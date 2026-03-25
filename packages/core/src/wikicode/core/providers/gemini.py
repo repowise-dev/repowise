@@ -24,10 +24,14 @@ from tenacity import (
 
 from wikicode.core.providers.base import (
     BaseProvider,
+    ChatStreamEvent,
+    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     RateLimitError,
 )
+
+from typing import Any, AsyncIterator
 from wikicode.core.rate_limiter import RateLimiter
 
 log = structlog.get_logger(__name__)
@@ -174,3 +178,206 @@ class GeminiProvider(BaseProvider):
             request_id=request_id,
         )
         return result
+
+    # --- ChatProvider protocol implementation ---
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        system_prompt: str,
+        max_tokens: int = 8192,
+        temperature: float = 0.7,
+        request_id: str | None = None,
+        tool_executor: Any | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        """Stream chat using Gemini's native generate_content.
+
+        Gemini requires thought_signature to be preserved on function_call
+        parts when sending them back. To handle this, we use non-streaming
+        generate_content and run the full agentic loop internally using
+        native Content objects (which preserve thought signatures). The
+        tool_executor callback is required for Gemini — if not provided
+        and the model requests tool calls, a stop event with tool_use is
+        yielded and the caller must handle it (though this will fail on
+        the next round-trip due to missing thought signatures).
+        """
+        import json as _json
+
+        model_name = self._model
+        api_key = self._api_key
+
+        def _call_sync(contents, config):
+            """Single Gemini generate_content call in thread."""
+            from google import genai  # type: ignore[import-untyped]
+
+            client = genai.Client(api_key=api_key)
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:
+                exc_str = str(exc)
+                status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                if status_code == 429 or "429" in exc_str or "quota" in exc_str.lower():
+                    raise RateLimitError("gemini", exc_str, status_code=429) from exc
+                raise ProviderError("gemini", f"{type(exc).__name__}: {exc_str}") from exc
+            return response
+
+        from google.genai import types as genai_types  # type: ignore[import-untyped]
+
+        # Convert OpenAI tools to Gemini FunctionDeclarations
+        gemini_tools = None
+        if tools:
+            declarations = []
+            for t in tools:
+                fn = t.get("function", t)
+                params = fn.get("parameters", {})
+                declarations.append(genai_types.FunctionDeclaration(
+                    name=fn["name"],
+                    description=fn.get("description", ""),
+                    parameters=params if params else None,
+                ))
+            gemini_tools = [genai_types.Tool(function_declarations=declarations)]
+
+        config = genai_types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=temperature,
+            tools=gemini_tools,
+        )
+
+        # Convert initial OpenAI messages to Gemini native Content objects
+        contents = _to_gemini_contents(messages)
+
+        max_loops = 10
+        for _ in range(max_loops):
+            # Call Gemini
+            try:
+                response = await asyncio.to_thread(_call_sync, contents, config)
+            except (RateLimitError, ProviderError):
+                raise
+            except Exception as exc:
+                raise ProviderError("gemini", f"{type(exc).__name__}: {exc}") from exc
+
+            if not response.candidates:
+                yield ChatStreamEvent(type="stop", stop_reason="end_turn")
+                return
+
+            # The model's response content — preserved as-is for the next turn
+            model_content = response.candidates[0].content
+
+            # Extract events from response parts
+            function_calls_found: list[tuple[str, str, dict]] = []
+            for part in model_content.parts:
+                if hasattr(part, "text") and part.text:
+                    yield ChatStreamEvent(type="text_delta", text=part.text)
+                elif hasattr(part, "function_call") and part.function_call:
+                    fc = part.function_call
+                    args = dict(fc.args) if fc.args else {}
+                    tc_id = f"gemini-{fc.name}-{id(part)}"
+                    function_calls_found.append((tc_id, fc.name, args))
+                    yield ChatStreamEvent(
+                        type="tool_start",
+                        tool_call=ChatToolCall(
+                            id=tc_id,
+                            name=fc.name,
+                            arguments=args,
+                        ),
+                    )
+
+            if not function_calls_found:
+                yield ChatStreamEvent(type="stop", stop_reason="end_turn")
+                return
+
+            # If no tool_executor, yield stop and let the caller handle
+            # (will break on next round-trip due to thought_signature, but
+            # this is a fallback)
+            if tool_executor is None:
+                yield ChatStreamEvent(type="stop", stop_reason="tool_use")
+                return
+
+            # Execute tools and build function_response parts
+            # Append the model's response (with thought signatures) to contents
+            contents.append(model_content)
+
+            response_parts = []
+            for tc_id, name, args in function_calls_found:
+                result = await tool_executor(name, args)
+                yield ChatStreamEvent(
+                    type="tool_result",
+                    tool_call=ChatToolCall(id=tc_id, name=name, arguments=args),
+                    tool_result_data=result,
+                )
+                response_parts.append(
+                    genai_types.Part.from_function_response(
+                        name=name,
+                        response=result,
+                    )
+                )
+
+            # Append tool results as a user turn
+            contents.append(genai_types.Content(role="user", parts=response_parts))
+            # Loop back to get the model's text response
+
+        # Max loops reached
+        yield ChatStreamEvent(type="stop", stop_reason="end_turn")
+
+
+def _to_gemini_contents(messages: list[dict[str, Any]]) -> list:
+    """Convert OpenAI-format messages to Gemini Content objects.
+
+    Only used for the initial history conversion. Subsequent tool-call
+    round-trips use native Gemini Content objects (preserving thought
+    signatures).
+    """
+    from google.genai import types as genai_types  # type: ignore[import-untyped]
+    import json as _json
+
+    contents = []
+    for msg in messages:
+        role = msg.get("role", "")
+        if role == "system":
+            continue  # Handled via system_instruction
+
+        gemini_role = "model" if role == "assistant" else "user"
+        parts = []
+
+        if role == "tool":
+            # Tool result → function_response part
+            content_str = msg.get("content", "{}")
+            try:
+                response_data = _json.loads(content_str) if isinstance(content_str, str) else content_str
+            except Exception:
+                response_data = {"result": content_str}
+            parts.append(genai_types.Part.from_function_response(
+                name=msg.get("name", "unknown"),
+                response=response_data,
+            ))
+            gemini_role = "user"
+        elif role == "assistant":
+            text = msg.get("content")
+            if text:
+                parts.append(genai_types.Part.from_text(text=text))
+            for tc in msg.get("tool_calls", []):
+                fn = tc.get("function", {})
+                args_str = fn.get("arguments", "{}")
+                if isinstance(args_str, str):
+                    try:
+                        args = _json.loads(args_str)
+                    except Exception:
+                        args = {}
+                else:
+                    args = args_str
+                parts.append(genai_types.Part.from_function_call(
+                    name=fn.get("name", ""),
+                    args=args,
+                ))
+        else:
+            parts.append(genai_types.Part.from_text(text=msg.get("content", "")))
+
+        if parts:
+            contents.append(genai_types.Content(role=gemini_role, parts=parts))
+
+    return contents

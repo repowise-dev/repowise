@@ -30,10 +30,14 @@ from tenacity import (
 
 from wikicode.core.providers.base import (
     BaseProvider,
+    ChatStreamEvent,
+    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     RateLimitError,
 )
+
+from typing import Any, AsyncIterator
 from wikicode.core.rate_limiter import RateLimiter
 
 log = structlog.get_logger(__name__)
@@ -159,3 +163,91 @@ class LiteLLMProvider(BaseProvider):
             request_id=request_id,
         )
         return result
+
+    # --- ChatProvider protocol implementation ---
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        system_prompt: str,
+        max_tokens: int = 8192,
+        temperature: float = 0.7,
+        request_id: str | None = None,
+        tool_executor: Any | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        import json as _json
+        import litellm  # type: ignore[import-untyped]
+
+        litellm.set_verbose = False
+        litellm.suppress_debug_info = True
+
+        full_messages = [{"role": "system", "content": system_prompt}, *messages]
+        call_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": full_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if tools:
+            call_kwargs["tools"] = tools
+        if self._api_key:
+            call_kwargs["api_key"] = self._api_key
+        if self._api_base:
+            call_kwargs["api_base"] = self._api_base
+
+        try:
+            stream = await litellm.acompletion(**call_kwargs)
+        except litellm.RateLimitError as exc:
+            raise RateLimitError("litellm", str(exc), status_code=429) from exc
+        except litellm.APIError as exc:
+            raise ProviderError("litellm", str(exc)) from exc
+
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+
+        try:
+            async for chunk in stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    continue
+
+                delta = choice.delta
+                finish = choice.finish_reason
+
+                if delta and getattr(delta, "content", None):
+                    yield ChatStreamEvent(type="text_delta", text=delta.content)
+
+                if delta and getattr(delta, "tool_calls", None):
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {"id": getattr(tc_delta, "id", "") or "", "name": "", "arguments": ""}
+                        acc = tool_calls_acc[idx]
+                        if getattr(tc_delta, "id", None):
+                            acc["id"] = tc_delta.id
+                        fn = getattr(tc_delta, "function", None)
+                        if fn:
+                            if getattr(fn, "name", None):
+                                acc["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                acc["arguments"] += fn.arguments
+
+                if finish:
+                    for idx in sorted(tool_calls_acc.keys()):
+                        acc = tool_calls_acc[idx]
+                        try:
+                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
+                        except Exception:
+                            args = {}
+                        yield ChatStreamEvent(
+                            type="tool_start",
+                            tool_call=ChatToolCall(id=acc["id"], name=acc["name"], arguments=args),
+                        )
+                    tool_calls_acc.clear()
+                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
+                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
+        except litellm.RateLimitError as exc:
+            raise RateLimitError("litellm", str(exc), status_code=429) from exc
+        except Exception as exc:
+            raise ProviderError("litellm", f"{type(exc).__name__}: {exc}") from exc

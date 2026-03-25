@@ -11,6 +11,9 @@ to instantiate a provider by name — this is the preferred entry point.
 
 from wikicode.core.providers.base import (
     BaseProvider,
+    ChatProvider,
+    ChatStreamEvent,
+    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     RateLimitError,
@@ -19,6 +22,9 @@ from wikicode.core.providers.registry import get_provider, list_providers, regis
 
 __all__ = [
     "BaseProvider",
+    "ChatProvider",
+    "ChatStreamEvent",
+    "ChatToolCall",
     "GeneratedResponse",
     "ProviderError",
     "RateLimitError",

@@ -26,6 +26,7 @@ from wikicode.core.persistence.search import FullTextSearch
 from wikicode.core.persistence.vector_store import InMemoryVectorStore
 from wikicode.server import __version__
 from wikicode.server.routers import (
+    chat,
     dead_code,
     decisions,
     git,
@@ -33,6 +34,7 @@ from wikicode.server.routers import (
     health,
     jobs,
     pages,
+    providers,
     repos,
     search,
     symbols,
@@ -98,6 +100,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.vector_store = vector_store
     app.state.scheduler = scheduler
 
+    # Initialize chat tool state (bridges FastAPI state to MCP tool globals)
+    from wikicode.server.chat_tools import init_tool_state
+
+    init_tool_state(
+        session_factory=session_factory,
+        fts=fts,
+        vector_store=vector_store,
+    )
+
     logger.info("wikicode_server_started", extra={"version": __version__})
     yield
 
@@ -147,5 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(git.router)
     app.include_router(dead_code.router)
     app.include_router(decisions.router)
+    app.include_router(chat.router)
+    app.include_router(providers.router)
 
     return app

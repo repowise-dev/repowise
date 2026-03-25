@@ -367,6 +367,40 @@ class DecisionRecord(Base):
     )
 
 
+class Conversation(Base):
+    """A chat conversation for a repository."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="New conversation")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class ChatMessage(Base):
+    """A single message in a chat conversation."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)  # user | assistant
+    content_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
 class DeadCodeFinding(Base):
     """Dead code finding: unreachable files, unused exports, zombie packages."""
 

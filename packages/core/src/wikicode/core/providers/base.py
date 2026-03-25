@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
 
 @dataclass
@@ -138,3 +138,90 @@ class RateLimitError(ProviderError):
     but RateLimitError signals that backing off longer won't help —
     the operator needs to review rate limits or reduce concurrency.
     """
+
+
+# ---------------------------------------------------------------------------
+# Chat streaming types and protocol (opt-in for providers that support it)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ChatToolCall:
+    """A tool call requested by the LLM during a chat turn."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class ChatStreamEvent:
+    """A single event yielded by stream_chat().
+
+    The ``type`` field determines which other fields are populated:
+    - ``text_delta``: incremental text token(s) in ``text``
+    - ``tool_start``: a completed tool call block in ``tool_call``
+    - ``tool_result``: tool execution result (from internal loops) in ``tool_call`` + ``tool_result_data``
+    - ``usage``: token counts in ``input_tokens`` / ``output_tokens``
+    - ``stop``: end of generation (may follow tool_start if stop_reason is tool_use)
+    """
+
+    type: str  # text_delta | tool_start | tool_result | usage | stop
+    text: str | None = None
+    tool_call: ChatToolCall | None = None
+    tool_result_data: dict[str, Any] | None = None  # populated for tool_result events
+    stop_reason: str | None = None  # end_turn | tool_use | max_tokens
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+ToolExecutor = Any  # Callable[[str, dict], Awaitable[dict]] — but kept as Any to avoid import cycles
+
+
+@runtime_checkable
+class ChatProvider(Protocol):
+    """Optional protocol for providers that support streaming chat with tool use.
+
+    Providers opt in by implementing stream_chat(). The existing BaseProvider
+    and its generate() method remain completely untouched.
+
+    Messages use OpenAI-format dicts. Each provider's stream_chat()
+    converts to its native format internally.
+    """
+
+    @property
+    def provider_name(self) -> str: ...
+
+    @property
+    def model_name(self) -> str: ...
+
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        system_prompt: str,
+        max_tokens: int = 8192,
+        temperature: float = 0.7,
+        request_id: str | None = None,
+        tool_executor: ToolExecutor | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        """Stream a multi-turn chat response with tool use support.
+
+        Args:
+            messages:       OpenAI-format message list (role + content + tool_calls).
+            tools:          OpenAI-format tool definitions for function calling.
+            system_prompt:  System instructions for the agent.
+            max_tokens:     Max completion tokens.
+            temperature:    Sampling temperature.
+            request_id:     Optional trace ID.
+            tool_executor:  Optional async callable(name, args) -> dict. If provided,
+                            providers that need internal tool-call looping (e.g. Gemini
+                            for thought_signature preservation) will execute tools
+                            internally and yield tool_start/tool_result events. Providers
+                            that don't need it (OpenAI, Anthropic) ignore this parameter
+                            and let the caller handle the loop.
+
+        Yields:
+            ChatStreamEvent objects as tokens and tool calls arrive.
+        """
+        ...

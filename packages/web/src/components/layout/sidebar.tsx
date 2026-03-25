@@ -8,6 +8,7 @@ import {
   BookOpen,
   GitBranch,
   Lightbulb,
+  MessageSquare,
   Search,
   Code2,
   BarChart3,
@@ -40,7 +41,7 @@ const GLOBAL_NAV: NavItem[] = [
 
 function repoNavItems(repoId: string): NavItem[] {
   return [
-    { label: "Overview", href: `/repos/${repoId}`, icon: BookOpen },
+    { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare },
     { label: "Search", href: `/repos/${repoId}/search`, icon: Search },
     { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
     { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },

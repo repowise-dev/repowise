@@ -26,10 +26,14 @@ from tenacity import (
 
 from wikicode.core.providers.base import (
     BaseProvider,
+    ChatStreamEvent,
+    ChatToolCall,
     GeneratedResponse,
     ProviderError,
     RateLimitError,
 )
+
+from typing import Any, AsyncIterator
 from wikicode.core.rate_limiter import RateLimiter
 
 log = structlog.get_logger(__name__)
@@ -150,3 +154,101 @@ class OpenAIProvider(BaseProvider):
             request_id=request_id,
         )
         return result
+
+    # --- ChatProvider protocol implementation ---
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        system_prompt: str,
+        max_tokens: int = 8192,
+        temperature: float = 0.7,
+        request_id: str | None = None,
+        tool_executor: Any | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        import json as _json
+
+        full_messages = [{"role": "system", "content": system_prompt}, *messages]
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": full_messages,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        try:
+            stream = await self._client.chat.completions.create(**kwargs)
+        except _OpenAIRateLimitError as exc:
+            raise RateLimitError("openai", str(exc), status_code=429) from exc
+        except _OpenAIAPIStatusError as exc:
+            raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc
+
+        # Track in-progress tool calls (OpenAI streams them incrementally)
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+
+        try:
+            async for chunk in stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    if chunk.usage:
+                        yield ChatStreamEvent(
+                            type="usage",
+                            input_tokens=chunk.usage.prompt_tokens or 0,
+                            output_tokens=chunk.usage.completion_tokens or 0,
+                        )
+                    continue
+
+                delta = choice.delta
+                finish = choice.finish_reason
+
+                # Text content
+                if delta and delta.content:
+                    yield ChatStreamEvent(type="text_delta", text=delta.content)
+
+                # Tool call fragments
+                if delta and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {
+                                "id": tc_delta.id or "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        acc = tool_calls_acc[idx]
+                        if tc_delta.id:
+                            acc["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                acc["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                acc["arguments"] += tc_delta.function.arguments
+
+                if finish:
+                    # Emit accumulated tool calls
+                    for idx in sorted(tool_calls_acc.keys()):
+                        acc = tool_calls_acc[idx]
+                        try:
+                            args = _json.loads(acc["arguments"]) if acc["arguments"] else {}
+                        except Exception:
+                            args = {}
+                        yield ChatStreamEvent(
+                            type="tool_start",
+                            tool_call=ChatToolCall(
+                                id=acc["id"],
+                                name=acc["name"],
+                                arguments=args,
+                            ),
+                        )
+                    tool_calls_acc.clear()
+
+                    stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
+                    yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
+        except _OpenAIRateLimitError as exc:
+            raise RateLimitError("openai", str(exc), status_code=429) from exc
+        except _OpenAIAPIStatusError as exc:
+            raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc

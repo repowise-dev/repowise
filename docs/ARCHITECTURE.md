@@ -34,10 +34,11 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 9. [Decision Intelligence](#9-decision-intelligence)
 10. [MCP Server](#10-mcp-server)
 11. [REST API and Web UI](#11-rest-api-and-web-ui)
-12. [Data Flow Diagrams](#12-data-flow-diagrams)
-13. [Key Design Decisions](#13-key-design-decisions)
-14. [Adding a New Language](#14-adding-a-new-language)
-15. [Adding a New LLM Provider](#15-adding-a-new-llm-provider)
+12. [Codebase Chat](#12-codebase-chat)
+13. [Data Flow Diagrams](#13-data-flow-diagrams)
+14. [Key Design Decisions](#14-key-design-decisions)
+15. [Adding a New Language](#15-adding-a-new-language)
+16. [Adding a New LLM Provider](#16-adding-a-new-llm-provider)
 
 ---
 
@@ -1033,7 +1034,37 @@ file, tokens used, estimated cost, estimated time remaining).
 
 ---
 
-## 12. Data Flow Diagrams
+## 12. Codebase Chat
+
+WikiCode includes an interactive chat interface that lets users ask questions about
+their codebase and receive answers grounded in the wiki, dependency graph, git
+history, and architectural decisions. The chat agent uses whichever LLM provider
+the user has configured and has access to all 8 MCP tools.
+
+See [`docs/CHAT.md`](CHAT.md) for the full technical reference covering the
+backend agentic loop, SSE streaming protocol, provider abstraction extensions,
+database schema, frontend component architecture, and artifact rendering system.
+
+**Key design points:**
+
+- **Provider-agnostic** — the chat agent goes through the same provider abstraction
+  as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
+  `stream_chat()` for streaming + tool use without breaking existing callers.
+- **Tool reuse** — the 8 MCP tools are called directly as Python functions (no
+  subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
+  fed to both the LLM and the executor.
+- **SSE streaming** — `POST /api/repos/{repo_id}/chat/messages` runs the agentic
+  loop and streams back Server-Sent Events (`text_delta`, `tool_start`,
+  `tool_result`, `done`, `error`).
+- **Conversation persistence** — chat history is stored in `conversations` and
+  `chat_messages` tables, allowing replay and continuation across page refreshes.
+- **Artifact panel** — tool results with rich content (wiki pages, Mermaid diagrams,
+  search results, risk reports) open in a slide-in artifact panel that reuses
+  existing frontend components.
+
+---
+
+## 13. Data Flow Diagrams
 
 ### Init flow
 
@@ -1183,7 +1214,7 @@ instead of reading 40 files
 
 ---
 
-## 13. Key Design Decisions
+## 14. Key Design Decisions
 
 ### Three-layer folder exclusion, not one monolithic list
 
@@ -1311,7 +1342,7 @@ and the vector store embed (LanceDB or pgvector) can overlap with the next file'
 
 ---
 
-## 14. Adding a New Language
+## 15. Adding a New Language
 
 1. **Write `packages/core/queries/<language>.scm`**
 
@@ -1353,7 +1384,7 @@ and the vector store embed (LanceDB or pgvector) can overlap with the next file'
 
 ---
 
-## 15. Adding a New LLM Provider
+## 16. Adding a New LLM Provider
 
 1. **Create `packages/core/providers/<name>.py`**
 
