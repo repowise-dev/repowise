@@ -301,5 +301,6 @@ def test_base_includes_all_models():
         "wiki_symbols",
         "git_metadata",
         "dead_code_findings",
+        "decision_records",
     }
     assert expected == table_names
