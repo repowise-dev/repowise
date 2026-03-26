@@ -133,14 +133,17 @@ class TestCoChangeDetection:
         mock_repo = MagicMock()
         all_files = {"a.py", "b.py", "c.py"}
 
-        # Simulate `git log --name-only --no-merges --format=%x00` output.
+        # Simulate `git log --name-only --no-merges --format=%x00%ct` output.
         # 4 commits where a.py and b.py always change together.
         # c.py only changes in commit 0.
+        # Timestamps are recent (within decay window) so weights stay high.
+        import time
+        now = int(time.time())
         raw_log = (
-            "\x00\na.py\nb.py\nc.py\n"  # commit 0
-            "\x00\na.py\nb.py\n"         # commit 1
-            "\x00\na.py\nb.py\n"         # commit 2
-            "\x00\na.py\nb.py\n"         # commit 3
+            f"\x00{now}\na.py\nb.py\nc.py\n"       # commit 0
+            f"\x00{now - 86400}\na.py\nb.py\n"      # commit 1 (1 day ago)
+            f"\x00{now - 172800}\na.py\nb.py\n"     # commit 2 (2 days ago)
+            f"\x00{now - 259200}\na.py\nb.py\n"     # commit 3 (3 days ago)
         )
         mock_repo.git.log.return_value = raw_log
 
@@ -155,9 +158,14 @@ class TestCoChangeDetection:
         partner_paths_b = [p["file_path"] for p in result["b.py"]]
         assert "a.py" in partner_paths_b
 
-        # Verify the count is 4
+        # With temporal decay, score is close to 4 (all commits very recent)
         co_count = next(p["co_change_count"] for p in result["a.py"] if p["file_path"] == "b.py")
-        assert co_count == 4
+        assert co_count >= 3.9  # decay-weighted, very recent → near 4.0
+
+        # Verify last_co_change date is present
+        entry = next(p for p in result["a.py"] if p["file_path"] == "b.py")
+        assert "last_co_change" in entry
+        assert entry["last_co_change"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -285,19 +293,15 @@ class TestCoChangeBelowThresholdSkipped:
         all_files = {"x.py", "y.py", "z.py"}
 
         # Only 2 commits with x.py + y.py together (below default min_count=3)
-        parent = MagicMock()
-        commits = []
-        for i in range(2):
-            c = _make_commit(hexsha=f"sha{i}", parents=[parent])
-            c.diff.return_value = [_make_diff("x.py"), _make_diff("y.py")]
-            commits.append(c)
-
-        # 1 commit with x.py + z.py (below min_count=3)
-        c_single = _make_commit(hexsha="sha_z", parents=[parent])
-        c_single.diff.return_value = [_make_diff("x.py"), _make_diff("z.py")]
-        commits.append(c_single)
-
-        mock_repo.iter_commits.return_value = commits
+        # 1 commit with x.py + z.py (also below min_count=3)
+        import time
+        now = int(time.time())
+        raw_log = (
+            f"\x00{now}\nx.py\ny.py\n"
+            f"\x00{now - 86400}\nx.py\ny.py\n"
+            f"\x00{now - 172800}\nx.py\nz.py\n"
+        )
+        mock_repo.git.log.return_value = raw_log
 
         result = indexer._compute_co_changes(mock_repo, all_files, commit_limit=500, min_count=3)
 
