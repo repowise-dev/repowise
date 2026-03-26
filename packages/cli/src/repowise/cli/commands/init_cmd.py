@@ -231,18 +231,19 @@ def init_command(
     # Load saved API keys from .repowise/.env (won't overwrite existing env vars)
     load_dotenv(repo_path)
 
-    # Suppress noisy library/structlog output so the interactive UX stays clean
+    # Suppress all library/structlog output so the interactive UX stays clean.
+    # Progress bars and summary lines are the only output the user needs.
     import logging
 
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.ERROR)
+    logging.getLogger("httpcore").setLevel(logging.ERROR)
     for _logger_name in ("repowise.core", "repowise.server"):
-        logging.getLogger(_logger_name).setLevel(logging.WARNING)
+        logging.getLogger(_logger_name).setLevel(logging.ERROR)
 
     try:
         import structlog
         structlog.configure(
-            wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
+            wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
         )
     except ImportError:
         pass
