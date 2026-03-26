@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-import sys
+from pathlib import Path
 from typing import Any
 
 import click
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.rule import Rule
@@ -77,7 +77,7 @@ def print_phase_header(
 
 
 # ---------------------------------------------------------------------------
-# Interactive mode selection
+# Provider metadata  —  order matters (gemini first = default)
 # ---------------------------------------------------------------------------
 
 _PROVIDER_DEFAULTS: dict[str, str] = {
@@ -94,6 +94,86 @@ _PROVIDER_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "OLLAMA_BASE_URL",
 }
+
+_PROVIDER_SIGNUP: dict[str, str] = {
+    "gemini": "https://aistudio.google.com/apikey",
+    "openai": "https://platform.openai.com/api-keys",
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "ollama": "https://ollama.com/download",
+}
+
+
+# ---------------------------------------------------------------------------
+# .env persistence  —  save/load API keys in .repowise/.env
+# ---------------------------------------------------------------------------
+
+def load_dotenv(repo_path: Path) -> None:
+    """Load ``<repo>/.repowise/.env`` into ``os.environ`` (without overwriting)."""
+    env_file = repo_path / ".repowise" / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        # Don't overwrite existing env vars (explicit env takes priority)
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+
+
+def _save_key_to_dotenv(repo_path: Path, env_var: str, value: str) -> None:
+    """Append or update a key in ``<repo>/.repowise/.env``."""
+    env_dir = repo_path / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_file = env_dir / ".env"
+
+    # Read existing lines
+    existing_lines: list[str] = []
+    found = False
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(f"{env_var}="):
+                existing_lines.append(f"{env_var}={value}")
+                found = True
+            else:
+                existing_lines.append(line)
+
+    if not found:
+        existing_lines.append(f"{env_var}={value}")
+
+    env_file.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+
+    # Ensure .repowise/.env is gitignored
+    _ensure_gitignored(repo_path)
+
+
+def _ensure_gitignored(repo_path: Path) -> None:
+    """Add ``.repowise/.env`` to ``.gitignore`` if not already present."""
+    gitignore = repo_path / ".gitignore"
+    pattern = ".repowise/.env"
+
+    if gitignore.exists():
+        content = gitignore.read_text(encoding="utf-8")
+        if pattern in content:
+            return
+        # Append to existing file
+        if not content.endswith("\n"):
+            content += "\n"
+        content += f"\n# repowise API keys (local)\n{pattern}\n"
+        gitignore.write_text(content, encoding="utf-8")
+    else:
+        gitignore.write_text(
+            f"# repowise API keys (local)\n{pattern}\n",
+            encoding="utf-8",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Interactive mode selection
+# ---------------------------------------------------------------------------
 
 
 def interactive_mode_select(console: Console) -> str:
@@ -138,7 +218,7 @@ def interactive_mode_select(console: Console) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Interactive provider selection (+ inline API key entry)
+# Interactive provider selection (+ inline API key entry + save)
 # ---------------------------------------------------------------------------
 
 
@@ -157,12 +237,14 @@ def _detect_provider_status() -> dict[str, str]:
 def interactive_provider_select(
     console: Console,
     model_flag: str | None,
+    *,
+    repo_path: Path | None = None,
 ) -> tuple[str, str]:
-    """Show provider table, handle selection + inline key entry.
+    """Show provider table, handle selection + inline key entry + save.
 
     Returns ``(provider_name, model_name)``.
     """
-    providers = list(_PROVIDER_ENV.keys())
+    providers = list(_PROVIDER_ENV.keys())  # gemini first
     detected = _detect_provider_status()
 
     # --- provider table ---
@@ -182,9 +264,13 @@ def interactive_provider_select(
         if prov in detected:
             status_text = f"[{OK}]✓ API key set[/]"
         else:
-            status_text = f"[dim]✗ no key[/dim]"
+            status_text = "[dim]✗ no key[/dim]"
         default_model = _PROVIDER_DEFAULTS.get(prov, "")
-        table.add_row(f"[{idx}]", prov, status_text, default_model)
+        # Mark gemini as recommended
+        label = prov
+        if prov == "gemini":
+            label = f"{prov} [dim](recommended)[/dim]"
+        table.add_row(f"[{idx}]", label, status_text, default_model)
 
     console.print()
     console.print(table)
@@ -192,7 +278,7 @@ def interactive_provider_select(
 
     # --- selection ---
     valid_choices = [str(i) for i in range(1, len(providers) + 1)]
-    # default to first detected, else first overall
+    # Default: first detected provider, or gemini (index 1)
     default_idx = "1"
     for idx, prov in enumerate(providers, 1):
         if prov in detected:
@@ -210,13 +296,16 @@ def interactive_provider_select(
     # --- inline API key entry if missing ---
     if chosen not in detected:
         env_var = _PROVIDER_ENV[chosen]
+        signup_url = _PROVIDER_SIGNUP.get(chosen, "")
         console.print()
         console.print(f"  [bold]{chosen}[/bold] requires [cyan]{env_var}[/cyan].")
-        key = prompt_api_key(console, chosen, env_var)
+        if signup_url:
+            console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
+        console.print()
+        key = _prompt_api_key(console, chosen, env_var, repo_path=repo_path)
         if not key:
-            # user skipped — re-prompt for a different provider
             console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
-            return interactive_provider_select(console, model_flag)
+            return interactive_provider_select(console, model_flag, repo_path=repo_path)
 
     # --- model ---
     default_model = _PROVIDER_DEFAULTS.get(chosen, "")
@@ -224,20 +313,26 @@ def interactive_provider_select(
         model = model_flag
     else:
         model = click.prompt(
-            f"  Model",
+            "  Model",
             default=default_model,
         )
 
     return chosen, model
 
 
-def prompt_api_key(console: Console, provider: str, env_var: str) -> str | None:
-    """Prompt for an API key (hidden input) and set it as an env var for this session.
+def _prompt_api_key(
+    console: Console,
+    provider: str,
+    env_var: str,
+    *,
+    repo_path: Path | None = None,
+) -> str | None:
+    """Prompt for an API key, set env var, and optionally save to .repowise/.env.
 
     Returns the key, or ``None`` if the user pressed Enter without typing.
     """
     key = click.prompt(
-        "  Enter API key (or press Enter to skip)",
+        "  Paste your API key (hidden)",
         default="",
         hide_input=True,
         show_default=False,
@@ -247,7 +342,19 @@ def prompt_api_key(console: Console, provider: str, env_var: str) -> str | None:
         return None
 
     os.environ[env_var] = key
-    console.print(f"  [{OK}]✓ Key set for this session[/] [dim](not saved to disk)[/dim]")
+    console.print(f"  [{OK}]✓ Key set for this session[/]")
+
+    # Offer to save for future runs
+    if repo_path is not None:
+        save = click.confirm(
+            "  Save key to .repowise/.env for future runs? (auto-gitignored)",
+            default=True,
+        )
+        if save:
+            _save_key_to_dotenv(repo_path, env_var, key)
+            console.print(f"  [{OK}]✓ Saved to .repowise/.env[/]")
+    console.print()
+
     return key
 
 
@@ -407,14 +514,10 @@ def build_completion_panel(
     parts: list[Any] = [table]
 
     if next_steps:
-        from rich.text import Text as _T
-
-        parts.append(_T(""))
-        parts.append(_T("  What's next:", style="bold"))
+        parts.append(Text(""))
+        parts.append(Text("  What's next:", style="bold"))
         for cmd, desc in next_steps:
-            parts.append(_T(f"  {cmd:<28}{desc}", style="dim"))
-
-    from rich.console import Group
+            parts.append(Text(f"  {cmd:<28}{desc}", style="dim"))
 
     return Panel(
         Group(*parts),

@@ -214,6 +214,7 @@ def init_command(
         interactive_advanced_config,
         interactive_mode_select,
         interactive_provider_select,
+        load_dotenv,
         print_banner,
         print_index_only_intro,
         print_phase_header,
@@ -227,6 +228,9 @@ def init_command(
 
     ensure_repowise_dir(repo_path)
 
+    # Load saved API keys from .repowise/.env (won't overwrite existing env vars)
+    load_dotenv(repo_path)
+
     # ---- Interactive mode (TTY, no explicit flags) ----
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
 
@@ -238,7 +242,7 @@ def init_command(
             index_only = True
         elif mode == "advanced":
             # Provider setup first, then advanced config
-            provider_name, model = interactive_provider_select(console, model)
+            provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
             adv = interactive_advanced_config(console)
             commit_limit = adv["commit_limit"]
             follow_renames = adv["follow_renames"]
@@ -249,7 +253,7 @@ def init_command(
             test_run = adv["test_run"]
         else:
             # Full mode — just provider setup
-            provider_name, model = interactive_provider_select(console, model)
+            provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
