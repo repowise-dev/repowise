@@ -89,7 +89,7 @@ DECISION_SIGNAL_KEYWORDS = [
     "migrate", "migration", "switch to", "replace", "replaced",
     "refactor to", "move from", "adopt", "introduce", "deprecate",
     "remove", "drop", "upgrade", "rewrite", "extract", "split",
-    "convert", "transition",
+    "convert", "transition", "revert",
 ]
 
 # ---------------------------------------------------------------------------

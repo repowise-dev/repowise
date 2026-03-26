@@ -51,22 +51,29 @@ def _make_diff(b_path: str, a_path: str | None = None):
 
 
 class TestSignificantCommitFilter:
-    """Merges, bumps, chore, and bot commits are filtered out; normal commits pass."""
+    """Merges, bumps, chore, and bot commits are filtered out; normal commits pass.
+
+    Revert commits are kept (high signal for risk and decision archaeology).
+    Soft-skip prefixes (chore:, ci:, style:, build:, release:, Bump) are
+    normally filtered but rescued when the message contains a decision-signal
+    keyword (e.g. "build: migrate from webpack to vite").
+    """
 
     def test_significant_commit_filter(self) -> None:
         indexer = GitIndexer("/tmp/repo")
 
         # --- Should be filtered (return False) ---
 
-        # Prefix-based filtering
+        # Hard-skip: merge commits are always noise
         assert indexer._is_significant_commit("Merge branch 'main' into feature", "Alice") is False
+
+        # Soft-skip: conventional prefixes without decision signal
         assert indexer._is_significant_commit("Bump lodash from 4.17.15 to 4.17.21", "Alice") is False
         assert indexer._is_significant_commit("chore: update dependencies across the board", "Alice") is False
         assert indexer._is_significant_commit("ci: fix the github actions workflow", "Alice") is False
         assert indexer._is_significant_commit("style: run prettier on the codebase", "Alice") is False
         assert indexer._is_significant_commit("build: update webpack config for prod", "Alice") is False
         assert indexer._is_significant_commit("release: v2.3.0 official release cut", "Alice") is False
-        assert indexer._is_significant_commit("revert: undo the last commit change", "Alice") is False
 
         # Author-based filtering (bot accounts)
         assert indexer._is_significant_commit(
@@ -82,7 +89,7 @@ class TestSignificantCommitFilter:
             "github-actions[bot]",
         ) is False
 
-        # Too short (< 20 chars)
+        # Too short (< 12 chars)
         assert indexer._is_significant_commit("fix typo", "Alice") is False
 
         # --- Should pass (return True) ---
@@ -91,6 +98,24 @@ class TestSignificantCommitFilter:
         ) is True
         assert indexer._is_significant_commit(
             "fix: resolve race condition in worker queue", "Bob"
+        ) is True
+
+        # Revert commits are now significant (high signal for risk/decisions)
+        assert indexer._is_significant_commit(
+            "revert: undo the last commit change", "Alice"
+        ) is True
+
+        # Soft-skip rescued by decision-signal keyword
+        assert indexer._is_significant_commit(
+            "build: migrate from webpack to vite", "Alice"
+        ) is True
+        assert indexer._is_significant_commit(
+            "chore: deprecate legacy auth module", "Alice"
+        ) is True
+
+        # Short but meaningful messages (>= 12 chars) now pass
+        assert indexer._is_significant_commit(
+            "fix auth race", "Alice"
         ) is True
 
 

@@ -117,7 +117,8 @@ def update_command(
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
 
-        git_indexer = GitIndexer(repo_path)
+        _commit_limit = repo_config.get("commit_limit")
+        git_indexer = GitIndexer(repo_path, commit_limit=_commit_limit)
         changed_paths = [fd.path for fd in file_diffs]
         updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
         git_meta_map = {m["file_path"]: m for m in updated_meta}

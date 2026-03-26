@@ -239,6 +239,12 @@ def _interactive_provider_wizard(model_flag: str | None) -> tuple[str, str]:
     metavar="PATTERN",
     help="Gitignore-style pattern to exclude. Can be repeated: -x vendor/ -x 'src/generated/**'",
 )
+@click.option(
+    "--commit-limit",
+    type=int,
+    default=None,
+    help="Max commits to analyze per file and for co-change detection (default: 500, max: 5000). Saved to config.",
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -254,6 +260,7 @@ def init_command(
     test_run: bool,
     index_only: bool,
     exclude: tuple[str, ...],
+    commit_limit: int | None,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -271,6 +278,13 @@ def init_command(
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
     exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
+
+    # Resolve commit limit: CLI flag → config.yaml → default (500)
+    resolved_commit_limit: int = commit_limit or config.get("commit_limit") or 500
+    resolved_commit_limit = max(1, min(resolved_commit_limit, 5000))
+    # Persist to config so `repowise update` picks it up automatically
+    if commit_limit is not None:
+        config["commit_limit"] = resolved_commit_limit
 
     embedder = _resolve_embedder(embedder_name)
 
@@ -342,7 +356,7 @@ def init_command(
         try:
             from repowise.core.ingestion.git_indexer import GitIndexer
 
-            git_indexer = GitIndexer(repo_path)
+            git_indexer = GitIndexer(repo_path, commit_limit=resolved_commit_limit)
 
             def _run_git_indexing() -> tuple:
                 def on_start(total: int) -> None:
@@ -521,6 +535,19 @@ def init_command(
             dead_code_report=dead_code_report,
             decision_report=decision_report,
         ))
+        # Persist commit_limit to config so `repowise update` picks it up
+        if commit_limit is not None:
+            cfg = load_config(repo_path)
+            cfg["commit_limit"] = resolved_commit_limit
+            try:
+                import yaml  # type: ignore[import-untyped]
+                cfg_path = repo_path / ".repowise" / "config.yaml"
+                cfg_path.write_text(
+                    yaml.dump(cfg, default_flow_style=False, sort_keys=False),
+                    encoding="utf-8",
+                )
+            except ImportError:
+                pass  # No yaml — commit_limit will use default next time
         elapsed = time.monotonic() - start
         console.print(f"[bold green]Index complete[/bold green] in {elapsed:.1f}s — graph, symbols, git, and dead code persisted.")
         return
@@ -798,6 +825,7 @@ def init_command(
         provider.model_name,
         embedder,
         exclude_patterns=exclude_patterns if exclude_patterns else None,
+        commit_limit=resolved_commit_limit if commit_limit is not None else None,
     )
 
     # ---- Step 7: Summary ----

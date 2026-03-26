@@ -297,6 +297,7 @@ class GitMetadata(Base):
     is_stable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     churn_percentile: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     age_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    commit_count_capped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

@@ -272,7 +272,7 @@ class GitConfig:
     """Configuration for git intelligence features."""
 
     enabled: bool = True
-    co_change_commit_limit: int = 500
+    commit_limit: int = 500
     co_change_min_count: int = 3
     blame_enabled: bool = True
     prompt_commit_count: int = 10

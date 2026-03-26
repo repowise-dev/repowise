@@ -899,10 +899,15 @@ async def _assess_one_target(
     result_data["trend"] = trend
     result_data["risk_type"] = risk_type
     result_data["impact_surface"] = impact_surface
+
+    capped = getattr(meta, "commit_count_capped", False)
+    capped_note = " (history truncated — actual count may be higher)" if capped else ""
+    result_data["commit_count_capped"] = capped
     result_data["risk_summary"] = (
         f"{target} — hotspot score {hotspot_score:.0%} ({trend}), "
         f"{dep_count} dependents, {risk_type}, "
         f"{len(co_changes)} co-change partners, owned {pct:.0%} by {owner}"
+        f"{capped_note}"
     )
 
     return result_data

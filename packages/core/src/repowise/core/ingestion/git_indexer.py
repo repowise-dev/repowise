@@ -41,10 +41,26 @@ try:
 except Exception:
     pass  # git not installed — nothing to patch
 
-# Commit message prefixes/keywords to skip as insignificant
-_SKIP_PREFIXES = ("Merge ", "Bump ", "chore:", "ci:", "style:", "build:", "release:", "revert:")
+# Commit message prefixes that are ALWAYS skipped (no signal value).
+_HARD_SKIP_PREFIXES = ("Merge ",)
+
+# Conventional-commit prefixes normally skipped — but kept if the message
+# contains a decision-signal keyword (e.g. "build: migrate from webpack to vite").
+_SOFT_SKIP_PREFIXES = ("Bump ", "chore:", "ci:", "style:", "build:", "release:")
+
+# Lightweight subset of decision-signal keywords (mirrors decision_extractor.py).
+# Used to rescue soft-skipped commits that carry architectural intent.
+_DECISION_SIGNAL_WORDS: frozenset[str] = frozenset({
+    "migrate", "migration", "switch to", "replace", "refactor",
+    "adopt", "introduce", "deprecate", "remove", "upgrade",
+    "rewrite", "extract", "convert", "transition",
+})
+
 _SKIP_AUTHORS = ("dependabot", "renovate", "github-actions")
-_MIN_MESSAGE_LEN = 20
+_MIN_MESSAGE_LEN = 12
+
+# Default per-file and co-change commit history depth.
+_DEFAULT_COMMIT_LIMIT: int = 500
 
 # Allowlist of extensions for which per-file git indexing (blame, commit
 # history, hotspot/stable classification) is worth running.  Anything NOT in
@@ -144,8 +160,9 @@ class GitIndexer:
     and return an empty summary. All downstream features degrade gracefully.
     """
 
-    def __init__(self, repo_path: str | Path) -> None:
+    def __init__(self, repo_path: str | Path, *, commit_limit: int | None = None) -> None:
         self.repo_path = Path(repo_path)
+        self.commit_limit = commit_limit or _DEFAULT_COMMIT_LIMIT
 
     async def index_repo(
         self,
@@ -230,7 +247,7 @@ class GitIndexer:
         # that relationships like "whenever auth.py changes, config.yaml changes too"
         # are captured even for files we didn't run full git log/blame on.
         co_changes = await loop.run_in_executor(
-            None, self._compute_co_changes, repo, set(tracked_files), 500, 3, on_commit_done, on_co_change_start
+            None, self._compute_co_changes, repo, set(tracked_files), self.commit_limit, 3, on_commit_done, on_co_change_start
         )
         for meta in results:
             fp = meta["file_path"]
@@ -339,6 +356,7 @@ class GitIndexer:
             "commit_count_total": 0,
             "commit_count_90d": 0,
             "commit_count_30d": 0,
+            "commit_count_capped": False,
             "first_commit_at": None,
             "last_commit_at": None,
             "primary_owner_name": None,
@@ -354,7 +372,7 @@ class GitIndexer:
         }
 
         try:
-            commits = list(repo.iter_commits(paths=file_path, max_count=500))
+            commits = list(repo.iter_commits(paths=file_path, max_count=self.commit_limit))
         except Exception:
             return meta
 
@@ -362,6 +380,7 @@ class GitIndexer:
             return meta
 
         meta["commit_count_total"] = len(commits)
+        meta["commit_count_capped"] = len(commits) >= self.commit_limit
 
         try:
             # Timeline
@@ -476,17 +495,34 @@ class GitIndexer:
         return top_name, emails.get(top_name), pct
 
     def _is_significant_commit(self, message: str, author: str) -> bool:
-        """Return True if the commit is considered significant."""
+        """Return True if the commit is considered significant.
+
+        Filtering rules:
+        1. Always skip messages shorter than _MIN_MESSAGE_LEN characters.
+        2. Always skip merge commits and bot authors (no useful signal).
+        3. Conventional-commit prefixes (chore:, ci:, style:, build:,
+           release:, Bump) are normally skipped — UNLESS the message also
+           contains a decision-signal keyword (e.g. "build: migrate from
+           webpack to vite").  This rescues architecturally meaningful
+           commits that happen to use a low-signal prefix.
+        """
         msg = message.strip()
         if len(msg) < _MIN_MESSAGE_LEN:
             return False
-        for prefix in _SKIP_PREFIXES:
+        # Always skip merge commits
+        for prefix in _HARD_SKIP_PREFIXES:
             if msg.startswith(prefix):
                 return False
+        # Always skip bot authors
         author_lower = author.lower()
         for skip in _SKIP_AUTHORS:
             if skip in author_lower:
                 return False
+        # Soft-skip conventional prefixes unless decision signal present
+        for prefix in _SOFT_SKIP_PREFIXES:
+            if msg.startswith(prefix):
+                msg_lower = msg.lower()
+                return any(word in msg_lower for word in _DECISION_SIGNAL_WORDS)
         return True
 
     def _compute_co_changes(

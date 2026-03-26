@@ -169,6 +169,7 @@ def save_config(
     embedder: str,
     *,
     exclude_patterns: list[str] | None = None,
+    commit_limit: int | None = None,
 ) -> None:
     """Write provider/model/embedder (and optionally exclude_patterns) to ``.repowise/config.yaml``.
 
@@ -184,6 +185,8 @@ def save_config(
     existing["embedder"] = embedder
     if exclude_patterns is not None:
         existing["exclude_patterns"] = exclude_patterns
+    if commit_limit is not None:
+        existing["commit_limit"] = commit_limit
 
     try:
         import yaml  # type: ignore[import-untyped]
