@@ -245,6 +245,12 @@ def _interactive_provider_wizard(model_flag: str | None) -> tuple[str, str]:
     default=None,
     help="Max commits to analyze per file and for co-change detection (default: 500, max: 5000). Saved to config.",
 )
+@click.option(
+    "--follow-renames",
+    is_flag=True,
+    default=False,
+    help="Use git log --follow to track files across renames (slower but more accurate history). Saved to config.",
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -261,6 +267,7 @@ def init_command(
     index_only: bool,
     exclude: tuple[str, ...],
     commit_limit: int | None,
+    follow_renames: bool,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -285,6 +292,11 @@ def init_command(
     # Persist to config so `repowise update` picks it up automatically
     if commit_limit is not None:
         config["commit_limit"] = resolved_commit_limit
+
+    # Resolve follow_renames: CLI flag → config.yaml
+    resolved_follow_renames: bool = follow_renames or config.get("follow_renames", False)
+    if follow_renames:
+        config["follow_renames"] = True
 
     embedder = _resolve_embedder(embedder_name)
 
@@ -356,7 +368,11 @@ def init_command(
         try:
             from repowise.core.ingestion.git_indexer import GitIndexer
 
-            git_indexer = GitIndexer(repo_path, commit_limit=resolved_commit_limit)
+            git_indexer = GitIndexer(
+                repo_path,
+                commit_limit=resolved_commit_limit,
+                follow_renames=resolved_follow_renames,
+            )
 
             def _run_git_indexing() -> tuple:
                 def on_start(total: int) -> None:

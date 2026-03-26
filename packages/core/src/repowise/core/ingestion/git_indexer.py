@@ -86,6 +86,10 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
 # Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
 _CO_CHANGE_DECAY_TAU: float = 180.0
 
+# Regex to extract PR/MR numbers from commit messages.
+# Matches: "#123", "Merge pull request #456", "(#789)", "!42" (GitLab MR)
+_PR_NUMBER_RE = re.compile(r"(?:pull request |)\#(\d+)|\(#(\d+)\)|!(\d+)")
+
 # Allowlist of extensions for which per-file git indexing (blame, commit
 # history, hotspot/stable classification) is worth running.  Anything NOT in
 # this set is skipped — data, config, markup, dotfiles, and binaries add no
@@ -184,9 +188,16 @@ class GitIndexer:
     and return an empty summary. All downstream features degrade gracefully.
     """
 
-    def __init__(self, repo_path: str | Path, *, commit_limit: int | None = None) -> None:
+    def __init__(
+        self,
+        repo_path: str | Path,
+        *,
+        commit_limit: int | None = None,
+        follow_renames: bool = False,
+    ) -> None:
         self.repo_path = Path(repo_path)
         self.commit_limit = commit_limit or _DEFAULT_COMMIT_LIMIT
+        self.follow_renames = follow_renames
 
     async def index_repo(
         self,
@@ -402,10 +413,13 @@ class GitIndexer:
             "recent_owner_commit_pct": None,
             "bus_factor": 0,
             "contributor_count": 0,
+            # Phase 3 fields
+            "original_path": None,
+            "merge_commit_count_90d": 0,
         }
 
         try:
-            commits = list(repo.iter_commits(paths=file_path, max_count=self.commit_limit))
+            commits = self._get_commits(file_path, repo)
         except Exception:
             return meta
 
@@ -499,18 +513,24 @@ class GitIndexer:
             except Exception:
                 pass  # blame is best-effort
 
-            # Significant commits + classification
+            # Significant commits + classification + PR extraction
             sig_commits = []
             category_counts: Counter[str] = Counter()
             for c in commits:
                 msg = c.message.strip().split("\n")[0][:200]
                 if self._is_significant_commit(c.message, c.author.name or ""):
-                    sig_commits.append({
+                    entry: dict[str, Any] = {
                         "sha": c.hexsha[:8],
                         "date": c.committed_datetime.isoformat(),
                         "message": msg,
                         "author": c.author.name or "unknown",
-                    })
+                    }
+                    # Extract PR/MR number from commit message
+                    pr_match = _PR_NUMBER_RE.search(c.message)
+                    if pr_match:
+                        pr_num = pr_match.group(1) or pr_match.group(2) or pr_match.group(3)
+                        entry["pr_number"] = int(pr_num)
+                    sig_commits.append(entry)
                     if len(sig_commits) >= 10:
                         break
                 # Classify ALL commits (not just significant) for accurate ratios
@@ -531,6 +551,17 @@ class GitIndexer:
                 (added + deleted) / c90 if c90 > 0 else 0.0
             )
 
+            # Original path detection (rename tracking)
+            if self.follow_renames:
+                orig = self._detect_original_path(file_path, repo)
+                if orig:
+                    meta["original_path"] = orig
+
+            # Merge commit count (coordination bottleneck signal)
+            meta["merge_commit_count_90d"] = self._get_merge_commit_count(
+                file_path, repo, ninety_days_ago,
+            )
+
             # Stable classification
             if meta["commit_count_total"] > 10 and meta["commit_count_90d"] == 0:
                 meta["is_stable"] = True
@@ -539,6 +570,66 @@ class GitIndexer:
             pass  # return whatever partial data we have
 
         return meta
+
+    def _get_commits(self, file_path: str, repo: Any) -> list[Any]:
+        """Get commits for a file, optionally following renames via --follow."""
+        if not self.follow_renames:
+            return list(repo.iter_commits(paths=file_path, max_count=self.commit_limit))
+
+        # --follow tracks the file across renames; iter_commits doesn't support it.
+        # Get SHAs via git log --follow, then resolve to commit objects.
+        try:
+            raw = repo.git.log(
+                "--follow", f"-{self.commit_limit}",
+                "--format=%H",
+                "--", file_path,
+            )
+        except Exception:
+            return []
+
+        commits = []
+        for line in raw.splitlines():
+            sha = line.strip()
+            if sha:
+                try:
+                    commits.append(repo.commit(sha))
+                except Exception:
+                    continue
+        return commits
+
+    def _detect_original_path(self, file_path: str, repo: Any) -> str | None:
+        """If --follow reveals the file was renamed, return its earliest prior path."""
+        try:
+            raw = repo.git.log(
+                "--follow", f"-{self.commit_limit}",
+                "--format=", "--name-only",
+                "--", file_path,
+            )
+        except Exception:
+            return None
+
+        # Paths appear newest-first; the last distinct path is the original.
+        prev_path: str | None = None
+        for line in raw.splitlines():
+            p = line.strip()
+            if p and p != file_path:
+                prev_path = p  # keep overwriting — last one is oldest
+        return prev_path
+
+    def _get_merge_commit_count(
+        self, file_path: str, repo: Any, since: datetime,
+    ) -> int:
+        """Count how many merge commits touched this file since a given date."""
+        try:
+            raw = repo.git.log(
+                "--merges",
+                f"--since={since.strftime('%Y-%m-%d')}",
+                "--format=%H",
+                "--", file_path,
+            )
+        except Exception:
+            return 0
+        return sum(1 for line in raw.splitlines() if line.strip())
 
     def _get_blame_ownership(
         self, file_path: str, repo: Any
@@ -739,7 +830,8 @@ class GitIndexer:
 
         return dict(result)
 
-    def _compute_percentiles(self, metadata_list: list[dict]) -> None:
+    @staticmethod
+    def _compute_percentiles(metadata_list: list[dict]) -> None:
         """Compute churn_percentile and is_hotspot. Mutates in place."""
         if not metadata_list:
             return

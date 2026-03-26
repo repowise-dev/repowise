@@ -118,7 +118,12 @@ def update_command(
         from repowise.core.ingestion.git_indexer import GitIndexer
 
         _commit_limit = repo_config.get("commit_limit")
-        git_indexer = GitIndexer(repo_path, commit_limit=_commit_limit)
+        _follow_renames = repo_config.get("follow_renames", False)
+        git_indexer = GitIndexer(
+            repo_path,
+            commit_limit=_commit_limit,
+            follow_renames=_follow_renames,
+        )
         changed_paths = [fd.path for fd in file_diffs]
         updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
         git_meta_map = {m["file_path"]: m for m in updated_meta}
@@ -195,6 +200,22 @@ def update_command(
             repo_id = repo.id
             for page in generated_pages:
                 await upsert_page_from_generated(session, page, repo_id)
+
+        # Persist updated git metadata + recompute percentiles
+        if git_meta_map:
+            try:
+                from repowise.core.persistence.crud import (
+                    recompute_git_percentiles,
+                    upsert_git_metadata_bulk,
+                )
+
+                async with get_session(sf) as session:
+                    await upsert_git_metadata_bulk(
+                        session, repo_id, list(git_meta_map.values()),
+                    )
+                    await recompute_git_percentiles(session, repo_id)
+            except Exception:
+                pass  # git persistence is best-effort
 
         # Decision records: persist new markers + recompute staleness
         try:

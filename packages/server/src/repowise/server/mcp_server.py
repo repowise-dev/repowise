@@ -921,6 +921,10 @@ async def _assess_one_target(
     bus_factor = getattr(meta, "bus_factor", 0) or 0
     contributor_count = getattr(meta, "contributor_count", 0) or 0
 
+    # Phase 3: rename tracking & merge commit proxy
+    original_path = getattr(meta, "original_path", None)
+    merge_commit_count = getattr(meta, "merge_commit_count_90d", 0) or 0
+
     result_data["hotspot_score"] = hotspot_score
     result_data["dependents_count"] = dep_count
     result_data["co_change_partners"] = co_changes
@@ -939,6 +943,10 @@ async def _assess_one_target(
         "avg_commit_size": round(avg_size, 1),
     }
     result_data["impact_surface"] = impact_surface
+    if original_path:
+        result_data["original_path"] = original_path
+    if merge_commit_count > 0:
+        result_data["merge_commit_count_90d"] = merge_commit_count
 
     capped = getattr(meta, "commit_count_capped", False)
     capped_note = " (history truncated — actual count may be higher)" if capped else ""

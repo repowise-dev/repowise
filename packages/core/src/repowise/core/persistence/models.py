@@ -315,6 +315,10 @@ class GitMetadata(Base):
     bus_factor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     contributor_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Rename tracking & merge conflict proxy (Phase 3)
+    original_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    merge_commit_count_90d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

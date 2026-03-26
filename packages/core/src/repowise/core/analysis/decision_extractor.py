@@ -532,18 +532,33 @@ class DecisionExtractor:
     # Staleness computation (static method)
     # ------------------------------------------------------------------
 
+    # Keywords that signal a decision may have been contradicted or superseded.
+    _CONFLICT_SIGNALS = frozenset({
+        "replace", "remove", "deprecate", "switch from", "migrate away",
+        "drop", "revert", "undo", "disable", "eliminate",
+    })
+
     @staticmethod
     def compute_staleness(
         decision_created_at: datetime,
         affected_files: list[str],
         git_meta_map: dict[str, dict],
+        decision_text: str = "",
     ) -> float:
-        """Compute staleness score for a decision. Returns 0.0–1.0."""
+        """Compute staleness score for a decision. Returns 0.0–1.0.
+
+        In addition to commit volume and age, checks whether recent commit
+        messages contain keywords that conflict with the decision text
+        (e.g. decision says "use Redis" but a recent commit says "migrate
+        away from Redis").  This boosts staleness when the underlying code
+        may have diverged from the decision's intent.
+        """
         if not affected_files:
             return 0.0
 
         now = datetime.now(timezone.utc)
         scores: list[float] = []
+        decision_lower = decision_text.lower()
 
         for fp in affected_files:
             meta = git_meta_map.get(fp)
@@ -557,17 +572,48 @@ class DecisionExtractor:
                     last_commit = datetime.fromisoformat(
                         last_commit.replace("Z", "+00:00")
                     )
-                if isinstance(decision_created_at, str):
-                    decision_created_at = datetime.fromisoformat(
-                        decision_created_at.replace("Z", "+00:00")
+                _created = decision_created_at
+                if isinstance(_created, str):
+                    _created = datetime.fromisoformat(
+                        _created.replace("Z", "+00:00")
                     )
-                if last_commit > decision_created_at:
-                    age_days = (now - decision_created_at).days
+                if last_commit > _created:
+                    age_days = (now - _created).days
                     commit_count = meta.get("commit_count_90d", 0)
-                    score = min(
+                    base_score = min(
                         1.0,
                         commit_count / 15 * 0.7 + age_days / 365 * 0.3,
                     )
+
+                    # Keyword conflict boost: check if recent commits
+                    # contradict the decision's content.
+                    conflict_boost = 0.0
+                    if decision_lower:
+                        sig_json = meta.get("significant_commits_json", "[]")
+                        try:
+                            sig_commits = json.loads(sig_json) if isinstance(sig_json, str) else sig_json
+                        except (json.JSONDecodeError, TypeError):
+                            sig_commits = []
+                        for sc in sig_commits:
+                            sc_date = sc.get("date", "")
+                            # Only consider commits after the decision was created
+                            if sc_date and sc_date > _created.isoformat():
+                                msg_lower = sc.get("message", "").lower()
+                                for signal in DecisionExtractor._CONFLICT_SIGNALS:
+                                    if signal in msg_lower:
+                                        # Check if the commit message shares meaningful
+                                        # words with the decision text (context overlap)
+                                        msg_words = set(msg_lower.split())
+                                        dec_words = set(decision_lower.split())
+                                        overlap = msg_words & dec_words - {
+                                            "the", "a", "an", "to", "in", "for",
+                                            "and", "or", "of", "is", "was", "with",
+                                        }
+                                        if len(overlap) >= 2:
+                                            conflict_boost = max(conflict_boost, 0.3)
+                                            break
+
+                    score = min(1.0, base_score + conflict_boost)
                     scores.append(score)
                 else:
                     scores.append(0.0)

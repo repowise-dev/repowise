@@ -719,6 +719,36 @@ async def upsert_git_metadata_bulk(
         await session.flush()
 
 
+async def recompute_git_percentiles(
+    session: AsyncSession, repository_id: str,
+) -> int:
+    """Reload all git_metadata rows and recompute churn_percentile + is_hotspot.
+
+    Called after incremental updates so that percentile rankings stay fresh
+    without a full ``repowise init``.  Returns the number of rows updated.
+    """
+    result = await session.execute(
+        select(GitMetadata).where(GitMetadata.repository_id == repository_id)
+    )
+    rows = result.scalars().all()
+    if not rows:
+        return 0
+
+    # Sort by 90-day commit count for percentile ranking
+    sorted_rows = sorted(rows, key=lambda r: r.commit_count_90d or 0)
+    total = len(sorted_rows)
+
+    for rank, row in enumerate(sorted_rows):
+        pct = rank / total if total > 0 else 0.0
+        row.churn_percentile = pct
+        c90 = row.commit_count_90d or 0
+        row.is_hotspot = pct >= 0.75 and c90 > 0
+        row.updated_at = _now_utc()
+
+    await session.flush()
+    return total
+
+
 # ---------------------------------------------------------------------------
 # DeadCodeFinding CRUD
 # ---------------------------------------------------------------------------
@@ -1079,30 +1109,12 @@ async def recompute_decision_staleness(
         if not affected:
             continue
 
-        scores: list[float] = []
-        for fp in affected:
-            meta = git_meta_map.get(fp)
-            if meta is None:
-                scores.append(1.0)  # file deleted or not tracked
-                continue
-            last_commit = meta.get("last_commit_at")
-            if last_commit and dec.created_at:
-                # Parse if string
-                if isinstance(last_commit, str):
-                    last_commit = datetime.fromisoformat(
-                        last_commit.replace("Z", "+00:00")
-                    )
-                if last_commit > dec.created_at:
-                    age_days = (now - dec.created_at).days
-                    commit_count = meta.get("commit_count_90d", 0)
-                    file_score = min(1.0, commit_count / 15 * 0.7 + age_days / 365 * 0.3)
-                    scores.append(file_score)
-                else:
-                    scores.append(0.0)
-            else:
-                scores.append(0.0)
+        from repowise.core.analysis.decision_extractor import DecisionExtractor
 
-        new_score = sum(scores) / len(scores) if scores else 0.0
+        decision_text = f"{dec.title} {dec.decision} {dec.rationale}"
+        new_score = DecisionExtractor.compute_staleness(
+            dec.created_at, affected, git_meta_map, decision_text=decision_text,
+        )
         if abs(new_score - dec.staleness_score) > 0.01:
             dec.staleness_score = round(new_score, 3)
             dec.updated_at = now
