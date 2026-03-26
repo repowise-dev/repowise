@@ -1,4 +1,4 @@
-# WikiCode Frontend — Build Status & Remaining Work
+# repowise Frontend — Build Status & Remaining Work
 
 **Last updated:** 2026-03-20
 **Current state:** Phase 3 complete. All polish, advanced features, responsive layout, loading skeletons, error boundaries, and a11y improvements are implemented.
@@ -240,36 +240,36 @@ D3 force-directed graph of module dependencies.
 
 ### 2.1 Settings Page (`/settings`)
 
-Central config — everything needed to run WikiCode is configurable here.
+Central config — everything needed to run repowise is configurable here.
 
 **Sections:**
 
 #### API Connection
-- API server URL (reads/writes `NEXT_PUBLIC_WIKICODE_API_URL` via `.env.local` or just localStorage)
-- API key (stored in `localStorage` as `wikicode_api_key` — already read by `client.ts`)
+- API server URL (reads/writes `NEXT_PUBLIC_REPOWISE_API_URL` via `.env.local` or just localStorage)
+- API key (stored in `localStorage` as `repowise_api_key` — already read by `client.ts`)
 - "Test connection" button → calls `GET /health` and shows server version + status
 
 #### Default Provider & Model
 - Provider dropdown: `litellm` | `openai` | `anthropic` | `ollama` | `mock`
 - Model text input (e.g., `gemini/gemini-2.0-flash`, `gpt-4.1`, `claude-opus-4-6`)
-- Saved to `localStorage` as `wikicode_default_provider` and `wikicode_default_model`
+- Saved to `localStorage` as `repowise_default_provider` and `repowise_default_model`
 - Used as defaults when triggering init/sync from UI
 
 #### Embedder Config
 - Embedder dropdown: `mock` | `gemini`
 - Embedding dimensions (default 768)
-- Note: "Set WIKICODE_EMBEDDER env var when starting the server"
+- Note: "Set REPOWISE_EMBEDDER env var when starting the server"
 - Inline docs explaining when semantic search is active
 
 #### Webhook Config (display only)
 - GitHub webhook URL: `http://your-server:7337/api/webhooks/github`
 - GitLab webhook URL: `http://your-server:7337/api/webhooks/gitlab`
-- Secret env vars to set: `WIKICODE_GITHUB_WEBHOOK_SECRET`, `WIKICODE_GITLAB_WEBHOOK_TOKEN`
+- Secret env vars to set: `REPOWISE_GITHUB_WEBHOOK_SECRET`, `REPOWISE_GITLAB_WEBHOOK_TOKEN`
 - Copy-to-clipboard buttons
 
 #### MCP Config (display only)
 - Auto-generated MCP config for Claude Code / Cursor / Cline
-- Shows `wikicode mcp {repo_path} --transport stdio` command
+- Shows `repowise mcp {repo_path} --transport stdio` command
 - Copy-to-clipboard
 
 **Component files:**
@@ -313,8 +313,8 @@ This is a collapsible panel on the repo overview page (`/repos/[id]`), and also 
 
 | Operation | API | CLI Equivalent |
 |-----------|-----|----------------|
-| Incremental Sync | `POST /api/repos/{id}/sync` | `wikicode update` |
-| Full Resync | `POST /api/repos/{id}/full-resync` | `wikicode init --force` |
+| Incremental Sync | `POST /api/repos/{id}/sync` | `repowise update` |
+| Full Resync | `POST /api/repos/{id}/full-resync` | `repowise init --force` |
 
 **UI — "Run" panel:**
 - Provider dropdown (defaults to saved settings provider)

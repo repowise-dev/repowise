@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import networkx as nx
 import pytest
 
-from wikicode.core.analysis.dead_code import (
+from repowise.core.analysis.dead_code import (
     DeadCodeAnalyzer,
     DeadCodeKind,
     DeadCodeReport,

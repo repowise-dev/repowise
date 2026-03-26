@@ -1,4 +1,4 @@
-package com.wikicode.sample;
+package com.repowise.sample;
 
 import java.util.ArrayList;
 import java.util.List;

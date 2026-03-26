@@ -92,7 +92,7 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
         </div>
         {!isIconOnly && (
           <span className="text-sm font-semibold text-[var(--color-text-primary)] tracking-tight flex-1 truncate">
-            WikiCode
+            repowise
           </span>
         )}
         <button
@@ -219,7 +219,7 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
       {!isIconOnly && (
         <div className="border-t border-[var(--color-border-default)] p-3">
           <p className="text-xs text-[var(--color-text-tertiary)] text-center">
-            WikiCode v0.1.0
+            repowise v0.1.0
           </p>
         </div>
       )}

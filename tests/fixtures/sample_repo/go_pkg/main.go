@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/wikicode-ai/sample/calculator"
-	"github.com/wikicode-ai/sample/types"
+	"github.com/repowise-ai/sample/calculator"
+	"github.com/repowise-ai/sample/types"
 )
 
 func main() {

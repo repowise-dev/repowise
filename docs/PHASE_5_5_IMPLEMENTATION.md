@@ -1,6 +1,6 @@
 # Phase 5.5 — Git Intelligence + Dead Code Detection: Implementation Prompt
 
-This document contains everything needed to implement Phase 5.5 of WikiCode.
+This document contains everything needed to implement Phase 5.5 of repowise.
 Read the full document before writing any code.
 
 **Context:** Phases 1-5 are complete and passing (473 tests, 11.48s). Phase 5.5 is
@@ -17,7 +17,7 @@ do not modify any existing Phase 1-5 code, only extend it.
 ## Codebase Layout (What Already Exists)
 
 ```
-packages/core/src/wikicode/core/
+packages/core/src/repowise/core/
 ├── generation/
 │   ├── context_assembler.py    # ContextAssembler class
 │   ├── page_generator.py       # PageGenerator class (8-level pipeline)
@@ -29,7 +29,7 @@ packages/core/src/wikicode/core/
 │   ├── change_detector.py      # ChangeDetector, FileDiff, AffectedPages
 │   ├── models.py               # ParsedFile, Symbol, FileInfo, RepoStructure
 │   ├── parser.py               # ASTParser
-│   └── traverser.py            # FileTraverser (extra_exclude_patterns + per-dir .wikicodeIgnore)
+│   └── traverser.py            # FileTraverser (extra_exclude_patterns + per-dir .repowiseIgnore)
 ├── persistence/
 │   ├── models.py               # SQLAlchemy ORM: Repository, Page, GraphNode, etc.
 │   ├── database.py             # Engine/session creation
@@ -38,10 +38,10 @@ packages/core/src/wikicode/core/
 │   └── vector_store.py         # Vector storage
 └── providers/                  # LLM providers (unchanged)
 
-packages/cli/src/wikicode/cli/
+packages/cli/src/repowise/cli/
 ├── commands/
-│   ├── init_cmd.py             # wikicode init pipeline
-│   ├── update_cmd.py           # wikicode update pipeline
+│   ├── init_cmd.py             # repowise init pipeline
+│   ├── update_cmd.py           # repowise update pipeline
 │   └── ...
 ├── helpers.py
 ├── cost_estimator.py
@@ -94,7 +94,7 @@ class GenerationConfig:
     top_symbol_percentile: float = 0.10
     file_page_top_percentile: float = 0.20
     file_page_min_symbols: int = 1
-    jobs_dir: str = ".wikicode/jobs"
+    jobs_dir: str = ".repowise/jobs"
 
 # Confidence: linear decay based on days since update
 def compute_freshness(...) -> str: ...
@@ -208,7 +208,7 @@ _BATCH_SIZE = 500  # Used for all batch operations
 ```python
 # Pipeline order:
 # 1. Resolve repo path
-# 2. Ensure .wikicode dir
+# 2. Ensure .repowise dir
 # 2.5 Load config; merge exclude_patterns from config + --exclude/-x flags
 # 3. Resolve LLM provider
 # 4. FileTraverser(extra_exclude_patterns=...) → list[FileInfo]
@@ -240,16 +240,16 @@ _BATCH_SIZE = 500  # Used for all batch operations
 ### New Files to Create
 
 ```
-packages/core/src/wikicode/core/
+packages/core/src/repowise/core/
 ├── ingestion/
 │   └── git_indexer.py               # GitIndexer class
 ├── analysis/
 │   ├── __init__.py
 │   └── dead_code.py                 # DeadCodeAnalyzer class
 
-packages/cli/src/wikicode/cli/
+packages/cli/src/repowise/cli/
 └── commands/
-    └── dead_code_cmd.py             # wikicode dead-code CLI command
+    └── dead_code_cmd.py             # repowise dead-code CLI command
 
 tests/
 ├── unit/
@@ -804,7 +804,7 @@ git_meta_map = {m["file_path"]: m for m in updated_meta}
 graph_builder.update_co_change_edges(git_meta_map)
 ```
 
-### 16. CLI: `wikicode dead-code` Command
+### 16. CLI: `repowise dead-code` Command
 
 ```python
 @click.command("dead-code")
@@ -910,7 +910,7 @@ Build in this exact order (each step should be testable independently):
 14. ChangeDetector co-change partner staleness
 15. Init pipeline integration (Steps 3.5 + 3.6)
 16. Update pipeline integration
-17. `wikicode dead-code` CLI command
+17. `repowise dead-code` CLI command
 18. Integration tests
 19. Run full test suite: `pytest tests/ -q` — all must pass
 

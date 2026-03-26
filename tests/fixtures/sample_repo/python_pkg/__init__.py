@@ -1,4 +1,4 @@
-"""Sample Python package for WikiCode integration tests.
+"""Sample Python package for repowise integration tests.
 
 This package provides a simple calculator with data models and utilities.
 It is intentionally small but realistic — covering classes, functions,

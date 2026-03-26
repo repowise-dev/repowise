@@ -1,6 +1,6 @@
-# WikiCode Web UI
+# repowise Web UI
 
-Next.js 15 frontend for the WikiCode codebase documentation engine. Provides an interactive interface for exploring AI-generated wiki pages, dependency graphs, code analytics, and architectural insights for any indexed repository.
+Next.js 15 frontend for the repowise codebase documentation engine. Provides an interactive interface for exploring AI-generated wiki pages, dependency graphs, code analytics, and architectural insights for any indexed repository.
 
 ## Tech Stack
 
@@ -99,11 +99,11 @@ Most pages are **React Server Components** that fetch data server-side. Client c
 
 ### API Proxy
 
-`next.config.ts` rewrites `/api/*` to `WIKICODE_API_URL/api/*`, so the frontend never hardcodes the backend URL and CORS is handled at the proxy layer.
+`next.config.ts` rewrites `/api/*` to `REPOWISE_API_URL/api/*`, so the frontend never hardcodes the backend URL and CORS is handled at the proxy layer.
 
 ### API Client (`src/lib/api/`)
 
-Organized by domain — `repos.ts`, `pages.ts`, `graph.ts`, `search.ts`, `symbols.ts`, `jobs.ts`, `git.ts`, `dead-code.ts`, `decisions.ts`, `health.ts`. Each module exports typed async functions wrapping `apiGet`/`apiPost`/`apiPatch` from `client.ts`. Auth is handled via Bearer token from `localStorage` (browser) or `WIKICODE_API_KEY` env var (server).
+Organized by domain — `repos.ts`, `pages.ts`, `graph.ts`, `search.ts`, `symbols.ts`, `jobs.ts`, `git.ts`, `dead-code.ts`, `decisions.ts`, `health.ts`. Each module exports typed async functions wrapping `apiGet`/`apiPost`/`apiPatch` from `client.ts`. Auth is handled via Bearer token from `localStorage` (browser) or `REPOWISE_API_KEY` env var (server).
 
 ### Custom Hooks (`src/lib/hooks/`)
 
@@ -142,8 +142,8 @@ Dark-mode only. All visual tokens are CSS custom properties in `src/styles/globa
 ## Development
 
 ```powershell
-# From repo root — requires the WikiCode API server on port 7337
-$env:WIKICODE_API_URL = "http://localhost:7337"
+# From repo root — requires the repowise API server on port 7337
+$env:REPOWISE_API_URL = "http://localhost:7337"
 npm run dev --workspace packages/web
 # Open http://localhost:3000
 ```

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "wikicode-cli"
+name = "repowise-cli"
 version = "0.1.0"
-description = "WikiCode CLI — generate and maintain codebase documentation from the command line"
+description = "repowise CLI — generate and maintain codebase documentation from the command line"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -22,29 +22,29 @@ classifiers = [
     "Topic :: Software Development :: Documentation",
 ]
 dependencies = [
-    "wikicode-core",
-    "wikicode-server",
+    "repowise-core",
+    "repowise-server",
     # CLI framework
     "click>=8.1,<9",
     # Terminal formatting
     "rich>=13,<14",
-    # Filesystem watching (for `wikicode watch`)
+    # Filesystem watching (for `repowise watch`)
     "watchdog>=4,<5",
 ]
 
 [project.scripts]
-wikicode = "wikicode.cli.main:cli"
+repowise = "repowise.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/wikicode-ai/wikicode"
-Repository = "https://github.com/wikicode-ai/wikicode"
+Homepage = "https://github.com/repowise-ai/repowise"
+Repository = "https://github.com/repowise-ai/repowise"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/wikicode"]
+packages = ["src/repowise"]
 
 [tool.uv]
 package = true
 
 [tool.uv.sources]
-wikicode-core = { workspace = true }
-wikicode-server = { workspace = true }
+repowise-core = { workspace = true }
+repowise-server = { workspace = true }

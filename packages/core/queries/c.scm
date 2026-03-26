@@ -1,5 +1,5 @@
 ; =============================================================================
-; WikiCode — C symbol and import queries
+; repowise — C symbol and import queries
 ; Uses the tree-sitter-cpp grammar (superset of C)
 ; =============================================================================
 

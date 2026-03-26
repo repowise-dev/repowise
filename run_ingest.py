@@ -1,6 +1,6 @@
 """
 Quick ingestion run on interview-coach repo (no LLM calls).
-Prints a summary of what WikiCode discovered AND projects how many pages
+Prints a summary of what repowise discovered AND projects how many pages
 would be generated (without actually calling any LLM).
 """
 import logging
@@ -20,12 +20,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "packages" / "core" / "src"))
 
-from wikicode.core.ingestion.traverser import FileTraverser
-from wikicode.core.ingestion.parser import ASTParser
-from wikicode.core.ingestion.graph import GraphBuilder
-from wikicode.core.ingestion.models import ParsedFile
-from wikicode.core.generation.models import GenerationConfig
-from wikicode.core.generation.page_generator import (
+from repowise.core.ingestion.traverser import FileTraverser
+from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.graph import GraphBuilder
+from repowise.core.ingestion.models import ParsedFile
+from repowise.core.generation.models import GenerationConfig
+from repowise.core.generation.page_generator import (
     _CODE_LANGUAGES, _INFRA_LANGUAGES, _INFRA_FILENAMES, _is_infra_file, _is_significant_file
 )
 

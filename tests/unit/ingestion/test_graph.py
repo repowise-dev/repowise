@@ -9,8 +9,8 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from wikicode.core.ingestion.graph import GraphBuilder
-from wikicode.core.ingestion.models import FileInfo, Import, ParsedFile
+from repowise.core.ingestion.graph import GraphBuilder
+from repowise.core.ingestion.models import FileInfo, Import, ParsedFile
 
 
 # ---------------------------------------------------------------------------

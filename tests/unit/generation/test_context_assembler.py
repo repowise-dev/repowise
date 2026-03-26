@@ -5,13 +5,13 @@ from __future__ import annotations
 import networkx as nx
 import pytest
 
-from wikicode.core.generation.context_assembler import (
+from repowise.core.generation.context_assembler import (
     ContextAssembler,
     FilePageContext,
     SccPageContext,
 )
-from wikicode.core.generation.models import GenerationConfig
-from wikicode.core.ingestion.models import (
+from repowise.core.generation.models import GenerationConfig
+from repowise.core.ingestion.models import (
     FileInfo,
     Import,
     PackageInfo,

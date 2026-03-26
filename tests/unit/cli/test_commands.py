@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from click.testing import CliRunner
 
-from wikicode.cli.main import cli
+from repowise.cli.main import cli
 
 
 @pytest.fixture
@@ -22,13 +22,13 @@ class TestCliBasics:
     def test_version(self, runner):
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "wikicode" in result.output
+        assert "repowise" in result.output
         assert "0.1.0" in result.output
 
     def test_help(self, runner):
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        assert "WikiCode" in result.output
+        assert "repowise" in result.output
 
     def test_init_help(self, runner):
         result = runner.invoke(cli, ["init", "--help"])
@@ -100,17 +100,17 @@ class TestErrorCases:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
-        monkeypatch.delenv("WIKICODE_PROVIDER", raising=False)
+        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code != 0
 
-    def test_status_no_wikicode_dir(self, runner, tmp_path):
+    def test_status_no_repowise_dir(self, runner, tmp_path):
         result = runner.invoke(cli, ["status", str(tmp_path)])
         assert result.exit_code == 0
-        assert "No .wikicode/" in result.output
+        assert "No .repowise/" in result.output
 
     def test_update_no_state(self, runner, tmp_path):
         """update without prior init should error."""
-        (tmp_path / ".wikicode").mkdir()
+        (tmp_path / ".repowise").mkdir()
         result = runner.invoke(cli, ["update", str(tmp_path)])
         assert result.exit_code != 0

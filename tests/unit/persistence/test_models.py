@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from wikicode.core.persistence.models import (
+from repowise.core.persistence.models import (
     Base,
     GenerationJob,
     GraphEdge,
@@ -194,7 +194,7 @@ def test_graph_node_unique_constraint_defined():
 
 async def test_graph_node_unique_constraint_enforced(async_session):
     """Inserting two nodes with the same (repository_id, node_id) raises IntegrityError."""
-    from wikicode.core.persistence.crud import upsert_repository
+    from repowise.core.persistence.crud import upsert_repository
 
     repo = await upsert_repository(async_session, name="r", local_path="/tmp/uq-test")
     await async_session.commit()

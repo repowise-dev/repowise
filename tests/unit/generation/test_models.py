@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from wikicode.core.generation.models import (
+from repowise.core.generation.models import (
     ConfidenceDecayResult,
     GeneratedPage,
     GenerationConfig,

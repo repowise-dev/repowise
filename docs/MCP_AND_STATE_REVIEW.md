@@ -1,4 +1,4 @@
-# WikiCode — MCP Server & Project State Review
+# repowise — MCP Server & Project State Review
 
 **Date:** 2026-03-25
 **Test repo:** `interview-coach` (3,557 files, polyglot monorepo)
@@ -25,8 +25,8 @@
 
 ### Overview
 
-The MCP server (`packages/server/src/wikicode/server/mcp_server.py`) exposes
-the full WikiCode wiki as queryable tools via the Model Context Protocol. It
+The MCP server (`packages/server/src/repowise/server/mcp_server.py`) exposes
+the full repowise wiki as queryable tools via the Model Context Protocol. It
 supports two transports:
 
 - **stdio** — for Claude Code, Cursor, Cline (the primary use case)
@@ -36,7 +36,7 @@ supports two transports:
 
 On startup (`_lifespan`), the server:
 
-1. Resolves the database URL from `_repo_path` → `.wikicode/wiki.db`
+1. Resolves the database URL from `_repo_path` → `.repowise/wiki.db`
 2. Creates an async SQLAlchemy engine + session factory
 3. Initializes FTS5 full-text search index
 4. Creates a `MockEmbedder` + `InMemoryVectorStore` (**Issue: always mock**)
@@ -119,7 +119,7 @@ pip install -e packages/server    # <-- was missing, caused ModuleNotFoundError
 ### Startup Command
 
 ```bash
-wikicode mcp /path/to/repo --transport stdio
+repowise mcp /path/to/repo --transport stdio
 ```
 
 ### Claude Code Configuration
@@ -129,8 +129,8 @@ Project-level config at `~/.claude/projects/<project-hash>/.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "wikicode": {
-      "command": "wikicode",
+    "repowise": {
+      "command": "repowise",
       "args": ["mcp", "C:/Users/ragha/Desktop/interview-coach", "--transport", "stdio"]
     }
   }
@@ -141,8 +141,8 @@ Project-level config at `~/.claude/projects/<project-hash>/.mcp.json`:
 
 | Issue | Severity | Description |
 |-------|----------|-------------|
-| Missing `wikicode-server` install | **Blocker** | `wikicode mcp` fails with `ModuleNotFoundError: No module named 'wikicode.server'` if only cli+core are installed. The `Makefile` and README should document that all 3 packages must be installed. |
-| No startup validation | Minor | Server starts silently in stdio mode even if `.wikicode/wiki.db` doesn't exist — tools will fail at query time instead of at startup |
+| Missing `repowise-server` install | **Blocker** | `repowise mcp` fails with `ModuleNotFoundError: No module named 'repowise.server'` if only cli+core are installed. The `Makefile` and README should document that all 3 packages must be installed. |
+| No startup validation | Minor | Server starts silently in stdio mode even if `.repowise/wiki.db` doesn't exist — tools will fail at query time instead of at startup |
 | Mock embedder always used | **Major** | `_lifespan()` always creates `MockEmbedder()` regardless of config |
 
 ---
@@ -168,10 +168,10 @@ Project-level config at `~/.claude/projects/<project-hash>/.mcp.json`:
 - **`completed_pages > total_pages`** in multiple jobs — the `total_pages` estimate is computed before all levels are planned
 - **Total tokens used:** 4,223,332 (from state.json)
 
-### .wikicode Directory Structure
+### .repowise Directory Structure
 
 ```
-.wikicode/
+.repowise/
 ├── config.yaml          (74 bytes — provider, model, embedder)
 ├── state.json           (191 bytes — last commit, total pages, provider)
 ├── wiki.db              (24 MB — all structured data)
@@ -383,7 +383,7 @@ symbols share a name is very useful for AI assistants.
 3. FTS used exact phrase match for multi-word queries → Fixed: `_build_fts5_query()` strips
    stop words and joins terms with OR + prefix matching
 4. No LanceDB directory existed (init never persisted embeddings) → Fixed: `init_cmd.py` now
-   tries LanceDB before InMemoryVectorStore; added `wikicode reindex` command to embed
+   tries LanceDB before InMemoryVectorStore; added `repowise reindex` command to embed
    existing pages without re-generating
 5. `lancedb` package not installed → Installed; 721 pages + 23 decisions indexed via Gemini embedder
 
@@ -418,7 +418,7 @@ functional but dense — the 50-edge cap produces a readable but incomplete view
 **Test:** `threshold=0.6`
 **Result:** `{"stale_pages": []}` — correct, all pages are fresh (confidence 1.0)
 
-This tool will become useful after `wikicode update` runs and confidence decays.
+This tool will become useful after `repowise update` runs and confidence decays.
 
 ---
 
@@ -476,7 +476,7 @@ there's no way to rank them by coupling strength.
 `min_count=3` filter removes all partners. Even with `min_count=0`, the data
 would lack meaningful ranking.
 
-**Impact:** HIGH — this tool is designed for one of WikiCode's most valuable
+**Impact:** HIGH — this tool is designed for one of repowise's most valuable
 features (revealing hidden coupling not visible in imports). Without real counts,
 it's useless.
 
@@ -515,7 +515,7 @@ returned nothing; FTS fallback never triggered.
 
 **Fixes applied (2026-03-25):**
 - Changed to `include_proposed=True` so keyword search finds proposed decisions
-- Real embedder (Gemini) now used; LanceDB decision_records table populated via `wikicode reindex`
+- Real embedder (Gemini) now used; LanceDB decision_records table populated via `repowise reindex`
 - FTS fallback improved (stop word stripping, OR-based matching)
 
 **Current status (consolidated `get_why` tool — 3 modes):**
@@ -544,7 +544,7 @@ files that are actively being changed but have no documented architectural decis
 
 | # | Issue | Location | Description |
 |---|-------|----------|-------------|
-| C1 | **DB filename mismatch** (FIXED) | `mcp_server.py:64` | MCP server looked for `.wikicode/wikicode.db` but CLI creates `.wikicode/wiki.db`. Fixed 2026-03-25: changed to `wiki.db`. |
+| C1 | **DB filename mismatch** (FIXED) | `mcp_server.py:64` | MCP server looked for `.repowise/repowise.db` but CLI creates `.repowise/wiki.db`. Fixed 2026-03-25: changed to `wiki.db`. |
 | C2 | **LanceDB filter injection** (FIXED) | `vector_store.py:240,274` | `f"page_id = '{page_id}'"` — string interpolation in LanceDB delete filter. Fixed 2026-03-25: single quotes in page_id are now escaped before interpolation. |
 | C3 | **Tool count mismatch in docs** (FIXED) | Multiple files | Updated "13 tools" → "16 tools" → "8 tools" (after consolidation) in mcp_server.py, ARCHITECTURE.md, server README. |
 
@@ -552,15 +552,15 @@ files that are actively being changed but have no documented architectural decis
 
 | # | Issue | Location | Description |
 |---|-------|----------|-------------|
-| M1 | **MockEmbedder in MCP server** (FIXED) | `mcp_server.py:82-83` | Always created `MockEmbedder()`. Fixed 2026-03-25: added `_resolve_embedder()` that checks `WIKICODE_EMBEDDER` env var and `.wikicode/config.yaml` for real embedder (gemini/openai). |
-| M2 | **CLI semantic search broken** (FIXED) | `search_cmd.py:60-69` | Created empty `InMemoryVectorStore`. Fixed 2026-03-25: now tries LanceDB from `.wikicode/lancedb/` first, falls back to FTS. |
+| M1 | **MockEmbedder in MCP server** (FIXED) | `mcp_server.py:82-83` | Always created `MockEmbedder()`. Fixed 2026-03-25: added `_resolve_embedder()` that checks `REPOWISE_EMBEDDER` env var and `.repowise/config.yaml` for real embedder (gemini/openai). |
+| M2 | **CLI semantic search broken** (FIXED) | `search_cmd.py:60-69` | Created empty `InMemoryVectorStore`. Fixed 2026-03-25: now tries LanceDB from `.repowise/lancedb/` first, falls back to FTS. |
 | M3 | **`state.json` total_pages wrong** (FIXED) | `init_cmd.py:744` | `state["total_pages"] = len(generated_pages)` only counts last job. Fixed 2026-03-25: now queries actual DB page count via `SELECT COUNT(*)` after persistence. |
 | M4 | **Missing `edge_type` in graph DB** (FIXED) | `persistence/models.py` | `graph_edges` table had no `edge_type` column. Fixed 2026-03-25: added `edge_type` column (Alembic migration 0004), CRUD layer, init_cmd persistence, and MCP server now uses real edge types in `get_dependency_path`. |
 | M5 | **Missing `repo_path` in update** (FIXED) | `update_cmd.py:87` | `resolve_provider(provider_name, model)` was missing `repo_path`. Fixed 2026-03-25: now passes `repo_path=repo_path`. |
 | M6 | ~~`get_repo_structure()` arg mismatch~~ (NOT A BUG) | `update_cmd.py:97` | The `files` parameter is optional (`files: list[FileInfo] | None = None`). Calling without args triggers a fresh traversal. |
-| M7 | **`wikicode-server` not auto-installed** (FIXED) | `packages/cli/pyproject.toml` | Fixed 2026-03-25: added `wikicode-server` as explicit dependency of `wikicode-cli` with workspace source. |
+| M7 | **`repowise-server` not auto-installed** (FIXED) | `packages/cli/pyproject.toml` | Fixed 2026-03-25: added `repowise-server` as explicit dependency of `repowise-cli` with workspace source. |
 | M8 | **`completed_pages > total_pages`** (FIXED) | `job_system.py` | Fixed 2026-03-25: `complete_page()` now clamps `total_pages = max(total_pages, completed_pages)`. |
-| M9 | **`search_codebase` returns empty** (FIXED) | `mcp_server.py`, `search.py`, `init_cmd.py` | Fixed: (a) FTS fallback triggers on empty results not just exceptions, (b) FTS query builder strips stop words and uses OR + prefix matching, (c) `init_cmd.py` now uses LanceDB when available, (d) added `wikicode reindex` command. LanceDB indexed with 721 pages + 23 decisions via Gemini embedder. |
+| M9 | **`search_codebase` returns empty** (FIXED) | `mcp_server.py`, `search.py`, `init_cmd.py` | Fixed: (a) FTS fallback triggers on empty results not just exceptions, (b) FTS query builder strips stop words and uses OR + prefix matching, (c) `init_cmd.py` now uses LanceDB when available, (d) added `repowise reindex` command. LanceDB indexed with 721 pages + 23 decisions via Gemini embedder. |
 | M10 | **Co-change counts all zero** (FIXED) | `mcp_server.py` | Root cause: key mismatch — data stores `"co_change_count"` but MCP tools read `"count"`. Fixed 2026-03-25: tools now check both keys via `p.get("co_change_count", p.get("count", 0))`. |
 | M11 | **`get_why` excludes all decisions** (FIXED) | `mcp_server.py:1155-1156` | `include_proposed=False` returned 0 results. Fixed 2026-03-25: changed to `include_proposed=True`. |
 
@@ -572,14 +572,14 @@ files that are actively being changed but have no documented architectural decis
 | m2 | Failed page IDs are level names | Job JSON files | `"level-1"` used as failed page ID instead of actual page identifier. Investigation shows `fail_page()` receives actual page IDs — the "level name" was a display callback, not a data bug. |
 | m3 | **Module description truncation** (FIXED) | `mcp_server.py:293` | Fixed 2026-03-25: added parentheses to fix operator precedence bug (was duplicating content), and added `rsplit(" ", 1)[0]` for word-boundary awareness. |
 | m4 | Graph nodes only `file` type | DB audit | Architecture describes symbol/package/external nodes but only file nodes are persisted. |
-| m5 | **No startup validation in MCP** (FIXED) | `mcp_server.py:50-108` | Server started silently. Fixed 2026-03-25: added warning logs when `.wikicode/` or `wiki.db` is missing. |
+| m5 | **No startup validation in MCP** (FIXED) | `mcp_server.py:50-108` | Server started silently. Fixed 2026-03-25: added warning logs when `.repowise/` or `wiki.db` is missing. |
 | m6 | **`click` import at bottom of file** (FIXED) | `helpers.py:257` | Fixed 2026-03-25: moved `import click` to top of file with other imports. |
 | m7 | Ownership grouping too coarse | `mcp_server.py:858` | Groups by first directory only — too coarse for nested monorepos. |
 | m8 | **Architecture diagram edge limit** (FIXED) | `mcp_server.py` | Fixed 2026-03-25: edges now sorted by source node PageRank before 50-edge cap, plus Mermaid node ID sanitization improved to use regex for all non-alphanumeric chars. |
 | m9 | All decisions are "proposed" | DB content | No inline markers found — all 23 are auto-extracted. Expected but worth noting. |
-| m10 | **`_decision_store` may be empty InMemory** (FIXED) | `mcp_server.py:103-104` | Fixed: `wikicode reindex` now indexes 23 decision records into LanceDB `decision_records` table. MCP server loads this on startup when `.wikicode/lancedb/` exists. |
+| m10 | **`_decision_store` may be empty InMemory** (FIXED) | `mcp_server.py:103-104` | Fixed: `repowise reindex` now indexes 23 decision records into LanceDB `decision_records` table. MCP server loads this on startup when `.repowise/lancedb/` exists. |
 | m11 | **`get_dead_code` default hides zombies** (FIXED) | `mcp_server.py:982` | Default `min_confidence` was 0.6, hiding 0.5-confidence zombie findings. Fixed 2026-03-25: lowered default to 0.5. |
-| m12 | **`wikicode-server` not installed by default** (FIXED) | `packages/cli/pyproject.toml` | Fixed 2026-03-25: same as M7 — `wikicode-server` is now a declared dependency of `wikicode-cli`. |
+| m12 | **`repowise-server` not installed by default** (FIXED) | `packages/cli/pyproject.toml` | Fixed 2026-03-25: same as M7 — `repowise-server` is now a declared dependency of `repowise-cli`. |
 
 ---
 
@@ -645,7 +645,7 @@ files that are actively being changed but have no documented architectural decis
 1. ~~**Fix LanceDB filter injection**~~ — DONE (C2)
 2. ~~**Fix MCP embedder**~~ — DONE (M1)
 3. ~~**Fix `update_cmd.py`**~~ — DONE (M5)
-4. ~~**Install wikicode-server in Makefile**~~ — DONE (M7): added as dependency in `packages/cli/pyproject.toml`
+4. ~~**Install repowise-server in Makefile**~~ — DONE (M7): added as dependency in `packages/cli/pyproject.toml`
 5. ~~**Update tool count**~~ — DONE (C3): updated to 8 tools everywhere
 
 ### Short-term Improvements

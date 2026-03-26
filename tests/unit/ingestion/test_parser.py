@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from wikicode.core.ingestion.models import FileInfo
-from wikicode.core.ingestion.parser import ASTParser, LANGUAGE_CONFIGS
+from repowise.core.ingestion.models import FileInfo
+from repowise.core.ingestion.parser import ASTParser, LANGUAGE_CONFIGS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -291,7 +291,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/wikicode-ai/sample/types"
+	"github.com/repowise-ai/sample/types"
 )
 
 // ErrDivisionByZero is returned on division by zero.
@@ -450,7 +450,7 @@ class TestRustParser:
 # Java
 # ---------------------------------------------------------------------------
 
-JAVA_SOURCE = b'''package com.wikicode.sample;
+JAVA_SOURCE = b'''package com.repowise.sample;
 
 import java.util.ArrayList;
 import java.util.List;

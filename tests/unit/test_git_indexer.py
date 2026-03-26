@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from wikicode.core.ingestion.git_indexer import GitIndexer
+from repowise.core.ingestion.git_indexer import GitIndexer
 
 
 # ---------------------------------------------------------------------------

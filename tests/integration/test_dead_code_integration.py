@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from wikicode.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
-from wikicode.core.ingestion import ASTParser, FileTraverser, GraphBuilder
-from wikicode.core.ingestion.models import FileInfo, ParsedFile
+from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
+from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+from repowise.core.ingestion.models import FileInfo, ParsedFile
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +62,8 @@ async def test_hotspot_sorted_first_in_generation() -> None:
     """Hotspot files should be sorted before non-hotspot files by _sort_level_files."""
     from datetime import datetime
 
-    from wikicode.core.generation import ContextAssembler, GenerationConfig, PageGenerator
-    from wikicode.core.providers.base import BaseProvider
+    from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
+    from repowise.core.providers.base import BaseProvider
 
     # Create a mock provider
     mock_provider = MagicMock(spec=BaseProvider)

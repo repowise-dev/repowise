@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "wikicode-server"
+name = "repowise-server"
 version = "0.1.0"
-description = "WikiCode server — FastAPI REST API, webhook handlers, and MCP server"
+description = "repowise server — FastAPI REST API, webhook handlers, and MCP server"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -22,7 +22,7 @@ classifiers = [
     "Topic :: Software Development :: Documentation",
 ]
 dependencies = [
-    "wikicode-core",
+    "repowise-core",
     # Web framework
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.32,<1",
@@ -35,14 +35,14 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/wikicode-ai/wikicode"
-Repository = "https://github.com/wikicode-ai/wikicode"
+Homepage = "https://github.com/repowise-ai/repowise"
+Repository = "https://github.com/repowise-ai/repowise"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/wikicode"]
+packages = ["src/repowise"]
 
 [tool.uv]
 package = true
 
 [tool.uv.sources]
-wikicode-core = { workspace = true }
+repowise-core = { workspace = true }

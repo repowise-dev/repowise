@@ -1,5 +1,5 @@
 ; =============================================================================
-; WikiCode — JavaScript symbol and import queries
+; repowise — JavaScript symbol and import queries
 ; tree-sitter-javascript >= 0.23
 ; =============================================================================
 

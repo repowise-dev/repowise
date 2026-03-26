@@ -1,4 +1,4 @@
-# WikiCode Frontend — Stack & Design Options
+# repowise Frontend — Stack & Design Options
 
 ## Decision: Which approach is best for an enterprise SaaS?
 
@@ -68,7 +68,7 @@ I've analyzed the backend (30+ endpoints, SSE, 13 MCP tools, 605 tests), the PLA
 - **CSS-in-JS runtime cost** — Emotion adds ~15KB and has runtime overhead. Not ideal for content-heavy wiki pages
 - **Vendor lock** — MUI X Pro/Premium features (DataGrid advanced sorting, tree view) require a $600-$15K/year license for commercial use
 - **Generic look** — Material Design is recognizable but doesn't signal "premium developer tool." Linear and Vercel deliberately avoid Material Design for this reason
-- **React Flow limitations** — great for editable node graphs (like n8n), but WikiCode's graph is read-only visualization. D3-force gives more control for that use case
+- **React Flow limitations** — great for editable node graphs (like n8n), but repowise's graph is read-only visualization. D3-force gives more control for that use case
 - **White-labeling is harder** — MUI's theme system works but is less flexible than raw CSS variables for deep customization
 
 **Estimated effort:** 5-8 days (faster initial, but harder to differentiate visually)
@@ -91,7 +91,7 @@ I've analyzed the backend (30+ endpoints, SSE, 13 MCP tools, 605 tests), the PLA
 **Pros:**
 - Tremor is built specifically for dashboards and data-heavy apps
 - Beautiful stat cards, charts, and data displays out of the box
-- Cytoscape.js is purpose-built for graph theory visualization (PageRank, shortest path, clustering — it speaks WikiCode's language)
+- Cytoscape.js is purpose-built for graph theory visualization (PageRank, shortest path, clustering — it speaks repowise's language)
 - TanStack Table is the most flexible table solution for the symbol index
 
 **Cons:**
@@ -110,7 +110,7 @@ For an enterprise SaaS product where the wiki page viewer is the core experience
 
 1. **The wiki page IS the product.** 70% of user time will be spent reading wiki pages. The rendering quality of MDX + Shiki + Mermaid + symbol hover cards must be excellent. shadcn/ui + custom components gives full control here.
 
-2. **Enterprise white-labeling.** CSS variable-based theming means any company can rebrand WikiCode to match their design system. This is a direct sales enabler.
+2. **Enterprise white-labeling.** CSS variable-based theming means any company can rebrand repowise to match their design system. This is a direct sales enabler.
 
 3. **No license risk.** shadcn/ui is MIT with zero licensing concerns. MUI X commercial licenses add cost and complexity for enterprise customers self-hosting.
 

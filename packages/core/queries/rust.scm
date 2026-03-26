@@ -1,5 +1,5 @@
 ; =============================================================================
-; WikiCode — Rust symbol and import queries
+; repowise — Rust symbol and import queries
 ; tree-sitter-rust >= 0.23
 ; =============================================================================
 

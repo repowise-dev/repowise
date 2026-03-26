@@ -1,4 +1,4 @@
-"""Alembic environment for WikiCode async migrations.
+"""Alembic environment for repowise async migrations.
 
 Uses the run_sync pattern: context.run_migrations() is synchronous and must
 be called inside an ``await connection.run_sync(...)`` block.
@@ -18,7 +18,7 @@ from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
 # Import the Base so Alembic can detect schema changes for autogenerate.
-from wikicode.core.persistence.models import Base
+from repowise.core.persistence.models import Base
 
 # Alembic Config object (access to alembic.ini values)
 config = context.config

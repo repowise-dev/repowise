@@ -1,6 +1,6 @@
-# wikicode-server
+# repowise-server
 
-FastAPI REST API, webhook handlers, MCP server, and background job scheduler for WikiCode. This package powers the `wikicode serve` command and the Next.js web UI backend.
+FastAPI REST API, webhook handlers, MCP server, and background job scheduler for repowise. This package powers the `repowise serve` command and the Next.js web UI backend.
 
 **Python >= 3.11 · Apache-2.0**
 
@@ -20,13 +20,13 @@ FastAPI REST API, webhook handlers, MCP server, and background job scheduler for
 ## Installation
 
 ```bash
-pip install wikicode-server
+pip install repowise-server
 
 # Recommended: use uv
-uv pip install wikicode-server
+uv pip install repowise-server
 ```
 
-Installs `fastapi`, `uvicorn[standard]`, `mcp`, `apscheduler`, `cryptography`, and `wikicode-core` automatically.
+Installs `fastapi`, `uvicorn[standard]`, `mcp`, `apscheduler`, `cryptography`, and `repowise-core` automatically.
 
 ---
 
@@ -34,14 +34,14 @@ Installs `fastapi`, `uvicorn[standard]`, `mcp`, `apscheduler`, `cryptography`, a
 
 ```bash
 # Via the CLI (recommended)
-wikicode serve                             # localhost:7337
-wikicode serve --host 0.0.0.0 --port 8080
+repowise serve                             # localhost:7337
+repowise serve --host 0.0.0.0 --port 8080
 
 # Directly with uvicorn
-uvicorn wikicode.server.app:create_app --factory --port 7337
+uvicorn repowise.server.app:create_app --factory --port 7337
 
 # With hot reload (development)
-uvicorn wikicode.server.app:create_app --factory --reload --port 7337
+uvicorn repowise.server.app:create_app --factory --reload --port 7337
 ```
 
 Interactive API docs are available at `http://localhost:7337/docs` once the server is running.
@@ -54,10 +54,10 @@ All configuration is via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WIKICODE_DB_URL` | `sqlite+aiosqlite:///.wikicode/wiki.db` | Database URL (SQLite or PostgreSQL) |
-| `WIKICODE_API_KEY` | _(none)_ | Bearer token required on all API requests (leave unset to disable auth) |
-| `WIKICODE_EMBEDDER` | `mock` | Embedder backend: `mock` (FTS only) or `gemini` (real semantic search) |
-| `WIKICODE_WEBHOOK_SECRET` | _(none)_ | HMAC-SHA256 secret for verifying GitHub/GitLab webhook signatures |
+| `REPOWISE_DB_URL` | `sqlite+aiosqlite:///.repowise/wiki.db` | Database URL (SQLite or PostgreSQL) |
+| `REPOWISE_API_KEY` | _(none)_ | Bearer token required on all API requests (leave unset to disable auth) |
+| `REPOWISE_EMBEDDER` | `mock` | Embedder backend: `mock` (FTS only) or `gemini` (real semantic search) |
+| `REPOWISE_WEBHOOK_SECRET` | _(none)_ | HMAC-SHA256 secret for verifying GitHub/GitLab webhook signatures |
 | `ANTHROPIC_API_KEY` | _(none)_ | Anthropic API key (required for Anthropic provider jobs) |
 | `OPENAI_API_KEY` | _(none)_ | OpenAI API key (required for OpenAI provider jobs) |
 
@@ -65,7 +65,7 @@ All configuration is via environment variables:
 
 ## REST API
 
-All endpoints are prefixed with `/api/`. When `WIKICODE_API_KEY` is set, every request must include an `Authorization: Bearer <key>` header.
+All endpoints are prefixed with `/api/`. When `REPOWISE_API_KEY` is set, every request must include an `Authorization: Bearer <key>` header.
 
 ### Repositories
 
@@ -75,8 +75,8 @@ All endpoints are prefixed with `/api/`. When `WIKICODE_API_KEY` is set, every r
 | `POST` | `/api/repos` | Register a new repository |
 | `GET` | `/api/repos/{id}` | Get repository details and sync state |
 | `PATCH` | `/api/repos/{id}` | Update repository settings (name, branch, provider) |
-| `POST` | `/api/repos/{id}/sync` | Trigger incremental sync (equivalent to `wikicode update`) |
-| `POST` | `/api/repos/{id}/full-resync` | Trigger full re-generation (equivalent to `wikicode init`) |
+| `POST` | `/api/repos/{id}/sync` | Trigger incremental sync (equivalent to `repowise update`) |
+| `POST` | `/api/repos/{id}/full-resync` | Trigger full re-generation (equivalent to `repowise init`) |
 
 ### Pages
 
@@ -153,11 +153,11 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 
 ## MCP Server
 
-WikiCode exposes 8 MCP tools for AI coding assistants. Start the MCP server via:
+repowise exposes 8 MCP tools for AI coding assistants. Start the MCP server via:
 
 ```bash
-wikicode mcp                          # stdio transport (Claude Code, Cursor, Cline)
-wikicode mcp --transport sse          # SSE transport on port 7338
+repowise mcp                          # stdio transport (Claude Code, Cursor, Cline)
+repowise mcp --transport sse          # SSE transport on port 7338
 ```
 
 | Tool | What It Answers | When to Call |
@@ -176,8 +176,8 @@ wikicode mcp --transport sse          # SSE transport on port 7338
 ```json
 {
   "mcpServers": {
-    "wikicode": {
-      "command": "wikicode",
+    "repowise": {
+      "command": "repowise",
       "args": ["mcp", "/absolute/path/to/your/repo"]
     }
   }
@@ -188,21 +188,21 @@ wikicode mcp --transport sse          # SSE transport on port 7338
 
 ## Webhooks
 
-Register the webhook URL with GitHub or GitLab so `wikicode update` runs automatically on every push.
+Register the webhook URL with GitHub or GitLab so `repowise update` runs automatically on every push.
 
 **GitHub setup:**
 
 1. Go to `Settings → Webhooks → Add webhook` in your GitHub repository
 2. Set **Payload URL** to `https://your-server.example.com/api/webhooks/github`
 3. Set **Content type** to `application/json`
-4. Set **Secret** to the value of `WIKICODE_WEBHOOK_SECRET`
+4. Set **Secret** to the value of `REPOWISE_WEBHOOK_SECRET`
 5. Select **Just the push event**
 
 **GitLab setup:**
 
 1. Go to `Settings → Webhooks` in your GitLab project
 2. Set **URL** to `https://your-server.example.com/api/webhooks/gitlab`
-3. Set **Secret token** to the value of `WIKICODE_WEBHOOK_SECRET`
+3. Set **Secret token** to the value of `REPOWISE_WEBHOOK_SECRET`
 4. Enable **Push events**
 
 The server verifies HMAC-SHA256 signatures, deduplicates events (stored in the `webhook_events` table), and queues an incremental sync job via the scheduler.
@@ -228,7 +228,7 @@ The APScheduler instance manages the following recurring tasks:
 uv pip install -e packages/server -e packages/core
 
 # Start with hot reload
-uvicorn wikicode.server.app:create_app --factory --reload --port 7337
+uvicorn repowise.server.app:create_app --factory --reload --port 7337
 
 # Run tests
 pytest tests/unit/server/ tests/integration/

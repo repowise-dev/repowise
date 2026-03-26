@@ -12,8 +12,8 @@ import "@/styles/globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "WikiCode",
-    template: "%s — WikiCode",
+    default: "repowise",
+    template: "%s — repowise",
   },
   description: "Open-source codebase documentation engine",
 };

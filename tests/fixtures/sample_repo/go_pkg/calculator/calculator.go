@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/wikicode-ai/sample/types"
+	"github.com/repowise-ai/sample/types"
 )
 
 // ErrDivisionByZero is returned when a division-by-zero is attempted.

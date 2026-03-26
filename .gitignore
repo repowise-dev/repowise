@@ -81,9 +81,9 @@ next-env.d.ts
 .env.*.local
 !.env.example
 
-# WikiCode runtime data
-.wikicode/
-!.wikicode/mcp.json.example
+# repowise runtime data
+.repowise/
+!.repowise/mcp.json.example
 
 # Database
 *.db

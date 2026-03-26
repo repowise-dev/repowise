@@ -1,5 +1,5 @@
 ; =============================================================================
-; WikiCode — Ruby symbol and import queries
+; repowise — Ruby symbol and import queries
 ; tree-sitter-ruby (install separately if needed)
 ; =============================================================================
 

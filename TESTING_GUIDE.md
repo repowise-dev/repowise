@@ -1,6 +1,6 @@
-# WikiCode — Local Testing Guide
+# repowise — Local Testing Guide
 
-Test WikiCode end-to-end against a real repo (`interview-coach`) using:
+Test repowise end-to-end against a real repo (`interview-coach`) using:
 - **LLM**: `gemini-3-flash-preview` via LiteLLM
 - **Embeddings**: `gemini-embedding-001` via GeminiEmbedder
 - **Frontend**: Next.js 15 at `http://localhost:3000`
@@ -27,15 +27,15 @@ Open **PowerShell** and set the following (or add them to your shell profile):
 # Gemini API key (from .env)
 $env:GEMINI_API_KEY = "AIzaSyCyyMAr-kS68BwN-xggeOHaN0QxE3FXqHU"
 
-# Tell WikiCode to use LiteLLM as the LLM provider
-$env:WIKICODE_PROVIDER = "litellm"
-$env:WIKICODE_MODEL    = "gemini/gemini-3-flash-preview"
+# Tell repowise to use LiteLLM as the LLM provider
+$env:REPOWISE_PROVIDER = "litellm"
+$env:REPOWISE_MODEL    = "gemini/gemini-3-flash-preview"
 
-# Tell the WikiCode server to use GeminiEmbedder for semantic search
-$env:WIKICODE_EMBEDDER = "gemini"
+# Tell the repowise server to use GeminiEmbedder for semantic search
+$env:REPOWISE_EMBEDDER = "gemini"
 
 # Point the server at the interview-coach SQLite database (created in Step 3)
-$env:WIKICODE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coach/.wikicode/wiki.db"
+$env:REPOWISE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coach/.repowise/wiki.db"
 ```
 
 > **Why LiteLLM?** It proxies Gemini natively via `GEMINI_API_KEY` — no extra config needed.
@@ -44,10 +44,10 @@ $env:WIKICODE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coa
 
 ## Step 2 — Install Python Dependencies
 
-From the **CodeWiki root** in PowerShell:
+From the **repowise root** in PowerShell:
 
 ```powershell
-cd C:\Users\ragha\Desktop\CodeWiki
+cd C:\Users\ragha\Desktop\repowise
 
 # Install all packages (core, cli, server) in editable mode
 uv sync --all-packages
@@ -56,11 +56,11 @@ uv sync --all-packages
 uv pip install google-genai litellm
 ```
 
-> **Tip**: `uv sync --all-packages` installs wikicode-core, wikicode-cli, and wikicode-server from the workspace.
+> **Tip**: `uv sync --all-packages` installs repowise-core, repowise-cli, and repowise-server from the workspace.
 
 Verify the CLI is available:
 ```powershell
-uv run wikicode --help
+uv run repowise --help
 ```
 
 ---
@@ -70,9 +70,9 @@ uv run wikicode --help
 This crawls all source files, parses symbols, builds a call graph, and generates wiki pages using Gemini:
 
 ```powershell
-cd C:\Users\ragha\Desktop\CodeWiki
+cd C:\Users\ragha\Desktop\repowise
 
-uv run wikicode init "C:\Users\ragha\Desktop\interview-coach" `
+uv run repowise init "C:\Users\ragha\Desktop\interview-coach" `
     --provider litellm `
     --model "gemini/gemini-3-flash-preview" `
     --yes
@@ -86,38 +86,38 @@ uv run wikicode init "C:\Users\ragha\Desktop\interview-coach" `
 5. Detects dead code
 6. Estimates token costs
 7. **Calls Gemini** to generate wiki pages for each file/module
-8. Persists everything to `.wikicode/wiki.db` + `.wikicode/index.fts`
+8. Persists everything to `.repowise/wiki.db` + `.repowise/index.fts`
 
 Expected output:
 ```
 Scanning interview-coach ...  [████████████] 100%
 Parsed 142 symbols across 38 files
 Generating wiki pages ...     [████████████] 100%
-Done. 38 pages written to .wikicode/wiki.db
+Done. 38 pages written to .repowise/wiki.db
 ```
 
 > **Cost note**: Init calls Gemini for each file. A ~40-file Python repo costs roughly 50K–200K tokens with `gemini-3-flash-preview` (well within free tier limits).
 
 ---
 
-## Step 4 — Start the WikiCode API Server
+## Step 4 — Start the repowise API Server
 
 In a **new PowerShell window**, set the env vars again (or use a `.env` loader), then:
 
 ```powershell
-cd C:\Users\ragha\Desktop\CodeWiki
+cd C:\Users\ragha\Desktop\repowise
 
 # Set env vars in this shell too
 $env:GEMINI_API_KEY = "AIzaSyCyyMAr-kS68BwN-xggeOHaN0QxE3FXqHU"
-$env:WIKICODE_EMBEDDER = "gemini"
-$env:WIKICODE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coach/.wikicode/wiki.db"
+$env:REPOWISE_EMBEDDER = "gemini"
+$env:REPOWISE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coach/.repowise/wiki.db"
 
-uv run wikicode serve --port 7337
+uv run repowise serve --port 7337
 ```
 
 Expected output:
 ```
-Starting WikiCode server on 127.0.0.1:7337
+Starting repowise server on 127.0.0.1:7337
 INFO:     Uvicorn running on http://127.0.0.1:7337
 ```
 
@@ -138,10 +138,10 @@ Expected response:
 In a **third PowerShell window**:
 
 ```powershell
-cd C:\Users\ragha\Desktop\CodeWiki
+cd C:\Users\ragha\Desktop\repowise
 
 # Tell the frontend where the API server is
-$env:WIKICODE_API_URL = "http://localhost:7337"
+$env:REPOWISE_API_URL = "http://localhost:7337"
 
 npm run dev --workspace packages/web
 ```
@@ -282,7 +282,7 @@ Simulate a code change and re-sync:
 (Get-Item "C:\Users\ragha\Desktop\interview-coach\README.md").LastWriteTime = Get-Date
 
 # Re-sync (only regenerates changed files)
-uv run wikicode sync "C:\Users\ragha\Desktop\interview-coach" `
+uv run repowise sync "C:\Users\ragha\Desktop\interview-coach" `
     --provider litellm `
     --model "gemini/gemini-3-flash-preview"
 ```
@@ -304,18 +304,18 @@ uv pip install litellm
 ```
 
 ### Server shows `MockEmbedder` in logs / semantic search returns empty
-Check that `WIKICODE_EMBEDDER=gemini` is set in the PowerShell session running `wikicode serve`.
+Check that `REPOWISE_EMBEDDER=gemini` is set in the PowerShell session running `repowise serve`.
 
-### `wikicode: command not found` in PowerShell
+### `repowise: command not found` in PowerShell
 Always prefix with `uv run`:
 ```powershell
-uv run wikicode --help
+uv run repowise --help
 ```
 
 ### Init fails with `rate limit` errors
 Add `--concurrency 1` to slow down Gemini calls:
 ```powershell
-uv run wikicode init "C:\Users\ragha\Desktop\interview-coach" `
+uv run repowise init "C:\Users\ragha\Desktop\interview-coach" `
     --provider litellm `
     --model "gemini/gemini-3-flash-preview" `
     --concurrency 1 `
@@ -325,13 +325,13 @@ uv run wikicode init "C:\Users\ragha\Desktop\interview-coach" `
 ### Frontend shows "Failed to fetch repos"
 Ensure:
 1. Server is running on port 7337
-2. `WIKICODE_API_URL=http://localhost:7337` is set before starting `npm run dev`
+2. `REPOWISE_API_URL=http://localhost:7337` is set before starting `npm run dev`
 3. CORS is allowed (it is — server allows all origins by default)
 
-### `WIKICODE_DB_URL` path issues on Windows
+### `REPOWISE_DB_URL` path issues on Windows
 Use forward slashes in the path:
 ```powershell
-$env:WIKICODE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coach/.wikicode/wiki.db"
+$env:REPOWISE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coach/.repowise/wiki.db"
 ```
 
 ---
@@ -341,9 +341,9 @@ $env:WIKICODE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coa
 | Variable | Value | Purpose |
 |----------|-------|---------|
 | `GEMINI_API_KEY` | `AIzaSy...` | Authenticates both LiteLLM and GeminiEmbedder |
-| `WIKICODE_PROVIDER` | `litellm` | Selects LiteLLM as the LLM provider for init/sync |
-| `WIKICODE_MODEL` | `gemini/gemini-3-flash-preview` | Model name in LiteLLM format |
-| `WIKICODE_EMBEDDER` | `gemini` | Activates GeminiEmbedder in the server |
-| `WIKICODE_DB_URL` | `sqlite+aiosqlite:///...` | Points server at the repo's wiki.db |
-| `WIKICODE_API_URL` | `http://localhost:7337` | Frontend → backend URL |
-| `WIKICODE_EMBEDDING_DIMS` | `768` | Optional: override embedding dimensions (default 768) |
+| `REPOWISE_PROVIDER` | `litellm` | Selects LiteLLM as the LLM provider for init/sync |
+| `REPOWISE_MODEL` | `gemini/gemini-3-flash-preview` | Model name in LiteLLM format |
+| `REPOWISE_EMBEDDER` | `gemini` | Activates GeminiEmbedder in the server |
+| `REPOWISE_DB_URL` | `sqlite+aiosqlite:///...` | Points server at the repo's wiki.db |
+| `REPOWISE_API_URL` | `http://localhost:7337` | Frontend → backend URL |
+| `REPOWISE_EMBEDDING_DIMS` | `768` | Optional: override embedding dimensions (default 768) |

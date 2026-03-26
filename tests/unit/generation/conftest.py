@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import networkx as nx
 import pytest
 
-from wikicode.core.ingestion.models import (
+from repowise.core.ingestion.models import (
     FileInfo,
     Import,
     PackageInfo,
@@ -15,8 +15,8 @@ from wikicode.core.ingestion.models import (
     RepoStructure,
     Symbol,
 )
-from wikicode.core.providers.mock import MockProvider
-from wikicode.core.generation.models import GenerationConfig
+from repowise.core.providers.mock import MockProvider
+from repowise.core.generation.models import GenerationConfig
 
 
 # ---------------------------------------------------------------------------

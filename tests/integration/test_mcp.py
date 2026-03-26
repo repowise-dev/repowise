@@ -13,9 +13,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from wikicode.core.persistence.database import init_db
-from wikicode.core.persistence.embedder import MockEmbedder
-from wikicode.core.persistence.models import (
+from repowise.core.persistence.database import init_db
+from repowise.core.persistence.embedder import MockEmbedder
+from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
     GraphEdge,
@@ -24,8 +24,8 @@ from wikicode.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
-from wikicode.core.persistence.search import FullTextSearch
-from wikicode.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.persistence.search import FullTextSearch
+from repowise.core.persistence.vector_store import InMemoryVectorStore
 
 _NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -189,7 +189,7 @@ async def mcp_env():
     )
 
     # Configure MCP globals
-    import wikicode.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server as mcp_mod
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts
     mcp_mod._vector_store = vector_store
@@ -217,7 +217,7 @@ async def mcp_env():
 @pytest.mark.asyncio
 async def test_mcp_full_exploration_flow(mcp_env):
     """Test the typical MCP exploration flow: overview → get_context for module/file/symbol."""
-    from wikicode.server.mcp_server import get_context, get_overview
+    from repowise.server.mcp_server import get_context, get_overview
 
     # Step 1: Get overview
     overview = await get_overview()
@@ -250,7 +250,7 @@ async def test_mcp_full_exploration_flow(mcp_env):
 @pytest.mark.asyncio
 async def test_mcp_dependency_and_graph_flow(mcp_env):
     """Test dependency path and architecture diagram tools."""
-    from wikicode.server.mcp_server import (
+    from repowise.server.mcp_server import (
         get_architecture_diagram,
         get_dependency_path,
     )
@@ -268,7 +268,7 @@ async def test_mcp_dependency_and_graph_flow(mcp_env):
 @pytest.mark.asyncio
 async def test_mcp_git_intelligence_flow(mcp_env):
     """Test git intelligence via get_context and get_risk."""
-    from wikicode.server.mcp_server import get_context, get_risk
+    from repowise.server.mcp_server import get_context, get_risk
 
     # File context with ownership and history
     ctx = await get_context(["src/auth/login.py"], include=["ownership", "last_change"])
@@ -289,7 +289,7 @@ async def test_mcp_git_intelligence_flow(mcp_env):
 @pytest.mark.asyncio
 async def test_mcp_dead_code_and_freshness_flow(mcp_env):
     """Test dead code tool and freshness via get_context."""
-    from wikicode.server.mcp_server import get_context, get_dead_code
+    from repowise.server.mcp_server import get_context, get_dead_code
 
     # Dead code
     dead = await get_dead_code()
@@ -306,7 +306,7 @@ async def test_mcp_dead_code_and_freshness_flow(mcp_env):
 @pytest.mark.asyncio
 async def test_mcp_search_flow(mcp_env):
     """Test semantic search."""
-    from wikicode.server.mcp_server import search_codebase
+    from repowise.server.mcp_server import search_codebase
 
     result = await search_codebase("authentication login OAuth")
     assert "results" in result

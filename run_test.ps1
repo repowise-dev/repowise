@@ -1,5 +1,5 @@
-# Load .env and run wikicode init --test-run on interview-coach
-$envFile = "C:\Users\ragha\Desktop\CodeWiki\.env"
+# Load .env and run repowise init --test-run on interview-coach
+$envFile = "C:\Users\ragha\Desktop\repowise\.env"
 Get-Content $envFile | ForEach-Object {
     $line = $_.Trim()
     if ($line -and -not $line.StartsWith("#") -and $line -match "^([^=]+)=(.*)$") {
@@ -18,8 +18,8 @@ Write-Host "OPENAI_API_KEY loaded: $($env:OPENAI_API_KEY.Substring(0,10))..."
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
-Set-Location "C:\Users\ragha\Desktop\CodeWiki"
-uv run wikicode init "C:\Users\ragha\Desktop\interview-coach" `
+Set-Location "C:\Users\ragha\Desktop\repowise"
+uv run repowise init "C:\Users\ragha\Desktop\interview-coach" `
     --provider gemini `
     --model gemini-3.1-flash-lite-preview `
     --test-run `

@@ -1,6 +1,6 @@
 /**
  * TypeScript types mirroring the backend Pydantic schemas.
- * Source of truth: packages/server/src/wikicode/server/schemas.py
+ * Source of truth: packages/server/src/repowise/server/schemas.py
  */
 
 // ---------------------------------------------------------------------------

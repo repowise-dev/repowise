@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from wikicode.core.generation.context_assembler import ContextAssembler
-from wikicode.core.generation.job_system import JobSystem
-from wikicode.core.generation.models import GenerationConfig, GeneratedPage
-from wikicode.core.generation.page_generator import PageGenerator
-from wikicode.core.ingestion.graph import GraphBuilder
-from wikicode.core.ingestion.models import (
+from repowise.core.generation.context_assembler import ContextAssembler
+from repowise.core.generation.job_system import JobSystem
+from repowise.core.generation.models import GenerationConfig, GeneratedPage
+from repowise.core.generation.page_generator import PageGenerator
+from repowise.core.ingestion.graph import GraphBuilder
+from repowise.core.ingestion.models import (
     FileInfo,
     Import,
     PackageInfo,
@@ -23,9 +23,9 @@ from wikicode.core.ingestion.models import (
     RepoStructure,
     Symbol,
 )
-from wikicode.core.ingestion.parser import ASTParser
-from wikicode.core.ingestion.traverser import FileTraverser
-from wikicode.core.providers.mock import MockProvider
+from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.traverser import FileTraverser
+from repowise.core.providers.mock import MockProvider
 
 SAMPLE_REPO = Path(__file__).parents[1] / "fixtures" / "sample_repo"
 
@@ -284,7 +284,7 @@ class TestGenerationPipeline:
             if src_path.exists():
                 source_map[pf.file_info.path] = src_path.read_bytes()
 
-        from wikicode.core.ingestion.graph import GraphBuilder
+        from repowise.core.ingestion.graph import GraphBuilder
         builder = GraphBuilder()
         for pf in parsed_files:
             builder.add_file(pf)

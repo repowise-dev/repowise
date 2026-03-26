@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from wikicode.core.persistence.crud import (
+from repowise.core.persistence.crud import (
     batch_upsert_graph_edges,
     batch_upsert_graph_nodes,
     batch_upsert_symbols,
@@ -313,7 +313,7 @@ async def test_get_stale_pages_returns_only_stale(async_session):
 
 async def test_batch_upsert_graph_nodes_inserts(async_session):
     from sqlalchemy import select
-    from wikicode.core.persistence.models import GraphNode
+    from repowise.core.persistence.models import GraphNode
 
     repo = await insert_repo(async_session)
     nodes = [
@@ -332,7 +332,7 @@ async def test_batch_upsert_graph_nodes_inserts(async_session):
 
 async def test_batch_upsert_graph_nodes_updates_existing(async_session):
     from sqlalchemy import select
-    from wikicode.core.persistence.models import GraphNode
+    from repowise.core.persistence.models import GraphNode
 
     repo = await insert_repo(async_session)
     await batch_upsert_graph_nodes(
@@ -355,7 +355,7 @@ async def test_batch_upsert_graph_nodes_updates_existing(async_session):
 
 async def test_batch_upsert_graph_edges_inserts(async_session):
     from sqlalchemy import select
-    from wikicode.core.persistence.models import GraphEdge
+    from repowise.core.persistence.models import GraphEdge
 
     repo = await insert_repo(async_session)
     edges = [
@@ -380,7 +380,7 @@ async def test_batch_upsert_graph_edges_inserts(async_session):
 async def test_batch_upsert_symbols_inserts(async_session):
     from dataclasses import dataclass
     from sqlalchemy import select
-    from wikicode.core.persistence.models import WikiSymbol
+    from repowise.core.persistence.models import WikiSymbol
 
     @dataclass
     class FakeSym:
@@ -449,7 +449,7 @@ async def test_mark_webhook_processed(async_session):
     await mark_webhook_processed(async_session, event.id)
     await async_session.commit()
 
-    from wikicode.core.persistence.models import WebhookEvent
+    from repowise.core.persistence.models import WebhookEvent
     from sqlalchemy import select
 
     result = await async_session.execute(

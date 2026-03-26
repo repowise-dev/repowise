@@ -1,4 +1,4 @@
-"""Unit tests for WikiCode MCP server tools.
+"""Unit tests for repowise MCP server tools.
 
 Tests all 8 MCP tools using an in-memory SQLite database with pre-populated
 test data, mirroring the conftest pattern from the REST API tests.
@@ -14,9 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from wikicode.core.persistence.database import init_db
-from wikicode.core.persistence.embedder import MockEmbedder
-from wikicode.core.persistence.models import (
+from repowise.core.persistence.database import init_db
+from repowise.core.persistence.embedder import MockEmbedder
+from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
     GitMetadata,
@@ -26,8 +26,8 @@ from wikicode.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
-from wikicode.core.persistence.search import FullTextSearch
-from wikicode.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.persistence.search import FullTextSearch
+from repowise.core.persistence.vector_store import InMemoryVectorStore
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +530,7 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
 @pytest.fixture
 async def setup_mcp(factory, fts, vector_store, populated_db):
     """Configure the MCP module's global state for testing."""
-    import wikicode.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server as mcp_mod
 
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts
@@ -553,7 +553,7 @@ async def setup_mcp(factory, fts, vector_store, populated_db):
 
 @pytest.mark.asyncio
 async def test_get_overview(setup_mcp):
-    from wikicode.server.mcp_server import get_overview
+    from repowise.server.mcp_server import get_overview
 
     result = await get_overview()
     assert result["title"] == "Test Repo Overview"
@@ -567,7 +567,7 @@ async def test_get_overview(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_overview_with_repo_path(setup_mcp):
-    from wikicode.server.mcp_server import get_overview
+    from repowise.server.mcp_server import get_overview
 
     result = await get_overview(repo="/tmp/test-repo")
     assert result["title"] == "Test Repo Overview"
@@ -575,7 +575,7 @@ async def test_get_overview_with_repo_path(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_overview_repo_not_found(setup_mcp):
-    from wikicode.server.mcp_server import get_overview
+    from repowise.server.mcp_server import get_overview
 
     with pytest.raises(LookupError, match="not found"):
         await get_overview(repo="/nonexistent")
@@ -586,7 +586,7 @@ async def test_get_overview_repo_not_found(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_context_single_file(setup_mcp):
-    from wikicode.server.mcp_server import get_context
+    from repowise.server.mcp_server import get_context
 
     result = await get_context(["src/auth/service.py"])
     targets = result["targets"]
@@ -617,7 +617,7 @@ async def test_get_context_single_file(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_context_single_module(setup_mcp):
-    from wikicode.server.mcp_server import get_context
+    from repowise.server.mcp_server import get_context
 
     result = await get_context(["src/auth"])
     targets = result["targets"]
@@ -633,7 +633,7 @@ async def test_get_context_single_module(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_context_single_symbol(setup_mcp):
-    from wikicode.server.mcp_server import get_context
+    from repowise.server.mcp_server import get_context
 
     result = await get_context(["AuthService"])
     targets = result["targets"]
@@ -649,7 +649,7 @@ async def test_get_context_single_symbol(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_context_multiple_targets(setup_mcp):
-    from wikicode.server.mcp_server import get_context
+    from repowise.server.mcp_server import get_context
 
     result = await get_context(["src/auth/service.py", "src/auth", "AuthService"])
     targets = result["targets"]
@@ -661,7 +661,7 @@ async def test_get_context_multiple_targets(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_context_include_filter(setup_mcp):
-    from wikicode.server.mcp_server import get_context
+    from repowise.server.mcp_server import get_context
 
     result = await get_context(["src/auth/service.py"], include=["docs"])
     t = result["targets"]["src/auth/service.py"]
@@ -674,7 +674,7 @@ async def test_get_context_include_filter(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_context_not_found(setup_mcp):
-    from wikicode.server.mcp_server import get_context
+    from repowise.server.mcp_server import get_context
 
     result = await get_context(["nonexistent_thing_xyz"])
     t = result["targets"]["nonexistent_thing_xyz"]
@@ -686,7 +686,7 @@ async def test_get_context_not_found(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_risk_single_target(setup_mcp):
-    from wikicode.server.mcp_server import get_risk
+    from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/service.py"])
     targets = result["targets"]
@@ -718,7 +718,7 @@ async def test_get_risk_single_target(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_risk_multiple_targets(setup_mcp):
-    from wikicode.server.mcp_server import get_risk
+    from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/service.py", "src/db/models.py"])
     targets = result["targets"]
@@ -732,7 +732,7 @@ async def test_get_risk_multiple_targets(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_risk_global_hotspots_exclude_targets(setup_mcp):
-    from wikicode.server.mcp_server import get_risk
+    from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/service.py"])
     # service.py is a hotspot but should NOT appear in global_hotspots
@@ -742,7 +742,7 @@ async def test_get_risk_global_hotspots_exclude_targets(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_risk_no_git_metadata(setup_mcp):
-    from wikicode.server.mcp_server import get_risk
+    from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/middleware.py"])
     t = result["targets"]["src/auth/middleware.py"]
@@ -756,7 +756,7 @@ async def test_get_risk_no_git_metadata(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_risk_stable_file(setup_mcp):
-    from wikicode.server.mcp_server import get_risk
+    from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/db/models.py"])
     t = result["targets"]["src/db/models.py"]
@@ -771,7 +771,7 @@ async def test_get_risk_stable_file(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_natural_language(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     result = await get_why("why is JWT used for authentication")
     assert result["mode"] == "search"
@@ -782,7 +782,7 @@ async def test_get_why_natural_language(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_file_path(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     result = await get_why("src/auth/service.py")
     assert result["mode"] == "path"
@@ -808,7 +808,7 @@ async def test_get_why_file_path(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_file_path_commit_decision_linkage(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     result = await get_why("src/auth/service.py")
     origin = result["origin_story"]
@@ -827,7 +827,7 @@ async def test_get_why_file_path_commit_decision_linkage(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_natural_language_with_targets(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     # Search with targets — decisions governing service.py should be boosted
     result = await get_why(
@@ -847,7 +847,7 @@ async def test_get_why_natural_language_with_targets(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_expanded_keyword_search(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     # Search for "security" — should match via tags_json on dec1
     result = await get_why("security")
@@ -859,7 +859,7 @@ async def test_get_why_expanded_keyword_search(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_file_no_git_metadata(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     # middleware.py has no GitMetadata in the fixture
     result = await get_why("src/auth/middleware.py")
@@ -876,7 +876,7 @@ async def test_get_why_file_no_git_metadata(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_file_ungoverned(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     # Use a path that has no decisions — triggers git archaeology fallback
     result = await get_why("src/other/utils.py")
@@ -896,7 +896,7 @@ async def test_get_why_file_ungoverned(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_fallback_with_cross_references(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     # src/auth/service.py has git metadata with commits mentioning "auth"
     # Query a nonexistent auth file — cross-references should find commits
@@ -915,7 +915,7 @@ async def test_get_why_fallback_with_cross_references(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_targets_fallback(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     # Search with a target that has no governing decisions
     result = await get_why(
@@ -932,7 +932,7 @@ async def test_get_why_targets_fallback(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_no_args(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     result = await get_why()
     assert result["mode"] == "health"
@@ -944,7 +944,7 @@ async def test_get_why_no_args(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_why_module_path(setup_mcp):
-    from wikicode.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_why
 
     result = await get_why("src/db")
     assert result["mode"] == "path"
@@ -957,10 +957,10 @@ async def test_get_why_module_path(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_search_codebase(setup_mcp):
-    from wikicode.server.mcp_server import search_codebase
+    from repowise.server.mcp_server import search_codebase
 
     # Index pages in the MCP module's vector store (which is the InMemoryVectorStore)
-    import wikicode.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server as mcp_mod
 
     await mcp_mod._vector_store.embed_and_upsert(
         "file_page:src/auth/service.py",
@@ -983,7 +983,7 @@ async def test_search_codebase(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_architecture_diagram_repo(setup_mcp):
-    from wikicode.server.mcp_server import get_architecture_diagram
+    from repowise.server.mcp_server import get_architecture_diagram
 
     result = await get_architecture_diagram(scope="repo")
     assert result["diagram_type"] in ("flowchart", "auto")
@@ -993,7 +993,7 @@ async def test_get_architecture_diagram_repo(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_architecture_diagram_module(setup_mcp):
-    from wikicode.server.mcp_server import get_architecture_diagram
+    from repowise.server.mcp_server import get_architecture_diagram
 
     result = await get_architecture_diagram(scope="module", path="src/auth")
     assert "mermaid_syntax" in result
@@ -1005,7 +1005,7 @@ async def test_get_architecture_diagram_module(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dependency_path(setup_mcp):
-    from wikicode.server.mcp_server import get_dependency_path
+    from repowise.server.mcp_server import get_dependency_path
 
     result = await get_dependency_path("src/auth/service.py", "src/db/models.py")
     assert result["distance"] == 1
@@ -1014,7 +1014,7 @@ async def test_get_dependency_path(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dependency_path_multi_hop(setup_mcp):
-    from wikicode.server.mcp_server import get_dependency_path
+    from repowise.server.mcp_server import get_dependency_path
 
     result = await get_dependency_path("src/auth/middleware.py", "src/db/models.py")
     assert result["distance"] == 2
@@ -1023,7 +1023,7 @@ async def test_get_dependency_path_multi_hop(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dependency_path_no_path(setup_mcp):
-    from wikicode.server.mcp_server import get_dependency_path
+    from repowise.server.mcp_server import get_dependency_path
 
     # Reverse direction — no path from models to middleware
     result = await get_dependency_path("src/db/models.py", "src/auth/middleware.py")
@@ -1052,7 +1052,7 @@ async def test_get_dependency_path_no_path(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dependency_path_node_not_found(setup_mcp):
-    from wikicode.server.mcp_server import get_dependency_path
+    from repowise.server.mcp_server import get_dependency_path
 
     result = await get_dependency_path("nonexistent.py", "src/auth/service.py")
     assert result["distance"] == -1
@@ -1065,7 +1065,7 @@ async def test_get_dependency_path_node_not_found(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dead_code(setup_mcp):
-    from wikicode.server.mcp_server import get_dead_code
+    from repowise.server.mcp_server import get_dead_code
 
     result = await get_dead_code()
     assert result["summary"]["total_findings"] == 3
@@ -1087,7 +1087,7 @@ async def test_get_dead_code(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dead_code_safe_only(setup_mcp):
-    from wikicode.server.mcp_server import get_dead_code
+    from repowise.server.mcp_server import get_dead_code
 
     result = await get_dead_code(safe_only=True)
     for tier_data in result["tiers"].values():
@@ -1097,7 +1097,7 @@ async def test_get_dead_code_safe_only(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dead_code_by_kind(setup_mcp):
-    from wikicode.server.mcp_server import get_dead_code
+    from repowise.server.mcp_server import get_dead_code
 
     result = await get_dead_code(kind="unreachable_file", min_confidence=0.0)
     for tier_data in result["tiers"].values():
@@ -1107,7 +1107,7 @@ async def test_get_dead_code_by_kind(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dead_code_low_confidence(setup_mcp):
-    from wikicode.server.mcp_server import get_dead_code
+    from repowise.server.mcp_server import get_dead_code
 
     result = await get_dead_code(min_confidence=0.0)
     total = sum(t["count"] for t in result["tiers"].values())
@@ -1116,7 +1116,7 @@ async def test_get_dead_code_low_confidence(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dead_code_tier_filter(setup_mcp):
-    from wikicode.server.mcp_server import get_dead_code
+    from repowise.server.mcp_server import get_dead_code
 
     result = await get_dead_code(tier="high")
     assert "high" in result["tiers"]
@@ -1127,7 +1127,7 @@ async def test_get_dead_code_tier_filter(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dead_code_group_by_directory(setup_mcp):
-    from wikicode.server.mcp_server import get_dead_code
+    from repowise.server.mcp_server import get_dead_code
 
     result = await get_dead_code(group_by="directory", min_confidence=0.0)
     assert "by_directory" in result
@@ -1142,7 +1142,7 @@ async def test_get_dead_code_group_by_directory(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_dead_code_group_by_owner(setup_mcp):
-    from wikicode.server.mcp_server import get_dead_code
+    from repowise.server.mcp_server import get_dead_code
 
     result = await get_dead_code(group_by="owner", min_confidence=0.0)
     assert "by_owner" in result
@@ -1157,23 +1157,23 @@ async def test_get_dead_code_group_by_owner(setup_mcp):
 
 def test_generate_mcp_config():
     from pathlib import Path
-    from wikicode.cli.mcp_config import generate_mcp_config
+    from repowise.cli.mcp_config import generate_mcp_config
 
     config = generate_mcp_config(Path("/tmp/test-repo"))
     assert "mcpServers" in config
-    assert "wikicode" in config["mcpServers"]
-    server = config["mcpServers"]["wikicode"]
-    assert server["command"] == "wikicode"
+    assert "repowise" in config["mcpServers"]
+    server = config["mcpServers"]["repowise"]
+    assert server["command"] == "repowise"
     assert "mcp" in server["args"]
     assert "stdio" in server["args"]
 
 
 def test_format_setup_instructions():
     from pathlib import Path
-    from wikicode.cli.mcp_config import format_setup_instructions
+    from repowise.cli.mcp_config import format_setup_instructions
 
     instructions = format_setup_instructions(Path("/tmp/test-repo"))
     assert "Claude Code" in instructions
     assert "Cursor" in instructions
     assert "Cline" in instructions
-    assert "wikicode" in instructions
+    assert "repowise" in instructions

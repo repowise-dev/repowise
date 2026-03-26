@@ -1,4 +1,4 @@
-"""Unit tests for wikicode.cli.cost_estimator."""
+"""Unit tests for repowise.cli.cost_estimator."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from wikicode.cli.cost_estimator import (
+from repowise.cli.cost_estimator import (
     CostEstimate,
     PageTypePlan,
     build_generation_plan,

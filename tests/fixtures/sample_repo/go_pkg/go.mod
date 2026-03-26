@@ -1,3 +1,3 @@
-module github.com/wikicode-ai/sample
+module github.com/repowise-ai/sample
 
 go 1.21

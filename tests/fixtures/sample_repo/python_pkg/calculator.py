@@ -22,7 +22,7 @@ class DivisionByZeroError(ArithmeticError):
     """Raised when a division by zero is attempted.
 
     Separate from Python's built-in ZeroDivisionError to allow callers
-    to catch WikiCode-domain errors independently of system errors.
+    to catch repowise-domain errors independently of system errors.
     """
 
 

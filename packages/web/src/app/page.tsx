@@ -85,7 +85,7 @@ export default async function DashboardPage() {
               <div className="px-6 pb-6">
                 <EmptyState
                   title="No repositories yet"
-                  description="Run wikicode init on a repository to get started."
+                  description="Run repowise init on a repository to get started."
                   icon={<FileText className="h-8 w-8" />}
                 />
               </div>
@@ -138,7 +138,7 @@ export default async function DashboardPage() {
               <div className="px-6 pb-6">
                 <EmptyState
                   title="No jobs yet"
-                  description="Jobs appear after running wikicode init or sync."
+                  description="Jobs appear after running repowise init or sync."
                   icon={<Activity className="h-8 w-8" />}
                 />
               </div>

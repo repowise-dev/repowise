@@ -113,7 +113,7 @@ Two tables added in migration `0005_chat_conversations.py`:
 
 ## 3. ChatProvider Protocol
 
-Defined in `packages/core/src/wikicode/core/providers/base.py`.
+Defined in `packages/core/src/repowise/core/providers/base.py`.
 
 The existing `BaseProvider.generate()` is untouched. A new `ChatProvider`
 protocol class (using `typing.Protocol` + `@runtime_checkable`) adds streaming
@@ -156,10 +156,10 @@ class ChatProvider(Protocol):
 
 ## 4. Tool Registry
 
-Defined in `packages/server/src/wikicode/server/chat_tools.py`.
+Defined in `packages/server/src/repowise/server/chat_tools.py`.
 
 Single source of truth for tool schemas and execution. Imports the 8 MCP tool
-functions directly from `wikicode.server.mcp_server`.
+functions directly from `repowise.server.mcp_server`.
 
 ```python
 TOOL_REGISTRY: dict[str, ToolDef]  # name -> ToolDef(name, description, parameters, function, artifact_type)
@@ -191,7 +191,7 @@ TOOL_REGISTRY: dict[str, ToolDef]  # name -> ToolDef(name, description, paramete
 
 ## 5. Provider Configuration
 
-Defined in `packages/server/src/wikicode/server/provider_config.py`.
+Defined in `packages/server/src/repowise/server/provider_config.py`.
 
 API keys and active provider/model selection are stored in a server-side
 `provider_config.json` file. Environment variables take precedence over stored

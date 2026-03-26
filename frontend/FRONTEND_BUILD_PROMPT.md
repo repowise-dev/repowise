@@ -1,4 +1,4 @@
-# WikiCode — Frontend Build Prompt (Phase 8)
+# repowise — Frontend Build Prompt (Phase 8)
 
 ## Enterprise-Grade Web UI for a Codebase Documentation Engine
 
@@ -6,7 +6,7 @@
 
 ## Context
 
-WikiCode is an open-source, self-hostable codebase documentation engine. The backend (Phases 1-7, 605 tests passing) generates structured, hierarchical wiki pages for any codebase using LLMs, keeps them in sync via webhooks/polling, and exposes everything through a REST API (30+ endpoints), MCP server (13 tools), and CLI (9 commands).
+repowise is an open-source, self-hostable codebase documentation engine. The backend (Phases 1-7, 605 tests passing) generates structured, hierarchical wiki pages for any codebase using LLMs, keeps them in sync via webhooks/polling, and exposes everything through a REST API (30+ endpoints), MCP server (13 tools), and CLI (9 commands).
 
 The frontend is the primary interface for enterprise customers. It must convey **engineering precision** and **editorial clarity** — the UI of a tool that senior engineers trust to understand their codebase.
 
@@ -97,7 +97,7 @@ The existing `packages/web/package.json` needs updates:
 
 **"Linear's exactness + Stripe's docs quality"**
 
-The UI should feel like a precision instrument. Every pixel communicates information density without visual noise. Enterprise buyers judge software quality by its UI — WikiCode's frontend must signal "this team ships quality."
+The UI should feel like a precision instrument. Every pixel communicates information density without visual noise. Enterprise buyers judge software quality by its UI — repowise's frontend must signal "this team ships quality."
 
 **Design references:**
 - **Linear** — Navigation, command palette, dark theme, information density
@@ -129,7 +129,7 @@ The UI should feel like a precision instrument. Every pixel communicates informa
 --text-tertiary: #666666;     /* Timestamps, metadata, muted labels */
 --text-inverse: #0a0a0a;      /* Text on accent backgrounds */
 
-/* Accent — WikiCode Blue */
+/* Accent — repowise Blue */
 --accent-primary: #5B9CF6;     /* Links, active states, primary CTA */
 --accent-hover: #7BB3F7;       /* Hover on accent elements */
 --accent-muted: rgba(91, 156, 246, 0.15);  /* Accent backgrounds */
@@ -282,7 +282,7 @@ The UI should feel like a precision instrument. Every pixel communicates informa
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ Top Nav: WikiCode logo · repo selector · search · settings │
+│ Top Nav: repowise logo · repo selector · search · settings │
 ├──────────┬─────────────────────────────────────────────────┤
 │          │                                                 │
 │ Sidebar  │   Main Content Area                             │
@@ -337,7 +337,7 @@ The UI should feel like a precision instrument. Every pixel communicates informa
 ├──────────────────────────────────────────────────────────┤
 │ Repositories                                              │
 │ ┌────────────────────────────────────────────────────────┐│
-│ │ 🔵 wikicode/backend  ·  Last sync: 2h ago  ·  Fresh  ││
+│ │ 🔵 repowise/backend  ·  Last sync: 2h ago  ·  Fresh  ││
 │ │    847 pages  ·  23 modules  ·  94 symbols spotlighted ││
 │ │    Provider: anthropic/claude-sonnet  ·  $4.20 total  ││
 │ ├────────────────────────────────────────────────────────┤│
@@ -635,7 +635,7 @@ Safe to delete: 23 findings  ·  Estimated savings: 2,100 LOC
 
 ### 11. Settings (`/settings`)
 
-**Purpose:** Configure WikiCode instance.
+**Purpose:** Configure repowise instance.
 
 **Sections:**
 1. **Provider** — current provider, model, API key status (masked)
@@ -810,9 +810,9 @@ function useSSE<T>(url: string, options?: { enabled?: boolean }) {
 ### Auth
 
 ```tsx
-// API calls include Authorization header when WIKICODE_API_KEY is set
+// API calls include Authorization header when REPOWISE_API_KEY is set
 // The key is stored in an httpOnly cookie (set by the settings page)
-// Or passed via environment variable NEXT_PUBLIC_WIKICODE_API_KEY for simple setups
+// Or passed via environment variable NEXT_PUBLIC_REPOWISE_API_KEY for simple setups
 ```
 
 ---
@@ -1033,7 +1033,7 @@ These are important for the hosted SaaS offering:
 
 ## What This Document Is NOT
 
-This document is the **frontend build prompt** — a comprehensive specification for building the WikiCode web UI. It is NOT:
+This document is the **frontend build prompt** — a comprehensive specification for building the repowise web UI. It is NOT:
 
 - A design mockup (no Figma). The spec is precise enough to build from directly.
 - A backend spec. The backend is complete (Phases 1-7). All API endpoints are documented in PLAN.md and tested.

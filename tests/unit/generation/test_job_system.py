@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from wikicode.core.generation.job_system import Checkpoint, JobSystem
-from wikicode.core.generation.models import GenerationConfig
+from repowise.core.generation.job_system import Checkpoint, JobSystem
+from repowise.core.generation.models import GenerationConfig
 
 
 def _make_system(tmp_path: Path) -> JobSystem:

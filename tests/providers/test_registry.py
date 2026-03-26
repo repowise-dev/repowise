@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from wikicode.core.providers.base import BaseProvider
-from wikicode.core.providers.mock import MockProvider
-from wikicode.core.providers.registry import (
+from repowise.core.providers.base import BaseProvider
+from repowise.core.providers.mock import MockProvider
+from repowise.core.providers.registry import (
     _BUILTIN_PROVIDERS,
     get_provider,
     list_providers,

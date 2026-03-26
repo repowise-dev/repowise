@@ -87,7 +87,7 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
           <BookOpen className="h-3 w-3 text-[var(--color-text-inverse)]" />
         </div>
         <span className="text-sm font-semibold text-[var(--color-text-primary)] tracking-tight truncate">
-          WikiCode
+          repowise
         </span>
       </div>
 
@@ -97,7 +97,7 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
             <div className="flex h-6 w-6 items-center justify-center rounded bg-[var(--color-accent-primary)] shrink-0">
               <BookOpen className="h-3.5 w-3.5 text-[var(--color-text-inverse)]" />
             </div>
-            <SheetTitle>WikiCode</SheetTitle>
+            <SheetTitle>repowise</SheetTitle>
           </SheetHeader>
 
           <ScrollArea className="flex-1">
@@ -197,7 +197,7 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
           </ScrollArea>
 
           <div className="border-t border-[var(--color-border-default)] p-3">
-            <p className="text-xs text-[var(--color-text-tertiary)] text-center">WikiCode v0.1.0</p>
+            <p className="text-xs text-[var(--color-text-tertiary)] text-center">repowise v0.1.0</p>
           </div>
         </SheetContent>
       </Sheet>

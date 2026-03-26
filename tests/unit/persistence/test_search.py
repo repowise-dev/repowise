@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from wikicode.core.persistence.search import FullTextSearch, SearchResult
+from repowise.core.persistence.search import FullTextSearch, SearchResult
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +81,8 @@ async def test_full_text_search_no_match_returns_empty(fts):
 
 async def test_full_text_search_limit_respected(fts):
     for i in range(5):
-        await fts.index(f"page{i}", f"WikiCode Module {i}", "Module documentation content here.")
-    results = await fts.search("WikiCode Module", limit=3)
+        await fts.index(f"page{i}", f"repowise Module {i}", "Module documentation content here.")
+    results = await fts.search("repowise Module", limit=3)
     assert len(results) <= 3
 
 

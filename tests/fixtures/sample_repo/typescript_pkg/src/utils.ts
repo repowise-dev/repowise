@@ -3,7 +3,7 @@
  *
  * Provides request building, response validation, and formatting helpers.
  * Consumed by client.ts — kept separate to demonstrate cross-file dependency
- * detection in WikiCode's graph builder.
+ * detection in repowise's graph builder.
  */
 
 import type { ApiError, CalculationRequest, OperationType } from "./types";

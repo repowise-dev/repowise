@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from wikicode.cli.main import cli
+from repowise.cli.main import cli
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ class TestInitDryRun:
         assert "Generation Plan" in result.output
         assert "Dry run" in result.output
         # No DB should be created
-        assert not (work_repo / ".wikicode" / "wiki.db").exists()
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
 
 
 class TestInitFullMock:
@@ -51,8 +51,8 @@ class TestInitFullMock:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert (work_repo / ".wikicode" / "wiki.db").exists()
-        assert (work_repo / ".wikicode" / "state.json").exists()
+        assert (work_repo / ".repowise" / "wiki.db").exists()
+        assert (work_repo / ".repowise" / "state.json").exists()
         assert "Done!" in result.output
 
 
@@ -94,7 +94,7 @@ class TestDoctorAfterInit:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "WikiCode Doctor" in result.output
+        assert "repowise Doctor" in result.output
 
 
 class TestSearchFulltext:

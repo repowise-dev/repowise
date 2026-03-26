@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from wikicode.core.persistence.openai_embedder import OpenAIEmbedder
+from repowise.core.persistence.openai_embedder import OpenAIEmbedder
 
 
 # ---------------------------------------------------------------------------

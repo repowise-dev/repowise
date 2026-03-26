@@ -1,8 +1,8 @@
 {
-  "name": "wikicode-root",
+  "name": "repowise-root",
   "version": "0.1.0",
   "private": true,
-  "description": "Root workspace configuration for WikiCode monorepo",
+  "description": "Root workspace configuration for repowise monorepo",
   "workspaces": [
     "packages/web"
   ],

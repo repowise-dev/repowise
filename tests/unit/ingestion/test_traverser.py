@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from wikicode.core.ingestion.traverser import FileTraverser, _detect_language
+from repowise.core.ingestion.traverser import FileTraverser, _detect_language
 
 
 # ---------------------------------------------------------------------------
@@ -200,15 +200,15 @@ class TestExtraExcludePatterns:
 
 
 # ---------------------------------------------------------------------------
-# Per-directory .wikicodeIgnore
+# Per-directory .repowiseIgnore
 # ---------------------------------------------------------------------------
 
 
-class TestPerDirectoryWikicodeIgnore:
-    def test_subdir_wikicodeIgnore_excludes_dir(self, tmp_path: Path) -> None:
+class TestPerDirectoryrepowiseIgnore:
+    def test_subdir_repowiseIgnore_excludes_dir(self, tmp_path: Path) -> None:
         src = tmp_path / "src"
         src.mkdir()
-        (src / ".wikicodeIgnore").write_text("generated/\n")
+        (src / ".repowiseIgnore").write_text("generated/\n")
         (src / "generated").mkdir()
         (src / "generated" / "types.py").write_text("pass")
         (src / "real.py").write_text("pass")
@@ -217,10 +217,10 @@ class TestPerDirectoryWikicodeIgnore:
         assert any("real.py" in p for p in paths)
         assert not any("types.py" in p for p in paths)
 
-    def test_subdir_wikicodeIgnore_excludes_files(self, tmp_path: Path) -> None:
+    def test_subdir_repowiseIgnore_excludes_files(self, tmp_path: Path) -> None:
         src = tmp_path / "src"
         src.mkdir()
-        (src / ".wikicodeIgnore").write_text("*.test.ts\n")
+        (src / ".repowiseIgnore").write_text("*.test.ts\n")
         (src / "app.ts").write_text("const x = 1;")
         (src / "app.test.ts").write_text("test('ok', () => {})")
         traverser = FileTraverser(tmp_path)
@@ -228,8 +228,8 @@ class TestPerDirectoryWikicodeIgnore:
         assert any("app.ts" in p and "test" not in p for p in paths)
         assert not any("app.test.ts" in p for p in paths)
 
-    def test_root_wikicodeIgnore_still_respected(self, tmp_path: Path) -> None:
-        (tmp_path / ".wikicodeIgnore").write_text("secret/\n")
+    def test_root_repowiseIgnore_still_respected(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowiseIgnore").write_text("secret/\n")
         (tmp_path / "secret").mkdir()
         (tmp_path / "secret" / "key.py").write_text("KEY = 'x'")
         (tmp_path / "app.py").write_text("pass")
@@ -238,10 +238,10 @@ class TestPerDirectoryWikicodeIgnore:
         assert any("app.py" in p for p in paths)
         assert not any("secret" in p for p in paths)
 
-    def test_subdir_wikicodeIgnore_does_not_affect_sibling_dirs(self, tmp_path: Path) -> None:
+    def test_subdir_repowiseIgnore_does_not_affect_sibling_dirs(self, tmp_path: Path) -> None:
         api = tmp_path / "api"
         api.mkdir()
-        (api / ".wikicodeIgnore").write_text("internal/\n")
+        (api / ".repowiseIgnore").write_text("internal/\n")
         (api / "internal").mkdir()
         (api / "internal" / "secret.py").write_text("pass")
         (api / "public.py").write_text("pass")

@@ -2,7 +2,7 @@
 @plugin "@tailwindcss/typography";
 
 /*
- * WikiCode Design System
+ * repowise Design System
  * "Linear's exactness + Stripe's docs quality"
  * Dark mode primary. No light mode in v1.
  */
@@ -33,7 +33,7 @@
   --color-text-inverse: #0a0a0a;
 
   /* ------------------------------------------------------------------ */
-  /* Accent — WikiCode Blue                                              */
+  /* Accent — repowise Blue                                              */
   /* ------------------------------------------------------------------ */
   --color-accent-primary: #5b9cf6;
   --color-accent-hover: #7bb3f7;

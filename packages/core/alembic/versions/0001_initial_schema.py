@@ -1,4 +1,4 @@
-"""Initial WikiCode schema.
+"""Initial repowise schema.
 
 Creates all 8 tables.  For PostgreSQL also:
 - Installs the pgvector extension.

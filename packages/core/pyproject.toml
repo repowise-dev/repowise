@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "wikicode-core"
+name = "repowise-core"
 version = "0.1.0"
-description = "WikiCode core: ingestion pipeline, dependency graph, and documentation generation engine"
+description = "repowise core: ingestion pipeline, dependency graph, and documentation generation engine"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -63,27 +63,27 @@ dependencies = [
 [project.optional-dependencies]
 # Vector search (LanceDB backend — default for SQLite deployments).
 # Pure Python wheel; no C++ build tools required.
-# Install with: uv pip install wikicode-core[search]
+# Install with: uv pip install repowise-core[search]
 # Added in Phase 4 of the build plan.
 search = [
     "lancedb>=0.12,<1",
 ]
 # pgvector backend — only needed when DATABASE_URL is PostgreSQL.
-# Install with: uv pip install wikicode-core[pgvector]
+# Install with: uv pip install repowise-core[pgvector]
 pgvector = [
     "pgvector>=0.3,<1",
     "asyncpg>=0.29,<1",
 ]
 
 [project.urls]
-Homepage = "https://github.com/wikicode-ai/wikicode"
-Repository = "https://github.com/wikicode-ai/wikicode"
-Issues = "https://github.com/wikicode-ai/wikicode/issues"
+Homepage = "https://github.com/repowise-ai/repowise"
+Repository = "https://github.com/repowise-ai/repowise"
+Issues = "https://github.com/repowise-ai/repowise/issues"
 
 [tool.hatch.build.targets.wheel]
-# Namespace package: src/wikicode has no __init__.py
-# Hatchling ships the wikicode/core/ slice of the wikicode namespace
-packages = ["src/wikicode"]
+# Namespace package: src/repowise has no __init__.py
+# Hatchling ships the repowise/core/ slice of the repowise namespace
+packages = ["src/repowise"]
 
 [tool.uv]
 package = true

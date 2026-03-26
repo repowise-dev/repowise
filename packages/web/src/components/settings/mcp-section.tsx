@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button";
 const MCP_CONFIG = JSON.stringify(
   {
     mcpServers: {
-      wikicode: {
-        command: "wikicode",
+      repowise: {
+        command: "repowise",
         args: ["mcp", "/path/to/your/repo", "--transport", "stdio"],
       },
     },
@@ -56,7 +56,7 @@ export function McpSection() {
         <p className="text-xs text-[var(--color-text-tertiary)]">
           Replace <code className="font-mono">/path/to/your/repo</code> with the local path
           of the repository you want to query. Run{" "}
-          <code className="font-mono">wikicode init</code> first to generate documentation.
+          <code className="font-mono">repowise init</code> first to generate documentation.
         </p>
       </CardContent>
     </Card>

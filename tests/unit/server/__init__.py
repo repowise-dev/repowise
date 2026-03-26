@@ -1,1 +1,1 @@
-"""Unit tests for the WikiCode server package."""
+"""Unit tests for the repowise server package."""

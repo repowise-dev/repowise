@@ -6,8 +6,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from wikicode.core.persistence.database import get_session
-from wikicode.core.persistence.models import WikiSymbol, _new_uuid, _now_utc
+from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import WikiSymbol, _new_uuid, _now_utc
 
 from tests.unit.server.conftest import create_test_repo
 

@@ -1,11 +1,11 @@
 # LLM Doc Generation — Deep Dive
 
-This document is a precise, code-level description of how WikiCode builds prompts and calls
+This document is a precise, code-level description of how repowise builds prompts and calls
 LLMs to produce wiki pages. It covers every piece of context that goes into each call,
 the exact generation ordering, how scalability is handled, and a frank gap analysis of
 where the current implementation diverges from the intended design.
 
-**Validated against:** actual generated output from `interview-coach/.wikicode/export/` —
+**Validated against:** actual generated output from `interview-coach/.repowise/export/` —
 a test run on a 2022-file monorepo (Python + TypeScript) using Gemini, producing 33 pages.
 
 ---
@@ -58,7 +58,7 @@ The key files:
 
 ## 2. Page Types and Generation Levels
 
-WikiCode generates 10 distinct page types in a strict dependency-ordered sequence:
+repowise generates 10 distinct page types in a strict dependency-ordered sequence:
 
 | Level | Page Type | What It Documents | Template |
 |-------|-----------|-------------------|----------|
@@ -91,7 +91,7 @@ Every LLM call is two parts:
 
 **System prompt (constant):**
 ```
-You are WikiCode, an expert technical documentation generator.
+You are repowise, an expert technical documentation generator.
 Your task is to produce comprehensive, accurate wiki pages from source code.
 Output markdown only. Do not include preamble or apologies.
 Required sections: ## Overview, ## Public API, ## Dependencies, ## Usage Notes.
@@ -137,7 +137,7 @@ All other fields are reserved first; the source gets whatever tokens remain.
 
 **System prompt:**
 ```
-You are WikiCode, an expert technical documentation generator.
+You are repowise, an expert technical documentation generator.
 Write a detailed spotlight page for a single code symbol.
 Output markdown only.
 Required sections: ## Purpose, ## Signature, ## Parameters, ## Returns, ## Example Usage.
@@ -163,7 +163,7 @@ Required sections: ## Purpose, ## Signature, ## Parameters, ## Returns, ## Examp
 
 **System prompt:**
 ```
-You are WikiCode, an expert technical documentation generator.
+You are repowise, an expert technical documentation generator.
 Write a module-level overview page summarising all files in the module.
 Output markdown only.
 Required sections: ## Overview, ## Public API Summary, ## Architecture Notes.
@@ -193,7 +193,7 @@ those files do.
 
 **System prompt:**
 ```
-You are WikiCode, an expert technical documentation generator.
+You are repowise, an expert technical documentation generator.
 Document this circular dependency cycle and provide actionable refactoring advice.
 Output markdown only.
 Required sections: ## Cycle Description, ## Files Involved, ## Why This Exists,
@@ -216,7 +216,7 @@ count but no signatures, no source, and no information about which symbols creat
 
 **System prompt:**
 ```
-You are WikiCode, an expert technical documentation generator.
+You are repowise, an expert technical documentation generator.
 Write a high-level repository overview suitable for onboarding new developers.
 Output markdown only.
 Required sections: ## Project Summary, ## Technology Stack, ## Entry Points, ## Architecture.
@@ -241,7 +241,7 @@ Required sections: ## Project Summary, ## Technology Stack, ## Entry Points, ## 
 
 **System prompt:**
 ```
-You are WikiCode, an expert technical documentation generator.
+You are repowise, an expert technical documentation generator.
 Generate an architecture overview with a Mermaid diagram.
 You MUST include a fenced mermaid block with graph TD showing key dependencies.
 Output markdown only.
@@ -307,7 +307,7 @@ trigger commit SHA + message + author + diff text (trimmed to 1,000 tokens).
 
 ### Token estimation
 
-WikiCode uses a rough heuristic: `len(text) // 4` characters-to-tokens. No tiktoken
+repowise uses a rough heuristic: `len(text) // 4` characters-to-tokens. No tiktoken
 dependency. This is accurate for English prose (~4 chars/token) but underestimates for
 dense code (operators, brackets, identifiers) and overestimates for unicode-heavy code.
 
@@ -401,7 +401,7 @@ SHA256(f"{model_name}:{page_type}:{user_prompt}")
 
 If the same file is enqueued twice (e.g., after a resume), the cached response is
 returned without an LLM call. This cache is per-process — it does not persist across
-`wikicode init` runs.
+`repowise init` runs.
 
 ### Anthropic prefix caching
 
@@ -417,7 +417,7 @@ Cost reduction on large repos is typically 60–90% on input tokens.
 
 `AnthropicProvider.generate_batch()` submits all requests for a level as a single
 Message Batches API request. Cheaper (~50%) than streaming but asynchronous — the
-job polls for completion. Enabled by default for `wikicode init`. Pass `--no-batch`
+job polls for completion. Enabled by default for `repowise init`. Pass `--no-batch`
 for streaming (faster, costlier).
 
 ---
@@ -474,9 +474,9 @@ Git modifiers applied on top:
 - All entry points + bridge files get `file_page`
 - Top 10% symbols get `symbol_spotlight`
 - Likely 1–3 modules (top-level dirs), so 1–3 `module_page` entries
-- Full graph fits in memory as NetworkX `DiGraph` in `.wikicode/graph.json`
+- Full graph fits in memory as NetworkX `DiGraph` in `.repowise/graph.json`
 - Full source snippets fit in token budget for most files
-- `wikicode init` runs in minutes
+- `repowise init` runs in minutes
 
 ### React / tokio-rs scale (thousands of files)
 
@@ -485,7 +485,7 @@ Git modifiers applied on top:
 - Module grouping by top-level dir creates logical package pages
 - Graph switches to SQLite-backed `networkit` above 30K nodes
 - `concurrent_jobs = 5` prevents runaway API parallelism
-- `wikicode init` supports `--resume` — checkpoint after every completed page
+- `repowise init` supports `--resume` — checkpoint after every completed page
 - Batch mode (Anthropic) makes large-scale init economically practical
 - Source snippets for large files will be heavily truncated
 

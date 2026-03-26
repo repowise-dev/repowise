@@ -1,5 +1,5 @@
 ; =============================================================================
-; WikiCode — Java symbol and import queries
+; repowise — Java symbol and import queries
 ; tree-sitter-java >= 0.23
 ; =============================================================================
 

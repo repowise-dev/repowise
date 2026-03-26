@@ -2,7 +2,7 @@
 
 import pytest
 
-from wikicode.core.generation.models import compute_confidence_decay_with_git
+from repowise.core.generation.models import compute_confidence_decay_with_git
 
 
 class TestComputeConfidenceDecayWithGit:

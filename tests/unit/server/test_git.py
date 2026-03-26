@@ -7,8 +7,8 @@ import json
 import pytest
 from httpx import AsyncClient
 
-from wikicode.core.persistence import crud
-from wikicode.core.persistence.database import get_session
+from repowise.core.persistence import crud
+from repowise.core.persistence.database import get_session
 
 from tests.unit.server.conftest import create_test_repo
 

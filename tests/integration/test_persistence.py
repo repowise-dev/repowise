@@ -17,15 +17,15 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from wikicode.core.generation.context_assembler import ContextAssembler
-from wikicode.core.generation.job_system import JobSystem
-from wikicode.core.generation.models import GenerationConfig, GeneratedPage
-from wikicode.core.generation.page_generator import PageGenerator
-from wikicode.core.ingestion.graph import GraphBuilder
-from wikicode.core.ingestion.models import PackageInfo, RepoStructure
-from wikicode.core.ingestion.parser import ASTParser
-from wikicode.core.ingestion.traverser import FileTraverser
-from wikicode.core.persistence import (
+from repowise.core.generation.context_assembler import ContextAssembler
+from repowise.core.generation.job_system import JobSystem
+from repowise.core.generation.models import GenerationConfig, GeneratedPage
+from repowise.core.generation.page_generator import PageGenerator
+from repowise.core.ingestion.graph import GraphBuilder
+from repowise.core.ingestion.models import PackageInfo, RepoStructure
+from repowise.core.ingestion.parser import ASTParser
+from repowise.core.ingestion.traverser import FileTraverser
+from repowise.core.persistence import (
     FullTextSearch,
     InMemoryVectorStore,
     MockEmbedder,
@@ -40,7 +40,7 @@ from wikicode.core.persistence import (
     upsert_page_from_generated,
     upsert_repository,
 )
-from wikicode.core.providers.mock import MockProvider
+from repowise.core.providers.mock import MockProvider
 
 SAMPLE_REPO = Path(__file__).parents[1] / "fixtures" / "sample_repo"
 
@@ -264,7 +264,7 @@ class TestVersionHistory:
         gp = pages[0]
 
         # Store a second version with modified content
-        from wikicode.core.persistence.crud import upsert_page
+        from repowise.core.persistence.crud import upsert_page
 
         async with sf() as session:
             await upsert_page(
@@ -343,7 +343,7 @@ class TestFullTextSearch:
         assert first_page.page_id in page_ids
 
     async def test_full_text_search_returns_search_results(self, persisted, fts):
-        from wikicode.core.persistence.search import SearchResult
+        from repowise.core.persistence.search import SearchResult
 
         results = await fts.search("module", limit=5)
         assert len(results) <= 5
@@ -395,7 +395,7 @@ class TestVectorSearch:
         assert len(results) > 0
 
     async def test_vector_search_result_has_required_fields(self, vector_store):
-        from wikicode.core.persistence.search import SearchResult
+        from repowise.core.persistence.search import SearchResult
 
         results = await vector_store.search("function", limit=3)
         for r in results:
@@ -423,7 +423,7 @@ class TestVectorSearch:
 
 class TestGenerationJob:
     async def test_job_completed_status(self, persisted, sf):
-        from wikicode.core.persistence import get_generation_job
+        from repowise.core.persistence import get_generation_job
 
         async with sf() as session:
             job = await get_generation_job(session, persisted["job_id"])
@@ -434,7 +434,7 @@ class TestGenerationJob:
         assert job.finished_at is not None
 
     async def test_job_started_at_set(self, persisted, sf):
-        from wikicode.core.persistence import get_generation_job
+        from repowise.core.persistence import get_generation_job
 
         async with sf() as session:
             job = await get_generation_job(session, persisted["job_id"])
@@ -442,7 +442,7 @@ class TestGenerationJob:
         assert job.started_at is not None
 
     async def test_job_total_pages_matches_generated(self, persisted, sf):
-        from wikicode.core.persistence import get_generation_job
+        from repowise.core.persistence import get_generation_job
 
         async with sf() as session:
             job = await get_generation_job(session, persisted["job_id"])

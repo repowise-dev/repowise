@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
-from wikicode.server import __version__
+from repowise.server import __version__
 
 
 @pytest.mark.asyncio
@@ -23,6 +23,6 @@ async def test_metrics_returns_prometheus_format(client: AsyncClient) -> None:
     resp = await client.get("/metrics")
     assert resp.status_code == 200
     text = resp.text
-    assert "wikicode_pages_total" in text
-    assert "wikicode_jobs_total" in text
-    assert "wikicode_tokens_total" in text
+    assert "repowise_pages_total" in text
+    assert "repowise_jobs_total" in text
+    assert "repowise_tokens_total" in text

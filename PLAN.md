@@ -1,11 +1,11 @@
-# WikiCode — Complete Build Prompt (v2)
+# repowise — Complete Build Prompt (v2)
 # Open-Source, Self-Hostable, Model-Agnostic Codebase Documentation Engine
 
 ---
 
 ## What You Are Building
 
-**WikiCode** is an open-source codebase documentation engine. It generates a structured,
+**repowise** is an open-source codebase documentation engine. It generates a structured,
 hierarchical wiki for any codebase, keeps it accurate as the code changes, and exposes
 everything through an MCP server so AI assistants can query the wiki in real time.
 
@@ -28,11 +28,11 @@ different strategies, both are specified.
 ## Monorepo Structure
 
 ```
-wikicode/
+repowise/
 ├── packages/
 │   ├── core/              # Python: ingestion, dep graph, generation engine
 │   ├── server/            # Python: FastAPI REST + webhook handler + MCP server
-│   ├── cli/               # Python: wikicode CLI (click)
+│   ├── cli/               # Python: repowise CLI (click)
 │   └── web/               # Next.js 15: web UI
 ├── integrations/
 │   ├── github-action/     # GitHub Action YAML + Dockerfile entrypoint
@@ -41,7 +41,7 @@ wikicode/
 ├── docker/
 │   ├── Dockerfile
 │   └── docker-compose.yml
-├── docs/                  # WikiCode's own documentation (dogfooding)
+├── docs/                  # repowise's own documentation (dogfooding)
 ├── pyproject.toml         # uv workspaces root
 ├── package.json           # Node workspaces root
 ├── CLAUDE.md              # This file
@@ -64,7 +64,7 @@ Node package management: **pnpm** workspaces.
   Auto-switch based on node count threshold (configurable, default 30K).
 - **SQLAlchemy 2.0** async + **Alembic** — ORM and migrations. SQLite dev, PostgreSQL prod.
 - **LanceDB** (embedded, default) — vector store for semantic search and RAG-during-generation.
-  Zero extra infra: runs as a library, stored in `.wikicode/lancedb/`. Backed by the Lance
+  Zero extra infra: runs as a library, stored in `.repowise/lancedb/`. Backed by the Lance
   columnar format; significantly faster than ChromaDB on both writes and ANN queries.
   When PostgreSQL is the SQL backend, **pgvector** is used instead — storing embeddings
   directly in the `wiki_pages.embedding` column so the entire system stays in one database.
@@ -173,7 +173,7 @@ Implement these providers:
 - Uses `anthropic` SDK. Supports all Claude models.
 - Implements `supports_batch = True` via Anthropic's Message Batches API.
   `generate_batch()` submits a batch, polls until complete, returns all responses.
-  Show batch mode as default for `wikicode init` with `--no-batch` to disable.
+  Show batch mode as default for `repowise init` with `--no-batch` to disable.
 - Implements **prompt caching**: For file-page generation, the system prompt +
   repository context is identical across many calls. Use cache-control breakpoints
   so this shared prefix is cached. Reduces cost by 60–90% on large repos.
@@ -234,7 +234,7 @@ rate_limits:
     tpm: 999999
 ```
 
-**Provider config (`.wikicode/config.yaml`):**
+**Provider config (`.repowise/config.yaml`):**
 ```yaml
 provider: anthropic
 model: claude-sonnet-4-6
@@ -242,8 +242,8 @@ embedding_provider: anthropic
 embedding_model: voyage-3
 
 # Optional: gitignore-style patterns to exclude during traversal.
-# Applied on top of .gitignore and .wikicodeIgnore.
-# Set via `wikicode init -x vendor/ -x 'src/generated/**'` or via the Web UI settings page.
+# Applied on top of .gitignore and .repowiseIgnore.
+# Set via `repowise init -x vendor/ -x 'src/generated/**'` or via the Web UI settings page.
 exclude_patterns:
   - vendor/
   - src/generated/**
@@ -293,7 +293,7 @@ dead_code:
     - "*Middleware"
     - "register_*"
     - "on_*"
-  whitelist_file: .wikicode/dead_code_whitelist.txt
+  whitelist_file: .repowise/dead_code_whitelist.txt
   analyze_on_update: true
 
 rate_limits:
@@ -316,10 +316,10 @@ rate_limits:
 
 Traverse the repo tree, respecting:
 1. `.gitignore` (parse properly using `pathspec` library — not a simple glob)
-2. Root `.wikicodeIgnore` (same syntax as .gitignore, user-defined exclusions at repo root)
-3. **Per-directory `.wikicodeIgnore`** — loaded from each visited directory (like git's
+2. Root `.repowiseIgnore` (same syntax as .gitignore, user-defined exclusions at repo root)
+3. **Per-directory `.repowiseIgnore`** — loaded from each visited directory (like git's
    per-directory `.gitignore`); patterns are relative to that directory.  Enables
-   sub-folder exclusions without any UI (e.g. `generated/` in `src/.wikicodeIgnore`
+   sub-folder exclusions without any UI (e.g. `generated/` in `src/.repowiseIgnore`
    skips only `src/generated/`)
 4. **Extra exclude patterns** (`extra_exclude_patterns` constructor param) — gitignore-style
    patterns injected at runtime from `--exclude/-x` CLI flags or `repo.settings["exclude_patterns"]`
@@ -492,11 +492,11 @@ After graph construction, compute and store:
 
 **Graph Persistence and Scalability**
 
-For repos up to 30K nodes: use NetworkX in-memory, serialize to `.wikicode/graph.json`
+For repos up to 30K nodes: use NetworkX in-memory, serialize to `.repowise/graph.json`
 using `networkx.node_link_data()`.
 
 For repos > 30K nodes: switch to SQLite-backed graph. Store nodes and edges in the
-WikiCode database (`graph_nodes` and `graph_edges` tables). Load only the subgraph
+repowise database (`graph_nodes` and `graph_edges` tables). Load only the subgraph
 needed for a given operation (e.g., only the 2-hop neighborhood of changed files).
 The threshold is configurable: `graph_backend: networkx | sqlite | auto`.
 
@@ -581,7 +581,7 @@ class GenerationJob(Base):
 On restart after crash: load the job, check `completed_page_ids`, skip those,
 resume from `checkpoint_level` and `checkpoint_file_index`.
 
-**`wikicode init` must be idempotent.** Running it twice on the same repo produces the
+**`repowise init` must be idempotent.** Running it twice on the same repo produces the
 same result. Running it after a partial previous run completes the remaining pages only.
 Flag `--force` to override and regenerate everything.
 
@@ -779,10 +779,10 @@ The polling fallback means: even if a webhook is missed, docs will be at most
 Store `last_sync_commit` in the `Repo` table. Update atomically after each successful
 sync (never update it if the sync job fails partway through).
 
-**State File (`.wikicode/state.json`)**
+**State File (`.repowise/state.json`)**
 
 Persisted alongside the wiki. Used by CLI for offline operation (no DB required for
-simple `wikicode update` on local repos):
+simple `repowise update` on local repos):
 
 ```json
 {
@@ -997,7 +997,7 @@ class WebhookEvent(Base):
 ## Prompt Templates (`packages/core/generation/prompts/`)
 
 All prompts are Jinja2 templates. Users can override any template by placing a file
-with the same name in `.wikicode/prompts/`. This is how power users customize generation.
+with the same name in `.repowise/prompts/`. This is how power users customize generation.
 
 **`file_page.j2`**:
 ```jinja2
@@ -1096,7 +1096,7 @@ Rules:
 ## CLI (`packages/cli/`)
 
 ```
-wikicode init [PATH]
+repowise init [PATH]
   --provider PROVIDER     anthropic|openai|ollama|litellm
   --model MODEL
   --workers N             parallel workers (default: 5)
@@ -1114,38 +1114,38 @@ wikicode init [PATH]
                           Example: -x vendor/ -x 'src/generated/**'
   --config PATH
 
-wikicode update [PATH]
+repowise update [PATH]
   --since COMMIT          override auto-detected last-sync commit
   --force                 regenerate all affected pages, ignore confidence scores
   --cascade-budget N      max pages to regenerate (default from config)
   --dry-run               show what would change, no LLM calls
 
-wikicode serve [PATH]
+repowise serve [PATH]
   --port 7337
   --host 0.0.0.0
   --workers N             uvicorn workers (default: 1)
 
-wikicode watch [PATH]
+repowise watch [PATH]
   --debounce-ms 2000      wait this long after last save before triggering update
 
-wikicode search QUERY [PATH]
+repowise search QUERY [PATH]
   --type semantic|fulltext|symbol
   --limit N
 
-wikicode export [PATH]
+repowise export [PATH]
   --format markdown|html|json|pdf
   --output DIR
 
-wikicode status [PATH]
+repowise status [PATH]
   # Shows: last sync commit, total pages, stale pages breakdown, 
   # pending regen queue, token usage totals, estimated monthly cost at current rate
 
-wikicode doctor [PATH]
+repowise doctor [PATH]
   # Validates: provider connection, git setup, DB integrity,
   # graph consistency (detects orphaned nodes), missing config, etc.
   # Outputs a health check table. Run this to debug setup issues.
 
-wikicode mcp [PATH]
+repowise mcp [PATH]
   --port 7338
   --transport stdio|sse   stdio for Claude Code/Cursor, sse for web clients
 ```
@@ -1187,7 +1187,7 @@ wikicode mcp [PATH]
 `/health` — liveness + readiness (checks DB connection, provider reachability)
 `/metrics` — Prometheus-compatible metrics endpoint (token usage, job counts, etc.)
 
-**Auth**: Optional API key auth. Set `WIKICODE_API_KEY` env var to enable.
+**Auth**: Optional API key auth. Set `REPOWISE_API_KEY` env var to enable.
 When set, all non-`/health` endpoints require `Authorization: Bearer <key>`.
 Default (no key set): fully open, suitable for local use.
 
@@ -1318,15 +1318,15 @@ Output: { summary: {total_findings, deletable_lines, safe_to_delete_count, by_ki
 **Update existing `get_blast_radius`** — add co-change partners to output alongside
 graph-based dependencies.
 
-**Auto-generated MCP config** (printed at end of `wikicode init`, saved to `.wikicode/mcp.json`):
+**Auto-generated MCP config** (printed at end of `repowise init`, saved to `.repowise/mcp.json`):
 
 ```json
 {
   "mcpServers": {
-    "wikicode": {
-      "command": "wikicode",
+    "repowise": {
+      "command": "repowise",
       "args": ["mcp", "--repo", "/absolute/path/to/repo", "--transport", "stdio"],
-      "description": "WikiCode: live documentation for this codebase"
+      "description": "repowise: live documentation for this codebase"
     }
   }
 }
@@ -1438,7 +1438,7 @@ last sync info, architecture diagram
 
 **`action.yml`**:
 ```yaml
-name: WikiCode
+name: repowise
 description: Auto-generate and maintain codebase documentation
 inputs:
   provider:
@@ -1449,9 +1449,9 @@ inputs:
   api-key:
     required: false
     description: "API key (use secrets.ANTHROPIC_API_KEY etc.)"
-  wikicode-url:
+  repowise-url:
     required: false
-    description: "Self-hosted WikiCode server URL (optional, for remote storage)"
+    description: "Self-hosted repowise server URL (optional, for remote storage)"
   mode:
     default: "auto"
     description: "auto|full|incremental — auto detects based on trigger"
@@ -1459,14 +1459,14 @@ inputs:
     default: "30"
   commit-wiki:
     default: "true"
-    description: "Whether to commit updated .wikicode/ back to the repo"
+    description: "Whether to commit updated .repowise/ back to the repo"
   pr-comment:
     default: "true"
     description: "Whether to comment on PRs with affected pages"
 ```
 
 **Trigger behavior:**
-- `push` to default branch → `incremental` update → commit `.wikicode/` back
+- `push` to default branch → `incremental` update → commit `.repowise/` back
 - `pull_request` → `dry-run` → comment listing affected pages + cost estimate
 - `release` / `workflow_dispatch` with `mode: full` → full regeneration
 - `schedule` (if configured) → `incremental` or background staleness run
@@ -1485,21 +1485,21 @@ Multi-stage Dockerfile:
 `docker-compose.yml`:
 ```yaml
 services:
-  wikicode:
+  repowise:
     build: .
     ports:
       - "7337:7337"   # Web UI + REST API
       - "7338:7338"   # MCP SSE server
     volumes:
       - ./repos:/repos           # repos to document
-      - wikicode_data:/data      # SQLite + LanceDB
+      - repowise_data:/data      # SQLite + LanceDB
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DATABASE_URL=sqlite+aiosqlite:////data/wikicode.db
+      - DATABASE_URL=sqlite+aiosqlite:////data/repowise.db
       - LANCEDB_PATH=/data/lancedb
       - GRAPH_PATH=/data/graphs
-      - WIKICODE_API_KEY=${WIKICODE_API_KEY:-}  # optional auth
+      - REPOWISE_API_KEY=${REPOWISE_API_KEY:-}  # optional auth
     restart: unless-stopped
     
   redis:
@@ -1507,7 +1507,7 @@ services:
     profiles: ["multi-worker"]   # only starts with --profile multi-worker
     
 volumes:
-  wikicode_data:
+  repowise_data:
 ```
 
 One-command self-host: `docker compose up -d`. Redis is optional (multi-worker profile only).
@@ -1520,10 +1520,10 @@ One-command self-host: `docker compose up -d`. Redis is optional (multi-worker p
 - Use `asyncio.Semaphore(concurrent_jobs)` to cap parallel LLM calls
 - All DB operations must use async SQLAlchemy — never block the event loop
 - Stream LLM responses for the web UI "regenerate" button (SSE → token-by-token)
-- For `wikicode init` with `--batch`: use provider batch API where supported.
+- For `repowise init` with `--batch`: use provider batch API where supported.
   For others, fall back to concurrent streaming with the semaphore.
 - Cache prompts: if the same `(model, system_prompt, user_prompt)` SHA256 has been
-  seen before, return the cached response from `.wikicode/cache/`. TTL: never expire
+  seen before, return the cached response from `.repowise/cache/`. TTL: never expire
   by default (docs don't change unless code changes). `--no-cache` to bypass.
 
 ### Reliability
@@ -1555,8 +1555,8 @@ One-command self-host: `docker compose up -d`. Redis is optional (multi-worker p
 - `tests/unit/` — parser, graph builder, differ, prompt rendering, confidence score logic
 - `tests/integration/` — full ingestion pipeline on `tests/fixtures/sample_repo/`
   (a small multi-language repo included in the project, ~30 files, Python + TS)
-- `tests/e2e/` — full `wikicode init` on sample repo, verify page count and structure.
-  Run WikiCode on itself: `wikicode init .` and assert pages > 50.
+- `tests/e2e/` — full `repowise init` on sample repo, verify page count and structure.
+  Run repowise on itself: `repowise init .` and assert pages > 50.
 - `tests/providers/` — all providers tested against a `MockProvider` that returns fixture
   responses. Never make real API calls in tests.
 - `pytest-asyncio`, `pytest-snapshot` (for generated page content regression),
@@ -1595,10 +1595,10 @@ Phase 4: Persistence
      → Test: store/retrieve pages, search returns expected results
 
 Phase 5: CLI
-  14. wikicode init — full end-to-end with cost estimate, progress, confirmation
-  15. wikicode update — incremental with cascade budget
-  16. wikicode watch — filesystem watcher with debounce
-  17. wikicode doctor — health check command
+  14. repowise init — full end-to-end with cost estimate, progress, confirmation
+  15. repowise update — incremental with cascade budget
+  16. repowise watch — filesystem watcher with debounce
+  17. repowise doctor — health check command
      → Test: init + update on sample_repo produces correct output
 
 Phase 5.5: Git Intelligence + Dead Code Detection (detour before Phase 6)
@@ -1610,7 +1610,7 @@ Phase 5.5: Git Intelligence + Dead Code Detection (detour before Phase 6)
   15.10. Confidence decay git modifiers
   15.11. Co-change edges in graph + staleness propagation
   15.12. DeadCodeAnalyzer — graph + SQL analysis
-  15.13. wikicode dead-code CLI command
+  15.13. repowise dead-code CLI command
   15.14. Config: git + dead_code sections
   15.15. Tests: git_indexer (7), dead_code (12), confidence_with_git (4), integration (2)
      → Test: GitIndexer indexes sample_repo; DeadCodeAnalyzer detects fixture dead code
@@ -1641,10 +1641,10 @@ Phase 9: Integrations
   30. Docker compose — production config with optional Redis profile
 
 Phase 10: Quality
-  31. E2E tests — full init on sample_repo + WikiCode on itself
+  31. E2E tests — full init on sample_repo + repowise on itself
   32. README — quickstart, comparison table, MCP setup for all clients, docker one-liner
   33. CONTRIBUTING.md — how to add a provider, how to add a language
-  34. Dogfood: run WikiCode on the WikiCode repo itself
+  34. Dogfood: run repowise on the repowise repo itself
 ```
 
 ---
@@ -1654,16 +1654,16 @@ Phase 10: Quality
 The README must include, in order:
 
 1. **One-sentence description** — what it is
-2. **Comparison table** with columns: WikiCode / Google Code Wiki / Mintlify / Swimlane
+2. **Comparison table** with columns: repowise / Google Code Wiki / Mintlify / Swimlane
    Rows: self-hostable, model-agnostic, MCP server, incremental updates, offline mode,
    free/open source, monorepo support, PR preview
-3. **30-second quickstart** — `pip install wikicode` + `wikicode init` + screenshot
+3. **30-second quickstart** — `pip install repowise` + `repowise init` + screenshot
 4. **MCP setup** — copy-paste configs for Claude Code, Cursor, Cline
 5. **All providers** — config examples for Anthropic, OpenAI, Ollama, LiteLLM
 6. **Docker one-liner** — `docker compose up`
 7. **GitHub Action** — minimal workflow YAML
-8. **Architecture overview** — generated by WikiCode itself (dogfooding screenshot)
-9. **"Why WikiCode?"** — hierarchical understanding, incremental updates, confidence scores,
+8. **Architecture overview** — generated by repowise itself (dogfooding screenshot)
+9. **"Why repowise?"** — hierarchical understanding, incremental updates, confidence scores,
    MCP-native, works offline with Ollama, committed docs = versioned docs
 
 ---

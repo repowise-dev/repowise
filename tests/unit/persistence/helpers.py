@@ -6,7 +6,7 @@ from any test file without conftest import restrictions.
 
 from __future__ import annotations
 
-from wikicode.core.persistence.models import Repository
+from repowise.core.persistence.models import Repository
 
 
 def make_repo_kwargs(**overrides) -> dict:
@@ -36,7 +36,7 @@ def make_page_kwargs(repo_id: str, **overrides) -> dict:
 
 
 async def insert_repo(session, **overrides) -> Repository:
-    from wikicode.core.persistence.crud import upsert_repository
+    from repowise.core.persistence.crud import upsert_repository
 
     repo = await upsert_repository(session, **make_repo_kwargs(**overrides))
     await session.commit()

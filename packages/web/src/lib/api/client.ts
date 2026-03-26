@@ -1,24 +1,24 @@
 /**
- * Base fetch wrapper for the WikiCode REST API.
+ * Base fetch wrapper for the repowise REST API.
  *
- * Reads the API base URL from NEXT_PUBLIC_WIKICODE_API_URL (default: empty string,
+ * Reads the API base URL from NEXT_PUBLIC_REPOWISE_API_URL (default: empty string,
  * meaning requests go to the same origin — the Next.js rewrite proxies them).
  *
- * API key is read from NEXT_PUBLIC_WIKICODE_API_KEY. For production use, the key
+ * API key is read from NEXT_PUBLIC_REPOWISE_API_KEY. For production use, the key
  * should be stored in an httpOnly cookie set by the settings page.
  */
 
 import type { ApiError } from "./types";
 
-const BASE_URL = process.env.NEXT_PUBLIC_WIKICODE_API_URL ?? "";
+const BASE_URL = process.env.NEXT_PUBLIC_REPOWISE_API_URL ?? "";
 
 function getApiKey(): string | null {
   // In browser: check localStorage (set by settings page)
   if (typeof window !== "undefined") {
-    return localStorage.getItem("wikicode_api_key") ?? null;
+    return localStorage.getItem("repowise_api_key") ?? null;
   }
   // In server components: use env var
-  return process.env.WIKICODE_API_KEY ?? process.env.NEXT_PUBLIC_WIKICODE_API_KEY ?? null;
+  return process.env.REPOWISE_API_KEY ?? process.env.NEXT_PUBLIC_REPOWISE_API_KEY ?? null;
 }
 
 function buildHeaders(extra?: Record<string, string>): Headers {

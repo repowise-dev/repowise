@@ -1,6 +1,6 @@
-# wikicode-core
+# repowise-core
 
-Core library for WikiCode — the ingestion pipeline, dependency graph engine, documentation generation system, and persistence layer. All other WikiCode packages depend on this.
+Core library for repowise — the ingestion pipeline, dependency graph engine, documentation generation system, and persistence layer. All other repowise packages depend on this.
 
 **Python >= 3.11 · Apache-2.0**
 
@@ -10,12 +10,12 @@ Core library for WikiCode — the ingestion pipeline, dependency graph engine, d
 
 | Module | Purpose |
 |--------|---------|
-| `wikicode.core.ingestion` | File traversal, AST parsing (tree-sitter), dependency graph, change detection |
-| `wikicode.core.generation` | Context assembly, page generation, Jinja2 prompt templates, job system |
-| `wikicode.core.persistence` | SQLAlchemy models, async CRUD, full-text search, vector store |
-| `wikicode.core.providers` | LLM provider abstraction (Anthropic, OpenAI, Ollama, LiteLLM) |
-| `wikicode.core.analysis` | Dead code detection (unreachable files, unused exports, zombie packages) |
-| `wikicode.core.rate_limiter` | Token-bucket rate limiter (RPM + TPM) for all LLM providers |
+| `repowise.core.ingestion` | File traversal, AST parsing (tree-sitter), dependency graph, change detection |
+| `repowise.core.generation` | Context assembly, page generation, Jinja2 prompt templates, job system |
+| `repowise.core.persistence` | SQLAlchemy models, async CRUD, full-text search, vector store |
+| `repowise.core.providers` | LLM provider abstraction (Anthropic, OpenAI, Ollama, LiteLLM) |
+| `repowise.core.analysis` | Dead code detection (unreachable files, unused exports, zombie packages) |
+| `repowise.core.rate_limiter` | Token-bucket rate limiter (RPM + TPM) for all LLM providers |
 
 ---
 
@@ -23,13 +23,13 @@ Core library for WikiCode — the ingestion pipeline, dependency graph engine, d
 
 ```bash
 # Core only (SQLite backend, no vector search)
-pip install wikicode-core
+pip install repowise-core
 
 # With LanceDB vector search (recommended for local/single-server deployments)
-pip install "wikicode-core[search]"
+pip install "repowise-core[search]"
 
 # With pgvector (PostgreSQL deployments)
-pip install "wikicode-core[pgvector]"
+pip install "repowise-core[pgvector]"
 ```
 
 ---
@@ -71,7 +71,7 @@ AST parsing uses [tree-sitter](https://tree-sitter.github.io/) with one `.scm` q
 | Mock | `mock` | In-memory stub for tests — no network calls |
 
 ```python
-from wikicode.core.providers import get_provider
+from repowise.core.providers import get_provider
 
 provider = get_provider("anthropic", api_key="sk-ant-...", model="claude-sonnet-4-6")
 response = await provider.generate(system_prompt="...", user_prompt="...")
@@ -82,7 +82,7 @@ print(f"{response.input_tokens} in / {response.output_tokens} out")
 ### Registering a custom provider
 
 ```python
-from wikicode.core.providers import register_provider
+from repowise.core.providers import register_provider
 from my_package import MyProvider
 
 register_provider("my_provider", lambda **kw: MyProvider(**kw))
@@ -95,7 +95,7 @@ provider = get_provider("my_provider", model="my-model-v1")
 
 ### Ingestion
 
-`FileTraverser` walks a repository tree respecting `.gitignore`, `.wikicodeIgnore`, a hardcoded blocklist (node_modules, `__pycache__`, build artifacts), auto-detected generated files, and binary files.
+`FileTraverser` walks a repository tree respecting `.gitignore`, `.repowiseIgnore`, a hardcoded blocklist (node_modules, `__pycache__`, build artifacts), auto-detected generated files, and binary files.
 
 `ASTParser` is a single class for all languages. It loads the matching `.scm` query file, runs tree-sitter queries to extract symbols and imports, and returns a `ParsedFile` with a consistent shape regardless of language.
 
@@ -104,7 +104,7 @@ provider = get_provider("my_provider", model="my-model-v1")
 `ChangeDetector` diffs two git refs with GitPython, identifies added/modified/deleted/renamed files, detects symbol renames using a signature-similarity heuristic, and determines which wiki pages need regeneration via cascade analysis.
 
 ```python
-from wikicode.core.ingestion import FileTraverser, ASTParser, GraphBuilder, ChangeDetector
+from repowise.core.ingestion import FileTraverser, ASTParser, GraphBuilder, ChangeDetector
 from pathlib import Path
 
 # Traverse
@@ -140,7 +140,7 @@ diffs = detector.get_changed_files("a1b2c3d", "HEAD")
 `JobSystem` checkpoints progress after every completed page so that a long init job can be resumed after an interruption.
 
 ```python
-from wikicode.core.generation import ContextAssembler, GenerationConfig, PageGenerator
+from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
 
 config = GenerationConfig()
 assembler = ContextAssembler(config)
@@ -159,7 +159,7 @@ for page in pages:
 Two SQL backends (SQLite / PostgreSQL) with identical async SQLAlchemy models. Pass a plain `sqlite:///...` or `postgresql://...` URL — `get_db_url()` injects the correct async driver automatically.
 
 ```python
-from wikicode.core.persistence import (
+from repowise.core.persistence import (
     create_engine, init_db, create_session_factory,
     get_session, upsert_repository, upsert_page_from_generated,
 )
@@ -179,7 +179,7 @@ Key tables: `repos`, `wiki_pages`, `page_versions`, `wiki_symbols`, `generation_
 ### Search
 
 ```python
-from wikicode.core.persistence import FullTextSearch, InMemoryVectorStore, MockEmbedder
+from repowise.core.persistence import FullTextSearch, InMemoryVectorStore, MockEmbedder
 
 # Full-text search (SQLite FTS5 or PostgreSQL GIN index)
 fts = FullTextSearch(engine)
@@ -196,7 +196,7 @@ Vector store backends:
 | Backend | When to use |
 |---------|-------------|
 | `InMemoryVectorStore` | Development / testing (no persistence) |
-| `LanceDBVectorStore` | SQLite mode — embedded, no separate server, stored in `.wikicode/lancedb/` |
+| `LanceDBVectorStore` | SQLite mode — embedded, no separate server, stored in `.repowise/lancedb/` |
 | `PgVectorStore` | PostgreSQL mode — HNSW index via the `pgvector` extension |
 
 ### Dead Code Detection
@@ -204,7 +204,7 @@ Vector store backends:
 Finds unreachable files (in-degree 0 in the dependency graph), unused exports, unused internal symbols, and zombie packages. No LLM calls — purely graph analysis and git metadata.
 
 ```python
-from wikicode.core.analysis.dead_code import DeadCodeAnalyzer
+from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 
 analyzer = DeadCodeAnalyzer(graph, git_meta_map)
 report = analyzer.analyze({"min_confidence": 0.5})
@@ -221,7 +221,7 @@ print(f"Deletable lines: {report.deletable_lines:,}")
 
 ## Page Types
 
-WikiCode generates 9 distinct page types in a strict dependency-aware order:
+repowise generates 9 distinct page types in a strict dependency-aware order:
 
 | Level | Page Type | Description |
 |-------|-----------|-------------|
@@ -241,7 +241,7 @@ WikiCode generates 9 distinct page types in a strict dependency-aware order:
 
 | Backend | Config | Vector search |
 |---------|--------|---------------|
-| SQLite + LanceDB | `sqlite:///path/to/wiki.db` + `[search]` extra | LanceDB embedded in `.wikicode/lancedb/` |
+| SQLite + LanceDB | `sqlite:///path/to/wiki.db` + `[search]` extra | LanceDB embedded in `.repowise/lancedb/` |
 | PostgreSQL + pgvector | `postgresql://user:pass@host/db` + `[pgvector]` extra | HNSW index on `wiki_pages.embedding` column |
 
 ---

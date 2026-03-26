@@ -7,7 +7,7 @@ from pathlib import Path
 import jinja2
 import pytest
 
-from wikicode.core.generation.context_assembler import (
+from repowise.core.generation.context_assembler import (
     ApiContractContext,
     ArchitectureDiagramContext,
     DiffSummaryContext,
@@ -19,7 +19,7 @@ from wikicode.core.generation.context_assembler import (
     RepoOverviewContext,
     _TopFile,
 )
-from wikicode.core.ingestion.models import PackageInfo
+from repowise.core.ingestion.models import PackageInfo
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ from wikicode.core.ingestion.models import PackageInfo
 
 @pytest.fixture(scope="module")
 def jinja_env() -> jinja2.Environment:
-    templates_dir = Path(__file__).parents[3] / "packages" / "core" / "src" / "wikicode" / "core" / "generation" / "templates"
+    templates_dir = Path(__file__).parents[3] / "packages" / "core" / "src" / "repowise" / "core" / "generation" / "templates"
     assert templates_dir.exists(), f"Templates directory not found: {templates_dir}"
     return jinja2.Environment(
         loader=jinja2.FileSystemLoader(str(templates_dir)),

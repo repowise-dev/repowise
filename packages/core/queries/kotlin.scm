@@ -1,5 +1,5 @@
 ; =============================================================================
-; WikiCode — Kotlin symbol and import queries
+; repowise — Kotlin symbol and import queries
 ; tree-sitter-kotlin (install separately if needed)
 ; =============================================================================
 

@@ -1,4 +1,4 @@
-# WikiCode — Build Status
+# repowise — Build Status
 
 > **Last Updated:** 2026-03-23
 > **Current Phase:** Phase 8.5 — Decision Intelligence ✅
@@ -132,7 +132,7 @@
 | 4.3 | Alembic migration: initial schema (adds `pgvector` extension + `embedding` column when PostgreSQL) | ✅ |
 | 4.4 | Async CRUD layer (aiosqlite / asyncpg) | ✅ |
 | 4.5 | `VectorStore` abstraction: `InMemoryVectorStore` + `LanceDBVectorStore` + `PgVectorStore` | ✅ |
-| 4.6 | LanceDB integration — embed on page generation, store in `.wikicode/lancedb/` | ✅ |
+| 4.6 | LanceDB integration — embed on page generation, store in `.repowise/lancedb/` | ✅ |
 | 4.7 | pgvector integration — store embeddings in `wiki_pages.embedding` column (PostgreSQL only) | ✅ |
 | 4.8 | Semantic search: `search(query, limit)` → `list[SearchResult]` (routes to active backend) | ✅ |
 | 4.9 | Full-text search fallback (SQLite FTS5 / PostgreSQL `tsvector`) | ✅ |
@@ -153,22 +153,22 @@
 
 ## Phase 5 — CLI ✅
 
-> Full `wikicode` command-line interface.
-> **Gate test:** `wikicode init` + `wikicode update` on `sample_repo` produces correct output.
+> Full `repowise` command-line interface.
+> **Gate test:** `repowise init` + `repowise update` on `sample_repo` produces correct output.
 
 | Step | Description | Status |
 |------|-------------|--------|
 | 5.1 | `helpers.py` — async bridge, path resolution, state file, DB setup, provider resolution | ✅ |
 | 5.2 | `cost_estimator.py` — pre-generation token/cost estimation (mirrors `generate_all()` logic) | ✅ |
-| 5.3 | `wikicode init` — full end-to-end with cost estimate, Rich progress, confirmation, persist | ✅ |
-| 5.4 | `wikicode update` — incremental with ChangeDetector + cascade budget | ✅ |
-| 5.5 | `wikicode search` — fulltext (FTS5), semantic (vector store), symbol (LIKE query) | ✅ |
-| 5.6 | `wikicode export` — markdown/html/json with Rich progress | ✅ |
-| 5.7 | `wikicode status` — sync state, page counts by type, token totals | ✅ |
-| 5.8 | `wikicode doctor` — 6 health checks as Rich table | ✅ |
-| 5.9 | `wikicode watch` — watchdog Observer + debounce timer | ✅ |
-| 5.10 | `wikicode serve` — Phase 6 stub | ✅ |
-| 5.11 | `wikicode mcp` — Phase 7 stub | ✅ |
+| 5.3 | `repowise init` — full end-to-end with cost estimate, Rich progress, confirmation, persist | ✅ |
+| 5.4 | `repowise update` — incremental with ChangeDetector + cascade budget | ✅ |
+| 5.5 | `repowise search` — fulltext (FTS5), semantic (vector store), symbol (LIKE query) | ✅ |
+| 5.6 | `repowise export` — markdown/html/json with Rich progress | ✅ |
+| 5.7 | `repowise status` — sync state, page counts by type, token totals | ✅ |
+| 5.8 | `repowise doctor` — 6 health checks as Rich table | ✅ |
+| 5.9 | `repowise watch` — watchdog Observer + debounce timer | ✅ |
+| 5.10 | `repowise serve` — Phase 6 stub | ✅ |
+| 5.11 | `repowise mcp` — Phase 7 stub | ✅ |
 | 5.12 | `main.py` — Click group + version + 9 command registrations | ✅ |
 | 5.13 | Unit tests: helpers (13), cost estimator (11), commands (15) | ✅ |
 | 5.14 | Integration tests: init dry-run, init full mock, idempotent, status, doctor, search, export (7) | ✅ |
@@ -182,7 +182,7 @@
 - `batch_upsert_symbols` expects duck-typed Symbol objects with a `file_path` attribute.
 - Click 8.x removed `mix_stderr` from `CliRunner` — use `CliRunner()` without kwargs.
 - `asyncio.run()` instead of deprecated `asyncio.get_event_loop().run_until_complete()` for Python 3.12+ safety.
-- Provider auto-detection: `WIKICODE_PROVIDER` env → `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OLLAMA_BASE_URL`.
+- Provider auto-detection: `REPOWISE_PROVIDER` env → `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OLLAMA_BASE_URL`.
 - Cost confirmation prompt when estimated cost > $2.00 (bypassed with `--yes`).
 - `--provider mock` for all tests — no API calls ever in test suite.
 
@@ -220,7 +220,7 @@
 | **Part B: Dead Code Detection** | | |
 | 5.5.20 | `DeadCodeAnalyzer` class (`analysis/dead_code.py`) — graph traversal, no LLM | ✅ |
 | 5.5.21 | Dead code in `file_page.j2` — unused code callout block | ✅ |
-| 5.5.22 | CLI: `wikicode dead-code` command (table/json/md output) | ✅ |
+| 5.5.22 | CLI: `repowise dead-code` command (table/json/md output) | ✅ |
 | **Config + Tests** | | |
 | 5.5.23 | Config: `GitConfig` + `DeadCodeConfig` frozen dataclasses in `generation/models.py` | ✅ |
 | 5.5.24 | Test fixtures: `dead/unreachable_module.py`, `utils/helpers.py` with unused export | ✅ |
@@ -260,22 +260,22 @@
 | 6.8 | `/api/webhooks/github` — HMAC-SHA256 signature verification, event storage, job enqueue on push | ✅ |
 | 6.9 | `/api/webhooks/gitlab` — X-Gitlab-Token verification, event storage, job enqueue on Push Hook | ✅ |
 | 6.10 | `/health` + `/metrics` (Prometheus text format) endpoints | ✅ |
-| 6.11 | Optional API key auth (`WIKICODE_API_KEY`) via `deps.verify_api_key` dependency | ✅ |
+| 6.11 | Optional API key auth (`REPOWISE_API_KEY`) via `deps.verify_api_key` dependency | ✅ |
 | 6.12 | APScheduler — staleness checker + polling fallback (configurable intervals) | ✅ |
 | 6.13 | Git intelligence endpoints: `git-metadata`, `hotspots`, `ownership`, `co-changes`, `git-summary` | ✅ |
 | 6.14 | Dead code endpoints: `GET` findings, `POST` analyze, `GET` summary, `PATCH` resolve | ✅ |
 | 6.15 | `deps.py` — dependency injection: sessions, vector store, FTS, API key auth | ✅ |
 | 6.16 | `schemas.py` — Pydantic response/request models with `from_orm()` for all ORM models | ✅ |
-| 6.17 | `wikicode serve` CLI command updated to start uvicorn with FastAPI app | ✅ |
+| 6.17 | `repowise serve` CLI command updated to start uvicorn with FastAPI app | ✅ |
 | 6.18 | Unit tests: 66 tests across 11 test files (auth, repos, pages, search, jobs, symbols, graph, webhooks, git, dead-code, health) | ✅ |
 | **Gate** | `pytest tests/unit/server/ -v` all pass | ✅ 66/66 passed (4.30s) |
 
 **Notes:**
-- Server package: `packages/server/src/wikicode/server/` with `app.py`, `deps.py`, `schemas.py`, `scheduler.py`, and 10 router modules under `routers/`.
+- Server package: `packages/server/src/repowise/server/` with `app.py`, `deps.py`, `schemas.py`, `scheduler.py`, and 10 router modules under `routers/`.
 - Page IDs contain colons and slashes (e.g. `file_page:src/main.py`). Path-based GET uses `{page_id:path}` for direct access; versions and regenerate use `/api/pages/lookup/*` with `?page_id=...` query parameter to avoid greedy path matching conflicts.
 - SSE streaming implemented with raw `StreamingResponse` + `text/event-stream` — no extra dependency needed. Polls DB every 1 second with independent sessions per poll iteration.
 - Webhook signature verification: GitHub uses HMAC-SHA256 (`X-Hub-Signature-256`), GitLab uses static token (`X-Gitlab-Token`). Both skip verification when secret/token env vars are unset (dev mode).
-- Auth: `WIKICODE_API_KEY` env var. When unset, all endpoints are open. When set, `Authorization: Bearer <key>` required on all endpoints except `/health`.
+- Auth: `REPOWISE_API_KEY` env var. When unset, all endpoints are open. When set, `Authorization: Bearer <key>` required on all endpoints except `/health`.
 - APScheduler `AsyncIOScheduler` with two interval jobs: staleness check + polling fallback. Started in lifespan, shut down on app close.
 - `httpx` added as dev dependency for `AsyncClient`-based test transport (`ASGITransport`).
 - Metrics endpoint returns Prometheus text format with page counts by freshness, job counts by status, and token usage totals.
@@ -314,14 +314,14 @@
 
 **Notes:**
 - Used FastMCP from MCP Python SDK (`mcp>=1.0,<2`) — the high-level `@mcp.tool()` decorator pattern.
-- MCP server module: `packages/server/src/wikicode/server/mcp_server.py` — single file with lifespan, 13 tools, and runner.
+- MCP server module: `packages/server/src/repowise/server/mcp_server.py` — single file with lifespan, 13 tools, and runner.
 - Module-level globals (`_session_factory`, `_vector_store`, `_fts`, `_repo_path`) for shared state across tools — set during lifespan context.
 - Repository resolution: `_get_repo()` tries local_path match → ID match → name match → default first repo. Allows flexible tool usage.
 - Symbol lookup: exact match first → `ILIKE` fuzzy match fallback. Returns up to 5 candidates when fuzzy.
 - `get_co_changes` enriches partners with `has_import_relationship` (checks graph edges) and `wiki_page_snippet`.
 - `get_architecture_diagram` returns stored page for repo scope; dynamically builds Mermaid from graph for module/file scope (limited to 50 edges for readability).
-- Auto-generated MCP config: `save_mcp_config()` writes `.wikicode/mcp.json` at end of `wikicode init`. `format_setup_instructions()` prints Claude Code, Cursor, and Cline config blocks.
-- CLI: `wikicode mcp [PATH] --transport stdio|sse --port 7338`. stdio mode suppresses console output (would corrupt protocol).
+- Auto-generated MCP config: `save_mcp_config()` writes `.repowise/mcp.json` at end of `repowise init`. `format_setup_instructions()` prints Claude Code, Cursor, and Cline config blocks.
+- CLI: `repowise mcp [PATH] --transport stdio|sse --port 7338`. stdio mode suppresses console output (would corrupt protocol).
 - `get_blast_radius` was dropped from the plan — its functionality is covered by `get_co_changes` (co-change partners) + `get_dependency_path` (graph-based dependencies).
 
 ---
@@ -365,15 +365,15 @@
 | Step | Description | Status |
 |------|-------------|--------|
 | FX.1 | `FileTraverser(extra_exclude_patterns=[...])` — pathspec from extra patterns, checked in `_should_skip_dir()` + `_build_file_info()` | ✅ |
-| FX.2 | Per-directory `.wikicodeIgnore` — `_get_dir_ignore()` loads + caches one spec per visited directory; root pre-seeded from `self._extra_ignore` | ✅ |
+| FX.2 | Per-directory `.repowiseIgnore` — `_get_dir_ignore()` loads + caches one spec per visited directory; root pre-seeded from `self._extra_ignore` | ✅ |
 | FX.3 | `helpers.load_config()` return type corrected to `dict[str, Any]` | ✅ |
 | FX.4 | `helpers.save_config()` — round-trip load→update→write (preserves all keys); optional `exclude_patterns` kwarg | ✅ |
-| FX.5 | `wikicode init --exclude/-x PATTERN` (repeatable) — merged with `config.yaml exclude_patterns`, passed to `FileTraverser`, persisted back to config | ✅ |
-| FX.6 | `wikicode update` — reads `exclude_patterns` from config, passes to `FileTraverser` | ✅ |
+| FX.5 | `repowise init --exclude/-x PATTERN` (repeatable) — merged with `config.yaml exclude_patterns`, passed to `FileTraverser`, persisted back to config | ✅ |
+| FX.6 | `repowise update` — reads `exclude_patterns` from config, passes to `FileTraverser` | ✅ |
 | FX.7 | `types.ts` — `RepoUpdate.settings` typed as `{ exclude_patterns?: string[]; [key: string]: unknown }` | ✅ |
 | FX.8 | Web UI `/repos/[id]/settings` — "Excluded Paths" chip editor with quick-add suggestions, tooltip, empty state, `hasChanges` detection | ✅ |
 | FX.9 | `scheduler.py` — `polling_fallback` logs `exclude_patterns` and documents where FileTraverser wiring goes for future sync | ✅ |
-| FX.10 | 13 new unit tests: `TestExtraExcludePatterns` (5) + `TestPerDirectoryWikicodeIgnore` (4) + expanded `TestFileTraverser` (4 new) | ✅ |
+| FX.10 | 13 new unit tests: `TestExtraExcludePatterns` (5) + `TestPerDirectoryrepowiseIgnore` (4) + expanded `TestFileTraverser` (4 new) | ✅ |
 | **Gate** | `pytest tests/unit/ingestion/test_traverser.py -v` | ✅ 32/32 passed (0.55s) |
 
 ---
@@ -381,7 +381,7 @@
 ## Phase 8.5 — Decision Intelligence ✅
 
 > Architectural Decision Intelligence layer — capture, track, and query the *why* behind code.
-> **Gate test:** `wikicode decision list` returns results after `wikicode init --index-only` on a repo with inline markers.
+> **Gate test:** `repowise decision list` returns results after `repowise init --index-only` on a repo with inline markers.
 
 | Step | Description | Status |
 |------|-------------|--------|
@@ -391,11 +391,11 @@
 | 8.5.4 | `LanceDBVectorStore` extended with `table_name` param | ✅ |
 | 8.5.5 | 3 MCP tools: `get_decisions`, `get_why`, `get_decision_health` | ✅ |
 | 8.5.6 | REST API: 5 endpoints in `routers/decisions.py` | ✅ |
-| 8.5.7 | CLI: `wikicode decision` group with 7 subcommands | ✅ |
+| 8.5.7 | CLI: `repowise decision` group with 7 subcommands | ✅ |
 | 8.5.8 | Init integration: extraction after dead code step | ✅ |
 | 8.5.9 | Update integration: marker re-scan + staleness recomputation | ✅ |
 | 8.5.10 | Frontend: Decisions list/detail pages + sidebar nav + health widget | ✅ |
-| **Gate** | `wikicode decision list` + MCP tools return data after init | ✅ |
+| **Gate** | `repowise decision list` + MCP tools return data after init | ✅ |
 
 ---
 
@@ -409,7 +409,7 @@
 | 9.1 | GitHub Action `action.yml` | ⏳ |
 | 9.2 | GitHub Action Dockerfile entrypoint | ⏳ |
 | 9.3 | PR comment: affected pages + cost estimate | ⏳ |
-| 9.4 | Commit-back logic for `.wikicode/` | ⏳ |
+| 9.4 | Commit-back logic for `.repowise/` | ⏳ |
 | 9.5 | Multi-stage `docker/Dockerfile` | ⏳ |
 | 9.6 | `docker/docker-compose.yml` with optional Redis profile | ⏳ |
 | **Gate** | `docker compose up -d` succeeds; `curl localhost:7337/health` returns 200 | ⏳ |
@@ -419,19 +419,19 @@
 ## Phase 10 — Quality ⏳
 
 > E2E tests, documentation, dogfooding.
-> **Gate test:** `wikicode init .` on WikiCode repo itself produces > 50 pages.
+> **Gate test:** `repowise init .` on repowise repo itself produces > 50 pages.
 
 | Step | Description | Status |
 |------|-------------|--------|
-| 10.1 | E2E test: full `wikicode init` on `sample_repo` | ⏳ |
-| 10.2 | E2E test: `wikicode update` after code change | ⏳ |
-| 10.3 | E2E test: `wikicode init .` on WikiCode itself | ⏳ |
+| 10.1 | E2E test: full `repowise init` on `sample_repo` | ⏳ |
+| 10.2 | E2E test: `repowise update` after code change | ⏳ |
+| 10.3 | E2E test: `repowise init .` on repowise itself | ⏳ |
 | 10.4 | `README.md` — complete with comparison table, quickstart, MCP setup | ⏳ |
 | 10.5 | `CONTRIBUTING.md` — how to add a provider, language, PR checklist | ⏳ |
 | 10.6 | `docs/ARCHITECTURE.md` — finalized | ⏳ |
 | 10.7 | `CHANGELOG.md` — initial version | ⏳ |
-| 10.8 | Dogfood: generate WikiCode's own wiki, commit `.wikicode/` | ⏳ |
-| **Gate** | E2E tests pass; WikiCode wiki has > 50 pages | ⏳ |
+| 10.8 | Dogfood: generate repowise's own wiki, commit `.repowise/` | ⏳ |
+| **Gate** | E2E tests pass; repowise wiki has > 50 pages | ⏳ |
 
 ---
 
@@ -464,7 +464,7 @@
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-03-18 | uv workspace for monorepo | Single lockfile, fast installs, native workspace support |
-| 2026-03-18 | Python namespace packages (`wikicode.*`) | Clean imports, extensible by community providers |
+| 2026-03-18 | Python namespace packages (`repowise.*`) | Clean imports, extensible by community providers |
 | 2026-03-18 | `src/` layout for all Python packages | Prevents accidental imports of un-installed code |
 | 2026-03-18 | async-first (SQLAlchemy + aiosqlite) | Never block the event loop during DB or LLM operations |
 | 2026-03-18 | tree-sitter for AST parsing | One interface for 6+ languages, fast, battle-tested |
@@ -481,7 +481,7 @@
 | 2026-03-19 | `compute_confidence_decay_with_git()` as multiplicative modifiers | Hotspot ×0.94, stable ×1.03, rewrite ×0.71, typo ×1.12 — applied on top of base decay, composes cleanly |
 | 2026-03-19 | Template `is defined and` guards for new blocks | Backward compatibility with `StrictUndefined` Jinja2 env — new optional template variables don't break existing tests |
 | 2026-03-19 | `GitConfig` + `DeadCodeConfig` as separate frozen dataclasses | `GenerationConfig` is already frozen; adding fields would break it. Separate configs passed where needed |
-| 2026-03-19 | Conservative dead code: `safe_to_delete` only at confidence ≥ 0.7 | Plus exclusion of dynamic patterns (`*Plugin`, `*Handler`, etc.), framework decorators, and `__init__.py` re-exports. WikiCode surfaces candidates — humans decide |
+| 2026-03-19 | Conservative dead code: `safe_to_delete` only at confidence ≥ 0.7 | Plus exclusion of dynamic patterns (`*Plugin`, `*Handler`, etc.), framework decorators, and `__init__.py` re-exports. repowise surfaces candidates — humans decide |
 | 2026-03-19 | FastAPI lifespan for resource management | Engine, session factory, FTS, vector store, and scheduler initialized in lifespan context manager; clean shutdown on app close |
 | 2026-03-19 | `deps.py` for FastAPI dependency injection | `get_db_session`, `get_vector_store`, `get_fts`, `verify_api_key` — clean separation, each router declares its needs via `Depends()` |
 | 2026-03-19 | Query-param endpoints for page operations with path suffixes | Page IDs contain `:` and `/` (e.g. `file_page:src/main.py`); `{page_id:path}` is greedy and swallows `/versions` suffix. Solution: `/api/pages/lookup/*` endpoints with `?page_id=...` for versions and regenerate |
@@ -491,7 +491,7 @@
 | 2026-03-19 | FastMCP `@mcp.tool()` decorator pattern | High-level API from MCP Python SDK; auto-generates tool schemas from type hints; handles stdio/SSE transport switching via `mcp.run(transport=...)` |
 | 2026-03-19 | Module-level globals for MCP state | `_session_factory`, `_vector_store`, `_fts`, `_repo_path` — set during FastMCP lifespan context manager. Simpler than dependency injection for tool functions that aren't FastAPI route handlers |
 | 2026-03-19 | Flexible repo resolution in MCP tools | `_get_repo()` tries local_path → ID → name → first repo. Single-repo setups (most common MCP use case) need zero configuration |
-| 2026-03-19 | Auto-generated `.wikicode/mcp.json` at end of init | Ready-to-paste config blocks for Claude Code, Cursor, Cline. Removes setup friction — users can copy-paste immediately after `wikicode init` |
-| 2026-03-20 | Per-directory `.wikicodeIgnore` cached by absolute dir path | Root `.wikicodeIgnore` pre-seeded in the cache to avoid reading it twice (already loaded into `self._extra_ignore`). Cache invalidation is not needed — traversal is a single pass |
-| 2026-03-20 | `save_config()` round-trips YAML before writing | Without round-trip, any `exclude_patterns` set via the Web UI would be silently dropped the next time `wikicode init` or `wikicode update` ran. Round-trip preserves all keys regardless of how they were set |
+| 2026-03-19 | Auto-generated `.repowise/mcp.json` at end of init | Ready-to-paste config blocks for Claude Code, Cursor, Cline. Removes setup friction — users can copy-paste immediately after `repowise init` |
+| 2026-03-20 | Per-directory `.repowiseIgnore` cached by absolute dir path | Root `.repowiseIgnore` pre-seeded in the cache to avoid reading it twice (already loaded into `self._extra_ignore`). Cache invalidation is not needed — traversal is a single pass |
+| 2026-03-20 | `save_config()` round-trips YAML before writing | Without round-trip, any `exclude_patterns` set via the Web UI would be silently dropped the next time `repowise init` or `repowise update` ran. Round-trip preserves all keys regardless of how they were set |
 | 2026-03-20 | `extra_exclude_patterns` checked at both directory and file level | Directory-level check prunes entire subtrees (fast). File-level check handles patterns that apply to files but not dirs (e.g. `*.test.ts`). Both use pathspec so full gitignore syntax is supported |

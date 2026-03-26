@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from wikicode.core.ingestion import FileTraverser, ASTParser, GraphBuilder
-from wikicode.core.ingestion.git_indexer import GitIndexer, GitIndexSummary
-from wikicode.core.ingestion.models import (
+from repowise.core.ingestion import FileTraverser, ASTParser, GraphBuilder
+from repowise.core.ingestion.git_indexer import GitIndexer, GitIndexSummary
+from repowise.core.ingestion.models import (
     FileInfo,
     Import,
     ParsedFile,

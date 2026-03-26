@@ -9,7 +9,7 @@ const nextConfig: NextConfig = {
     unoptimized: true,
   },
   async rewrites() {
-    const apiUrl = process.env.WIKICODE_API_URL || "http://localhost:7337";
+    const apiUrl = process.env.REPOWISE_API_URL || "http://localhost:7337";
     return [
       {
         source: "/api/:path*",

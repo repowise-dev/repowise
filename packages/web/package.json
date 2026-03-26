@@ -1,8 +1,8 @@
 {
-  "name": "wikicode-web",
+  "name": "repowise-web",
   "version": "0.1.0",
   "private": true,
-  "description": "WikiCode Web UI — Next.js 15 dashboard and wiki viewer",
+  "description": "repowise Web UI — Next.js 15 dashboard and wiki viewer",
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",

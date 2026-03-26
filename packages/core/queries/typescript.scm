@@ -1,5 +1,5 @@
 ; =============================================================================
-; WikiCode — TypeScript symbol and import queries
+; repowise — TypeScript symbol and import queries
 ; tree-sitter-typescript >= 0.23
 ; =============================================================================
 

@@ -7,11 +7,11 @@ import hashlib
 import networkx as nx
 import pytest
 
-from wikicode.core.generation.context_assembler import ContextAssembler
-from wikicode.core.generation.models import GenerationConfig, GeneratedPage
-from wikicode.core.generation.page_generator import PageGenerator, SYSTEM_PROMPTS
-from wikicode.core.ingestion.models import FileInfo, Import, ParsedFile, RepoStructure, PackageInfo
-from wikicode.core.providers.mock import MockProvider
+from repowise.core.generation.context_assembler import ContextAssembler
+from repowise.core.generation.models import GenerationConfig, GeneratedPage
+from repowise.core.generation.page_generator import PageGenerator, SYSTEM_PROMPTS
+from repowise.core.ingestion.models import FileInfo, Import, ParsedFile, RepoStructure, PackageInfo
+from repowise.core.providers.mock import MockProvider
 
 from .conftest import _make_file_info, _make_symbol
 
@@ -221,7 +221,7 @@ async def test_generated_page_created_at_is_iso(
 
 def _make_builder_with(parsed_files):
     """Build a GraphBuilder from a list of ParsedFile objects."""
-    from wikicode.core.ingestion.graph import GraphBuilder
+    from repowise.core.ingestion.graph import GraphBuilder
     builder = GraphBuilder()
     for p in parsed_files:
         builder.add_file(p)

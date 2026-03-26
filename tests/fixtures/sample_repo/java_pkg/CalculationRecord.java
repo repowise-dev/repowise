@@ -1,4 +1,4 @@
-package com.wikicode.sample;
+package com.repowise.sample;
 
 /**
  * An immutable record of a single arithmetic calculation.

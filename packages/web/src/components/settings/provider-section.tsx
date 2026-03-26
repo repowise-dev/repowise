@@ -176,14 +176,14 @@ export function ProviderSection() {
                 {embedderVars.map((v) => (
                   <code key={v} className="font-mono">{v}</code>
                 ))}{" "}
-                — set <code className="font-mono">WIKICODE_EMBEDDER={embedder}</code> on the server.
+                — set <code className="font-mono">REPOWISE_EMBEDDER={embedder}</code> on the server.
               </p>
             )}
             {embedder === "mock" && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
                 Using mock embedder — semantic search disabled. Set{" "}
-                <code className="font-mono">WIKICODE_EMBEDDER=gemini</code> or{" "}
-                <code className="font-mono">WIKICODE_EMBEDDER=openai</code> for real RAG.
+                <code className="font-mono">REPOWISE_EMBEDDER=gemini</code> or{" "}
+                <code className="font-mono">REPOWISE_EMBEDDER=openai</code> for real RAG.
               </p>
             )}
           </div>
@@ -194,7 +194,7 @@ export function ProviderSection() {
         <CardHeader>
           <CardTitle className="text-base">Server Connection</CardTitle>
           <CardDescription>
-            Test that the WikiCode server is reachable and healthy.
+            Test that the repowise server is reachable and healthy.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

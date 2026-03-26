@@ -13,10 +13,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from wikicode.core.persistence.database import init_db
-from wikicode.core.persistence.embedder import MockEmbedder
-from wikicode.core.persistence.search import FullTextSearch
-from wikicode.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.persistence.database import init_db
+from repowise.core.persistence.embedder import MockEmbedder
+from repowise.core.persistence.search import FullTextSearch
+from repowise.core.persistence.vector_store import InMemoryVectorStore
 
 
 def _create_test_app():
@@ -27,7 +27,7 @@ def _create_test_app():
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
 
-    from wikicode.server.routers import (
+    from repowise.server.routers import (
         dead_code,
         git,
         graph,
@@ -44,7 +44,7 @@ def _create_test_app():
     async def noop_lifespan(app: FastAPI):
         yield
 
-    app = FastAPI(title="WikiCode API Test", lifespan=noop_lifespan)
+    app = FastAPI(title="repowise API Test", lifespan=noop_lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

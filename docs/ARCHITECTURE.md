@@ -1,6 +1,6 @@
-# WikiCode Architecture
+# repowise Architecture
 
-WikiCode is an open-source, self-hostable codebase documentation engine. It generates
+repowise is an open-source, self-hostable codebase documentation engine. It generates
 a structured, hierarchical wiki for any codebase, keeps it accurate as code changes,
 and exposes everything through an MCP server so AI coding assistants can query it
 in real time.
@@ -49,7 +49,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │                         Sources                                      │
 │         GitHub / GitLab repo          Local filesystem               │
 └────────────────────┬────────────────────────┬───────────────────────┘
-                     │ webhook / git diff       │ wikicode init/update
+                     │ webhook / git diff       │ repowise init/update
                      ▼                          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      Core Engine                                     │
@@ -79,7 +79,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
 │  jobs, symbols,      │   │  (Next.js)  (8 tools)    (CI/CD)        │
 │  versions)           │   │                                         │
-│                      │   │  wikicode CLI                           │
+│                      │   │  repowise CLI                           │
 │  Vector (LanceDB /   │   │  (init, update, watch,                  │
 │  pgvector, semantic  │   │   search, export, serve, mcp)           │
 │  search, RAG ctx)    │   │                                         │
@@ -90,7 +90,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 └──────────────────────┘
 ```
 
-WikiCode has two operational modes that share the same core engine but follow
+repowise has two operational modes that share the same core engine but follow
 different strategies:
 
 - **Init** — first-time documentation of an existing codebase. May take minutes
@@ -104,12 +104,12 @@ different strategies:
 ## 2. Repository Structure
 
 ```
-wikicode/
+repowise/
 ├── packages/
 │   ├── core/                   # Python: ingestion + generation engine
-│   │   ├── src/wikicode/core/
+│   │   ├── src/repowise/core/
 │   │   │   ├── ingestion/
-│   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .wikicodeIgnore + extra exclude patterns
+│   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .repowiseIgnore + extra exclude patterns
 │   │   │   │   ├── parser.py           # ASTParser — one class, all languages
 │   │   │   │   ├── parsers/            # per-language parser helpers
 │   │   │   │   ├── graph.py            # NetworkX dep graph builder
@@ -154,14 +154,14 @@ wikicode/
 │   │       └── kotlin.scm
 │   │
 │   ├── server/                 # Python: FastAPI REST API + MCP server
-│   │   └── src/wikicode/server/
+│   │   └── src/repowise/server/
 │   │       ├── api/             # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search)
 │   │       ├── mcp_server.py    # MCP server (8 tools)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
 │   │       └── scheduler.py     # APScheduler background jobs
 │   │
-│   ├── cli/                    # Python: wikicode CLI (click + rich)
-│   │   └── src/wikicode/cli/
+│   ├── cli/                    # Python: repowise CLI (click + rich)
+│   │   └── src/repowise/cli/
 │   │       └── commands/        # init, update, watch, serve, search, export, status, doctor, dead-code, decision, mcp, reindex
 │   │
 │   └── web/                    # Next.js 15 frontend
@@ -180,18 +180,18 @@ wikicode/
 ├── tests/
 │   ├── unit/                    # unit tests (no LLM calls, no filesystem)
 │   ├── integration/             # integration tests using sample_repo fixture
-│   ├── e2e/                     # full wikicode init + update flows
+│   ├── e2e/                     # full repowise init + update flows
 │   └── fixtures/
 │       └── sample_repo/         # 30-file multi-language fixture repo
 │
-└── docs/                        # WikiCode's own generated wiki (dogfooding)
+└── docs/                        # repowise's own generated wiki (dogfooding)
 ```
 
 ---
 
 ## 3. The Three Stores
 
-WikiCode uses three separate storage systems. They are not redundant — each answers
+repowise uses three separate storage systems. They are not redundant — each answers
 a fundamentally different kind of question that the other two cannot answer efficiently.
 
 ### 3.1 SQL Store (SQLAlchemy + SQLite / PostgreSQL)
@@ -217,24 +217,24 @@ Key tables:
 | `git_metadata` | Per-file git history: commit counts, ownership, co-change partners, hotspot/stable flags |
 | `dead_code_findings` | Dead code findings: unreachable files, unused exports, zombie packages |
 
-If you delete the SQL store, you lose everything and must re-run `wikicode init`.
+If you delete the SQL store, you lose everything and must re-run `repowise init`.
 
 ### 3.2 Vector Store (LanceDB embedded / pgvector)
 
 **Answers: what is semantically similar to this query.**
 
-WikiCode uses a `VectorStore` abstraction with two backends, selected automatically
+repowise uses a `VectorStore` abstraction with two backends, selected automatically
 based on the configured SQL backend:
 
 **LanceDB (default — SQLite mode)**
 LanceDB runs embedded as a library — no separate server process. Data is stored in
-`.wikicode/lancedb/` using the Lance columnar format. This makes self-hosting trivial
+`.repowise/lancedb/` using the Lance columnar format. This makes self-hosting trivial
 and keeps the Docker setup simple. LanceDB is significantly faster than ChromaDB on
 both write throughput (batch embedding) and ANN query latency, and it requires no
 C++ build tools to install.
 
 **pgvector (PostgreSQL mode)**
-When WikiCode is configured with a PostgreSQL database, the `wiki_pages` table gains
+When repowise is configured with a PostgreSQL database, the `wiki_pages` table gains
 an `embedding vector(N)` column via the `pgvector` PostgreSQL extension. Embeddings
 are stored directly in the same SQL database — no second storage system required.
 Vector similarity search uses `<=>` (cosine distance) with an HNSW index. This is
@@ -256,7 +256,7 @@ natural language query. This is better than full-text search for questions like
 
 If you delete the vector store (LanceDB directory or pgvector embeddings), search
 quality degrades and generation context becomes shallower — rebuild it by running
-`wikicode reindex` which re-embeds all existing SQL pages into LanceDB using
+`repowise reindex` which re-embeds all existing SQL pages into LanceDB using
 the configured embedder (Gemini or OpenAI). No LLM calls — only embedding API calls.
 
 ### 3.3 Graph Store (NetworkX / SQLite-backed)
@@ -267,7 +267,7 @@ The dependency graph is a directed multigraph where nodes are files and symbols,
 and edges are relationships (`imports`, `calls`, `inherits`, `implements`, etc.).
 
 It is built by the `ASTParser` + `GraphBuilder` during ingestion and persisted to
-`.wikicode/graph.json` (for repos ≤ 30K nodes) or the `graph_nodes`/`graph_edges`
+`.repowise/graph.json` (for repos ≤ 30K nodes) or the `graph_nodes`/`graph_edges`
 SQL tables (for larger repos, using the `networkit` library as a drop-in).
 
 The graph is used for:
@@ -290,7 +290,7 @@ The graph is used for:
 - **MCP `get_dependency_path` tool** — answers "how is module A connected to module B?"
 - **D3 graph visualization** in the web UI
 
-If you delete the graph, WikiCode loses change propagation and generation ordering.
+If you delete the graph, repowise loses change propagation and generation ordering.
 It can be rebuilt from scratch by re-parsing the source files.
 
 ---
@@ -328,17 +328,17 @@ Before every API call, the limiter acquires from both buckets. On a 429 response
 it calls `on_rate_limit_error()` which applies exponential backoff and temporarily
 reduces the refill rate. This is transparent to all callers.
 
-Default limits are configured per provider in `.wikicode/config.yaml` and can be
+Default limits are configured per provider in `.repowise/config.yaml` and can be
 adjusted for users with higher API tiers.
 
 ### 4.2 Batch Mode (Init Only)
 
-For `wikicode init`, the Anthropic provider supports the Message Batches API:
+For `repowise init`, the Anthropic provider supports the Message Batches API:
 instead of firing concurrent streaming requests, all file-page generation requests
 for a given level are submitted as a single batch, which is ~50% cheaper and
 processes asynchronously (typically within 1 hour).
 
-Batch mode is enabled by default for `wikicode init` when using the Anthropic
+Batch mode is enabled by default for `repowise init` when using the Anthropic
 provider. Pass `--no-batch` to use streaming instead (faster wall-clock time,
 higher cost).
 
@@ -352,13 +352,13 @@ on large repos is typically 60–90%.
 ### 4.4 Adding a Provider
 
 Implement `LLMProvider`, add an entry to `LANGUAGE_CONFIGS` in `providers/registry.py`,
-and add a section to `.wikicode/config.yaml`. See [Section 12](#12-adding-a-new-llm-provider).
+and add a section to `.repowise/config.yaml`. See [Section 12](#12-adding-a-new-llm-provider).
 
 ---
 
 ## 5. Init Path — First-Time Documentation
 
-`wikicode init` runs when documenting a codebase for the first time. It is the
+`repowise init` runs when documenting a codebase for the first time. It is the
 expensive, one-time operation that builds the full wiki from scratch.
 
 ### 5.1 File Traversal
@@ -368,11 +368,11 @@ file that should be documented. It respects six layers of exclusion, applied in
 priority order:
 
 1. `.gitignore` (parsed with `pathspec`, not simple glob matching)
-2. Root `.wikicodeIgnore` (same syntax, user-defined at repo root)
-3. **Per-directory `.wikicodeIgnore`** — loaded from each directory visited during
+2. Root `.repowiseIgnore` (same syntax, user-defined at repo root)
+3. **Per-directory `.repowiseIgnore`** — loaded from each directory visited during
    the `os.walk`. Patterns are relative to the directory containing the file (like
    git's per-directory `.gitignore`). A spec per directory is loaded once and cached
-   for the traversal. Example: `generated/` in `src/.wikicodeIgnore` skips
+   for the traversal. Example: `generated/` in `src/.repowiseIgnore` skips
    `src/generated/` without affecting other directories with the same name.
 4. **`extra_exclude_patterns`** (constructor param) — additional gitignore-style
    patterns passed at runtime from `--exclude/-x` CLI flags or
@@ -390,7 +390,7 @@ FileTraverser(
     repo_root: Path,
     *,
     max_file_size_kb: int = 500,
-    extra_ignore_filename: str = ".wikicodeIgnore",
+    extra_ignore_filename: str = ".repowiseIgnore",
     extra_exclude_patterns: list[str] | None = None,
 )
 ```
@@ -399,8 +399,8 @@ FileTraverser(
 
 | Source | How patterns reach traverser |
 |--------|------------------------------|
-| `wikicode init -x vendor/ -x 'src/gen/**'` | Merged with `config.yaml exclude_patterns`, passed directly |
-| `wikicode update` | Read from `.wikicode/config.yaml exclude_patterns` |
+| `repowise init -x vendor/ -x 'src/gen/**'` | Merged with `config.yaml exclude_patterns`, passed directly |
+| `repowise update` | Read from `.repowise/config.yaml exclude_patterns` |
 | Web UI Excluded Paths section | Saved to `repo.settings["exclude_patterns"]` via REST API |
 | Server sync job | Read from `repo.settings.get("exclude_patterns", [])` |
 
@@ -492,9 +492,9 @@ depends on the others. Strategy:
 **Graph scalability:**
 
 For repos with fewer than 30K nodes, the graph lives in memory as a NetworkX
-`DiGraph` and is serialized to `.wikicode/graph.json`.
+`DiGraph` and is serialized to `.repowise/graph.json`.
 
-For repos exceeding 30K nodes (configurable via `graph_backend: sqlite`), WikiCode
+For repos exceeding 30K nodes (configurable via `graph_backend: sqlite`), repowise
 switches to `networkit` with SQLite backing via the `graph_nodes` and `graph_edges`
 tables. Only the subgraph needed for each operation is loaded into memory. The
 API is identical — this is transparent to all callers.
@@ -539,7 +539,7 @@ The source code is never dropped — it is chunked instead if too large.
 **Large file chunking:**
 
 Files over `large_file_threshold_kb` (default: 100KB) are handled differently.
-Rather than passing the full source, WikiCode:
+Rather than passing the full source, repowise:
 1. Extracts public symbol signatures only for the top-level context
 2. Generates one sub-page per major class or function group
 3. Synthesizes a file page from the sub-pages
@@ -600,17 +600,17 @@ The `JobSystem` persists checkpoint state after every completed page:
 - `completed_page_ids` — list of already-generated page IDs
 - `failed_page_ids` — pages that failed (retried on resume)
 
-On `wikicode init --resume`, the job is loaded from the database, completed pages
+On `repowise init --resume`, the job is loaded from the database, completed pages
 are skipped, and generation continues from the last checkpoint.
 
-`wikicode init` is fully idempotent. Running it twice produces the same result.
+`repowise init` is fully idempotent. Running it twice produces the same result.
 Running it after a partial previous run completes only the remaining pages.
 
 ---
 
 ## 6. Maintenance Path — Keeping Docs in Sync
 
-`wikicode update` runs after a git push (triggered by webhook, GitHub Action, or
+`repowise update` runs after a git push (triggered by webhook, GitHub Action, or
 polling fallback). It is fast, targeted, and avoids regenerating pages that
 haven't actually changed in a meaningful way.
 
@@ -624,7 +624,7 @@ changed_files = differ.get_changed_files(repo_path, since_commit="a1b2c3d")
 # → ChangedFiles(added=[...], modified=[...], deleted=[...], renamed=[...])
 ```
 
-Renamed files get special treatment: WikiCode updates all `source_files` references
+Renamed files get special treatment: repowise updates all `source_files` references
 in existing wiki pages and regenerates the file page (since the path context has
 changed), but does *not* regenerate pages that only reference the file's symbols
 (symbol names don't include paths).
@@ -637,7 +637,7 @@ symbol was renamed rather than deleted-and-recreated:
 - Similar signature (Levenshtein distance under threshold)
 - Git blame on the new file confirms line provenance
 
-When a rename is detected, WikiCode applies a targeted text patch to all pages
+When a rename is detected, repowise applies a targeted text patch to all pages
 that only *mention* the old name (cheaper than full regeneration), and fully
 regenerates pages that *document* the old symbol.
 
@@ -698,7 +698,7 @@ Pages start at `1.0` and decay over time. Regeneration resets to `1.0`.
 
 ### 6.5 Webhook Reliability
 
-Webhooks can be missed when the WikiCode server is down during a push. WikiCode
+Webhooks can be missed when the repowise server is down during a push. repowise
 uses a two-layer sync strategy:
 
 **Layer 1 (real-time):** GitHub/GitLab webhook → `POST /api/webhooks/github` →
@@ -724,7 +724,7 @@ This ensures no page stays stale indefinitely regardless of cascade budget const
 
 ### 6.7 PR Documentation Preview
 
-On `pull_request` webhook events, WikiCode runs `ChangeDetector` in dry-run mode
+On `pull_request` webhook events, repowise runs `ChangeDetector` in dry-run mode
 and posts a GitHub PR comment listing:
 - Pages that will be regenerated (with links to current versions)
 - Pages that will have confidence decay
@@ -738,9 +738,9 @@ On merge, the actual incremental update runs.
 
 ## 7. Git Intelligence
 
-WikiCode mines git history to make documentation significantly richer and more useful.
-The `GitIndexer` runs once during `wikicode init` (after graph construction, before
-generation) and incrementally during `wikicode update`. All git features degrade
+repowise mines git history to make documentation significantly richer and more useful.
+The `GitIndexer` runs once during `repowise init` (after graph construction, before
+generation) and incrementally during `repowise update`. All git features degrade
 gracefully when git metadata is unavailable — they simply skip git-enriched context.
 
 ### 7.1 GitIndexer (`packages/core/ingestion/git_indexer.py`)
@@ -783,7 +783,7 @@ hotspots, have > 100 commits with > 10 in 90 days, have >= 8 significant commits
 or have co-change partners. Conversely, stable + low PageRank + low commit count
 files can be auto-downgraded to "minimal". Controlled by `git.depth_auto_upgrade`.
 
-**Maintenance prompts:** When regenerating during `wikicode update`, the specific
+**Maintenance prompts:** When regenerating during `repowise update`, the specific
 commit that triggered the update (SHA, author, message, diff) is included in the
 prompt. This produces targeted updates rather than full rewrites.
 
@@ -797,7 +797,7 @@ are added to the dependency graph. They participate in change propagation (when 
 A changes, its co-change partners get mild confidence decay at factor 0.97) and are
 visible in the graph visualization as dashed purple lines.
 
-**CLAUDE.md generation:** `wikicode generate-claude-md` includes sections for
+**CLAUDE.md generation:** `repowise generate-claude-md` includes sections for
 hotspots, stable core files, ownership map, and hidden coupling pairs.
 
 ### 7.3 Module and Repo-Level Git Summaries
@@ -810,14 +810,14 @@ hotspot count, stable file count, top churn files, oldest file.
 
 ## 8. Dead Code Detection
 
-WikiCode detects unreachable files, unused exports, and zombie packages using
+repowise detects unreachable files, unused exports, and zombie packages using
 graph traversal and SQL queries. No LLM calls — the analysis completes in < 10
 seconds for any repo size.
 
 ### 8.1 DeadCodeAnalyzer (`packages/core/analysis/dead_code.py`)
 
 The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally during
-`wikicode update`. It produces findings with confidence scores:
+`repowise update`. It produces findings with confidence scores:
 
 **Finding types:**
 - `unreachable_file` — file with `in_degree == 0`, not an entry point, test, or config
@@ -838,7 +838,7 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 - Files matching `*migrations*`, `*schema*`, `*seed*`
 - TypeScript `.d.ts` files
 - Files where `is_api_contract == True`
-- Files in `.wikicode/dead_code_whitelist.txt`
+- Files in `.repowise/dead_code_whitelist.txt`
 - Symbols matching `config.dead_code.dynamic_patterns`
 
 ### 8.2 Dead Code in Generation Prompts
@@ -847,10 +847,10 @@ The `file_page.j2` template includes an optional block for dead code findings.
 When present, the LLM notes unused symbols as cleanup candidates in the
 documentation, including confidence percentages and safety assessment.
 
-### 8.3 CLI: `wikicode dead-code`
+### 8.3 CLI: `repowise dead-code`
 
 ```
-wikicode dead-code [PATH]
+repowise dead-code [PATH]
   --min-confidence FLOAT    (default: 0.4)
   --safe-only               only show safe_to_delete=True findings
   --kind TYPE               filter by kind
@@ -858,7 +858,7 @@ wikicode dead-code [PATH]
   --format table|json|md
   --output FILE
 
-wikicode dead-code resolve [FINDING_ID]
+repowise dead-code resolve [FINDING_ID]
   --status acknowledged|resolved|false_positive
   --note "reason"
 ```
@@ -888,7 +888,7 @@ Decisions are extracted from four sources, each with a different confidence leve
 | **Inline markers** (`# WHY:`, `# DECISION:`, `# TRADEOFF:`, `# ADR:`, `# RATIONALE:`, `# REJECTED:`) | 0.95 | `active` | File scanning during init/update |
 | **Git archaeology** (commit messages with migration/refactor signals) | 0.70–0.85 | `proposed` | Init only, reuses git layer data |
 | **README/docs mining** (implicit decisions in prose) | 0.60 | `proposed` | Init only, LLM extraction |
-| **CLI capture** (`wikicode decision add`) | 1.00 | `active` | Manual entry |
+| **CLI capture** (`repowise decision add`) | 1.00 | `active` | Manual entry |
 
 ### Data Model
 
@@ -899,7 +899,7 @@ affected files, modules, tags, and evidence commits. Deduplication key:
 ### Staleness Tracking
 
 Decisions have a `staleness_score` (0.0 = fresh, 1.0 = very stale) recomputed on every
-`wikicode update`. Staleness rises when affected files receive commits after the decision
+`repowise update`. Staleness rises when affected files receive commits after the decision
 was recorded. Decisions with `staleness_score > 0.5` are flagged as stale.
 
 ### MCP Tools
@@ -910,13 +910,13 @@ was recorded. Decisions with `staleness_score > 0.5` are flagged as stale.
 ### CLI Commands
 
 ```
-wikicode decision add        # interactive capture
-wikicode decision list       # tabular list with filters
-wikicode decision show <id>  # full detail
-wikicode decision confirm    # proposed → active
-wikicode decision dismiss    # delete proposed
-wikicode decision deprecate  # active → deprecated
-wikicode decision health     # health summary
+repowise decision add        # interactive capture
+repowise decision list       # tabular list with filters
+repowise decision show <id>  # full detail
+repowise decision confirm    # proposed → active
+repowise decision dismiss    # delete proposed
+repowise decision deprecate  # active → deprecated
+repowise decision health     # health summary
 ```
 
 ### Key Files
@@ -934,7 +934,7 @@ wikicode decision health     # health summary
 
 ## 10. MCP Server
 
-The MCP server is WikiCode's most valuable integration feature. It exposes the
+The MCP server is repowise's most valuable integration feature. It exposes the
 entire wiki as a set of queryable tools that any MCP-compatible AI assistant
 can call in real time.
 
@@ -962,9 +962,9 @@ and supports two transports:
 
 ### Auto-generated Config
 
-`wikicode init` automatically generates `.wikicode/mcp.json` with ready-to-paste
+`repowise init` automatically generates `.repowise/mcp.json` with ready-to-paste
 config blocks for Claude Code (`~/.claude/claude.json`), Cursor (`.cursor/mcp.json`),
-and Cline. This config is printed at the end of `wikicode init`.
+and Cline. This config is printed at the end of `repowise init`.
 
 ---
 
@@ -994,7 +994,7 @@ Key routers:
 - `/health` — liveness + readiness (checks DB + provider)
 - `/metrics` — Prometheus-compatible metrics (job counts, token totals, stale count)
 
-Authentication is optional. Set `WIKICODE_API_KEY` to require bearer token auth on
+Authentication is optional. Set `REPOWISE_API_KEY` to require bearer token auth on
 all non-`/health` endpoints. Default (no key set): fully open, suitable for local use.
 
 ### Web UI (Next.js 15)
@@ -1023,7 +1023,7 @@ link to the symbol's wiki page. This is built by post-processing the MDX content
 client-side after initial render.
 
 Mermaid diagrams are rendered lazily (only when scrolled into viewport) using
-`mermaid.js` initialized with the WikiCode design theme.
+`mermaid.js` initialized with the repowise design theme.
 
 Code blocks use Shiki for syntax highlighting. Each block has a "View in source"
 button that deep-links to the relevant line in GitHub/GitLab.
@@ -1036,7 +1036,7 @@ file, tokens used, estimated cost, estimated time remaining).
 
 ## 12. Codebase Chat
 
-WikiCode includes an interactive chat interface that lets users ask questions about
+repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
 the user has configured and has access to all 8 MCP tools.
@@ -1069,7 +1069,7 @@ database schema, frontend component architecture, and artifact rendering system.
 ### Init flow
 
 ```
-wikicode init /path/to/repo
+repowise init /path/to/repo
        │
        ▼
 FileTraverser
@@ -1131,7 +1131,7 @@ JobSystem
        └── Level 8: index pages
               │
               ▼
-       .wikicode/state.json updated
+       .repowise/state.json updated
        MCP config printed
        Summary shown (pages, tokens, cost, time)
 ```
@@ -1196,7 +1196,7 @@ state.json updated
 Claude Code: "how does the auth module work?"
     │
     ▼
-MCP client calls WikiCode tool: search_codebase(query="auth module")
+MCP client calls repowise tool: search_codebase(query="auth module")
     │
     ▼
 VectorStore similarity search (LanceDB or pgvector) → top 5 page IDs
@@ -1218,13 +1218,13 @@ instead of reading 40 files
 
 ### Three-layer folder exclusion, not one monolithic list
 
-WikiCode offers three complementary ways to skip paths during traversal, each solving
+repowise offers three complementary ways to skip paths during traversal, each solving
 a different problem:
 
-1. **Root `.wikicodeIgnore`** — project-wide exclusions committed to the repo (like
+1. **Root `.repowiseIgnore`** — project-wide exclusions committed to the repo (like
    `.gitignore`). Shared across all users, version-controlled.
 
-2. **Per-directory `.wikicodeIgnore`** — exclusions that only apply within a subtree.
+2. **Per-directory `.repowiseIgnore`** — exclusions that only apply within a subtree.
    Lets a monorepo package owner exclude its own generated output without polluting
    the root ignore file. Patterns are relative to the directory, matching git semantics.
    Specs are loaded once per directory during `os.walk` and cached by absolute path;
@@ -1243,7 +1243,7 @@ for `.gitignore` parsing — so the full gitignore syntax works everywhere.
 
 The original `save_config()` wrote a fixed three-key file (`provider`, `model`,
 `embedder`). This meant any other keys — such as `exclude_patterns` set via the Web UI
-— would be silently dropped the next time `wikicode init` ran. The updated function
+— would be silently dropped the next time `repowise init` ran. The updated function
 loads the existing config, merges in the new values, then writes the result back.
 This ensures all config sources (CLI, Web UI, REST API, manual edits) coexist safely.
 
@@ -1262,20 +1262,20 @@ tree. LanceDB replaces it as the default embedded vector store:
 
 - **No build step** — pure Python wheel, no C++ compiler required on Windows
 - **Faster writes** — Lance columnar format is optimised for batch appends; embedding
-  50K pages during `wikicode init` is measurably faster
+  50K pages during `repowise init` is measurably faster
 - **Faster queries** — IVF-PQ and HNSW index support with sub-millisecond ANN search
 - **Simpler data model** — tables are Arrow-native; filtering by `repo_id` or `page_type`
   uses SQL-style predicates alongside the vector search, no separate metadata store needed
 - **Zero server process** — same embedded story as ChromaDB: data lives in
-  `.wikicode/lancedb/`, no container needed
+  `.repowise/lancedb/`, no container needed
 
 When PostgreSQL is already in use (multi-worker prod), **pgvector** is preferred because
 it eliminates the second storage system entirely: embeddings live as a `vector` column
 in the existing `wiki_pages` table, queries are plain SQL with `<=>` cosine distance,
 and backup/restore is a single `pg_dump`. The HNSW index (`CREATE INDEX ... USING hnsw`)
-gives query latency on par with LanceDB at typical WikiCode dataset sizes.
+gives query latency on par with LanceDB at typical repowise dataset sizes.
 
-The `VectorStore` abstraction in `packages/core/src/wikicode/core/persistence/vector.py`
+The `VectorStore` abstraction in `packages/core/src/repowise/core/persistence/vector.py`
 selects the backend at startup based on `DATABASE_URL`: SQLite → LanceDB, PostgreSQL → pgvector.
 
 ### NetworkX + SQLite fallback, not Neo4j
@@ -1299,13 +1299,13 @@ Users can see at a glance how much to trust each page.
 ### Jinja2 prompts, not hardcoded strings
 
 All LLM prompts are Jinja2 templates in `packages/core/queries/prompts/`. Users can
-override any prompt by placing a file with the same name in `.wikicode/prompts/`.
+override any prompt by placing a file with the same name in `.repowise/prompts/`.
 This lets power users tune generation quality without forking the project.
 
 ### Cascade budget
 
 Without a budget, changing a central utility (imported by 200 files) would
-regenerate 200+ pages on every push. With a budget (default: 30), WikiCode
+regenerate 200+ pages on every push. With a budget (default: 30), repowise
 regenerates the highest-PageRank affected pages immediately and defers the rest
 to the nightly background job. No page stays stale indefinitely; the nightly job
 catches everything the cascade budget missed.
@@ -1321,17 +1321,17 @@ pipeline"). This context is unavailable from static analysis alone.
 ### Co-change edges as a separate graph layer
 
 Co-change relationships are temporal coupling — they cannot be detected by AST
-parsing. WikiCode adds them as `co_changes` edges after `GitIndexer` runs, but
+parsing. repowise adds them as `co_changes` edges after `GitIndexer` runs, but
 deliberately filters them out of PageRank computation (they would skew it
 artificially toward files that are often edited together for process reasons, not
 architectural ones). They participate in change propagation and visualization only.
 
 ### Conservative dead code detection
 
-WikiCode's dead code detector errs heavily toward false negatives. `safe_to_delete`
+repowise's dead code detector errs heavily toward false negatives. `safe_to_delete`
 is set to `True` only at confidence >= 0.7 and after excluding dynamically-loaded
 patterns. Dead code analysis is pure graph traversal + SQL (no LLM calls), so it
-completes in seconds and can be re-run cheaply. WikiCode surfaces candidates —
+completes in seconds and can be re-run cheaply. repowise surfaces candidates —
 humans decide before deleting anything.
 
 ### Async-first throughout
@@ -1405,7 +1405,7 @@ and the vector store embed (LanceDB or pgvector) can overlap with the next file'
    case "myprovider": return MyProvider(config)
    ```
 
-3. **Add config section to `.wikicode/config.yaml` docs**
+3. **Add config section to `.repowise/config.yaml` docs**
 
    ```yaml
    myprovider:
@@ -1423,7 +1423,7 @@ and the vector store embed (LanceDB or pgvector) can overlap with the next file'
 
 ## Appendix: Configuration Reference
 
-Full configuration with defaults (`.wikicode/config.yaml`):
+Full configuration with defaults (`.repowise/config.yaml`):
 
 ```yaml
 provider: anthropic          # anthropic | openai | ollama | litellm
@@ -1480,7 +1480,7 @@ dead_code:
     - "*Middleware"
     - "register_*"
     - "on_*"
-  whitelist_file: .wikicode/dead_code_whitelist.txt
+  whitelist_file: .repowise/dead_code_whitelist.txt
   analyze_on_update: true    # re-analyze dead code on incremental updates
 
 maintenance:

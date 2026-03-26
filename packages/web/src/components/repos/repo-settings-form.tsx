@@ -141,7 +141,7 @@ export function RepoSettingsForm({ repo }: RepoSettingsFormProps) {
         {/* Chips */}
         {patterns.length === 0 ? (
           <p className="text-xs text-[var(--color-text-tertiary)] italic">
-            No custom patterns — .gitignore and .wikicodeIgnore are always respected.
+            No custom patterns — .gitignore and .repowiseIgnore are always respected.
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">

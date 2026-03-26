@@ -2,4 +2,4 @@
 name = "sample-calculator"
 version = "0.1.0"
 edition = "2021"
-description = "Sample Rust calculator for WikiCode fixture testing"
+description = "Sample Rust calculator for repowise fixture testing"

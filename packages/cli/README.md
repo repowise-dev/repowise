@@ -1,6 +1,6 @@
-# wikicode-cli
+# repowise-cli
 
-Command-line interface for WikiCode — generate, maintain, search, and export AI-powered codebase documentation from your terminal.
+Command-line interface for repowise — generate, maintain, search, and export AI-powered codebase documentation from your terminal.
 
 **Python >= 3.11 · Apache-2.0**
 
@@ -9,13 +9,13 @@ Command-line interface for WikiCode — generate, maintain, search, and export A
 ## Installation
 
 ```bash
-pip install wikicode-cli
+pip install repowise-cli
 
 # Recommended: use uv
-uv pip install wikicode-cli
+uv pip install repowise-cli
 ```
 
-`wikicode-core` is installed automatically as a dependency. The `wikicode` command is available immediately after installation.
+`repowise-core` is installed automatically as a dependency. The `repowise` command is available immediately after installation.
 
 ---
 
@@ -24,33 +24,33 @@ uv pip install wikicode-cli
 ```bash
 # 1. Generate documentation for the first time
 cd /path/to/your/repo
-wikicode init --provider anthropic
+repowise init --provider anthropic
 
 # 2. Check what was generated
-wikicode status
+repowise status
 
 # 3. Keep docs in sync after commits
-wikicode update
+repowise update
 
 # 4. Search the wiki
-wikicode search "authentication flow"
+repowise search "authentication flow"
 
 # 5. Start the web UI
-wikicode serve
+repowise serve
 ```
 
-All data is stored in a `.wikicode/` directory at the root of your repository.
+All data is stored in a `.repowise/` directory at the root of your repository.
 
 ---
 
 ## Commands
 
-### `wikicode init`
+### `repowise init`
 
 Generate full wiki documentation from scratch. This is the expensive, one-time operation — it traverses every file, builds the dependency graph, and calls the LLM to generate all wiki pages in dependency order. It is resumable: if interrupted, re-run with `--resume`.
 
 ```
-wikicode init [PATH] [OPTIONS]
+repowise init [PATH] [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -65,33 +65,33 @@ wikicode init [PATH] [OPTIONS]
 
 ```bash
 # Current directory, Anthropic (default)
-wikicode init
+repowise init
 
 # Specific path and provider
-wikicode init /path/to/repo --provider openai --model gpt-4o
+repowise init /path/to/repo --provider openai --model gpt-4o
 
 # Fully offline with Ollama
-wikicode init --provider ollama --model llama3.2
+repowise init --provider ollama --model llama3.2
 
 # Preview cost before spending tokens
-wikicode init --dry-run
+repowise init --dry-run
 
 # Resume after an interruption
-wikicode init --resume
+repowise init --resume
 ```
 
-**Batch API:** When using the Anthropic provider, `wikicode init` uses the Message Batches API by default, which reduces cost by ~50%. Pass `--no-batch` to use streaming instead (returns results immediately, costs more).
+**Batch API:** When using the Anthropic provider, `repowise init` uses the Message Batches API by default, which reduces cost by ~50%. Pass `--no-batch` to use streaming instead (returns results immediately, costs more).
 
 **Prompt caching:** The Anthropic provider caches the shared system prompt and repository context across all generation calls. On large repos, this typically cuts cost by 60–90%.
 
 ---
 
-### `wikicode update`
+### `repowise update`
 
 Incrementally regenerate wiki pages for files changed since the last sync. Uses git diff to detect what changed and propagates changes through the dependency graph — only pages that actually need updating are regenerated.
 
 ```
-wikicode update [PATH] [OPTIONS]
+repowise update [PATH] [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -104,26 +104,26 @@ wikicode update [PATH] [OPTIONS]
 
 ```bash
 # Update current repo (diffs HEAD against last sync commit)
-wikicode update
+repowise update
 
 # Preview what would be regenerated
-wikicode update --dry-run
+repowise update --dry-run
 
 # Diff from a specific branch or commit
-wikicode update --since main
-wikicode update --since a1b2c3d
+repowise update --since main
+repowise update --since a1b2c3d
 ```
 
-`wikicode update` requires that `wikicode init` has been run first. It reads `last_sync_commit` from `.wikicode/state.json`.
+`repowise update` requires that `repowise init` has been run first. It reads `last_sync_commit` from `.repowise/state.json`.
 
 ---
 
-### `wikicode watch`
+### `repowise watch`
 
-Watch a repository for file changes and automatically run `wikicode update` after a debounce period. Useful during active development.
+Watch a repository for file changes and automatically run `repowise update` after a debounce period. Useful during active development.
 
 ```
-wikicode watch [PATH] [OPTIONS]
+repowise watch [PATH] [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -134,22 +134,22 @@ wikicode watch [PATH] [OPTIONS]
 
 ```bash
 # Watch current directory
-wikicode watch
+repowise watch
 
 # Custom debounce (wait 5 seconds after last change)
-wikicode watch --debounce 5000
+repowise watch --debounce 5000
 ```
 
-Press `Ctrl+C` to stop. Changes to `.wikicode/` are automatically ignored.
+Press `Ctrl+C` to stop. Changes to `.repowise/` are automatically ignored.
 
 ---
 
-### `wikicode search`
+### `repowise search`
 
 Search wiki pages by keyword, meaning, or symbol name.
 
 ```
-wikicode search QUERY [PATH] [OPTIONS]
+repowise search QUERY [PATH] [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -159,53 +159,53 @@ wikicode search QUERY [PATH] [OPTIONS]
 
 ```bash
 # Full-text search (SQLite FTS5)
-wikicode search "authentication"
+repowise search "authentication"
 
 # Semantic / vector search
-wikicode search "rate limiting strategy" --mode semantic
+repowise search "rate limiting strategy" --mode semantic
 
 # Find a symbol by name
-wikicode search "AuthService" --mode symbol
+repowise search "AuthService" --mode symbol
 ```
 
-`semantic` search requires the `[search]` extra (`pip install "wikicode-core[search]"`).
+`semantic` search requires the `[search]` extra (`pip install "repowise-core[search]"`).
 
 ---
 
-### `wikicode export`
+### `repowise export`
 
 Export all wiki pages to files on disk in Markdown, HTML, or JSON format.
 
 ```
-wikicode export [PATH] [OPTIONS]
+repowise export [PATH] [OPTIONS]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--format` | `markdown` | Output format: `markdown`, `html`, `json` |
-| `--output`, `-o` | `.wikicode/export` | Output directory |
+| `--output`, `-o` | `.repowise/export` | Output directory |
 
 ```bash
-# Export as Markdown to .wikicode/export/
-wikicode export
+# Export as Markdown to .repowise/export/
+repowise export
 
 # Export as JSON to a custom directory
-wikicode export --format json -o ./wiki-export
+repowise export --format json -o ./wiki-export
 
 # Export as HTML
-wikicode export --format html -o ./docs/wiki
+repowise export --format html -o ./docs/wiki
 ```
 
 The JSON output is a single `wiki_pages.json` file with all pages as an array. Markdown and HTML outputs write one file per page.
 
 ---
 
-### `wikicode status`
+### `repowise status`
 
 Show sync state, page counts by type, and total token consumption.
 
 ```
-wikicode status [PATH]
+repowise status [PATH]
 ```
 
 Displays:
@@ -217,12 +217,12 @@ Displays:
 
 ---
 
-### `wikicode doctor`
+### `repowise doctor`
 
 Run health checks on the wiki setup. Useful for debugging why `init` or `update` is failing.
 
 ```
-wikicode doctor [PATH]
+repowise doctor [PATH]
 ```
 
 Checks performed:
@@ -230,7 +230,7 @@ Checks performed:
 | Check | What it verifies |
 |-------|-----------------|
 | Git repository | The path is inside a git repo |
-| `.wikicode/` directory | The init directory exists |
+| `.repowise/` directory | The init directory exists |
 | Database | `wiki.db` is connectable; shows page count |
 | `state.json` | Valid JSON with a `last_sync_commit` entry |
 | Providers | At least one LLM provider is importable |
@@ -240,12 +240,12 @@ Exits with a summary of passed/failed checks.
 
 ---
 
-### `wikicode dead-code`
+### `repowise dead-code`
 
 Detect dead and unused code using the dependency graph. Does not call an LLM — purely graph analysis and git metadata.
 
 ```
-wikicode dead-code [PATH] [OPTIONS]
+repowise dead-code [PATH] [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -257,19 +257,19 @@ wikicode dead-code [PATH] [OPTIONS]
 
 ```bash
 # All findings, table format
-wikicode dead-code
+repowise dead-code
 
 # Only safe-to-delete findings
-wikicode dead-code --safe-only
+repowise dead-code --safe-only
 
 # Only unreachable files (no importers in the graph)
-wikicode dead-code --kind unreachable_file
+repowise dead-code --kind unreachable_file
 
 # Export to JSON for CI integration
-wikicode dead-code --format json > dead-code.json
+repowise dead-code --format json > dead-code.json
 
 # High-confidence findings only
-wikicode dead-code --min-confidence 0.8
+repowise dead-code --min-confidence 0.8
 ```
 
 Finding kinds:
@@ -283,12 +283,12 @@ Finding kinds:
 
 ---
 
-### `wikicode serve`
+### `repowise serve`
 
-Start the WikiCode REST API and web UI server. Requires `wikicode-server` to be installed.
+Start the repowise REST API and web UI server. Requires `repowise-server` to be installed.
 
 ```
-wikicode serve [OPTIONS]
+repowise serve [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -299,25 +299,25 @@ wikicode serve [OPTIONS]
 
 ```bash
 # Start on localhost:7337
-wikicode serve
+repowise serve
 
 # Expose on all interfaces
-wikicode serve --host 0.0.0.0
+repowise serve --host 0.0.0.0
 
 # Custom port
-wikicode serve --port 8080
+repowise serve --port 8080
 ```
 
-The API docs are available at `http://localhost:7337/docs`. Start the Next.js web UI separately and point `WIKICODE_API_URL` at this server.
+The API docs are available at `http://localhost:7337/docs`. Start the Next.js web UI separately and point `REPOWISE_API_URL` at this server.
 
 ---
 
-### `wikicode mcp`
+### `repowise mcp`
 
 Start the MCP server for AI editor integration (Claude Code, Cursor, Cline).
 
 ```
-wikicode mcp [PATH] [OPTIONS]
+repowise mcp [PATH] [OPTIONS]
 ```
 
 | Option | Default | Description |
@@ -327,13 +327,13 @@ wikicode mcp [PATH] [OPTIONS]
 
 ```bash
 # stdio transport, current directory (typical editor integration)
-wikicode mcp
+repowise mcp
 
 # Specific repository path
-wikicode mcp /path/to/repo
+repowise mcp /path/to/repo
 
 # SSE transport for web clients
-wikicode mcp --transport sse
+repowise mcp --transport sse
 ```
 
 Exposes 16 MCP tools for querying wiki pages, symbols, the dependency graph, git analytics, ownership data, hotspots, dead code findings, and decision intelligence.
@@ -343,8 +343,8 @@ Exposes 16 MCP tools for querying wiki pages, symbols, the dependency graph, git
 ```json
 {
   "mcpServers": {
-    "wikicode": {
-      "command": "wikicode",
+    "repowise": {
+      "command": "repowise",
       "args": ["mcp", "/path/to/your/repo"]
     }
   }
@@ -356,8 +356,8 @@ Exposes 16 MCP tools for querying wiki pages, symbols, the dependency graph, git
 ```json
 {
   "mcpServers": {
-    "wikicode": {
-      "command": "wikicode",
+    "repowise": {
+      "command": "repowise",
       "args": ["mcp", "/absolute/path/to/repo"]
     }
   }
@@ -372,25 +372,25 @@ Exposes 16 MCP tools for querying wiki pages, symbols, the dependency graph, git
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | API key for the Anthropic provider |
 | `OPENAI_API_KEY` | API key for the OpenAI provider |
-| `WIKICODE_DB_URL` | Override the default SQLite path (e.g., `postgresql://user:pass@host/db`) |
-| `WIKICODE_EMBEDDER` | Embedder backend: `mock` (default) or `gemini` |
+| `REPOWISE_DB_URL` | Override the default SQLite path (e.g., `postgresql://user:pass@host/db`) |
+| `REPOWISE_EMBEDDER` | Embedder backend: `mock` (default) or `gemini` |
 
 ---
 
-## The `.wikicode/` Directory
+## The `.repowise/` Directory
 
-After `wikicode init`, your repo will contain:
+After `repowise init`, your repo will contain:
 
 ```
-.wikicode/
+.repowise/
 ├── wiki.db         # SQLite database — all pages, symbols, jobs, git metadata
 ├── lancedb/        # LanceDB vector store (if [search] extra is installed)
 ├── graph.json      # Serialized dependency graph (repos < 30K nodes)
 ├── state.json      # Sync state: last_sync_commit, provider, model, token counts
-└── export/         # Output directory for `wikicode export`
+└── export/         # Output directory for `repowise export`
 ```
 
-Add `.wikicode/` to your `.gitignore` to avoid committing generated data.
+Add `.repowise/` to your `.gitignore` to avoid committing generated data.
 
 ---
 

@@ -8,8 +8,8 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from wikicode.core.ingestion.change_detector import ChangeDetector, SymbolDiff
-from wikicode.core.ingestion.models import FileInfo, Import, ParsedFile, Symbol
+from repowise.core.ingestion.change_detector import ChangeDetector, SymbolDiff
+from repowise.core.ingestion.models import FileInfo, Import, ParsedFile, Symbol
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ class TestGetAffectedPages:
         status: str = "modified",
         symbol_diff: SymbolDiff | None = None,
     ):
-        from wikicode.core.ingestion.change_detector import FileDiff
+        from repowise.core.ingestion.change_detector import FileDiff
 
         return FileDiff(
             path=path,
@@ -258,7 +258,7 @@ class TestGetAffectedPages:
 
     def test_rename_patch_subset_of_regenerate(self, tmp_path: Path) -> None:
         """rename_patch pages must appear in regenerate."""
-        from wikicode.core.ingestion.change_detector import FileDiff, SymbolRename
+        from repowise.core.ingestion.change_detector import FileDiff, SymbolRename
 
         d = self._detector(tmp_path)
         g = nx.DiGraph()
