@@ -158,7 +158,7 @@ _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
 # Maximum seconds to wait for a single file's git indexing.  If exceeded the
 # file is recorded with whatever data was collected before the timeout and the
 # semaphore slot is released so other files can proceed.
-_FILE_INDEX_TIMEOUT_SECS: float = 90.0
+_FILE_INDEX_TIMEOUT_SECS: float = 45.0
 
 
 def _should_skip_index(file_path: str) -> bool:
@@ -236,7 +236,11 @@ class GitIndexer:
         if on_start is not None:
             on_start(len(indexable_files))
 
-        # Parallelized per-file indexing
+        # Use a dedicated executor so timed-out threads don't block
+        # asyncio.run() cleanup (the default executor waits for ALL threads).
+        from concurrent.futures import ThreadPoolExecutor
+
+        executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="git-idx")
         semaphore = asyncio.Semaphore(20)
         loop = asyncio.get_event_loop()
 
@@ -245,12 +249,12 @@ class GitIndexer:
                 try:
                     result = await asyncio.wait_for(
                         loop.run_in_executor(
-                            None, self._index_file, file_path, repo
+                            executor, self._index_file, file_path, repo
                         ),
                         timeout=_FILE_INDEX_TIMEOUT_SECS,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning(
+                    logger.debug(
                         "Git indexing timed out for file — using partial data",
                         path=file_path,
                         timeout=_FILE_INDEX_TIMEOUT_SECS,
@@ -273,7 +277,7 @@ class GitIndexer:
 
         async def _co_change_task() -> dict[str, list[dict]]:
             return await loop.run_in_executor(
-                None, self._compute_co_changes, repo, set(tracked_files),
+                executor, self._compute_co_changes, repo, set(tracked_files),
                 self.commit_limit, 3, on_commit_done, on_co_change_start,
             )
 
@@ -281,6 +285,10 @@ class GitIndexer:
             asyncio.gather(*file_tasks, return_exceptions=True),
             _co_change_task(),
         )
+
+        # Abandon any timed-out threads immediately instead of letting
+        # asyncio.run() block for minutes during default-executor cleanup.
+        executor.shutdown(wait=False, cancel_futures=True)
 
         # Filter out failures
         results: list[dict] = []
