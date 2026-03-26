@@ -111,3 +111,6 @@ docker-compose.override.yml
 .Spotlight-V100
 .Trashes
 ehthumbs.db
+
+# repowise API keys (local)
+.repowise/.env

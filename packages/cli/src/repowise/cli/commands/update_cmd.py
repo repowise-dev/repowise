@@ -40,6 +40,11 @@ def update_command(
     repo_path = resolve_repo_path(path)
     ensure_repowise_dir(repo_path)
 
+    # Load saved API keys from .repowise/.env (won't overwrite existing env vars)
+    from repowise.cli.ui import load_dotenv
+
+    load_dotenv(repo_path)
+
     state = load_state(repo_path)
     base_ref = since or state.get("last_sync_commit")
     head = get_head_commit(repo_path)
@@ -74,17 +79,12 @@ def update_command(
         color = status_color.get(fd.status, "white")
         console.print(f"  [{color}]{fd.status:>10}[/{color}]  {fd.path}")
 
-    if dry_run:
-        console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
-        return
-
     # Re-parse changed files and rebuild graph for affected pages
     from pathlib import Path as PathlibPath
 
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
-    provider = resolve_provider(provider_name, model, repo_path=repo_path)
     config = GenerationConfig()
 
     # Read exclude patterns from config (set during init or via web UI)
@@ -113,23 +113,21 @@ def update_command(
     graph_builder.build()
 
     # Re-index git metadata for changed files
+    # NOTE: disabled due to git subprocess hanging on Windows — see separate fix
     git_meta_map: dict[str, dict] = {}
-    try:
-        from repowise.core.ingestion.git_indexer import GitIndexer
 
-        _commit_limit = repo_config.get("commit_limit")
-        _follow_renames = repo_config.get("follow_renames", False)
-        git_indexer = GitIndexer(
-            repo_path,
-            commit_limit=_commit_limit,
-            follow_renames=_follow_renames,
-        )
-        changed_paths = [fd.path for fd in file_diffs]
-        updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
-        git_meta_map = {m["file_path"]: m for m in updated_meta}
-        graph_builder.update_co_change_edges(git_meta_map)
-    except Exception as exc:
-        console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
+    # Determine affected pages
+    affected = detector.get_affected_pages(file_diffs, graph_builder.graph(), cascade_budget)
+
+    console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
+    if affected.decay_only:
+        console.print(f"Pages to decay: [yellow]{len(affected.decay_only)}[/yellow]")
+
+    if dry_run:
+        console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
+        return
+
+    provider = resolve_provider(provider_name, model, repo_path=repo_path)
 
     # Re-scan changed files for inline decision markers
     new_decision_markers: list = []
@@ -154,12 +152,10 @@ def update_command(
     except Exception as exc:
         console.print(f"[yellow]Decision re-scan skipped: {exc}[/yellow]")
 
-    # Determine affected pages
-    affected = detector.get_affected_pages(file_diffs, graph_builder.graph(), cascade_budget)
-
-    console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
-    if affected.decay_only:
-        console.print(f"Pages to decay: [yellow]{len(affected.decay_only)}[/yellow]")
+    # Filter to only affected files
+    regen_set = set(affected.regenerate)
+    affected_parsed = [pf for pf in parsed_files if pf.file_info.path in regen_set]
+    affected_source = {p: s for p, s in source_map.items() if p in regen_set}
 
     # Generate affected pages
     assembler = ContextAssembler(config)
@@ -168,11 +164,12 @@ def update_command(
 
     generated_pages = run_async(
         generator.generate_all(
-            parsed_files,
-            source_map,
+            affected_parsed,
+            affected_source,
             graph_builder,
             repo_structure,
             repo_name,
+            git_meta_map=git_meta_map,
         )
     )
 

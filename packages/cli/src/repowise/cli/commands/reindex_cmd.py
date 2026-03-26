@@ -33,6 +33,11 @@ def reindex_command(path: str | None, embedder: str, batch_size: int) -> None:
     repo_path = resolve_repo_path(path)
     ensure_repowise_dir(repo_path)
 
+    # Load saved API keys from .repowise/.env (won't overwrite existing env vars)
+    from repowise.cli.ui import load_dotenv
+
+    load_dotenv(repo_path)
+
     run_async(_reindex(repo_path, embedder, batch_size))
 
 
