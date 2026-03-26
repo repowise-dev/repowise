@@ -113,8 +113,23 @@ def update_command(
     graph_builder.build()
 
     # Re-index git metadata for changed files
-    # NOTE: disabled due to git subprocess hanging on Windows — see separate fix
     git_meta_map: dict[str, dict] = {}
+    try:
+        from repowise.core.ingestion.git_indexer import GitIndexer
+
+        _commit_limit = repo_config.get("commit_limit")
+        _follow_renames = repo_config.get("follow_renames", False)
+        git_indexer = GitIndexer(
+            repo_path,
+            commit_limit=_commit_limit,
+            follow_renames=_follow_renames,
+        )
+        changed_paths = [fd.path for fd in file_diffs]
+        updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
+        git_meta_map = {m["file_path"]: m for m in updated_meta}
+        graph_builder.update_co_change_edges(git_meta_map)
+    except Exception as exc:
+        console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
 
     # Determine affected pages
     affected = detector.get_affected_pages(file_diffs, graph_builder.graph(), cascade_budget)

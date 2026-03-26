@@ -244,12 +244,26 @@ class GitIndexer:
         semaphore = asyncio.Semaphore(20)
         loop = asyncio.get_event_loop()
 
+        def _index_one_sync(file_path: str) -> dict:
+            """Use a per-thread Repo to avoid shared-handle issues on Windows."""
+            try:
+                import git as gitpython
+                thread_repo = gitpython.Repo(
+                    self.repo_path, search_parent_directories=True,
+                )
+                try:
+                    return self._index_file(file_path, thread_repo)
+                finally:
+                    thread_repo.close()
+            except Exception:
+                return {"file_path": file_path}
+
         async def index_one(file_path: str) -> dict:
             async with semaphore:
                 try:
                     result = await asyncio.wait_for(
                         loop.run_in_executor(
-                            executor, self._index_file, file_path, repo
+                            executor, _index_one_sync, file_path
                         ),
                         timeout=_FILE_INDEX_TIMEOUT_SECS,
                     )
@@ -342,11 +356,25 @@ class GitIndexer:
         loop = asyncio.get_event_loop()
         semaphore = asyncio.Semaphore(20)
 
+        def _index_one_sync(file_path: str) -> dict:
+            """Use a per-thread Repo to avoid shared-handle issues on Windows."""
+            try:
+                import git as gitpython
+                thread_repo = gitpython.Repo(
+                    self.repo_path, search_parent_directories=True,
+                )
+                try:
+                    return self._index_file(file_path, thread_repo)
+                finally:
+                    thread_repo.close()
+            except Exception:
+                return {"file_path": file_path}
+
         async def index_one(file_path: str) -> dict:
             async with semaphore:
                 try:
                     return await asyncio.wait_for(
-                        loop.run_in_executor(None, self._index_file, file_path, repo),
+                        loop.run_in_executor(None, _index_one_sync, file_path),
                         timeout=_FILE_INDEX_TIMEOUT_SECS,
                     )
                 except (asyncio.TimeoutError, Exception) as exc:
