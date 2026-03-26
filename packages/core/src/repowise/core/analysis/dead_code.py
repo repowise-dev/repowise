@@ -70,10 +70,24 @@ _NON_CODE_LANGUAGES: frozenset[str] = frozenset(
 # Patterns that should never be flagged as dead
 _NEVER_FLAG_PATTERNS = (
     "*__init__.py",
+    "*__main__.py",
+    "*conftest.py",
+    "*alembic/env.py",
+    "*manage.py",
+    "*wsgi.py",
+    "*asgi.py",
     "*migrations*",
     "*schema*",
     "*seed*",
     "*.d.ts",
+    "*setup.py",
+    "*setup.cfg",
+    "*next.config.*",
+    "*vite.config.*",
+    "*tailwind.config.*",
+    "*postcss.config.*",
+    "*jest.config.*",
+    "*vitest.config.*",
 )
 
 # Decorator patterns that indicate framework usage
@@ -88,6 +102,28 @@ _DEFAULT_DYNAMIC_PATTERNS = (
     "register_*",
     "on_*",
 )
+
+# Path segments that indicate test fixture / sample data directories.
+# Files under these directories are test data, not real code — they should
+# never be flagged as dead even if nothing imports them.
+_FIXTURE_PATH_SEGMENTS = (
+    "fixture",
+    "fixtures",
+    "testdata",
+    "test_data",
+    "sample_repo",
+    "mock_data",
+    "test_assets",
+)
+
+
+def _is_fixture_path(path: str) -> bool:
+    """Return True if path is under a test fixture / sample data directory."""
+    path_lower = path.lower().replace("\\", "/")
+    for seg in _FIXTURE_PATH_SEGMENTS:
+        if f"/{seg}/" in path_lower or path_lower.startswith(f"{seg}/"):
+            return True
+    return False
 
 
 class DeadCodeAnalyzer:
@@ -226,6 +262,8 @@ class DeadCodeAnalyzer:
                 continue
             if node_data.get("is_test", False):
                 continue
+            if _is_fixture_path(str(node)):
+                continue
             if self._should_never_flag(str(node), whitelist):
                 continue
             if self._is_api_contract(node_data):
@@ -306,6 +344,8 @@ class DeadCodeAnalyzer:
             if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
                 continue
             if node_data.get("is_test", False):
+                continue
+            if _is_fixture_path(str(node)):
                 continue
             if self._should_never_flag(str(node), whitelist):
                 continue

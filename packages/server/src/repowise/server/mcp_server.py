@@ -55,6 +55,18 @@ def _sanitize_mermaid_id(node_id: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", node_id)
 
 
+def _short_label(node_id: str) -> str:
+    """Shorten a full path to at most parent/filename for readable diagram labels.
+
+    ``packages/core/src/repowise/core/persistence/models.py``
+    → ``persistence/models.py``
+    """
+    parts = node_id.replace("\\", "/").split("/")
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    return parts[-1]
+
+
 def _resolve_embedder():
     """Resolve embedder from REPOWISE_EMBEDDER env var or .repowise/config.yaml."""
     name = os.environ.get("REPOWISE_EMBEDDER", "").lower()
@@ -474,14 +486,21 @@ async def get_overview(repo: str | None = None) -> dict:
         )
         module_pages = result.scalars().all()
 
-        # Get entry point files from graph nodes
+        # Get entry point files from graph nodes (exclude tests & fixtures)
         result = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repository.id,
                 GraphNode.is_entry_point == True,  # noqa: E712
+                GraphNode.is_test == False,  # noqa: E712
             )
         )
-        entry_nodes = result.scalars().all()
+        entry_nodes = [
+            n for n in result.scalars().all()
+            if not any(
+                seg in n.node_id.lower()
+                for seg in ("fixture", "test_data", "testdata", "sample_repo")
+            )
+        ]
 
         # Phase 4: repo-wide git health summary
         git_res = await session.execute(
@@ -1234,39 +1253,39 @@ async def get_why(
             repository = await _get_repo(session, repo)
             health = await get_decision_health_summary(session, repository.id)
 
-        stale = health["stale_decisions"]
-        proposed = health["proposed_awaiting_review"]
-        ungoverned = health["ungoverned_hotspots"]
+            stale = health["stale_decisions"]
+            proposed = health["proposed_awaiting_review"]
+            ungoverned = health["ungoverned_hotspots"]
 
-        return {
-            "mode": "health",
-            "summary": (
-                f"{health['summary'].get('active', 0)} active · "
-                f"{health['summary'].get('stale', 0)} stale · "
-                f"{len(proposed)} proposed · "
-                f"{len(ungoverned)} ungoverned hotspots"
-            ),
-            "counts": health["summary"],
-            "stale_decisions": [
-                {
-                    "id": d.id,
-                    "title": d.title,
-                    "staleness_score": d.staleness_score,
-                    "affected_files": json.loads(d.affected_files_json)[:5],
-                }
-                for d in stale[:10]
-            ],
-            "proposed_awaiting_review": [
-                {
-                    "id": d.id,
-                    "title": d.title,
-                    "source": d.source,
-                    "confidence": d.confidence,
-                }
-                for d in proposed[:10]
-            ],
-            "ungoverned_hotspots": ungoverned[:15],
-        }
+            return {
+                "mode": "health",
+                "summary": (
+                    f"{health['summary'].get('active', 0)} active · "
+                    f"{health['summary'].get('stale', 0)} stale · "
+                    f"{len(proposed)} proposed · "
+                    f"{len(ungoverned)} ungoverned hotspots"
+                ),
+                "counts": health["summary"],
+                "stale_decisions": [
+                    {
+                        "id": d.id,
+                        "title": d.title,
+                        "staleness_score": d.staleness_score,
+                        "affected_files": json.loads(d.affected_files_json)[:5],
+                    }
+                    for d in stale[:10]
+                ],
+                "proposed_awaiting_review": [
+                    {
+                        "id": d.id,
+                        "title": d.title,
+                        "source": d.source,
+                        "confidence": d.confidence,
+                    }
+                    for d in proposed[:10]
+                ],
+                "ungoverned_hotspots": ungoverned[:15],
+            }
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
@@ -1296,41 +1315,41 @@ async def get_why(
             )
             all_git_meta = all_git_res.scalars().all()
 
-        governing = []
-        for d in all_decisions:
-            affected_files = json.loads(d.affected_files_json)
-            affected_modules = json.loads(d.affected_modules_json)
-            if query in affected_files or query in affected_modules:
-                governing.append({
-                    "id": d.id,
-                    "title": d.title,
-                    "status": d.status,
-                    "context": d.context,
-                    "decision": d.decision,
-                    "rationale": d.rationale,
-                    "alternatives": json.loads(d.alternatives_json),
-                    "consequences": json.loads(d.consequences_json),
-                    "affected_files": affected_files,
-                    "source": d.source,
-                    "confidence": d.confidence,
-                    "staleness_score": d.staleness_score,
-                })
+            governing = []
+            for d in all_decisions:
+                affected_files = json.loads(d.affected_files_json)
+                affected_modules = json.loads(d.affected_modules_json)
+                if query in affected_files or query in affected_modules:
+                    governing.append({
+                        "id": d.id,
+                        "title": d.title,
+                        "status": d.status,
+                        "context": d.context,
+                        "decision": d.decision,
+                        "rationale": d.rationale,
+                        "alternatives": json.loads(d.alternatives_json),
+                        "consequences": json.loads(d.consequences_json),
+                        "affected_files": affected_files,
+                        "source": d.source,
+                        "confidence": d.confidence,
+                        "staleness_score": d.staleness_score,
+                    })
 
-        result_data: dict[str, Any] = {
-            "mode": "path",
-            "path": query,
-            "decisions": governing,
-            "origin_story": _build_origin_story(query, git_meta, governing),
-            "alignment": _compute_alignment(query, governing, all_decisions),
-        }
+            result_data: dict[str, Any] = {
+                "mode": "path",
+                "path": query,
+                "decisions": governing,
+                "origin_story": _build_origin_story(query, git_meta, governing),
+                "alignment": _compute_alignment(query, governing, all_decisions),
+            }
 
-        # --- Fallback: git archaeology when no decisions found ---
-        if not governing:
-            result_data["git_archaeology"] = await _git_archaeology_fallback(
-                query, git_meta, all_git_meta, repository,
-            )
+            # --- Fallback: git archaeology when no decisions found ---
+            if not governing:
+                result_data["git_archaeology"] = await _git_archaeology_fallback(
+                    query, git_meta, all_git_meta, repository,
+                )
 
-        return result_data
+            return result_data
 
     # --- Mode 3: Natural language → target-aware search ---
     from repowise.core.persistence.crud import list_decisions as _list_decisions
@@ -1447,29 +1466,29 @@ async def get_why(
             )
             all_git_meta_list = all_git_res.scalars().all()
 
-        target_context = {}
-        for t in targets:
-            t_governing = []
-            for d in all_decisions:
-                affected = json.loads(d.affected_files_json)
-                affected_mods = json.loads(d.affected_modules_json)
-                if t in affected or any(t.startswith(m + "/") for m in affected_mods):
-                    t_governing.append({"title": d.title, "status": d.status})
-            git_m = target_git.get(t)
-            ctx_entry: dict[str, Any] = {
-                "governing_decisions": t_governing,
-                "origin": _build_origin_story(t, git_m, t_governing) if git_m else {
-                    "available": False,
-                    "summary": f"No git history for {t}.",
-                },
-            }
-            # Git archaeology fallback when no decisions found
-            if not t_governing:
-                ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
-                    t, git_m, all_git_meta_list, repository,
-                )
-            target_context[t] = ctx_entry
-        result_data["target_context"] = target_context
+            target_context = {}
+            for t in targets:
+                t_governing = []
+                for d in all_decisions:
+                    affected = json.loads(d.affected_files_json)
+                    affected_mods = json.loads(d.affected_modules_json)
+                    if t in affected or any(t.startswith(m + "/") for m in affected_mods):
+                        t_governing.append({"title": d.title, "status": d.status})
+                git_m = target_git.get(t)
+                ctx_entry: dict[str, Any] = {
+                    "governing_decisions": t_governing,
+                    "origin": _build_origin_story(t, git_m, t_governing) if git_m else {
+                        "available": False,
+                        "summary": f"No git history for {t}.",
+                    },
+                }
+                # Git archaeology fallback when no decisions found
+                if not t_governing:
+                    ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
+                        t, git_m, all_git_meta_list, repository,
+                    )
+                target_context[t] = ctx_entry
+            result_data["target_context"] = target_context
 
     return result_data
 
@@ -1603,56 +1622,60 @@ async def _run_git_log(
     repo_path: str, file_path: str, stem: str,
 ) -> list[dict]:
     """Run git log against the local repo for deeper history. Best-effort."""
+    import asyncio
     import subprocess
 
-    results = []
-    try:
-        # Search for commits that touched this file
-        proc = subprocess.run(
-            ["git", "log", "--follow", "--format=%H\t%an\t%ai\t%s", "-20", "--", file_path],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if proc.returncode == 0:
-            for line in proc.stdout.strip().splitlines():
-                parts = line.split("\t", 3)
-                if len(parts) == 4:
-                    results.append({
-                        "sha": parts[0][:12],
-                        "author": parts[1],
-                        "date": parts[2][:10],
-                        "message": parts[3],
-                        "source": "git_log_follow",
-                    })
-
-        # Also grep for the class/function name in commit messages
-        if stem and len(stem) >= 3:
-            proc2 = subprocess.run(
-                ["git", "log", "--all", "--grep", stem, "--format=%H\t%an\t%ai\t%s", "-10"],
+    def _sync_git_log() -> list[dict]:
+        results: list[dict] = []
+        try:
+            proc = subprocess.run(
+                ["git", "log", "--follow", "--format=%H\t%an\t%ai\t%s", "-20", "--", file_path],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            if proc2.returncode == 0:
-                seen = {r["sha"] for r in results}
-                for line in proc2.stdout.strip().splitlines():
+            if proc.returncode == 0:
+                for line in proc.stdout.strip().splitlines():
                     parts = line.split("\t", 3)
-                    if len(parts) == 4 and parts[0][:12] not in seen:
-                        seen.add(parts[0][:12])
+                    if len(parts) == 4:
                         results.append({
                             "sha": parts[0][:12],
                             "author": parts[1],
                             "date": parts[2][:10],
                             "message": parts[3],
-                            "source": "git_log_grep",
+                            "source": "git_log_follow",
                         })
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass  # Git not available or repo not accessible
 
-    return results[:20]
+            if stem and len(stem) >= 3:
+                proc2 = subprocess.run(
+                    ["git", "log", "--all", "--grep", stem, "--format=%H\t%an\t%ai\t%s", "-10"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if proc2.returncode == 0:
+                    seen = {r["sha"] for r in results}
+                    for line in proc2.stdout.strip().splitlines():
+                        parts = line.split("\t", 3)
+                        if len(parts) == 4 and parts[0][:12] not in seen:
+                            seen.add(parts[0][:12])
+                            results.append({
+                                "sha": parts[0][:12],
+                                "author": parts[1],
+                                "date": parts[2][:10],
+                                "message": parts[3],
+                                "source": "git_log_grep",
+                            })
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+        return results[:20]
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_sync_git_log), timeout=15)
+    except asyncio.TimeoutError:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -1704,26 +1727,25 @@ async def search_codebase(
                 "page_type": r.page_type,
                 "snippet": r.snippet,
                 "relevance_score": r.score,
-                "confidence_score": None,
             }
         )
 
     output = output[:limit]
 
-    # Batch-lookup actual page confidence scores from DB + git freshness boost
+    # Batch-lookup page target paths for git freshness boost
     if output:
         page_ids = [item["page_id"] for item in output]
         async with get_session(_session_factory) as session:
             res = await session.execute(
-                select(Page.id, Page.confidence, Page.target_path).where(
+                select(Page.id, Page.target_path).where(
                     Page.id.in_(page_ids)
                 )
             )
-            page_info = {row[0]: (row[1], row[2]) for row in res.all()}
+            page_info = {row[0]: row[1] for row in res.all()}
 
             # Build git freshness map for result file paths
             target_paths = [
-                info[1] for info in page_info.values() if info[1]
+                tp for tp in page_info.values() if tp
             ]
             git_map: dict[str, GitMetadata] = {}
             if target_paths:
@@ -1735,10 +1757,8 @@ async def search_codebase(
                 git_map = {g.file_path: g for g in git_res.scalars().all()}
 
         for item in output:
-            info = page_info.get(item["page_id"])
-            item["confidence_score"] = info[0] if info else None
             # Freshness boost: recently-active files rank higher
-            target_path = info[1] if info else None
+            target_path = page_info.get(item["page_id"])
             gm = git_map.get(target_path) if target_path else None
             if gm and item.get("relevance_score"):
                 c30 = gm.commit_count_30d or 0
@@ -1755,6 +1775,17 @@ async def search_codebase(
 
         # Re-sort by boosted relevance
         output.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+
+    # Derive confidence_score from relative position in the result set.
+    # The top result gets 1.0; others are scaled proportionally by their
+    # relevance score relative to the best match.
+    if output:
+        max_score = max(
+            (item.get("relevance_score") or 0) for item in output
+        )
+        for item in output:
+            raw = item.get("relevance_score") or 0
+            item["confidence_score"] = round(raw / max_score, 2) if max_score > 0 else 0.0
 
     return {"results": output}
 
@@ -2336,30 +2367,79 @@ async def get_architecture_diagram(
         seen_nodes: set[str] = set()
         node_classes: dict[str, str] = {}  # mermaid_id → class
 
+        # For module-scoped diagrams, clip cross-boundary nodes to a single
+        # "[external]" stub so the diagram stays focused on the target module.
+        _EXTERNAL_ID = "external_deps"
+        _external_added = False
+
         for e in relevant_edges[:50]:  # Limit to 50 edges for readability
-            src = _sanitize_mermaid_id(e.source_node_id)
-            tgt = _sanitize_mermaid_id(e.target_node_id)
+            src_id = e.source_node_id
+            tgt_id = e.target_node_id
+
+            # Clip nodes outside the module boundary
+            src_external = bool(filter_prefix and not src_id.startswith(filter_prefix))
+            tgt_external = bool(filter_prefix and not tgt_id.startswith(filter_prefix))
+
+            # Skip edges where both ends are external
+            if src_external and tgt_external:
+                continue
+
+            if src_external:
+                src = _EXTERNAL_ID
+                src_label = "external"
+            else:
+                src = _sanitize_mermaid_id(src_id)
+                src_label = _short_label(src_id)
+
+            if tgt_external:
+                tgt = _EXTERNAL_ID
+                tgt_label = "external"
+            else:
+                tgt = _sanitize_mermaid_id(tgt_id)
+                tgt_label = _short_label(tgt_id)
+
+            # Skip self-loops created by clipping
+            if src == tgt:
+                continue
+
             if src not in seen_nodes:
-                lines.append(f'    {src}["{e.source_node_id}"]')
+                if src == _EXTERNAL_ID:
+                    if not _external_added:
+                        lines.append(f'    {_EXTERNAL_ID}[/"external"/]')
+                        _external_added = True
+                        node_classes[_EXTERNAL_ID] = "ext"
+                else:
+                    lines.append(f'    {src}["{src_label}"]')
+                    if show_heat:
+                        pct = churn_map.get(src_id, 0.0)
+                        node_classes[src] = "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
                 seen_nodes.add(src)
-                if show_heat:
-                    pct = churn_map.get(e.source_node_id, 0.0)
-                    node_classes[src] = "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
+
             if tgt not in seen_nodes:
-                lines.append(f'    {tgt}["{e.target_node_id}"]')
+                if tgt == _EXTERNAL_ID:
+                    if not _external_added:
+                        lines.append(f'    {_EXTERNAL_ID}[/"external"/]')
+                        _external_added = True
+                        node_classes[_EXTERNAL_ID] = "ext"
+                else:
+                    lines.append(f'    {tgt}["{tgt_label}"]')
+                    if show_heat:
+                        pct = churn_map.get(tgt_id, 0.0)
+                        node_classes[tgt] = "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
                 seen_nodes.add(tgt)
-                if show_heat:
-                    pct = churn_map.get(e.target_node_id, 0.0)
-                    node_classes[tgt] = "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
+
             lines.append(f"    {src} --> {tgt}")
 
-        # Apply heat classes
-        if show_heat and node_classes:
+        # Apply heat + external classes
+        if node_classes:
             for nid, cls in node_classes.items():
                 lines.append(f"    class {nid} {cls}")
-            lines.append("    classDef hot fill:#ff6b6b,color:#000")
-            lines.append("    classDef warm fill:#ffd93d,color:#000")
-            lines.append("    classDef cold fill:#6bcb77,color:#000")
+            if show_heat:
+                lines.append("    classDef hot fill:#ff6b6b,color:#000")
+                lines.append("    classDef warm fill:#ffd93d,color:#000")
+                lines.append("    classDef cold fill:#6bcb77,color:#000")
+            if _external_added:
+                lines.append("    classDef ext fill:#ccc,stroke-dasharray:5 5,color:#666")
 
         mermaid = "\n".join(lines) if len(lines) > 1 else "graph TD\n    A[No graph data available]"
 
