@@ -16,6 +16,7 @@ import json
 import os
 import os.path
 import re
+from collections import Counter
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -482,6 +483,45 @@ async def get_overview(repo: str | None = None) -> dict:
         )
         entry_nodes = result.scalars().all()
 
+        # Phase 4: repo-wide git health summary
+        git_res = await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repository.id,
+            )
+        )
+        all_git = git_res.scalars().all()
+
+        git_health: dict[str, Any] = {}
+        if all_git:
+            hotspot_count = sum(1 for g in all_git if g.is_hotspot)
+            bus_factors = [getattr(g, "bus_factor", 0) or 0 for g in all_git]
+            avg_bus = sum(bus_factors) / len(bus_factors) if bus_factors else 0
+            bf1 = sum(1 for b in bus_factors if b == 1)
+            c30_total = sum(g.commit_count_30d or 0 for g in all_git)
+            c90_total = sum(g.commit_count_90d or 0 for g in all_git)
+            baseline = c90_total - c30_total
+            if baseline > 0:
+                ratio = (c30_total / 30.0) / (baseline / 60.0)
+                churn_trend = "increasing" if ratio > 1.5 else ("decreasing" if ratio < 0.5 else "stable")
+            else:
+                churn_trend = "increasing" if c30_total > 0 else "stable"
+            # Top churn modules (group by first directory component)
+            module_churn: Counter = Counter()
+            for g in all_git:
+                parts = g.file_path.split("/")
+                mod = parts[0] if len(parts) == 1 else "/".join(parts[:2])
+                module_churn[mod] += g.commit_count_90d or 0
+            top_modules = [m for m, _ in module_churn.most_common(5) if module_churn[m] > 0]
+
+            git_health = {
+                "total_files_indexed": len(all_git),
+                "hotspot_count": hotspot_count,
+                "avg_bus_factor": round(avg_bus, 1),
+                "files_with_bus_factor_1": bf1,
+                "churn_trend": churn_trend,
+                "top_churn_modules": top_modules,
+            }
+
         return {
             "title": overview_page.title if overview_page else repository.name,
             "content_md": overview_page.content if overview_page else "No overview generated yet.",
@@ -499,6 +539,7 @@ async def get_overview(repo: str | None = None) -> dict:
                 for p in module_pages
             ],
             "entry_points": [n.node_id for n in entry_nodes],
+            "git_health": git_health,
         }
 
 
@@ -1669,16 +1710,51 @@ async def search_codebase(
 
     output = output[:limit]
 
-    # Batch-lookup actual page confidence scores from DB
+    # Batch-lookup actual page confidence scores from DB + git freshness boost
     if output:
         page_ids = [item["page_id"] for item in output]
         async with get_session(_session_factory) as session:
             res = await session.execute(
-                select(Page.id, Page.confidence).where(Page.id.in_(page_ids))
+                select(Page.id, Page.confidence, Page.target_path).where(
+                    Page.id.in_(page_ids)
+                )
             )
-            conf_map = {row[0]: row[1] for row in res.all()}
+            page_info = {row[0]: (row[1], row[2]) for row in res.all()}
+
+            # Build git freshness map for result file paths
+            target_paths = [
+                info[1] for info in page_info.values() if info[1]
+            ]
+            git_map: dict[str, GitMetadata] = {}
+            if target_paths:
+                git_res = await session.execute(
+                    select(GitMetadata).where(
+                        GitMetadata.file_path.in_(target_paths)
+                    )
+                )
+                git_map = {g.file_path: g for g in git_res.scalars().all()}
+
         for item in output:
-            item["confidence_score"] = conf_map.get(item["page_id"])
+            info = page_info.get(item["page_id"])
+            item["confidence_score"] = info[0] if info else None
+            # Freshness boost: recently-active files rank higher
+            target_path = info[1] if info else None
+            gm = git_map.get(target_path) if target_path else None
+            if gm and item.get("relevance_score"):
+                c30 = gm.commit_count_30d or 0
+                c90 = gm.commit_count_90d or 0
+                if c30 > 0:
+                    recency = 1.0
+                elif c90 > 0:
+                    recency = 0.5
+                else:
+                    recency = 0.0
+                item["relevance_score"] = round(
+                    item["relevance_score"] * (1 + 0.2 * recency), 4
+                )
+
+        # Re-sort by boosted relevance
+        output.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
 
     return {"results": output}
 
@@ -1741,12 +1817,36 @@ async def get_dependency_path(
     try:
         path = nx.shortest_path(G, source, target)
     except nx.NetworkXNoPath:
-        return {
+        result_data: dict[str, Any] = {
             "path": [],
             "distance": -1,
             "explanation": "No direct dependency path found",
             "visual_context": _build_visual_context(G, source, target, nodes, nx),
         }
+        # Phase 4: check co-change coupling even without import dependency
+        async with get_session(_session_factory) as session:
+            src_res = await session.execute(
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repository.id,
+                    GitMetadata.file_path == source,
+                )
+            )
+            src_meta = src_res.scalar_one_or_none()
+            if src_meta and src_meta.co_change_partners_json:
+                partners = json.loads(src_meta.co_change_partners_json)
+                for p in partners:
+                    partner_path = p.get("file_path", "")
+                    if partner_path == target:
+                        result_data["co_change_signal"] = {
+                            "co_change_count": p.get("co_change_count", 0),
+                            "last_co_change": p.get("last_co_change"),
+                            "note": (
+                                "No import dependency, but these files co-change "
+                                "frequently — likely logical coupling."
+                            ),
+                        }
+                        break
+        return result_data
 
     # Build path with relationships
     path_with_info = []
@@ -1948,6 +2048,18 @@ async def get_dead_code(
         all_result = await session.execute(all_query)
         all_findings = list(all_result.scalars().all())
 
+        # Phase 4: load git metadata for "last meaningful change" enrichment
+        finding_paths = list({f.file_path for f in all_findings})
+        git_meta_map: dict[str, Any] = {}
+        if finding_paths:
+            git_res = await session.execute(
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repository.id,
+                    GitMetadata.file_path.in_(finding_paths),
+                )
+            )
+            git_meta_map = {g.file_path: g for g in git_res.scalars().all()}
+
     # --- Apply filters ---
     filtered = all_findings
     if kind:
@@ -1964,7 +2076,7 @@ async def get_dead_code(
         filtered = [f for f in filtered if f.primary_owner and f.primary_owner.lower() == owner_lower]
 
     # --- Build tiered structure ---
-    tiers = _build_tiers(filtered, limit, tier)
+    tiers = _build_tiers(filtered, limit, tier, git_meta_map)
 
     # --- Summary across ALL open findings (unfiltered) ---
     by_kind: dict[str, int] = {}
@@ -1993,9 +2105,27 @@ async def get_dead_code(
     return result
 
 
-def _serialize_finding(f: Any) -> dict:
+def _find_last_meaningful_change(gm: Any) -> str | None:
+    """Find the date of the last feature/fix commit (not style/chore) from git metadata."""
+    if gm is None:
+        return None
+    sig_json = getattr(gm, "significant_commits_json", None)
+    cat_json = getattr(gm, "commit_categories_json", None)
+    # If we have significant commits, the most recent one is the best proxy
+    # for "last meaningful change" (significant commits already filter noise)
+    if sig_json:
+        try:
+            commits = json.loads(sig_json)
+            if commits:
+                return commits[0].get("date")  # most recent first
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None
+
+
+def _serialize_finding(f: Any, git_meta_map: dict | None = None) -> dict:
     """Serialize a single DeadCodeFinding to dict."""
-    return {
+    result = {
         "kind": f.kind,
         "file_path": f.file_path,
         "symbol_name": f.symbol_name,
@@ -2007,10 +2137,18 @@ def _serialize_finding(f: Any) -> dict:
         "primary_owner": f.primary_owner,
         "age_days": f.age_days,
     }
+    # Phase 4: add last meaningful change date
+    if git_meta_map:
+        gm = git_meta_map.get(f.file_path)
+        meaningful = _find_last_meaningful_change(gm)
+        if meaningful:
+            result["last_meaningful_change"] = meaningful
+    return result
 
 
 def _build_tiers(
     findings: list, limit: int, tier_filter: str | None,
+    git_meta_map: dict | None = None,
 ) -> dict:
     """Split findings into high/medium/low confidence tiers."""
     high = sorted(
@@ -2032,7 +2170,7 @@ def _build_tiers(
             "count": len(items),
             "lines": sum(f.lines for f in items),
             "safe_count": sum(1 for f in items if f.safe_to_delete),
-            "findings": [_serialize_finding(f) for f in items[:limit]],
+            "findings": [_serialize_finding(f, git_meta_map) for f in items[:limit]],
             "truncated": len(items) > limit,
         }
 
@@ -2120,6 +2258,7 @@ async def get_architecture_diagram(
     scope: str = "repo",
     path: str | None = None,
     diagram_type: str = "auto",
+    show_heat: bool = False,
     repo: str | None = None,
 ) -> dict:
     """Get a Mermaid diagram for the codebase or a specific module.
@@ -2128,6 +2267,7 @@ async def get_architecture_diagram(
         scope: "repo", "module", or "file".
         path: Module or file path (required for module/file scope).
         diagram_type: "auto", "flowchart", "class", or "sequence".
+        show_heat: Annotate nodes with churn heat colors (red=hot, yellow=warm, green=cold).
         repo: Repository path, name, or ID.
     """
     async with get_session(_session_factory) as session:
@@ -2181,26 +2321,53 @@ async def get_architecture_diagram(
             reverse=True,
         )
 
+        # Load git churn data for heat map
+        churn_map: dict[str, float] = {}
+        if show_heat:
+            git_res = await session.execute(
+                select(GitMetadata.file_path, GitMetadata.churn_percentile).where(
+                    GitMetadata.repository_id == repository.id,
+                )
+            )
+            churn_map = {row[0]: row[1] for row in git_res.all()}
+
         # Build Mermaid flowchart
         lines = ["graph TD"]
-        seen_nodes = set()
+        seen_nodes: set[str] = set()
+        node_classes: dict[str, str] = {}  # mermaid_id → class
+
         for e in relevant_edges[:50]:  # Limit to 50 edges for readability
             src = _sanitize_mermaid_id(e.source_node_id)
             tgt = _sanitize_mermaid_id(e.target_node_id)
             if src not in seen_nodes:
                 lines.append(f'    {src}["{e.source_node_id}"]')
                 seen_nodes.add(src)
+                if show_heat:
+                    pct = churn_map.get(e.source_node_id, 0.0)
+                    node_classes[src] = "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
             if tgt not in seen_nodes:
                 lines.append(f'    {tgt}["{e.target_node_id}"]')
                 seen_nodes.add(tgt)
+                if show_heat:
+                    pct = churn_map.get(e.target_node_id, 0.0)
+                    node_classes[tgt] = "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
             lines.append(f"    {src} --> {tgt}")
+
+        # Apply heat classes
+        if show_heat and node_classes:
+            for nid, cls in node_classes.items():
+                lines.append(f"    class {nid} {cls}")
+            lines.append("    classDef hot fill:#ff6b6b,color:#000")
+            lines.append("    classDef warm fill:#ffd93d,color:#000")
+            lines.append("    classDef cold fill:#6bcb77,color:#000")
 
         mermaid = "\n".join(lines) if len(lines) > 1 else "graph TD\n    A[No graph data available]"
 
         return {
             "diagram_type": diagram_type if diagram_type != "auto" else "flowchart",
             "mermaid_syntax": mermaid,
-            "description": f"Dependency graph for {scope}: {path or 'entire repo'}",
+            "description": f"Dependency graph for {scope}: {path or 'entire repo'}"
+                           + (" (with churn heat map)" if show_heat else ""),
         }
 
 
