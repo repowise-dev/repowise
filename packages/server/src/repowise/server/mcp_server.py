@@ -685,15 +685,23 @@ async def _resolve_one_target(
             if meta:
                 ownership["primary_owner"] = meta.primary_owner_name
                 ownership["owner_pct"] = meta.primary_owner_commit_pct
-                ownership["contributor_count"] = len(json.loads(meta.top_authors_json))
+                ownership["contributor_count"] = getattr(meta, "contributor_count", 0) or len(json.loads(meta.top_authors_json))
+                ownership["bus_factor"] = getattr(meta, "bus_factor", 0) or 0
+                # Recent owner (who maintains this file now)
+                recent = getattr(meta, "recent_owner_name", None)
+                if recent and recent != meta.primary_owner_name:
+                    ownership["recent_owner"] = recent
+                    ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
             else:
                 ownership["primary_owner"] = None
                 ownership["owner_pct"] = None
                 ownership["contributor_count"] = 0
+                ownership["bus_factor"] = 0
         else:
             ownership["primary_owner"] = None
             ownership["owner_pct"] = None
             ownership["contributor_count"] = 0
+            ownership["bus_factor"] = 0
         result_data["ownership"] = ownership
 
     # --- Last change ---
@@ -874,6 +882,7 @@ async def _assess_one_target(
         {
             "file_path": p.get("file_path", p.get("path", "")),
             "count": p.get("co_change_count", p.get("count", 0)),
+            "last_co_change": p.get("last_co_change"),
             "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
         }
         for p in partners
@@ -891,23 +900,59 @@ async def _assess_one_target(
     # --- Impact surface ---
     impact_surface = _compute_impact_surface(target, reverse_deps, node_meta)
 
+    # Phase 2: diff size & change magnitude
+    lines_added = getattr(meta, "lines_added_90d", 0) or 0
+    lines_deleted = getattr(meta, "lines_deleted_90d", 0) or 0
+    avg_size = getattr(meta, "avg_commit_size", 0.0) or 0.0
+
+    # Phase 2: commit classification → change_pattern
+    categories = {}
+    cat_json = getattr(meta, "commit_categories_json", None)
+    if cat_json:
+        try:
+            categories = json.loads(cat_json)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    change_pattern = _derive_change_pattern(categories)
+
+    # Phase 2: recent owner & bus factor
+    recent_owner = getattr(meta, "recent_owner_name", None)
+    recent_owner_pct = getattr(meta, "recent_owner_commit_pct", None)
+    bus_factor = getattr(meta, "bus_factor", 0) or 0
+    contributor_count = getattr(meta, "contributor_count", 0) or 0
+
     result_data["hotspot_score"] = hotspot_score
     result_data["dependents_count"] = dep_count
     result_data["co_change_partners"] = co_changes
     result_data["primary_owner"] = owner
     result_data["owner_pct"] = pct
+    result_data["recent_owner"] = recent_owner
+    result_data["recent_owner_pct"] = recent_owner_pct
+    result_data["bus_factor"] = bus_factor
+    result_data["contributor_count"] = contributor_count
     result_data["trend"] = trend
     result_data["risk_type"] = risk_type
+    result_data["change_pattern"] = change_pattern
+    result_data["change_magnitude"] = {
+        "lines_added_90d": lines_added,
+        "lines_deleted_90d": lines_deleted,
+        "avg_commit_size": round(avg_size, 1),
+    }
     result_data["impact_surface"] = impact_surface
 
     capped = getattr(meta, "commit_count_capped", False)
     capped_note = " (history truncated — actual count may be higher)" if capped else ""
     result_data["commit_count_capped"] = capped
+
+    bus_note = ""
+    if bus_factor == 1 and (meta.commit_count_total or 0) > 20:
+        bus_note = f", bus factor risk (sole maintainer: {owner})"
+
     result_data["risk_summary"] = (
         f"{target} — hotspot score {hotspot_score:.0%} ({trend}), "
-        f"{dep_count} dependents, {risk_type}, "
+        f"{dep_count} dependents, {risk_type}, {change_pattern}, "
         f"{len(co_changes)} co-change partners, owned {pct:.0%} by {owner}"
-        f"{capped_note}"
+        f"{bus_note}{capped_note}"
     )
 
     return result_data
@@ -917,6 +962,26 @@ _FIX_PATTERN = re.compile(
     r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",
     re.IGNORECASE,
 )
+
+
+def _derive_change_pattern(categories: dict[str, int]) -> str:
+    """Derive a human-readable change pattern from commit category counts."""
+    if not categories:
+        return "uncategorized"
+    total = sum(categories.values())
+    if total == 0:
+        return "uncategorized"
+    dominant = max(categories, key=lambda k: categories[k])
+    ratio = categories[dominant] / total
+    if ratio >= 0.5:
+        labels = {
+            "feature": "feature-active",
+            "refactor": "primarily refactored",
+            "fix": "bug-prone",
+            "dependency": "dependency-churn",
+        }
+        return labels.get(dominant, dominant)
+    return "mixed-activity"
 
 
 def _compute_trend(meta: Any) -> str:
@@ -941,7 +1006,7 @@ def _compute_trend(meta: Any) -> str:
 
 
 def _classify_risk_type(meta: Any, dep_count: int) -> str:
-    """Classify risk as churn-heavy, bug-prone, or high-coupling."""
+    """Classify risk as churn-heavy, bug-prone, high-coupling, or bus-factor-risk."""
     # Count bug-fix commits from significant_commits messages
     commits = json.loads(meta.significant_commits_json) if meta.significant_commits_json else []
     fix_count = sum(
@@ -950,12 +1015,16 @@ def _classify_risk_type(meta: Any, dep_count: int) -> str:
     )
 
     churn_score = meta.churn_percentile or 0.0
+    bus_factor = getattr(meta, "bus_factor", 0) or 0
+    total_commits = meta.commit_count_total or 0
 
     # Bug-prone takes priority if fix ratio is high
     if commits and fix_count / len(commits) >= 0.4:
         return "bug-prone"
     if churn_score >= 0.7:
         return "churn-heavy"
+    if bus_factor == 1 and total_commits > 20:
+        return "bus-factor-risk"
     if dep_count >= 5:
         return "high-coupling"
     return "stable"

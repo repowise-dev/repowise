@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -61,6 +63,28 @@ _MIN_MESSAGE_LEN = 12
 
 # Default per-file and co-change commit history depth.
 _DEFAULT_COMMIT_LIMIT: int = 500
+
+# Commit message classification regexes (Phase 2.2).
+_COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
+    "feature": re.compile(
+        r"\b(add|implement|introduce|create|new|feat)\b", re.IGNORECASE,
+    ),
+    "refactor": re.compile(
+        r"\b(refactor|restructure|cleanup|clean.up|rename|reorganize|extract|simplify|move)\b",
+        re.IGNORECASE,
+    ),
+    "fix": re.compile(
+        r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",
+        re.IGNORECASE,
+    ),
+    "dependency": re.compile(
+        r"\b(upgrade|bump|update.dep|migrate.to|switch.to|dependency|dependencies)\b",
+        re.IGNORECASE,
+    ),
+}
+
+# Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
+_CO_CHANGE_DECAY_TAU: float = 180.0
 
 # Allowlist of extensions for which per-file git indexing (blame, commit
 # history, hotspot/stable classification) is worth running.  Anything NOT in
@@ -365,10 +389,19 @@ class GitIndexer:
             "top_authors_json": "[]",
             "significant_commits_json": "[]",
             "co_change_partners_json": "[]",
+            "commit_categories_json": "{}",
             "is_hotspot": False,
             "is_stable": False,
             "churn_percentile": 0.0,
             "age_days": 0,
+            # Phase 2 fields
+            "lines_added_90d": 0,
+            "lines_deleted_90d": 0,
+            "avg_commit_size": 0.0,
+            "recent_owner_name": None,
+            "recent_owner_commit_pct": None,
+            "bus_factor": 0,
+            "contributor_count": 0,
         }
 
         try:
@@ -389,25 +422,40 @@ class GitIndexer:
             meta["last_commit_at"] = max(dates)
             meta["age_days"] = (now - min(dates)).days
 
-            # Commit counts by time window
+            # Commit counts by time window + recent author tracking
+            author_counts: Counter[str] = Counter()
+            author_emails: dict[str, str] = {}
+            recent_author_counts: Counter[str] = Counter()
+
             for c in commits:
                 cd = c.committed_datetime
                 if cd.tzinfo is None:
                     cd = cd.replace(tzinfo=timezone.utc)
                 if cd >= ninety_days_ago:
                     meta["commit_count_90d"] += 1
+                    recent_author_counts[c.author.name or "unknown"] += 1
                 if cd >= thirty_days_ago:
                     meta["commit_count_30d"] += 1
-
-            # Author analysis
-            author_counts: Counter[str] = Counter()
-            author_emails: dict[str, str] = {}
-            for c in commits:
                 name = c.author.name or "unknown"
                 author_counts[name] += 1
                 if name not in author_emails and c.author.email:
                     author_emails[name] = c.author.email
 
+            # Contributor count & bus factor
+            meta["contributor_count"] = len(author_counts)
+            total_commits = sum(author_counts.values())
+            if total_commits > 0:
+                threshold = total_commits * 0.8
+                running = 0
+                bus = 0
+                for _name, cnt in author_counts.most_common():
+                    running += cnt
+                    bus += 1
+                    if running >= threshold:
+                        break
+                meta["bus_factor"] = bus
+
+            # Top authors
             top_authors = []
             for name, count in author_counts.most_common(5):
                 top_authors.append({
@@ -421,9 +469,17 @@ class GitIndexer:
                 primary = top_authors[0]
                 meta["primary_owner_name"] = primary["name"]
                 meta["primary_owner_email"] = primary["email"]
-                total = sum(a["commit_count"] for a in top_authors)
                 meta["primary_owner_commit_pct"] = (
-                    primary["commit_count"] / total if total > 0 else 0.0
+                    primary["commit_count"] / total_commits if total_commits > 0 else 0.0
+                )
+
+            # Recent owner (90d)
+            if recent_author_counts:
+                recent_top = recent_author_counts.most_common(1)[0]
+                meta["recent_owner_name"] = recent_top[0]
+                recent_total = sum(recent_author_counts.values())
+                meta["recent_owner_commit_pct"] = (
+                    recent_top[1] / recent_total if recent_total > 0 else 0.0
                 )
 
             # Blame ownership (overrides author-based if available).
@@ -443,19 +499,37 @@ class GitIndexer:
             except Exception:
                 pass  # blame is best-effort
 
-            # Significant commits
+            # Significant commits + classification
             sig_commits = []
+            category_counts: Counter[str] = Counter()
             for c in commits:
+                msg = c.message.strip().split("\n")[0][:200]
                 if self._is_significant_commit(c.message, c.author.name or ""):
                     sig_commits.append({
                         "sha": c.hexsha[:8],
                         "date": c.committed_datetime.isoformat(),
-                        "message": c.message.strip().split("\n")[0][:200],
+                        "message": msg,
                         "author": c.author.name or "unknown",
                     })
                     if len(sig_commits) >= 10:
                         break
+                # Classify ALL commits (not just significant) for accurate ratios
+                for cat, pattern in _COMMIT_CATEGORIES.items():
+                    if pattern.search(msg):
+                        category_counts[cat] += 1
+                        break  # first match wins
+
             meta["significant_commits_json"] = json.dumps(sig_commits)
+            meta["commit_categories_json"] = json.dumps(dict(category_counts))
+
+            # Diff stats (lines added/deleted in last 90 days)
+            added, deleted = self._get_line_stats(file_path, repo, ninety_days_ago)
+            meta["lines_added_90d"] = added
+            meta["lines_deleted_90d"] = deleted
+            c90 = meta["commit_count_90d"]
+            meta["avg_commit_size"] = (
+                (added + deleted) / c90 if c90 > 0 else 0.0
+            )
 
             # Stable classification
             if meta["commit_count_total"] > 10 and meta["commit_count_90d"] == 0:
@@ -493,6 +567,38 @@ class GitIndexer:
         top_name = line_counts.most_common(1)[0][0]
         pct = line_counts[top_name] / total_lines
         return top_name, emails.get(top_name), pct
+
+    def _get_line_stats(
+        self, file_path: str, repo: Any, since: datetime,
+    ) -> tuple[int, int]:
+        """Get total lines added and deleted for a file since a given date.
+
+        Uses a single ``git log --numstat`` call — one subprocess per file.
+        """
+        try:
+            output = repo.git.log(
+                f"--since={since.strftime('%Y-%m-%d')}",
+                "--numstat",
+                "--format=",
+                "--",
+                file_path,
+            )
+        except Exception:
+            return 0, 0
+
+        added = 0
+        deleted = 0
+        for line in output.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                try:
+                    a = int(parts[0]) if parts[0] != "-" else 0
+                    d = int(parts[1]) if parts[1] != "-" else 0
+                    added += a
+                    deleted += d
+                except ValueError:
+                    continue
+        return added, deleted
 
     def _is_significant_commit(self, message: str, author: str) -> bool:
         """Return True if the commit is considered significant.
@@ -539,21 +645,25 @@ class GitIndexer:
         Uses a single ``git log --name-only`` call instead of spawning one
         ``git diff`` subprocess per commit — O(1) processes vs O(commit_limit).
 
+        Applies exponential temporal decay so recent co-changes weigh more
+        than ancient ones.  The ``%ct`` format captures commit timestamps.
+
         on_co_change_start(total) is called once with the actual number of
         commits found.  on_commit_done() is called after each commit block is
         processed.  Both are invoked from a thread-pool thread; callers must
         ensure thread safety (Rich Progress is thread-safe).
         """
-        pair_counts: Counter[tuple[str, str]] = Counter()
+        pair_scores: defaultdict[tuple[str, str], float] = defaultdict(float)
+        pair_last_date: dict[tuple[str, str], int] = {}  # pair → latest Unix ts
+        now_ts = time.time()
 
         try:
-            # One git command returns all changed-file lists.  %x00 (null byte)
-            # is used as a commit separator — it cannot appear in file paths.
+            # %x00 = commit separator, %ct = committer timestamp (Unix epoch).
             raw = repo.git.log(
                 f"-{commit_limit}",
                 "--name-only",
                 "--no-merges",
-                "--format=%x00",
+                "--format=%x00%ct",
             )
         except Exception:
             return {}
@@ -564,16 +674,32 @@ class GitIndexer:
             on_co_change_start(actual_commits)
 
         current: set[str] = set()
+        current_ts: int = 0
+
+        def _flush_commit() -> None:
+            if len(current) < 2:
+                return
+            age_days = max((now_ts - current_ts) / 86400.0, 0.0)
+            weight = math.exp(-age_days / _CO_CHANGE_DECAY_TAU)
+            sorted_files = sorted(current)
+            for i in range(len(sorted_files)):
+                for j in range(i + 1, len(sorted_files)):
+                    pair = (sorted_files[i], sorted_files[j])
+                    pair_scores[pair] += weight
+                    if pair not in pair_last_date or current_ts > pair_last_date[pair]:
+                        pair_last_date[pair] = current_ts
+
         for line in raw.splitlines():
             if line == "\x00" or line.startswith("\x00"):
-                # Commit boundary — process the files accumulated for the
-                # previous commit, then start a fresh set.
-                if len(current) >= 2:
-                    sorted_files = sorted(current)
-                    for i in range(len(sorted_files)):
-                        for j in range(i + 1, len(sorted_files)):
-                            pair_counts[(sorted_files[i], sorted_files[j])] += 1
+                # Commit boundary — flush previous, parse timestamp.
+                _flush_commit()
                 current = set()
+                # Extract Unix timestamp after the \x00 marker
+                ts_part = line.lstrip("\x00").strip()
+                try:
+                    current_ts = int(ts_part)
+                except (ValueError, TypeError):
+                    current_ts = 0
                 if on_commit_done is not None:
                     on_commit_done()
             else:
@@ -581,21 +707,33 @@ class GitIndexer:
                 if path and path in all_files:
                     current.add(path)
 
-        # Flush the final commit's files
-        if len(current) >= 2:
-            sorted_files = sorted(current)
-            for i in range(len(sorted_files)):
-                for j in range(i + 1, len(sorted_files)):
-                    pair_counts[(sorted_files[i], sorted_files[j])] += 1
+        _flush_commit()  # final commit
 
-        # Build result: for each file, list partners above threshold
+        # Build result: for each file, list partners above threshold.
+        # min_count is compared against raw weight (decay-adjusted).
+        # A score of 3.0 roughly equals 3 recent co-changes or many older ones.
         result: dict[str, list[dict]] = defaultdict(list)
-        for (a, b), count in pair_counts.items():
-            if count >= min_count:
-                result[a].append({"file_path": b, "co_change_count": count})
-                result[b].append({"file_path": a, "co_change_count": count})
+        for (a, b), score in pair_scores.items():
+            if score >= min_count:
+                last_ts = pair_last_date.get((a, b), 0)
+                last_date = (
+                    datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                    if last_ts > 0 else None
+                )
+                entry_a = {
+                    "file_path": b,
+                    "co_change_count": round(score, 2),
+                    "last_co_change": last_date,
+                }
+                entry_b = {
+                    "file_path": a,
+                    "co_change_count": round(score, 2),
+                    "last_co_change": last_date,
+                }
+                result[a].append(entry_a)
+                result[b].append(entry_b)
 
-        # Sort partners by count descending
+        # Sort partners by score descending
         for fp in result:
             result[fp].sort(key=lambda x: x["co_change_count"], reverse=True)
 

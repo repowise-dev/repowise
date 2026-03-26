@@ -299,6 +299,22 @@ class GitMetadata(Base):
     age_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     commit_count_capped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Diff size (Phase 2)
+    lines_added_90d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lines_deleted_90d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    avg_commit_size: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # Commit classification (Phase 2)
+    commit_categories_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}"
+    )
+
+    # Recent ownership & bus factor (Phase 2)
+    recent_owner_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    recent_owner_commit_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bus_factor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    contributor_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
