@@ -1,6 +1,15 @@
 # ---------------------------------------------------------------------------
 # repowise-server — per-package config (packaging is handled by root pyproject.toml)
 # ---------------------------------------------------------------------------
+[project]
+name = "repowise-server"
+version = "0.1.2"
+requires-python = ">=3.11"
+dependencies = ["repowise-core"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/repowise"]
