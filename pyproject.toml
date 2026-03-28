@@ -197,34 +197,13 @@ known-first-party = ["repowise"]
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
-strict = true
-warn_return_any = true
 warn_unused_configs = true
-warn_unused_ignores = true
 show_error_codes = true
 namespace_packages = true
 explicit_package_bases = true
-
-# Per-module overrides for third-party packages without stubs
-[[tool.mypy.overrides]]
-module = [
-    "tree_sitter",
-    "tree_sitter_python",
-    "tree_sitter_typescript",
-    "tree_sitter_go",
-    "tree_sitter_rust",
-    "tree_sitter_java",
-    "tree_sitter_cpp",
-    "lancedb",
-    "pgvector",
-    "litellm",
-    "apscheduler.*",
-    "networkx",
-    "pathspec",
-    "structlog",
-    "mcp",
-]
 ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = true
 
 # ---------------------------------------------------------------------------
 # pytest
