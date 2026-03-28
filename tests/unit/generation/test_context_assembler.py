@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import networkx as nx
-import pytest
 
 from repowise.core.generation.context_assembler import (
     ContextAssembler,
@@ -12,16 +11,10 @@ from repowise.core.generation.context_assembler import (
 )
 from repowise.core.generation.models import GenerationConfig
 from repowise.core.ingestion.models import (
-    FileInfo,
-    Import,
-    PackageInfo,
     ParsedFile,
-    RepoStructure,
-    Symbol,
 )
 
 from .conftest import _make_file_info, _make_symbol
-
 
 # ---------------------------------------------------------------------------
 # _estimate_tokens

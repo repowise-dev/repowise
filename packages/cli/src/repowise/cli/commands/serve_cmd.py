@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -35,9 +34,7 @@ def _web_is_cached(version: str) -> bool:
     server_js = _WEB_CACHE_DIR / "server.js"
     if not server_js.exists():
         return False
-    if _MARKER_FILE.exists() and _MARKER_FILE.read_text().strip() == version:
-        return True
-    return False
+    return _MARKER_FILE.exists() and _MARKER_FILE.read_text().strip() == version
 
 
 def _find_local_web() -> Path | None:
@@ -185,10 +182,8 @@ def serve_command(port: int, host: str, workers: int, ui_port: int, no_ui: bool)
     try:
         import uvicorn
     except ImportError:
-        console.print(
-            "[red]uvicorn is not installed. Install it with: pip install repowise[/red]"
-        )
-        raise SystemExit(1)
+        console.print("[red]uvicorn is not installed. Install it with: pip install repowise[/red]")
+        raise SystemExit(1) from None
 
     frontend_proc: subprocess.Popen | None = None
 
@@ -227,9 +222,7 @@ def serve_command(port: int, host: str, workers: int, ui_port: int, no_ui: bool)
             if ready:
                 frontend_proc = _start_frontend(node, port, ui_port)
                 if frontend_proc:
-                    console.print(
-                        f"[green]Web UI starting on http://localhost:{ui_port}[/green]"
-                    )
+                    console.print(f"[green]Web UI starting on http://localhost:{ui_port}[/green]")
                 else:
                     console.print("[yellow]Could not start web UI — running API only.[/yellow]")
             else:

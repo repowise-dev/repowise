@@ -50,7 +50,7 @@ def _verify_gitlab_token(token_header: str) -> None:
 @router.post("/github", response_model=WebhookResponse)
 async def github_webhook(
     request: Request,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> WebhookResponse:
     """Receive and process GitHub webhook events.
 
@@ -86,9 +86,10 @@ async def github_webhook(
         ref = payload.get("ref", "")
         # Only sync pushes to the default branch
         if ref.startswith("refs/heads/"):
-            branch = ref[len("refs/heads/"):]
+            branch = ref[len("refs/heads/") :]
             # Find matching repo by URL
             from sqlalchemy import select
+
             from repowise.core.persistence.models import Repository
 
             result = await session.execute(
@@ -115,7 +116,7 @@ async def github_webhook(
 @router.post("/gitlab", response_model=WebhookResponse)
 async def gitlab_webhook(
     request: Request,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> WebhookResponse:
     """Receive and process GitLab webhook events.
 
@@ -140,16 +141,15 @@ async def gitlab_webhook(
     if event_type == "Push Hook":
         ref = payload.get("ref", "")
         if ref.startswith("refs/heads/"):
-            branch = ref[len("refs/heads/"):]
+            branch = ref[len("refs/heads/") :]
             project_url = payload.get("project", {}).get("web_url", "")
 
             from sqlalchemy import select
+
             from repowise.core.persistence.models import Repository
 
             result = await session.execute(
-                select(Repository).where(
-                    Repository.url.contains(project_url[:50])
-                )
+                select(Repository).where(Repository.url.contains(project_url[:50]))
             )
             repo = result.scalar_one_or_none()
             if repo and branch == repo.default_branch:

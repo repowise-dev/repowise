@@ -29,10 +29,7 @@ ERR = "bold red"
 # ASCII art  —  bold half-block, compact lowercase, 2 lines
 # ---------------------------------------------------------------------------
 
-_LOGO = (
-    " █▀█ █▀▀ █▀█ █▀█ █ █ █ ▀ █▀▀ █▀▀\n"
-    " █▀▄ ██▄ █▀▀ █▄█ ▀▄▀▄▀ █ ▄▄█ ██▄"
-)
+_LOGO = " █▀█ █▀▀ █▀█ █▀█ █ █ █ ▀ █▀▀ █▀▀\n █▀▄ ██▄ █▀▀ █▄█ ▀▄▀▄▀ █ ▄▄█ ██▄"
 
 
 def print_banner(console: Console, repo_name: str | None = None) -> None:
@@ -105,6 +102,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # .env persistence  —  save/load API keys in .repowise/.env
 # ---------------------------------------------------------------------------
+
 
 def load_dotenv(repo_path: Path) -> None:
     """Load ``<repo>/.repowise/.env`` into ``os.environ`` (without overwriting)."""
@@ -260,10 +258,7 @@ def interactive_provider_select(
     table.add_column("Default Model", style="dim")
 
     for idx, prov in enumerate(providers, 1):
-        if prov in detected:
-            status_text = f"[{OK}]✓ API key set[/]"
-        else:
-            status_text = "[dim]✗ no key[/dim]"
+        status_text = f"[{OK}]✓ API key set[/]" if prov in detected else "[dim]✗ no key[/dim]"
         default_model = _PROVIDER_DEFAULTS.get(prov, "")
         # Mark gemini as recommended
         label = prov
@@ -308,13 +303,10 @@ def interactive_provider_select(
 
     # --- model ---
     default_model = _PROVIDER_DEFAULTS.get(chosen, "")
-    if model_flag:
-        model = model_flag
-    else:
-        model = click.prompt(
-            "  Model",
-            default=default_model,
-        )
+    model = model_flag or click.prompt(
+        "  Model",
+        default=default_model,
+    )
 
     return chosen, model
 
@@ -415,9 +407,7 @@ def interactive_advanced_config(console: Console) -> dict[str, Any]:
     )
 
     # --- exclude patterns ---
-    console.print(
-        "  [dim]Exclude patterns (gitignore-style, comma-separated, or empty):[/dim]"
-    )
+    console.print("  [dim]Exclude patterns (gitignore-style, comma-separated, or empty):[/dim]")
     raw = click.prompt("  Exclude", default="", show_default=False)
     patterns = [p.strip() for p in raw.split(",") if p.strip()]
     result["exclude"] = tuple(patterns)

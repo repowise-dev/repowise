@@ -12,7 +12,6 @@ import pytest
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
 from repowise.core.providers.llm.gemini import GeminiProvider
 
-
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
@@ -75,8 +74,8 @@ async def test_generate_returns_generated_response():
     provider = GeminiProvider(api_key="fake-key")
     mock_response = _make_mock_response("Hello world")
 
-    with patch("google.genai.Client") as MockClient:
-        MockClient.return_value.models.generate_content.return_value = mock_response
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.return_value = mock_response
         result = await provider.generate("sys", "user")
 
     assert isinstance(result, GeneratedResponse)
@@ -87,8 +86,8 @@ async def test_generate_token_counts():
     provider = GeminiProvider(api_key="fake-key")
     mock_response = _make_mock_response()
 
-    with patch("google.genai.Client") as MockClient:
-        MockClient.return_value.models.generate_content.return_value = mock_response
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.return_value = mock_response
         result = await provider.generate("sys", "user")
 
     assert result.input_tokens == 100
@@ -108,8 +107,8 @@ async def test_generate_passes_max_tokens():
         captured.append(config)
         return mock_response
 
-    with patch("google.genai.Client") as MockClient:
-        MockClient.return_value.models.generate_content.side_effect = fake_generate_content
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.side_effect = fake_generate_content
         await provider.generate("sys", "user", max_tokens=1234)
 
     # max_output_tokens intentionally omitted — Gemini flash models default to 65k
@@ -124,11 +123,13 @@ async def test_generate_passes_max_tokens():
 async def test_rate_limit_error_on_429():
     provider = GeminiProvider(api_key="fake-key")
 
-    class FakeRateLimit(Exception):
+    class FakeRateLimitError(Exception):
         status_code = 429
 
-    with patch("google.genai.Client") as MockClient:
-        MockClient.return_value.models.generate_content.side_effect = FakeRateLimit("quota exceeded")
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.side_effect = FakeRateLimitError(
+            "quota exceeded"
+        )
         with pytest.raises(RateLimitError):
             await provider.generate("sys", "user")
 
@@ -136,8 +137,10 @@ async def test_rate_limit_error_on_429():
 async def test_rate_limit_error_on_quota_message():
     provider = GeminiProvider(api_key="fake-key")
 
-    with patch("google.genai.Client") as MockClient:
-        MockClient.return_value.models.generate_content.side_effect = Exception("quota exceeded for project")
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.side_effect = Exception(
+            "quota exceeded for project"
+        )
         with pytest.raises(RateLimitError):
             await provider.generate("sys", "user")
 
@@ -145,8 +148,10 @@ async def test_rate_limit_error_on_quota_message():
 async def test_api_error_on_generic_exception():
     provider = GeminiProvider(api_key="fake-key")
 
-    with patch("google.genai.Client") as MockClient:
-        MockClient.return_value.models.generate_content.side_effect = Exception("internal server error")
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.side_effect = Exception(
+            "internal server error"
+        )
         with pytest.raises(ProviderError):
             await provider.generate("sys", "user")
 
@@ -157,7 +162,7 @@ async def test_provider_error_message_includes_exception_type():
     class CustomError(Exception):
         pass
 
-    with patch("google.genai.Client") as MockClient:
-        MockClient.return_value.models.generate_content.side_effect = CustomError("bad request")
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.side_effect = CustomError("bad request")
         with pytest.raises(ProviderError, match="CustomError"):
             await provider.generate("sys", "user")

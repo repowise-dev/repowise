@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 # ---------------------------------------------------------------------------
@@ -76,12 +76,12 @@ class GenerationConfig:
     cache_enabled: bool = True
     staleness_threshold_days: int = 7
     expiry_threshold_days: int = 30
-    top_symbol_percentile: float = 0.10   # top N% public symbols by PageRank → symbol_spotlight
-    file_page_top_percentile: float = 0.10 # top N% code files by PageRank → file_page
-    file_page_min_symbols: int = 1         # files with fewer symbols are skipped for file_page
-    max_pages_pct: float = 0.10            # hard cap: total pages ≤ max(50, N_files * this)
+    top_symbol_percentile: float = 0.10  # top N% public symbols by PageRank → symbol_spotlight
+    file_page_top_percentile: float = 0.10  # top N% code files by PageRank → file_page
+    file_page_min_symbols: int = 1  # files with fewer symbols are skipped for file_page
+    max_pages_pct: float = 0.10  # hard cap: total pages ≤ max(50, N_files * this)
     jobs_dir: str = ".repowise/jobs"
-    large_file_source_pct: float = 0.4    # use structural summary when source tokens > budget * this
+    large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ class GeneratedPage:
         input_tokens:     Prompt tokens consumed.
         output_tokens:    Completion tokens produced.
         cached_tokens:    Tokens served from provider cache.
-        generation_level: Numeric generation level (0–7).
+        generation_level: Numeric generation level (0-7).
         target_path:      File/module/SCC this page documents.
         created_at:       ISO-8601 UTC timestamp.
         updated_at:       ISO-8601 UTC timestamp.
@@ -168,7 +168,7 @@ def _parse_datetime(ts: str) -> datetime:
     ts = ts.replace("Z", "+00:00")
     dt = datetime.fromisoformat(ts)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -190,9 +190,9 @@ def compute_freshness(
         FreshnessStatus: "fresh", "stale", or "expired".
     """
     if as_of is None:
-        as_of = datetime.now(timezone.utc)
+        as_of = datetime.now(UTC)
     if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=timezone.utc)
+        as_of = as_of.replace(tzinfo=UTC)
 
     updated = _parse_datetime(page.updated_at)
     days = (as_of - updated).total_seconds() / 86400.0
@@ -230,9 +230,9 @@ def decay_confidence(
         ConfidenceDecayResult with old/new confidence and freshness status.
     """
     if as_of is None:
-        as_of = datetime.now(timezone.utc)
+        as_of = datetime.now(UTC)
     if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=timezone.utc)
+        as_of = as_of.replace(tzinfo=UTC)
 
     updated = _parse_datetime(page.updated_at)
     days = (as_of - updated).total_seconds() / 86400.0
@@ -337,9 +337,8 @@ def compute_confidence_decay_with_git(
                 result *= 0.95
 
         # Stable: decays slower
-        if is_stable:
-            if relationship == "direct":
-                result *= 1.03
+        if is_stable and relationship == "direct":
+            result *= 1.03
 
     if commit_message:
         msg_lower = commit_message.lower()
@@ -350,8 +349,7 @@ def compute_confidence_decay_with_git(
             elif relationship == "1hop":
                 result *= 0.84
         # Cosmetic changes: soft decay
-        elif any(kw in msg_lower for kw in ("typo", "lint", "format")):
-            if relationship == "direct":
-                result *= 1.12
+        elif any(kw in msg_lower for kw in ("typo", "lint", "format")) and relationship == "direct":
+            result *= 1.12
 
     return result

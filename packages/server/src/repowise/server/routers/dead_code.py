@@ -30,7 +30,7 @@ async def list_dead_code(
     status: str = Query("open"),
     safe_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[DeadCodeFindingResponse]:
     """List dead code findings for a repository."""
     findings = await crud.get_dead_code_findings(
@@ -48,7 +48,7 @@ async def list_dead_code(
 @router.post("/api/repos/{repo_id}/dead-code/analyze", status_code=202)
 async def analyze_dead_code(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Trigger a fresh dead code analysis.
 
@@ -66,7 +66,7 @@ async def analyze_dead_code(
 )
 async def dead_code_summary(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DeadCodeSummaryResponse:
     """Get aggregate dead code statistics for a repository."""
     summary = await crud.get_dead_code_summary(session, repo_id)
@@ -77,7 +77,7 @@ async def dead_code_summary(
 async def resolve_finding(
     finding_id: str,
     body: DeadCodePatchRequest,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DeadCodeFindingResponse:
     """Update the status of a dead code finding."""
     valid_statuses = {"acknowledged", "resolved", "false_positive", "open"}
@@ -87,9 +87,7 @@ async def resolve_finding(
             detail=f"Invalid status. Must be one of: {sorted(valid_statuses)}",
         )
 
-    finding = await crud.update_dead_code_status(
-        session, finding_id, body.status, body.note
-    )
+    finding = await crud.update_dead_code_status(session, finding_id, body.status, body.note)
     if finding is None:
         raise HTTPException(status_code=404, detail="Finding not found")
     return DeadCodeFindingResponse.from_orm(finding)

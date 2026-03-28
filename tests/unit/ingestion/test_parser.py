@@ -7,12 +7,11 @@ Covers Python, TypeScript, Go, Rust, Java, C++ — one test class per language.
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
 from repowise.core.ingestion.models import FileInfo
-from repowise.core.ingestion.parser import ASTParser, LANGUAGE_CONFIGS
+from repowise.core.ingestion.parser import LANGUAGE_CONFIGS, ASTParser
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -138,9 +137,7 @@ class TestPythonParser:
     def test_from_import_names(self, parser: ASTParser) -> None:
         fi = _make_file_info("pkg/calc.py", "python")
         result = parser.parse_file(fi, PYTHON_SOURCE)
-        op_import = next(
-            i for i in result.imports if i.module_path == "python_pkg.models"
-        )
+        op_import = next(i for i in result.imports if i.module_path == "python_pkg.models")
         assert "Operation" in op_import.imported_names
 
     def test_function_docstring(self, parser: ASTParser) -> None:
@@ -172,7 +169,7 @@ class TestPythonParser:
         calc_add = next(
             s for s in result.symbols if s.name == "add" and s.parent_name == "Calculator"
         )
-        assert "python_pkg.calculator.Calculator.add" == calc_add.qualified_name
+        assert calc_add.qualified_name == "python_pkg.calculator.Calculator.add"
 
     def test_exports_list(self, parser: ASTParser) -> None:
         fi = _make_file_info("pkg/calc.py", "python")
@@ -186,7 +183,7 @@ class TestPythonParser:
 # TypeScript
 # ---------------------------------------------------------------------------
 
-TS_SOURCE = b'''/**
+TS_SOURCE = b"""/**
  * Sample TypeScript client module.
  * Exports ApiClient and related types.
  */
@@ -236,7 +233,7 @@ export class ApiClient {
 export function createClient(config: ApiClientConfig): ApiClient {
   return new ApiClient(config);
 }
-'''
+"""
 
 
 class TestTypeScriptParser:
@@ -284,7 +281,7 @@ class TestTypeScriptParser:
 # Go
 # ---------------------------------------------------------------------------
 
-GO_SOURCE = b'''// Package calculator provides arithmetic with history.
+GO_SOURCE = b"""// Package calculator provides arithmetic with history.
 package calculator
 
 import (
@@ -320,7 +317,7 @@ func (c *Calculator) Divide(ops types.Operands) (float64, error) {
 	}
 	return ops.X / ops.Y, nil
 }
-'''
+"""
 
 
 class TestGoParser:
@@ -373,7 +370,7 @@ class TestGoParser:
 # Rust
 # ---------------------------------------------------------------------------
 
-RUST_SOURCE = b'''//! Sample Rust calculator.
+RUST_SOURCE = b"""//! Sample Rust calculator.
 
 use std::fmt;
 
@@ -406,7 +403,7 @@ impl CalculationRecord {
 pub fn add(x: f64, y: f64) -> f64 {
     x + y
 }
-'''
+"""
 
 
 class TestRustParser:
@@ -450,7 +447,7 @@ class TestRustParser:
 # Java
 # ---------------------------------------------------------------------------
 
-JAVA_SOURCE = b'''package com.repowise.sample;
+JAVA_SOURCE = b"""package com.repowise.sample;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -474,7 +471,7 @@ public class Calculator {
         history.add(entry);
     }
 }
-'''
+"""
 
 
 class TestJavaParser:
@@ -504,7 +501,7 @@ class TestJavaParser:
 # C++
 # ---------------------------------------------------------------------------
 
-CPP_SOURCE = b'''#include "calculator.hpp"
+CPP_SOURCE = b"""#include "calculator.hpp"
 #include <stdexcept>
 #include <string>
 
@@ -522,9 +519,9 @@ double Calculator::divide(double x, double y) {
 }
 
 }  // namespace sample
-'''
+"""
 
-CPP_HEADER_SOURCE = b'''#pragma once
+CPP_HEADER_SOURCE = b"""#pragma once
 
 #include <vector>
 #include "models.hpp"
@@ -542,7 +539,7 @@ private:
 };
 
 }  // namespace sample
-'''
+"""
 
 
 class TestCppParser:

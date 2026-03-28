@@ -29,7 +29,7 @@ async def list_jobs(
     status: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[JobResponse]:
     """List generation jobs, optionally filtered by repository or status."""
     q = select(GenerationJob)
@@ -47,7 +47,7 @@ async def list_jobs(
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(
     job_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> JobResponse:
     """Get a single generation job by ID."""
     job = await crud.get_generation_job(session, job_id)

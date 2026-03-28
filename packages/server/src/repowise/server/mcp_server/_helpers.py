@@ -11,7 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.models import (
-    DecisionRecord,
     Repository,
 )
 
@@ -19,10 +18,26 @@ from repowise.core.persistence.models import (
 # Constants
 # ---------------------------------------------------------------------------
 
-_CODE_EXTS = frozenset({
-    ".py", ".ts", ".js", ".go", ".rs", ".java", ".tsx", ".jsx",
-    ".rb", ".kt", ".cpp", ".c", ".h", ".cs", ".swift", ".scala",
-})
+_CODE_EXTS = frozenset(
+    {
+        ".py",
+        ".ts",
+        ".js",
+        ".go",
+        ".rs",
+        ".java",
+        ".tsx",
+        ".jsx",
+        ".rb",
+        ".kt",
+        ".cpp",
+        ".c",
+        ".h",
+        ".cs",
+        ".swift",
+        ".scala",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -34,9 +49,7 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
     """Resolve a repository — by path, by ID, or return the first one."""
     if repo:
         # Try by path
-        result = await session.execute(
-            select(Repository).where(Repository.local_path == repo)
-        )
+        result = await session.execute(select(Repository).where(Repository.local_path == repo))
         obj = result.scalar_one_or_none()
         if obj:
             return obj
@@ -45,9 +58,7 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
         if obj:
             return obj
         # Try by name
-        result = await session.execute(
-            select(Repository).where(Repository.name == repo)
-        )
+        result = await session.execute(select(Repository).where(Repository.name == repo))
         obj = result.scalar_one_or_none()
         if obj:
             return obj
@@ -57,9 +68,7 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
     result = await session.execute(select(Repository).limit(1))
     obj = result.scalar_one_or_none()
     if obj is None:
-        raise LookupError(
-            "No repositories found. Run 'repowise init' first."
-        )
+        raise LookupError("No repositories found. Run 'repowise init' first.")
     return obj
 
 
@@ -82,7 +91,9 @@ def _is_path(query: str) -> bool:
 
 
 def _build_origin_story(
-    file_path: str, git_meta: Any | None, governing_decisions: list[dict],
+    file_path: str,
+    git_meta: Any | None,
+    governing_decisions: list[dict],
 ) -> dict:
     """Build the human context / origin story for a file from stored metadata."""
     if git_meta is None:
@@ -92,7 +103,9 @@ def _build_origin_story(
         }
 
     authors = json.loads(git_meta.top_authors_json) if git_meta.top_authors_json else []
-    commits = json.loads(git_meta.significant_commits_json) if git_meta.significant_commits_json else []
+    commits = (
+        json.loads(git_meta.significant_commits_json) if git_meta.significant_commits_json else []
+    )
 
     # Find the earliest significant commit as the "creation" context
     earliest_commit = None
@@ -104,7 +117,9 @@ def _build_origin_story(
     linked_decisions = []
     for d in governing_decisions:
         # Build a keyword set from the decision
-        decision_text = f"{d.get('title', '')} {d.get('decision', '')} {d.get('rationale', '')}".lower()
+        decision_text = (
+            f"{d.get('title', '')} {d.get('decision', '')} {d.get('rationale', '')}".lower()
+        )
         decision_words = set(decision_text.split())
         decision_words -= {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
 
@@ -117,27 +132,35 @@ def _build_origin_story(
             overlap = decision_words & msg_words
             # Require at least 1 meaningful word match
             if len(overlap) >= 1:
-                related_commits.append({
-                    "sha": c.get("sha", ""),
-                    "message": c.get("message", ""),
-                    "author": c.get("author", ""),
-                    "date": c.get("date", ""),
-                    "matching_keywords": sorted(overlap)[:5],
-                })
+                related_commits.append(
+                    {
+                        "sha": c.get("sha", ""),
+                        "message": c.get("message", ""),
+                        "author": c.get("author", ""),
+                        "date": c.get("date", ""),
+                        "matching_keywords": sorted(overlap)[:5],
+                    }
+                )
 
-        linked_decisions.append({
-            "title": d.get("title", ""),
-            "status": d.get("status", ""),
-            "source": d.get("source", ""),
-            "rationale": d.get("rationale", ""),
-            "evidence_commits": related_commits,
-        })
+        linked_decisions.append(
+            {
+                "title": d.get("title", ""),
+                "status": d.get("status", ""),
+                "source": d.get("source", ""),
+                "rationale": d.get("rationale", ""),
+                "evidence_commits": related_commits,
+            }
+        )
 
     # Build narrative summary
     primary = git_meta.primary_owner_name or "unknown"
     total = git_meta.commit_count_total or 0
-    first_date = git_meta.first_commit_at.strftime("%Y-%m-%d") if git_meta.first_commit_at else "unknown"
-    last_date = git_meta.last_commit_at.strftime("%Y-%m-%d") if git_meta.last_commit_at else "unknown"
+    first_date = (
+        git_meta.first_commit_at.strftime("%Y-%m-%d") if git_meta.first_commit_at else "unknown"
+    )
+    last_date = (
+        git_meta.last_commit_at.strftime("%Y-%m-%d") if git_meta.last_commit_at else "unknown"
+    )
     age = git_meta.age_days or 0
 
     parts = [f"Created ~{first_date}, last modified {last_date} ({age} days old)."]
@@ -145,7 +168,7 @@ def _build_origin_story(
 
     if earliest_commit:
         parts.append(
-            f"Earliest key commit: \"{earliest_commit.get('message', '')}\" "
+            f'Earliest key commit: "{earliest_commit.get("message", "")}" '
             f"by {earliest_commit.get('author', 'unknown')} on {earliest_commit.get('date', 'unknown')}."
         )
 
@@ -157,8 +180,7 @@ def _build_origin_story(
             if ld["evidence_commits"]:
                 ec = ld["evidence_commits"][0]
                 parts.append(
-                    f"Commit \"{ec['message']}\" by {ec['author']} "
-                    f"is evidence for \"{ld['title']}\"."
+                    f'Commit "{ec["message"]}" by {ec["author"]} is evidence for "{ld["title"]}".'
                 )
 
     contributor_count = len(authors)
@@ -182,7 +204,9 @@ def _build_origin_story(
 
 
 def _compute_alignment(
-    file_path: str, governing: list[dict], all_decisions: list,
+    file_path: str,
+    governing: list[dict],
+    all_decisions: list,
 ) -> dict:
     """Compute how well a file aligns with established architectural decisions."""
     if not governing:
@@ -212,7 +236,7 @@ def _compute_alignment(
 
     for d in all_decisions:
         affected = json.loads(d.affected_files_json)
-        affected_modules = json.loads(d.affected_modules_json)
+        _affected_modules = json.loads(d.affected_modules_json)
         for af in affected:
             af_dir = "/".join(af.split("/")[:-1])
             if af_dir == dir_path and af != file_path:
@@ -229,8 +253,8 @@ def _compute_alignment(
     if deprecated and not active and not proposed:
         score = "low"
         explanation = (
-            f"All governing decisions are deprecated/superseded. "
-            f"This file likely contains technical debt that should be migrated."
+            "All governing decisions are deprecated/superseded. "
+            "This file likely contains technical debt that should be migrated."
         )
     elif stale and len(stale) >= len(governing) / 2:
         score = "low"

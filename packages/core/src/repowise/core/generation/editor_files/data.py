@@ -19,8 +19,8 @@ class TechStackItem:
 
 @dataclass(frozen=True)
 class KeyModule:
-    name: str        # display name, e.g. "src/api"
-    purpose: str     # short description (~80 chars)
+    name: str  # display name, e.g. "src/api"
+    purpose: str  # short description (~80 chars)
     file_count: int
     owner: str | None
 
@@ -36,15 +36,15 @@ class HotspotFile:
 @dataclass(frozen=True)
 class DecisionSummary:
     title: str
-    status: str      # active | deprecated | superseded | proposed
-    rationale: str   # first ~100 chars of decision.rationale
+    status: str  # active | deprecated | superseded | proposed
+    rationale: str  # first ~100 chars of decision.rationale
 
 
 @dataclass(frozen=True)
 class EditorFileData:
     repo_name: str
-    indexed_at: str              # date only: "2026-03-28"
-    architecture_summary: str    # 2-4 sentences from repo_overview page
+    indexed_at: str  # date only: "2026-03-28"
+    architecture_summary: str  # 2-4 sentences from repo_overview page
     key_modules: list[KeyModule] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)
     tech_stack: list[TechStackItem] = field(default_factory=list)

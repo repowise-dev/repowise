@@ -27,29 +27,29 @@ from .parser import LANGUAGE_CONFIGS, ASTParser, LanguageConfig, parse_file
 from .traverser import FileTraverser
 
 __all__ = [
-    # Traversal
-    "FileTraverser",
+    # Models
+    "EXTENSION_TO_LANGUAGE",
+    "LANGUAGE_CONFIGS",
     # Parsing
     "ASTParser",
-    "parse_file",
-    "LANGUAGE_CONFIGS",
-    "LanguageConfig",
-    # Graph
-    "GraphBuilder",
     # Change detection
+    "AffectedPages",
     "ChangeDetector",
     "FileDiff",
-    "SymbolDiff",
-    "SymbolRename",
-    "AffectedPages",
-    # Models
     "FileInfo",
+    # Traversal
+    "FileTraverser",
+    # Graph
+    "GraphBuilder",
     "Import",
+    "LanguageConfig",
     "PackageInfo",
     "ParsedFile",
     "RepoStructure",
     "Symbol",
+    "SymbolDiff",
     "SymbolKind",
-    "EXTENSION_TO_LANGUAGE",
+    "SymbolRename",
     "compute_content_hash",
+    "parse_file",
 ]

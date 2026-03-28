@@ -52,9 +52,7 @@ def _parse_imported_names(raw: str | None) -> list[str]:
 
 async def _get_documented_paths(session: AsyncSession, repo_id: str) -> set[str]:
     """Return the set of node_ids (file paths) that have a wiki page."""
-    result = await session.execute(
-        select(Page.target_path).where(Page.repository_id == repo_id)
-    )
+    result = await session.execute(select(Page.target_path).where(Page.repository_id == repo_id))
     return {row.target_path for row in result.all() if row.target_path}
 
 
@@ -66,16 +64,14 @@ async def _get_documented_paths(session: AsyncSession, repo_id: str) -> set[str]
 @router.get("/{repo_id}/modules", response_model=ModuleGraphResponse)
 async def module_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> ModuleGraphResponse:
     """Collapsed directory-level graph: one node per top-level path segment."""
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    node_result = await session.execute(
-        select(GraphNode).where(GraphNode.repository_id == repo_id)
-    )
+    node_result = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
     nodes = node_result.scalars().all()
 
     # Group nodes by first path segment
@@ -97,9 +93,7 @@ async def module_graph(
         file_count = len(module_file_nodes)
         symbol_count = sum(n.symbol_count for n in module_file_nodes)
         avg_pagerank = sum(n.pagerank for n in module_file_nodes) / max(file_count, 1)
-        covered = sum(
-            1 for n in module_file_nodes if page_coverage.get(n.node_id, 0.0) >= 0.7
-        )
+        covered = sum(1 for n in module_file_nodes if page_coverage.get(n.node_id, 0.0) >= 0.7)
         doc_coverage_pct = covered / max(file_count, 1)
 
         for n in module_file_nodes:
@@ -116,9 +110,7 @@ async def module_graph(
         )
 
     # Build inter-module edges from file-level edges
-    edge_result = await session.execute(
-        select(GraphEdge).where(GraphEdge.repository_id == repo_id)
-    )
+    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     edges = edge_result.scalars().all()
 
     edge_counts: dict[tuple[str, str], int] = {}
@@ -147,7 +139,7 @@ async def ego_graph(
     repo_id: str,
     node_id: str = Query(..., description="Center node ID"),
     hops: int = Query(2, ge=1, le=3),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> EgoGraphResponse:
     """Return the N-hop neighborhood of a given node."""
     repo = await crud.get_repository(session, repo_id)
@@ -157,18 +149,16 @@ async def ego_graph(
     try:
         import networkx as nx
     except ImportError:
-        raise HTTPException(status_code=501, detail="networkx not available")
+        raise HTTPException(status_code=501, detail="networkx not available") from None
 
-    edge_result = await session.execute(
-        select(GraphEdge).where(GraphEdge.repository_id == repo_id)
-    )
+    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     edges = edge_result.scalars().all()
 
-    G: nx.DiGraph = nx.DiGraph()
+    graph: nx.DiGraph = nx.DiGraph()
     for e in edges:
-        G.add_edge(e.source_node_id, e.target_node_id)
+        graph.add_edge(e.source_node_id, e.target_node_id)
 
-    if node_id not in G:
+    if node_id not in graph:
         node_check = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
@@ -177,12 +167,12 @@ async def ego_graph(
         )
         if node_check.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
-        G.add_node(node_id)
+        graph.add_node(node_id)
 
-    inbound_count = G.in_degree(node_id)
-    outbound_count = G.out_degree(node_id)
+    inbound_count = graph.in_degree(node_id)
+    outbound_count = graph.out_degree(node_id)
 
-    ego: nx.DiGraph = nx.ego_graph(G, node_id, radius=hops, undirected=True)
+    ego: nx.DiGraph = nx.ego_graph(graph, node_id, radius=hops, undirected=True)
     ego_node_ids = set(ego.nodes())
 
     node_result = await session.execute(
@@ -248,7 +238,7 @@ async def ego_graph(
 @router.get("/{repo_id}/entry-points", response_model=GraphExportResponse)
 async def entry_points_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> GraphExportResponse:
     """Return the subgraph reachable within 3 hops from entry-point nodes."""
     repo = await crud.get_repository(session, repo_id)
@@ -258,16 +248,14 @@ async def entry_points_graph(
     try:
         import networkx as nx
     except ImportError:
-        raise HTTPException(status_code=501, detail="networkx not available")
+        raise HTTPException(status_code=501, detail="networkx not available") from None
 
-    edge_result = await session.execute(
-        select(GraphEdge).where(GraphEdge.repository_id == repo_id)
-    )
+    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     edges = edge_result.scalars().all()
 
-    G: nx.DiGraph = nx.DiGraph()
+    graph: nx.DiGraph = nx.DiGraph()
     for e in edges:
-        G.add_edge(e.source_node_id, e.target_node_id)
+        graph.add_edge(e.source_node_id, e.target_node_id)
 
     ep_result = await session.execute(
         select(GraphNode).where(
@@ -280,8 +268,8 @@ async def entry_points_graph(
     reachable: set[str] = set()
     for ep in entry_nodes:
         reachable.add(ep.node_id)
-        if ep.node_id in G:
-            paths = nx.single_source_shortest_path_length(G, ep.node_id, cutoff=3)
+        if ep.node_id in graph:
+            paths = nx.single_source_shortest_path_length(graph, ep.node_id, cutoff=3)
             reachable.update(paths.keys())
 
     if not reachable:
@@ -334,7 +322,7 @@ async def entry_points_graph(
 @router.get("/{repo_id}/dead-nodes", response_model=DeadCodeGraphResponse)
 async def dead_code_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DeadCodeGraphResponse:
     """Return dead-code nodes plus their 1-hop neighbors."""
     repo = await crud.get_repository(session, repo_id)
@@ -453,7 +441,7 @@ async def hot_files_graph(
     repo_id: str,
     days: int = Query(30, description="Time window in days: 7, 30, or 90"),
     limit: int = Query(25, ge=1, le=100),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> HotFilesGraphResponse:
     """Return the most-committed files plus their 1-hop outgoing neighbors."""
     repo = await crud.get_repository(session, repo_id)
@@ -526,10 +514,9 @@ async def hot_files_graph(
             commit_count=commit_count,
         )
 
-    node_responses = (
-        [_to_hot_node(n, commit_map.get(n.node_id, 0)) for n in hot_nodes]
-        + [_to_hot_node(n, 0) for n in neighbor_nodes]
-    )
+    node_responses = [_to_hot_node(n, commit_map.get(n.node_id, 0)) for n in hot_nodes] + [
+        _to_hot_node(n, 0) for n in neighbor_nodes
+    ]
 
     link_responses = [
         GraphEdgeResponse(
@@ -554,7 +541,7 @@ async def search_nodes(
     repo_id: str,
     q: str = Query(..., description="Search query"),
     limit: int = Query(10, ge=1, le=50),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[NodeSearchResult]:
     """Full-text search over node_id values."""
     repo = await crud.get_repository(session, repo_id)
@@ -571,7 +558,10 @@ async def search_nodes(
         .limit(limit)
     )
     nodes = result.scalars().all()
-    return [NodeSearchResult(node_id=n.node_id, language=n.language, symbol_count=n.symbol_count) for n in nodes]
+    return [
+        NodeSearchResult(node_id=n.node_id, language=n.language, symbol_count=n.symbol_count)
+        for n in nodes
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -582,21 +572,17 @@ async def search_nodes(
 @router.get("/{repo_id}", response_model=GraphExportResponse)
 async def export_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> GraphExportResponse:
     """Export the full dependency graph in D3 force-directed format."""
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    node_result = await session.execute(
-        select(GraphNode).where(GraphNode.repository_id == repo_id)
-    )
+    node_result = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
     nodes = node_result.scalars().all()
 
-    edge_result = await session.execute(
-        select(GraphEdge).where(GraphEdge.repository_id == repo_id)
-    )
+    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     edges = edge_result.scalars().all()
 
     documented = await _get_documented_paths(session, repo_id)
@@ -639,7 +625,7 @@ async def dependency_path(
     repo_id: str,
     source: str = Query(..., alias="from", description="Source node ID"),
     target: str = Query(..., alias="to", description="Target node ID"),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Find the shortest dependency path between two nodes.
 
@@ -650,39 +636,38 @@ async def dependency_path(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    edge_result = await session.execute(
-        select(GraphEdge).where(GraphEdge.repository_id == repo_id)
-    )
+    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     edges = edge_result.scalars().all()
 
-    node_result = await session.execute(
-        select(GraphNode).where(GraphNode.repository_id == repo_id)
-    )
+    node_result = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
     nodes = node_result.scalars().all()
 
     try:
         import networkx as nx
     except ImportError:
-        raise HTTPException(status_code=501, detail="networkx not available for path queries")
+        raise HTTPException(
+            status_code=501, detail="networkx not available for path queries"
+        ) from None
 
-    G: nx.DiGraph = nx.DiGraph()
+    graph: nx.DiGraph = nx.DiGraph()
     for e in edges:
-        G.add_edge(e.source_node_id, e.target_node_id)
+        graph.add_edge(e.source_node_id, e.target_node_id)
 
-    if source not in G:
+    if source not in graph:
         raise HTTPException(status_code=404, detail=f"Source node '{source}' not found in graph")
-    if target not in G:
+    if target not in graph:
         raise HTTPException(status_code=404, detail=f"Target node '{target}' not found in graph")
 
     try:
-        path = nx.shortest_path(G, source, target)
+        path = nx.shortest_path(graph, source, target)
     except nx.NetworkXNoPath:
         from repowise.server.mcp_server import _build_visual_context
+
         return {
             "path": [],
             "distance": -1,
             "explanation": "No direct dependency path found",
-            "visual_context": _build_visual_context(G, source, target, nodes, nx),
+            "visual_context": _build_visual_context(graph, source, target, nodes, nx),
         }
 
     return {

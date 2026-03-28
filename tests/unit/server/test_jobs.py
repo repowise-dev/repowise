@@ -7,7 +7,6 @@ from httpx import AsyncClient
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -98,9 +97,7 @@ async def test_job_stream_completed(client: AsyncClient, app) -> None:
             status="completed",
             total_pages=5,
         )
-        await crud.update_job_status(
-            session, job.id, "completed", completed_pages=5
-        )
+        await crud.update_job_status(session, job.id, "completed", completed_pages=5)
         job_id = job.id
 
     resp = await client.get(f"/api/jobs/{job_id}/stream")

@@ -40,7 +40,9 @@ def _get_url() -> str:
     # Normalise to async driver prefix
     if url.startswith("sqlite://") and "aiosqlite" not in url:
         url = url.replace("sqlite://", "sqlite+aiosqlite://", 1)
-    elif (url.startswith("postgresql://") or url.startswith("postgres://")) and "asyncpg" not in url:
+    elif (
+        url.startswith("postgresql://") or url.startswith("postgres://")
+    ) and "asyncpg" not in url:
         url = url.replace("://", "+asyncpg://", 1)
     return url
 

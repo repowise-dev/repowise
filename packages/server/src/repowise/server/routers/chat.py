@@ -9,14 +9,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import StreamingResponse
 
-from repowise.core.persistence.database import get_session
 from repowise.core.persistence import crud
-from repowise.core.providers.llm.base import ChatProvider, ChatStreamEvent, ProviderError
+from repowise.core.persistence.database import get_session
+from repowise.core.providers.llm.base import ChatProvider, ProviderError
 from repowise.server.chat_tools import (
     execute_tool,
     get_artifact_type,
     get_tool_schemas_for_llm,
-    init_tool_state,
 )
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.provider_config import get_chat_provider_instance, set_active_provider
@@ -142,8 +141,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
             assistant_text_parts: list[str] = []
             tool_calls_made: list[dict[str, Any]] = []
 
-            for loop_idx in range(_MAX_AGENTIC_LOOPS):
-                stop_reason = None
+            for _loop_idx in range(_MAX_AGENTIC_LOOPS):
                 pending_tool_calls: list[dict[str, Any]] = []
 
                 try:
@@ -160,24 +158,32 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 
                         if event.type == "text_delta" and event.text:
                             assistant_text_parts.append(event.text)
-                            yield _sse_event("data", {
-                                "type": "text_delta",
-                                "text": event.text,
-                            })
+                            yield _sse_event(
+                                "data",
+                                {
+                                    "type": "text_delta",
+                                    "text": event.text,
+                                },
+                            )
 
                         elif event.type == "tool_start" and event.tool_call:
                             tc = event.tool_call
-                            pending_tool_calls.append({
-                                "id": tc.id,
-                                "name": tc.name,
-                                "arguments": tc.arguments,
-                            })
-                            yield _sse_event("data", {
-                                "type": "tool_start",
-                                "tool_id": tc.id,
-                                "tool_name": tc.name,
-                                "input": tc.arguments,
-                            })
+                            pending_tool_calls.append(
+                                {
+                                    "id": tc.id,
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                }
+                            )
+                            yield _sse_event(
+                                "data",
+                                {
+                                    "type": "tool_start",
+                                    "tool_id": tc.id,
+                                    "tool_name": tc.name,
+                                    "input": tc.arguments,
+                                },
+                            )
 
                         elif event.type == "tool_result" and event.tool_call:
                             # Provider executed the tool internally (e.g. Gemini).
@@ -187,37 +193,43 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                             artifact_type = get_artifact_type(tc.name)
                             summary = _build_tool_summary(tc.name, result)
 
-                            yield _sse_event("data", {
-                                "type": "tool_result",
-                                "tool_id": tc.id,
-                                "tool_name": tc.name,
-                                "summary": summary,
-                                "artifact": {
-                                    "type": artifact_type,
-                                    "data": result,
+                            yield _sse_event(
+                                "data",
+                                {
+                                    "type": "tool_result",
+                                    "tool_id": tc.id,
+                                    "tool_name": tc.name,
+                                    "summary": summary,
+                                    "artifact": {
+                                        "type": artifact_type,
+                                        "data": result,
+                                    },
                                 },
-                            })
+                            )
 
-                            tool_calls_made.append({
-                                "id": tc.id,
-                                "name": tc.name,
-                                "arguments": tc.arguments,
-                                "result": result,
-                            })
+                            tool_calls_made.append(
+                                {
+                                    "id": tc.id,
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                    "result": result,
+                                }
+                            )
 
                             # Remove from pending since provider already executed it
-                            pending_tool_calls = [
-                                p for p in pending_tool_calls if p["id"] != tc.id
-                            ]
+                            pending_tool_calls = [p for p in pending_tool_calls if p["id"] != tc.id]
 
                         elif event.type == "stop":
-                            stop_reason = event.stop_reason
+                            pass  # stop_reason = event.stop_reason (reserved for future use)
 
                 except ProviderError as exc:
-                    yield _sse_event("data", {
-                        "type": "error",
-                        "message": str(exc),
-                    })
+                    yield _sse_event(
+                        "data",
+                        {
+                            "type": "error",
+                            "message": str(exc),
+                        },
+                    )
                     return
 
                 # Execute tool calls that weren't handled internally by the provider
@@ -249,31 +261,38 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                         # Build summary from result
                         summary = _build_tool_summary(tc["name"], result)
 
-                        yield _sse_event("data", {
-                            "type": "tool_result",
-                            "tool_id": tc["id"],
-                            "tool_name": tc["name"],
-                            "summary": summary,
-                            "artifact": {
-                                "type": artifact_type,
-                                "data": result,
+                        yield _sse_event(
+                            "data",
+                            {
+                                "type": "tool_result",
+                                "tool_id": tc["id"],
+                                "tool_name": tc["name"],
+                                "summary": summary,
+                                "artifact": {
+                                    "type": artifact_type,
+                                    "data": result,
+                                },
                             },
-                        })
+                        )
 
-                        tool_calls_made.append({
-                            "id": tc["id"],
-                            "name": tc["name"],
-                            "arguments": tc["arguments"],
-                            "result": result,
-                        })
+                        tool_calls_made.append(
+                            {
+                                "id": tc["id"],
+                                "name": tc["name"],
+                                "arguments": tc["arguments"],
+                                "result": result,
+                            }
+                        )
 
                         # Add tool result to LLM history
-                        llm_messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "name": tc["name"],
-                            "content": json.dumps(result),
-                        })
+                        llm_messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": tc["name"],
+                                "content": json.dumps(result),
+                            }
+                        )
 
                     # Always loop back so the LLM can generate a text
                     # response based on the tool results.
@@ -297,18 +316,24 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                 msg_id = msg.id
                 await crud.touch_conversation(session, conv_id)
 
-            yield _sse_event("data", {
-                "type": "done",
-                "conversation_id": conv_id,
-                "message_id": msg_id,
-            })
+            yield _sse_event(
+                "data",
+                {
+                    "type": "done",
+                    "conversation_id": conv_id,
+                    "message_id": msg_id,
+                },
+            )
 
         except Exception as exc:
             logger.exception("Chat stream error")
-            yield _sse_event("data", {
-                "type": "error",
-                "message": f"Internal error: {type(exc).__name__}: {exc}",
-            })
+            yield _sse_event(
+                "data",
+                {
+                    "type": "error",
+                    "message": f"Internal error: {type(exc).__name__}: {exc}",
+                },
+            )
 
     return StreamingResponse(
         event_stream(),
@@ -329,7 +354,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 @router.get("/api/repos/{repo_id}/chat/conversations")
 async def list_conversations(
     repo_id: str,
-    session=Depends(get_db_session),
+    session=Depends(get_db_session),  # noqa: B008
 ):
     convs = await crud.list_conversations(session, repo_id)
     result = []
@@ -343,7 +368,7 @@ async def list_conversations(
 async def get_conversation(
     repo_id: str,
     conversation_id: str,
-    session=Depends(get_db_session),
+    session=Depends(get_db_session),  # noqa: B008
 ):
     conv = await crud.get_conversation(session, conversation_id)
     if not conv or conv.repository_id != repo_id:
@@ -360,7 +385,7 @@ async def get_conversation(
 async def delete_conversation(
     repo_id: str,
     conversation_id: str,
-    session=Depends(get_db_session),
+    session=Depends(get_db_session),  # noqa: B008
 ):
     conv = await crud.get_conversation(session, conversation_id)
     if not conv or conv.repository_id != repo_id:
@@ -384,13 +409,17 @@ def _db_messages_to_llm_format(db_messages: list) -> list[dict[str, Any]]:
     llm_messages: list[dict[str, Any]] = []
 
     for msg in db_messages:
-        content = json.loads(msg.content_json) if isinstance(msg.content_json, str) else msg.content_json
+        content = (
+            json.loads(msg.content_json) if isinstance(msg.content_json, str) else msg.content_json
+        )
 
         if msg.role == "user":
-            llm_messages.append({
-                "role": "user",
-                "content": content.get("text", ""),
-            })
+            llm_messages.append(
+                {
+                    "role": "user",
+                    "content": content.get("text", ""),
+                }
+            )
         elif msg.role == "assistant":
             text = content.get("text", "")
             tool_calls = content.get("tool_calls", [])
@@ -415,17 +444,21 @@ def _db_messages_to_llm_format(db_messages: list) -> list[dict[str, Any]]:
 
                 # Add tool results
                 for tc in tool_calls:
-                    llm_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "name": tc["name"],
-                        "content": json.dumps(tc.get("result", {})),
-                    })
+                    llm_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": tc["name"],
+                            "content": json.dumps(tc.get("result", {})),
+                        }
+                    )
             else:
-                llm_messages.append({
-                    "role": "assistant",
-                    "content": text,
-                })
+                llm_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": text,
+                    }
+                )
 
     return llm_messages
 
@@ -459,13 +492,17 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
         mode = result.get("mode", "")
         if mode == "health":
             counts = result.get("counts", {})
-            return f"Decision health: {counts.get('active', 0)} active, {counts.get('stale', 0)} stale"
+            return (
+                f"Decision health: {counts.get('active', 0)} active, {counts.get('stale', 0)} stale"
+            )
         if mode == "path":
             decisions = result.get("decisions", [])
             alignment = result.get("alignment", {})
             score = alignment.get("score", "unknown")
             origin = result.get("origin_story", {})
-            author = origin.get("primary_author", "unknown") if origin.get("available") else "unknown"
+            author = (
+                origin.get("primary_author", "unknown") if origin.get("available") else "unknown"
+            )
             return f"{len(decisions)} decision(s), alignment: {score}, author: {author}"
         decisions = result.get("decisions", [])
         return f"Found {len(decisions)} decision(s)"

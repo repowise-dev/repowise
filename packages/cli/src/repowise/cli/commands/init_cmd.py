@@ -44,6 +44,7 @@ def _maybe_generate_claude_md(
         cfg["editor_files"] = ef_cfg
         try:
             import yaml  # type: ignore[import-untyped]
+
             cfg_path = repo_path / ".repowise" / "config.yaml"
             cfg_path.write_text(
                 yaml.dump(cfg, default_flow_style=False, sort_keys=False),
@@ -58,12 +59,13 @@ def _maybe_generate_claude_md(
         with console_obj.status("  Generating CLAUDE.md…", spinner="dots"):
             run_async(_write_claude_md_async(repo_path))
         console_obj.print("  [green]✓[/green] CLAUDE.md updated")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         console_obj.print(f"  [yellow]CLAUDE.md skipped: {exc}[/yellow]")
 
 
 async def _write_claude_md_async(repo_path: Path) -> None:
     """Fetch data from DB and write CLAUDE.md (async helper)."""
+    from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.generation.editor_files import ClaudeMdGenerator, EditorFileDataFetcher
     from repowise.core.persistence import (
         create_engine,
@@ -72,7 +74,6 @@ async def _write_claude_md_async(repo_path: Path) -> None:
         init_db,
     )
     from repowise.core.persistence.crud import get_repository_by_path
-    from repowise.cli.helpers import get_db_url_for_repo
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
@@ -100,6 +101,7 @@ async def _persist_index_only(
     decision_report: Any = None,
 ) -> None:
     """Persist graph, symbols, git metadata, dead code, and decisions — no pages."""
+    from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
         batch_upsert_graph_edges,
         batch_upsert_graph_nodes,
@@ -114,7 +116,6 @@ async def _persist_index_only(
         save_dead_code_findings,
         upsert_git_metadata_bulk,
     )
-    from repowise.cli.helpers import get_db_url_for_repo
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
@@ -137,29 +138,33 @@ async def _persist_index_only(
         nodes = []
         for node_path in graph.nodes:
             data = graph.nodes[node_path]
-            nodes.append({
-                "node_id": node_path,
-                "symbol_count": data.get("symbol_count", 0),
-                "has_error": data.get("has_error", False),
-                "is_test": data.get("is_test", False),
-                "is_entry_point": data.get("is_entry_point", False),
-                "language": data.get("language", "unknown"),
-                "pagerank": pr.get(node_path, 0.0),
-                "betweenness": bc.get(node_path, 0.0),
-                "community_id": cd.get(node_path, 0),
-            })
+            nodes.append(
+                {
+                    "node_id": node_path,
+                    "symbol_count": data.get("symbol_count", 0),
+                    "has_error": data.get("has_error", False),
+                    "is_test": data.get("is_test", False),
+                    "is_entry_point": data.get("is_entry_point", False),
+                    "language": data.get("language", "unknown"),
+                    "pagerank": pr.get(node_path, 0.0),
+                    "betweenness": bc.get(node_path, 0.0),
+                    "community_id": cd.get(node_path, 0),
+                }
+            )
         if nodes:
             await batch_upsert_graph_nodes(session, repo_id, nodes)
 
         # Graph edges
         edges = []
         for u, v, data in graph.edges(data=True):
-            edges.append({
-                "source_node_id": u,
-                "target_node_id": v,
-                "imported_names_json": json.dumps(data.get("imported_names", [])),
-                "edge_type": data.get("edge_type", "imports"),
-            })
+            edges.append(
+                {
+                    "source_node_id": u,
+                    "target_node_id": v,
+                    "imported_names_json": json.dumps(data.get("imported_names", [])),
+                    "edge_type": data.get("edge_type", "imports"),
+                }
+            )
         if edges:
             await batch_upsert_graph_edges(session, repo_id, edges)
 
@@ -208,20 +213,37 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
 
 @click.command("init")
 @click.argument("path", required=False, default=None)
-@click.option("--provider", "provider_name", default=None, help="LLM provider name (anthropic, openai, gemini, ollama, mock).")
+@click.option(
+    "--provider",
+    "provider_name",
+    default=None,
+    help="LLM provider name (anthropic, openai, gemini, ollama, mock).",
+)
 @click.option("--model", default=None, help="Model identifier override.")
-@click.option("--embedder", "embedder_name", default=None,
-              type=click.Choice(["gemini", "openai", "mock"]),
-              help="Embedder for RAG: gemini | openai | mock (default: auto-detect).")
+@click.option(
+    "--embedder",
+    "embedder_name",
+    default=None,
+    type=click.Choice(["gemini", "openai", "mock"]),
+    help="Embedder for RAG: gemini | openai | mock (default: auto-detect).",
+)
 @click.option("--skip-tests", is_flag=True, default=False, help="Skip test files.")
 @click.option("--skip-infra", is_flag=True, default=False, help="Skip infrastructure files.")
-@click.option("--dry-run", is_flag=True, default=False, help="Show generation plan without running.")
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="Show generation plan without running."
+)
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip cost confirmation prompt.")
 @click.option("--resume", is_flag=True, default=False, help="Resume from last checkpoint.")
-@click.option("--force", is_flag=True, default=False, help="Regenerate all pages, ignoring existing.")
+@click.option(
+    "--force", is_flag=True, default=False, help="Regenerate all pages, ignoring existing."
+)
 @click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
-@click.option("--test-run", is_flag=True, default=False,
-              help="Limit generation to top 10 files by PageRank for quick validation.")
+@click.option(
+    "--test-run",
+    is_flag=True,
+    default=False,
+    help="Limit generation to top 10 files by PageRank for quick validation.",
+)
 @click.option(
     "--index-only",
     is_flag=True,
@@ -229,7 +251,8 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
     help="Index files, git history, graph, and dead code — skip LLM page generation.",
 )
 @click.option(
-    "--exclude", "-x",
+    "--exclude",
+    "-x",
     multiple=True,
     metavar="PATTERN",
     help="Gitignore-style pattern to exclude. Can be repeated: -x vendor/ -x 'src/generated/**'",
@@ -312,6 +335,7 @@ def init_command(
 
     try:
         import structlog
+
         structlog.configure(
             wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
         )
@@ -368,9 +392,19 @@ def init_command(
         # Still try to resolve a provider for decision extraction (no page generation)
         decision_provider = None
         try:
-            if provider_name or (sys.stdin.isatty() is False):
-                decision_provider = resolve_provider(provider_name, model, repo_path)
-            elif any(os.environ.get(k) for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")):
+            if (
+                provider_name
+                or (sys.stdin.isatty() is False)
+                or any(
+                    os.environ.get(k)
+                    for k in (
+                        "GEMINI_API_KEY",
+                        "GOOGLE_API_KEY",
+                        "OPENAI_API_KEY",
+                        "ANTHROPIC_API_KEY",
+                    )
+                )
+            ):
                 decision_provider = resolve_provider(provider_name, model, repo_path)
         except Exception:
             pass  # No provider available — inline markers only
@@ -382,18 +416,23 @@ def init_command(
             console.print(f"[bold]repowise index-only[/bold] — {repo_path}")
             console.print("[yellow]Skipping LLM page generation (--index-only)[/yellow]")
             if decision_provider:
-                console.print(f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]")
+                console.print(
+                    f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]"
+                )
     else:
         # Non-interactive path: resolve provider from flags/env
         if not is_interactive and provider_name is None and sys.stdin.isatty():
             # Fallback for TTY without interactive mode (shouldn't happen, but safety)
             from repowise.cli.ui import interactive_provider_select as _ips
+
             provider_name, model = _ips(console, model)
 
         provider = resolve_provider(provider_name, model, repo_path)
         if not is_interactive:
             console.print(f"[bold]repowise init[/bold] — {repo_path}")
-        console.print(f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]")
+        console.print(
+            f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]"
+        )
         console.print(f"  Embedder: [cyan]{embedder}[/cyan]")
 
         # Validate API key with a lightweight call before ingesting
@@ -403,12 +442,15 @@ def init_command(
             try:
                 run_async(provider.generate("You are a test.", "Reply with OK.", max_tokens=50))
             except ProviderError as exc:
-                raise click.ClickException(f"Provider validation failed: {exc}")
+                raise click.ClickException(f"Provider validation failed: {exc}") from exc
         console.print("  [green]✓[/green] Provider connection verified")
 
     # ---- Phase 1: Ingestion ----
     print_phase_header(
-        console, 1, total_phases, "Ingestion",
+        console,
+        1,
+        total_phases,
+        "Ingestion",
         "Parsing source files and building the dependency graph",
     )
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -500,7 +542,11 @@ def init_command(
         if skip_tests:
             file_infos = [fi for fi in file_infos if not fi.is_test]
         if skip_infra:
-            file_infos = [fi for fi in file_infos if fi.language not in ("dockerfile", "makefile", "terraform", "shell")]
+            file_infos = [
+                fi
+                for fi in file_infos
+                if fi.language not in ("dockerfile", "makefile", "terraform", "shell")
+            ]
 
         # Parse (sequential — GraphBuilder is not thread-safe)
         progress.update(task_parse, total=len(file_infos), visible=True)
@@ -530,7 +576,9 @@ def init_command(
         # doesn't think it's stuck after the co-change bar hits 100%.
         if git_future is not None:
             task_git_finalize = progress.add_task(
-                "Finalizing git analysis...", total=None, visible=True,
+                "Finalizing git analysis...",
+                total=None,
+                visible=True,
             )
             try:
                 git_summary, git_metadata_list = git_future.result()
@@ -557,7 +605,7 @@ def init_command(
 
     # ---- Test-run: limit to top 10 files by PageRank ----
     if test_run and not index_only:
-        import networkx as nx  # noqa: PLC0415
+        import networkx as nx
 
         graph = graph_builder.graph()
         try:
@@ -573,7 +621,10 @@ def init_command(
 
     # ---- Phase 2: Analysis ----
     print_phase_header(
-        console, 2, total_phases, "Analysis",
+        console,
+        2,
+        total_phases,
+        "Analysis",
         "Dead code detection and architectural decision extraction",
     )
 
@@ -629,21 +680,24 @@ def init_command(
         print_phase_header(console, 3, total_phases, "Persistence", "Saving to database")
 
         with console.status("  Persisting index…", spinner="dots"):
-            run_async(_persist_index_only(
-                repo_path=repo_path,
-                repo_name=repo_path.name,
-                graph_builder=graph_builder,
-                parsed_files=parsed_files,
-                git_metadata_list=git_metadata_list,
-                dead_code_report=dead_code_report,
-                decision_report=decision_report,
-            ))
+            run_async(
+                _persist_index_only(
+                    repo_path=repo_path,
+                    repo_name=repo_path.name,
+                    graph_builder=graph_builder,
+                    parsed_files=parsed_files,
+                    git_metadata_list=git_metadata_list,
+                    dead_code_report=dead_code_report,
+                    decision_report=decision_report,
+                )
+            )
         # Persist commit_limit to config so `repowise update` picks it up
         if commit_limit is not None:
             cfg = load_config(repo_path)
             cfg["commit_limit"] = resolved_commit_limit
             try:
                 import yaml  # type: ignore[import-untyped]
+
                 cfg_path = repo_path / ".repowise" / "config.yaml"
                 cfg_path.write_text(
                     yaml.dump(cfg, default_flow_style=False, sort_keys=False),
@@ -654,6 +708,7 @@ def init_command(
 
         # MCP config
         from repowise.cli.mcp_config import save_mcp_config
+
         save_mcp_config(repo_path)
 
         # CLAUDE.md (index-only: structural data is available)
@@ -664,8 +719,16 @@ def init_command(
         # Collect stats for the completion panel
         _graph = graph_builder.graph()
         _langs = {fi.language for fi in file_infos if hasattr(fi, "language") and fi.language}
-        _dc_unreachable = sum(1 for f in (dead_code_report.findings if dead_code_report else []) if f.kind.value == "unreachable_file")
-        _dc_unused = sum(1 for f in (dead_code_report.findings if dead_code_report else []) if f.kind.value == "unused_export")
+        _dc_unreachable = sum(
+            1
+            for f in (dead_code_report.findings if dead_code_report else [])
+            if f.kind.value == "unreachable_file"
+        )
+        _dc_unused = sum(
+            1
+            for f in (dead_code_report.findings if dead_code_report else [])
+            if f.kind.value == "unused_export"
+        )
         _n_decisions = sum(decision_report.by_source.values()) if decision_report else 0
 
         metrics: list[tuple[str, str]] = [
@@ -679,7 +742,12 @@ def init_command(
             ("Decisions", str(_n_decisions)),
         ]
         if git_summary:
-            metrics.append(("Git history", f"{git_summary.files_indexed} files · {git_summary.hotspots} hotspots"))
+            metrics.append(
+                (
+                    "Git history",
+                    f"{git_summary.files_indexed} files · {git_summary.hotspots} hotspots",
+                )
+            )
 
         next_steps = [
             ("repowise mcp .", "start MCP server for AI assistants"),
@@ -688,20 +756,23 @@ def init_command(
             ("repowise search <query>", "search the index"),
         ]
         console.print()
-        console.print(build_completion_panel("repowise index complete", metrics, next_steps=next_steps))
+        console.print(
+            build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
+        )
         console.print()
         return
 
     # ---- Phase 3: Generation ----
     print_phase_header(
-        console, 3, total_phases, "Generation",
+        console,
+        3,
+        total_phases,
+        "Generation",
         f"Generating wiki pages with {provider.provider_name} / {provider.model_name}",
     )
 
     plans = build_generation_plan(parsed_files, graph_builder, config, skip_tests, skip_infra)
     est = estimate_cost(plans, provider.provider_name, provider.model_name)
-
-    from rich.panel import Panel as _Panel
 
     table = Table(title="Generation Plan", border_style=BRAND)
     table.add_column("Page Type", style="cyan")
@@ -723,15 +794,18 @@ def init_command(
         console.print("[yellow]Dry run — no pages generated.[/yellow]")
         return
 
-    if est.estimated_cost_usd > 2.00 and not yes:
-        if not click.confirm("  Estimated cost exceeds $2.00. Continue?"):
-            console.print("[yellow]Aborted.[/yellow]")
-            return
+    if (
+        est.estimated_cost_usd > 2.00
+        and not yes
+        and not click.confirm("  Estimated cost exceeds $2.00. Continue?")
+    ):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
 
     # ---- Generate pages ----
     from repowise.core.generation import ContextAssembler, JobSystem, PageGenerator
-    from repowise.core.providers.embedding.base import MockEmbedder
     from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
 
     assembler = ContextAssembler(config)
 
@@ -741,12 +815,14 @@ def init_command(
     if embedder_resolved == "gemini":
         try:
             from repowise.core.providers.embedding.gemini import GeminiEmbedder
+
             embedder_impl = GeminiEmbedder()
         except Exception:
             embedder_impl = MockEmbedder()
     elif embedder_resolved == "openai":
         try:
             from repowise.core.providers.embedding.openai import OpenAIEmbedder
+
             embedder_impl = OpenAIEmbedder()
         except Exception:
             embedder_impl = MockEmbedder()
@@ -811,14 +887,19 @@ def init_command(
 
     # ---- Phase 4: Persistence ----
     print_phase_header(
-        console, 4, total_phases, "Persistence",
+        console,
+        4,
+        total_phases,
+        "Persistence",
         "Saving to database and building search index",
     )
+
     async def _persist() -> None:
+        from repowise.cli.helpers import get_db_url_for_repo
         from repowise.core.persistence import (
             FullTextSearch,
-            batch_upsert_graph_nodes,
             batch_upsert_graph_edges,
+            batch_upsert_graph_nodes,
             batch_upsert_symbols,
             create_engine,
             create_session_factory,
@@ -831,8 +912,6 @@ def init_command(
             save_dead_code_findings,
             upsert_git_metadata_bulk,
         )
-
-        from repowise.cli.helpers import get_db_url_for_repo
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
@@ -858,29 +937,33 @@ def init_command(
             nodes = []
             for node_path in graph.nodes:
                 data = graph.nodes[node_path]
-                nodes.append({
-                    "node_id": node_path,
-                    "symbol_count": data.get("symbol_count", 0),
-                    "has_error": data.get("has_error", False),
-                    "is_test": data.get("is_test", False),
-                    "is_entry_point": data.get("is_entry_point", False),
-                    "language": data.get("language", "unknown"),
-                    "pagerank": pr.get(node_path, 0.0),
-                    "betweenness": bc.get(node_path, 0.0),
-                    "community_id": cd.get(node_path, 0),
-                })
+                nodes.append(
+                    {
+                        "node_id": node_path,
+                        "symbol_count": data.get("symbol_count", 0),
+                        "has_error": data.get("has_error", False),
+                        "is_test": data.get("is_test", False),
+                        "is_entry_point": data.get("is_entry_point", False),
+                        "language": data.get("language", "unknown"),
+                        "pagerank": pr.get(node_path, 0.0),
+                        "betweenness": bc.get(node_path, 0.0),
+                        "community_id": cd.get(node_path, 0),
+                    }
+                )
             if nodes:
                 await batch_upsert_graph_nodes(session, repo_id, nodes)
 
             # Graph edges
             edges = []
             for u, v, data in graph.edges(data=True):
-                edges.append({
-                    "source_node_id": u,
-                    "target_node_id": v,
-                    "imported_names_json": json.dumps(data.get("imported_names", [])),
-                    "edge_type": data.get("edge_type", "imports"),
-                })
+                edges.append(
+                    {
+                        "source_node_id": u,
+                        "target_node_id": v,
+                        "imported_names_json": json.dumps(data.get("imported_names", [])),
+                        "edge_type": data.get("edge_type", "imports"),
+                    }
+                )
             if edges:
                 await batch_upsert_graph_edges(session, repo_id, edges)
 
@@ -900,9 +983,7 @@ def init_command(
 
             # Dead code findings
             if dead_code_report and dead_code_report.findings:
-                await save_dead_code_findings(
-                    session, repo_id, dead_code_report.findings
-                )
+                await save_dead_code_findings(session, repo_id, dead_code_report.findings)
 
             # Decision records
             if decision_report and decision_report.decisions:
@@ -934,20 +1015,18 @@ def init_command(
     # ---- State ----
     # Query actual DB page count (not just current job's pages)
     async def _count_db_pages() -> int:
-        from sqlalchemy import func as sa_func, select as sa_select
-
-        from repowise.core.persistence import create_engine, create_session_factory, get_session
-        from repowise.core.persistence.models import Page, Repository
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
 
         from repowise.cli.helpers import get_db_url_for_repo as _get_url
+        from repowise.core.persistence import create_engine, create_session_factory, get_session
+        from repowise.core.persistence.models import Page, Repository
 
         _engine = create_engine(_get_url(repo_path))
         _sf = create_session_factory(_engine)
         async with get_session(_sf) as _sess:
             repo_result = await _sess.execute(
-                sa_select(Repository.id).where(
-                    Repository.local_path == str(repo_path)
-                )
+                sa_select(Repository.id).where(Repository.local_path == str(repo_path))
             )
             _repo_id = repo_result.scalar_one_or_none()
             if _repo_id is None:
@@ -955,9 +1034,7 @@ def init_command(
                 return len(generated_pages)  # fallback
 
             result = await _sess.execute(
-                sa_select(sa_func.count()).select_from(Page).where(
-                    Page.repository_id == _repo_id
-                )
+                sa_select(sa_func.count()).select_from(Page).where(Page.repository_id == _repo_id)
             )
             count = result.scalar_one()
         await _engine.dispose()
@@ -989,8 +1066,16 @@ def init_command(
 
     elapsed = time.monotonic() - start
 
-    _dc_unreachable = sum(1 for f in (dead_code_report.findings if dead_code_report else []) if f.kind.value == "unreachable_file")
-    _dc_unused = sum(1 for f in (dead_code_report.findings if dead_code_report else []) if f.kind.value == "unused_export")
+    _dc_unreachable = sum(
+        1
+        for f in (dead_code_report.findings if dead_code_report else [])
+        if f.kind.value == "unreachable_file"
+    )
+    _dc_unused = sum(
+        1
+        for f in (dead_code_report.findings if dead_code_report else [])
+        if f.kind.value == "unused_export"
+    )
     _n_decisions = sum(decision_report.by_source.values()) if decision_report else 0
 
     metrics = [
@@ -1003,7 +1088,9 @@ def init_command(
         ("Decisions", str(_n_decisions)),
     ]
     if git_summary:
-        metrics.append(("Git history", f"{git_summary.files_indexed} files · {git_summary.hotspots} hotspots"))
+        metrics.append(
+            ("Git history", f"{git_summary.files_indexed} files · {git_summary.hotspots} hotspots")
+        )
 
     console.print()
     console.print(build_completion_panel("repowise init complete", metrics))

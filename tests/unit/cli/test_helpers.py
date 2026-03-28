@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -17,7 +16,6 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
-
 
 # ---------------------------------------------------------------------------
 # run_async

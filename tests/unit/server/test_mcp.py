@@ -7,15 +7,13 @@ test data, mirroring the conftest pattern from the REST API tests.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.persistence.database import init_db
-from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -28,13 +26,13 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
-
+from repowise.core.providers.embedding.base import MockEmbedder
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-_NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -366,23 +364,39 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
             commit_count_total=42,
             commit_count_90d=8,
             commit_count_30d=3,
-            first_commit_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            last_commit_at=datetime(2026, 3, 15, tzinfo=timezone.utc),
+            first_commit_at=datetime(2025, 1, 1, tzinfo=UTC),
+            last_commit_at=datetime(2026, 3, 15, tzinfo=UTC),
             primary_owner_name="Alice",
             primary_owner_email="alice@example.com",
             primary_owner_commit_pct=0.65,
-            top_authors_json=json.dumps([
-                {"name": "Alice", "count": 27},
-                {"name": "Bob", "count": 15},
-            ]),
-            significant_commits_json=json.dumps([
-                {"sha": "abc1234", "date": "2026-03-15", "message": "Refactor auth flow", "author": "Alice"},
-                {"sha": "def5678", "date": "2026-02-10", "message": "Add JWT support", "author": "Bob"},
-            ]),
-            co_change_partners_json=json.dumps([
-                {"file_path": "src/auth/middleware.py", "count": 5},
-                {"file_path": "src/db/models.py", "count": 3},
-            ]),
+            top_authors_json=json.dumps(
+                [
+                    {"name": "Alice", "count": 27},
+                    {"name": "Bob", "count": 15},
+                ]
+            ),
+            significant_commits_json=json.dumps(
+                [
+                    {
+                        "sha": "abc1234",
+                        "date": "2026-03-15",
+                        "message": "Refactor auth flow",
+                        "author": "Alice",
+                    },
+                    {
+                        "sha": "def5678",
+                        "date": "2026-02-10",
+                        "message": "Add JWT support",
+                        "author": "Bob",
+                    },
+                ]
+            ),
+            co_change_partners_json=json.dumps(
+                [
+                    {"file_path": "src/auth/middleware.py", "count": 5},
+                    {"file_path": "src/db/models.py", "count": 3},
+                ]
+            ),
             is_hotspot=True,
             is_stable=False,
             churn_percentile=0.92,
@@ -397,18 +411,27 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
             commit_count_total=15,
             commit_count_90d=0,
             commit_count_30d=0,
-            first_commit_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            last_commit_at=datetime(2025, 9, 1, tzinfo=timezone.utc),
+            first_commit_at=datetime(2025, 1, 1, tzinfo=UTC),
+            last_commit_at=datetime(2025, 9, 1, tzinfo=UTC),
             primary_owner_name="Bob",
             primary_owner_email="bob@example.com",
             primary_owner_commit_pct=0.90,
             top_authors_json=json.dumps([{"name": "Bob", "count": 13}]),
-            significant_commits_json=json.dumps([
-                {"sha": "111aaa", "date": "2025-09-01", "message": "Add migration helper", "author": "Bob"},
-            ]),
-            co_change_partners_json=json.dumps([
-                {"file_path": "src/auth/service.py", "count": 3},
-            ]),
+            significant_commits_json=json.dumps(
+                [
+                    {
+                        "sha": "111aaa",
+                        "date": "2025-09-01",
+                        "message": "Add migration helper",
+                        "author": "Bob",
+                    },
+                ]
+            ),
+            co_change_partners_json=json.dumps(
+                [
+                    {"file_path": "src/auth/service.py", "count": 3},
+                ]
+            ),
             is_hotspot=False,
             is_stable=True,
             churn_percentile=0.15,
@@ -957,10 +980,9 @@ async def test_get_why_module_path(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_search_codebase(setup_mcp):
-    from repowise.server.mcp_server import search_codebase
-
     # Index pages in the MCP module's vector store (which is the InMemoryVectorStore)
     import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import search_codebase
 
     await mcp_mod._vector_store.embed_and_upsert(
         "file_page:src/auth/service.py",
@@ -1157,6 +1179,7 @@ async def test_get_dead_code_group_by_owner(setup_mcp):
 
 def test_generate_mcp_config():
     from pathlib import Path
+
     from repowise.cli.mcp_config import generate_mcp_config
 
     config = generate_mcp_config(Path("/tmp/test-repo"))
@@ -1170,6 +1193,7 @@ def test_generate_mcp_config():
 
 def test_format_setup_instructions():
     from pathlib import Path
+
     from repowise.cli.mcp_config import format_setup_instructions
 
     instructions = format_setup_instructions(Path("/tmp/test-repo"))

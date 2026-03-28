@@ -25,7 +25,7 @@ async def search_symbols(
     language: str | None = Query(None, description="Filter by language"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[SymbolResponse]:
     """Search symbols by name, kind, or language."""
     query = select(WikiSymbol).where(WikiSymbol.repository_id == repo_id)
@@ -48,7 +48,7 @@ async def search_symbols(
 async def lookup_by_name(
     name: str,
     repo_id: str = Query(..., description="Repository ID"),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[SymbolResponse]:
     """Look up symbols by exact or fuzzy name match.
 
@@ -81,7 +81,7 @@ async def lookup_by_name(
 @router.get("/{symbol_db_id}", response_model=SymbolResponse)
 async def get_symbol(
     symbol_db_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> SymbolResponse:
     """Get a single symbol by its database ID."""
     sym = await session.get(WikiSymbol, symbol_db_id)

@@ -68,7 +68,8 @@ async def get_overview(repo: str | None = None) -> dict:
             )
         )
         entry_nodes = [
-            n for n in result.scalars().all()
+            n
+            for n in result.scalars().all()
             if not any(
                 seg in n.node_id.lower()
                 for seg in ("fixture", "test_data", "testdata", "sample_repo")
@@ -94,7 +95,9 @@ async def get_overview(repo: str | None = None) -> dict:
             baseline = c90_total - c30_total
             if baseline > 0:
                 ratio = (c30_total / 30.0) / (baseline / 60.0)
-                churn_trend = "increasing" if ratio > 1.5 else ("decreasing" if ratio < 0.5 else "stable")
+                churn_trend = (
+                    "increasing" if ratio > 1.5 else ("decreasing" if ratio < 0.5 else "stable")
+                )
             else:
                 churn_trend = "increasing" if c30_total > 0 else "stable"
             # Top churn modules (group by first directory component)

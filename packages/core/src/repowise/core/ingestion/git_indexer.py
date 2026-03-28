@@ -10,15 +10,17 @@ and return an empty summary. All downstream features degrade gracefully.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import re
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import structlog
 
@@ -34,10 +36,8 @@ try:
     _orig_del = _CatFileContentStream.__del__
 
     def _quiet_del(self: Any) -> None:
-        try:
+        with contextlib.suppress(ValueError, OSError):
             _orig_del(self)
-        except (ValueError, OSError):
-            pass
 
     _CatFileContentStream.__del__ = _quiet_del  # type: ignore[assignment]
 except Exception:
@@ -52,11 +52,24 @@ _SOFT_SKIP_PREFIXES = ("Bump ", "chore:", "ci:", "style:", "build:", "release:")
 
 # Lightweight subset of decision-signal keywords (mirrors decision_extractor.py).
 # Used to rescue soft-skipped commits that carry architectural intent.
-_DECISION_SIGNAL_WORDS: frozenset[str] = frozenset({
-    "migrate", "migration", "switch to", "replace", "refactor",
-    "adopt", "introduce", "deprecate", "remove", "upgrade",
-    "rewrite", "extract", "convert", "transition",
-})
+_DECISION_SIGNAL_WORDS: frozenset[str] = frozenset(
+    {
+        "migrate",
+        "migration",
+        "switch to",
+        "replace",
+        "refactor",
+        "adopt",
+        "introduce",
+        "deprecate",
+        "remove",
+        "upgrade",
+        "rewrite",
+        "extract",
+        "convert",
+        "transition",
+    }
+)
 
 _SKIP_AUTHORS = ("dependabot", "renovate", "github-actions")
 _MIN_MESSAGE_LEN = 12
@@ -67,7 +80,8 @@ _DEFAULT_COMMIT_LIMIT: int = 500
 # Commit message classification regexes (Phase 2.2).
 _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     "feature": re.compile(
-        r"\b(add|implement|introduce|create|new|feat)\b", re.IGNORECASE,
+        r"\b(add|implement|introduce|create|new|feat)\b",
+        re.IGNORECASE,
     ),
     "refactor": re.compile(
         r"\b(refactor|restructure|cleanup|clean.up|rename|reorganize|extract|simplify|move)\b",
@@ -98,17 +112,32 @@ _PR_NUMBER_RE = re.compile(r"(?:pull request |)\#(\d+)|\(#(\d+)\)|!(\d+)")
 _CODE_EXTENSIONS: frozenset[str] = frozenset(
     {
         # Python
-        ".py", ".pyi",
+        ".py",
+        ".pyi",
         # JavaScript / TypeScript
-        ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
         # Go
         ".go",
         # Rust
         ".rs",
         # JVM
-        ".java", ".kt", ".kts", ".scala",
+        ".java",
+        ".kt",
+        ".kts",
+        ".scala",
         # C / C++
-        ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hxx",
+        ".c",
+        ".h",
+        ".cpp",
+        ".cc",
+        ".cxx",
+        ".hpp",
+        ".hxx",
         # C#
         ".cs",
         # Ruby
@@ -118,9 +147,13 @@ _CODE_EXTENSIONS: frozenset[str] = frozenset(
         # Swift
         ".swift",
         # Objective-C
-        ".m", ".mm",
+        ".m",
+        ".mm",
         # Elixir / Erlang
-        ".ex", ".exs", ".erl", ".hrl",
+        ".ex",
+        ".exs",
+        ".erl",
+        ".hrl",
         # Lua
         ".lua",
         # R
@@ -132,15 +165,21 @@ _CODE_EXTENSIONS: frozenset[str] = frozenset(
         # Julia
         ".jl",
         # Clojure
-        ".clj", ".cljs", ".cljc",
+        ".clj",
+        ".cljs",
+        ".cljc",
         # Elm
         ".elm",
         # Haskell
-        ".hs", ".lhs",
+        ".hs",
+        ".lhs",
         # OCaml
-        ".ml", ".mli",
+        ".ml",
+        ".mli",
         # F#
-        ".fs", ".fsi", ".fsx",
+        ".fs",
+        ".fsi",
+        ".fsx",
         # Crystal
         ".cr",
         # Nim
@@ -248,8 +287,10 @@ class GitIndexer:
             """Use a per-thread Repo to avoid shared-handle issues on Windows."""
             try:
                 import git as gitpython
+
                 thread_repo = gitpython.Repo(
-                    self.repo_path, search_parent_directories=True,
+                    self.repo_path,
+                    search_parent_directories=True,
                 )
                 try:
                     return self._index_file(file_path, thread_repo)
@@ -262,12 +303,10 @@ class GitIndexer:
             async with semaphore:
                 try:
                     result = await asyncio.wait_for(
-                        loop.run_in_executor(
-                            executor, _index_one_sync, file_path
-                        ),
+                        loop.run_in_executor(executor, _index_one_sync, file_path),
                         timeout=_FILE_INDEX_TIMEOUT_SECS,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.debug(
                         "Git indexing timed out for file — using partial data",
                         path=file_path,
@@ -291,8 +330,14 @@ class GitIndexer:
 
         async def _co_change_task() -> dict[str, list[dict]]:
             return await loop.run_in_executor(
-                executor, self._compute_co_changes, repo, set(tracked_files),
-                self.commit_limit, 3, on_commit_done, on_co_change_start,
+                executor,
+                self._compute_co_changes,
+                repo,
+                set(tracked_files),
+                self.commit_limit,
+                3,
+                on_commit_done,
+                on_co_change_start,
             )
 
         metadata_list, co_changes = await asyncio.gather(
@@ -360,8 +405,10 @@ class GitIndexer:
             """Use a per-thread Repo to avoid shared-handle issues on Windows."""
             try:
                 import git as gitpython
+
                 thread_repo = gitpython.Repo(
-                    self.repo_path, search_parent_directories=True,
+                    self.repo_path,
+                    search_parent_directories=True,
                 )
                 try:
                     return self._index_file(file_path, thread_repo)
@@ -377,7 +424,7 @@ class GitIndexer:
                         loop.run_in_executor(None, _index_one_sync, file_path),
                         timeout=_FILE_INDEX_TIMEOUT_SECS,
                     )
-                except (asyncio.TimeoutError, Exception) as exc:
+                except (TimeoutError, Exception) as exc:
                     logger.debug(
                         "Git indexing failed for changed file",
                         path=file_path,
@@ -405,6 +452,7 @@ class GitIndexer:
     def _get_repo(self) -> Any | None:
         try:
             import git as gitpython
+
             return gitpython.Repo(self.repo_path, search_parent_directories=True)
         except Exception as exc:
             logger.warning(
@@ -424,10 +472,9 @@ class GitIndexer:
 
     def _index_file(self, file_path: str, repo: Any) -> dict:
         """Index a single file's git history. Runs in executor."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ninety_days_ago = now - timedelta(days=90)
         thirty_days_ago = now - timedelta(days=30)
-        six_months_ago = now - timedelta(days=180)
 
         meta: dict[str, Any] = {
             "file_path": file_path,
@@ -487,7 +534,7 @@ class GitIndexer:
             for c in commits:
                 cd = c.committed_datetime
                 if cd.tzinfo is None:
-                    cd = cd.replace(tzinfo=timezone.utc)
+                    cd = cd.replace(tzinfo=UTC)
                 if cd >= ninety_days_ago:
                     meta["commit_count_90d"] += 1
                     recent_author_counts[c.author.name or "unknown"] += 1
@@ -515,11 +562,13 @@ class GitIndexer:
             # Top authors
             top_authors = []
             for name, count in author_counts.most_common(5):
-                top_authors.append({
-                    "name": name,
-                    "email": author_emails.get(name, ""),
-                    "commit_count": count,
-                })
+                top_authors.append(
+                    {
+                        "name": name,
+                        "email": author_emails.get(name, ""),
+                        "commit_count": count,
+                    }
+                )
             meta["top_authors_json"] = json.dumps(top_authors)
 
             if top_authors:
@@ -546,9 +595,7 @@ class GitIndexer:
             try:
                 file_size = (self.repo_path / file_path).stat().st_size
                 if file_size <= _MAX_BLAME_SIZE_BYTES:
-                    blame_name, blame_email, blame_pct = self._get_blame_ownership(
-                        file_path, repo
-                    )
+                    blame_name, blame_email, blame_pct = self._get_blame_ownership(file_path, repo)
                     if blame_name:
                         meta["primary_owner_name"] = blame_name
                         meta["primary_owner_email"] = blame_email
@@ -590,9 +637,7 @@ class GitIndexer:
             meta["lines_added_90d"] = added
             meta["lines_deleted_90d"] = deleted
             c90 = meta["commit_count_90d"]
-            meta["avg_commit_size"] = (
-                (added + deleted) / c90 if c90 > 0 else 0.0
-            )
+            meta["avg_commit_size"] = (added + deleted) / c90 if c90 > 0 else 0.0
 
             # Original path detection (rename tracking)
             if self.follow_renames:
@@ -602,7 +647,9 @@ class GitIndexer:
 
             # Merge commit count (coordination bottleneck signal)
             meta["merge_commit_count_90d"] = self._get_merge_commit_count(
-                file_path, repo, ninety_days_ago,
+                file_path,
+                repo,
+                ninety_days_ago,
             )
 
             # Stable classification
@@ -623,9 +670,11 @@ class GitIndexer:
         # Get SHAs via git log --follow, then resolve to commit objects.
         try:
             raw = repo.git.log(
-                "--follow", f"-{self.commit_limit}",
+                "--follow",
+                f"-{self.commit_limit}",
                 "--format=%H",
-                "--", file_path,
+                "--",
+                file_path,
             )
         except Exception:
             return []
@@ -644,9 +693,12 @@ class GitIndexer:
         """If --follow reveals the file was renamed, return its earliest prior path."""
         try:
             raw = repo.git.log(
-                "--follow", f"-{self.commit_limit}",
-                "--format=", "--name-only",
-                "--", file_path,
+                "--follow",
+                f"-{self.commit_limit}",
+                "--format=",
+                "--name-only",
+                "--",
+                file_path,
             )
         except Exception:
             return None
@@ -660,7 +712,10 @@ class GitIndexer:
         return prev_path
 
     def _get_merge_commit_count(
-        self, file_path: str, repo: Any, since: datetime,
+        self,
+        file_path: str,
+        repo: Any,
+        since: datetime,
     ) -> int:
         """Count how many merge commits touched this file since a given date."""
         try:
@@ -668,7 +723,8 @@ class GitIndexer:
                 "--merges",
                 f"--since={since.strftime('%Y-%m-%d')}",
                 "--format=%H",
-                "--", file_path,
+                "--",
+                file_path,
             )
         except Exception:
             return 0
@@ -703,7 +759,10 @@ class GitIndexer:
         return top_name, emails.get(top_name), pct
 
     def _get_line_stats(
-        self, file_path: str, repo: Any, since: datetime,
+        self,
+        file_path: str,
+        repo: Any,
+        since: datetime,
     ) -> tuple[int, int]:
         """Get total lines added and deleted for a file since a given date.
 
@@ -851,8 +910,9 @@ class GitIndexer:
             if score >= min_count:
                 last_ts = pair_last_date.get((a, b), 0)
                 last_date = (
-                    datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-                    if last_ts > 0 else None
+                    datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d")
+                    if last_ts > 0
+                    else None
                 )
                 entry_a = {
                     "file_path": b,

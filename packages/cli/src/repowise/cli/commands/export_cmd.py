@@ -26,7 +26,13 @@ from repowise.cli.helpers import (
     default="markdown",
     help="Output format.",
 )
-@click.option("--output", "-o", "output_dir", default=None, help="Output directory (default: .repowise/export).")
+@click.option(
+    "--output",
+    "-o",
+    "output_dir",
+    default=None,
+    help="Output directory (default: .repowise/export).",
+)
 def export_command(
     path: str | None,
     fmt: str,
@@ -36,10 +42,7 @@ def export_command(
     repo_path = resolve_repo_path(path)
     ensure_repowise_dir(repo_path)
 
-    if output_dir is None:
-        out = repo_path / ".repowise" / "export"
-    else:
-        out = Path(output_dir).resolve()
+    out = repo_path / ".repowise" / "export" if output_dir is None else Path(output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
 
     # Load pages from DB
@@ -47,9 +50,9 @@ def export_command(
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
+            get_repository_by_path,
             get_session,
             list_pages,
-            get_repository_by_path,
         )
 
         url = get_db_url_for_repo(repo_path)
@@ -78,8 +81,7 @@ def export_command(
         if fmt == "markdown":
             for page in pages:
                 safe_name = (
-                    page.target_path
-                    .replace("/", "_")
+                    page.target_path.replace("/", "_")
                     .replace("::", "__")
                     .replace("->", "--")
                     .replace(">", "")
@@ -101,8 +103,7 @@ def export_command(
         elif fmt == "html":
             for page in pages:
                 safe_name = (
-                    page.target_path
-                    .replace("/", "_")
+                    page.target_path.replace("/", "_")
                     .replace("::", "__")
                     .replace("->", "--")
                     .replace(">", "")
@@ -119,9 +120,7 @@ def export_command(
                 try:
                     import markdown as _md
 
-                    body_html = _md.markdown(
-                        page.content, extensions=["fenced_code", "tables"]
-                    )
+                    body_html = _md.markdown(page.content, extensions=["fenced_code", "tables"])
                 except ImportError:
                     try:
                         import mistune  # type: ignore[import-untyped]
@@ -144,13 +143,15 @@ def export_command(
         elif fmt == "json":
             data = []
             for page in pages:
-                data.append({
-                    "page_id": page.id,
-                    "page_type": page.page_type,
-                    "title": page.title,
-                    "content": page.content,
-                    "target_path": page.target_path,
-                })
+                data.append(
+                    {
+                        "page_id": page.id,
+                        "page_type": page.page_type,
+                        "title": page.title,
+                        "content": page.content,
+                        "target_path": page.target_path,
+                    }
+                )
                 progress.advance(task)
             filepath = out / "wiki_pages.json"
             filepath.write_text(json.dumps(data, indent=2), encoding="utf-8")

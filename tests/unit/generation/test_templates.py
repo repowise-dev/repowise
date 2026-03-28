@@ -1,4 +1,4 @@
-"""Tests for Jinja2 templates — 27 tests (3 per template × 9 templates)."""
+"""Tests for Jinja2 templates - 27 tests (3 per template x 9 templates)."""
 
 from __future__ import annotations
 
@@ -14,13 +14,12 @@ from repowise.core.generation.context_assembler import (
     FilePageContext,
     InfraPageContext,
     ModulePageContext,
+    RepoOverviewContext,
     SccPageContext,
     SymbolSpotlightContext,
-    RepoOverviewContext,
     _TopFile,
 )
 from repowise.core.ingestion.models import PackageInfo
-
 
 # ---------------------------------------------------------------------------
 # Fixture: Jinja2 environment pointing at the real templates directory
@@ -29,7 +28,16 @@ from repowise.core.ingestion.models import PackageInfo
 
 @pytest.fixture(scope="module")
 def jinja_env() -> jinja2.Environment:
-    templates_dir = Path(__file__).parents[3] / "packages" / "core" / "src" / "repowise" / "core" / "generation" / "templates"
+    templates_dir = (
+        Path(__file__).parents[3]
+        / "packages"
+        / "core"
+        / "src"
+        / "repowise"
+        / "core"
+        / "generation"
+        / "templates"
+    )
     assert templates_dir.exists(), f"Templates directory not found: {templates_dir}"
     return jinja2.Environment(
         loader=jinja2.FileSystemLoader(str(templates_dir)),
@@ -54,7 +62,19 @@ def file_page_ctx() -> FilePageContext:
         language="python",
         docstring="Calculator module.",
         symbols=[
-            {"name": "Calculator", "kind": "class", "signature": "class Calculator:", "docstring": "Calc.", "visibility": "public", "is_async": False, "complexity_estimate": 1, "decorators": [], "parent_name": None, "start_line": 1, "end_line": 10}
+            {
+                "name": "Calculator",
+                "kind": "class",
+                "signature": "class Calculator:",
+                "docstring": "Calc.",
+                "visibility": "public",
+                "is_async": False,
+                "complexity_estimate": 1,
+                "decorators": [],
+                "parent_name": None,
+                "start_line": 1,
+                "end_line": 10,
+            }
         ],
         imports=["from python_pkg import models"],
         exports=["Calculator"],

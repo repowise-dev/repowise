@@ -7,16 +7,16 @@ Create Date: 2026-03-22
 
 from __future__ import annotations
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
 revision: str = "0003"
-down_revision: Union[str, None] = "0002"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "0002"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -39,13 +39,9 @@ def upgrade() -> None:
         sa.Column("alternatives_json", sa.Text, nullable=False, server_default="[]"),
         sa.Column("consequences_json", sa.Text, nullable=False, server_default="[]"),
         sa.Column("affected_files_json", sa.Text, nullable=False, server_default="[]"),
-        sa.Column(
-            "affected_modules_json", sa.Text, nullable=False, server_default="[]"
-        ),
+        sa.Column("affected_modules_json", sa.Text, nullable=False, server_default="[]"),
         sa.Column("tags_json", sa.Text, nullable=False, server_default="[]"),
-        sa.Column(
-            "evidence_commits_json", sa.Text, nullable=False, server_default="[]"
-        ),
+        sa.Column("evidence_commits_json", sa.Text, nullable=False, server_default="[]"),
         # Provenance
         sa.Column("source", sa.String(32), nullable=False, server_default="cli"),
         sa.Column("evidence_file", sa.Text, nullable=True),
@@ -53,9 +49,7 @@ def upgrade() -> None:
         sa.Column("confidence", sa.Float, nullable=False, server_default="1.0"),
         # Staleness
         sa.Column("last_code_change", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "staleness_score", sa.Float, nullable=False, server_default="0.0"
-        ),
+        sa.Column("staleness_score", sa.Float, nullable=False, server_default="0.0"),
         sa.Column("superseded_by", sa.String(32), nullable=True),
         # Timestamps
         sa.Column(

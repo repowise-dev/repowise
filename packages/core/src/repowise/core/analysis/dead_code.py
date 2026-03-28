@@ -9,9 +9,9 @@ zombie packages using the dependency graph and git metadata.
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-class DeadCodeKind(str, Enum):
+class DeadCodeKind(StrEnum):
     UNREACHABLE_FILE = "unreachable_file"
     UNUSED_EXPORT = "unused_export"
     UNUSED_INTERNAL = "unused_internal"
@@ -60,9 +60,17 @@ class DeadCodeReport:
 # meaningless for them.  Matches the skip lists in git_indexer and page_generator.
 _NON_CODE_LANGUAGES: frozenset[str] = frozenset(
     {
-        "json", "yaml", "toml", "markdown",
-        "sql", "shell", "terraform", "proto",
-        "graphql", "dockerfile", "makefile",
+        "json",
+        "yaml",
+        "toml",
+        "markdown",
+        "sql",
+        "shell",
+        "terraform",
+        "proto",
+        "graphql",
+        "dockerfile",
+        "makefile",
         "unknown",
     }
 )
@@ -150,19 +158,13 @@ class DeadCodeAnalyzer:
         whitelist = set(cfg.get("whitelist", []))
 
         if cfg.get("detect_unreachable_files", True):
-            findings.extend(
-                self._detect_unreachable_files(dynamic_patterns, whitelist)
-            )
+            findings.extend(self._detect_unreachable_files(dynamic_patterns, whitelist))
 
         if cfg.get("detect_unused_exports", True):
-            findings.extend(
-                self._detect_unused_exports(dynamic_patterns, whitelist)
-            )
+            findings.extend(self._detect_unused_exports(dynamic_patterns, whitelist))
 
         if cfg.get("detect_unused_internals", False):
-            findings.extend(
-                self._detect_unused_internals(dynamic_patterns, whitelist)
-            )
+            findings.extend(self._detect_unused_internals(dynamic_patterns, whitelist))
 
         if cfg.get("detect_zombie_packages", True):
             findings.extend(self._detect_zombie_packages(whitelist))
@@ -171,7 +173,7 @@ class DeadCodeAnalyzer:
         min_conf = cfg.get("min_confidence", 0.4)
         findings = [f for f in findings if f.confidence >= min_conf]
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         deletable = sum(f.lines for f in findings if f.safe_to_delete)
 
         high = sum(1 for f in findings if f.confidence >= 0.7)
@@ -215,16 +217,14 @@ class DeadCodeAnalyzer:
                 and not node_data.get("is_entry_point", False)
                 and not node_data.get("is_test", False)
             ):
-                finding = self._make_unreachable_finding(
-                    node, node_data, dynamic_patterns
-                )
+                finding = self._make_unreachable_finding(node, node_data, dynamic_patterns)
                 if finding:
                     findings.append(finding)
 
         min_conf = cfg.get("min_confidence", 0.4)
         findings = [f for f in findings if f.confidence >= min_conf]
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         deletable = sum(f.lines for f in findings if f.safe_to_delete)
         high = sum(1 for f in findings if f.confidence >= 0.7)
         medium = sum(1 for f in findings if 0.4 <= f.confidence < 0.7)
@@ -273,9 +273,7 @@ class DeadCodeAnalyzer:
             if in_deg > 0:
                 continue
 
-            finding = self._make_unreachable_finding(
-                str(node), node_data, dynamic_patterns
-            )
+            finding = self._make_unreachable_finding(str(node), node_data, dynamic_patterns)
             if finding:
                 findings.append(finding)
 
@@ -307,7 +305,7 @@ class DeadCodeAnalyzer:
         if safe and self._matches_dynamic_patterns(node, dynamic_patterns):
             safe = False
 
-        evidence = [f"in_degree=0 (no files import this)"]
+        evidence = ["in_degree=0 (no files import this)"]
         if commit_90d == 0:
             evidence.append("No commits in last 90 days")
 
@@ -317,7 +315,7 @@ class DeadCodeAnalyzer:
             symbol_name=None,
             symbol_kind=None,
             confidence=confidence,
-            reason=f"File has no importers (in_degree=0)",
+            reason="File has no importers (in_degree=0)",
             last_commit_at=last_commit if isinstance(last_commit, datetime) else None,
             commit_count_90d=commit_90d,
             lines=node_data.get("symbol_count", 0) * 10,  # rough estimate
@@ -367,9 +365,7 @@ class DeadCodeAnalyzer:
                 # Skip framework decorators
                 decorators = sym.get("decorators", [])
                 if any(
-                    d.startswith(prefix)
-                    for d in decorators
-                    for prefix in _FRAMEWORK_DECORATORS
+                    d.startswith(prefix) for d in decorators for prefix in _FRAMEWORK_DECORATORS
                 ):
                     continue
 
@@ -379,8 +375,7 @@ class DeadCodeAnalyzer:
 
                 # Skip deprecated-named symbols (lower confidence)
                 is_deprecated = any(
-                    sym_name.endswith(suffix)
-                    for suffix in ("_DEPRECATED", "_LEGACY", "_COMPAT")
+                    sym_name.endswith(suffix) for suffix in ("_DEPRECATED", "_LEGACY", "_COMPAT")
                 )
 
                 # Check for importers of this specific symbol
@@ -416,7 +411,9 @@ class DeadCodeAnalyzer:
                         symbol_kind=sym.get("kind"),
                         confidence=confidence,
                         reason=f"Public symbol '{sym_name}' has no importers",
-                        last_commit_at=git_meta.get("last_commit_at") if isinstance(git_meta.get("last_commit_at"), datetime) else None,
+                        last_commit_at=git_meta.get("last_commit_at")
+                        if isinstance(git_meta.get("last_commit_at"), datetime)
+                        else None,
                         commit_count_90d=git_meta.get("commit_count_90d", 0),
                         lines=sym.get("end_line", 0) - sym.get("start_line", 0),
                         package=self._get_package(str(node)),
@@ -438,9 +435,7 @@ class DeadCodeAnalyzer:
         # Higher false positive rate — off by default
         return []
 
-    def _detect_zombie_packages(
-        self, whitelist: set[str]
-    ) -> list[DeadCodeFindingData]:
+    def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
         """Detect monorepo packages with no incoming inter_package edges."""
         findings = []
 
@@ -514,38 +509,26 @@ class DeadCodeAnalyzer:
             if fnmatch.fnmatch(path, pattern):
                 return True
         # Check if it's an __init__.py (re-export barrel)
-        if Path(path).name == "__init__.py":
-            return True
-        return False
+        return Path(path).name == "__init__.py"
 
     def _is_api_contract(self, node_data: dict) -> bool:
         return node_data.get("is_api_contract", False)
 
-    def _matches_dynamic_patterns(
-        self, path: str, patterns: tuple[str, ...]
-    ) -> bool:
+    def _matches_dynamic_patterns(self, path: str, patterns: tuple[str, ...]) -> bool:
         name = Path(path).stem
-        for pattern in patterns:
-            if fnmatch.fnmatch(name, pattern):
-                return True
-        return False
+        return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
-    def _name_matches_dynamic(
-        self, name: str, patterns: tuple[str, ...]
-    ) -> bool:
-        for pattern in patterns:
-            if fnmatch.fnmatch(name, pattern):
-                return True
-        return False
+    def _name_matches_dynamic(self, name: str, patterns: tuple[str, ...]) -> bool:
+        return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
     def _is_old(self, dt: Any, days: int = 180) -> bool:
         """Return True if datetime is older than `days` ago."""
         if dt is None:
             return False
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if isinstance(dt, datetime):
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return (now - dt).days > days
         return False
 

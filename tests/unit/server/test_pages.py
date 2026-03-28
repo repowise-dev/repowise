@@ -7,7 +7,6 @@ from httpx import AsyncClient
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -54,7 +53,7 @@ async def test_list_pages_with_data(client: AsyncClient, app) -> None:
 
 @pytest.mark.asyncio
 async def test_get_page_by_path(client: AsyncClient, app) -> None:
-    repo_id, page_id = await _create_page(client, app.state.session_factory)
+    _, page_id = await _create_page(client, app.state.session_factory)
     resp = await client.get(f"/api/pages/{page_id}")
     assert resp.status_code == 200
     data = resp.json()
@@ -64,7 +63,7 @@ async def test_get_page_by_path(client: AsyncClient, app) -> None:
 
 @pytest.mark.asyncio
 async def test_get_page_by_query(client: AsyncClient, app) -> None:
-    repo_id, page_id = await _create_page(client, app.state.session_factory)
+    _, page_id = await _create_page(client, app.state.session_factory)
     resp = await client.get("/api/pages/lookup", params={"page_id": page_id})
     assert resp.status_code == 200
     assert resp.json()["id"] == page_id
@@ -78,20 +77,16 @@ async def test_get_page_not_found(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_get_page_versions_empty(client: AsyncClient, app) -> None:
-    repo_id, page_id = await _create_page(client, app.state.session_factory)
-    resp = await client.get(
-        "/api/pages/lookup/versions", params={"page_id": page_id}
-    )
+    _, page_id = await _create_page(client, app.state.session_factory)
+    resp = await client.get("/api/pages/lookup/versions", params={"page_id": page_id})
     assert resp.status_code == 200
     assert resp.json() == []  # First version has no archived versions
 
 
 @pytest.mark.asyncio
 async def test_regenerate_page_returns_202(client: AsyncClient, app) -> None:
-    repo_id, page_id = await _create_page(client, app.state.session_factory)
-    resp = await client.post(
-        "/api/pages/lookup/regenerate", params={"page_id": page_id}
-    )
+    _, page_id = await _create_page(client, app.state.session_factory)
+    resp = await client.post("/api/pages/lookup/regenerate", params={"page_id": page_id})
     assert resp.status_code == 202
     data = resp.json()
     assert "job_id" in data

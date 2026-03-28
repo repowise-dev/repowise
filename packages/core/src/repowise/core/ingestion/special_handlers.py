@@ -11,8 +11,7 @@ the tree-sitter parsers — so the rest of the pipeline treats them identically.
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 import structlog
 
@@ -65,7 +64,7 @@ def _parse_openapi(file_info: FileInfo, source: bytes) -> ParsedFile:
         return _empty(file_info, parse_errors=["Not an OpenAPI/Swagger spec"])
 
     symbols: list[Symbol] = []
-    title = (data.get("info") or {}).get("title", file_info.path)
+    _title = (data.get("info") or {}).get("title", file_info.path)
 
     paths = data.get("paths") or {}
     for path, methods in paths.items():
@@ -91,8 +90,7 @@ def _parse_openapi(file_info: FileInfo, source: bytes) -> ParsedFile:
                 )
 
     # Components / schemas as type symbols
-    components = (data.get("components") or {}).get("schemas") or \
-                 (data.get("definitions") or {})
+    components = (data.get("components") or {}).get("schemas") or (data.get("definitions") or {})
     for schema_name in components:
         symbols.append(
             Symbol(
@@ -147,49 +145,55 @@ def _parse_dockerfile(file_info: FileInfo, source: bytes) -> ParsedFile:
         m = _FROM_RE.match(line)
         if m:
             image = m.group(1)
-            imports.append(Import(
-                raw_statement=line.strip(),
-                module_path=image,
-                imported_names=[image],
-                is_relative=False,
-                resolved_file=None,
-            ))
+            imports.append(
+                Import(
+                    raw_statement=line.strip(),
+                    module_path=image,
+                    imported_names=[image],
+                    is_relative=False,
+                    resolved_file=None,
+                )
+            )
             continue
 
         # ENTRYPOINT / CMD → entry-point symbol
         m = _ENTRYPOINT_RE.match(line)
         if m:
             name = "entrypoint" if "ENTRYPOINT" in line.upper() else "cmd"
-            symbols.append(Symbol(
-                id=f"{file_info.path}::{name}",
-                name=name,
-                qualified_name=name,
-                kind="function",
-                signature=line.strip(),
-                start_line=lineno,
-                end_line=lineno,
-                docstring=None,
-                visibility="public",
-                language="dockerfile",
-            ))
+            symbols.append(
+                Symbol(
+                    id=f"{file_info.path}::{name}",
+                    name=name,
+                    qualified_name=name,
+                    kind="function",
+                    signature=line.strip(),
+                    start_line=lineno,
+                    end_line=lineno,
+                    docstring=None,
+                    visibility="public",
+                    language="dockerfile",
+                )
+            )
             continue
 
         # EXPOSE → constant
         m = _EXPOSE_RE.match(line)
         if m:
             port = m.group(1)
-            symbols.append(Symbol(
-                id=f"{file_info.path}::EXPOSE_{port}",
-                name=f"EXPOSE_{port}",
-                qualified_name=f"port_{port}",
-                kind="constant",
-                signature=line.strip(),
-                start_line=lineno,
-                end_line=lineno,
-                docstring=None,
-                visibility="public",
-                language="dockerfile",
-            ))
+            symbols.append(
+                Symbol(
+                    id=f"{file_info.path}::EXPOSE_{port}",
+                    name=f"EXPOSE_{port}",
+                    qualified_name=f"port_{port}",
+                    kind="constant",
+                    signature=line.strip(),
+                    start_line=lineno,
+                    end_line=lineno,
+                    docstring=None,
+                    visibility="public",
+                    language="dockerfile",
+                )
+            )
 
     return ParsedFile(
         file_info=file_info,
@@ -225,7 +229,6 @@ def _parse_makefile(file_info: FileInfo, source: bytes) -> ParsedFile:
             phony_targets.update(m.group(1).split())
 
     # Second pass: extract targets
-    current_lineno = 0
     for lineno, line in enumerate(lines, start=1):
         line_stripped = line.strip()
         if not line_stripped or line_stripped.startswith("#"):
@@ -235,30 +238,34 @@ def _parse_makefile(file_info: FileInfo, source: bytes) -> ParsedFile:
         if m:
             target = m.group(1)
             if not target.startswith("."):  # skip .PHONY, .SUFFIXES, etc.
-                symbols.append(Symbol(
-                    id=f"{file_info.path}::{target}",
-                    name=target,
-                    qualified_name=target,
-                    kind="function",
-                    signature=f"{target}:",
-                    start_line=lineno,
-                    end_line=lineno,
-                    docstring=None,
-                    visibility="public",
-                    language="makefile",
-                ))
+                symbols.append(
+                    Symbol(
+                        id=f"{file_info.path}::{target}",
+                        name=target,
+                        qualified_name=target,
+                        kind="function",
+                        signature=f"{target}:",
+                        start_line=lineno,
+                        end_line=lineno,
+                        docstring=None,
+                        visibility="public",
+                        language="makefile",
+                    )
+                )
             continue
 
         m = _INCLUDE_RE.match(line)
         if m:
             include_path = m.group(1).strip()
-            imports.append(Import(
-                raw_statement=line.strip(),
-                module_path=include_path,
-                imported_names=[],
-                is_relative=True,
-                resolved_file=None,
-            ))
+            imports.append(
+                Import(
+                    raw_statement=line.strip(),
+                    module_path=include_path,
+                    imported_names=[],
+                    is_relative=True,
+                    resolved_file=None,
+                )
+            )
 
     return ParsedFile(
         file_info=file_info,

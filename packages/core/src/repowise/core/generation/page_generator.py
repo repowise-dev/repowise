@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import jinja2
 import structlog
@@ -26,7 +27,7 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
 
-from .context_assembler import ContextAssembler, FilePageContext, CrossPackageContext
+from .context_assembler import ContextAssembler, FilePageContext
 from .models import (
     GENERATION_LEVELS,
     GeneratedPage,
@@ -110,16 +111,29 @@ _INFRA_LANGUAGES = frozenset({"dockerfile", "makefile", "terraform", "shell"})
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
 
 # Languages worth generating file pages for — data/config/doc files excluded
-_CODE_LANGUAGES = frozenset({
-    "python", "typescript", "javascript", "go", "rust",
-    "java", "cpp", "c", "csharp", "ruby", "kotlin", "scala",
-    "swift", "php",
-})
+_CODE_LANGUAGES = frozenset(
+    {
+        "python",
+        "typescript",
+        "javascript",
+        "go",
+        "rust",
+        "java",
+        "cpp",
+        "c",
+        "csharp",
+        "ruby",
+        "kotlin",
+        "scala",
+        "swift",
+        "php",
+    }
+)
 
 
 def _now_iso() -> str:
     """Return current UTC time as ISO-8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class PageGenerator:
@@ -193,13 +207,14 @@ class PageGenerator:
         source_map: dict[str, bytes] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_symbol_spotlight(
-            symbol, parsed, pagerank, graph,
+            symbol,
+            parsed,
+            pagerank,
+            graph,
             source_bytes=(source_map or {}).get(parsed.file_info.path, b""),
         )
         user_prompt = self._render("symbol_spotlight.j2", ctx=ctx)
-        response = await self._call_provider(
-            "symbol_spotlight", user_prompt, str(uuid.uuid4())
-        )
+        response = await self._call_provider("symbol_spotlight", user_prompt, str(uuid.uuid4()))
         return self._build_generated_page(
             "symbol_spotlight",
             f"{parsed.file_info.path}::{symbol.name}",
@@ -217,12 +232,11 @@ class PageGenerator:
         graph: Any,
         git_meta_map: dict[str, dict] | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_module_page(
-            module_path, language, file_contexts, graph
-        )
+        ctx = self._assembler.assemble_module_page(module_path, language, file_contexts, graph)
         module_git_summary = None
         if git_meta_map:
             from collections import Counter
+
             file_paths = [fc.file_path for fc in file_contexts]
             metas = [git_meta_map[f] for f in file_paths if f in git_meta_map]
             if metas:
@@ -232,8 +246,7 @@ class PageGenerator:
                 most_active = max(metas, key=lambda m: m.get("commit_count_90d", 0))
                 module_git_summary = {
                     "top_owners": [
-                        {"name": n, "file_count": c}
-                        for n, c in owner_counts.most_common(3)
+                        {"name": n, "file_count": c} for n, c in owner_counts.most_common(3)
                     ],
                     "most_active_file": most_active.get("file_path", ""),
                     "most_active_commits_90d": most_active.get("commit_count_90d", 0),
@@ -275,9 +288,7 @@ class PageGenerator:
         community: dict[str, int],
         git_meta_map: dict[str, dict] | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_repo_overview(
-            repo_structure, pagerank, sccs, community
-        )
+        ctx = self._assembler.assemble_repo_overview(repo_structure, pagerank, sccs, community)
         repo_git_summary = None
         if git_meta_map:
             metas = list(git_meta_map.values())
@@ -295,9 +306,7 @@ class PageGenerator:
                 "oldest_file_age_days": oldest.get("age_days", 0) if oldest else 0,
             }
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
-        response = await self._call_provider(
-            "repo_overview", user_prompt, str(uuid.uuid4())
-        )
+        response = await self._call_provider("repo_overview", user_prompt, str(uuid.uuid4()))
         repo_name = getattr(repo_structure, "name", "repo")
         return self._build_generated_page(
             "repo_overview",
@@ -320,9 +329,7 @@ class PageGenerator:
             graph, pagerank, community, sccs, repo_name
         )
         user_prompt = self._render("architecture_diagram.j2", ctx=ctx)
-        response = await self._call_provider(
-            "architecture_diagram", user_prompt, str(uuid.uuid4())
-        )
+        response = await self._call_provider("architecture_diagram", user_prompt, str(uuid.uuid4()))
         return self._build_generated_page(
             "architecture_diagram",
             repo_name,
@@ -339,9 +346,7 @@ class PageGenerator:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_api_contract(parsed, source_bytes)
         user_prompt = self._render("api_contract.j2", ctx=ctx)
-        response = await self._call_provider(
-            "api_contract", user_prompt, str(uuid.uuid4())
-        )
+        response = await self._call_provider("api_contract", user_prompt, str(uuid.uuid4()))
         return self._build_generated_page(
             "api_contract",
             parsed.file_info.path,
@@ -358,9 +363,7 @@ class PageGenerator:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_infra_page(parsed, source_bytes)
         user_prompt = self._render("infra_page.j2", ctx=ctx)
-        response = await self._call_provider(
-            "infra_page", user_prompt, str(uuid.uuid4())
-        )
+        response = await self._call_provider("infra_page", user_prompt, str(uuid.uuid4()))
         return self._build_generated_page(
             "infra_page",
             parsed.file_info.path,
@@ -455,9 +458,7 @@ class PageGenerator:
                 self._provider.model_name,
             )
 
-        async def run_level(
-            named_coros: list[tuple[str, Any]], level: int
-        ) -> list[GeneratedPage]:
+        async def run_level(named_coros: list[tuple[str, Any]], level: int) -> list[GeneratedPage]:
             if job_system is not None and job_id is not None:
                 job_system.update_level(job_id, level)
 
@@ -481,14 +482,18 @@ class PageGenerator:
                                 log.debug("rag.embed_failed", page_id=result.page_id, error=str(e))
                         # Store summary for dependency context (B2)
                         if isinstance(result, GeneratedPage):
-                            completed_page_summaries[result.target_path] = _extract_summary(result.content)
+                            completed_page_summaries[result.target_path] = _extract_summary(
+                                result.content
+                            )
                         return result
                     except Exception as exc:
                         if job_system is not None and job_id is not None:
                             job_system.fail_page(job_id, page_id, str(exc))
                         log.error(
                             "page_generation_failed",
-                            page_id=page_id, level=level, error=str(exc),
+                            page_id=page_id,
+                            level=level,
+                            error=str(exc),
                         )
                         return exc  # return as value so gather works
 
@@ -505,7 +510,8 @@ class PageGenerator:
 
         # ---- Budget pre-computation ----
         code_files = [
-            p for p in parsed_files
+            p
+            for p in parsed_files
             if not p.file_info.is_api_contract
             and not _is_infra_file(p)
             and p.file_info.language in _CODE_LANGUAGES
@@ -535,10 +541,7 @@ class PageGenerator:
             reverse=True,
         )
         _all_public_symbols: list[tuple[Any, Any]] = [
-            (sym, p)
-            for p in parsed_files
-            for sym in p.symbols
-            if sym.visibility == "public"
+            (sym, p) for p in parsed_files for sym in p.symbols if sym.visibility == "public"
         ]
 
         budget = max(50, int(len(parsed_files) * self._config.max_pages_pct))
@@ -546,21 +549,37 @@ class PageGenerator:
         _fixed_overhead = (
             sum(1 for p in parsed_files if p.file_info.is_api_contract)
             + sum(1 for scc in sccs if len(scc) > 1)
-            + len({
-                (Path(p.file_info.path).parts[0] if len(Path(p.file_info.path).parts) > 1 else "root")
-                for p in code_files
-            })
+            + len(
+                {
+                    (
+                        Path(p.file_info.path).parts[0]
+                        if len(Path(p.file_info.path).parts) > 1
+                        else "root"
+                    )
+                    for p in code_files
+                }
+            )
             + 2  # repo_overview + architecture_diagram
         )
         _remaining = max(0, budget - _fixed_overhead)
 
         # File page gets priority over symbol_spotlight
-        _n_file_uncapped = max(1, int(len(code_pr_scores) * self._config.file_page_top_percentile)) if code_pr_scores else 0
+        _n_file_uncapped = (
+            max(1, int(len(code_pr_scores) * self._config.file_page_top_percentile))
+            if code_pr_scores
+            else 0
+        )
         _n_file_cap = min(_n_file_uncapped, _remaining)
-        pr_threshold = code_pr_scores[_n_file_cap - 1] if code_pr_scores and _n_file_cap > 0 else 0.0
+        pr_threshold = (
+            code_pr_scores[_n_file_cap - 1] if code_pr_scores and _n_file_cap > 0 else 0.0
+        )
 
         _sym_budget = max(0, _remaining - _n_file_cap)
-        _n_sym_uncapped = max(1, int(len(_all_public_symbols) * self._config.top_symbol_percentile)) if _all_public_symbols else 0
+        _n_sym_uncapped = (
+            max(1, int(len(_all_public_symbols) * self._config.top_symbol_percentile))
+            if _all_public_symbols
+            else 0
+        )
         _n_sym_cap = min(_n_sym_uncapped, _sym_budget)
 
         # Start job with estimated total (A7)
@@ -570,10 +589,16 @@ class PageGenerator:
                 + _n_sym_cap
                 + _n_file_cap
                 + sum(1 for scc in sccs if len(scc) > 1)
-                + len({
-                    (Path(p.file_info.path).parts[0] if len(Path(p.file_info.path).parts) > 1 else "root")
-                    for p in code_files
-                })
+                + len(
+                    {
+                        (
+                            Path(p.file_info.path).parts[0]
+                            if len(Path(p.file_info.path).parts) > 1
+                            else "root"
+                        )
+                        for p in code_files
+                    }
+                )
                 + 2  # repo_overview + arch_diagram
                 + sum(1 for p in parsed_files if _is_infra_file(p))
             )
@@ -609,9 +634,8 @@ class PageGenerator:
                 self.generate_symbol_spotlight(sym, pf, pagerank, graph, source_map=source_map),
             )
             for sym, pf in top_symbols
-            if compute_page_id(
-                "symbol_spotlight", f"{pf.file_info.path}::{sym.name}"
-            ) not in completed_ids
+            if compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}")
+            not in completed_ids
         ]
         level1_pages = await run_level(level1_coros, 1)
         all_pages.extend(level1_pages)
@@ -673,7 +697,10 @@ class PageGenerator:
             (
                 compute_page_id("module_page", module),
                 self.generate_module_page(
-                    module, module_languages.get(module, "unknown"), fcs, graph,
+                    module,
+                    module_languages.get(module, "unknown"),
+                    fcs,
+                    graph,
                     git_meta_map=git_meta_map,
                 ),
             )
@@ -702,31 +729,35 @@ class PageGenerator:
                             if ctx_xpkg.coupling_strength >= 2:
                                 pid = compute_page_id("cross_package", f"{src_pkg}->{dep_pkg}")
                                 if pid not in completed_ids:
-                                    cross_coros.append((
-                                        pid,
-                                        self.generate_cross_package(
-                                            src_pkg, dep_pkg, src_fcs, dep_fcs, graph
-                                        ),
-                                    ))
+                                    cross_coros.append(
+                                        (
+                                            pid,
+                                            self.generate_cross_package(
+                                                src_pkg, dep_pkg, src_fcs, dep_fcs, graph
+                                            ),
+                                        )
+                                    )
             level5_pages = await run_level(cross_coros, 5)
             all_pages.extend(level5_pages)
 
         # ---- Level 6: repo_overview + architecture_diagram ----
         level6_coros: list[tuple[str, Any]] = []
         if compute_page_id("repo_overview", repo_name) not in completed_ids:
-            level6_coros.append((
-                compute_page_id("repo_overview", repo_name),
-                self.generate_repo_overview(
-                    repo_structure, pagerank, sccs, community, git_meta_map=git_meta_map
-                ),
-            ))
+            level6_coros.append(
+                (
+                    compute_page_id("repo_overview", repo_name),
+                    self.generate_repo_overview(
+                        repo_structure, pagerank, sccs, community, git_meta_map=git_meta_map
+                    ),
+                )
+            )
         if compute_page_id("architecture_diagram", repo_name) not in completed_ids:
-            level6_coros.append((
-                compute_page_id("architecture_diagram", repo_name),
-                self.generate_architecture_diagram(
-                    graph, pagerank, community, sccs, repo_name
-                ),
-            ))
+            level6_coros.append(
+                (
+                    compute_page_id("architecture_diagram", repo_name),
+                    self.generate_architecture_diagram(graph, pagerank, community, sccs, repo_name),
+                )
+            )
         level6_pages = await run_level(level6_coros, 6)
         all_pages.extend(level6_pages)
 
@@ -772,14 +803,10 @@ class PageGenerator:
             ]
             if query_terms:
                 try:
-                    results = await self._vector_store.search(
-                        ", ".join(query_terms[:5]), limit=3
-                    )
+                    results = await self._vector_store.search(", ".join(query_terms[:5]), limit=3)
                     self_id = f"file_page:{parsed.file_info.path}"
                     ctx.rag_context = [
-                        f"[{r.page_id}]\n{r.snippet}"
-                        for r in results
-                        if r.page_id != self_id
+                        f"[{r.page_id}]\n{r.snippet}" for r in results if r.page_id != self_id
                     ]
                 except Exception as e:
                     log.debug("rag.search_failed", path=parsed.file_info.path, error=str(e))

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import networkx as nx
 import pytest
 
+from repowise.core.generation.models import GenerationConfig
 from repowise.core.ingestion.models import (
     FileInfo,
     Import,
@@ -16,8 +17,6 @@ from repowise.core.ingestion.models import (
     Symbol,
 )
 from repowise.core.providers.llm.mock import MockProvider
-from repowise.core.generation.models import GenerationConfig
-
 
 # ---------------------------------------------------------------------------
 # Helper functions (module-level, not fixtures)
@@ -39,7 +38,7 @@ def _make_file_info(
         language=language,
         size_bytes=size_bytes,
         git_hash="abc123",
-        last_modified=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_modified=datetime(2026, 1, 1, tzinfo=UTC),
         is_test=is_test,
         is_config=is_config,
         is_api_contract=is_api_contract,

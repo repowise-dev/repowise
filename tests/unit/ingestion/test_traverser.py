@@ -8,7 +8,6 @@ import pytest
 
 from repowise.core.ingestion.traverser import FileTraverser, _detect_language
 
-
 # ---------------------------------------------------------------------------
 # Language detection
 # ---------------------------------------------------------------------------
@@ -205,7 +204,7 @@ class TestExtraExcludePatterns:
 
 
 class TestPerDirectoryrepowiseIgnore:
-    def test_subdir_repowiseIgnore_excludes_dir(self, tmp_path: Path) -> None:
+    def test_subdir_repowise_ignore_excludes_dir(self, tmp_path: Path) -> None:
         src = tmp_path / "src"
         src.mkdir()
         (src / ".repowiseIgnore").write_text("generated/\n")
@@ -217,7 +216,7 @@ class TestPerDirectoryrepowiseIgnore:
         assert any("real.py" in p for p in paths)
         assert not any("types.py" in p for p in paths)
 
-    def test_subdir_repowiseIgnore_excludes_files(self, tmp_path: Path) -> None:
+    def test_subdir_repowise_ignore_excludes_files(self, tmp_path: Path) -> None:
         src = tmp_path / "src"
         src.mkdir()
         (src / ".repowiseIgnore").write_text("*.test.ts\n")
@@ -228,7 +227,7 @@ class TestPerDirectoryrepowiseIgnore:
         assert any("app.ts" in p and "test" not in p for p in paths)
         assert not any("app.test.ts" in p for p in paths)
 
-    def test_root_repowiseIgnore_still_respected(self, tmp_path: Path) -> None:
+    def test_root_repowise_ignore_still_respected(self, tmp_path: Path) -> None:
         (tmp_path / ".repowiseIgnore").write_text("secret/\n")
         (tmp_path / "secret").mkdir()
         (tmp_path / "secret" / "key.py").write_text("KEY = 'x'")
@@ -238,7 +237,7 @@ class TestPerDirectoryrepowiseIgnore:
         assert any("app.py" in p for p in paths)
         assert not any("secret" in p for p in paths)
 
-    def test_subdir_repowiseIgnore_does_not_affect_sibling_dirs(self, tmp_path: Path) -> None:
+    def test_subdir_repowise_ignore_does_not_affect_sibling_dirs(self, tmp_path: Path) -> None:
         api = tmp_path / "api"
         api.mkdir()
         (api / ".repowiseIgnore").write_text("internal/\n")
@@ -298,4 +297,7 @@ class TestMonorepoDetection:
         structure = traverser.get_repo_structure()
         assert "python" in structure.root_language_distribution
         assert "typescript" in structure.root_language_distribution
-        assert structure.root_language_distribution["python"] > structure.root_language_distribution["typescript"]
+        assert (
+            structure.root_language_distribution["python"]
+            > structure.root_language_distribution["typescript"]
+        )

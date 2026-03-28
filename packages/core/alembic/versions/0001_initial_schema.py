@@ -15,16 +15,16 @@ Create Date: 2026-03-19
 
 from __future__ import annotations
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
 revision: str = "0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -116,9 +116,7 @@ def upgrade() -> None:
         sa.Column("generation_level", sa.Integer, nullable=False, server_default="0"),
         sa.Column("version", sa.Integer, nullable=False, server_default="1"),
         sa.Column("confidence", sa.Float, nullable=False, server_default="1.0"),
-        sa.Column(
-            "freshness_status", sa.String(32), nullable=False, server_default="fresh"
-        ),
+        sa.Column("freshness_status", sa.String(32), nullable=False, server_default="fresh"),
         sa.Column("metadata_json", sa.Text, nullable=False, server_default="{}"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
@@ -264,13 +262,9 @@ def upgrade() -> None:
         sa.Column("start_line", sa.Integer, nullable=False, server_default="0"),
         sa.Column("end_line", sa.Integer, nullable=False, server_default="0"),
         sa.Column("docstring", sa.Text, nullable=True),
-        sa.Column(
-            "visibility", sa.String(16), nullable=False, server_default="public"
-        ),
+        sa.Column("visibility", sa.String(16), nullable=False, server_default="public"),
         sa.Column("is_async", sa.Boolean, nullable=False, server_default="0"),
-        sa.Column(
-            "complexity_estimate", sa.Integer, nullable=False, server_default="0"
-        ),
+        sa.Column("complexity_estimate", sa.Integer, nullable=False, server_default="0"),
         sa.Column("language", sa.String(32), nullable=False, server_default=""),
         sa.Column("parent_name", sa.String(255), nullable=True),
         sa.Column(

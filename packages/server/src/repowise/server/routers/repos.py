@@ -21,7 +21,7 @@ router = APIRouter(
 @router.post("", response_model=RepoResponse, status_code=201)
 async def create_repo(
     body: RepoCreate,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> RepoResponse:
     """Register a new repository (or update if same local_path exists)."""
     repo = await crud.upsert_repository(
@@ -37,12 +37,10 @@ async def create_repo(
 
 @router.get("", response_model=list[RepoResponse])
 async def list_repos(
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[RepoResponse]:
     """List all registered repositories."""
-    result = await session.execute(
-        select(Repository).order_by(Repository.updated_at.desc())
-    )
+    result = await session.execute(select(Repository).order_by(Repository.updated_at.desc()))
     repos = result.scalars().all()
     return [RepoResponse.from_orm(r) for r in repos]
 
@@ -50,7 +48,7 @@ async def list_repos(
 @router.get("/{repo_id}", response_model=RepoResponse)
 async def get_repo(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> RepoResponse:
     """Get a single repository by ID."""
     repo = await crud.get_repository(session, repo_id)
@@ -63,7 +61,7 @@ async def get_repo(
 async def update_repo(
     repo_id: str,
     body: RepoUpdate,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> RepoResponse:
     """Update repository fields."""
     repo = await crud.get_repository(session, repo_id)
@@ -87,7 +85,7 @@ async def update_repo(
 @router.get("/{repo_id}/stats", response_model=RepoStatsResponse)
 async def get_repo_stats(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> RepoStatsResponse:
     """Get aggregate stats for a repository."""
     repo = await crud.get_repository(session, repo_id)
@@ -140,7 +138,7 @@ async def get_repo_stats(
 @router.post("/{repo_id}/sync", status_code=202)
 async def sync_repo(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Trigger an incremental documentation sync for a repository.
 
@@ -162,7 +160,7 @@ async def sync_repo(
 @router.post("/{repo_id}/full-resync", status_code=202)
 async def full_resync(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Trigger a full re-generation of all documentation.
 

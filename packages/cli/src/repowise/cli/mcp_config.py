@@ -62,5 +62,5 @@ Or run directly:
   repowise mcp {abs_path}
   repowise mcp {abs_path} --transport sse --port 7338
 
-Config saved to: {repo_path / '.repowise' / 'mcp.json'}
+Config saved to: {repo_path / ".repowise" / "mcp.json"}
 """.strip()

@@ -7,9 +7,7 @@ parameter greedily matches the suffix as part of the page_id.
 
 from __future__ import annotations
 
-from urllib.parse import unquote
-
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
@@ -27,11 +25,13 @@ router = APIRouter(
 async def list_pages(
     repo_id: str = Query(..., description="Repository ID"),
     page_type: str | None = Query(None, description="Filter by page type"),
-    sort_by: str = Query("updated_at", description="Sort field: updated_at, confidence, created_at"),
+    sort_by: str = Query(
+        "updated_at", description="Sort field: updated_at, confidence, created_at"
+    ),
     order: str = Query("desc", description="Sort order: asc or desc"),
     limit: int = Query(100, ge=1, le=5000),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[PageResponse]:
     """List wiki pages for a repository."""
     pages = await crud.list_pages(
@@ -49,7 +49,7 @@ async def list_pages(
 @router.get("/lookup", response_model=PageResponse)
 async def get_page_by_query(
     page_id: str = Query(..., description="Page ID (e.g. file_page:src/main.py)"),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> PageResponse:
     """Get a single wiki page by ID passed as query parameter.
 
@@ -66,7 +66,7 @@ async def get_page_by_query(
 async def get_page_versions_by_query(
     page_id: str = Query(..., description="Page ID"),
     limit: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[PageVersionResponse]:
     """Get version history for a wiki page (page_id as query param)."""
     versions = await crud.get_page_versions(session, page_id, limit=limit)
@@ -76,7 +76,7 @@ async def get_page_versions_by_query(
 @router.post("/lookup/regenerate", status_code=202)
 async def regenerate_page_by_query(
     page_id: str = Query(..., description="Page ID"),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Force-regenerate a single wiki page (page_id as query param)."""
     page = await crud.get_page(session, page_id)
@@ -95,7 +95,7 @@ async def regenerate_page_by_query(
 @router.get("/{page_id:path}", response_model=PageResponse)
 async def get_page(
     page_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> PageResponse:
     """Get a single wiki page by ID in path (e.g. ``file_page:src/main.py``).
 

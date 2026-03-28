@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -19,10 +18,10 @@ from repowise.core.persistence.models import (
     Page,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 async def async_engine():
@@ -59,8 +58,9 @@ async def repo(session):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _add_graph_node(session, repo_id, node_id, *, is_entry_point=False, pagerank=0.1):
@@ -99,7 +99,9 @@ async def _add_page(session, repo_id, page_id, page_type, target_path, content):
     return page
 
 
-async def _add_git_meta(session, repo_id, file_path, *, is_hotspot=False, churn_pct=0.5, owner=None):
+async def _add_git_meta(
+    session, repo_id, file_path, *, is_hotspot=False, churn_pct=0.5, owner=None
+):
     gm = GitMetadata(
         repository_id=repo_id,
         file_path=file_path,
@@ -132,6 +134,7 @@ async def _add_decision(session, repo_id, title, status="active", rationale="Som
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 async def test_fetch_empty_db_returns_defaults(session, repo, tmp_path):
     fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
@@ -194,7 +197,9 @@ async def test_fetch_entry_points_sorted_by_pagerank(session, repo, tmp_path):
 
 
 async def test_fetch_hotspots(session, repo, tmp_path):
-    await _add_git_meta(session, repo.id, "src/billing.py", is_hotspot=True, churn_pct=0.95, owner="@alice")
+    await _add_git_meta(
+        session, repo.id, "src/billing.py", is_hotspot=True, churn_pct=0.95, owner="@alice"
+    )
     await _add_git_meta(session, repo.id, "src/utils.py", is_hotspot=False, churn_pct=0.10)
     await session.commit()
 
@@ -224,6 +229,7 @@ async def test_fetch_avg_confidence(session, repo, tmp_path):
     await _add_page(session, repo.id, "file_page:src/a.py", "file_page", "src/a.py", "content")
     # Update confidence manually
     from sqlalchemy import update
+
     await session.execute(
         update(Page).where(Page.id == "file_page:src/a.py").values(confidence=0.8)
     )
@@ -240,4 +246,5 @@ async def test_fetch_indexed_at_is_date_string(session, repo, tmp_path):
     data = await fetcher.fetch()
 
     import re
+
     assert re.match(r"^\d{4}-\d{2}-\d{2}$", data.indexed_at)

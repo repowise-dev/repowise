@@ -12,8 +12,6 @@ import math
 import pytest
 
 from repowise.core.providers.embedding.base import Embedder, MockEmbedder
-from repowise.core.persistence.vector_store import InMemoryVectorStore
-
 
 # ---------------------------------------------------------------------------
 # MockEmbedder
@@ -76,7 +74,12 @@ async def test_in_memory_store_upsert_and_search(in_memory_vector_store):
     await in_memory_vector_store.embed_and_upsert(
         "page1",
         "Python decorator pattern for caching",
-        {"title": "Decorators", "page_type": "file_page", "target_path": "src/cache.py", "content": "Python decorator pattern for caching"},
+        {
+            "title": "Decorators",
+            "page_type": "file_page",
+            "target_path": "src/cache.py",
+            "content": "Python decorator pattern for caching",
+        },
     )
     results = await in_memory_vector_store.search("Python decorator caching")
     assert len(results) == 1
@@ -89,12 +92,22 @@ async def test_in_memory_store_search_returns_closest(in_memory_vector_store):
     await in_memory_vector_store.embed_and_upsert(
         "p1",
         "Python decorator pattern",
-        {"title": "p1", "page_type": "file_page", "target_path": "a.py", "content": "Python decorator pattern"},
+        {
+            "title": "p1",
+            "page_type": "file_page",
+            "target_path": "a.py",
+            "content": "Python decorator pattern",
+        },
     )
     await in_memory_vector_store.embed_and_upsert(
         "p2",
         "Rust ownership and borrowing",
-        {"title": "p2", "page_type": "file_page", "target_path": "b.py", "content": "Rust ownership and borrowing"},
+        {
+            "title": "p2",
+            "page_type": "file_page",
+            "target_path": "b.py",
+            "content": "Rust ownership and borrowing",
+        },
     )
     results = await in_memory_vector_store.search("Python decorator pattern", limit=2)
     assert results[0].page_id == "p1"
@@ -105,7 +118,12 @@ async def test_in_memory_store_limit_respected(in_memory_vector_store):
         await in_memory_vector_store.embed_and_upsert(
             f"page{i}",
             f"content number {i}",
-            {"title": f"Page {i}", "page_type": "file_page", "target_path": f"f{i}.py", "content": f"content number {i}"},
+            {
+                "title": f"Page {i}",
+                "page_type": "file_page",
+                "target_path": f"f{i}.py",
+                "content": f"content number {i}",
+            },
         )
     results = await in_memory_vector_store.search("content", limit=3)
     assert len(results) == 3
@@ -115,7 +133,12 @@ async def test_in_memory_store_delete_removes_entry(in_memory_vector_store):
     await in_memory_vector_store.embed_and_upsert(
         "to-delete",
         "transient content",
-        {"title": "tmp", "page_type": "file_page", "target_path": "t.py", "content": "transient content"},
+        {
+            "title": "tmp",
+            "page_type": "file_page",
+            "target_path": "t.py",
+            "content": "transient content",
+        },
     )
     assert len(in_memory_vector_store) == 1
 
@@ -132,11 +155,21 @@ async def test_in_memory_store_delete_nonexistent_is_safe(in_memory_vector_store
 
 
 async def test_in_memory_store_upsert_overwrites(in_memory_vector_store):
-    meta = {"title": "v1", "page_type": "file_page", "target_path": "a.py", "content": "version one"}
+    meta = {
+        "title": "v1",
+        "page_type": "file_page",
+        "target_path": "a.py",
+        "content": "version one",
+    }
     await in_memory_vector_store.embed_and_upsert("p", "version one", meta)
     assert len(in_memory_vector_store) == 1
 
-    meta2 = {"title": "v2", "page_type": "file_page", "target_path": "a.py", "content": "version two"}
+    meta2 = {
+        "title": "v2",
+        "page_type": "file_page",
+        "target_path": "a.py",
+        "content": "version two",
+    }
     await in_memory_vector_store.embed_and_upsert("p", "version two", meta2)
     assert len(in_memory_vector_store) == 1  # still one entry
 
@@ -149,7 +182,12 @@ async def test_in_memory_store_score_between_zero_and_one(in_memory_vector_store
     await in_memory_vector_store.embed_and_upsert(
         "p1",
         "machine learning algorithms",
-        {"title": "ML", "page_type": "file_page", "target_path": "ml.py", "content": "machine learning algorithms"},
+        {
+            "title": "ML",
+            "page_type": "file_page",
+            "target_path": "ml.py",
+            "content": "machine learning algorithms",
+        },
     )
     results = await in_memory_vector_store.search("machine learning")
     assert 0.0 <= results[0].score <= 1.0

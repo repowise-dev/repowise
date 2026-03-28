@@ -17,7 +17,6 @@ import pytest
 
 from repowise.core.providers.llm.base import GeneratedResponse
 
-
 # ---------------------------------------------------------------------------
 # OpenAI
 # ---------------------------------------------------------------------------
@@ -40,7 +39,9 @@ async def test_openai_live(model):
     assert result.content.strip()
     assert result.input_tokens > 0
     assert result.output_tokens > 0
-    print(f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}")
+    print(
+        f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -51,11 +52,14 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"
 
 
 @pytest.mark.skipif(not GEMINI_KEY, reason="GEMINI_API_KEY not set")
-@pytest.mark.parametrize("model", [
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3-flash-preview",
-    "gemini-3.1-pro-preview",
-])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+    ],
+)
 async def test_gemini_live(model):
     from repowise.core.providers.llm.gemini import GeminiProvider
 
@@ -67,7 +71,9 @@ async def test_gemini_live(model):
     )
     assert isinstance(result, GeneratedResponse)
     assert result.content.strip()
-    print(f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}")
+    print(
+        f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -90,4 +96,6 @@ async def test_anthropic_live(model):
     )
     assert isinstance(result, GeneratedResponse)
     assert result.content.strip()
-    print(f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}")
+    print(
+        f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}"
+    )

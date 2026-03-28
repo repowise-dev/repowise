@@ -66,7 +66,7 @@ def watch_command(
         except Exception as e:
             console.print(f"[red]Update failed: {e}[/red]")
 
-    class repowiseHandler(FileSystemEventHandler):
+    class RepowiseHandler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal timer
             if event.is_directory:
@@ -85,7 +85,7 @@ def watch_command(
                 timer.start()
 
     observer = Observer()
-    observer.schedule(repowiseHandler(), str(repo_path), recursive=True)
+    observer.schedule(RepowiseHandler(), str(repo_path), recursive=True)
     observer.start()
 
     console.print(f"[bold]Watching {repo_path}... Ctrl+C to stop[/bold]")

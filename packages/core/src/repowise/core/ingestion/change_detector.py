@@ -38,7 +38,7 @@ class SymbolRename:
     old_name: str
     new_name: str
     kind: str
-    confidence: float  # 0.0–1.0; 1.0 = certain rename
+    confidence: float  # 0.0-1.0; 1.0 = certain rename
 
 
 @dataclass
@@ -57,23 +57,23 @@ class FileDiff:
 
     path: str
     status: Literal["added", "deleted", "modified", "renamed"]
-    old_path: str | None              # only set when status == "renamed"
-    old_parsed: ParsedFile | None     # None for new files
-    new_parsed: ParsedFile | None     # None for deleted files
-    symbol_diff: SymbolDiff | None    # None if parsing failed
+    old_path: str | None  # only set when status == "renamed"
+    old_parsed: ParsedFile | None  # None for new files
+    new_parsed: ParsedFile | None  # None for deleted files
+    symbol_diff: SymbolDiff | None  # None if parsing failed
     trigger_commit_sha: str | None = None
     trigger_commit_message: str | None = None
     trigger_commit_author: str | None = None
-    diff_text: str | None = None      # unified diff, capped at 4K chars
+    diff_text: str | None = None  # unified diff, capped at 4K chars
 
 
 @dataclass
 class AffectedPages:
     """Output of get_affected_pages — pages that need attention."""
 
-    regenerate: list[str]    # page IDs to fully regenerate
+    regenerate: list[str]  # page IDs to fully regenerate
     rename_patch: list[str]  # pages that only need a symbol rename text patch
-    decay_only: list[str]    # pages to mark stale without immediate regeneration
+    decay_only: list[str]  # pages to mark stale without immediate regeneration
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,6 @@ class ChangeDetector:
             return []
 
         try:
-            import git as gitpython
             base_commit = repo.commit(base_ref)
             until_commit = repo.commit(until_ref)
             diff_items = base_commit.diff(until_commit)
@@ -120,7 +119,6 @@ class ChangeDetector:
             return []
 
         results: list[FileDiff] = []
-        from .parser import parse_file  # avoid circular at module level
 
         for item in diff_items:
             status: Literal["added", "deleted", "modified", "renamed"]
@@ -222,9 +220,8 @@ class ChangeDetector:
                 line_bonus = 0.2 if line_close else 0.0
 
                 confidence = min(name_ratio + line_bonus, 1.0)
-                if confidence >= 0.65:
-                    if best_match is None or confidence > best_match[0]:
-                        best_match = (confidence, new_name)
+                if confidence >= 0.65 and (best_match is None or confidence > best_match[0]):
+                    best_match = (confidence, new_name)
 
             if best_match:
                 conf, new_name = best_match
@@ -264,7 +261,7 @@ class ChangeDetector:
 
             # Collect files referenced by symbol renames
             if diff.symbol_diff and diff.symbol_diff.renamed:
-                for rename in diff.symbol_diff.renamed:
+                for _rename in diff.symbol_diff.renamed:
                     rename_candidates.add(path)
 
         if not isinstance(graph, nx.DiGraph):
@@ -318,9 +315,7 @@ class ChangeDetector:
 
         regenerate = all_pages_needing_regen[:cascade_budget]
         decay_only = (
-            all_pages_needing_regen[cascade_budget:]
-            + sorted(two_hop)
-            + sorted(co_change_decay)
+            all_pages_needing_regen[cascade_budget:] + sorted(two_hop) + sorted(co_change_decay)
         )
         rename_patch = [p for p in rename_candidates if p in regenerate]
 
@@ -339,6 +334,7 @@ class ChangeDetector:
             return self._repo
         try:
             import git as gitpython
+
             self._repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
             return self._repo
         except Exception as exc:
@@ -369,7 +365,6 @@ class ChangeDetector:
     def _parse_bytes(self, source: bytes, path: str) -> ParsedFile | None:
         from datetime import datetime
 
-        from .models import FileInfo
         from .parser import parse_file
         from .traverser import _detect_language
 

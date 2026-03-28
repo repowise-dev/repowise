@@ -32,7 +32,7 @@ async def list_decisions(
     include_proposed: bool = Query(True),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[DecisionRecordResponse]:
     """List architectural decision records for a repository."""
     decisions = await crud.list_decisions(
@@ -54,18 +54,15 @@ async def list_decisions(
 )
 async def decision_health(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Get decision health summary: stale, proposed, ungoverned hotspots."""
     summary = await crud.get_decision_health_summary(session, repo_id)
     return {
         "summary": summary["summary"],
-        "stale_decisions": [
-            DecisionRecordResponse.from_orm(d) for d in summary["stale_decisions"]
-        ],
+        "stale_decisions": [DecisionRecordResponse.from_orm(d) for d in summary["stale_decisions"]],
         "proposed_awaiting_review": [
-            DecisionRecordResponse.from_orm(d)
-            for d in summary["proposed_awaiting_review"]
+            DecisionRecordResponse.from_orm(d) for d in summary["proposed_awaiting_review"]
         ],
         "ungoverned_hotspots": summary["ungoverned_hotspots"],
     }
@@ -78,7 +75,7 @@ async def decision_health(
 async def get_decision(
     repo_id: str,
     decision_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DecisionRecordResponse:
     """Get a single decision record by ID."""
     rec = await crud.get_decision(session, decision_id)
@@ -95,7 +92,7 @@ async def get_decision(
 async def create_decision(
     repo_id: str,
     body: DecisionCreate,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DecisionRecordResponse:
     """Create a new decision record (e.g. from CLI capture via API)."""
     rec = await crud.upsert_decision(
@@ -125,7 +122,7 @@ async def patch_decision(
     repo_id: str,
     decision_id: str,
     body: DecisionStatusUpdate,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DecisionRecordResponse:
     """Update the status of a decision record (confirm, deprecate, supersede)."""
     try:
@@ -136,7 +133,7 @@ async def patch_decision(
             superseded_by=body.superseded_by,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if rec is None:
         raise HTTPException(status_code=404, detail="Decision not found")
     if rec.repository_id != repo_id:

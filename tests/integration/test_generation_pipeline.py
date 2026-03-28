@@ -12,16 +12,13 @@ import pytest
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.job_system import JobSystem
-from repowise.core.generation.models import GenerationConfig, GeneratedPage
+from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import (
-    FileInfo,
-    Import,
     PackageInfo,
     ParsedFile,
     RepoStructure,
-    Symbol,
 )
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.traverser import FileTraverser
@@ -57,7 +54,7 @@ async def pipeline_result(tmp_path_factory):
         except Exception:
             pass
 
-    graph = builder.build()
+    _graph = builder.build()
 
     # Determine if monorepo (sample_repo has multiple language packages)
     pkg_dirs = [d for d in SAMPLE_REPO.iterdir() if d.is_dir()]
@@ -77,7 +74,9 @@ async def pipeline_result(tmp_path_factory):
         packages=packages,
         root_language_distribution={"python": 0.5, "typescript": 0.2, "go": 0.1, "other": 0.2},
         total_files=len(parsed_files),
-        total_loc=sum(len(source_map.get(p.file_info.path, b"").splitlines()) for p in parsed_files),
+        total_loc=sum(
+            len(source_map.get(p.file_info.path, b"").splitlines()) for p in parsed_files
+        ),
         entry_points=[],
     )
 
@@ -122,7 +121,7 @@ class TestGenerationPipeline:
 
     def test_all_pages_have_page_id(self, pipeline_result):
         for page in pipeline_result["pages"]:
-            assert page.page_id, f"Missing page_id"
+            assert page.page_id, "Missing page_id"
 
     def test_no_none_page_ids(self, pipeline_result):
         for page in pipeline_result["pages"]:
@@ -130,7 +129,9 @@ class TestGenerationPipeline:
 
     def test_no_duplicate_page_ids(self, pipeline_result):
         ids = [p.page_id for p in pipeline_result["pages"]]
-        assert len(ids) == len(set(ids)), f"Duplicate page IDs found: {[i for i in ids if ids.count(i) > 1]}"
+        assert len(ids) == len(set(ids)), (
+            f"Duplicate page IDs found: {[i for i in ids if ids.count(i) > 1]}"
+        )
 
     def test_all_pages_have_model_name(self, pipeline_result):
         for page in pipeline_result["pages"]:
@@ -152,9 +153,9 @@ class TestGenerationPipeline:
         """There should be at least one file_page for Python files."""
         file_pages = [p for p in pipeline_result["pages"] if p.page_type == "file_page"]
         parsed_py = [
-            pf for pf in pipeline_result["parsed_files"]
-            if pf.file_info.language == "python"
-            and not pf.file_info.is_api_contract
+            pf
+            for pf in pipeline_result["parsed_files"]
+            if pf.file_info.language == "python" and not pf.file_info.is_api_contract
         ]
         # At least one py file → at least one file_page
         if parsed_py:
@@ -163,8 +164,7 @@ class TestGenerationPipeline:
     def test_generates_infra_page_for_dockerfile(self, pipeline_result):
         """If Dockerfile is in sample_repo, an infra_page should exist."""
         dockerfile_parsed = [
-            pf for pf in pipeline_result["parsed_files"]
-            if pf.file_info.language == "dockerfile"
+            pf for pf in pipeline_result["parsed_files"] if pf.file_info.language == "dockerfile"
         ]
         if dockerfile_parsed:
             infra_pages = [p for p in pipeline_result["pages"] if p.page_type == "infra_page"]
@@ -173,8 +173,7 @@ class TestGenerationPipeline:
     def test_generates_infra_page_for_makefile(self, pipeline_result):
         """If Makefile is in sample_repo, an infra_page should exist."""
         makefile_parsed = [
-            pf for pf in pipeline_result["parsed_files"]
-            if pf.file_info.language == "makefile"
+            pf for pf in pipeline_result["parsed_files"] if pf.file_info.language == "makefile"
         ]
         if makefile_parsed:
             infra_pages = [p for p in pipeline_result["pages"] if p.page_type == "infra_page"]
@@ -190,7 +189,6 @@ class TestGenerationPipeline:
 
     def test_provider_called_at_least_once_per_file(self, pipeline_result):
         """Provider should have been called at least once for each generated page."""
-        pages = pipeline_result["pages"]
         provider = pipeline_result["provider"]
         # call_count >= non-cached pages
         assert provider.call_count >= 1
@@ -218,7 +216,6 @@ class TestGenerationPipeline:
     def test_completed_page_count_matches_generated(self, pipeline_result):
         """Checkpoint.completed_pages should match len(pages)."""
         job_sys = pipeline_result["job_sys"]
-        pages = pipeline_result["pages"]
         jobs = job_sys.list_jobs()
         if jobs:
             # completed_pages ≤ total because some may not have been checkpointed before start_job
@@ -238,6 +235,7 @@ class TestGenerationPipeline:
     def test_generated_page_created_at_is_iso(self, pipeline_result):
         """created_at should be a valid ISO-8601 string."""
         from datetime import datetime
+
         for page in pipeline_result["pages"]:
             dt = datetime.fromisoformat(page.created_at.replace("Z", "+00:00"))
             assert dt.year >= 2026
@@ -269,7 +267,10 @@ class TestGenerationPipeline:
         # A fresh run with no completed pages should call at least once
         tmp = tmp_path_factory.mktemp("resume")
         config = GenerationConfig(
-            max_tokens=256, token_budget=1000, max_concurrency=2, cache_enabled=True,
+            max_tokens=256,
+            token_budget=1000,
+            max_concurrency=2,
+            cache_enabled=True,
             jobs_dir=str(tmp / "jobs"),
         )
         provider2 = MockProvider()
@@ -285,6 +286,7 @@ class TestGenerationPipeline:
                 source_map[pf.file_info.path] = src_path.read_bytes()
 
         from repowise.core.ingestion.graph import GraphBuilder
+
         builder = GraphBuilder()
         for pf in parsed_files:
             builder.add_file(pf)
@@ -292,7 +294,9 @@ class TestGenerationPipeline:
 
         pkg_dirs = [d for d in SAMPLE_REPO.iterdir() if d.is_dir()]
         packages = [
-            PackageInfo(name=d.name, path=d.name, language="unknown", entry_points=[], manifest_file="")
+            PackageInfo(
+                name=d.name, path=d.name, language="unknown", entry_points=[], manifest_file=""
+            )
             for d in pkg_dirs
         ]
         repo_structure = RepoStructure(
@@ -304,7 +308,7 @@ class TestGenerationPipeline:
             entry_points=[],
         )
 
-        pages2 = await gen2.generate_all(
+        await gen2.generate_all(
             parsed_files, source_map, builder, repo_structure, "sample_repo", job_sys2
         )
         # Provider was called (fresh run, no resume)

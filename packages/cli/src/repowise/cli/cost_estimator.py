@@ -6,18 +6,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Infra / significance helpers (mirrored from page_generator.py)
 # ---------------------------------------------------------------------------
 
 _INFRA_LANGUAGES = frozenset({"dockerfile", "makefile", "terraform", "shell"})
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
-_CODE_LANGUAGES = frozenset({
-    "python", "typescript", "javascript", "go", "rust",
-    "java", "cpp", "c", "csharp", "ruby", "kotlin", "scala",
-    "swift", "php",
-})
+_CODE_LANGUAGES = frozenset(
+    {
+        "python",
+        "typescript",
+        "javascript",
+        "go",
+        "rust",
+        "java",
+        "cpp",
+        "c",
+        "csharp",
+        "ruby",
+        "kotlin",
+        "scala",
+        "swift",
+        "php",
+    }
+)
 
 
 def _is_infra_file(parsed: Any) -> bool:
@@ -89,31 +101,31 @@ _TOKEN_HEURISTICS: dict[str, tuple[int, int]] = {
 # Exact model names are checked first; prefix fallbacks catch unknown variants.
 _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     # OpenAI GPT-5.4 family (prices per MTok → divide by 1000 for per-1K)
-    "gpt-5.4":          (0.0025,   0.015),    # $2.50/$15 per MTok
-    "gpt-5.4-mini":     (0.00075,  0.0045),   # $0.75/$4.50 per MTok
-    "gpt-5.4-nano":     (0.0002,   0.00125),  # $0.20/$1.25 per MTok
+    "gpt-5.4": (0.0025, 0.015),  # $2.50/$15 per MTok
+    "gpt-5.4-mini": (0.00075, 0.0045),  # $0.75/$4.50 per MTok
+    "gpt-5.4-nano": (0.0002, 0.00125),  # $0.20/$1.25 per MTok
     # Gemini family
-    "gemini-3.1-pro-preview":        (0.002,    0.012),   # $2/$12 per MTok
-    "gemini-3-flash-preview":        (0.0005,   0.003),   # $0.50/$3 per MTok
-    "gemini-3.1-flash-lite-preview": (0.00025,  0.0015),  # $0.25/$1.50 per MTok
+    "gemini-3.1-pro-preview": (0.002, 0.012),  # $2/$12 per MTok
+    "gemini-3-flash-preview": (0.0005, 0.003),  # $0.50/$3 per MTok
+    "gemini-3.1-flash-lite-preview": (0.00025, 0.0015),  # $0.25/$1.50 per MTok
     # Anthropic Claude 4.x family
-    "claude-opus-4-6":   (0.005,  0.025),  # $5/$25 per MTok
-    "claude-sonnet-4-6": (0.003,  0.015),  # $3/$15 per MTok
-    "claude-haiku-4-5":  (0.001,  0.005),  # $1/$5 per MTok
+    "claude-opus-4-6": (0.005, 0.025),  # $5/$25 per MTok
+    "claude-sonnet-4-6": (0.003, 0.015),  # $3/$15 per MTok
+    "claude-haiku-4-5": (0.001, 0.005),  # $1/$5 per MTok
 }
 
 # Prefix fallbacks for unknown model variants
 _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
-    "gpt-5.4-nano":  (0.0002,  0.00125),
-    "gpt-5.4-mini":  (0.00075, 0.0045),
-    "gpt-5.4":       (0.0025,  0.015),
-    "claude-opus":   (0.005,   0.025),
-    "claude-sonnet": (0.003,   0.015),
-    "claude-haiku":  (0.001,   0.005),
-    "claude":        (0.003,   0.015),
-    "gemini":        (0.00025, 0.0015),
-    "llama":         (0.0,     0.0),
-    "mock":          (0.0,     0.0),
+    "gpt-5.4-nano": (0.0002, 0.00125),
+    "gpt-5.4-mini": (0.00075, 0.0045),
+    "gpt-5.4": (0.0025, 0.015),
+    "claude-opus": (0.005, 0.025),
+    "claude-sonnet": (0.003, 0.015),
+    "claude-haiku": (0.001, 0.005),
+    "claude": (0.003, 0.015),
+    "gemini": (0.00025, 0.0015),
+    "llama": (0.0, 0.0),
+    "mock": (0.0, 0.0),
 }
 
 
@@ -157,7 +169,8 @@ def build_generation_plan(
         files = [p for p in files if not p.file_info.is_test]
 
     code_files = [
-        p for p in files
+        p
+        for p in files
         if not p.file_info.is_api_contract
         and not _is_infra_file(p)
         and p.file_info.language in _CODE_LANGUAGES
@@ -183,26 +196,30 @@ def build_generation_plan(
         [pagerank.get(p.file_info.path, 0.0) for p in code_files],
         reverse=True,
     )
-    n_file_uncapped = max(1, int(len(code_pr_scores) * config.file_page_top_percentile)) if code_pr_scores else 0
+    n_file_uncapped = (
+        max(1, int(len(code_pr_scores) * config.file_page_top_percentile)) if code_pr_scores else 0
+    )
     n_file_cap = min(n_file_uncapped, remaining)
     pr_threshold = code_pr_scores[n_file_cap - 1] if code_pr_scores and n_file_cap > 0 else 0.0
 
     # Actual file_page count: ALL files passing _is_significant_file
     # (betweenness > 0 and entry_point are independent of the PageRank threshold)
     file_page_count = sum(
-        1 for p in code_files
+        1
+        for p in code_files
         if _is_significant_file(p, pagerank, betweenness, config, pr_threshold)
     )
 
     # Symbol spotlight budget
     sym_budget = max(0, remaining - n_file_cap)
     all_public_symbols = [
-        (sym, p)
-        for p in files
-        for sym in p.symbols
-        if sym.visibility == "public"
+        (sym, p) for p in files for sym in p.symbols if sym.visibility == "public"
     ]
-    n_sym_uncapped = max(1, int(len(all_public_symbols) * config.top_symbol_percentile)) if all_public_symbols else 0
+    n_sym_uncapped = (
+        max(1, int(len(all_public_symbols) * config.top_symbol_percentile))
+        if all_public_symbols
+        else 0
+    )
     n_sym_cap = min(n_sym_uncapped, sym_budget)
 
     # Infra page count
@@ -214,7 +231,6 @@ def build_generation_plan(
     cross_package_count = 0
     try:
         # Check if monorepo structure exists
-        from repowise.core.ingestion import FileTraverser
         if len(modules) > 1:
             # Count distinct cross-module import pairs
             seen_pairs: set[tuple[str, str]] = set()

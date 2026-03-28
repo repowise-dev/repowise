@@ -5,15 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
-import pytest
-
 from repowise.cli.cost_estimator import (
-    CostEstimate,
     PageTypePlan,
     build_generation_plan,
     estimate_cost,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures — lightweight fakes to avoid importing full ingestion models

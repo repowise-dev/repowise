@@ -6,10 +6,10 @@ for the agentic chat loop. Also provides OpenAI-format tool definitions for the 
 
 from __future__ import annotations
 
-import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,10 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "repo": {"type": "string", "description": "Repository path, name, or ID. Omit if only one repo."},
+                "repo": {
+                    "type": "string",
+                    "description": "Repository path, name, or ID. Omit if only one repo.",
+                },
             },
             "required": [],
         },
@@ -55,7 +58,10 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "include": {
                     "type": "array",
-                    "items": {"type": "string", "enum": ["docs", "ownership", "last_change", "decisions", "freshness"]},
+                    "items": {
+                        "type": "string",
+                        "enum": ["docs", "ownership", "last_change", "decisions", "freshness"],
+                    },
                     "description": "Subset of fields to include. Default: all.",
                 },
                 "repo": {"type": "string", "description": "Repository identifier."},
@@ -87,7 +93,10 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Natural language question, file/module path, or omit for health dashboard."},
+                "query": {
+                    "type": "string",
+                    "description": "Natural language question, file/module path, or omit for health dashboard.",
+                },
                 "targets": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -106,8 +115,15 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Natural language search query."},
-                "limit": {"type": "integer", "description": "Max results (default 5).", "default": 5},
-                "page_type": {"type": "string", "description": "Filter by page type (e.g., file_page, module_page)."},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 5).",
+                    "default": 5,
+                },
+                "page_type": {
+                    "type": "string",
+                    "description": "Filter by page type (e.g., file_page, module_page).",
+                },
                 "repo": {"type": "string", "description": "Repository identifier."},
             },
             "required": ["query"],
@@ -135,14 +151,38 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "repo": {"type": "string", "description": "Repository identifier."},
-                "kind": {"type": "string", "description": "Filter: unreachable_file, unused_export, unused_internal, zombie_package."},
-                "min_confidence": {"type": "number", "description": "Minimum confidence threshold (default 0.5).", "default": 0.5},
-                "safe_only": {"type": "boolean", "description": "Only return safe-to-delete findings.", "default": False},
-                "limit": {"type": "integer", "description": "Max findings per tier (default 20).", "default": 20},
-                "tier": {"type": "string", "description": "Focus on one tier: high (>=0.8), medium (0.5-0.8), or low (<0.5)."},
-                "directory": {"type": "string", "description": "Filter to a directory prefix (e.g. src/legacy)."},
+                "kind": {
+                    "type": "string",
+                    "description": "Filter: unreachable_file, unused_export, unused_internal, zombie_package.",
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "description": "Minimum confidence threshold (default 0.5).",
+                    "default": 0.5,
+                },
+                "safe_only": {
+                    "type": "boolean",
+                    "description": "Only return safe-to-delete findings.",
+                    "default": False,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max findings per tier (default 20).",
+                    "default": 20,
+                },
+                "tier": {
+                    "type": "string",
+                    "description": "Focus on one tier: high (>=0.8), medium (0.5-0.8), or low (<0.5).",
+                },
+                "directory": {
+                    "type": "string",
+                    "description": "Filter to a directory prefix (e.g. src/legacy).",
+                },
                 "owner": {"type": "string", "description": "Filter by primary owner name."},
-                "group_by": {"type": "string", "description": "Rollup view: 'directory' or 'owner'."},
+                "group_by": {
+                    "type": "string",
+                    "description": "Rollup view: 'directory' or 'owner'.",
+                },
             },
             "required": [],
         },
@@ -154,9 +194,17 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "scope": {"type": "string", "description": "Scope: repo, module, or file.", "default": "repo"},
+                "scope": {
+                    "type": "string",
+                    "description": "Scope: repo, module, or file.",
+                    "default": "repo",
+                },
                 "path": {"type": "string", "description": "Required for module/file scope."},
-                "diagram_type": {"type": "string", "description": "Diagram type: auto, flowchart, class, sequence.", "default": "auto"},
+                "diagram_type": {
+                    "type": "string",
+                    "description": "Diagram type: auto, flowchart, class, sequence.",
+                    "default": "auto",
+                },
                 "repo": {"type": "string", "description": "Repository identifier."},
             },
             "required": [],
@@ -169,14 +217,14 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
 def _build_registry() -> dict[str, ToolDef]:
     """Build the tool registry by importing MCP tool functions."""
     from repowise.server.mcp_server import (
-        get_overview,
+        get_architecture_diagram,
         get_context,
+        get_dead_code,
+        get_dependency_path,
+        get_overview,
         get_risk,
         get_why,
         search_codebase,
-        get_dependency_path,
-        get_dead_code,
-        get_architecture_diagram,
     )
 
     func_map: dict[str, Callable] = {

@@ -86,7 +86,9 @@ async def get_dead_code(
         filtered = [f for f in filtered if f.file_path.startswith(prefix)]
     if owner:
         owner_lower = owner.lower()
-        filtered = [f for f in filtered if f.primary_owner and f.primary_owner.lower() == owner_lower]
+        filtered = [
+            f for f in filtered if f.primary_owner and f.primary_owner.lower() == owner_lower
+        ]
 
     # --- Build tiered structure ---
     tiers = _build_tiers(filtered, limit, tier, git_meta_map)
@@ -123,7 +125,7 @@ def _find_last_meaningful_change(gm: Any) -> str | None:
     if gm is None:
         return None
     sig_json = getattr(gm, "significant_commits_json", None)
-    cat_json = getattr(gm, "commit_categories_json", None)
+    _cat_json = getattr(gm, "commit_categories_json", None)
     # If we have significant commits, the most recent one is the best proxy
     # for "last meaningful change" (significant commits already filter noise)
     if sig_json:
@@ -160,7 +162,9 @@ def _serialize_finding(f: Any, git_meta_map: dict | None = None) -> dict:
 
 
 def _build_tiers(
-    findings: list, limit: int, tier_filter: str | None,
+    findings: list,
+    limit: int,
+    tier_filter: str | None,
     git_meta_map: dict | None = None,
 ) -> dict:
     """Split findings into high/medium/low confidence tiers."""
@@ -190,17 +194,20 @@ def _build_tiers(
     tiers = {}
     if tier_filter is None or tier_filter == "high":
         tiers["high"] = _tier_block(
-            "high", high,
+            "high",
+            high,
             "High confidence (>=0.8): Zero references in the codebase. Safe to delete.",
         )
     if tier_filter is None or tier_filter == "medium":
         tiers["medium"] = _tier_block(
-            "medium", medium,
+            "medium",
+            medium,
             "Medium confidence (0.5-0.8): Likely unused but may have indirect references. Review before deleting.",
         )
     if tier_filter is None or tier_filter == "low":
         tiers["low"] = _tier_block(
-            "low", low,
+            "low",
+            low,
             "Low confidence (<0.5): Potentially used via dynamic imports or reflection. Investigate first.",
         )
     return tiers

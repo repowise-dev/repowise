@@ -14,13 +14,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
 
 
 def setup_scheduler(
-    session_factory: "async_sessionmaker[AsyncSession]",
+    session_factory: async_sessionmaker[AsyncSession],
     *,
     staleness_interval_minutes: int = 15,
     polling_interval_minutes: int = 15,
@@ -85,6 +85,7 @@ def setup_scheduler(
                     #   extra_exclude_patterns=repo.settings.get("exclude_patterns", [])
                     # to FileTraverser so user-configured exclusions are respected.
                     import json as _json
+
                     try:
                         _settings = _json.loads(repo.settings_json) if repo.settings_json else {}
                     except Exception:

@@ -11,7 +11,7 @@ repowise.core.ingestion.models.Symbol in files that import from both modules.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -32,7 +32,7 @@ def _new_uuid() -> str:
 
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -110,9 +110,7 @@ class Page(Base):
     generation_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
-    freshness_status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="fresh"
-    )
+    freshness_status: Mapped[str] = mapped_column(String(32), nullable=False, default="fresh")
     # JSON-encoded dict (metadata is a reserved SQLAlchemy attribute name)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -164,9 +162,7 @@ class GraphNode(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
-    __table_args__ = (
-        UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),
-    )
+    __table_args__ = (UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),)
 
 
 class GraphEdge(Base):
@@ -185,9 +181,7 @@ class GraphEdge(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "repository_id", "source_node_id", "target_node_id", name="uq_graph_edge"
-        ),
+        UniqueConstraint("repository_id", "source_node_id", "target_node_id", name="uq_graph_edge"),
     )
 
 
@@ -246,18 +240,14 @@ class WikiSymbol(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
 
-    __table_args__ = (
-        UniqueConstraint("repository_id", "symbol_id", name="uq_wiki_symbol"),
-    )
+    __table_args__ = (UniqueConstraint("repository_id", "symbol_id", name="uq_wiki_symbol"),)
 
 
 class GitMetadata(Base):
     """Per-file git history metadata: commit counts, ownership, co-change partners."""
 
     __tablename__ = "git_metadata"
-    __table_args__ = (
-        UniqueConstraint("repository_id", "file_path", name="uq_git_metadata"),
-    )
+    __table_args__ = (UniqueConstraint("repository_id", "file_path", name="uq_git_metadata"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
     repository_id: Mapped[str] = mapped_column(
@@ -271,12 +261,8 @@ class GitMetadata(Base):
     commit_count_30d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Timeline
-    first_commit_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_commit_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    first_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Ownership
     primary_owner_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -285,12 +271,8 @@ class GitMetadata(Base):
 
     # JSON fields (stored as Text, parsed/serialized in CRUD layer)
     top_authors_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    significant_commits_json: Mapped[str] = mapped_column(
-        Text, nullable=False, default="[]"
-    )
-    co_change_partners_json: Mapped[str] = mapped_column(
-        Text, nullable=False, default="[]"
-    )
+    significant_commits_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    co_change_partners_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
 
     # Derived signals
     is_hotspot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -305,9 +287,7 @@ class GitMetadata(Base):
     avg_commit_size: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # Commit classification (Phase 2)
-    commit_categories_json: Mapped[str] = mapped_column(
-        Text, nullable=False, default="{}"
-    )
+    commit_categories_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     # Recent ownership & bus factor (Phase 2)
     recent_owner_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -334,7 +314,10 @@ class DecisionRecord(Base):
     __tablename__ = "decision_records"
     __table_args__ = (
         UniqueConstraint(
-            "repository_id", "title", "source", "evidence_file",
+            "repository_id",
+            "title",
+            "source",
+            "evidence_file",
             name="uq_decision_record",
         ),
     )
@@ -357,13 +340,9 @@ class DecisionRecord(Base):
     alternatives_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     consequences_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     affected_files_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    affected_modules_json: Mapped[str] = mapped_column(
-        Text, nullable=False, default="[]"
-    )
+    affected_modules_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    evidence_commits_json: Mapped[str] = mapped_column(
-        Text, nullable=False, default="[]"
-    )
+    evidence_commits_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
 
     # Provenance
     source: Mapped[str] = mapped_column(
@@ -439,9 +418,7 @@ class DeadCodeFinding(Base):
     symbol_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    last_commit_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     commit_count_90d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     package: Mapped[str | None] = mapped_column(String(255), nullable=True)

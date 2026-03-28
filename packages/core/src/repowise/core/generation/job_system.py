@@ -13,8 +13,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -26,7 +26,7 @@ JobStatus = Literal["pending", "running", "completed", "failed", "paused"]
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ class Checkpoint:
     current_level: int
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Checkpoint":
+    def from_dict(cls, d: dict[str, Any]) -> Checkpoint:
         """Reconstruct a Checkpoint from a JSON-decoded dict."""
         return cls(
             job_id=d["job_id"],

@@ -4,30 +4,33 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.cli.cost_estimator import _lookup_cost, estimate_cost, PageTypePlan
-
+from repowise.cli.cost_estimator import PageTypePlan, _lookup_cost, estimate_cost
 
 # ---------------------------------------------------------------------------
 # Per-model pricing (input_rate, output_rate) per 1K tokens
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("model,expected_input,expected_output", [
-    # OpenAI GPT-5.4 family
-    ("gpt-5.4-nano",  0.0002,   0.00125),
-    ("gpt-5.4-mini",  0.00075,  0.0045),
-    ("gpt-5.4",       0.0025,   0.015),
-    # Gemini
-    ("gemini-3.1-flash-lite-preview", 0.00025, 0.0015),
-    ("gemini-3-flash-preview",        0.0005,  0.003),
-    ("gemini-3.1-pro-preview",        0.002,   0.012),
-    # Anthropic Claude
-    ("claude-opus-4-6",   0.005,  0.025),
-    ("claude-sonnet-4-6", 0.003,  0.015),
-    ("claude-haiku-4-5",  0.001,  0.005),
-    # Free/local models
-    ("mock",   0.0, 0.0),
-    ("llama3", 0.0, 0.0),
-])
+
+@pytest.mark.parametrize(
+    "model,expected_input,expected_output",
+    [
+        # OpenAI GPT-5.4 family
+        ("gpt-5.4-nano", 0.0002, 0.00125),
+        ("gpt-5.4-mini", 0.00075, 0.0045),
+        ("gpt-5.4", 0.0025, 0.015),
+        # Gemini
+        ("gemini-3.1-flash-lite-preview", 0.00025, 0.0015),
+        ("gemini-3-flash-preview", 0.0005, 0.003),
+        ("gemini-3.1-pro-preview", 0.002, 0.012),
+        # Anthropic Claude
+        ("claude-opus-4-6", 0.005, 0.025),
+        ("claude-sonnet-4-6", 0.003, 0.015),
+        ("claude-haiku-4-5", 0.001, 0.005),
+        # Free/local models
+        ("mock", 0.0, 0.0),
+        ("llama3", 0.0, 0.0),
+    ],
+)
 def test_lookup_cost(model, expected_input, expected_output):
     inp, out = _lookup_cost(model)
     assert inp == pytest.approx(expected_input, rel=1e-6)
@@ -37,6 +40,7 @@ def test_lookup_cost(model, expected_input, expected_output):
 # ---------------------------------------------------------------------------
 # estimate_cost integration
 # ---------------------------------------------------------------------------
+
 
 def test_estimate_cost_gpt54_nano():
     plans = [PageTypePlan("repo_overview", 1, 6)]  # 5000 input, 3000 output tokens

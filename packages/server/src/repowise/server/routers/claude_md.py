@@ -20,7 +20,7 @@ router = APIRouter(
 @router.get("/api/repos/{repo_id}/claude-md")
 async def get_claude_md(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Return the Repowise-managed CLAUDE.md section as JSON.
 
@@ -48,7 +48,7 @@ async def get_claude_md(
 @router.post("/api/repos/{repo_id}/claude-md/generate", status_code=202)
 async def generate_claude_md(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Regenerate CLAUDE.md and write it to the repository root.
 
@@ -81,4 +81,5 @@ async def generate_claude_md(
 def _detect_sections(content: str) -> list[str]:
     """Return the markdown H3 section names present in the content."""
     import re
+
     return re.findall(r"^### (.+)$", content, re.MULTILINE)

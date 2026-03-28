@@ -72,15 +72,14 @@ async def get_architecture_diagram(
                 }
 
         # For module/file scope or fallback, build diagram from graph
-        if path:
-            filter_prefix = path
-        else:
-            filter_prefix = ""
+        filter_prefix = path or ""
 
         result = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repository.id,
-                GraphNode.node_id.like(f"{filter_prefix}%") if filter_prefix else GraphNode.repository_id == repository.id,
+                GraphNode.node_id.like(f"{filter_prefix}%")
+                if filter_prefix
+                else GraphNode.repository_id == repository.id,
             )
         )
         nodes = result.scalars().all()
@@ -95,10 +94,7 @@ async def get_architecture_diagram(
         node_ids = {n.node_id for n in nodes}
         pr_map = {n.node_id: n.pagerank for n in nodes}
         relevant_edges = sorted(
-            [
-                e for e in edges
-                if e.source_node_id in node_ids or e.target_node_id in node_ids
-            ],
+            [e for e in edges if e.source_node_id in node_ids or e.target_node_id in node_ids],
             key=lambda e: pr_map.get(e.source_node_id, 0.0),
             reverse=True,
         )
@@ -120,7 +116,7 @@ async def get_architecture_diagram(
 
         # For module-scoped diagrams, clip cross-boundary nodes to a single
         # "[external]" stub so the diagram stays focused on the target module.
-        _EXTERNAL_ID = "external_deps"
+        external_id = "external_deps"
         _external_added = False
 
         for e in relevant_edges[:50]:  # Limit to 50 edges for readability
@@ -136,14 +132,14 @@ async def get_architecture_diagram(
                 continue
 
             if src_external:
-                src = _EXTERNAL_ID
+                src = external_id
                 src_label = "external"
             else:
                 src = _sanitize_mermaid_id(src_id)
                 src_label = _short_label(src_id)
 
             if tgt_external:
-                tgt = _EXTERNAL_ID
+                tgt = external_id
                 tgt_label = "external"
             else:
                 tgt = _sanitize_mermaid_id(tgt_id)
@@ -154,29 +150,33 @@ async def get_architecture_diagram(
                 continue
 
             if src not in seen_nodes:
-                if src == _EXTERNAL_ID:
+                if src == external_id:
                     if not _external_added:
-                        lines.append(f'    {_EXTERNAL_ID}[/"external"/]')
+                        lines.append(f'    {external_id}[/"external"/]')
                         _external_added = True
-                        node_classes[_EXTERNAL_ID] = "ext"
+                        node_classes[external_id] = "ext"
                 else:
                     lines.append(f'    {src}["{src_label}"]')
                     if show_heat:
                         pct = churn_map.get(src_id, 0.0)
-                        node_classes[src] = "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
+                        node_classes[src] = (
+                            "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
+                        )
                 seen_nodes.add(src)
 
             if tgt not in seen_nodes:
-                if tgt == _EXTERNAL_ID:
+                if tgt == external_id:
                     if not _external_added:
-                        lines.append(f'    {_EXTERNAL_ID}[/"external"/]')
+                        lines.append(f'    {external_id}[/"external"/]')
                         _external_added = True
-                        node_classes[_EXTERNAL_ID] = "ext"
+                        node_classes[external_id] = "ext"
                 else:
                     lines.append(f'    {tgt}["{tgt_label}"]')
                     if show_heat:
                         pct = churn_map.get(tgt_id, 0.0)
-                        node_classes[tgt] = "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
+                        node_classes[tgt] = (
+                            "hot" if pct >= 0.75 else ("warm" if pct >= 0.4 else "cold")
+                        )
                 seen_nodes.add(tgt)
 
             lines.append(f"    {src} --> {tgt}")
@@ -198,5 +198,5 @@ async def get_architecture_diagram(
             "diagram_type": diagram_type if diagram_type != "auto" else "flowchart",
             "mermaid_syntax": mermaid,
             "description": f"Dependency graph for {scope}: {path or 'entire repo'}"
-                           + (" (with churn heat map)" if show_heat else ""),
+            + (" (with churn heat map)" if show_heat else ""),
         }

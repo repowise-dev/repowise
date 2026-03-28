@@ -19,8 +19,8 @@ async def search(
     query: str = Query(..., min_length=1, description="Search query"),
     search_type: str = Query("semantic", description="semantic or fulltext"),
     limit: int = Query(10, ge=1, le=100),
-    vector_store=Depends(get_vector_store),
-    fts=Depends(get_fts),
+    vector_store=Depends(get_vector_store),  # noqa: B008
+    fts=Depends(get_fts),  # noqa: B008
 ) -> list[SearchResultResponse]:
     """Search wiki pages by semantic similarity or full-text match."""
     if search_type == "fulltext":

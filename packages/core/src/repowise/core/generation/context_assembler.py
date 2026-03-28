@@ -16,7 +16,6 @@ Token estimate: len(text) // 4 (no tiktoken dependency).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -171,9 +170,9 @@ class DiffSummaryContext:
 class CrossPackageContext:
     source_package: str
     target_package: str
-    coupling_strength: int      # number of boundary files
-    used_symbols: list[str]     # public symbols from target used by source
-    boundary_files: list[str]   # files in source that import from target
+    coupling_strength: int  # number of boundary files
+    used_symbols: list[str]  # public symbols from target used by source
+    boundary_files: list[str]  # files in source that import from target
     source_pagerank_mean: float
     target_pagerank_mean: float
 
@@ -346,10 +345,7 @@ class ContextAssembler:
         path = parsed.file_info.path
         # Callers = files that import the containing file (in-edges)
         if path in graph:
-            callers = [
-                e for e in graph.predecessors(path)
-                if not e.startswith("external:")
-            ]
+            callers = [e for e in graph.predecessors(path) if not e.startswith("external:")]
         else:
             callers = []
 
@@ -391,8 +387,7 @@ class ContextAssembler:
         """Assemble context for the module_page template."""
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
         public_symbols = sum(
-            sum(1 for s in fc.symbols if s.get("visibility") == "public")
-            for fc in file_contexts
+            sum(1 for s in fc.symbols if s.get("visibility") == "public") for fc in file_contexts
         )
         entry_points = [fc.file_path for fc in file_contexts if fc.is_entry_point]
         files = [fc.file_path for fc in file_contexts]
@@ -409,9 +404,7 @@ class ContextAssembler:
 
         pagerank_mean = 0.0
         if file_contexts:
-            pagerank_mean = sum(fc.pagerank_score for fc in file_contexts) / len(
-                file_contexts
-            )
+            pagerank_mean = sum(fc.pagerank_score for fc in file_contexts) / len(file_contexts)
 
         return ModulePageContext(
             module_path=module_path,
@@ -510,21 +503,23 @@ class ContextAssembler:
         repo_name: str,
     ) -> ArchitectureDiagramContext:
         """Assemble context for the architecture_diagram template."""
-        _MAX_DIAGRAM_NODES = 50
-        _MAX_DIAGRAM_EDGES = 200
+        max_diagram_nodes = 50
+        max_diagram_edges = 200
 
         # Top-N nodes by PageRank (exclude external nodes)
         top_nodes = set(
-            p for p, _ in sorted(pagerank.items(), key=lambda x: x[1], reverse=True)[:_MAX_DIAGRAM_NODES]
+            p
+            for p, _ in sorted(pagerank.items(), key=lambda x: x[1], reverse=True)[
+                :max_diagram_nodes
+            ]
             if not str(p).startswith("external:")
         )
         nodes = sorted(top_nodes)
 
         # Only edges between selected nodes
-        edges = [
-            (src, dst) for src, dst in graph.edges()
-            if src in top_nodes and dst in top_nodes
-        ][:_MAX_DIAGRAM_EDGES]
+        edges = [(src, dst) for src, dst in graph.edges() if src in top_nodes and dst in top_nodes][
+            :max_diagram_edges
+        ]
 
         # Community → members mapping (top-10 communities, cap members to 5)
         raw_communities: dict[int, list[str]] = {}
@@ -535,11 +530,7 @@ class ContextAssembler:
         communities: dict[int, list[str]] = {cid: members[:5] for cid, members in comm_sorted}
 
         # SCC groups (only non-singleton)
-        scc_groups = [
-            sorted(scc)
-            for scc in sccs
-            if len(scc) > 1
-        ]
+        scc_groups = [sorted(scc) for scc in sccs if len(scc) > 1]
 
         return ArchitectureDiagramContext(
             repo_name=repo_name,
@@ -665,19 +656,24 @@ class ContextAssembler:
         """Assemble context for cross-package dependency page."""
         target_paths = {fc.file_path for fc in target_fcs}
         boundary = [fc for fc in source_fcs if any(d in target_paths for d in fc.dependencies)]
-        used_syms = sorted({
-            sym["name"]
-            for fc in target_fcs
-            for sym in fc.symbols if sym.get("visibility") == "public"
-        })[:20]
+        used_syms = sorted(
+            {
+                sym["name"]
+                for fc in target_fcs
+                for sym in fc.symbols
+                if sym.get("visibility") == "public"
+            }
+        )[:20]
         return CrossPackageContext(
             source_package=source_pkg,
             target_package=target_pkg,
             coupling_strength=len(boundary),
             used_symbols=used_syms,
             boundary_files=[fc.file_path for fc in boundary],
-            source_pagerank_mean=sum(fc.pagerank_score for fc in source_fcs) / max(len(source_fcs), 1),
-            target_pagerank_mean=sum(fc.pagerank_score for fc in target_fcs) / max(len(target_fcs), 1),
+            source_pagerank_mean=sum(fc.pagerank_score for fc in source_fcs)
+            / max(len(source_fcs), 1),
+            target_pagerank_mean=sum(fc.pagerank_score for fc in target_fcs)
+            / max(len(target_fcs), 1),
         )
 
     # ------------------------------------------------------------------
@@ -692,15 +688,16 @@ class ContextAssembler:
         lines = source_text.splitlines()
         parts = ["[Large file — structural summary mode]"]
         top3_complex = {
-            s.name for s in sorted(
-                parsed.symbols, key=lambda s: s.complexity_estimate, reverse=True
-            )[:3]
+            s.name
+            for s in sorted(parsed.symbols, key=lambda s: s.complexity_estimate, reverse=True)[:3]
         }
 
         for sym in parsed.symbols:
             if sym.start_line and sym.end_line and sym.name in top3_complex:
                 body = "\n".join(lines[sym.start_line - 1 : sym.end_line])
-                parts.append(f"\n# {sym.name} (full body, complexity={sym.complexity_estimate})\n{body}")
+                parts.append(
+                    f"\n# {sym.name} (full body, complexity={sym.complexity_estimate})\n{body}"
+                )
             else:
                 parts.append(f"# {sym.signature or sym.name}")
             if self._estimate_tokens("\n".join(parts)) >= budget:
@@ -757,11 +754,7 @@ class ContextAssembler:
             return "thorough"
 
         # Downgrade conditions
-        if (
-            git_meta.get("is_stable", False)
-            and pagerank_score < 0.3
-            and commit_total < 5
-        ):
+        if git_meta.get("is_stable", False) and pagerank_score < 0.3 and commit_total < 5:
             return "minimal"
 
         return config_depth
@@ -785,7 +778,12 @@ class ContextAssembler:
     ) -> FilePageContext:
         """Assemble context for maintenance regeneration using trigger commit + diff."""
         ctx = self.assemble_file_page(
-            parsed, graph, pagerank, betweenness, community, source_bytes,
+            parsed,
+            graph,
+            pagerank,
+            betweenness,
+            community,
+            source_bytes,
             git_meta=git_meta,
         )
         # Enrich with trigger context (stored in rag_context for now)

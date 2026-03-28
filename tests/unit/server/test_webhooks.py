@@ -11,8 +11,6 @@ from unittest.mock import patch
 import pytest
 from httpx import AsyncClient
 
-from tests.unit.server.conftest import create_test_repo
-
 
 @pytest.mark.asyncio
 async def test_github_webhook_no_secret(client: AsyncClient) -> None:
@@ -41,9 +39,7 @@ async def test_github_webhook_valid_signature(client: AsyncClient) -> None:
     """With a secret configured, a valid signature passes."""
     secret = "test-webhook-secret"
     payload = json.dumps({"ref": "refs/heads/main", "repository": {}})
-    sig = "sha256=" + hmac.new(
-        secret.encode(), payload.encode(), hashlib.sha256
-    ).hexdigest()
+    sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
     with patch.dict(os.environ, {"REPOWISE_GITHUB_WEBHOOK_SECRET": ""}):
         # Patch the module-level variable

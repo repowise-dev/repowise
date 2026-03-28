@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from typing import Any
@@ -72,10 +73,7 @@ def _classify_risk_type(meta: Any, dep_count: int) -> str:
     """Classify risk as churn-heavy, bug-prone, high-coupling, or bus-factor-risk."""
     # Count bug-fix commits from significant_commits messages
     commits = json.loads(meta.significant_commits_json) if meta.significant_commits_json else []
-    fix_count = sum(
-        1 for c in commits
-        if _FIX_PATTERN.search(c.get("message", ""))
-    )
+    fix_count = sum(1 for c in commits if _FIX_PATTERN.search(c.get("message", "")))
 
     churn_score = meta.churn_percentile or 0.0
     bus_factor = getattr(meta, "bus_factor", 0) or 0
@@ -118,11 +116,13 @@ def _compute_impact_surface(
     ranked = []
     for dep in visited:
         meta = node_meta.get(dep)
-        ranked.append({
-            "file_path": dep,
-            "pagerank": meta.pagerank if meta else 0.0,
-            "is_entry_point": meta.is_entry_point if meta else False,
-        })
+        ranked.append(
+            {
+                "file_path": dep,
+                "pagerank": meta.pagerank if meta else 0.0,
+                "is_entry_point": meta.is_entry_point if meta else False,
+            }
+        )
     ranked.sort(key=lambda x: -x["pagerank"])
     return ranked[:3]
 
@@ -160,7 +160,9 @@ async def _assess_one_target(
         result_data["trend"] = "unknown"
         result_data["risk_type"] = "high-coupling" if dep_count >= 5 else "unknown"
         result_data["impact_surface"] = _compute_impact_surface(
-            target, reverse_deps, node_meta,
+            target,
+            reverse_deps,
+            node_meta,
         )
         result_data["risk_summary"] = f"{target} — no git metadata available"
         return result_data
@@ -201,10 +203,8 @@ async def _assess_one_target(
     categories = {}
     cat_json = getattr(meta, "commit_categories_json", None)
     if cat_json:
-        try:
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
             categories = json.loads(cat_json)
-        except (json.JSONDecodeError, TypeError):
-            pass
     change_pattern = _derive_change_pattern(categories)
 
     # Phase 2: recent owner & bus factor
@@ -306,13 +306,20 @@ async def get_risk(
         node_meta = {n.node_id: n for n in node_res.scalars().all()}
 
         # Assess each target
-        results = await asyncio.gather(*[
-            _assess_one_target(
-                session, repository, t, dep_counts, import_links,
-                reverse_deps, node_meta,
-            )
-            for t in targets
-        ])
+        results = await asyncio.gather(
+            *[
+                _assess_one_target(
+                    session,
+                    repository,
+                    t,
+                    dep_counts,
+                    import_links,
+                    reverse_deps,
+                    node_meta,
+                )
+                for t in targets
+            ]
+        )
 
         # Global hotspots (excluding requested targets)
         target_set = set(targets)

@@ -123,10 +123,7 @@ class GraphBuilder:
 
     def strongly_connected_components(self) -> list[frozenset[str]]:
         """Return SCCs as a list of frozensets. SCCs of size > 1 are circular deps."""
-        return [
-            frozenset(scc)
-            for scc in nx.strongly_connected_components(self.graph())
-        ]
+        return [frozenset(scc) for scc in nx.strongly_connected_components(self.graph())]
 
     def betweenness_centrality(self) -> dict[str, float]:
         """Return betweenness centrality. High value → bridge file.
@@ -302,13 +299,19 @@ class GraphBuilder:
                     candidate = Path(str(base) + ext).as_posix()
                     if candidate in path_set:
                         return candidate
-                    candidate = base.with_suffix(ext).as_posix() if not ext.startswith("/") else (base / "index.ts").as_posix()
+                    candidate = (
+                        base.with_suffix(ext).as_posix()
+                        if not ext.startswith("/")
+                        else (base / "index.ts").as_posix()
+                    )
                     if candidate in path_set:
                         return candidate
             # External npm package
             external_key = f"external:{module_path}"
             if external_key not in self._graph.nodes:
-                self._graph.add_node(external_key, language="external", symbol_count=0, has_error=False)
+                self._graph.add_node(
+                    external_key, language="external", symbol_count=0, has_error=False
+                )
             return external_key
 
         # --- Go ---
@@ -325,9 +328,7 @@ class GraphBuilder:
     # Co-change edges (Phase 5.5)
     # ------------------------------------------------------------------
 
-    def add_co_change_edges(
-        self, git_meta_map: dict, min_count: int = 3
-    ) -> int:
+    def add_co_change_edges(self, git_meta_map: dict, min_count: int = 3) -> int:
         """Add co_changes edges from git metadata. Returns count of edges added.
 
         These DO NOT affect PageRank — filter them out before computing.
@@ -359,7 +360,9 @@ class GraphBuilder:
                 seen.add(pair)
 
                 # Don't add if an import edge already exists
-                if not self._graph.has_edge(file_path, partner_path) and not self._graph.has_edge(partner_path, file_path):
+                if not self._graph.has_edge(file_path, partner_path) and not self._graph.has_edge(
+                    partner_path, file_path
+                ):
                     self._graph.add_edge(
                         file_path,
                         partner_path,
@@ -372,16 +375,13 @@ class GraphBuilder:
         log.info("Co-change edges added", count=count)
         return count
 
-    def update_co_change_edges(
-        self, updated_meta: dict, min_count: int = 3
-    ) -> None:
+    def update_co_change_edges(self, updated_meta: dict, min_count: int = 3) -> None:
         """Remove old co_changes edges for updated files, add new ones."""
         # Remove existing co_changes edges involving updated files
         edges_to_remove = []
         for u, v, data in self._graph.edges(data=True):
-            if data.get("edge_type") == "co_changes":
-                if u in updated_meta or v in updated_meta:
-                    edges_to_remove.append((u, v))
+            if data.get("edge_type") == "co_changes" and (u in updated_meta or v in updated_meta):
+                edges_to_remove.append((u, v))
         self._graph.remove_edges_from(edges_to_remove)
 
         # Re-add co_changes edges

@@ -11,8 +11,8 @@ Call init_db() once at startup to create all tables and the FTS index.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -29,11 +29,11 @@ __all__ = [
     "AsyncEngine",
     "AsyncSession",
     "async_sessionmaker",
-    "get_db_url",
     "create_engine",
     "create_session_factory",
-    "init_db",
+    "get_db_url",
     "get_session",
+    "init_db",
 ]
 
 _DEFAULT_URL = "sqlite+aiosqlite:///.repowise/wiki.db"

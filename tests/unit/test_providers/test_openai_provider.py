@@ -9,9 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytest.importorskip("openai", reason="openai SDK not installed")
+
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
 from repowise.core.providers.llm.openai import OpenAIProvider
-
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -62,9 +63,9 @@ async def test_generate_returns_generated_response():
     provider = OpenAIProvider(api_key="sk-test")
     mock_response = _make_mock_chat_response("Hello from OpenAI")
 
-    with patch("openai.AsyncOpenAI") as MockClient:
-        MockClient.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
-        provider._client = MockClient.return_value
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
         result = await provider.generate("sys", "user")
 
     assert isinstance(result, GeneratedResponse)
@@ -75,9 +76,9 @@ async def test_generate_token_counts():
     provider = OpenAIProvider(api_key="sk-test")
     mock_response = _make_mock_chat_response()
 
-    with patch("openai.AsyncOpenAI") as MockClient:
-        MockClient.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
-        provider._client = MockClient.return_value
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
         result = await provider.generate("sys", "user")
 
     assert result.input_tokens == 120
@@ -94,9 +95,9 @@ async def test_generate_sends_correct_messages():
         captured_kwargs.append(kwargs)
         return mock_response
 
-    with patch("openai.AsyncOpenAI") as MockClient:
-        MockClient.return_value.chat.completions.create = fake_create
-        provider._client = MockClient.return_value
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
         await provider.generate("system msg", "user msg", max_tokens=2048, temperature=0.5)
 
     kw = captured_kwargs[0]
@@ -118,11 +119,13 @@ async def test_rate_limit_error():
 
     provider = OpenAIProvider(api_key="sk-test")
 
-    with patch("openai.AsyncOpenAI") as MockClient:
-        MockClient.return_value.chat.completions.create = AsyncMock(
-            side_effect=_OpenAIRateLimitError("rate limit", response=MagicMock(status_code=429), body={})
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(
+            side_effect=_OpenAIRateLimitError(
+                "rate limit", response=MagicMock(status_code=429), body={}
+            )
         )
-        provider._client = MockClient.return_value
+        provider._client = mock_client.return_value
         with pytest.raises(RateLimitError):
             await provider.generate("sys", "user")
 
@@ -132,12 +135,12 @@ async def test_api_status_error():
 
     provider = OpenAIProvider(api_key="sk-test")
 
-    with patch("openai.AsyncOpenAI") as MockClient:
-        MockClient.return_value.chat.completions.create = AsyncMock(
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(
             side_effect=_OpenAIAPIStatusError(
                 "server error", response=MagicMock(status_code=500), body={}
             )
         )
-        provider._client = MockClient.return_value
+        provider._client = mock_client.return_value
         with pytest.raises(ProviderError):
             await provider.generate("sys", "user")

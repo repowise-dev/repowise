@@ -15,29 +15,29 @@ import sys
 from typing import Any
 
 # --- Import submodules in dependency order (triggers tool registration) ---
-from repowise.server.mcp_server import _state  # noqa: F401
-from repowise.server.mcp_server._server import (  # noqa: F401
-    mcp,
-    create_mcp_server,
-    run_mcp,
-)
-from repowise.server.mcp_server._helpers import (  # noqa: F401
-    _get_repo,
-    _is_path,
+from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._helpers import (
     _build_origin_story,
     _compute_alignment,
+    _get_repo,
+    _is_path,
 )
-from repowise.server.mcp_server.tool_overview import get_overview  # noqa: F401
-from repowise.server.mcp_server.tool_context import get_context  # noqa: F401
-from repowise.server.mcp_server.tool_risk import get_risk  # noqa: F401
-from repowise.server.mcp_server.tool_why import get_why  # noqa: F401
-from repowise.server.mcp_server.tool_search import search_codebase  # noqa: F401
-from repowise.server.mcp_server.tool_dependency import (  # noqa: F401
-    get_dependency_path,
+from repowise.server.mcp_server._server import (
+    create_mcp_server,
+    mcp,
+    run_mcp,
+)
+from repowise.server.mcp_server.tool_context import get_context
+from repowise.server.mcp_server.tool_dead_code import get_dead_code
+from repowise.server.mcp_server.tool_dependency import (
     _build_visual_context,
+    get_dependency_path,
 )
-from repowise.server.mcp_server.tool_dead_code import get_dead_code  # noqa: F401
-from repowise.server.mcp_server.tool_diagram import get_architecture_diagram  # noqa: F401
+from repowise.server.mcp_server.tool_diagram import get_architecture_diagram
+from repowise.server.mcp_server.tool_overview import get_overview
+from repowise.server.mcp_server.tool_risk import get_risk
+from repowise.server.mcp_server.tool_search import search_codebase
+from repowise.server.mcp_server.tool_why import get_why
 
 # ---------------------------------------------------------------------------
 # Backward-compatible access to _state globals.
@@ -51,10 +51,16 @@ from repowise.server.mcp_server.tool_diagram import get_architecture_diagram  # 
 # module __class__ override so that all mutations go to _state.
 # ---------------------------------------------------------------------------
 
-_STATE_NAMES = frozenset({
-    "_session_factory", "_vector_store", "_decision_store", "_fts", "_repo_path",
-    "_vector_store_ready",
-})
+_STATE_NAMES = frozenset(
+    {
+        "_session_factory",
+        "_vector_store",
+        "_decision_store",
+        "_fts",
+        "_repo_path",
+        "_vector_store_ready",
+    }
+)
 
 
 def __getattr__(name: str) -> Any:
@@ -77,20 +83,20 @@ class _WritableModule(_Module):
 sys.modules[__name__].__class__ = _WritableModule
 
 __all__ = [
-    "mcp",
-    "create_mcp_server",
-    "run_mcp",
-    "get_overview",
-    "get_context",
-    "get_risk",
-    "get_why",
-    "search_codebase",
-    "get_dependency_path",
-    "get_dead_code",
-    "get_architecture_diagram",
+    "_build_origin_story",
     "_build_visual_context",
+    "_compute_alignment",
     "_get_repo",
     "_is_path",
-    "_build_origin_story",
-    "_compute_alignment",
+    "create_mcp_server",
+    "get_architecture_diagram",
+    "get_context",
+    "get_dead_code",
+    "get_dependency_path",
+    "get_overview",
+    "get_risk",
+    "get_why",
+    "mcp",
+    "run_mcp",
+    "search_codebase",
 ]

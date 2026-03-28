@@ -46,6 +46,7 @@ def doctor_command(path: str | None) -> None:
     page_count = 0
     if db_path.exists():
         try:
+
             async def _check_db():
                 from repowise.core.persistence import (
                     create_engine,
@@ -83,7 +84,9 @@ def doctor_command(path: str | None) -> None:
         _check(
             "state.json",
             state_ok,
-            f"last_sync: {(state.get('last_sync_commit') or '—')[:8]}" if state_ok else "Not found or empty",
+            f"last_sync: {(state.get('last_sync_commit') or '—')[:8]}"
+            if state_ok
+            else "Not found or empty",
         )
     )
 
@@ -101,6 +104,7 @@ def doctor_command(path: str | None) -> None:
     # 6. Stale page count
     if db_ok and page_count > 0:
         try:
+
             async def _check_stale():
                 from repowise.core.persistence import (
                     create_engine,
@@ -123,9 +127,7 @@ def doctor_command(path: str | None) -> None:
                 return 0
 
             stale_count = run_async(_check_stale())
-            checks.append(
-                _check("Stale pages", stale_count == 0, f"{stale_count} stale")
-            )
+            checks.append(_check("Stale pages", stale_count == 0, f"{stale_count} stale"))
         except Exception:
             checks.append(_check("Stale pages", True, "Could not check"))
 

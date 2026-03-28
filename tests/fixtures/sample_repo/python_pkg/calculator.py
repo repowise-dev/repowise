@@ -138,9 +138,7 @@ class Calculator:
         """
         value = subtract(x, y)
         self._history.append(
-            CalculationResult(
-                operation=Operation.SUBTRACT, operands=[x, y], result=value
-            )
+            CalculationResult(operation=Operation.SUBTRACT, operands=[x, y], result=value)
         )
         return value
 
@@ -156,9 +154,7 @@ class Calculator:
         """
         value = multiply(x, y)
         self._history.append(
-            CalculationResult(
-                operation=Operation.MULTIPLY, operands=[x, y], result=value
-            )
+            CalculationResult(operation=Operation.MULTIPLY, operands=[x, y], result=value)
         )
         return value
 
@@ -177,9 +173,7 @@ class Calculator:
         """
         value = divide(x, y)
         self._history.append(
-            CalculationResult(
-                operation=Operation.DIVIDE, operands=[x, y], result=value
-            )
+            CalculationResult(operation=Operation.DIVIDE, operands=[x, y], result=value)
         )
         return value
 

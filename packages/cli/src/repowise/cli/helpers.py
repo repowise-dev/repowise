@@ -9,10 +9,9 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import click
+from rich.console import Console
 
 CONFIG_FILENAME = "config.yaml"
-
-from rich.console import Console
 
 T = TypeVar("T")
 
@@ -151,6 +150,7 @@ def load_config(repo_path: Path) -> dict[str, Any]:
     text = config_path.read_text(encoding="utf-8")
     try:
         import yaml  # type: ignore[import-untyped]
+
         return yaml.safe_load(text) or {}
     except ImportError:
         # Simple line-by-line parser for the flat key: value format we write
@@ -190,6 +190,7 @@ def save_config(
 
     try:
         import yaml  # type: ignore[import-untyped]
+
         config_path.write_text(
             yaml.dump(existing, default_flow_style=False, sort_keys=False),
             encoding="utf-8",

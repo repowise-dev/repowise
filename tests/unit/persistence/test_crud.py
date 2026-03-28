@@ -7,6 +7,8 @@ they want to verify that changes persist across a query boundary.
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 
 from repowise.core.persistence.crud import (
@@ -28,7 +30,6 @@ from repowise.core.persistence.crud import (
     upsert_repository,
 )
 from tests.unit.persistence.helpers import insert_repo, make_page_kwargs
-
 
 # ---------------------------------------------------------------------------
 # Repository CRUD
@@ -108,9 +109,7 @@ async def test_update_job_status_to_completed(async_session):
     job = await upsert_generation_job(async_session, repository_id=repo.id)
     await async_session.commit()
 
-    updated = await update_job_status(
-        async_session, job.id, "completed", completed_pages=5
-    )
+    updated = await update_job_status(async_session, job.id, "completed", completed_pages=5)
     await async_session.commit()
 
     assert updated.status == "completed"
@@ -183,10 +182,10 @@ async def test_upsert_page_increments_version_field(async_session):
 
 
 async def test_upsert_page_preserves_created_at(async_session):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     repo = await insert_repo(async_session)
-    original_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    original_time = datetime(2025, 1, 1, tzinfo=UTC)
     kwargs = make_page_kwargs(repo.id, created_at=original_time)
     await upsert_page(async_session, **kwargs)
     await async_session.commit()
@@ -198,7 +197,9 @@ async def test_upsert_page_preserves_created_at(async_session):
     assert page is not None
     # created_at must not change on update.
     # SQLite may strip timezone info on round-trip, so compare naive UTC.
-    stored_naive = page.created_at.replace(tzinfo=None) if page.created_at.tzinfo else page.created_at
+    stored_naive = (
+        page.created_at.replace(tzinfo=None) if page.created_at.tzinfo else page.created_at
+    )
     original_naive = original_time.replace(tzinfo=None)
     assert stored_naive == original_naive
 
@@ -209,8 +210,12 @@ async def test_get_page_returns_none_for_missing(async_session):
 
 async def test_list_pages_returns_all_for_repo(async_session):
     repo = await insert_repo(async_session)
-    await upsert_page(async_session, **make_page_kwargs(repo.id, page_id="file_page:a.py", target_path="a.py"))
-    await upsert_page(async_session, **make_page_kwargs(repo.id, page_id="file_page:b.py", target_path="b.py"))
+    await upsert_page(
+        async_session, **make_page_kwargs(repo.id, page_id="file_page:a.py", target_path="a.py")
+    )
+    await upsert_page(
+        async_session, **make_page_kwargs(repo.id, page_id="file_page:b.py", target_path="b.py")
+    )
     await async_session.commit()
 
     pages = await list_pages(async_session, repo.id)
@@ -219,7 +224,9 @@ async def test_list_pages_returns_all_for_repo(async_session):
 
 async def test_list_pages_filters_by_page_type(async_session):
     repo = await insert_repo(async_session)
-    await upsert_page(async_session, **make_page_kwargs(repo.id, page_id="file_page:a.py", target_path="a.py"))
+    await upsert_page(
+        async_session, **make_page_kwargs(repo.id, page_id="file_page:a.py", target_path="a.py")
+    )
     await upsert_page(
         async_session,
         **make_page_kwargs(
@@ -313,6 +320,7 @@ async def test_get_stale_pages_returns_only_stale(async_session):
 
 async def test_batch_upsert_graph_nodes_inserts(async_session):
     from sqlalchemy import select
+
     from repowise.core.persistence.models import GraphNode
 
     repo = await insert_repo(async_session)
@@ -332,6 +340,7 @@ async def test_batch_upsert_graph_nodes_inserts(async_session):
 
 async def test_batch_upsert_graph_nodes_updates_existing(async_session):
     from sqlalchemy import select
+
     from repowise.core.persistence.models import GraphNode
 
     repo = await insert_repo(async_session)
@@ -355,6 +364,7 @@ async def test_batch_upsert_graph_nodes_updates_existing(async_session):
 
 async def test_batch_upsert_graph_edges_inserts(async_session):
     from sqlalchemy import select
+
     from repowise.core.persistence.models import GraphEdge
 
     repo = await insert_repo(async_session)
@@ -379,7 +389,9 @@ async def test_batch_upsert_graph_edges_inserts(async_session):
 
 async def test_batch_upsert_symbols_inserts(async_session):
     from dataclasses import dataclass
+
     from sqlalchemy import select
+
     from repowise.core.persistence.models import WikiSymbol
 
     @dataclass
@@ -449,12 +461,11 @@ async def test_mark_webhook_processed(async_session):
     await mark_webhook_processed(async_session, event.id)
     await async_session.commit()
 
-    from repowise.core.persistence.models import WebhookEvent
     from sqlalchemy import select
 
-    result = await async_session.execute(
-        select(WebhookEvent).where(WebhookEvent.id == event.id)
-    )
+    from repowise.core.persistence.models import WebhookEvent
+
+    result = await async_session.execute(select(WebhookEvent).where(WebhookEvent.id == event.id))
     updated = result.scalar_one()
     assert updated.processed is True
 

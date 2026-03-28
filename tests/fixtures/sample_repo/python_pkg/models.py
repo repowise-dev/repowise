@@ -7,8 +7,8 @@ All models use Python dataclasses for simplicity and immutability.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from datetime import datetime
+from enum import Enum
 
 
 class Operation(Enum):

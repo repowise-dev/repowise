@@ -7,7 +7,7 @@ Uses the existing CRUD layer where possible; raw selects for aggregate queries.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -51,7 +51,7 @@ class EditorFileDataFetcher:
 
         return EditorFileData(
             repo_name=repo_name,
-            indexed_at=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            indexed_at=datetime.now(UTC).strftime("%Y-%m-%d"),
             architecture_summary=await self._get_architecture_summary(),
             key_modules=await self._get_key_modules(),
             entry_points=await self._get_entry_points(),
@@ -108,7 +108,7 @@ class EditorFileDataFetcher:
         owner_map = await self._get_owners_for_paths(target_paths)
 
         modules: list[KeyModule] = []
-        for page, pagerank, symbol_count in rows:
+        for page, _pagerank, symbol_count in rows:
             purpose = _extract_sentences(page.content or "", max_sentences=1)
             purpose = purpose[:80].rstrip(".") if purpose else ""
             modules.append(
@@ -156,7 +156,7 @@ class EditorFileDataFetcher:
         return [
             HotspotFile(
                 path=row[0],
-                churn_percentile=round(row[1] * 100, 1),  # stored as 0.0–1.0
+                churn_percentile=round(row[1] * 100, 1),  # stored as 0.0-1.0
                 commit_count_90d=row[2],
                 owner=row[3],
             )
@@ -203,8 +203,7 @@ class EditorFileDataFetcher:
         if not paths:
             return {}
         result = await self._session.execute(
-            select(GitMetadata.file_path, GitMetadata.primary_owner_name)
-            .where(
+            select(GitMetadata.file_path, GitMetadata.primary_owner_name).where(
                 GitMetadata.repository_id == self._repo_id,
                 GitMetadata.file_path.in_(paths),
                 GitMetadata.primary_owner_name.isnot(None),
@@ -216,6 +215,7 @@ class EditorFileDataFetcher:
 # ------------------------------------------------------------------
 # Utility
 # ------------------------------------------------------------------
+
 
 def _extract_sentences(text: str, max_sentences: int) -> str:
     """Return up to *max_sentences* sentences from the start of *text*.

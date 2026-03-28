@@ -61,15 +61,14 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
     async def _run():
         from pathlib import Path
 
-        from repowise.core.persistence import InMemoryVectorStore, MockEmbedder
+        from repowise.core.persistence import MockEmbedder
 
         # Try LanceDB first (populated during repowise init)
         lance_dir = Path(repo_path) / ".repowise" / "lancedb"
         if lance_dir.exists():
             try:
-                from repowise.core.persistence.vector_store import LanceDBVectorStore
-
                 from repowise.cli.commands.init_cmd import _resolve_embedder
+                from repowise.core.persistence.vector_store import LanceDBVectorStore
 
                 embedder_name = _resolve_embedder(None)
                 if embedder_name == "gemini":
@@ -162,6 +161,6 @@ def _display_results(results, title: str) -> None:
         )
 
     if not results:
-        console.print(f"[yellow]No results found.[/yellow]")
+        console.print("[yellow]No results found.[/yellow]")
     else:
         console.print(table)

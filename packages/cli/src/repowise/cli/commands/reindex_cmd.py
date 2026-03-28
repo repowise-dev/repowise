@@ -58,14 +58,18 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     if embedder_name == "gemini":
         from repowise.core.providers.embedding.gemini import GeminiEmbedder
+
         embedder_impl = GeminiEmbedder()
-        console.print(f"[green]Using Gemini embedder[/green]")
+        console.print("[green]Using Gemini embedder[/green]")
     elif embedder_name == "openai":
         from repowise.core.providers.embedding.openai import OpenAIEmbedder
+
         embedder_impl = OpenAIEmbedder()
-        console.print(f"[green]Using OpenAI embedder[/green]")
+        console.print("[green]Using OpenAI embedder[/green]")
     else:
-        console.print("[red]No real embedder available. Set GEMINI_API_KEY or OPENAI_API_KEY.[/red]")
+        console.print(
+            "[red]No real embedder available. Set GEMINI_API_KEY or OPENAI_API_KEY.[/red]"
+        )
         raise click.Abort()
 
     # --- Create LanceDB vector store ---
@@ -74,7 +78,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         from repowise.core.persistence.vector_store import LanceDBVectorStore
     except ImportError:
         console.print("[red]lancedb not installed. Run: uv pip install lancedb[/red]")
-        raise click.Abort()
+        raise click.Abort() from None
 
     lance_dir.mkdir(parents=True, exist_ok=True)
     vector_store = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
@@ -106,7 +110,9 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         decisions = list(result.scalars().all())
 
     total = len(pages) + len(decisions)
-    console.print(f"Found [bold]{len(pages)}[/bold] wiki pages and [bold]{len(decisions)}[/bold] decision records to index.")
+    console.print(
+        f"Found [bold]{len(pages)}[/bold] wiki pages and [bold]{len(decisions)}[/bold] decision records to index."
+    )
 
     if total == 0:
         console.print("[yellow]Nothing to index. Run 'repowise init' first.[/yellow]")
@@ -146,7 +152,9 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 except Exception as exc:
                     failed += 1
                     if failed <= 3:
-                        console.print(f"[yellow]  Warning: failed to embed {page.id}: {exc}[/yellow]")
+                        console.print(
+                            f"[yellow]  Warning: failed to embed {page.id}: {exc}[/yellow]"
+                        )
                 progress.advance(task)
 
         # Decision records
@@ -169,7 +177,9 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 except Exception as exc:
                     failed += 1
                     if failed <= 3:
-                        console.print(f"[yellow]  Warning: failed to embed decision {d.id}: {exc}[/yellow]")
+                        console.print(
+                            f"[yellow]  Warning: failed to embed decision {d.id}: {exc}[/yellow]"
+                        )
                 progress.advance(task)
 
     await vector_store.close()

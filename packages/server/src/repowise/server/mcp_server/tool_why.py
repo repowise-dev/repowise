@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -123,20 +124,22 @@ async def get_why(
                 affected_files = json.loads(d.affected_files_json)
                 affected_modules = json.loads(d.affected_modules_json)
                 if query in affected_files or query in affected_modules:
-                    governing.append({
-                        "id": d.id,
-                        "title": d.title,
-                        "status": d.status,
-                        "context": d.context,
-                        "decision": d.decision,
-                        "rationale": d.rationale,
-                        "alternatives": json.loads(d.alternatives_json),
-                        "consequences": json.loads(d.consequences_json),
-                        "affected_files": affected_files,
-                        "source": d.source,
-                        "confidence": d.confidence,
-                        "staleness_score": d.staleness_score,
-                    })
+                    governing.append(
+                        {
+                            "id": d.id,
+                            "title": d.title,
+                            "status": d.status,
+                            "context": d.context,
+                            "decision": d.decision,
+                            "rationale": d.rationale,
+                            "alternatives": json.loads(d.alternatives_json),
+                            "consequences": json.loads(d.consequences_json),
+                            "affected_files": affected_files,
+                            "source": d.source,
+                            "confidence": d.confidence,
+                            "staleness_score": d.staleness_score,
+                        }
+                    )
 
             result_data: dict[str, Any] = {
                 "mode": "path",
@@ -149,7 +152,10 @@ async def get_why(
             # --- Fallback: git archaeology when no decisions found ---
             if not governing:
                 result_data["git_archaeology"] = await _git_archaeology_fallback(
-                    query, git_meta, all_git_meta, repository,
+                    query,
+                    git_meta,
+                    all_git_meta,
+                    repository,
                 )
 
             return result_data
@@ -184,8 +190,26 @@ async def get_why(
     query_lower = query.lower()
     query_words = set(query_lower.split())
     # Remove stop words for better matching
-    stop_words = {"why", "was", "is", "the", "a", "an", "this", "that", "how",
-                  "what", "when", "where", "for", "to", "of", "in", "it", "be"}
+    stop_words = {
+        "why",
+        "was",
+        "is",
+        "the",
+        "a",
+        "an",
+        "this",
+        "that",
+        "how",
+        "what",
+        "when",
+        "where",
+        "for",
+        "to",
+        "of",
+        "in",
+        "it",
+        "be",
+    }
     query_words -= stop_words
 
     scored_decisions: list[tuple[float, Any]] = []
@@ -198,20 +222,16 @@ async def get_why(
 
     # Semantic search over decision vector store
     decision_results = []
-    try:
+    with contextlib.suppress(Exception):
         decision_results = await _state._decision_store.search(query, limit=5)
-    except Exception:
-        pass
 
     # Semantic search over documentation
     doc_results = []
     try:
         doc_results = await _state._vector_store.search(query, limit=3)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             doc_results = await _state._fts.search(query, limit=3)
-        except Exception:
-            pass
 
     # Merge keyword matches with semantic results (dedup by ID)
     seen_ids: set[str] = set()
@@ -219,28 +239,32 @@ async def get_why(
     for d in keyword_matches:
         if d.id not in seen_ids:
             seen_ids.add(d.id)
-            merged_decisions.append({
-                "id": d.id,
-                "title": d.title,
-                "status": d.status,
-                "decision": d.decision,
-                "rationale": d.rationale,
-                "context": d.context,
-                "consequences": json.loads(d.consequences_json),
-                "affected_files": json.loads(d.affected_files_json),
-                "source": d.source,
-                "confidence": d.confidence,
-            })
+            merged_decisions.append(
+                {
+                    "id": d.id,
+                    "title": d.title,
+                    "status": d.status,
+                    "decision": d.decision,
+                    "rationale": d.rationale,
+                    "context": d.context,
+                    "consequences": json.loads(d.consequences_json),
+                    "affected_files": json.loads(d.affected_files_json),
+                    "source": d.source,
+                    "confidence": d.confidence,
+                }
+            )
 
     for r in decision_results:
         if r.page_id not in seen_ids:
             seen_ids.add(r.page_id)
-            merged_decisions.append({
-                "id": r.page_id,
-                "title": r.title,
-                "snippet": r.snippet,
-                "relevance_score": r.score,
-            })
+            merged_decisions.append(
+                {
+                    "id": r.page_id,
+                    "title": r.title,
+                    "snippet": r.snippet,
+                    "relevance_score": r.score,
+                }
+            )
 
     result_data: dict[str, Any] = {
         "mode": "search",
@@ -280,7 +304,9 @@ async def get_why(
                 git_m = target_git.get(t)
                 ctx_entry: dict[str, Any] = {
                     "governing_decisions": t_governing,
-                    "origin": _build_origin_story(t, git_m, t_governing) if git_m else {
+                    "origin": _build_origin_story(t, git_m, t_governing)
+                    if git_m
+                    else {
                         "available": False,
                         "summary": f"No git history for {t}.",
                     },
@@ -288,7 +314,10 @@ async def get_why(
                 # Git archaeology fallback when no decisions found
                 if not t_governing:
                     ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
-                        t, git_m, all_git_meta_list, repository,
+                        t,
+                        git_m,
+                        all_git_meta_list,
+                        repository,
                     )
                 target_context[t] = ctx_entry
             result_data["target_context"] = target_context
@@ -297,7 +326,9 @@ async def get_why(
 
 
 def _score_decision(
-    d: Any, query_words: set[str], target_files: set[str],
+    d: Any,
+    query_words: set[str],
+    target_files: set[str],
 ) -> float:
     """Score a decision against query words with field weighting and target boosting."""
     if not query_words:
@@ -377,14 +408,16 @@ async def _git_archaeology_fallback(
             # Match if the commit message mentions the file basename or 2+ stem terms
             matched_terms = [t for t in search_terms if t in msg_lower]
             if basename.lower() in msg_lower or len(matched_terms) >= 2:
-                cross_references.append({
-                    "source_file": gm.file_path,
-                    "sha": c.get("sha", ""),
-                    "message": c.get("message", ""),
-                    "author": c.get("author", ""),
-                    "date": c.get("date", ""),
-                    "matched_terms": matched_terms,
-                })
+                cross_references.append(
+                    {
+                        "source_file": gm.file_path,
+                        "sha": c.get("sha", ""),
+                        "message": c.get("message", ""),
+                        "author": c.get("author", ""),
+                        "date": c.get("date", ""),
+                        "matched_terms": matched_terms,
+                    }
+                )
     # Deduplicate by SHA and sort by date descending
     seen_shas: set[str] = set()
     unique_refs = []
@@ -422,7 +455,9 @@ async def _git_archaeology_fallback(
 
 
 async def _run_git_log(
-    repo_path: str, file_path: str, stem: str,
+    repo_path: str,
+    file_path: str,
+    stem: str,
 ) -> list[dict]:
     """Run git log against the local repo for deeper history. Best-effort."""
     import asyncio
@@ -442,13 +477,15 @@ async def _run_git_log(
                 for line in proc.stdout.strip().splitlines():
                     parts = line.split("\t", 3)
                     if len(parts) == 4:
-                        results.append({
-                            "sha": parts[0][:12],
-                            "author": parts[1],
-                            "date": parts[2][:10],
-                            "message": parts[3],
-                            "source": "git_log_follow",
-                        })
+                        results.append(
+                            {
+                                "sha": parts[0][:12],
+                                "author": parts[1],
+                                "date": parts[2][:10],
+                                "message": parts[3],
+                                "source": "git_log_follow",
+                            }
+                        )
 
             if stem and len(stem) >= 3:
                 proc2 = subprocess.run(
@@ -464,18 +501,20 @@ async def _run_git_log(
                         parts = line.split("\t", 3)
                         if len(parts) == 4 and parts[0][:12] not in seen:
                             seen.add(parts[0][:12])
-                            results.append({
-                                "sha": parts[0][:12],
-                                "author": parts[1],
-                                "date": parts[2][:10],
-                                "message": parts[3],
-                                "source": "git_log_grep",
-                            })
+                            results.append(
+                                {
+                                    "sha": parts[0][:12],
+                                    "author": parts[1],
+                                    "date": parts[2][:10],
+                                    "message": parts[3],
+                                    "source": "git_log_grep",
+                                }
+                            )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
         return results[:20]
 
     try:
         return await asyncio.wait_for(asyncio.to_thread(_sync_git_log), timeout=15)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return []

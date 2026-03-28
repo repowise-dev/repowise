@@ -15,7 +15,7 @@ Versioning contract for upsert_page:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,7 +52,7 @@ def _parse_dt(ts: str) -> datetime:
     ts = ts.replace("Z", "+00:00")
     dt = datetime.fromisoformat(ts)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -74,9 +74,7 @@ async def upsert_repository(
 
     Lookup is by ``local_path`` (the canonical key for local repositories).
     """
-    result = await session.execute(
-        select(Repository).where(Repository.local_path == local_path)
-    )
+    result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
 
     if repo is None:
@@ -106,13 +104,9 @@ async def get_repository(session: AsyncSession, repo_id: str) -> Repository | No
     return await session.get(Repository, repo_id)
 
 
-async def get_repository_by_path(
-    session: AsyncSession, local_path: str
-) -> Repository | None:
+async def get_repository_by_path(session: AsyncSession, local_path: str) -> Repository | None:
     """Return a Repository by local_path, or None."""
-    result = await session.execute(
-        select(Repository).where(Repository.local_path == local_path)
-    )
+    result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     return result.scalar_one_or_none()
 
 
@@ -171,8 +165,7 @@ async def update_job_status(
     """
     if status not in _VALID_JOB_STATUSES:
         raise ValueError(
-            f"Unknown job status {status!r}. "
-            f"Valid values: {sorted(_VALID_JOB_STATUSES)}"
+            f"Unknown job status {status!r}. Valid values: {sorted(_VALID_JOB_STATUSES)}"
         )
 
     job = await session.get(GenerationJob, job_id)
@@ -314,7 +307,7 @@ async def upsert_page_from_generated(
     session: AsyncSession,
     generated_page: object,  # repowise.core.generation.models.GeneratedPage
     repository_id: str,
-) -> "Page":
+) -> Page:
     """Convenience wrapper that unpacks a GeneratedPage dataclass.
 
     This keeps the CRUD layer independent of the generation models at the
@@ -435,20 +428,14 @@ async def batch_upsert_graph_nodes(
 
         if existing is not None:
             for key, val in node_data.items():
-                if key not in ("id", "repository_id", "created_at") and hasattr(
-                    existing, key
-                ):
+                if key not in ("id", "repository_id", "created_at") and hasattr(existing, key):
                     setattr(existing, key, val)
         else:
             session.add(
                 GraphNode(
                     id=_new_uuid(),
                     repository_id=repository_id,
-                    **{
-                        k: v
-                        for k, v in node_data.items()
-                        if k not in ("id", "repository_id")
-                    },
+                    **{k: v for k, v in node_data.items() if k not in ("id", "repository_id")},
                 )
             )
 
@@ -671,9 +658,7 @@ async def get_git_metadata_bulk(
     return {gm.file_path: gm for gm in result.scalars().all()}
 
 
-async def get_all_git_metadata(
-    session: AsyncSession, repository_id: str
-) -> dict[str, GitMetadata]:
+async def get_all_git_metadata(session: AsyncSession, repository_id: str) -> dict[str, GitMetadata]:
     """Return all GitMetadata rows for a repository."""
     result = await session.execute(
         select(GitMetadata).where(GitMetadata.repository_id == repository_id)
@@ -720,7 +705,8 @@ async def upsert_git_metadata_bulk(
 
 
 async def recompute_git_percentiles(
-    session: AsyncSession, repository_id: str,
+    session: AsyncSession,
+    repository_id: str,
 ) -> int:
     """Reload all git_metadata rows and recompute churn_percentile + is_hotspot.
 
@@ -776,7 +762,9 @@ async def save_dead_code_findings(
             # Accept both DeadCodeFindingData-like objects and plain dicts
             if hasattr(finding, "kind"):
                 data = {
-                    "kind": str(finding.kind.value) if hasattr(finding.kind, "value") else str(finding.kind),
+                    "kind": str(finding.kind.value)
+                    if hasattr(finding.kind, "value")
+                    else str(finding.kind),
                     "file_path": finding.file_path,
                     "symbol_name": finding.symbol_name,
                     "symbol_kind": finding.symbol_kind,
@@ -786,7 +774,9 @@ async def save_dead_code_findings(
                     "commit_count_90d": finding.commit_count_90d,
                     "lines": finding.lines,
                     "package": finding.package,
-                    "evidence_json": json.dumps(finding.evidence if hasattr(finding, "evidence") else []),
+                    "evidence_json": json.dumps(
+                        finding.evidence if hasattr(finding, "evidence") else []
+                    ),
                     "safe_to_delete": finding.safe_to_delete,
                     "primary_owner": finding.primary_owner,
                     "age_days": finding.age_days,
@@ -848,9 +838,7 @@ async def update_dead_code_status(
     return finding
 
 
-async def get_dead_code_summary(
-    session: AsyncSession, repository_id: str
-) -> dict:
+async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> dict:
     """Return aggregate dead code statistics."""
     result = await session.execute(
         select(DeadCodeFinding).where(
@@ -979,9 +967,7 @@ async def upsert_decision(
     return rec
 
 
-async def get_decision(
-    session: AsyncSession, decision_id: str
-) -> DecisionRecord | None:
+async def get_decision(session: AsyncSession, decision_id: str) -> DecisionRecord | None:
     """Return a DecisionRecord by primary key, or None."""
     return await session.get(DecisionRecord, decision_id)
 
@@ -999,9 +985,7 @@ async def list_decisions(
     offset: int = 0,
 ) -> list[DecisionRecord]:
     """Return decision records with optional filters."""
-    q = select(DecisionRecord).where(
-        DecisionRecord.repository_id == repository_id
-    )
+    q = select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
     if status is not None:
         q = q.where(DecisionRecord.status == status)
     elif not include_proposed:
@@ -1030,8 +1014,7 @@ async def update_decision_status(
     """
     if status not in _VALID_DECISION_STATUSES:
         raise ValueError(
-            f"Unknown decision status {status!r}. "
-            f"Valid values: {sorted(_VALID_DECISION_STATUSES)}"
+            f"Unknown decision status {status!r}. Valid values: {sorted(_VALID_DECISION_STATUSES)}"
         )
     rec = await session.get(DecisionRecord, decision_id)
     if rec is None:
@@ -1044,9 +1027,7 @@ async def update_decision_status(
     return rec
 
 
-async def delete_decision(
-    session: AsyncSession, decision_id: str
-) -> bool:
+async def delete_decision(session: AsyncSession, decision_id: str) -> bool:
     """Delete a decision record. Returns True if deleted, False if not found."""
     rec = await session.get(DecisionRecord, decision_id)
     if rec is None:
@@ -1113,7 +1094,10 @@ async def recompute_decision_staleness(
 
         decision_text = f"{dec.title} {dec.decision} {dec.rationale}"
         new_score = DecisionExtractor.compute_staleness(
-            dec.created_at, affected, git_meta_map, decision_text=decision_text,
+            dec.created_at,
+            affected,
+            git_meta_map,
+            decision_text=decision_text,
         )
         if abs(new_score - dec.staleness_score) > 0.01:
             dec.staleness_score = round(new_score, 3)
@@ -1205,9 +1189,7 @@ async def create_conversation(
     return conv
 
 
-async def get_conversation(
-    session: AsyncSession, conversation_id: str
-) -> Conversation | None:
+async def get_conversation(session: AsyncSession, conversation_id: str) -> Conversation | None:
     return await session.get(Conversation, conversation_id)
 
 
@@ -1243,9 +1225,7 @@ async def delete_conversation(session: AsyncSession, conversation_id: str) -> bo
     return True
 
 
-async def touch_conversation(
-    session: AsyncSession, conversation_id: str
-) -> None:
+async def touch_conversation(session: AsyncSession, conversation_id: str) -> None:
     """Update the updated_at timestamp of a conversation."""
     conv = await session.get(Conversation, conversation_id)
     if conv:
@@ -1275,9 +1255,7 @@ async def create_chat_message(
     return msg
 
 
-async def list_chat_messages(
-    session: AsyncSession, conversation_id: str
-) -> list[ChatMessage]:
+async def list_chat_messages(session: AsyncSession, conversation_id: str) -> list[ChatMessage]:
     result = await session.execute(
         select(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
@@ -1286,9 +1264,7 @@ async def list_chat_messages(
     return list(result.scalars().all())
 
 
-async def count_chat_messages(
-    session: AsyncSession, conversation_id: str
-) -> int:
+async def count_chat_messages(session: AsyncSession, conversation_id: str) -> int:
     from sqlalchemy import func
 
     result = await session.execute(

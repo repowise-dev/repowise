@@ -76,10 +76,12 @@ async def _resolve_one_target(
             sym_matches = list(res.scalars().all())
             if not sym_matches:
                 res = await session.execute(
-                    select(WikiSymbol).where(
+                    select(WikiSymbol)
+                    .where(
                         WikiSymbol.repository_id == repo_id,
                         WikiSymbol.name.ilike(f"%{target}%"),
-                    ).limit(10)
+                    )
+                    .limit(10)
                 )
                 sym_matches = list(res.scalars().all())
             if sym_matches:
@@ -125,10 +127,12 @@ async def _resolve_one_target(
         # F5: fuzzy path suggestions — match by filename or partial path
         tail = target.rsplit("/", 1)[-1]
         res = await session.execute(
-            select(GitMetadata.file_path).where(
+            select(GitMetadata.file_path)
+            .where(
                 GitMetadata.repository_id == repo_id,
                 GitMetadata.file_path.contains(tail),
-            ).limit(5)
+            )
+            .limit(5)
         )
         suggestions = [row[0] for row in res.all() if row[0] != target]
         if suggestions:
@@ -158,8 +162,7 @@ async def _resolve_one_target(
             )
             symbols = res.scalars().all()
             docs["symbols"] = [
-                {"name": s.name, "kind": s.kind, "signature": s.signature}
-                for s in symbols
+                {"name": s.name, "kind": s.kind, "signature": s.signature} for s in symbols
             ]
             # Importers
             res = await session.execute(
@@ -239,7 +242,9 @@ async def _resolve_one_target(
             if meta:
                 ownership["primary_owner"] = meta.primary_owner_name
                 ownership["owner_pct"] = meta.primary_owner_commit_pct
-                ownership["contributor_count"] = getattr(meta, "contributor_count", 0) or len(json.loads(meta.top_authors_json))
+                ownership["contributor_count"] = getattr(meta, "contributor_count", 0) or len(
+                    json.loads(meta.top_authors_json)
+                )
                 ownership["bus_factor"] = getattr(meta, "bus_factor", 0) or 0
                 # Recent owner (who maintains this file now)
                 recent = getattr(meta, "recent_owner_name", None)
@@ -273,7 +278,9 @@ async def _resolve_one_target(
             )
             meta = res.scalar_one_or_none()
             if meta:
-                last_change["date"] = meta.last_commit_at.isoformat() if meta.last_commit_at else None
+                last_change["date"] = (
+                    meta.last_commit_at.isoformat() if meta.last_commit_at else None
+                )
                 last_change["author"] = meta.primary_owner_name
                 last_change["days_ago"] = meta.age_days
             else:
@@ -298,24 +305,21 @@ async def _resolve_one_target(
         for d in all_decisions:
             affected_files = json.loads(d.affected_files_json)
             affected_modules = json.loads(d.affected_modules_json)
-            if target in affected_files or target in affected_modules:
-                governing.append({
-                    "id": d.id,
-                    "title": d.title,
-                    "status": d.status,
-                    "decision": d.decision,
-                    "rationale": d.rationale,
-                    "confidence": d.confidence,
-                })
-            elif file_path_for_git and file_path_for_git in affected_files:
-                governing.append({
-                    "id": d.id,
-                    "title": d.title,
-                    "status": d.status,
-                    "decision": d.decision,
-                    "rationale": d.rationale,
-                    "confidence": d.confidence,
-                })
+            if (
+                target in affected_files
+                or target in affected_modules
+                or (file_path_for_git and file_path_for_git in affected_files)
+            ):
+                governing.append(
+                    {
+                        "id": d.id,
+                        "title": d.title,
+                        "status": d.status,
+                        "decision": d.decision,
+                        "rationale": d.rationale,
+                        "confidence": d.confidence,
+                    }
+                )
         result_data["decisions"] = governing
 
     # --- Freshness ---
@@ -374,10 +378,9 @@ async def get_context(
     async with get_session(_state._session_factory) as session:
         repository = await _get_repo(session, repo)
 
-        results = await asyncio.gather(*[
-            _resolve_one_target(session, repository, t, include_set)
-            for t in targets
-        ])
+        results = await asyncio.gather(
+            *[_resolve_one_target(session, repository, t, include_set) for t in targets]
+        )
 
     return {
         "targets": {r["target"]: r for r in results},

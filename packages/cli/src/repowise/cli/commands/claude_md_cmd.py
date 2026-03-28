@@ -49,7 +49,7 @@ def claude_md_command(
 
     try:
         content = run_async(_generate(repo_path, output_path, to_stdout))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 
     if to_stdout:
@@ -80,7 +80,7 @@ async def _generate(
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 raise click.ClickException(
-                    f"Repository not found in index. Run 'repowise init' first."
+                    "Repository not found in index. Run 'repowise init' first."
                 )
             fetcher = EditorFileDataFetcher(session, repo.id, repo_path)
             data = await fetcher.fetch()

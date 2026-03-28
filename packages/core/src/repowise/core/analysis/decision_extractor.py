@@ -1,12 +1,12 @@
-"""Architectural Decision Intelligence — extraction from multiple sources.
+"""Architectural Decision Intelligence - extraction from multiple sources.
 
 Capture sources:
-    1. Inline markers  (# WHY:, # DECISION:, etc.)       — confidence 0.95
-    2. Git archaeology (significant commit messages)       — confidence 0.70–0.85
-    3. README / docs mining (implicit decisions in prose)  — confidence 0.60
-    4. CLI capture (manual entry)                          — confidence 1.00
+    1. Inline markers  (# WHY:, # DECISION:, etc.)       - confidence 0.95
+    2. Git archaeology (significant commit messages)       - confidence 0.70-0.85
+    3. README / docs mining (implicit decisions in prose)  - confidence 0.60
+    4. CLI capture (manual entry)                          - confidence 1.00
 
-All LLM calls are wrapped in try/except — failures never propagate.
+All LLM calls are wrapped in try/except - failures never propagate.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,31 +65,88 @@ MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
-_SKIP_DIRS = frozenset({
-    ".git", "node_modules", "__pycache__", ".repowise", ".venv",
-    "venv", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
-    ".next", ".nuxt",
-})
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".repowise",
+        ".venv",
+        "venv",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        "dist",
+        "build",
+        ".next",
+        ".nuxt",
+    }
+)
 
-_BINARY_EXTENSIONS = frozenset({
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".bmp", ".webp",
-    ".woff", ".woff2", ".ttf", ".eot", ".otf",
-    ".zip", ".tar", ".gz", ".bz2", ".rar", ".7z",
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
-    ".pyc", ".pyo", ".so", ".dll", ".dylib", ".exe",
-    ".db", ".sqlite", ".sqlite3", ".lance",
-    ".lock",
-})
+_BINARY_EXTENSIONS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
+        ".svg",
+        ".bmp",
+        ".webp",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".otf",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".rar",
+        ".7z",
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".pyc",
+        ".pyo",
+        ".so",
+        ".dll",
+        ".dylib",
+        ".exe",
+        ".db",
+        ".sqlite",
+        ".sqlite3",
+        ".lance",
+        ".lock",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Decision signal keywords for git archaeology
 # ---------------------------------------------------------------------------
 
 DECISION_SIGNAL_KEYWORDS = [
-    "migrate", "migration", "switch to", "replace", "replaced",
-    "refactor to", "move from", "adopt", "introduce", "deprecate",
-    "remove", "drop", "upgrade", "rewrite", "extract", "split",
-    "convert", "transition", "revert",
+    "migrate",
+    "migration",
+    "switch to",
+    "replace",
+    "replaced",
+    "refactor to",
+    "move from",
+    "adopt",
+    "introduce",
+    "deprecate",
+    "remove",
+    "drop",
+    "upgrade",
+    "rewrite",
+    "extract",
+    "split",
+    "convert",
+    "transition",
+    "revert",
 ]
 
 # ---------------------------------------------------------------------------
@@ -248,12 +305,14 @@ class DecisionExtractor:
                     except ValueError:
                         rel_path = str(file_path)
 
-                    markers_by_file.setdefault(rel_path, []).append({
-                        "keyword": m.group("keyword"),
-                        "text": marker_text,
-                        "line": line_num,
-                        "context": context,
-                    })
+                    markers_by_file.setdefault(rel_path, []).append(
+                        {
+                            "keyword": m.group("keyword"),
+                            "text": marker_text,
+                            "line": line_num,
+                            "context": context,
+                        }
+                    )
 
         if not markers_by_file:
             return []
@@ -267,16 +326,12 @@ class DecisionExtractor:
             if self._provider:
                 # Use LLM to structure markers
                 try:
-                    llm_decisions = await self._structure_markers_via_llm(
-                        file_path, markers
-                    )
+                    llm_decisions = await self._structure_markers_via_llm(file_path, markers)
                     for d in llm_decisions:
                         d.evidence_file = file_path
                         d.evidence_line = markers[0]["line"] if markers else None
                         d.affected_files = list({file_path} | set(affected))
-                        d.affected_modules = self._infer_modules(
-                            d.affected_files
-                        )
+                        d.affected_modules = self._infer_modules(d.affected_files)
                         d.source = "inline_marker"
                         d.status = "active"
                         d.confidence = 0.95
@@ -288,15 +343,13 @@ class DecisionExtractor:
                     )
                     # Fall through to raw extraction below
                     for marker in markers:
-                        decisions.append(self._raw_decision_from_marker(
-                            file_path, marker, affected
-                        ))
+                        decisions.append(
+                            self._raw_decision_from_marker(file_path, marker, affected)
+                        )
             else:
                 # No LLM — create minimal decisions from raw marker text
                 for marker in markers:
-                    decisions.append(self._raw_decision_from_marker(
-                        file_path, marker, affected
-                    ))
+                    decisions.append(self._raw_decision_from_marker(file_path, marker, affected))
 
         return decisions
 
@@ -317,7 +370,7 @@ class DecisionExtractor:
             evidence_file=file_path,
             evidence_line=marker["line"],
             affected_files=list({file_path} | set(affected)),
-            affected_modules=self._infer_modules([file_path] + affected),
+            affected_modules=self._infer_modules([file_path, *affected]),
             tags=self._infer_tags(marker["text"]),
         )
 
@@ -372,10 +425,7 @@ class DecisionExtractor:
                     commit_files.setdefault(sha, []).append(file_path)
                     continue
                 msg = commit.get("message", "")
-                signal_count = sum(
-                    1 for kw in DECISION_SIGNAL_KEYWORDS
-                    if kw in msg.lower()
-                )
+                signal_count = sum(1 for kw in DECISION_SIGNAL_KEYWORDS if kw in msg.lower())
                 if signal_count > 0:
                     commit_map[sha] = {
                         "sha": sha,
@@ -433,8 +483,7 @@ class DecisionExtractor:
                 d.source = "git_archaeology"
                 d.status = "proposed"
                 signal = max(
-                    (c["signal_count"] for c in batch
-                     if c["sha"] == sha),
+                    (c["signal_count"] for c in batch if c["sha"] == sha),
                     default=1,
                 )
                 d.confidence = 0.85 if signal >= 2 else 0.70
@@ -467,8 +516,12 @@ class DecisionExtractor:
             return []
 
         doc_patterns = [
-            "README.md", "CLAUDE.md", "ARCHITECTURE.md", "CONTRIBUTING.md",
-            "DESIGN.md", "DECISIONS.md",
+            "README.md",
+            "CLAUDE.md",
+            "ARCHITECTURE.md",
+            "CONTRIBUTING.md",
+            "DESIGN.md",
+            "DECISIONS.md",
         ]
         doc_files: list[Path] = []
 
@@ -516,9 +569,7 @@ class DecisionExtractor:
                     d.status = "proposed"
                     d.confidence = 0.60
                     d.evidence_file = rel_path
-                    d.affected_modules = self._infer_modules_from_text(
-                        d.title + " " + d.decision
-                    )
+                    d.affected_modules = self._infer_modules_from_text(d.title + " " + d.decision)
                 decisions.extend(extracted)
             except Exception:
                 logger.warning(
@@ -533,10 +584,20 @@ class DecisionExtractor:
     # ------------------------------------------------------------------
 
     # Keywords that signal a decision may have been contradicted or superseded.
-    _CONFLICT_SIGNALS = frozenset({
-        "replace", "remove", "deprecate", "switch from", "migrate away",
-        "drop", "revert", "undo", "disable", "eliminate",
-    })
+    _CONFLICT_SIGNALS = frozenset(
+        {
+            "replace",
+            "remove",
+            "deprecate",
+            "switch from",
+            "migrate away",
+            "drop",
+            "revert",
+            "undo",
+            "disable",
+            "eliminate",
+        }
+    )
 
     @staticmethod
     def compute_staleness(
@@ -545,7 +606,7 @@ class DecisionExtractor:
         git_meta_map: dict[str, dict],
         decision_text: str = "",
     ) -> float:
-        """Compute staleness score for a decision. Returns 0.0–1.0.
+        """Compute staleness score for a decision. Returns 0.0-1.0.
 
         In addition to commit volume and age, checks whether recent commit
         messages contain keywords that conflict with the decision text
@@ -556,7 +617,7 @@ class DecisionExtractor:
         if not affected_files:
             return 0.0
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         scores: list[float] = []
         decision_lower = decision_text.lower()
 
@@ -569,14 +630,10 @@ class DecisionExtractor:
             last_commit = meta.get("last_commit_at")
             if last_commit and decision_created_at:
                 if isinstance(last_commit, str):
-                    last_commit = datetime.fromisoformat(
-                        last_commit.replace("Z", "+00:00")
-                    )
+                    last_commit = datetime.fromisoformat(last_commit.replace("Z", "+00:00"))
                 _created = decision_created_at
                 if isinstance(_created, str):
-                    _created = datetime.fromisoformat(
-                        _created.replace("Z", "+00:00")
-                    )
+                    _created = datetime.fromisoformat(_created.replace("Z", "+00:00"))
                 if last_commit > _created:
                     age_days = (now - _created).days
                     commit_count = meta.get("commit_count_90d", 0)
@@ -591,7 +648,9 @@ class DecisionExtractor:
                     if decision_lower:
                         sig_json = meta.get("significant_commits_json", "[]")
                         try:
-                            sig_commits = json.loads(sig_json) if isinstance(sig_json, str) else sig_json
+                            sig_commits = (
+                                json.loads(sig_json) if isinstance(sig_json, str) else sig_json
+                            )
                         except (json.JSONDecodeError, TypeError):
                             sig_commits = []
                         for sc in sig_commits:
@@ -606,8 +665,18 @@ class DecisionExtractor:
                                         msg_words = set(msg_lower.split())
                                         dec_words = set(decision_lower.split())
                                         overlap = msg_words & dec_words - {
-                                            "the", "a", "an", "to", "in", "for",
-                                            "and", "or", "of", "is", "was", "with",
+                                            "the",
+                                            "a",
+                                            "an",
+                                            "to",
+                                            "in",
+                                            "for",
+                                            "and",
+                                            "or",
+                                            "of",
+                                            "is",
+                                            "was",
+                                            "with",
                                         }
                                         if len(overlap) >= 2:
                                             conflict_boost = max(conflict_boost, 0.3)
@@ -736,10 +805,7 @@ class DecisionExtractor:
         if content.startswith("```"):
             # Remove markdown code fences
             lines = content.split("\n")
-            content = "\n".join(
-                l for l in lines
-                if not l.strip().startswith("```")
-            )
+            content = "\n".join(line for line in lines if not line.strip().startswith("```"))
 
         try:
             data = json.loads(content)
@@ -775,9 +841,7 @@ class DecisionExtractor:
                     alternatives=item.get("alternatives", []),
                     consequences=item.get("consequences", []),
                     tags=item.get("tags", []),
-                    evidence_commits=[item["commit_sha"]]
-                    if "commit_sha" in item
-                    else [],
+                    evidence_commits=[item["commit_sha"]] if "commit_sha" in item else [],
                 )
             )
         return decisions

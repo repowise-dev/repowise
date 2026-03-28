@@ -92,21 +92,23 @@ def dead_code_command(
     if fmt == "json":
         output = []
         for f in findings:
-            output.append({
-                "kind": f.kind.value,
-                "file_path": f.file_path,
-                "symbol_name": f.symbol_name,
-                "confidence": f.confidence,
-                "reason": f.reason,
-                "safe_to_delete": f.safe_to_delete,
-                "lines": f.lines,
-                "primary_owner": f.primary_owner,
-            })
+            output.append(
+                {
+                    "kind": f.kind.value,
+                    "file_path": f.file_path,
+                    "symbol_name": f.symbol_name,
+                    "confidence": f.confidence,
+                    "reason": f.reason,
+                    "safe_to_delete": f.safe_to_delete,
+                    "lines": f.lines,
+                    "primary_owner": f.primary_owner,
+                }
+            )
         click.echo(json.dumps(output, indent=2))
         return
 
     if fmt == "md":
-        click.echo(f"# Dead Code Report\n")
+        click.echo("# Dead Code Report\n")
         click.echo(f"**Total findings:** {len(findings)}")
         click.echo(f"**Deletable lines:** {report.deletable_lines}\n")
         for f in findings:

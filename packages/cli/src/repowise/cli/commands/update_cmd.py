@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 
 import click
-from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
@@ -26,7 +25,9 @@ from repowise.cli.helpers import (
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--since", default=None, help="Base git ref to diff from (overrides state).")
 @click.option("--cascade-budget", type=int, default=30, help="Max pages to regenerate per run.")
-@click.option("--dry-run", is_flag=True, default=False, help="Show affected pages without regenerating.")
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="Show affected pages without regenerating."
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -190,6 +191,7 @@ def update_command(
 
     # Persist
     async def _persist() -> None:
+        from repowise.cli.helpers import get_db_url_for_repo
         from repowise.core.persistence import (
             FullTextSearch,
             create_engine,
@@ -199,8 +201,6 @@ def update_command(
             upsert_page_from_generated,
             upsert_repository,
         )
-
-        from repowise.cli.helpers import get_db_url_for_repo
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
@@ -223,7 +223,9 @@ def update_command(
 
                 async with get_session(sf) as session:
                     await upsert_git_metadata_bulk(
-                        session, repo_id, list(git_meta_map.values()),
+                        session,
+                        repo_id,
+                        list(git_meta_map.values()),
                     )
                     await recompute_git_percentiles(session, repo_id)
             except Exception:
@@ -264,8 +266,11 @@ def update_command(
     cfg = load_config(repo_path)
     if cfg.get("editor_files", {}).get("claude_md", True):
         try:
-            from pathlib import Path as _Path
-            from repowise.core.generation.editor_files import ClaudeMdGenerator, EditorFileDataFetcher
+            from repowise.cli.helpers import get_db_url_for_repo
+            from repowise.core.generation.editor_files import (
+                ClaudeMdGenerator,
+                EditorFileDataFetcher,
+            )
             from repowise.core.persistence import (
                 create_engine,
                 create_session_factory,
@@ -273,7 +278,6 @@ def update_command(
                 init_db,
             )
             from repowise.core.persistence.crud import get_repository_by_path
-            from repowise.cli.helpers import get_db_url_for_repo
 
             async def _update_claude_md() -> None:
                 url = get_db_url_for_repo(repo_path)

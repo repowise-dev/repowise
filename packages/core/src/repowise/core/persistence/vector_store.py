@@ -26,16 +26,17 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from repowise.core.providers.embedding.base import Embedder
+
 from .search import SearchResult
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 __all__ = [
-    "VectorStore",
     "InMemoryVectorStore",
     "LanceDBVectorStore",
     "PgVectorStore",
+    "VectorStore",
 ]
 
 
@@ -48,9 +49,7 @@ class VectorStore(ABC):
     """Abstract vector store.  All methods are async."""
 
     @abstractmethod
-    async def embed_and_upsert(
-        self, page_id: str, text: str, metadata: dict
-    ) -> None:
+    async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         """Embed *text* and upsert the vector under *page_id*."""
         ...
 
@@ -77,7 +76,7 @@ class VectorStore(ABC):
 
 def _cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors (returns 0.0 for zero vectors)."""
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
     denom = norm_a * norm_b
@@ -96,9 +95,7 @@ class InMemoryVectorStore(VectorStore):
         # page_id → (vector, metadata)
         self._store: dict[str, tuple[list[float], dict]] = {}
 
-    async def embed_and_upsert(
-        self, page_id: str, text: str, metadata: dict
-    ) -> None:
+    async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         vectors = await self._embedder.embed([text])
         self._store[page_id] = (vectors[0], dict(metadata))
 
@@ -159,9 +156,7 @@ class LanceDBVectorStore(VectorStore):
 
     _TABLE_NAME = "wiki_pages"
 
-    def __init__(
-        self, db_path: str, embedder: Embedder, table_name: str | None = None
-    ) -> None:
+    def __init__(self, db_path: str, embedder: Embedder, table_name: str | None = None) -> None:
         self._db_path = db_path
         self._embedder = embedder
         self._table_name = table_name or self._TABLE_NAME
@@ -175,8 +170,7 @@ class LanceDBVectorStore(VectorStore):
             import lancedb  # type: ignore[import]
         except ImportError as exc:
             raise RuntimeError(
-                "LanceDB is not installed. Install it with: "
-                "pip install repowise-core[search]"
+                "LanceDB is not installed. Install it with: pip install repowise-core[search]"
             ) from exc
 
         self._db = await lancedb.connect_async(self._db_path)
@@ -214,9 +208,7 @@ class LanceDBVectorStore(VectorStore):
             self._table_name, schema=schema, exist_ok=True
         )
 
-    async def embed_and_upsert(
-        self, page_id: str, text: str, metadata: dict
-    ) -> None:
+    async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         await self._ensure_connected()
         vectors = await self._embedder.embed([text])
         vector = vectors[0]
@@ -234,7 +226,12 @@ class LanceDBVectorStore(VectorStore):
 
         # merge_insert: upsert by page_id (LanceDB 0.12+)
         try:
-            await self._table.merge_insert("page_id").when_matched_update_all().when_not_matched_insert_all().execute([row])  # type: ignore[union-attr]
+            await (
+                self._table.merge_insert("page_id")
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute([row])
+            )  # type: ignore[union-attr]
         except AttributeError:
             # Fallback for older LanceDB versions: delete + add
             safe_id = page_id.replace("'", "''")
@@ -299,15 +296,13 @@ class PgVectorStore(VectorStore):
 
     def __init__(
         self,
-        session_factory: "async_sessionmaker[AsyncSession]",
+        session_factory: async_sessionmaker[AsyncSession],
         embedder: Embedder,
     ) -> None:
         self._session_factory = session_factory
         self._embedder = embedder
 
-    async def embed_and_upsert(
-        self, page_id: str, text: str, metadata: dict
-    ) -> None:
+    async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         vectors = await self._embedder.embed([text])
         vector = vectors[0]
         # pgvector expects a list encoded as a string like "[0.1, 0.2, ...]"
@@ -317,10 +312,7 @@ class PgVectorStore(VectorStore):
 
         async with self._session_factory() as session:
             await session.execute(
-                sa_text(
-                    "UPDATE wiki_pages SET embedding = CAST(:emb AS vector) "
-                    "WHERE id = :pid"
-                ),
+                sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"),
                 {"emb": vec_str, "pid": page_id},
             )
             await session.commit()

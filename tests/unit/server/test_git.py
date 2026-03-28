@@ -9,7 +9,6 @@ from httpx import AsyncClient
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -28,9 +27,7 @@ async def _insert_git_metadata(session_factory, repo_id: str) -> None:
             primary_owner_commit_pct=0.6,
             top_authors_json=json.dumps([{"name": "Alice", "commits": 30}]),
             significant_commits_json=json.dumps([{"sha": "abc", "message": "init"}]),
-            co_change_partners_json=json.dumps(
-                [{"file_path": "src/utils.py", "count": 5}]
-            ),
+            co_change_partners_json=json.dumps([{"file_path": "src/utils.py", "count": 5}]),
             is_hotspot=True,
             is_stable=False,
             churn_percentile=0.85,

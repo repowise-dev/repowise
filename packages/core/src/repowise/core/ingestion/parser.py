@@ -24,10 +24,9 @@ Capture-name conventions (shared across ALL .scm files):
 
 from __future__ import annotations
 
-import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import structlog
 from tree_sitter import Language, Node, Parser
@@ -77,6 +76,7 @@ def _build_language_registry() -> dict[str, Language]:
 
     def _ts() -> None:
         import tree_sitter_typescript as ts
+
         registry["typescript"] = Language(ts.language_typescript())
         registry["tsx"] = Language(ts.language_tsx())
 
@@ -92,6 +92,7 @@ def _build_language_registry() -> dict[str, Language]:
 
     def _cpp() -> None:
         import tree_sitter_cpp as ts_cpp
+
         lang = Language(ts_cpp.language())
         registry["cpp"] = lang
         registry["c"] = lang  # C is a subset of C++ for our purposes
@@ -155,7 +156,7 @@ class LanguageConfig:
 
 def _py_visibility(name: str, _mods: list[str]) -> str:
     if name.startswith("__") and name.endswith("__"):
-        return "public"   # dunder
+        return "public"  # dunder
     if name.startswith("_"):
         return "private"
     return "public"
@@ -244,7 +245,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         symbol_node_types={
             "function_declaration": "function",
             "method_declaration": "method",
-            "type_spec": "struct",   # refined in post-processing
+            "type_spec": "struct",  # refined in post-processing
         },
         import_node_types=["import_declaration"],
         export_node_types=[],
@@ -283,7 +284,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         export_node_types=[],
         visibility_fn=_java_visibility,
         parent_extraction="nesting",
-        parent_class_types=frozenset({"class_declaration", "interface_declaration", "enum_declaration"}),
+        parent_class_types=frozenset(
+            {"class_declaration", "interface_declaration", "enum_declaration"}
+        ),
         entry_point_patterns=["Main.java", "Application.java"],
     ),
     "cpp": LanguageConfig(
@@ -370,6 +373,7 @@ class ASTParser:
         # Delegate to special handlers for non-tree-sitter formats
         if lang in ("openapi", "dockerfile", "makefile"):
             from .special_handlers import parse_special
+
             return parse_special(file_info, source, lang)
 
         parser = Parser(language)
@@ -415,6 +419,7 @@ class ASTParser:
         scm_text = scm_path.read_text(encoding="utf-8")
         try:
             from tree_sitter import Query  # type: ignore[attr-defined]
+
             compiled = Query(language, scm_text)
             self._query_cache[lang] = compiled
             log.debug("Compiled query", language=lang)
@@ -440,7 +445,7 @@ class ASTParser:
             return []
 
         symbols: list[Symbol] = []
-        seen: set[tuple[int, str]] = set()   # (start_line, name) — dedup decorated dupes
+        seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
 
         for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
             def_nodes = capture_dict.get("symbol.def", [])
@@ -486,9 +491,7 @@ class ASTParser:
             visibility = config.visibility_fn(name, modifier_texts)
 
             # Parent class detection
-            parent_name = self._find_parent(
-                def_node, config, receiver_nodes, src
-            )
+            parent_name = self._find_parent(def_node, config, receiver_nodes, src)
 
             # Upgrade function → method when a parent class is detected
             if parent_name and kind == "function":
@@ -623,17 +626,9 @@ class ASTParser:
         """Derive the list of exported names from parsed symbols."""
         if config.export_node_types:
             # Languages with explicit exports (TS, JS) — public top-level symbols
-            return [
-                s.name
-                for s in symbols
-                if s.visibility == "public" and s.parent_name is None
-            ]
+            return [s.name for s in symbols if s.visibility == "public" and s.parent_name is None]
         # Languages where all top-level public symbols are exported (Python, Go, …)
-        return [
-            s.name
-            for s in symbols
-            if s.visibility == "public" and s.parent_name is None
-        ]
+        return [s.name for s in symbols if s.visibility == "public" and s.parent_name is None]
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +660,7 @@ def _run_query(query: object, root_node: Node) -> list[dict[str, list[Node]]]:
     results: list[dict[str, list[Node]]] = []
     try:
         from tree_sitter import QueryCursor  # type: ignore[attr-defined]
+
         cursor = QueryCursor(query)  # type: ignore[call-arg]
         for match in cursor.matches(root_node):
             if hasattr(match, "captures"):
@@ -690,7 +686,7 @@ def _node_text(node: Node | None, src: str) -> str:
         return ""
     if node.text is not None:
         return node.text.decode("utf-8", errors="replace")
-    return src[node.start_byte:node.end_byte]
+    return src[node.start_byte : node.end_byte]
 
 
 def _collect_error_nodes(root: Node) -> list[str]:
@@ -716,8 +712,13 @@ def _extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
                     if sub.type == "string":
                         return _clean_string_literal(_node_text(sub, src))
                 break
-            elif child.type not in ("comment", "newline", "import_statement",
-                                    "import_from_statement", "future_import_statement"):
+            elif child.type not in (
+                "comment",
+                "newline",
+                "import_statement",
+                "import_from_statement",
+                "future_import_statement",
+            ):
                 break
     elif lang in ("typescript", "javascript"):
         # Look for leading /** ... */ comment
@@ -811,9 +812,7 @@ def _extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None
     return None
 
 
-def _build_signature(
-    node_type: str, name: str, params_text: str, def_node: Node, src: str
-) -> str:
+def _build_signature(node_type: str, name: str, params_text: str, def_node: Node, src: str) -> str:
     """Build a human-readable signature string."""
     if node_type == "function_definition":
         # Detect async via child "async" keyword (tree-sitter-python >= 0.23)
@@ -882,7 +881,7 @@ def _extract_import_names(stmt_node: Node, src: str, lang: str) -> list[str]:
             if child.type == "import_clause":
                 for sub in child.children:
                     if sub.type == "identifier":
-                        names.append(_node_text(sub, src))   # default import
+                        names.append(_node_text(sub, src))  # default import
                     elif sub.type == "named_imports":
                         for spec in sub.children:
                             if spec.type == "import_specifier":
@@ -923,9 +922,7 @@ def _refine_go_type_kind(type_spec_node: Node, src: str) -> str:
 
 
 def _is_async_node(node: Node, src: str) -> bool:
-    return node.type == "async_function_definition" or any(
-        c.type == "async" for c in node.children
-    )
+    return node.type == "async_function_definition" or any(c.type == "async" for c in node.children)
 
 
 def _clean_string_literal(text: str) -> str:

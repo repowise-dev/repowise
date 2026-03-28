@@ -7,16 +7,16 @@ Create Date: 2026-03-19
 
 from __future__ import annotations
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
 revision: str = "0002"
-down_revision: Union[str, None] = "0001"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "0001"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -46,12 +46,8 @@ def upgrade() -> None:
         sa.Column("primary_owner_commit_pct", sa.Float, nullable=True),
         # JSON fields
         sa.Column("top_authors_json", sa.Text, nullable=False, server_default="[]"),
-        sa.Column(
-            "significant_commits_json", sa.Text, nullable=False, server_default="[]"
-        ),
-        sa.Column(
-            "co_change_partners_json", sa.Text, nullable=False, server_default="[]"
-        ),
+        sa.Column("significant_commits_json", sa.Text, nullable=False, server_default="[]"),
+        sa.Column("co_change_partners_json", sa.Text, nullable=False, server_default="[]"),
         # Derived signals
         sa.Column("is_hotspot", sa.Boolean, nullable=False, server_default="0"),
         sa.Column("is_stable", sa.Boolean, nullable=False, server_default="0"),
@@ -72,9 +68,7 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("repository_id", "file_path", name="uq_git_metadata"),
     )
-    op.create_index(
-        "ix_git_metadata_repository_id", "git_metadata", ["repository_id"]
-    )
+    op.create_index("ix_git_metadata_repository_id", "git_metadata", ["repository_id"])
     op.create_index(
         "ix_git_metadata_repo_file",
         "git_metadata",

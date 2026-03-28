@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from repowise.core.generation.editor_files.base import BaseEditorFileGenerator
 from repowise.core.generation.editor_files.data import EditorFileData
 
-
 # ---------------------------------------------------------------------------
 # Minimal concrete subclass for testing
 # ---------------------------------------------------------------------------
+
 
 class _TestGenerator(BaseEditorFileGenerator):
     filename = "TEST.md"
@@ -32,6 +30,7 @@ def _minimal_data() -> EditorFileData:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def gen():

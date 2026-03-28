@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import networkx as nx
 import pytest
@@ -10,16 +10,15 @@ import pytest
 from repowise.core.analysis.dead_code import (
     DeadCodeAnalyzer,
     DeadCodeKind,
-    DeadCodeReport,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _old_date(days: int = 365) -> datetime:
@@ -52,6 +51,7 @@ def _build_graph(
 # ---------------------------------------------------------------------------
 # 1. test_unreachable_file_detected
 # ---------------------------------------------------------------------------
+
 
 def test_unreachable_file_detected():
     """A file with in_degree=0, not an entry point, should be flagged as unreachable."""
@@ -87,6 +87,7 @@ def test_unreachable_file_detected():
 # 2. test_entry_point_not_flagged
 # ---------------------------------------------------------------------------
 
+
 def test_entry_point_not_flagged():
     """A file marked as is_entry_point=True should NOT be flagged even with in_degree=0."""
     g = _build_graph(
@@ -111,6 +112,7 @@ def test_entry_point_not_flagged():
 # 3. test_test_files_excluded
 # ---------------------------------------------------------------------------
 
+
 def test_test_files_excluded():
     """A test file (is_test=True) with in_degree=0 should NOT be flagged."""
     g = _build_graph(
@@ -134,6 +136,7 @@ def test_test_files_excluded():
 # ---------------------------------------------------------------------------
 # 4. test_unused_export_detected
 # ---------------------------------------------------------------------------
+
 
 def test_unused_export_detected():
     """A public symbol with no importers should be flagged as unused export."""
@@ -169,10 +172,12 @@ def test_unused_export_detected():
     )
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map={})
-    report = analyzer.analyze({
-        "detect_unreachable_files": False,
-        "detect_zombie_packages": False,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+        }
+    )
 
     unused = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
     sym_names = [f.symbol_name for f in unused]
@@ -182,6 +187,7 @@ def test_unused_export_detected():
 # ---------------------------------------------------------------------------
 # 5. test_framework_decorator_excluded
 # ---------------------------------------------------------------------------
+
 
 def test_framework_decorator_excluded():
     """A symbol decorated with pytest.fixture should NOT be flagged."""
@@ -208,10 +214,12 @@ def test_framework_decorator_excluded():
     )
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map={})
-    report = analyzer.analyze({
-        "detect_unreachable_files": False,
-        "detect_zombie_packages": False,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+        }
+    )
 
     sym_names = [f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
     assert "db_session" not in sym_names
@@ -220,6 +228,7 @@ def test_framework_decorator_excluded():
 # ---------------------------------------------------------------------------
 # 6. test_dynamic_pattern_excluded
 # ---------------------------------------------------------------------------
+
 
 def test_dynamic_pattern_excluded():
     """A symbol matching '*Handler' dynamic pattern should NOT be flagged as unused."""
@@ -246,10 +255,12 @@ def test_dynamic_pattern_excluded():
     )
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map={})
-    report = analyzer.analyze({
-        "detect_unreachable_files": False,
-        "detect_zombie_packages": False,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+        }
+    )
 
     sym_names = [f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
     assert "EventHandler" not in sym_names
@@ -258,6 +269,7 @@ def test_dynamic_pattern_excluded():
 # ---------------------------------------------------------------------------
 # 7. test_confidence_low_for_recent_files
 # ---------------------------------------------------------------------------
+
 
 def test_confidence_low_for_recent_files():
     """Unreachable file with commit_count_90d > 0 should have confidence 0.4."""
@@ -283,11 +295,13 @@ def test_confidence_low_for_recent_files():
     }
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta)
-    report = analyzer.analyze({
-        "detect_unused_exports": False,
-        "detect_zombie_packages": False,
-        "min_confidence": 0.0,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
 
     findings = [f for f in report.findings if f.file_path == "pkg/recent.py"]
     assert len(findings) == 1
@@ -297,6 +311,7 @@ def test_confidence_low_for_recent_files():
 # ---------------------------------------------------------------------------
 # 8. test_confidence_high_for_stale_unreachable
 # ---------------------------------------------------------------------------
+
 
 def test_confidence_high_for_stale_unreachable():
     """Unreachable file with no commits in 90d and last commit > 6 months ago -> confidence 1.0."""
@@ -322,10 +337,12 @@ def test_confidence_high_for_stale_unreachable():
     }
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta)
-    report = analyzer.analyze({
-        "detect_unused_exports": False,
-        "detect_zombie_packages": False,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+        }
+    )
 
     findings = [f for f in report.findings if f.file_path == "pkg/stale.py"]
     assert len(findings) == 1
@@ -335,6 +352,7 @@ def test_confidence_high_for_stale_unreachable():
 # ---------------------------------------------------------------------------
 # 9. test_zombie_package_detected
 # ---------------------------------------------------------------------------
+
 
 def test_zombie_package_detected():
     """A package with no incoming inter-package imports should be flagged as zombie."""
@@ -371,11 +389,13 @@ def test_zombie_package_detected():
     )
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map={})
-    report = analyzer.analyze({
-        "detect_unreachable_files": False,
-        "detect_unused_exports": False,
-        "min_confidence": 0.0,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "min_confidence": 0.0,
+        }
+    )
 
     zombie = [f for f in report.findings if f.kind == DeadCodeKind.ZOMBIE_PACKAGE]
     pkgs = [f.package for f in zombie]
@@ -387,6 +407,7 @@ def test_zombie_package_detected():
 # ---------------------------------------------------------------------------
 # 10. test_whitelist_respected
 # ---------------------------------------------------------------------------
+
 
 def test_whitelist_respected():
     """A file in the whitelist should NOT be flagged even if it is unreachable."""
@@ -403,11 +424,13 @@ def test_whitelist_respected():
     )
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map={})
-    report = analyzer.analyze({
-        "detect_unused_exports": False,
-        "detect_zombie_packages": False,
-        "whitelist": ["pkg/legacy.py"],
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "whitelist": ["pkg/legacy.py"],
+        }
+    )
 
     assert all(f.file_path != "pkg/legacy.py" for f in report.findings)
 
@@ -415,6 +438,7 @@ def test_whitelist_respected():
 # ---------------------------------------------------------------------------
 # 11. test_safe_to_delete_conservative
 # ---------------------------------------------------------------------------
+
 
 def test_safe_to_delete_conservative():
     """safe_to_delete is True only when confidence >= 0.7 AND file does not match dynamic patterns."""
@@ -466,11 +490,13 @@ def test_safe_to_delete_conservative():
     }
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta)
-    report = analyzer.analyze({
-        "detect_unused_exports": False,
-        "detect_zombie_packages": False,
-        "min_confidence": 0.0,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
 
     by_path = {f.file_path: f for f in report.findings}
     # High confidence + no dynamic pattern -> safe
@@ -484,6 +510,7 @@ def test_safe_to_delete_conservative():
 # ---------------------------------------------------------------------------
 # 12. test_report_deletable_lines_sum
 # ---------------------------------------------------------------------------
+
 
 def test_report_deletable_lines_sum():
     """report.deletable_lines should equal the sum of lines for safe_to_delete findings."""
@@ -533,11 +560,13 @@ def test_report_deletable_lines_sum():
     }
 
     analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta)
-    report = analyzer.analyze({
-        "detect_unused_exports": False,
-        "detect_zombie_packages": False,
-        "min_confidence": 0.0,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
 
     safe_findings = [f for f in report.findings if f.safe_to_delete]
     expected_lines = sum(f.lines for f in safe_findings)

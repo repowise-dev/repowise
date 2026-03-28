@@ -129,20 +129,12 @@ class TestIngestSampleRepo:
 
     def test_calculator_class_found(self, ingestion_result) -> None:
         """The Calculator class must be extracted from python_pkg/calculator.py."""
-        all_symbols = {
-            s.name
-            for p in ingestion_result["parsed"]
-            for s in p.symbols
-        }
+        all_symbols = {s.name for p in ingestion_result["parsed"] for s in p.symbols}
         assert "Calculator" in all_symbols
 
     def test_calculator_methods_found(self, ingestion_result) -> None:
         """Methods add, subtract, multiply, divide must be extracted."""
-        method_names = {
-            s.name
-            for p in ingestion_result["parsed"]
-            for s in p.symbols
-        }
+        method_names = {s.name for p in ingestion_result["parsed"] for s in p.symbols}
         for method in ("add", "subtract", "multiply", "divide"):
             assert method in method_names, f"Method '{method}' not found"
 
@@ -174,8 +166,7 @@ class TestIngestSampleRepo:
             (
                 p
                 for p in ingestion_result["parsed"]
-                if p.file_info.path.endswith("calculator.py")
-                and "python_pkg" in p.file_info.path
+                if p.file_info.path.endswith("calculator.py") and "python_pkg" in p.file_info.path
             ),
             None,
         )
@@ -187,11 +178,7 @@ class TestIngestSampleRepo:
     def test_typescript_imports_extracted(self, ingestion_result) -> None:
         """client.ts must import from ./types and ./utils."""
         client_file = next(
-            (
-                p
-                for p in ingestion_result["parsed"]
-                if p.file_info.path.endswith("client.ts")
-            ),
+            (p for p in ingestion_result["parsed"] if p.file_info.path.endswith("client.ts")),
             None,
         )
         assert client_file is not None, "client.ts not found"
@@ -214,16 +201,10 @@ class TestIngestSampleRepo:
     def test_python_dependency_edge(self, ingestion_result) -> None:
         """calculator.py → models.py edge should exist in the graph."""
         g = ingestion_result["graph"]
-        calc_node = next(
-            (n for n in g.nodes if "calculator" in n and "python_pkg" in n), None
-        )
-        models_node = next(
-            (n for n in g.nodes if "models" in n and "python_pkg" in n), None
-        )
+        calc_node = next((n for n in g.nodes if "calculator" in n and "python_pkg" in n), None)
+        models_node = next((n for n in g.nodes if "models" in n and "python_pkg" in n), None)
         if calc_node and models_node:
-            assert g.has_edge(calc_node, models_node), (
-                f"Expected edge {calc_node} → {models_node}"
-            )
+            assert g.has_edge(calc_node, models_node), f"Expected edge {calc_node} → {models_node}"
 
     # ------------------------------------------------------------------
     # Graph metrics

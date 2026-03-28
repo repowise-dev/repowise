@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import pytest
 
 from repowise.core.generation.editor_files.tech_stack import (
     detect_build_commands,
     detect_tech_stack,
 )
 
-
 # ---------------------------------------------------------------------------
 # detect_tech_stack
 # ---------------------------------------------------------------------------
+
 
 def test_empty_directory_returns_empty_list(tmp_path):
     result = detect_tech_stack(tmp_path)
@@ -23,9 +20,7 @@ def test_empty_directory_returns_empty_list(tmp_path):
 
 
 def test_detects_python_from_pyproject(tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "myapp"\n', encoding="utf-8"
-    )
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "myapp"\n', encoding="utf-8")
     items = detect_tech_stack(tmp_path)
     names = [i.name for i in items]
     assert "Python" in names
@@ -79,9 +74,7 @@ def test_detects_rust_from_cargo_toml(tmp_path):
 
 
 def test_detects_go_from_go_mod(tmp_path):
-    (tmp_path / "go.mod").write_text(
-        "module myapp\n\ngo 1.22\n", encoding="utf-8"
-    )
+    (tmp_path / "go.mod").write_text("module myapp\n\ngo 1.22\n", encoding="utf-8")
     items = detect_tech_stack(tmp_path)
     names = [i.name for i in items]
     assert "Go" in names
@@ -110,6 +103,7 @@ def test_returns_sorted_by_category_then_name(tmp_path):
 # detect_build_commands
 # ---------------------------------------------------------------------------
 
+
 def test_empty_directory_returns_empty_dict(tmp_path):
     result = detect_build_commands(tmp_path)
     assert result == {}
@@ -125,9 +119,7 @@ def test_detects_pytest_from_pyproject(tmp_path):
 
 
 def test_detects_ruff_from_pyproject(tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.ruff]\nline-length = 88\n", encoding="utf-8"
-    )
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n", encoding="utf-8")
     cmds = detect_build_commands(tmp_path)
     assert "lint" in cmds
     assert "ruff" in cmds["lint"]

@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.persistence.database import init_db
-from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.providers.embedding.base import MockEmbedder
+from tests.unit.persistence.helpers import insert_repo, make_page_kwargs, make_repo_kwargs
 
 
 @pytest.fixture
@@ -54,6 +55,4 @@ def in_memory_vector_store(mock_embedder):
 
 
 # Re-export helpers so test files can import from either location
-from tests.unit.persistence.helpers import insert_repo, make_page_kwargs, make_repo_kwargs
-
 __all__ = ["insert_repo", "make_page_kwargs", "make_repo_kwargs"]

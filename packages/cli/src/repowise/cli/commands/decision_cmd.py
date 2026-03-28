@@ -41,9 +41,7 @@ def decision_add(path: str | None) -> None:
     decision_text = click.prompt("Decision (what was chosen?)")
     rationale = click.prompt("Rationale (why?)", default="")
 
-    alternatives_raw = click.prompt(
-        "Rejected alternatives (comma-separated, optional)", default=""
-    )
+    alternatives_raw = click.prompt("Rejected alternatives (comma-separated, optional)", default="")
     alternatives = [a.strip() for a in alternatives_raw.split(",") if a.strip()]
 
     consequences_raw = click.prompt(
@@ -51,9 +49,7 @@ def decision_add(path: str | None) -> None:
     )
     consequences = [c.strip() for c in consequences_raw.split(",") if c.strip()]
 
-    affected_raw = click.prompt(
-        "Affected files/modules (comma-separated, optional)", default=""
-    )
+    affected_raw = click.prompt("Affected files/modules (comma-separated, optional)", default="")
     affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
 
     tags_raw = click.prompt(
@@ -78,9 +74,7 @@ def decision_add(path: str | None) -> None:
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            repo = await upsert_repository(
-                session, name=repo_path.name, local_path=str(repo_path)
-            )
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             rec = await upsert_decision(
                 session,
                 repository_id=repo.id,
@@ -103,9 +97,7 @@ def decision_add(path: str | None) -> None:
         return decision_id
 
     decision_id = run_async(_persist())
-    console.print(
-        f"\n[green]Decision recorded[/green] — ID: [bold]{decision_id[:8]}[/bold]"
-    )
+    console.print(f"\n[green]Decision recorded[/green] — ID: [bold]{decision_id[:8]}[/bold]")
 
 
 # ---------------------------------------------------------------------------
@@ -153,9 +145,7 @@ def decision_list(
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            repo = await upsert_repository(
-                session, name=repo_path.name, local_path=str(repo_path)
-            )
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             decisions = await list_decisions(
                 session,
                 repo.id,
@@ -228,8 +218,8 @@ def decision_show(decision_id: str, path: str | None) -> None:
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
-            get_session,
             get_decision,
+            get_session,
             init_db,
         )
 
@@ -382,9 +372,7 @@ def decision_dismiss(decision_id: str, path: str | None) -> None:
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
 @click.option("--superseded-by", default=None, help="ID of the decision that replaces this one.")
-def decision_deprecate(
-    decision_id: str, path: str | None, superseded_by: str | None
-) -> None:
+def decision_deprecate(decision_id: str, path: str | None, superseded_by: str | None) -> None:
     """Deprecate an active decision."""
     repo_path = resolve_repo_path(path)
 
@@ -444,9 +432,7 @@ def decision_health(path: str | None) -> None:
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            repo = await upsert_repository(
-                session, name=repo_path.name, local_path=str(repo_path)
-            )
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             health = await get_decision_health_summary(session, repo.id)
 
         await engine.dispose()

@@ -43,26 +43,22 @@ async def metrics(request: Request) -> str:
             # Page counts by freshness
             for status_val in ("fresh", "stale", "expired"):
                 result = await session.execute(
-                    select(func.count()).select_from(Page).where(
-                        Page.freshness_status == status_val
-                    )
+                    select(func.count())
+                    .select_from(Page)
+                    .where(Page.freshness_status == status_val)
                 )
                 count = result.scalar() or 0
-                lines.append(
-                    f'repowise_pages_total{{status="{status_val}"}} {count}'
-                )
+                lines.append(f'repowise_pages_total{{status="{status_val}"}} {count}')
 
             # Job counts by status
             for job_status in ("pending", "running", "completed", "failed"):
                 result = await session.execute(
-                    select(func.count()).select_from(GenerationJob).where(
-                        GenerationJob.status == job_status
-                    )
+                    select(func.count())
+                    .select_from(GenerationJob)
+                    .where(GenerationJob.status == job_status)
                 )
                 count = result.scalar() or 0
-                lines.append(
-                    f'repowise_jobs_total{{status="{job_status}"}} {count}'
-                )
+                lines.append(f'repowise_jobs_total{{status="{job_status}"}} {count}')
 
             # Aggregate token usage from completed jobs
             for token_type, col in [
@@ -71,9 +67,7 @@ async def metrics(request: Request) -> str:
             ]:
                 result = await session.execute(select(col))
                 total = result.scalar() or 0
-                lines.append(
-                    f'repowise_tokens_total{{type="{token_type}"}} {total}'
-                )
+                lines.append(f'repowise_tokens_total{{type="{token_type}"}} {total}')
     except Exception:
         lines.append("repowise_health 0")
 

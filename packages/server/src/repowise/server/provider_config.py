@@ -23,7 +23,11 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "id": "gemini",
         "name": "Google Gemini",
         "default_model": "gemini-3.1-flash-lite-preview",
-        "models": ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview"],
+        "models": [
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.1-pro-preview",
+        ],
         "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "requires_key": True,
     },
@@ -68,6 +72,7 @@ _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}
 # Config file I/O
 # ---------------------------------------------------------------------------
 
+
 def _config_path() -> Path:
     config_dir = os.environ.get("REPOWISE_CONFIG_DIR", "")
     if config_dir:
@@ -94,6 +99,7 @@ def _save_config(config: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def _get_key_for_provider(provider_id: str) -> str | None:
     """Get API key: env var takes precedence, then stored config."""
@@ -131,18 +137,21 @@ def list_provider_status() -> dict[str, Any]:
     for p in PROVIDER_CATALOG:
         has_key = bool(_get_key_for_provider(p["id"]))
         configured = has_key or not p["requires_key"]
-        providers.append({
-            "id": p["id"],
-            "name": p["name"],
-            "models": p["models"],
-            "default_model": p["default_model"],
-            "configured": configured,
-        })
+        providers.append(
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "models": p["models"],
+                "default_model": p["default_model"],
+                "configured": configured,
+            }
+        )
 
     return {
         "active": {
             "provider": active_id,
-            "model": active_model or (_CATALOG_BY_ID.get(active_id, {}).get("default_model") if active_id else None),
+            "model": active_model
+            or (_CATALOG_BY_ID.get(active_id, {}).get("default_model") if active_id else None),
         },
         "providers": providers,
     }

@@ -12,15 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.ingestion import FileTraverser, ASTParser, GraphBuilder
+from repowise.core.ingestion import GraphBuilder
 from repowise.core.ingestion.git_indexer import GitIndexer, GitIndexSummary
 from repowise.core.ingestion.models import (
     FileInfo,
-    Import,
     ParsedFile,
     Symbol,
 )
-
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -96,20 +94,26 @@ async def test_co_change_edges_in_graph() -> None:
     # -- Mock git metadata with co-change partners -------------------------
     git_meta_map = {
         "pkg/alpha.py": {
-            "co_change_partners_json": json.dumps([
-                {"file_path": "pkg/beta.py", "co_change_count": 5},
-            ]),
+            "co_change_partners_json": json.dumps(
+                [
+                    {"file_path": "pkg/beta.py", "co_change_count": 5},
+                ]
+            ),
         },
         "pkg/beta.py": {
-            "co_change_partners_json": json.dumps([
-                {"file_path": "pkg/alpha.py", "co_change_count": 5},
-                {"file_path": "pkg/gamma.py", "co_change_count": 4},
-            ]),
+            "co_change_partners_json": json.dumps(
+                [
+                    {"file_path": "pkg/alpha.py", "co_change_count": 5},
+                    {"file_path": "pkg/gamma.py", "co_change_count": 4},
+                ]
+            ),
         },
         "pkg/gamma.py": {
-            "co_change_partners_json": json.dumps([
-                {"file_path": "pkg/beta.py", "co_change_count": 4},
-            ]),
+            "co_change_partners_json": json.dumps(
+                [
+                    {"file_path": "pkg/beta.py", "co_change_count": 4},
+                ]
+            ),
         },
     }
 
@@ -121,9 +125,7 @@ async def test_co_change_edges_in_graph() -> None:
 
     # Verify edge attributes
     co_edges = [
-        (u, v, d)
-        for u, v, d in graph.edges(data=True)
-        if d.get("edge_type") == "co_changes"
+        (u, v, d) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "co_changes"
     ]
     assert len(co_edges) == 2
 

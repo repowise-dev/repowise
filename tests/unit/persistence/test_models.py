@@ -6,7 +6,7 @@ No CRUD or database queries — just ORM-layer behaviour.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -22,9 +22,7 @@ from repowise.core.persistence.models import (
     WebhookEvent,
     WikiSymbol,
     _new_uuid,
-    _now_utc,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper factories
@@ -41,7 +39,7 @@ def _repo(**kwargs) -> Repository:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +53,9 @@ def test_repository_has_expected_tablename():
 
 def test_repository_defaults():
     """SQLAlchemy INSERT-time defaults; verify the column metadata, not Python init."""
-    col_defaults = {c.name: c.default for c in Repository.__table__.columns if c.default is not None}
+    col_defaults = {
+        c.name: c.default for c in Repository.__table__.columns if c.default is not None
+    }
     assert "default_branch" in col_defaults
     assert col_defaults["default_branch"].arg == "main"
     # head_commit is nullable
@@ -79,7 +79,9 @@ def test_generation_job_has_expected_tablename():
 
 def test_generation_job_defaults():
     """Verify column-level defaults (INSERT-time); not Python constructor defaults."""
-    col_defaults = {c.name: c.default for c in GenerationJob.__table__.columns if c.default is not None}
+    col_defaults = {
+        c.name: c.default for c in GenerationJob.__table__.columns if c.default is not None
+    }
     assert col_defaults["status"].arg == "pending"
     assert col_defaults["total_pages"].arg == 0
     assert col_defaults["completed_pages"].arg == 0
@@ -160,7 +162,9 @@ def test_page_version_fields():
     )
     assert pv.version == 1
     # confidence has INSERT-time default 1.0; verify via column metadata
-    col_defaults = {c.name: c.default for c in PageVersion.__table__.columns if c.default is not None}
+    col_defaults = {
+        c.name: c.default for c in PageVersion.__table__.columns if c.default is not None
+    }
     assert col_defaults["confidence"].arg == 1.0
 
 
@@ -184,11 +188,7 @@ def test_graph_node_defaults():
 
 def test_graph_node_unique_constraint_defined():
     """The UniqueConstraint on (repository_id, node_id) must exist."""
-    constraint_names = {
-        c.name
-        for c in GraphNode.__table__.constraints
-        if hasattr(c, "name")
-    }
+    constraint_names = {c.name for c in GraphNode.__table__.constraints if hasattr(c, "name")}
     assert "uq_graph_node" in constraint_names
 
 
@@ -243,7 +243,9 @@ def test_webhook_event_nullable_repository_id():
 
 
 def test_webhook_event_defaults():
-    col_defaults = {c.name: c.default for c in WebhookEvent.__table__.columns if c.default is not None}
+    col_defaults = {
+        c.name: c.default for c in WebhookEvent.__table__.columns if c.default is not None
+    }
     # processed defaults to False (stored as 0 in SQLite)
     assert col_defaults["processed"].arg == False  # noqa: E712
     # job_id is nullable
@@ -265,7 +267,9 @@ def test_wiki_symbol_name_does_not_shadow_ingestion_symbol():
 
 
 def test_wiki_symbol_defaults():
-    col_defaults = {c.name: c.default for c in WikiSymbol.__table__.columns if c.default is not None}
+    col_defaults = {
+        c.name: c.default for c in WikiSymbol.__table__.columns if c.default is not None
+    }
     assert col_defaults["visibility"].arg == "public"
     assert col_defaults["is_async"].arg == False  # noqa: E712
     assert col_defaults["complexity_estimate"].arg == 0
@@ -275,11 +279,7 @@ def test_wiki_symbol_defaults():
 
 
 def test_wiki_symbol_unique_constraint_defined():
-    constraint_names = {
-        c.name
-        for c in WikiSymbol.__table__.constraints
-        if hasattr(c, "name")
-    }
+    constraint_names = {c.name for c in WikiSymbol.__table__.constraints if hasattr(c, "name")}
     assert "uq_wiki_symbol" in constraint_names
 
 

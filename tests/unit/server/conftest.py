@@ -6,17 +6,15 @@ provides an httpx AsyncClient for making requests.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.persistence.database import init_db
-from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.providers.embedding.base import MockEmbedder
 
 
 def _create_test_app():
@@ -90,9 +88,7 @@ async def test_engine():
 @pytest.fixture
 async def session_factory(test_engine):
     """Async session factory for the test engine."""
-    return async_sessionmaker(
-        test_engine, expire_on_commit=False, class_=AsyncSession
-    )
+    return async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
 
 
 @pytest.fixture

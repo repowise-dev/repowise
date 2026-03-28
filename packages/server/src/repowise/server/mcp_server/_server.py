@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -9,10 +11,10 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from repowise.core.persistence.database import get_session, init_db
-from repowise.core.providers.embedding.base import MockEmbedder
+from repowise.core.persistence.database import init_db
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.server.mcp_server import _state
 
 
@@ -70,6 +72,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
     """
     import asyncio as _asyncio
     import logging as _logging
+
     _log = _logging.getLogger("repowise.mcp")
     try:
         embedder = _resolve_embedder()
@@ -120,14 +123,11 @@ async def _lifespan(server: FastMCP):
     the server starts accepting tool calls immediately.  search_codebase awaits
     _state._vector_store_ready before querying the vector store.
     """
-    import asyncio
     import logging as _logging
 
     _log = _logging.getLogger("repowise.mcp")
 
-    db_url = os.environ.get(
-        "REPOWISE_DATABASE_URL", "sqlite+aiosqlite:///repowise.db"
-    )
+    db_url = os.environ.get("REPOWISE_DATABASE_URL", "sqlite+aiosqlite:///repowise.db")
 
     # If a repo path was configured, try .repowise/wiki.db
     if _state._repo_path:
@@ -178,10 +178,8 @@ async def _lifespan(server: FastMCP):
     yield
 
     _bg_task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await _bg_task
-    except (asyncio.CancelledError, Exception):
-        pass
 
     await engine.dispose()
     await _state._vector_store.close()

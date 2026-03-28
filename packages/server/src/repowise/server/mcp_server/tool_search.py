@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 from sqlalchemy import select
 
@@ -41,28 +42,22 @@ async def search_codebase(
     # first search() call hits a warm connection.  Typically completes in
     # under a second for a local LanceDB; 30 s timeout is a hard safety net.
     if _state._vector_store_ready is not None:
-        try:
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(_state._vector_store_ready.wait(), timeout=30.0)
-        except asyncio.TimeoutError:
-            pass
 
     # Try semantic search, fall back to FTS.
     # Over-fetch when filtering by page_type to avoid returning 0 results.
     # 8 s safety-net timeout covers any remaining Gemini API latency.
     fetch_limit = limit * 3 if page_type else limit
     results = []
-    try:
+    with contextlib.suppress(TimeoutError, Exception):
         results = await asyncio.wait_for(
             _state._vector_store.search(query, limit=fetch_limit),
             timeout=8.0,
         )
-    except (asyncio.TimeoutError, Exception):
-        pass
     if not results:
-        try:
+        with contextlib.suppress(Exception):
             results = await _state._fts.search(query, limit=fetch_limit)
-        except Exception:
-            pass
 
     output = []
     for r in results:
@@ -85,22 +80,16 @@ async def search_codebase(
         page_ids = [item["page_id"] for item in output]
         async with get_session(_state._session_factory) as session:
             res = await session.execute(
-                select(Page.id, Page.target_path).where(
-                    Page.id.in_(page_ids)
-                )
+                select(Page.id, Page.target_path).where(Page.id.in_(page_ids))
             )
             page_info = {row[0]: row[1] for row in res.all()}
 
             # Build git freshness map for result file paths
-            target_paths = [
-                tp for tp in page_info.values() if tp
-            ]
+            target_paths = [tp for tp in page_info.values() if tp]
             git_map: dict[str, GitMetadata] = {}
             if target_paths:
                 git_res = await session.execute(
-                    select(GitMetadata).where(
-                        GitMetadata.file_path.in_(target_paths)
-                    )
+                    select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
                 )
                 git_map = {g.file_path: g for g in git_res.scalars().all()}
 
@@ -117,9 +106,7 @@ async def search_codebase(
                     recency = 0.5
                 else:
                     recency = 0.0
-                item["relevance_score"] = round(
-                    item["relevance_score"] * (1 + 0.2 * recency), 4
-                )
+                item["relevance_score"] = round(item["relevance_score"] * (1 + 0.2 * recency), 4)
 
         # Re-sort by boosted relevance
         output.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
@@ -128,9 +115,7 @@ async def search_codebase(
     # The top result gets 1.0; others are scaled proportionally by their
     # relevance score relative to the best match.
     if output:
-        max_score = max(
-            (item.get("relevance_score") or 0) for item in output
-        )
+        max_score = max((item.get("relevance_score") or 0) for item in output)
         for item in output:
             raw = item.get("relevance_score") or 0
             item["confidence_score"] = round(raw / max_score, 2) if max_score > 0 else 0.0

@@ -10,7 +10,6 @@ import pytest
 
 from repowise.core.persistence.search import FullTextSearch, SearchResult
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -38,10 +37,7 @@ async def test_fts5_table_created_after_ensure_index(async_engine):
 
     async with async_engine.connect() as conn:
         result = await conn.execute(
-            text(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='page_fts'"
-            )
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='page_fts'")
         )
         row = result.fetchone()
     assert row is not None, "page_fts virtual table was not created"
@@ -140,7 +136,9 @@ async def test_full_text_search_delete_removes_from_index(fts):
 async def test_full_text_search_multiple_pages_relevance_ordered(fts):
     """Page with title match should rank higher than page with only content match."""
     await fts.index("exact", "Python Asyncio", "asyncio event loop management")
-    await fts.index("content-only", "Event Loop Guide", "Python asyncio is great for concurrent tasks")
+    await fts.index(
+        "content-only", "Event Loop Guide", "Python asyncio is great for concurrent tasks"
+    )
     results = await fts.search("Python Asyncio")
     # Both should appear; 'exact' should rank first (title match)
     assert len(results) >= 1

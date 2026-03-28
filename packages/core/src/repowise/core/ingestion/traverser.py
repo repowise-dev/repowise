@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
 
 import pathspec
 import structlog
@@ -54,9 +54,9 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         "dist",
         "build",
         ".next",
-        "target",   # Rust / Maven
+        "target",  # Rust / Maven
         ".gradle",
-        "vendor",   # Go / PHP
+        "vendor",  # Go / PHP
         "coverage",
         "htmlcov",
         ".eggs",
@@ -114,11 +114,22 @@ _ENTRY_POINT_STEMS: frozenset[str] = frozenset(
 
 _ENTRY_POINT_NAMES: frozenset[str] = frozenset(
     {
-        "main.py", "app.py", "run.py", "server.py", "wsgi.py", "asgi.py",
-        "index.ts", "index.js", "main.ts", "main.js", "app.ts",
+        "main.py",
+        "app.py",
+        "run.py",
+        "server.py",
+        "wsgi.py",
+        "asgi.py",
+        "index.ts",
+        "index.js",
+        "main.ts",
+        "main.js",
+        "app.ts",
         "main.go",
-        "main.rs", "lib.rs",
-        "Main.java", "Application.java",
+        "main.rs",
+        "lib.rs",
+        "Main.java",
+        "Application.java",
     }
 )
 
@@ -130,8 +141,17 @@ _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
 # adds no value.
 _SKIP_GENERATED_CHECK: frozenset[str] = frozenset(
     {
-        "json", "yaml", "toml", "markdown", "sql", "shell",
-        "terraform", "proto", "graphql", "dockerfile", "makefile",
+        "json",
+        "yaml",
+        "toml",
+        "markdown",
+        "sql",
+        "shell",
+        "terraform",
+        "proto",
+        "graphql",
+        "dockerfile",
+        "makefile",
     }
 )
 
@@ -242,8 +262,7 @@ class FileTraverser:
 
             # Prune ignored directories in-place (affects os.walk recursion)
             dirnames[:] = sorted(
-                d for d in dirnames
-                if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
+                d for d in dirnames if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
             )
 
             for filename in sorted(filenames):
@@ -277,9 +296,7 @@ class FileTraverser:
         if self._extra_exclude.match_file(rel_str + "/"):
             return True
         # Per-directory ignore: pattern is relative to the parent directory.
-        if dir_ignore is not None and dir_ignore.match_file(dirname + "/"):
-            return True
-        return False
+        return dir_ignore is not None and dir_ignore.match_file(dirname + "/")
 
     # ------------------------------------------------------------------
     # Internal: FileInfo construction
@@ -414,7 +431,7 @@ def _detect_language(abs_path: Path) -> LanguageTag:
 
 def _detect_by_shebang(abs_path: Path) -> LanguageTag:
     try:
-        with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(abs_path, encoding="utf-8", errors="ignore") as f:
             first_line = f.readline(200)
         if not first_line.startswith("#!"):
             return "unknown"
@@ -446,7 +463,7 @@ def _is_generated(abs_path: Path) -> bool:
     if any(name.endswith(sfx) for sfx in _GENERATED_SUFFIXES):
         return True
     try:
-        with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(abs_path, encoding="utf-8", errors="ignore") as f:
             header = f.read(512)
         header_upper = header.upper()
         return any(marker.upper() in header_upper for marker in _GENERATED_MARKERS)

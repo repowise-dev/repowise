@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
+from datetime import datetime
 
-import networkx as nx
 import pytest
 
 from repowise.core.generation.context_assembler import ContextAssembler
-from repowise.core.generation.models import GenerationConfig, GeneratedPage
-from repowise.core.generation.page_generator import PageGenerator, SYSTEM_PROMPTS
-from repowise.core.ingestion.models import FileInfo, Import, ParsedFile, RepoStructure, PackageInfo
+from repowise.core.generation.models import GeneratedPage, GenerationConfig
+from repowise.core.generation.page_generator import SYSTEM_PROMPTS, PageGenerator
+from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.mock import MockProvider
 
 from .conftest import _make_file_info, _make_symbol
-
-from datetime import datetime, timezone
-
 
 # ---------------------------------------------------------------------------
 # SYSTEM_PROMPTS completeness
@@ -24,8 +20,14 @@ from datetime import datetime, timezone
 
 
 EXPECTED_PAGE_TYPES = [
-    "file_page", "symbol_spotlight", "module_page", "scc_page",
-    "repo_overview", "architecture_diagram", "api_contract", "infra_page",
+    "file_page",
+    "symbol_spotlight",
+    "module_page",
+    "scc_page",
+    "repo_overview",
+    "architecture_diagram",
+    "api_contract",
+    "infra_page",
     "diff_summary",
 ]
 
@@ -69,15 +71,19 @@ def test_generate_file_page_provider_name(
     sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
 ):
     import asyncio
+
     provider = MockProvider()
     assembler = ContextAssembler(sample_config)
     gen = PageGenerator(provider, assembler, sample_config)
 
     page = asyncio.run(
         gen.generate_file_page(
-            sample_parsed_file, sample_graph,
-            graph_metrics["pagerank"], graph_metrics["betweenness"],
-            graph_metrics["community"], sample_source_bytes,
+            sample_parsed_file,
+            sample_graph,
+            graph_metrics["pagerank"],
+            graph_metrics["betweenness"],
+            graph_metrics["community"],
+            sample_source_bytes,
         )
     )
     assert page.provider_name == "mock"
@@ -92,9 +98,12 @@ async def test_generate_file_page_increments_call_count(
     gen = PageGenerator(provider, assembler, sample_config)
 
     await gen.generate_file_page(
-        sample_parsed_file, sample_graph,
-        graph_metrics["pagerank"], graph_metrics["betweenness"],
-        graph_metrics["community"], sample_source_bytes,
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
     )
     assert provider.call_count == 1
 
@@ -115,15 +124,21 @@ async def test_cache_hit_does_not_increment_call_count(
     gen = PageGenerator(provider, assembler, config)
 
     await gen.generate_file_page(
-        sample_parsed_file, sample_graph,
-        graph_metrics["pagerank"], graph_metrics["betweenness"],
-        graph_metrics["community"], sample_source_bytes,
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
     )
     # Second call — identical inputs → cache hit
     await gen.generate_file_page(
-        sample_parsed_file, sample_graph,
-        graph_metrics["pagerank"], graph_metrics["betweenness"],
-        graph_metrics["community"], sample_source_bytes,
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
     )
     assert provider.call_count == 1
 
@@ -139,14 +154,20 @@ async def test_cache_disabled_increments_every_call(
     gen = PageGenerator(provider, assembler, config)
 
     await gen.generate_file_page(
-        sample_parsed_file, sample_graph,
-        graph_metrics["pagerank"], graph_metrics["betweenness"],
-        graph_metrics["community"], sample_source_bytes,
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
     )
     await gen.generate_file_page(
-        sample_parsed_file, sample_graph,
-        graph_metrics["pagerank"], graph_metrics["betweenness"],
-        graph_metrics["community"], sample_source_bytes,
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
     )
     assert provider.call_count == 2
 
@@ -189,9 +210,12 @@ async def test_generated_page_source_hash_is_64_hex(
     gen = PageGenerator(provider, assembler, sample_config)
 
     page = await gen.generate_file_page(
-        sample_parsed_file, sample_graph,
-        graph_metrics["pagerank"], graph_metrics["betweenness"],
-        graph_metrics["community"], sample_source_bytes,
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
     )
     assert len(page.source_hash) == 64
     int(page.source_hash, 16)  # must be valid hex
@@ -205,9 +229,12 @@ async def test_generated_page_created_at_is_iso(
     gen = PageGenerator(provider, assembler, sample_config)
 
     page = await gen.generate_file_page(
-        sample_parsed_file, sample_graph,
-        graph_metrics["pagerank"], graph_metrics["betweenness"],
-        graph_metrics["community"], sample_source_bytes,
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
     )
     # Must parse without error
     dt = datetime.fromisoformat(page.created_at.replace("Z", "+00:00"))
@@ -222,6 +249,7 @@ async def test_generated_page_created_at_is_iso(
 def _make_builder_with(parsed_files):
     """Build a GraphBuilder from a list of ParsedFile objects."""
     from repowise.core.ingestion.graph import GraphBuilder
+
     builder = GraphBuilder()
     for p in parsed_files:
         builder.add_file(p)
@@ -240,12 +268,10 @@ async def test_generate_all_api_contract_before_file_page():
     fi_py = _make_file_info("pkg/main.py", language="python")
     sym = _make_symbol(file_path="pkg/main.py")
     p_api = ParsedFile(
-        file_info=fi_api, symbols=[], imports=[], exports=[],
-        docstring=None, parse_errors=[]
+        file_info=fi_api, symbols=[], imports=[], exports=[], docstring=None, parse_errors=[]
     )
     p_py = ParsedFile(
-        file_info=fi_py, symbols=[sym], imports=[], exports=[],
-        docstring=None, parse_errors=[]
+        file_info=fi_py, symbols=[sym], imports=[], exports=[], docstring=None, parse_errors=[]
     )
 
     repo = RepoStructure(
@@ -259,8 +285,11 @@ async def test_generate_all_api_contract_before_file_page():
 
     builder = _make_builder_with([p_api, p_py])
     pages = await gen.generate_all(
-        [p_api, p_py], {"api/openapi.yaml": b"openapi: 3.0", "pkg/main.py": b"pass"},
-        builder, repo, "test-repo"
+        [p_api, p_py],
+        {"api/openapi.yaml": b"openapi: 3.0", "pkg/main.py": b"pass"},
+        builder,
+        repo,
+        "test-repo",
     )
 
     api_idx = next((i for i, p in enumerate(pages) if p.page_type == "api_contract"), None)
@@ -278,13 +307,15 @@ async def test_generate_all_infra_file_gets_infra_page():
 
     fi_docker = _make_file_info("Dockerfile", language="dockerfile")
     p_docker = ParsedFile(
-        file_info=fi_docker, symbols=[], imports=[], exports=[],
-        docstring=None, parse_errors=[]
+        file_info=fi_docker, symbols=[], imports=[], exports=[], docstring=None, parse_errors=[]
     )
     repo = RepoStructure(
-        is_monorepo=False, packages=[],
+        is_monorepo=False,
+        packages=[],
         root_language_distribution={"dockerfile": 1.0},
-        total_files=1, total_loc=10, entry_points=[],
+        total_files=1,
+        total_loc=10,
+        entry_points=[],
     )
     builder = _make_builder_with([p_docker])
     pages = await gen.generate_all(
@@ -305,13 +336,15 @@ async def test_generate_all_returns_pages():
     fi = _make_file_info("pkg/main.py", language="python")
     sym = _make_symbol(file_path="pkg/main.py")
     p = ParsedFile(
-        file_info=fi, symbols=[sym], imports=[], exports=[],
-        docstring=None, parse_errors=[]
+        file_info=fi, symbols=[sym], imports=[], exports=[], docstring=None, parse_errors=[]
     )
     repo = RepoStructure(
-        is_monorepo=False, packages=[],
+        is_monorepo=False,
+        packages=[],
         root_language_distribution={"python": 1.0},
-        total_files=1, total_loc=20, entry_points=[],
+        total_files=1,
+        total_loc=20,
+        entry_points=[],
     )
     builder = _make_builder_with([p])
     pages = await gen.generate_all(
@@ -329,13 +362,15 @@ async def test_generate_all_level_values_in_range():
     fi = _make_file_info("pkg/main.py", language="python")
     sym = _make_symbol(file_path="pkg/main.py")
     p = ParsedFile(
-        file_info=fi, symbols=[sym], imports=[], exports=[],
-        docstring=None, parse_errors=[]
+        file_info=fi, symbols=[sym], imports=[], exports=[], docstring=None, parse_errors=[]
     )
     repo = RepoStructure(
-        is_monorepo=False, packages=[],
+        is_monorepo=False,
+        packages=[],
         root_language_distribution={"python": 1.0},
-        total_files=1, total_loc=10, entry_points=[],
+        total_files=1,
+        total_loc=10,
+        entry_points=[],
     )
     builder = _make_builder_with([p])
     pages = await gen.generate_all(

@@ -9,9 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
-from repowise.core.providers.llm.anthropic import AnthropicProvider
+pytest.importorskip("anthropic", reason="anthropic SDK not installed")
 
+from repowise.core.providers.llm.anthropic import AnthropicProvider
+from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -63,9 +64,9 @@ async def test_generate_returns_generated_response():
     provider = AnthropicProvider(api_key="sk-ant-test")
     mock_response = _make_mock_response("Hello from Claude")
 
-    with patch("anthropic.AsyncAnthropic") as MockClient:
-        MockClient.return_value.messages.create = AsyncMock(return_value=mock_response)
-        provider._client = MockClient.return_value
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
         result = await provider.generate("sys", "user")
 
     assert isinstance(result, GeneratedResponse)
@@ -76,9 +77,9 @@ async def test_generate_token_counts_with_cache():
     provider = AnthropicProvider(api_key="sk-ant-test")
     mock_response = _make_mock_response()
 
-    with patch("anthropic.AsyncAnthropic") as MockClient:
-        MockClient.return_value.messages.create = AsyncMock(return_value=mock_response)
-        provider._client = MockClient.return_value
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
         result = await provider.generate("sys", "user")
 
     assert result.input_tokens == 200
@@ -95,9 +96,9 @@ async def test_generate_sends_correct_params():
         captured_kwargs.append(kwargs)
         return mock_response
 
-    with patch("anthropic.AsyncAnthropic") as MockClient:
-        MockClient.return_value.messages.create = fake_create
-        provider._client = MockClient.return_value
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = fake_create
+        provider._client = mock_client.return_value
         await provider.generate("system msg", "user msg", max_tokens=1024, temperature=0.1)
 
     kw = captured_kwargs[0]
@@ -118,11 +119,11 @@ async def test_rate_limit_error():
 
     provider = AnthropicProvider(api_key="sk-ant-test")
 
-    with patch("anthropic.AsyncAnthropic") as MockClient:
-        MockClient.return_value.messages.create = AsyncMock(
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = AsyncMock(
             side_effect=_AnthropicRateLimitError.__new__(_AnthropicRateLimitError)
         )
-        provider._client = MockClient.return_value
+        provider._client = mock_client.return_value
         with pytest.raises(RateLimitError):
             await provider.generate("sys", "user")
 
@@ -135,8 +136,8 @@ async def test_api_status_error():
     err = _AnthropicAPIStatusError.__new__(_AnthropicAPIStatusError)
     err.status_code = 500
 
-    with patch("anthropic.AsyncAnthropic") as MockClient:
-        MockClient.return_value.messages.create = AsyncMock(side_effect=err)
-        provider._client = MockClient.return_value
+    with patch("anthropic.AsyncAnthropic") as mock_client:
+        mock_client.return_value.messages.create = AsyncMock(side_effect=err)
+        provider._client = mock_client.return_value
         with pytest.raises(ProviderError):
             await provider.generate("sys", "user")

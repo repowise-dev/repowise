@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Literal
 
 # ---------------------------------------------------------------------------
@@ -130,11 +129,11 @@ SymbolKind = Literal[
 class FileInfo:
     """Metadata about a single source file discovered during traversal."""
 
-    path: str          # POSIX path relative to repo root
-    abs_path: str      # absolute filesystem path
+    path: str  # POSIX path relative to repo root
+    abs_path: str  # absolute filesystem path
     language: LanguageTag
     size_bytes: int
-    git_hash: str      # SHA of last commit touching this file (empty if unavailable)
+    git_hash: str  # SHA of last commit touching this file (empty if unavailable)
     last_modified: datetime
     is_test: bool
     is_config: bool
@@ -147,7 +146,7 @@ class PackageInfo:
     """A sub-package/workspace within a monorepo."""
 
     name: str
-    path: str           # POSIX path relative to repo root
+    path: str  # POSIX path relative to repo root
     language: LanguageTag
     entry_points: list[str]
     manifest_file: str  # pyproject.toml | package.json | Cargo.toml | go.mod
@@ -169,20 +168,20 @@ class RepoStructure:
 class Symbol:
     """A code symbol (function, class, method, …) extracted from a file."""
 
-    id: str                          # "<rel_path>::<name>" or "<rel_path>::<class>::<method>"
+    id: str  # "<rel_path>::<name>" or "<rel_path>::<class>::<method>"
     name: str
-    qualified_name: str              # dotted full name, e.g. "myapp.calc.Calculator.add"
+    qualified_name: str  # dotted full name, e.g. "myapp.calc.Calculator.add"
     kind: SymbolKind
-    signature: str                   # full signature string
-    start_line: int                  # 1-indexed
-    end_line: int                    # 1-indexed
+    signature: str  # full signature string
+    start_line: int  # 1-indexed
+    end_line: int  # 1-indexed
     docstring: str | None
     decorators: list[str] = field(default_factory=list)
     visibility: Literal["public", "private", "protected", "internal"] = "public"
     is_async: bool = False
-    complexity_estimate: int = 1     # cyclomatic complexity
+    complexity_estimate: int = 1  # cyclomatic complexity
     language: str = ""
-    parent_name: str | None = None   # for methods: the containing class name
+    parent_name: str | None = None  # for methods: the containing class name
 
 
 @dataclass
@@ -190,7 +189,7 @@ class Import:
     """An import statement extracted from a source file."""
 
     raw_statement: str
-    module_path: str           # normalized module path
+    module_path: str  # normalized module path
     imported_names: list[str]  # specific names, or ["*"] for wildcard
     is_relative: bool
     resolved_file: str | None  # absolute path if successfully resolved
@@ -203,10 +202,10 @@ class ParsedFile:
     file_info: FileInfo
     symbols: list[Symbol]
     imports: list[Import]
-    exports: list[str]       # names exported by this file
-    docstring: str | None    # module/file-level docstring
+    exports: list[str]  # names exported by this file
+    docstring: str | None  # module/file-level docstring
     parse_errors: list[str]  # non-fatal parser warnings/errors
-    content_hash: str = ""   # SHA-256 hex of raw file bytes
+    content_hash: str = ""  # SHA-256 hex of raw file bytes
 
 
 def compute_content_hash(source: bytes) -> str:

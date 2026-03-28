@@ -14,12 +14,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.job_system import JobSystem
-from repowise.core.generation.models import GenerationConfig, GeneratedPage
+from repowise.core.generation.models import GeneratedPage, GenerationConfig
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import PackageInfo, RepoStructure
@@ -32,7 +32,6 @@ from repowise.core.persistence import (
     create_session_factory,
     get_page,
     get_page_versions,
-    get_stale_pages,
     init_db,
     list_pages,
     update_job_status,
@@ -119,7 +118,9 @@ async def persisted(engine, sf, tmp_path_factory):
         packages=packages,
         root_language_distribution={"python": 0.5},
         total_files=len(parsed_files),
-        total_loc=sum(len(source_map.get(p.file_info.path, b"").splitlines()) for p in parsed_files),
+        total_loc=sum(
+            len(source_map.get(p.file_info.path, b"").splitlines()) for p in parsed_files
+        ),
         entry_points=[],
     )
 
@@ -198,7 +199,6 @@ class TestPersistenceStoreRetrieve:
     async def test_all_generated_pages_stored(self, persisted, sf):
         """Every GeneratedPage should be retrievable by page_id."""
         pages = persisted["pages"]
-        repo_id = persisted["repo_id"]
         assert len(pages) > 0
 
         async with sf() as session:
@@ -311,6 +311,7 @@ class TestVersionHistory:
         # The original page was stored from the generated page's created_at
         # Just verify it's set and is a real datetime
         from datetime import datetime
+
         assert isinstance(stored.created_at, datetime)
 
 

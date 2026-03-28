@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
@@ -29,7 +29,7 @@ router = APIRouter(
 async def get_git_metadata(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> GitMetadataResponse:
     """Get git metadata for a specific file."""
     meta = await crud.get_git_metadata(session, repo_id, file_path)
@@ -42,14 +42,14 @@ async def get_git_metadata(
 async def get_hotspots(
     repo_id: str,
     limit: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[HotspotResponse]:
     """Get the highest-churn files (hotspots) for a repository."""
     result = await session.execute(
         select(GitMetadata)
         .where(
             GitMetadata.repository_id == repo_id,
-            GitMetadata.is_hotspot == True,
+            GitMetadata.is_hotspot.is_(True),
         )
         .order_by(GitMetadata.churn_percentile.desc())
         .limit(limit)
@@ -71,12 +71,10 @@ async def get_hotspots(
 async def get_ownership(
     repo_id: str,
     granularity: str = Query("module", description="file or module"),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[OwnershipEntry]:
     """Get ownership breakdown for a repository."""
-    result = await session.execute(
-        select(GitMetadata).where(GitMetadata.repository_id == repo_id)
-    )
+    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
     all_meta = result.scalars().all()
 
     if granularity == "file":
@@ -129,7 +127,7 @@ async def get_co_changes(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),
     min_count: int = Query(3, ge=1),
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Get files that frequently change together with the given file."""
     meta = await crud.get_git_metadata(session, repo_id, file_path)
@@ -148,21 +146,15 @@ async def get_co_changes(
 @router.get("/{repo_id}/git-summary", response_model=GitSummaryResponse)
 async def get_git_summary(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> GitSummaryResponse:
     """Get aggregate git health signals for a repository."""
-    result = await session.execute(
-        select(GitMetadata).where(GitMetadata.repository_id == repo_id)
-    )
+    result = await session.execute(select(GitMetadata).where(GitMetadata.repository_id == repo_id))
     all_meta = list(result.scalars().all())
 
     hotspot_count = sum(1 for m in all_meta if m.is_hotspot)
     stable_count = sum(1 for m in all_meta if m.is_stable)
-    avg_churn = (
-        sum(m.churn_percentile for m in all_meta) / len(all_meta)
-        if all_meta
-        else 0.0
-    )
+    avg_churn = sum(m.churn_percentile for m in all_meta) / len(all_meta) if all_meta else 0.0
 
     # Top owners by file count
     owners: dict[str, int] = {}

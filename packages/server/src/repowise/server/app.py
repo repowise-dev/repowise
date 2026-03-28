@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,9 +21,9 @@ from repowise.core.persistence.database import (
     create_session_factory,
     init_db,
 )
-from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
     chat,
@@ -56,18 +56,16 @@ def _build_embedder():
     """
     name = os.environ.get("REPOWISE_EMBEDDER", "mock").lower()
     if name == "gemini":
-        from repowise.core.providers.embedding.gemini import GeminiEmbedder  # noqa: PLC0415
+        from repowise.core.providers.embedding.gemini import GeminiEmbedder
 
         dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
         return GeminiEmbedder(output_dimensionality=dims)
     if name == "openai":
-        from repowise.core.providers.embedding.openai import OpenAIEmbedder  # noqa: PLC0415
+        from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "text-embedding-3-small")
         return OpenAIEmbedder(model=model)
-    logger.warning(
-        "embedder.mock_active — set REPOWISE_EMBEDDER=gemini or openai for real RAG"
-    )
+    logger.warning("embedder.mock_active — set REPOWISE_EMBEDDER=gemini or openai for real RAG")
     return MockEmbedder()
 
 

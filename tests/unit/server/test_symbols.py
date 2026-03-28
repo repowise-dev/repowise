@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import WikiSymbol, _new_uuid, _now_utc
-
+from repowise.core.persistence.models import WikiSymbol, _new_uuid
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -50,9 +48,7 @@ async def test_search_symbols_by_name(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_symbol(app.state.session_factory, repo["id"])
 
-    resp = await client.get(
-        "/api/symbols", params={"repo_id": repo["id"], "q": "main"}
-    )
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"], "q": "main"})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
@@ -71,9 +67,7 @@ async def test_search_symbols_by_kind(client: AsyncClient, app) -> None:
         kind="class",
     )
 
-    resp = await client.get(
-        "/api/symbols", params={"repo_id": repo["id"], "kind": "class"}
-    )
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"], "kind": "class"})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
@@ -85,9 +79,7 @@ async def test_lookup_by_name_exact(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_symbol(app.state.session_factory, repo["id"])
 
-    resp = await client.get(
-        "/api/symbols/by-name/main", params={"repo_id": repo["id"]}
-    )
+    resp = await client.get("/api/symbols/by-name/main", params={"repo_id": repo["id"]})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
@@ -104,9 +96,7 @@ async def test_lookup_by_name_fuzzy(client: AsyncClient, app) -> None:
         symbol_id="src/auth.py::authenticate_user",
     )
 
-    resp = await client.get(
-        "/api/symbols/by-name/auth", params={"repo_id": repo["id"]}
-    )
+    resp = await client.get("/api/symbols/by-name/auth", params={"repo_id": repo["id"]})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) >= 1

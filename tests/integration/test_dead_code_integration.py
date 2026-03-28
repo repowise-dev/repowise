@@ -11,7 +11,6 @@ from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 
-
 # ---------------------------------------------------------------------------
 # 1. test_dead_code_detects_unreachable_fixture
 # ---------------------------------------------------------------------------
@@ -34,15 +33,16 @@ def test_dead_code_detects_unreachable_fixture(sample_repo_path: Path) -> None:
     graph_builder.build()
 
     analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map={})
-    report = analyzer.analyze({
-        "detect_unused_exports": False,
-        "detect_zombie_packages": False,
-        "min_confidence": 0.0,
-    })
+    report = analyzer.analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
 
     unreachable_paths = [
-        f.file_path for f in report.findings
-        if f.kind == DeadCodeKind.UNREACHABLE_FILE
+        f.file_path for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE
     ]
     # dead/unreachable_module.py should have in_degree=0 (nothing imports it)
     matches = [p for p in unreachable_paths if "unreachable_module" in p]
@@ -72,7 +72,7 @@ async def test_hotspot_sorted_first_in_generation() -> None:
 
     config = GenerationConfig()
     assembler = ContextAssembler(config)
-    generator = PageGenerator(mock_provider, assembler, config)
+    _generator = PageGenerator(mock_provider, assembler, config)
 
     # Create test ParsedFile objects
     def make_parsed(path: str, is_entry: bool = False) -> ParsedFile:

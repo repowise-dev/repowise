@@ -8,4 +8,5 @@ def orphaned_function():
 
 class OrphanedClass:
     """No one imports this."""
+
     pass

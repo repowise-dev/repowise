@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections import Counter
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from repowise.core.ingestion.git_indexer import GitIndexer
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,7 +28,7 @@ def _make_commit(
     c.hexsha = hexsha
     c.author.name = author_name
     c.author.email = author_email
-    c.committed_datetime = committed_datetime or datetime.now(timezone.utc)
+    c.committed_datetime = committed_datetime or datetime.now(UTC)
     c.parents = parents if parents is not None else [MagicMock()]
     return c
 
@@ -68,55 +64,80 @@ class TestSignificantCommitFilter:
         assert indexer._is_significant_commit("Merge branch 'main' into feature", "Alice") is False
 
         # Soft-skip: conventional prefixes without decision signal
-        assert indexer._is_significant_commit("Bump lodash from 4.17.15 to 4.17.21", "Alice") is False
-        assert indexer._is_significant_commit("chore: update dependencies across the board", "Alice") is False
-        assert indexer._is_significant_commit("ci: fix the github actions workflow", "Alice") is False
-        assert indexer._is_significant_commit("style: run prettier on the codebase", "Alice") is False
-        assert indexer._is_significant_commit("build: update webpack config for prod", "Alice") is False
-        assert indexer._is_significant_commit("release: v2.3.0 official release cut", "Alice") is False
+        assert (
+            indexer._is_significant_commit("Bump lodash from 4.17.15 to 4.17.21", "Alice") is False
+        )
+        assert (
+            indexer._is_significant_commit("chore: update dependencies across the board", "Alice")
+            is False
+        )
+        assert (
+            indexer._is_significant_commit("ci: fix the github actions workflow", "Alice") is False
+        )
+        assert (
+            indexer._is_significant_commit("style: run prettier on the codebase", "Alice") is False
+        )
+        assert (
+            indexer._is_significant_commit("build: update webpack config for prod", "Alice")
+            is False
+        )
+        assert (
+            indexer._is_significant_commit("release: v2.3.0 official release cut", "Alice") is False
+        )
 
         # Author-based filtering (bot accounts)
-        assert indexer._is_significant_commit(
-            "chore(deps): bump axios from 0.21.1 to 0.21.2",
-            "dependabot[bot]",
-        ) is False
-        assert indexer._is_significant_commit(
-            "fix(deps): update dependency express to v5",
-            "renovate[bot]",
-        ) is False
-        assert indexer._is_significant_commit(
-            "chore: automated release pipeline",
-            "github-actions[bot]",
-        ) is False
+        assert (
+            indexer._is_significant_commit(
+                "chore(deps): bump axios from 0.21.1 to 0.21.2",
+                "dependabot[bot]",
+            )
+            is False
+        )
+        assert (
+            indexer._is_significant_commit(
+                "fix(deps): update dependency express to v5",
+                "renovate[bot]",
+            )
+            is False
+        )
+        assert (
+            indexer._is_significant_commit(
+                "chore: automated release pipeline",
+                "github-actions[bot]",
+            )
+            is False
+        )
 
         # Too short (< 12 chars)
         assert indexer._is_significant_commit("fix typo", "Alice") is False
 
         # --- Should pass (return True) ---
-        assert indexer._is_significant_commit(
-            "feat: add authentication module with OAuth2 support", "Alice"
-        ) is True
-        assert indexer._is_significant_commit(
-            "fix: resolve race condition in worker queue", "Bob"
-        ) is True
+        assert (
+            indexer._is_significant_commit(
+                "feat: add authentication module with OAuth2 support", "Alice"
+            )
+            is True
+        )
+        assert (
+            indexer._is_significant_commit("fix: resolve race condition in worker queue", "Bob")
+            is True
+        )
 
         # Revert commits are now significant (high signal for risk/decisions)
-        assert indexer._is_significant_commit(
-            "revert: undo the last commit change", "Alice"
-        ) is True
+        assert (
+            indexer._is_significant_commit("revert: undo the last commit change", "Alice") is True
+        )
 
         # Soft-skip rescued by decision-signal keyword
-        assert indexer._is_significant_commit(
-            "build: migrate from webpack to vite", "Alice"
-        ) is True
-        assert indexer._is_significant_commit(
-            "chore: deprecate legacy auth module", "Alice"
-        ) is True
+        assert (
+            indexer._is_significant_commit("build: migrate from webpack to vite", "Alice") is True
+        )
+        assert (
+            indexer._is_significant_commit("chore: deprecate legacy auth module", "Alice") is True
+        )
 
         # Short but meaningful messages (>= 12 chars) now pass
-        assert indexer._is_significant_commit(
-            "fix auth race", "Alice"
-        ) is True
+        assert indexer._is_significant_commit("fix auth race", "Alice") is True
 
 
 # ---------------------------------------------------------------------------
@@ -138,12 +159,13 @@ class TestCoChangeDetection:
         # c.py only changes in commit 0.
         # Timestamps are recent (within decay window) so weights stay high.
         import time
+
         now = int(time.time())
         raw_log = (
-            f"\x00{now}\na.py\nb.py\nc.py\n"       # commit 0
-            f"\x00{now - 86400}\na.py\nb.py\n"      # commit 1 (1 day ago)
-            f"\x00{now - 172800}\na.py\nb.py\n"     # commit 2 (2 days ago)
-            f"\x00{now - 259200}\na.py\nb.py\n"     # commit 3 (3 days ago)
+            f"\x00{now}\na.py\nb.py\nc.py\n"  # commit 0
+            f"\x00{now - 86400}\na.py\nb.py\n"  # commit 1 (1 day ago)
+            f"\x00{now - 172800}\na.py\nb.py\n"  # commit 2 (2 days ago)
+            f"\x00{now - 259200}\na.py\nb.py\n"  # commit 3 (3 days ago)
         )
         mock_repo.git.log.return_value = raw_log
 
@@ -184,22 +206,28 @@ class TestHotspotClassification:
         # Files with commit_count_90d > p75 AND > 0 should be hotspots.
         metadata_list = []
         for i in range(6):
-            metadata_list.append({
-                "file_path": f"low_{i}.py",
-                "commit_count_90d": 1,
-                "is_hotspot": False,
-            })
+            metadata_list.append(
+                {
+                    "file_path": f"low_{i}.py",
+                    "commit_count_90d": 1,
+                    "is_hotspot": False,
+                }
+            )
         # Two high-churn files
-        metadata_list.append({
-            "file_path": "hot_a.py",
-            "commit_count_90d": 50,
-            "is_hotspot": False,
-        })
-        metadata_list.append({
-            "file_path": "hot_b.py",
-            "commit_count_90d": 40,
-            "is_hotspot": False,
-        })
+        metadata_list.append(
+            {
+                "file_path": "hot_a.py",
+                "commit_count_90d": 50,
+                "is_hotspot": False,
+            }
+        )
+        metadata_list.append(
+            {
+                "file_path": "hot_b.py",
+                "commit_count_90d": 40,
+                "is_hotspot": False,
+            }
+        )
 
         indexer._compute_percentiles(metadata_list)
 
@@ -234,7 +262,7 @@ class TestStableClassification:
         mock_repo = MagicMock()
 
         # Build 15 commits all older than 90 days
-        old_date = datetime.now(timezone.utc) - timedelta(days=180)
+        old_date = datetime.now(UTC) - timedelta(days=180)
         commits = [
             _make_commit(
                 hexsha=f"sha{i:04d}",
@@ -295,6 +323,7 @@ class TestCoChangeBelowThresholdSkipped:
         # Only 2 commits with x.py + y.py together (below default min_count=3)
         # 1 commit with x.py + z.py (also below min_count=3)
         import time
+
         now = int(time.time())
         raw_log = (
             f"\x00{now}\nx.py\ny.py\n"

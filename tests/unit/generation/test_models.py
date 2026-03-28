@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from repowise.core.generation.models import (
     ConfidenceDecayResult,
@@ -12,10 +10,8 @@ from repowise.core.generation.models import (
     GenerationConfig,
     compute_freshness,
     compute_page_id,
-    compute_source_hash,
     decay_confidence,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,7 +44,7 @@ def _make_page(
 
 
 def _utc(**kwargs) -> datetime:
-    return datetime.now(timezone.utc) - timedelta(**kwargs)
+    return datetime.now(UTC) - timedelta(**kwargs)
 
 
 # ---------------------------------------------------------------------------

@@ -20,11 +20,11 @@ __all__ = [
     # Generators
     "ClaudeMdGenerator",
     # Data containers
-    "EditorFileData",
-    "TechStackItem",
-    "KeyModule",
-    "HotspotFile",
     "DecisionSummary",
+    "EditorFileData",
     # Fetcher
     "EditorFileDataFetcher",
+    "HotspotFile",
+    "KeyModule",
+    "TechStackItem",
 ]

@@ -12,7 +12,6 @@ import pytest
 
 from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
-
 # ---------------------------------------------------------------------------
 # Construction
 # ---------------------------------------------------------------------------
@@ -72,8 +71,8 @@ async def test_embed_returns_normalized_vectors():
     raw = [1.0, 0.0, 0.0]
     emb = OpenAIEmbedder(api_key="k")
 
-    with patch("openai.OpenAI") as MockClient:
-        MockClient.return_value.embeddings.create.return_value = _make_mock_response([raw])
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.return_value = _make_mock_response([raw])
         result = await emb.embed(["hello"])
 
     assert len(result) == 1
@@ -86,8 +85,8 @@ async def test_embed_batch_returns_correct_count():
     raw_vecs = [[1.0, 0.0], [0.0, 1.0], [0.707, 0.707]]
     emb = OpenAIEmbedder(api_key="k")
 
-    with patch("openai.OpenAI") as MockClient:
-        MockClient.return_value.embeddings.create.return_value = _make_mock_response(raw_vecs)
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.return_value = _make_mock_response(raw_vecs)
         result = await emb.embed(texts)
 
     assert len(result) == 3
@@ -101,8 +100,8 @@ async def test_embed_passes_model_and_input():
         captured.append({"model": model, "input": input})
         return _make_mock_response([[1.0, 0.0]])
 
-    with patch("openai.OpenAI") as MockClient:
-        MockClient.return_value.embeddings.create.side_effect = fake_create
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.side_effect = fake_create
         await emb.embed(["test text"])
 
     assert captured[0]["model"] == "text-embedding-3-large"

@@ -19,9 +19,7 @@ from repowise.server.mcp_server._server import mcp
 
 
 @mcp.tool()
-async def get_dependency_path(
-    source: str, target: str, repo: str | None = None
-) -> dict:
+async def get_dependency_path(source: str, target: str, repo: str | None = None) -> dict:
     """Find how two files/modules are connected in the dependency graph.
 
     When no direct path exists, returns visual context: nearest common
@@ -53,29 +51,41 @@ async def get_dependency_path(
     try:
         import networkx as nx
     except ImportError:
-        return {"path": [], "distance": -1, "explanation": "networkx not available for path queries"}
+        return {
+            "path": [],
+            "distance": -1,
+            "explanation": "networkx not available for path queries",
+        }
 
-    G = nx.DiGraph()
+    graph = nx.DiGraph()
     for e in edges:
-        G.add_edge(
+        graph.add_edge(
             e.source_node_id,
             e.target_node_id,
             edge_type=getattr(e, "edge_type", None) or "imports",
         )
 
-    if source not in G:
-        return {"path": [], "distance": -1, "explanation": f"Source node '{source}' not found in graph"}
-    if target not in G:
-        return {"path": [], "distance": -1, "explanation": f"Target node '{target}' not found in graph"}
+    if source not in graph:
+        return {
+            "path": [],
+            "distance": -1,
+            "explanation": f"Source node '{source}' not found in graph",
+        }
+    if target not in graph:
+        return {
+            "path": [],
+            "distance": -1,
+            "explanation": f"Target node '{target}' not found in graph",
+        }
 
     try:
-        path = nx.shortest_path(G, source, target)
+        path = nx.shortest_path(graph, source, target)
     except nx.NetworkXNoPath:
         result_data: dict[str, Any] = {
             "path": [],
             "distance": -1,
             "explanation": "No direct dependency path found",
-            "visual_context": _build_visual_context(G, source, target, nodes, nx),
+            "visual_context": _build_visual_context(graph, source, target, nodes, nx),
         }
         # Phase 4: check co-change coupling even without import dependency
         async with get_session(_state._session_factory) as session:
@@ -108,7 +118,7 @@ async def get_dependency_path(
         relationship = ""
         if i < len(path) - 1:
             next_node = path[i + 1]
-            relationship = G[node][next_node].get("edge_type", "imports")
+            relationship = graph[node][next_node].get("edge_type", "imports")
         path_with_info.append({"node": node, "relationship": relationship})
 
     return {
@@ -119,7 +129,11 @@ async def get_dependency_path(
 
 
 def _build_visual_context(
-    G: Any, source: str, target: str, nodes: list, nx: Any,
+    graph: Any,
+    source: str,
+    target: str,
+    nodes: list,
+    nx: Any,
 ) -> dict:
     """Build diagnostic context when no directed path exists."""
     node_meta = {n.node_id: n for n in nodes}
@@ -127,44 +141,44 @@ def _build_visual_context(
 
     # --- Reverse path check ---
     try:
-        rev_path = nx.shortest_path(G, target, source)
+        rev_path = nx.shortest_path(graph, target, source)
         context["reverse_path"] = {
             "exists": True,
             "path": rev_path,
             "distance": len(rev_path) - 1,
             "note": f"A path exists in the reverse direction ({target} -> {source}). "
-                    "The dependency flows the other way.",
+            "The dependency flows the other way.",
         }
     except nx.NetworkXNoPath:
         context["reverse_path"] = {"exists": False}
 
     # --- Nearest common ancestors (via undirected graph) ---
-    U = G.to_undirected()
-    source_reachable = set(nx.single_source_shortest_path_length(U, source))
-    target_reachable = set(nx.single_source_shortest_path_length(U, target))
+    undirected = graph.to_undirected()
+    source_reachable = set(nx.single_source_shortest_path_length(undirected, source))
+    target_reachable = set(nx.single_source_shortest_path_length(undirected, target))
     common = source_reachable & target_reachable
     common.discard(source)
     common.discard(target)
 
     if common:
-        source_dist = nx.single_source_shortest_path_length(U, source)
-        target_dist = nx.single_source_shortest_path_length(U, target)
-        scored = [
-            (node, source_dist[node] + target_dist[node])
-            for node in common
-        ]
+        source_dist = nx.single_source_shortest_path_length(undirected, source)
+        target_dist = nx.single_source_shortest_path_length(undirected, target)
+        scored = [(node, source_dist[node] + target_dist[node]) for node in common]
         scored.sort(key=lambda x: x[1])
         context["nearest_common_ancestors"] = [
-            {"node": node, "distance_from_source": source_dist[node],
-             "distance_from_target": target_dist[node]}
+            {
+                "node": node,
+                "distance_from_source": source_dist[node],
+                "distance_from_target": target_dist[node],
+            }
             for node, _ in scored[:5]
         ]
     else:
         context["nearest_common_ancestors"] = []
 
     # --- Shared neighbors (direct) ---
-    source_neighbors = set(G.predecessors(source)) | set(G.successors(source))
-    target_neighbors = set(G.predecessors(target)) | set(G.successors(target))
+    source_neighbors = set(graph.predecessors(source)) | set(graph.successors(source))
+    target_neighbors = set(graph.predecessors(target)) | set(graph.successors(target))
     shared = source_neighbors & target_neighbors
     if shared:
         context["shared_neighbors"] = sorted(shared)
@@ -194,16 +208,18 @@ def _build_visual_context(
         src_community_nodes = nodes_by_community.get(src_community, set())
         tgt_community_nodes = nodes_by_community.get(tgt_community, set())
 
-        for node_id in G.nodes():
-            neighbors = set(G.predecessors(node_id)) | set(G.successors(node_id))
+        for node_id in graph.nodes():
+            neighbors = set(graph.predecessors(node_id)) | set(graph.successors(node_id))
             touches_src = bool(neighbors & src_community_nodes)
             touches_tgt = bool(neighbors & tgt_community_nodes)
             if touches_src and touches_tgt:
                 meta = node_meta.get(node_id)
-                bridge_nodes.append({
-                    "node": node_id,
-                    "pagerank": meta.pagerank if meta else 0.0,
-                })
+                bridge_nodes.append(
+                    {
+                        "node": node_id,
+                        "pagerank": meta.pagerank if meta else 0.0,
+                    }
+                )
         bridge_nodes.sort(key=lambda x: x["pagerank"], reverse=True)
         context["bridge_suggestions"] = bridge_nodes[:5]
     else:
@@ -211,7 +227,7 @@ def _build_visual_context(
 
     # --- Connectivity summary ---
     # Check if they're in completely disconnected components
-    components = list(nx.weakly_connected_components(G))
+    components = list(nx.weakly_connected_components(graph))
     src_comp = next((c for c in components if source in c), set())
     tgt_comp = next((c for c in components if target in c), set())
     actually_disconnected = src_comp != tgt_comp
