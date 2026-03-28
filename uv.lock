@@ -9,22 +9,10 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "repowise",
     "repowise-cli",
     "repowise-core",
     "repowise-server",
-]
-
-[manifest.dependency-groups]
-dev = [
-    { name = "httpx", specifier = ">=0.27,<1" },
-    { name = "mypy", specifier = ">=1.11,<2" },
-    { name = "pytest", specifier = ">=8,<9" },
-    { name = "pytest-asyncio", specifier = ">=0.23,<1" },
-    { name = "pytest-snapshot", specifier = ">=0.9,<1" },
-    { name = "respx", specifier = ">=0.21,<1" },
-    { name = "ruff", specifier = ">=0.6,<1" },
-    { name = "time-machine", specifier = ">=2.14,<3" },
-    { name = "types-networkx", specifier = ">=3.3,<4" },
 ]
 
 [[package]]
@@ -291,6 +279,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6b/5c/685e6633917e101e5dcb62b9dd76946cbb57c26e133bae9e0cd36033c0a9/attrs-25.4.0.tar.gz", hash = "sha256:16d5969b87f0859ef33a48b35d55ac1be6e42ae49d5e853b597db70c35c57e11", size = 934251, upload-time = "2025-10-06T13:54:44.725Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3a/2a/7cc015f5b9f5db42b7d48157e23356022889fc354a2813c15934b7cb5c0e/attrs-25.4.0-py3-none-any.whl", hash = "sha256:adcf7e2a1fb3b36ac48d97835bb6d8ade15b8dcce26aba8bf1d14847b57a3373", size = 67615, upload-time = "2025-10-06T13:54:43.17Z" },
+]
+
+[[package]]
+name = "build"
+version = "1.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "os_name == 'nt'" },
+    { name = "packaging" },
+    { name = "pyproject-hooks" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6c/1d/ab15c8ac57f4ee8778d7633bc6685f808ab414437b8644f555389cdc875e/build-1.4.2.tar.gz", hash = "sha256:35b14e1ee329c186d3f08466003521ed7685ec15ecffc07e68d706090bf161d1", size = 83433, upload-time = "2026-03-25T14:20:27.659Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/57/3b7d4dd193ade4641c865bc2b93aeeb71162e81fc348b8dad020215601ed/build-1.4.2-py3-none-any.whl", hash = "sha256:7a4d8651ea877cb2a89458b1b198f2e69f536c95e89129dbf5d448045d60db88", size = 24643, upload-time = "2026-03-25T14:20:26.568Z" },
 ]
 
 [[package]]
@@ -2062,6 +2064,15 @@ crypto = [
 ]
 
 [[package]]
+name = "pyproject-hooks"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/82/28175b2414effca1cdac8dc99f76d660e7a4fb0ceefa4b4ab8f5f6742925/pyproject_hooks-1.2.0.tar.gz", hash = "sha256:1e859bd5c40fae9448642dd871adf459e5e2084186e8d2c2a79a824c970da1f8", size = 19228, upload-time = "2024-09-29T09:24:13.293Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/24/12818598c362d7f300f18e74db45963dbcb85150324092410c8b49405e42/pyproject_hooks-1.2.0-py3-none-any.whl", hash = "sha256:9e5c6bfa8dcc30091c74b0cf803c81fdd29d94f01992a7707bc97babb1141913", size = 10216, upload-time = "2024-09-29T09:24:11.978Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2324,45 +2335,26 @@ wheels = [
 ]
 
 [[package]]
-name = "repowise-cli"
-version = "0.1.0"
-source = { editable = "packages/cli" }
-dependencies = [
-    { name = "click" },
-    { name = "repowise-core" },
-    { name = "repowise-server" },
-    { name = "rich" },
-    { name = "watchdog" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.1,<9" },
-    { name = "repowise-core", editable = "packages/core" },
-    { name = "repowise-server", editable = "packages/server" },
-    { name = "rich", specifier = ">=13,<14" },
-    { name = "watchdog", specifier = ">=4,<5" },
-]
-
-[[package]]
-name = "repowise-core"
-version = "0.1.0"
-source = { editable = "packages/core" }
+name = "repowise"
+version = "0.1.2"
+source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
-    { name = "anthropic" },
+    { name = "apscheduler" },
+    { name = "click" },
+    { name = "cryptography" },
+    { name = "fastapi" },
     { name = "gitpython" },
-    { name = "google-genai" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "lancedb" },
-    { name = "litellm" },
+    { name = "mcp" },
     { name = "networkx" },
-    { name = "openai" },
     { name = "pathspec" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "rich" },
     { name = "scipy" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
@@ -2375,36 +2367,97 @@ dependencies = [
     { name = "tree-sitter-python" },
     { name = "tree-sitter-rust" },
     { name = "tree-sitter-typescript" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "watchdog" },
 ]
 
 [package.optional-dependencies]
-pgvector = [
+all = [
+    { name = "anthropic" },
+    { name = "asyncpg" },
+    { name = "google-genai" },
+    { name = "litellm" },
+    { name = "openai" },
+    { name = "pgvector" },
+]
+anthropic = [
+    { name = "anthropic" },
+]
+dev = [
+    { name = "build" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-snapshot" },
+    { name = "respx" },
+    { name = "ruff" },
+    { name = "time-machine" },
+    { name = "types-networkx" },
+]
+gemini = [
+    { name = "google-genai" },
+]
+litellm = [
+    { name = "litellm" },
+]
+openai = [
+    { name = "openai" },
+]
+postgres = [
     { name = "asyncpg" },
     { name = "pgvector" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-snapshot" },
+    { name = "respx" },
+    { name = "ruff" },
+    { name = "time-machine" },
+    { name = "types-networkx" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20,<1" },
     { name = "alembic", specifier = ">=1.13,<2" },
-    { name = "anthropic", specifier = ">=0.40,<1" },
-    { name = "asyncpg", marker = "extra == 'pgvector'", specifier = ">=0.29,<1" },
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40,<1" },
+    { name = "apscheduler", specifier = ">=3.10,<4" },
+    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29,<1" },
+    { name = "build", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "click", specifier = ">=8.1,<9" },
+    { name = "cryptography", specifier = ">=43,<44" },
+    { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "gitpython", specifier = ">=3.1,<4" },
-    { name = "google-genai", specifier = ">=1.0,<2" },
+    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0,<2" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "jinja2", specifier = ">=3.1,<4" },
     { name = "lancedb", specifier = ">=0.12,<1" },
-    { name = "litellm", specifier = ">=1.50,<2" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50,<2" },
+    { name = "mcp", specifier = ">=1.0,<2" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11,<2" },
     { name = "networkx", specifier = ">=3.3,<4" },
-    { name = "openai", specifier = ">=1.50,<2" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.50,<2" },
     { name = "pathspec", specifier = ">=0.12,<1" },
-    { name = "pgvector", marker = "extra == 'pgvector'", specifier = ">=0.3,<1" },
+    { name = "pgvector", marker = "extra == 'postgres'", specifier = ">=0.3,<1" },
     { name = "pydantic", specifier = ">=2.8,<3" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<9" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23,<1" },
+    { name = "pytest-snapshot", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
+    { name = "repowise", extras = ["anthropic", "openai", "gemini", "litellm", "postgres"], marker = "extra == 'all'" },
+    { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21,<1" },
+    { name = "rich", specifier = ">=13,<14" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6,<1" },
     { name = "scipy", specifier = ">=1.11,<2" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3" },
     { name = "structlog", specifier = ">=24,<25" },
     { name = "tenacity", specifier = ">=9,<10" },
+    { name = "time-machine", marker = "extra == 'dev'", specifier = ">=2.14,<3" },
     { name = "tree-sitter", specifier = ">=0.23,<1" },
     { name = "tree-sitter-cpp", specifier = ">=0.23,<1" },
     { name = "tree-sitter-go", specifier = ">=0.23,<1" },
@@ -2413,31 +2466,55 @@ requires-dist = [
     { name = "tree-sitter-python", specifier = ">=0.23,<1" },
     { name = "tree-sitter-rust", specifier = ">=0.23,<1" },
     { name = "tree-sitter-typescript", specifier = ">=0.23,<1" },
+    { name = "types-networkx", marker = "extra == 'dev'", specifier = ">=3.3,<4" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1" },
+    { name = "watchdog", specifier = ">=4,<5" },
 ]
-provides-extras = ["pgvector"]
+provides-extras = ["anthropic", "openai", "gemini", "litellm", "postgres", "all", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "mypy", specifier = ">=1.11,<2" },
+    { name = "pytest", specifier = ">=8,<9" },
+    { name = "pytest-asyncio", specifier = ">=0.23,<1" },
+    { name = "pytest-snapshot", specifier = ">=0.9,<1" },
+    { name = "respx", specifier = ">=0.21,<1" },
+    { name = "ruff", specifier = ">=0.6,<1" },
+    { name = "time-machine", specifier = ">=2.14,<3" },
+    { name = "types-networkx", specifier = ">=3.3,<4" },
+]
 
 [[package]]
-name = "repowise-server"
-version = "0.1.0"
-source = { editable = "packages/server" }
+name = "repowise-cli"
+version = "0.1.2"
+source = { editable = "packages/cli" }
 dependencies = [
-    { name = "apscheduler" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "mcp" },
     { name = "repowise-core" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "repowise-server" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "apscheduler", specifier = ">=3.10,<4" },
-    { name = "cryptography", specifier = ">=43,<44" },
-    { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "mcp", specifier = ">=1.0,<2" },
     { name = "repowise-core", editable = "packages/core" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1" },
+    { name = "repowise-server", editable = "packages/server" },
 ]
+
+[[package]]
+name = "repowise-core"
+version = "0.1.2"
+source = { editable = "packages/core" }
+
+[[package]]
+name = "repowise-server"
+version = "0.1.2"
+source = { editable = "packages/server" }
+dependencies = [
+    { name = "repowise-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "repowise-core", editable = "packages/core" }]
 
 [[package]]
 name = "requests"
