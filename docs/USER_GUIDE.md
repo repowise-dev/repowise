@@ -334,21 +334,36 @@ See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions.
 
 ### `repowise serve`
 
-Start a local web server for browsing the wiki in your browser.
+Start the API server and web UI.
 
 ```bash
 repowise serve [PATH]
 ```
 
+If Node.js 20+ is installed, the web frontend is automatically downloaded (once, ~50 MB) and started alongside the API. No separate setup needed.
+
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--port` | Port (default: 7337) |
-| `--host` | Host (default: 127.0.0.1) |
+| `--port` | API server port (default: 7337) |
+| `--host` | Host to bind to (default: 127.0.0.1) |
 | `--workers` | Uvicorn workers (default: 1) |
+| `--ui-port` | Web UI port (default: 3000) |
+| `--no-ui` | Start API server only, skip the web UI. |
 
-Opens a FastAPI server with a REST API. Pair with the web frontend for a full UI experience (see [Web UI](#web-ui)).
+**Examples:**
+
+```bash
+# Start everything (API + Web UI)
+repowise serve
+
+# API only
+repowise serve --no-ui
+
+# Custom ports
+repowise serve --port 8080 --ui-port 8081
+```
 
 ---
 
@@ -533,22 +548,57 @@ Checks:
 
 ## Web UI
 
-Repowise includes a full web dashboard built with Next.js, React, and D3.js. It requires Node.js 20+ and runs alongside the backend server.
+Repowise includes a full web dashboard built with Next.js, React, and D3.js.
 
-### Starting the Web UI
+### Automatic (with Node.js)
 
-**Terminal 1 — Backend:**
+If you have Node.js 20+ installed, `repowise serve` handles everything:
 
 ```bash
-cd /path/to/your-repo
-repowise serve --port 7337
+repowise serve
+# API: http://localhost:7337
+# Web UI: http://localhost:3000
 ```
 
-**Terminal 2 — Frontend:**
+On first run, the pre-built frontend is downloaded (~50 MB) and cached in `~/.repowise/web/`. Subsequent runs start instantly.
+
+### Docker (no Node.js needed)
 
 ```bash
-cd /path/to/repowise           # the repowise source repo
-npm install                     # first time only
+# Build the image (one-time)
+docker build -t repowise https://github.com/RaghavChamadiya/repowise.git
+
+# Run with your indexed repo's .repowise directory
+docker run -p 7337:7337 -p 3000:3000 \
+  -v /path/to/your-repo/.repowise:/data \
+  -e GEMINI_API_KEY=your-key \
+  -e REPOWISE_EMBEDDER=gemini \
+  repowise
+```
+
+Or with docker compose:
+
+```bash
+git clone https://github.com/RaghavChamadiya/repowise.git
+cd repowise
+export REPOWISE_DATA=/path/to/your-repo/.repowise
+export GEMINI_API_KEY=your-key
+docker compose up
+```
+
+Open **http://localhost:3000** for the Web UI, **http://localhost:7337** for the API.
+
+### From source (for development)
+
+For working on the frontend code with hot reload:
+
+```bash
+# Terminal 1 — API only
+repowise serve --no-ui
+
+# Terminal 2 — Frontend with hot reload
+cd /path/to/repowise
+npm install
 REPOWISE_API_URL=http://localhost:7337 npm run dev --workspace packages/web
 ```
 

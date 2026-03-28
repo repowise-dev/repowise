@@ -1,0 +1,17 @@
+services:
+  repowise:
+    build: .
+    ports:
+      - "7337:7337"   # API
+      - "3000:3000"   # Web UI
+    volumes:
+      # Mount the .repowise directory from your indexed repo
+      - ${REPOWISE_DATA:-./data}:/data
+    environment:
+      - REPOWISE_DB_URL=sqlite+aiosqlite:///data/wiki.db
+      - REPOWISE_EMBEDDER=${REPOWISE_EMBEDDER:-mock}
+      # Set your LLM provider API key
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    restart: unless-stopped

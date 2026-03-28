@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.venv
+venv
+.mypy_cache
+.ruff_cache
+.pytest_cache
+htmlcov
+dist
+build
+
+# Node
+node_modules
+packages/web/.next
+packages/web/out
+
+# Runtime data
+.repowise
+*.db
+*.db-shm
+*.db-wal
+lancedb
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Docker
+docker-compose.override.yml
+
+# Docs (not needed in image)
+docs/
+tests/

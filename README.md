@@ -115,14 +115,23 @@ repowise includes a full web dashboard (Next.js + React + D3.js) with:
 - **Dead code finder** — unused code with confidence scores and bulk actions
 - **Decision tracker** — architectural decisions with health monitoring
 
-See the [User Guide](https://github.com/RaghavChamadiya/repowise/blob/main/docs/USER_GUIDE.md#web-ui) for setup instructions.
+**Starts automatically with `repowise serve`** if Node.js 20+ is installed. No separate setup — the frontend is downloaded and cached on first run.
+
+No Node.js? Use Docker instead:
+
+```bash
+docker build -t repowise https://github.com/RaghavChamadiya/repowise.git
+docker run -p 7337:7337 -p 3000:3000 -v .repowise:/data repowise
+```
+
+See the [User Guide](https://github.com/RaghavChamadiya/repowise/blob/main/docs/USER_GUIDE.md#web-ui) for more options.
 
 ## Requirements
 
 - Python 3.11+
 - Git (for repository analysis)
 - An LLM API key (for documentation generation — not needed for analysis-only mode)
-- Node.js 20+ (only if running the web UI frontend)
+- Node.js 20+ or Docker (optional, for the web UI)
 
 ## Documentation
 

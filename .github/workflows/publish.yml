@@ -5,11 +5,54 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: read
+  contents: write  # needed for creating GitHub releases
 
 jobs:
-  build:
-    name: Build distribution
+  # ---------------------------------------------------------------------------
+  # Build the Next.js frontend as a standalone tarball
+  # ---------------------------------------------------------------------------
+  build-web:
+    name: Build Web UI
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: packages/web/package-lock.json
+
+      - name: Install dependencies
+        run: cd packages/web && npm install
+
+      - name: Build Next.js (standalone)
+        run: cd packages/web && npm run build
+        env:
+          NEXT_PUBLIC_REPOWISE_API_URL: ""
+
+      - name: Package standalone output
+        run: |
+          cd packages/web/.next/standalone
+          # Copy static files into standalone (Next.js requirement)
+          cp -r ../../.next/static .next/static
+          [ -d ../../public ] && cp -r ../../public public || true
+          # Create tarball
+          tar -czf /tmp/repowise-web.tar.gz .
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repowise-web
+          path: /tmp/repowise-web.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Build the Python package
+  # ---------------------------------------------------------------------------
+  build-python:
+    name: Build Python package
     runs-on: ubuntu-latest
 
     steps:
@@ -32,9 +75,41 @@ jobs:
           name: dist
           path: dist/
 
+  # ---------------------------------------------------------------------------
+  # Create GitHub release with web UI tarball
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    needs: [build-web, build-python]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: repowise-web
+          path: ./artifacts/
+
+      - name: Download Python dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: ./dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/repowise-web.tar.gz
+            dist/*
+          generate_release_notes: true
+
+  # ---------------------------------------------------------------------------
+  # Publish to PyPI
+  # ---------------------------------------------------------------------------
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: build-python
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

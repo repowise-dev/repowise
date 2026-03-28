@@ -1,96 +1,153 @@
 # Quickstart
 
-Get the repowise backend and frontend running locally against an already-indexed repo.
+Get repowise running on your codebase in under 5 minutes.
 
-## Prerequisites
+> For the full CLI reference, web UI docs, MCP integration, and troubleshooting, see the [User Guide](USER_GUIDE.md).
 
-- **Python 3.11+** managed by [uv](https://docs.astral.sh/uv/)
-- **Node.js 18+** with npm
-- A **Gemini API key** (or Anthropic/OpenAI — swap the env vars accordingly)
-- A repo that has already been indexed with `repowise init` (the `.repowise/` directory exists)
+---
 
-## Test Repo
+## 1. Install
 
-These instructions use the `interview-coach` repo as the test target:
-
-```
-Repo path:  C:\Users\ragha\Desktop\interview-coach
-Wiki DB:    C:\Users\ragha\Desktop\interview-coach\.repowise\wiki.db
-Provider:   gemini (gemini-3.1-flash-lite-preview)
-Embedder:   gemini
+```bash
+pip install "repowise[anthropic]"
 ```
 
-## 1. Install Dependencies
+Or substitute `openai`, `gemini`, `litellm`, or `all` depending on your LLM provider.
 
-From the repowise root:
+**Requirements:** Python 3.11+, Git.
+
+## 2. Set Your API Key
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+Or `OPENAI_API_KEY`, `GEMINI_API_KEY` — whichever provider you installed.
+
+On Windows PowerShell:
 
 ```powershell
-cd C:\Users\ragha\Desktop\repowise
-
-# Python packages (all workspace packages)
-uv sync
-
-# Node packages (web frontend)
-npm install
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
-## 2. Start the Backend (port 7337)
+## 3. Initialize
 
-Open a PowerShell terminal:
-
-```powershell
-cd C:\Users\ragha\Desktop\repowise
-
-$env:REPOWISE_DB_URL = "sqlite+aiosqlite:///C:/Users/ragha/Desktop/interview-coach/.repowise/wiki.db"
-$env:GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
-$env:REPOWISE_EMBEDDER = "gemini"
-
-uv run uvicorn repowise.server.app:create_app --factory --host 0.0.0.0 --port 7337 --reload
+```bash
+cd /path/to/your-repo
+repowise init
 ```
 
-Verify: `http://localhost:7337/health` should return `{"status": "ok"}`.
+Repowise will walk you through an interactive setup — choose a provider, review the cost estimate, and confirm. It parses every file, builds a dependency graph, indexes git history, and generates wiki pages.
 
-## 3. Start the Frontend (port 3000)
+A typical run on a ~500-file codebase takes 5-15 minutes.
 
-Open a second PowerShell terminal:
+**Want to skip LLM costs?** Use `--index-only` to just parse and analyze without generating docs:
 
-```powershell
-cd C:\Users\ragha\Desktop\repowise
-
-$env:REPOWISE_API_URL = "http://localhost:7337"
-
-npm run dev --workspace packages/web
+```bash
+repowise init --index-only
 ```
 
-Open **http://localhost:3000** in your browser.
+## 4. Explore
 
-## 4. Test the Chat
+Once init completes, you have several ways to use the wiki:
 
-1. Click your repo on the dashboard
-2. You'll see the chat interface with suggestion chips
-3. Try: *"Give me an overview of this codebase"*
-4. Watch the streaming response with tool calls appearing in real time
-5. Click **View** on any tool result to open the artifact panel
+**Search from the terminal:**
 
-## Environment Variables Reference
+```bash
+repowise search "authentication"
+repowise search "how are errors handled" --mode semantic
+```
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `REPOWISE_DB_URL` | Yes | SQLite/PostgreSQL connection string pointing to the indexed wiki DB |
-| `GEMINI_API_KEY` | If using Gemini | Google Gemini API key |
-| `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key |
-| `OPENAI_API_KEY` | If using OpenAI | OpenAI API key |
-| `REPOWISE_EMBEDDER` | No (default: `mock`) | Embedder for RAG search: `gemini`, `openai`, or `mock` |
-| `REPOWISE_API_URL` | Frontend only | Backend URL for Next.js proxy (default: `http://localhost:7337`) |
-| `REPOWISE_API_KEY` | No | Optional API key to protect the backend; omit for local dev |
+**Browse in a web UI:**
 
-## Switching LLM Providers
+```bash
+repowise serve
+# API on http://localhost:7337, Web UI on http://localhost:3000
+```
 
-The chat model selector in the UI lets you switch providers on the fly. To use a different provider, set its API key env var on the backend and restart. The chat will auto-detect configured providers.
+If Node.js 20+ is installed, the web UI starts automatically. Otherwise, use Docker (see below).
 
-## Troubleshooting
+**Connect to your AI editor (Claude Code, Cursor, Cline, Windsurf):**
 
-- **"embedder.mock_active" warning** — Set `$env:REPOWISE_EMBEDDER = "gemini"` (or `openai`) for real vector search
-- **Empty repo list** — Check `REPOWISE_DB_URL` points to a DB with indexed repos
-- **Chat returns 422** — The active provider doesn't have an API key set; check env vars
-- **CORS errors** — Backend CORS is open (`*`) by default; ensure both servers are running
+```bash
+repowise mcp --transport stdio
+```
+
+## 5. Keep It in Sync
+
+After pulling changes or editing code:
+
+```bash
+repowise update
+```
+
+Or run continuous sync while you work:
+
+```bash
+repowise watch
+```
+
+---
+
+## Web UI
+
+Repowise includes a full web dashboard with a wiki browser, interactive dependency graph, codebase chat, search, code ownership, hotspots, and dead code detection.
+
+### With Node.js installed
+
+If you have Node.js 20+, `repowise serve` auto-downloads and starts the web UI:
+
+```bash
+repowise serve
+# API: http://localhost:7337
+# Web UI: http://localhost:3000
+```
+
+The frontend is downloaded once (~50 MB) and cached in `~/.repowise/web/`.
+
+To skip the web UI and only run the API: `repowise serve --no-ui`
+
+### With Docker (no Node.js needed)
+
+```bash
+docker build -t repowise https://github.com/RaghavChamadiya/repowise.git
+
+docker run -p 7337:7337 -p 3000:3000 \
+  -v /path/to/your-repo/.repowise:/data \
+  -e GEMINI_API_KEY=your-key \
+  -e REPOWISE_EMBEDDER=gemini \
+  repowise
+```
+
+### From source (for development)
+
+```bash
+git clone https://github.com/RaghavChamadiya/repowise.git
+cd repowise && npm install
+
+# Terminal 1: API
+repowise serve --no-ui
+
+# Terminal 2: Frontend (with hot reload)
+REPOWISE_API_URL=http://localhost:7337 npm run dev --workspace packages/web
+```
+
+---
+
+## Environment Variables
+
+| Variable | When needed | Description |
+|----------|-------------|-------------|
+| `ANTHROPIC_API_KEY` | Using Anthropic | Anthropic API key |
+| `OPENAI_API_KEY` | Using OpenAI | OpenAI API key |
+| `GEMINI_API_KEY` | Using Gemini | Google Gemini API key |
+| `REPOWISE_EMBEDDER` | Semantic search | Embedder: `gemini`, `openai`, or `mock` (default) |
+| `REPOWISE_DB_URL` | Custom database | SQLite/PostgreSQL connection string (default: `.repowise/wiki.db`) |
+| `REPOWISE_API_URL` | Frontend only | Backend URL for the web UI (default: `http://localhost:7337`) |
+
+---
+
+## What's Next
+
+- **[User Guide](USER_GUIDE.md)** — full CLI reference (all 13 commands with every flag), web UI features, MCP setup, common workflows, and troubleshooting
+- **[Architecture](ARCHITECTURE.md)** — how repowise is built internally
