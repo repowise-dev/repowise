@@ -109,13 +109,13 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: packages/web/package.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: cd packages/web && npm install
+        run: npm ci --workspace packages/web
 
       - name: Type check
-        run: cd packages/web && npm run type-check
+        run: npm run type-check --workspace packages/web
 
       - name: Lint
-        run: cd packages/web && npm run lint
+        run: npm run lint --workspace packages/web

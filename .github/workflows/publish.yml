@@ -23,24 +23,31 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: packages/web/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: cd packages/web && npm install
+        run: npm ci --workspace packages/web
 
       - name: Build Next.js (standalone)
-        run: cd packages/web && npm run build
+        run: npm run build --workspace packages/web
         env:
           NEXT_PUBLIC_REPOWISE_API_URL: ""
 
       - name: Package standalone output
         run: |
-          cd packages/web/.next/standalone
-          # Copy static files into standalone (Next.js requirement)
-          cp -r ../../.next/static .next/static
-          [ -d ../../public ] && cp -r ../../public public || true
+          STANDALONE=packages/web/.next/standalone
+          # Copy static assets into standalone (Next.js requirement)
+          cp -r packages/web/.next/static $STANDALONE/packages/web/.next/static
+          [ -d packages/web/public ] && cp -r packages/web/public $STANDALONE/packages/web/public || true
+          # Flatten: move the nested server into a clean directory
+          mkdir -p /tmp/repowise-web
+          cp $STANDALONE/packages/web/server.js /tmp/repowise-web/
+          cp -r $STANDALONE/packages/web/.next /tmp/repowise-web/.next
+          [ -d $STANDALONE/packages/web/public ] && cp -r $STANDALONE/packages/web/public /tmp/repowise-web/public || true
+          cp -r $STANDALONE/node_modules /tmp/repowise-web/node_modules 2>/dev/null || true
+          [ -d $STANDALONE/packages/web/node_modules ] && cp -r $STANDALONE/packages/web/node_modules/* /tmp/repowise-web/node_modules/ 2>/dev/null || true
           # Create tarball
-          tar -czf /tmp/repowise-web.tar.gz .
+          cd /tmp/repowise-web && tar -czf /tmp/repowise-web.tar.gz .
 
       - name: Upload web artifact
         uses: actions/upload-artifact@v4
