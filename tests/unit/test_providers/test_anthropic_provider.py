@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from repowise.core.providers.base import GeneratedResponse, ProviderError, RateLimitError
-from repowise.core.providers.anthropic import AnthropicProvider
+from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
+from repowise.core.providers.llm.anthropic import AnthropicProvider
 
 
 # ---------------------------------------------------------------------------

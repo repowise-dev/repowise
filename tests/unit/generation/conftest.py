@@ -15,7 +15,7 @@ from repowise.core.ingestion.models import (
     RepoStructure,
     Symbol,
 )
-from repowise.core.providers.mock import MockProvider
+from repowise.core.providers.llm.mock import MockProvider
 from repowise.core.generation.models import GenerationConfig
 
 

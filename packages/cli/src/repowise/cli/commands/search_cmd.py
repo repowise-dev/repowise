@@ -73,11 +73,11 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
 
                 embedder_name = _resolve_embedder(None)
                 if embedder_name == "gemini":
-                    from repowise.core.persistence.gemini_embedder import GeminiEmbedder
+                    from repowise.core.providers.embedding.gemini import GeminiEmbedder
 
                     embedder = GeminiEmbedder()
                 elif embedder_name == "openai":
-                    from repowise.core.persistence.openai_embedder import OpenAIEmbedder
+                    from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
                     embedder = OpenAIEmbedder()
                 else:

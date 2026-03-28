@@ -40,7 +40,7 @@ from repowise.core.persistence import (
     upsert_page_from_generated,
     upsert_repository,
 )
-from repowise.core.providers.mock import MockProvider
+from repowise.core.providers.llm.mock import MockProvider
 
 SAMPLE_REPO = Path(__file__).parents[1] / "fixtures" / "sample_repo"
 

@@ -11,7 +11,7 @@ from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.models import GenerationConfig, GeneratedPage
 from repowise.core.generation.page_generator import PageGenerator, SYSTEM_PROMPTS
 from repowise.core.ingestion.models import FileInfo, Import, ParsedFile, RepoStructure, PackageInfo
-from repowise.core.providers.mock import MockProvider
+from repowise.core.providers.llm.mock import MockProvider
 
 from .conftest import _make_file_info, _make_symbol
 

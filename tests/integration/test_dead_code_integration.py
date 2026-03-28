@@ -63,7 +63,7 @@ async def test_hotspot_sorted_first_in_generation() -> None:
     from datetime import datetime
 
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
-    from repowise.core.providers.base import BaseProvider
+    from repowise.core.providers.llm.base import BaseProvider
 
     # Create a mock provider
     mock_provider = MagicMock(spec=BaseProvider)

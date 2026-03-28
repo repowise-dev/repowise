@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from repowise.core.providers.base import GeneratedResponse, ProviderError, RateLimitError
-from repowise.core.providers.gemini import GeminiProvider
+from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
+from repowise.core.providers.llm.gemini import GeminiProvider
 
 
 # ---------------------------------------------------------------------------

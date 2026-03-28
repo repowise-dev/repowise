@@ -24,7 +24,7 @@ import jinja2
 import structlog
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
-from repowise.core.providers.base import BaseProvider, GeneratedResponse
+from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
 
 from .context_assembler import ContextAssembler, FilePageContext, CrossPackageContext
 from .models import (

@@ -11,7 +11,7 @@ from starlette.responses import StreamingResponse
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence import crud
-from repowise.core.providers.base import ChatProvider, ChatStreamEvent, ProviderError
+from repowise.core.providers.llm.base import ChatProvider, ChatStreamEvent, ProviderError
 from repowise.server.chat_tools import (
     execute_tool,
     get_artifact_type,

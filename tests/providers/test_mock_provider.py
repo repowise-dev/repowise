@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.providers.base import BaseProvider, GeneratedResponse
-from repowise.core.providers.mock import MockProvider
+from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
+from repowise.core.providers.llm.mock import MockProvider
 
 
 # ---------------------------------------------------------------------------

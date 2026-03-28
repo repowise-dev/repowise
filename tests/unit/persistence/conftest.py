@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.persistence.database import init_db
-from repowise.core.persistence.embedder import MockEmbedder
+from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 
 

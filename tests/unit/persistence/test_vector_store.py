@@ -11,7 +11,7 @@ import math
 
 import pytest
 
-from repowise.core.persistence.embedder import Embedder, MockEmbedder
+from repowise.core.providers.embedding.base import Embedder, MockEmbedder
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 
 

@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from repowise.core.persistence.database import get_session, init_db
-from repowise.core.persistence.embedder import MockEmbedder
+from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.server.mcp_server import _state
@@ -33,7 +33,7 @@ def _resolve_embedder():
             pass
     if name == "gemini":
         try:
-            from repowise.core.persistence.gemini_embedder import GeminiEmbedder
+            from repowise.core.providers.embedding.gemini import GeminiEmbedder
 
             dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
             return GeminiEmbedder(output_dimensionality=dims)
@@ -41,7 +41,7 @@ def _resolve_embedder():
             pass
     if name == "openai":
         try:
-            from repowise.core.persistence.openai_embedder import OpenAIEmbedder
+            from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
             model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "text-embedding-3-small")
             return OpenAIEmbedder(model=model)

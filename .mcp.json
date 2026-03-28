@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "repowise": {
+      "command": "C:\\Users\\ragha\\.local\\bin\\uv.exe",
+      "args": [
+        "run",
+        "--directory",
+        "C:\\Users\\ragha\\Desktop\\repowise",
+        "repowise",
+        "mcp",
+        "C:\\Users\\ragha\\Desktop\\repowise"
+      ]
+    }
+  }
+}

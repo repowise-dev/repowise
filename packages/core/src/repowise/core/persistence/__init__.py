@@ -70,7 +70,7 @@ from .database import (
     get_session,
     init_db,
 )
-from .embedder import Embedder, MockEmbedder
+from repowise.core.providers.embedding.base import Embedder, MockEmbedder
 from .models import (
     Base,
     ChatMessage,

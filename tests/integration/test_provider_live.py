@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-from repowise.core.providers.base import GeneratedResponse
+from repowise.core.providers.llm.base import GeneratedResponse
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 @pytest.mark.skipif(not OPENAI_KEY, reason="OPENAI_API_KEY not set")
 @pytest.mark.parametrize("model", ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"])
 async def test_openai_live(model):
-    from repowise.core.providers.openai import OpenAIProvider
+    from repowise.core.providers.llm.openai import OpenAIProvider
 
     provider = OpenAIProvider(api_key=OPENAI_KEY, model=model)
     result = await provider.generate(
@@ -57,7 +57,7 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"
     "gemini-3.1-pro-preview",
 ])
 async def test_gemini_live(model):
-    from repowise.core.providers.gemini import GeminiProvider
+    from repowise.core.providers.llm.gemini import GeminiProvider
 
     provider = GeminiProvider(api_key=GEMINI_KEY, model=model)
     result = await provider.generate(
@@ -80,7 +80,7 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 @pytest.mark.skipif(not ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY not set")
 @pytest.mark.parametrize("model", ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"])
 async def test_anthropic_live(model):
-    from repowise.core.providers.anthropic import AnthropicProvider
+    from repowise.core.providers.llm.anthropic import AnthropicProvider
 
     provider = AnthropicProvider(api_key=ANTHROPIC_KEY, model=model)
     result = await provider.generate(

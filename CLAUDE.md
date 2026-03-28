@@ -9,13 +9,13 @@
 This project is indexed by [Repowise](https://repowise.dev) — a codebase intelligence layer.
 Last indexed: 2026-03-28. Confidence: 100%.
 ### Architecture
-is a sophisticated, multi-language monorepo designed to facilitate repository analysis, ingestion, and visualization. The project leverages a robust backend architecture to process source code across various languages, providing a structured way to index, search, and embed repository data. With a clean separation between core logic, CLI tooling, server-side operations, and a web-based frontend,  serves as a comprehensive toolkit for developers looking to gain insights into complex codebases. The project is a polyglot monorepo with a primary focus on Python for backend logic and TypeScript/JavaScript for the web interface.
+repo is a sophisticated monorepo designed to provide comprehensive repository analysis, ingestion, and intelligence capabilities. It leverages a multi-language architecture to handle complex codebase parsing, LLM-based reasoning, and persistence. The project is structured to support a CLI for local interaction, a server for backend operations, and a web interface for visualization and management. With a clean dependency graph and zero circular dependencies, the project maintains high modularity across its Python-heavy core and TypeScript-based frontend.
 ### Key Modules
 | Module | Purpose | Owner |
 |--------|---------|-------|
-| `tests` | The  module serves as the comprehensive testing suite for the Repowise ecosystem | — |
-| `packages` | The  module serves as the monorepo root for the Repowise ecosystem, encompassing | — |
-| `root` | The  module serves as the primary execution entry point for the Repowise ingesti | — |
+| `tests` | The tests module serves as the comprehensive testing suite for the Repowise plat | — |
+| `packages` | The packages module serves as the foundational monorepo structure for **Repowise | — |
+| `root` | The root module serves as the primary execution entry point for the Repowise ing | — |
 ### Entry Points
 - `packages/cli/src/repowise/cli/main.py`
 - `packages/server/src/repowise/server/app.py`
@@ -28,11 +28,11 @@ is a sophisticated, multi-language monorepo designed to facilitate repository an
 ### Hotspots (High Churn)
 | File | Churn | 90d Commits | Owner |
 |------|-------|-------------|-------|
-| `packages/core/src/repowise/core/ingestion/git_indexer.py` | 99.7th %ile | 8 | RaghavChamadiya |
-| `tests/unit/server/test_mcp.py` | 99.4th %ile | 7 | RaghavChamadiya |
-| `packages/cli/src/repowise/cli/commands/update_cmd.py` | 99.0th %ile | 5 | RaghavChamadiya |
-| `tests/unit/persistence/test_models.py` | 98.7th %ile | 4 | RaghavChamadiya |
-| `packages/web/src/components/layout/sidebar.tsx` | 98.4th %ile | 4 | RaghavChamadiya |
+| `packages/cli/src/repowise/cli/commands/init_cmd.py` | 99.7th %ile | 10 | RaghavChamadiya |
+| `packages/core/src/repowise/core/ingestion/git_indexer.py` | 99.4th %ile | 8 | RaghavChamadiya |
+| `tests/unit/server/test_mcp.py` | 99.1th %ile | 7 | RaghavChamadiya |
+| `docs/ARCHITECTURE.md` | 98.8th %ile | 7 | RaghavChamadiya |
+| `packages/cli/src/repowise/cli/commands/update_cmd.py` | 98.6th %ile | 6 | RaghavChamadiya |
 
 ### Repowise MCP Tools
 

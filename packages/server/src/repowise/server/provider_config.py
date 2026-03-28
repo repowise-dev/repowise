@@ -183,7 +183,7 @@ def get_chat_provider_instance():
 
     Returns a provider that implements both BaseProvider and ChatProvider.
     """
-    from repowise.core.providers.registry import get_provider
+    from repowise.core.providers.llm.registry import get_provider
 
     provider_id, model = get_active_provider()
     if not provider_id:

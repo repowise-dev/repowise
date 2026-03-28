@@ -57,11 +57,11 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         embedder_name = _resolve_embedder(None)
 
     if embedder_name == "gemini":
-        from repowise.core.persistence.gemini_embedder import GeminiEmbedder
+        from repowise.core.providers.embedding.gemini import GeminiEmbedder
         embedder_impl = GeminiEmbedder()
         console.print(f"[green]Using Gemini embedder[/green]")
     elif embedder_name == "openai":
-        from repowise.core.persistence.openai_embedder import OpenAIEmbedder
+        from repowise.core.providers.embedding.openai import OpenAIEmbedder
         embedder_impl = OpenAIEmbedder()
         console.print(f"[green]Using OpenAI embedder[/green]")
     else:

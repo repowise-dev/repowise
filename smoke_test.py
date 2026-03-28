@@ -27,7 +27,7 @@ load_dotenv(str(Path(__file__).parent / ".env"))
 
 
 async def test_gemini() -> None:
-    from repowise.core.providers.gemini import GeminiProvider
+    from repowise.core.providers.llm.gemini import GeminiProvider
     p = GeminiProvider()
     print(f"  key: {p._api_key[:10]}...")
     r = await p.generate(
@@ -40,7 +40,7 @@ async def test_gemini() -> None:
 
 
 async def test_openai() -> None:
-    from repowise.core.providers.openai import OpenAIProvider
+    from repowise.core.providers.llm.openai import OpenAIProvider
     key = os.environ.get("OPENAI_API_KEY", "")
     p = OpenAIProvider(api_key=key, model="gpt-4.1-mini")
     print(f"  key: {key[:10]}...")

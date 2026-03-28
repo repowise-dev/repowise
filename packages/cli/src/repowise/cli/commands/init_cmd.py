@@ -397,7 +397,7 @@ def init_command(
         console.print(f"  Embedder: [cyan]{embedder}[/cyan]")
 
         # Validate API key with a lightweight call before ingesting
-        from repowise.core.providers.base import ProviderError
+        from repowise.core.providers.llm.base import ProviderError
 
         with console.status("  Verifying provider connection…", spinner="dots"):
             try:
@@ -730,7 +730,7 @@ def init_command(
 
     # ---- Generate pages ----
     from repowise.core.generation import ContextAssembler, JobSystem, PageGenerator
-    from repowise.core.persistence.embedder import MockEmbedder
+    from repowise.core.providers.embedding.base import MockEmbedder
     from repowise.core.persistence.vector_store import InMemoryVectorStore
 
     assembler = ContextAssembler(config)
@@ -740,13 +740,13 @@ def init_command(
     embedder_resolved = _resolve_embedder(embedder_name)
     if embedder_resolved == "gemini":
         try:
-            from repowise.core.persistence.gemini_embedder import GeminiEmbedder
+            from repowise.core.providers.embedding.gemini import GeminiEmbedder
             embedder_impl = GeminiEmbedder()
         except Exception:
             embedder_impl = MockEmbedder()
     elif embedder_resolved == "openai":
         try:
-            from repowise.core.persistence.openai_embedder import OpenAIEmbedder
+            from repowise.core.providers.embedding.openai import OpenAIEmbedder
             embedder_impl = OpenAIEmbedder()
         except Exception:
             embedder_impl = MockEmbedder()

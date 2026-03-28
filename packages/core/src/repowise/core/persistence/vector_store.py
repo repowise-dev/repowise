@@ -25,7 +25,7 @@ import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from .embedder import Embedder
+from repowise.core.providers.embedding.base import Embedder
 from .search import SearchResult
 
 if TYPE_CHECKING:

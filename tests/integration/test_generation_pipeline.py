@@ -25,7 +25,7 @@ from repowise.core.ingestion.models import (
 )
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.traverser import FileTraverser
-from repowise.core.providers.mock import MockProvider
+from repowise.core.providers.llm.mock import MockProvider
 
 SAMPLE_REPO = Path(__file__).parents[1] / "fixtures" / "sample_repo"
 
