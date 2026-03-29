@@ -62,6 +62,8 @@ export function useFileElkLayout(
               isTest: node.is_test,
               isEntryPoint: node.is_entry_point,
               hasDoc: node.has_doc,
+              ...("confidence_group" in node && { confidenceGroup: (node as Record<string, unknown>).confidence_group }),
+              ...("commit_count" in node && { commitCount: (node as Record<string, unknown>).commit_count }),
             },
           })),
         );

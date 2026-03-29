@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { LANGUAGE_COLORS } from "@/lib/utils/confidence";
 import type { ColorMode, ViewMode } from "./graph-toolbar";
 
@@ -35,90 +37,81 @@ export function GraphLegend({
   colorMode,
   viewMode,
 }: GraphLegendProps) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm p-2.5 text-xs space-y-1.5 min-w-[130px] max-w-[160px] shadow-lg shadow-black/20">
-      <div className="font-medium text-[var(--color-text-secondary)] tabular-nums">
-        {nodeCount} nodes &middot; {edgeCount} edges
-      </div>
-
-      <div className="border-t border-[var(--color-border-default)] pt-1.5 space-y-1">
-        {/* Doc status — always shown */}
-        <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-          <span
-            className="w-2 h-2 rounded-full shrink-0"
-            style={{ background: "var(--color-node-documented)" }}
-          />
-          <span>Has docs</span>
-        </div>
-        <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-          <span
-            className="w-2 h-2 rounded-full shrink-0"
-            style={{ background: "var(--color-node-undocumented)" }}
-          />
-          <span>No docs</span>
-        </div>
-      </div>
-
-      {/* Color mode legend */}
-      <div className="border-t border-[var(--color-border-default)] pt-1.5 space-y-1">
-        <p className="text-[9px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium mb-1">
-          {colorMode === "language" ? "Language" : colorMode === "community" ? "Community" : "Risk"}
-        </p>
-
-        {colorMode === "language" &&
-          LANGUAGE_LEGEND.map((l) => (
-            <div key={l.lang} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-              <span
-                className="w-2 h-2 rounded-full shrink-0"
-                style={{ background: l.color }}
-              />
-              <span>{l.label}</span>
-            </div>
-          ))}
-
-        {colorMode === "community" &&
-          COMMUNITY_SAMPLE.map((c, i) => (
-            <div key={i} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-              <span
-                className="w-2 h-2 rounded-full shrink-0"
-                style={{ background: c.color }}
-              />
-              <span>{c.label}</span>
-            </div>
-          ))}
-
-        {colorMode === "risk" && (
-          <>
-            <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-              <span className="w-2 h-2 rounded-full shrink-0 bg-[#22c55e]" />
-              <span>Low risk</span>
-            </div>
-            <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-              <span className="w-2 h-2 rounded-full shrink-0 bg-[#f59520]" />
-              <span>Medium risk</span>
-            </div>
-            <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-              <span className="w-2 h-2 rounded-full shrink-0 bg-[#ef4444]" />
-              <span>High risk</span>
-            </div>
-          </>
+    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-lg shadow-black/20 min-w-[120px] max-w-[150px]">
+      {/* Header — always visible, clickable to expand */}
+      <button
+        onClick={() => setExpanded((s) => !s)}
+        className="flex items-center justify-between w-full px-2.5 py-2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+      >
+        <span className="font-medium tabular-nums">
+          {nodeCount} nodes &middot; {edgeCount} edges
+        </span>
+        {expanded ? (
+          <ChevronDown className="w-3 h-3 shrink-0 ml-1.5" />
+        ) : (
+          <ChevronUp className="w-3 h-3 shrink-0 ml-1.5" />
         )}
-      </div>
+      </button>
 
-      {/* View-specific info */}
-      {viewMode !== "module" && viewMode !== "full" && (
-        <div className="border-t border-[var(--color-border-default)] pt-1.5">
-          <p className="text-[9px] text-[var(--color-text-tertiary)]">
-            {viewMode === "dead" && "Showing unreachable files"}
-            {viewMode === "hotfiles" && "Most-committed files (30d)"}
-            {viewMode === "architecture" && "Entry-point reachable (3 hops)"}
+      {/* Expandable color legend */}
+      {expanded && (
+        <div className="px-2.5 pb-2.5 space-y-1.5 border-t border-[var(--color-border-default)] pt-2">
+          <p className="text-[9px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
+            {colorMode === "language" ? "Language" : colorMode === "community" ? "Community" : "Risk"}
           </p>
+
+          {colorMode === "language" &&
+            LANGUAGE_LEGEND.map((l) => (
+              <div key={l.lang} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ background: l.color }}
+                />
+                <span>{l.label}</span>
+              </div>
+            ))}
+
+          {colorMode === "community" &&
+            COMMUNITY_SAMPLE.map((c, i) => (
+              <div key={i} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ background: c.color }}
+                />
+                <span>{c.label}</span>
+              </div>
+            ))}
+
+          {colorMode === "risk" && (
+            <>
+              <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                <span className="w-2 h-2 rounded-full shrink-0 bg-[#22c55e]" />
+                <span>Low risk</span>
+              </div>
+              <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                <span className="w-2 h-2 rounded-full shrink-0 bg-[#f59520]" />
+                <span>Medium risk</span>
+              </div>
+              <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                <span className="w-2 h-2 rounded-full shrink-0 bg-[#ef4444]" />
+                <span>High risk</span>
+              </div>
+            </>
+          )}
+
+          {/* View-specific info */}
+          {viewMode !== "module" && viewMode !== "full" && (
+            <p className="text-[9px] text-[var(--color-text-tertiary)] pt-1 border-t border-[var(--color-border-default)]">
+              {viewMode === "dead" && "Showing unreachable files"}
+              {viewMode === "hotfiles" && "Most-committed files (30d)"}
+              {viewMode === "architecture" && "Entry-point reachable (3 hops)"}
+            </p>
+          )}
         </div>
       )}
-
-      <p className="text-[9px] text-[var(--color-text-tertiary)] pt-1 border-t border-[var(--color-border-default)]">
-        Click &middot; Double-click &middot; Right-click
-      </p>
     </div>
   );
 }

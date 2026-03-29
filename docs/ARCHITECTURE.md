@@ -78,7 +78,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (8 tools)    (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (9 tools)    (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
 │  Vector (LanceDB /   │   │  (init, update, watch,                  │
@@ -954,7 +954,7 @@ and supports two transports:
 - **stdio** — for Claude Code, Cursor, Cline (add to their MCP config)
 - **SSE** — for web-based MCP clients (served on port 7338)
 
-### Tools (8 total)
+### Tools (9 total)
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|
@@ -962,6 +962,7 @@ and supports two transports:
 | `get_context(targets, include?)` | Docs, ownership, history, decisions, freshness for files/modules/symbols. Pass multiple targets in one call. | When you need to understand specific code before reading or modifying it. |
 | `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary per target. Also returns top 5 global hotspots. | Before modifying files — assess what could break. |
 | `get_why(query?)` | Three modes: NL search over decisions, path-based decisions for a file, no-arg health dashboard. | Before making architectural changes — understand existing intent. |
+| `update_decision_records(action, ...)` | Full CRUD on decision records: create, update, update_status, delete, list, get. | After every coding task — record new decisions and keep existing ones current. |
 | `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When you don't know where something lives. |
 | `get_dependency_path(from, to)` | Connection path between two files/modules in the dependency graph. | When you need to understand how two things are connected. |
 | `get_dead_code` | Dead/unused code findings sorted by confidence and cleanup impact. | Before cleanup tasks. |
