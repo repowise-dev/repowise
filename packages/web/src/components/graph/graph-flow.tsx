@@ -6,6 +6,7 @@ import {
   useMemo,
   useState,
   useEffect,
+  useRef,
 } from "react";
 import {
   ReactFlow,
@@ -32,12 +33,13 @@ import {
 import { ModuleGroupNode } from "./nodes/module-group-node";
 import { FileNode } from "./nodes/file-node";
 import { DependencyEdge } from "./edges/dependency-edge";
-import { groupNodesAsModules } from "./elk-layout";
+import { groupNodesAsModules, type FileNodeData } from "./elk-layout";
 import { useModuleElkLayout, useFileElkLayout } from "./use-elk-layout";
 import { PathFinderPanel } from "./path-finder-panel";
 import { GraphToolbar, type ColorMode, type ViewMode } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
 import { GraphContextMenu } from "./graph-context-menu";
+import { GraphTooltip } from "./graph-tooltip";
 import { languageColor } from "@/lib/utils/confidence";
 
 // ---- Context ----
@@ -47,6 +49,10 @@ export interface GraphContextValue {
   highlightedEdges: Set<string>;
   colorMode: ColorMode;
   riskScores: Map<string, number>;
+  hoveredNodeId: string | null;
+  connectedNodeIds: Set<string>;
+  connectedEdgeIds: Set<string>;
+  selectedNodeId: string | null;
 }
 
 export const GraphContext = createContext<GraphContextValue>({
@@ -54,6 +60,10 @@ export const GraphContext = createContext<GraphContextValue>({
   highlightedEdges: new Set(),
   colorMode: "language",
   riskScores: new Map(),
+  hoveredNodeId: null,
+  connectedNodeIds: new Set(),
+  connectedEdgeIds: new Set(),
+  selectedNodeId: null,
 });
 
 // ---- Node/Edge types ----
@@ -103,6 +113,11 @@ function GraphFlowInner({
   // Path finder pre-fill
   const [pathFrom, setPathFrom] = useState("");
   const [pathTo, setPathTo] = useState("");
+
+  // Hover & selection tracking
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeScreen, setSelectedNodeScreen] = useState<{ x: number; y: number } | null>(null);
 
   // ---- Data fetching ----
   const isModuleView = viewMode === "module";
@@ -206,6 +221,21 @@ function GraphFlowInner({
     viewMode === "hotfiles" ? hotLoading : false;
   const isLayouting = isModuleView ? moduleLayouting : fileLayouting;
 
+  // Compute connected nodes/edges for hover highlighting
+  const { connectedNodeIds, connectedEdgeIds } = useMemo(() => {
+    if (!hoveredNodeId) return { connectedNodeIds: new Set<string>(), connectedEdgeIds: new Set<string>() };
+    const nodeIds = new Set<string>([hoveredNodeId]);
+    const edgeIds = new Set<string>();
+    for (const edge of currentEdges) {
+      if (edge.source === hoveredNodeId || edge.target === hoveredNodeId) {
+        edgeIds.add(edge.id);
+        nodeIds.add(edge.source);
+        nodeIds.add(edge.target);
+      }
+    }
+    return { connectedNodeIds: nodeIds, connectedEdgeIds: edgeIds };
+  }, [hoveredNodeId, currentEdges]);
+
   // Context value
   const ctxValue = useMemo<GraphContextValue>(
     () => ({
@@ -213,23 +243,45 @@ function GraphFlowInner({
       highlightedEdges,
       colorMode,
       riskScores: new Map(),
+      hoveredNodeId,
+      connectedNodeIds,
+      connectedEdgeIds,
+      selectedNodeId,
     }),
-    [highlightedPath, highlightedEdges, colorMode],
+    [highlightedPath, highlightedEdges, colorMode, hoveredNodeId, connectedNodeIds, connectedEdgeIds, selectedNodeId],
   );
 
   // ---- Handlers ----
 
   const handleNodeClick: NodeMouseHandler = useCallback(
-    (_event, node) => {
+    (event, node) => {
       if (node.type === "moduleGroup" && isModuleView) {
         // Drill into this module — the node ID is the full module path
         setModulePath((prev) => [...prev, node.id]);
+        setSelectedNodeId(null);
         return;
       }
-      // File node or dir group in file view — pass to parent (opens docs)
-      onNodeClick?.(node.id, node.type ?? "fileNode");
+      // Toggle selection — show tooltip on click
+      const mEvent = event as unknown as React.MouseEvent;
+      if (selectedNodeId === node.id) {
+        setSelectedNodeId(null);
+        setSelectedNodeScreen(null);
+      } else {
+        setSelectedNodeId(node.id);
+        setSelectedNodeScreen({ x: mEvent.clientX, y: mEvent.clientY });
+      }
     },
-    [isModuleView, onNodeClick],
+    [isModuleView, selectedNodeId],
+  );
+
+  const handleNodeMouseEnter: NodeMouseHandler = useCallback(
+    (_event, node) => { setHoveredNodeId(node.id); },
+    [],
+  );
+
+  const handleNodeMouseLeave: NodeMouseHandler = useCallback(
+    () => { setHoveredNodeId(null); },
+    [],
   );
 
   const handleNodeDoubleClick: NodeMouseHandler = useCallback(
@@ -300,6 +352,8 @@ function GraphFlowInner({
     setModulePath([]);
     setHighlightedPath(new Set());
     setHighlightedEdges(new Set());
+    setSelectedNodeId(null);
+    setSelectedNodeScreen(null);
   }, []);
 
   // Breadcrumb
@@ -338,6 +392,45 @@ function GraphFlowInner({
     setCtxMenu(null);
   }, [ctxMenu]);
 
+  // After layout completes, zoom to entry-point nodes for a readable first view
+  const hasFocusedRef = useRef(false);
+
+  useEffect(() => {
+    // Only auto-focus once per view mode, after layout is done and nodes exist
+    if (isLayouting || filteredNodes.length === 0 || hasFocusedRef.current) return;
+    hasFocusedRef.current = true;
+
+    const timer = setTimeout(() => {
+      // Per-view zoom strategy
+      switch (viewMode) {
+        case "dead":
+        case "hotfiles":
+        case "architecture": {
+          // Small, focused graphs — fit all nodes, zoom in to read them
+          reactFlow.fitView({ padding: 0.3, duration: 600, maxZoom: 1.5 });
+          return;
+        }
+        case "module": {
+          // Module view — fit all, comfortable zoom
+          reactFlow.fitView({ padding: 0.2, duration: 600, maxZoom: 1 });
+          return;
+        }
+        default:
+          break;
+      }
+
+      // Full graph: zoom to show all nodes but cap zoom so they're readable
+      reactFlow.fitView({ padding: 0.15, duration: 600, maxZoom: 0.6 });
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [isLayouting, filteredNodes, reactFlow]);
+
+  // Reset focus flag when view mode changes
+  useEffect(() => {
+    hasFocusedRef.current = false;
+  }, [viewMode]);
+
   const minimapNodeColor = useCallback(
     (node: Node) => {
       if (node.type === "moduleGroup") {
@@ -353,15 +446,6 @@ function GraphFlowInner({
 
   if (isLoading) return <Skeleton className="h-full w-full rounded-lg" />;
 
-  if (filteredNodes.length === 0 && !isLayouting) {
-    return (
-      <EmptyState
-        title="No graph data"
-        description="Check that the backend is running and this repo has been indexed."
-      />
-    );
-  }
-
   return (
     <GraphContext.Provider value={ctxValue}>
       <div className="relative w-full h-full">
@@ -374,6 +458,14 @@ function GraphFlowInner({
           </div>
         )}
 
+        {filteredNodes.length === 0 && !isLayouting ? (
+          <div className="flex items-center justify-center h-full">
+            <EmptyState
+              title="No graph data"
+              description="Check that the backend is running and this repo has been indexed."
+            />
+          </div>
+        ) : (
         <ReactFlow
           nodes={filteredNodes}
           edges={currentEdges}
@@ -382,16 +474,19 @@ function GraphFlowInner({
           onNodeClick={handleNodeClick}
           onNodeDoubleClick={handleNodeDoubleClick}
           onNodeContextMenu={handleNodeContextMenu}
+          onNodeMouseEnter={handleNodeMouseEnter}
+          onNodeMouseLeave={handleNodeMouseLeave}
+          onPaneClick={() => { setSelectedNodeId(null); setSelectedNodeScreen(null); }}
           fitView
-          fitViewOptions={{ padding: 0.15 }}
-          minZoom={0.02}
+          fitViewOptions={{ padding: 0.3, maxZoom: 1.2 }}
+          minZoom={0.05}
           maxZoom={4}
           proOptions={{ hideAttribution: true }}
           className="!bg-transparent"
           nodesDraggable={false}
           defaultEdgeOptions={{ type: "dependency" }}
         >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(255,255,255,0.04)" />
+          <Background variant={BackgroundVariant.Dots} gap={16} size={0.5} color="rgba(255,255,255,0.03)" />
           <Controls
             showInteractive={false}
             className="!border-[var(--color-border-default)] !bg-[var(--color-bg-elevated)] !shadow-lg !shadow-black/20 [&>button]:!border-[var(--color-border-default)] [&>button]:!bg-[var(--color-bg-elevated)] [&>button]:!text-[var(--color-text-secondary)] [&>button:hover]:!bg-[var(--color-bg-overlay)] [&>button:hover]:!text-[var(--color-text-primary)]"
@@ -404,6 +499,7 @@ function GraphFlowInner({
             zoomable
           />
         </ReactFlow>
+        )}
 
         {/* Breadcrumb — shown when drilled into a module */}
         {isModuleView && isDrilledDown && (
@@ -493,6 +589,28 @@ function GraphFlowInner({
             onPathTo={handleCtxPathTo}
           />
         )}
+
+        {/* Node detail tooltip */}
+        {selectedNodeId && selectedNodeScreen && (() => {
+          const rfNode = filteredNodes.find((n) => n.id === selectedNodeId);
+          if (!rfNode) return null;
+          return (
+            <GraphTooltip
+              nodeId={selectedNodeId}
+              nodeType={rfNode.type ?? "fileNode"}
+              data={rfNode.data as Record<string, unknown>}
+              x={selectedNodeScreen.x}
+              y={selectedNodeScreen.y}
+              onClose={() => { setSelectedNodeId(null); setSelectedNodeScreen(null); }}
+              onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); setSelectedNodeId(null); setSelectedNodeScreen(null); }}
+              onExplore={rfNode.type === "moduleGroup" && isModuleView ? () => {
+                setModulePath((prev) => [...prev, selectedNodeId]);
+                setSelectedNodeId(null);
+                setSelectedNodeScreen(null);
+              } : undefined}
+            />
+          );
+        })()}
       </div>
     </GraphContext.Provider>
   );

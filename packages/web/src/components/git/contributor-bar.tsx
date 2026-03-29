@@ -16,7 +16,7 @@ interface ContributorBarProps {
 export function ContributorBar({ owners }: ContributorBarProps) {
   const data = owners.slice(0, 5).map((o) => ({
     name: o.name.split(" ")[0] ?? o.name,
-    files: o.file_count,
+    files: o.file_count ?? 0,
   }));
 
   if (data.length === 0) return null;

@@ -121,7 +121,7 @@ export default function OwnershipPage() {
                   <div key={o.email || `owner-${i}`} className="flex items-center justify-between text-xs">
                     <span className="text-[var(--color-text-secondary)] truncate">{o.name}</span>
                     <span className="text-[var(--color-text-tertiary)] tabular-nums ml-2">
-                      {Math.round(o.pct * 100)}%
+                      {Math.round((o.pct ?? 0) * 100)}%
                     </span>
                   </div>
                 ))}
