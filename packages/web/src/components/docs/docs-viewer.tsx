@@ -8,6 +8,7 @@ import {
   Cpu,
   Hash,
   ExternalLink,
+  Download,
   ArrowRight,
   RefreshCw,
   Loader2,
@@ -18,6 +19,7 @@ import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
+import { downloadTextFile } from "@/lib/utils/download";
 import type { PageResponse } from "@/lib/api/types";
 
 interface DocsViewerProps {
@@ -83,6 +85,19 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
           <Cpu className="h-2.5 w-2.5 mr-1" />
           <span className="truncate max-w-[100px]">{page.model_name}</span>
         </Badge>
+
+        {/* Download as markdown */}
+        <button
+          onClick={() => {
+            const filename = (page.target_path || page.title).replace(/\//g, "_") + ".md";
+            const header = `# ${page.title}\n\n> Path: ${page.target_path}\n\n`;
+            downloadTextFile(header + page.content, filename);
+          }}
+          className="text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-primary)] transition-colors shrink-0"
+          title="Download as Markdown"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
 
         {/* Open full page link */}
         <Link

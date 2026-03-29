@@ -17,10 +17,10 @@ import type {
 
 // ---- Constants ----
 
-const MODULE_NODE_WIDTH = 200;
-const MODULE_NODE_HEIGHT = 60;
-const FILE_NODE_WIDTH = 160;
-const FILE_NODE_HEIGHT = 40;
+const MODULE_NODE_WIDTH = 140;
+const MODULE_NODE_HEIGHT = 36;
+const FILE_NODE_WIDTH = 140;
+const FILE_NODE_HEIGHT = 36;
 
 const elk = new ELK();
 
@@ -237,10 +237,10 @@ export async function layoutFileGraph(
     layoutOptions: {
       "elk.algorithm": "layered",
       "elk.direction": "DOWN",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "60",
-      "elk.layered.spacing.edgeNodeBetweenLayers": "30",
-      "elk.spacing.nodeNode": "30",
-      "elk.spacing.componentComponent": "50",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "80",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "35",
+      "elk.spacing.nodeNode": "40",
+      "elk.spacing.componentComponent": "60",
       "elk.hierarchyHandling": "INCLUDE_CHILDREN",
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
       "elk.padding": "[top=45,left=15,bottom=15,right=15]",
@@ -360,6 +360,9 @@ export async function layoutFileGraph(
               isTest: apiNode.is_test,
               isEntryPoint: apiNode.is_entry_point,
               hasDoc: apiNode.has_doc,
+              // View-specific fields (dead code, hot files)
+              ...("confidence_group" in apiNode && { confidenceGroup: (apiNode as Record<string, unknown>).confidence_group }),
+              ...("commit_count" in apiNode && { commitCount: (apiNode as Record<string, unknown>).commit_count }),
             } satisfies FileNodeData,
           });
         }
@@ -447,6 +450,8 @@ export async function layoutModuleGraph(
           isTest: fileEntry.is_test,
           isEntryPoint: fileEntry.is_entry_point,
           hasDoc: fileEntry.has_doc,
+          ...("confidence_group" in fileEntry && { confidenceGroup: (fileEntry as Record<string, unknown>).confidence_group }),
+          ...("commit_count" in fileEntry && { commitCount: (fileEntry as Record<string, unknown>).commit_count }),
         } satisfies FileNodeData,
       };
     }

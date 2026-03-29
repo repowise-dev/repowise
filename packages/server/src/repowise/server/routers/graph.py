@@ -333,11 +333,16 @@ async def dead_code_graph(
         select(DeadCodeFinding).where(
             DeadCodeFinding.repository_id == repo_id,
             DeadCodeFinding.status == "open",
-            DeadCodeFinding.kind.in_(["unreachable_file", "unused_export"]),
+            DeadCodeFinding.kind == "unreachable_file",
         )
     )
     findings = finding_result.scalars().all()
 
+    if not findings:
+        return DeadCodeGraphResponse(nodes=[], links=[])
+
+    # Only consider high-confidence findings
+    findings = [f for f in findings if f.confidence >= 0.85]
     if not findings:
         return DeadCodeGraphResponse(nodes=[], links=[])
 
@@ -350,8 +355,33 @@ async def dead_code_graph(
             GraphNode.node_id.in_(list(dead_paths)),
         )
     )
-    dead_nodes = node_result.scalars().all()
+    all_candidates = node_result.scalars().all()
+
+    # Filter out false positives:
+    # - Entry points and test files are never truly dead
+    # - Files with incoming edges (in_degree > 0) are used
+    # - Framework files (Next.js pages/layouts, alembic, routers, etc.)
+    _framework_patterns = (
+        "alembic/versions/",
+        "__init__.py",
+        "conftest.py",
+        "fixtures/",
+        "/app/",        # Next.js app router pages
+        "/pages/",      # Next.js pages router
+        "/routers/",    # FastAPI routers
+        "/commands/",   # CLI commands
+        "/components/ui/",  # UI component library
+    )
+    dead_nodes = [
+        n for n in all_candidates
+        if not n.is_entry_point
+        and not n.is_test
+        and not any(pat in n.node_id for pat in _framework_patterns)
+    ]
     dead_node_ids = {n.node_id for n in dead_nodes}
+
+    if not dead_node_ids:
+        return DeadCodeGraphResponse(nodes=[], links=[])
 
     out_edge_result = await session.execute(
         select(GraphEdge).where(

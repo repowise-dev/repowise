@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1022,6 +1023,55 @@ async def update_decision_status(
     rec.status = status
     if superseded_by is not None:
         rec.superseded_by = superseded_by
+    rec.updated_at = _now_utc()
+    await session.flush()
+    return rec
+
+
+async def update_decision_by_id(
+    session: AsyncSession,
+    decision_id: str,
+    **fields: Any,
+) -> DecisionRecord | None:
+    """Update content fields of a decision record by ID (partial update).
+
+    Accepts keyword arguments for any updatable field:
+    title, context, decision, rationale, alternatives, consequences,
+    affected_files, affected_modules, tags, evidence_file, evidence_line,
+    confidence.
+
+    JSON list fields (alternatives, consequences, affected_files,
+    affected_modules, tags) accept Python lists and are serialized to JSON.
+
+    Returns None if the decision is not found.
+    """
+    rec = await session.get(DecisionRecord, decision_id)
+    if rec is None:
+        return None
+
+    _json_fields = {
+        "alternatives": "alternatives_json",
+        "consequences": "consequences_json",
+        "affected_files": "affected_files_json",
+        "affected_modules": "affected_modules_json",
+        "tags": "tags_json",
+    }
+    _scalar_fields = {
+        "title",
+        "context",
+        "decision",
+        "rationale",
+        "evidence_file",
+        "evidence_line",
+        "confidence",
+    }
+
+    for key, value in fields.items():
+        if key in _json_fields:
+            setattr(rec, _json_fields[key], json.dumps(value))
+        elif key in _scalar_fields:
+            setattr(rec, key, value)
+
     rec.updated_at = _now_utc()
     await session.flush()
     return rec

@@ -72,7 +72,7 @@ server process.
 
 ## 2. MCP Tools Inventory
 
-The server implements **8 tools** (consolidated from 16 on 2026-03-25 to reduce
+The server implements **9 tools** (consolidated from 16 on 2026-03-25 to reduce
 sequential tool calls for common tasks).
 
 | # | Tool | Category | What It Answers |
@@ -85,6 +85,7 @@ sequential tool calls for common tasks).
 | 6 | `get_dependency_path` | Graph | How two files/modules are connected |
 | 7 | `get_dead_code` | Analysis | Dead/unused code findings |
 | 8 | `get_architecture_diagram` | Visualization | Mermaid diagram for repo/module/file |
+| 9 | `update_decision_records(action, ...)` | Decision Management | CRUD on decision records: create, update, update_status, delete, list, get |
 
 **Consolidation mapping** (old → new):
 - `get_module_docs`, `get_file_docs`, `get_symbol`, `get_file_history`, `get_codebase_ownership` (partial), `get_stale_pages` → **`get_context`**
@@ -274,13 +275,13 @@ This is genuinely useful documentation that would take a human engineer signific
 ## 7. MCP Tool-by-Tool Assessment (Live Test Results)
 
 All tools were tested live against the interview-coach wiki database on 2026-03-25
-(originally 16 tools; consolidated to 8 tools on 2026-03-25).
+(originally 16 tools; consolidated to 9 tools on 2026-03-25).
 
 ### Result Summary
 
 | # | Tool | Status | Verdict |
 |---|------|--------|---------|
-**Post-consolidation (8 tools, tested 2026-03-25):**
+**Post-consolidation (9 tools, tested 2026-03-25):**
 
 | # | Tool | Status | Verdict |
 |---|------|--------|---------|
@@ -546,7 +547,7 @@ files that are actively being changed but have no documented architectural decis
 |---|-------|----------|-------------|
 | C1 | **DB filename mismatch** (FIXED) | `mcp_server.py:64` | MCP server looked for `.repowise/repowise.db` but CLI creates `.repowise/wiki.db`. Fixed 2026-03-25: changed to `wiki.db`. |
 | C2 | **LanceDB filter injection** (FIXED) | `vector_store.py:240,274` | `f"page_id = '{page_id}'"` — string interpolation in LanceDB delete filter. Fixed 2026-03-25: single quotes in page_id are now escaped before interpolation. |
-| C3 | **Tool count mismatch in docs** (FIXED) | Multiple files | Updated "13 tools" → "16 tools" → "8 tools" (after consolidation) in mcp_server.py, ARCHITECTURE.md, server README. |
+| C3 | **Tool count mismatch in docs** (FIXED) | Multiple files | Updated "13 tools" → "16 tools" → "9 tools" (after consolidation) in mcp_server.py, ARCHITECTURE.md, server README. |
 
 ### MAJOR (significant impact)
 
@@ -646,7 +647,7 @@ files that are actively being changed but have no documented architectural decis
 2. ~~**Fix MCP embedder**~~ — DONE (M1)
 3. ~~**Fix `update_cmd.py`**~~ — DONE (M5)
 4. ~~**Install repowise-server in Makefile**~~ — DONE (M7): added as dependency in `packages/cli/pyproject.toml`
-5. ~~**Update tool count**~~ — DONE (C3): updated to 8 tools everywhere
+5. ~~**Update tool count**~~ — DONE (C3): updated to 9 tools everywhere
 
 ### Short-term Improvements
 
