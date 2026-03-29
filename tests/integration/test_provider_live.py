@@ -50,8 +50,17 @@ async def test_openai_live(model):
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
 
+_has_google_genai = True
+try:
+    import google.genai  # noqa: F401
+except ImportError:
+    _has_google_genai = False
 
-@pytest.mark.skipif(not GEMINI_KEY, reason="GEMINI_API_KEY not set")
+
+@pytest.mark.skipif(
+    not GEMINI_KEY or not _has_google_genai,
+    reason="GEMINI_API_KEY not set or google-genai not installed",
+)
 @pytest.mark.parametrize(
     "model",
     [

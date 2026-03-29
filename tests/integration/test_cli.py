@@ -52,7 +52,7 @@ class TestInitFullMock:
         assert result.exit_code == 0, result.output
         assert (work_repo / ".repowise" / "wiki.db").exists()
         assert (work_repo / ".repowise" / "state.json").exists()
-        assert "Done!" in result.output
+        assert "init complete" in result.output
 
 
 class TestInitIdempotent:

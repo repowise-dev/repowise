@@ -24,7 +24,12 @@ from repowise.cli.helpers import (
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--since", default=None, help="Base git ref to diff from (overrides state).")
-@click.option("--cascade-budget", type=int, default=None, help="Max pages to regenerate (auto-scaled if unset).")
+@click.option(
+    "--cascade-budget",
+    type=int,
+    default=None,
+    help="Max pages to regenerate (auto-scaled if unset).",
+)
 @click.option(
     "--dry-run", is_flag=True, default=False, help="Show affected pages without regenerating."
 )

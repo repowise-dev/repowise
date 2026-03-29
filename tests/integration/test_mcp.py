@@ -423,7 +423,7 @@ async def test_mcp_dead_code_and_freshness_flow(mcp_env):
     # Dead code
     dead = await get_dead_code()
     assert dead["summary"]["total_findings"] == 1
-    assert dead["findings"][0]["symbol_name"] == "deprecated_verify"
+    assert dead["tiers"]["high"]["findings"][0]["symbol_name"] == "deprecated_verify"
 
     # Freshness via get_context (all pages have confidence 0.9)
     ctx = await get_context(["src/auth/login.py"], include=["freshness"])

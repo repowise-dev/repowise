@@ -36,9 +36,7 @@ class GenerationReport:
         elapsed: float = 0.0,
     ) -> GenerationReport:
         by_type = dict(Counter(p.page_type for p in pages))
-        hal_count = sum(
-            1 for p in pages if p.metadata.get("hallucination_warnings")
-        )
+        hal_count = sum(1 for p in pages if p.metadata.get("hallucination_warnings"))
         return cls(
             pages_by_type=by_type,
             total_input_tokens=sum(p.input_tokens for p in pages),
@@ -62,8 +60,7 @@ class GenerationReport:
     ) -> float:
         """Estimated USD cost.  Rates are per 1M tokens (Sonnet 4 defaults)."""
         return (
-            self.total_input_tokens * input_rate
-            + self.total_output_tokens * output_rate
+            self.total_input_tokens * input_rate + self.total_output_tokens * output_rate
         ) / 1_000_000
 
 

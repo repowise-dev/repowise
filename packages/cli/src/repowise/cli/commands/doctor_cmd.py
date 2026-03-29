@@ -152,7 +152,6 @@ def doctor_command(path: str | None, repair: bool) -> None:
                     list_pages,
                 )
                 from repowise.core.persistence.vector_store import (
-                    InMemoryVectorStore,
                     LanceDBVectorStore,
                 )
                 from repowise.core.providers.embedding.base import MockEmbedder
@@ -202,14 +201,18 @@ def doctor_command(path: str | None, repair: bool) -> None:
             )
 
             vec_ok = not missing_from_vector and not orphaned_vector
-            vec_detail = "in sync" if vec_ok else (
-                f"{len(missing_from_vector)} missing, {len(orphaned_vector)} orphaned"
+            vec_detail = (
+                "in sync"
+                if vec_ok
+                else (f"{len(missing_from_vector)} missing, {len(orphaned_vector)} orphaned")
             )
             checks.append(_check("SQL ↔ Vector Store", vec_ok, vec_detail))
 
             fts_ok = not missing_from_fts and not orphaned_fts
-            fts_detail = "in sync" if fts_ok else (
-                f"{len(missing_from_fts)} missing, {len(orphaned_fts)} orphaned"
+            fts_detail = (
+                "in sync"
+                if fts_ok
+                else (f"{len(missing_from_fts)} missing, {len(orphaned_fts)} orphaned")
             )
             checks.append(_check("SQL ↔ FTS Index", fts_ok, fts_detail))
         except Exception:
@@ -241,7 +244,6 @@ def doctor_command(path: str | None, repair: bool) -> None:
                 create_engine,
                 create_session_factory,
                 get_session,
-                list_pages,
             )
 
             url = get_db_url_for_repo(repo_path)
@@ -256,8 +258,9 @@ def doctor_command(path: str | None, repair: bool) -> None:
                 if missing_from_fts:
                     # Fetch full page data for missing pages
                     async with get_session(sf) as session:
-                        from repowise.core.persistence.models import Page
                         from sqlalchemy import select
+
+                        from repowise.core.persistence.models import Page
 
                         rows = await session.execute(
                             select(Page).where(Page.page_id.in_(list(missing_from_fts)))
@@ -276,28 +279,20 @@ def doctor_command(path: str | None, repair: bool) -> None:
                     from repowise.core.persistence.vector_store import LanceDBVectorStore
                     from repowise.core.providers.embedding.base import MockEmbedder
 
-                    import os
-
-                    # Resolve embedder — try real embedder, fall back to mock
-                    embedder_name = os.environ.get("REPOWISE_EMBEDDER", "mock").lower()
-                    if embedder_name == "mock":
-                        embedder = MockEmbedder()
-                    else:
-                        # Use mock for repair to avoid API costs; user can re-run
-                        # repowise reindex for real embeddings
-                        embedder = MockEmbedder()
+                    # Use mock embedder for repair to avoid API costs;
+                    # user can re-run `repowise reindex` for real embeddings
+                    embedder = MockEmbedder()
 
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
 
                     if missing_from_vector:
                         async with get_session(sf) as session:
-                            from repowise.core.persistence.models import Page
                             from sqlalchemy import select
 
+                            from repowise.core.persistence.models import Page
+
                             rows = await session.execute(
-                                select(Page).where(
-                                    Page.page_id.in_(list(missing_from_vector))
-                                )
+                                select(Page).where(Page.page_id.in_(list(missing_from_vector)))
                             )
                             for page in rows.scalars().all():
                                 await vs.embed_and_upsert(
