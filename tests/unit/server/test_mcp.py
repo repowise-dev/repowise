@@ -1,6 +1,6 @@
 """Unit tests for repowise MCP server tools.
 
-Tests all 8 MCP tools using an in-memory SQLite database with pre-populated
+Tests all 9 MCP tools using an in-memory SQLite database with pre-populated
 test data, mirroring the conftest pattern from the REST API tests.
 """
 
@@ -1175,6 +1175,157 @@ async def test_get_dead_code_group_by_owner(setup_mcp):
 
 
 # ---- MCP config generation ----
+
+
+# ---- Tool 9: update_decision_records ----
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_create(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(
+        action="create",
+        title="Use Redis for caching",
+        context="Need distributed caching",
+        decision="Use Redis as the caching layer",
+        rationale="Mature, fast, supports pub/sub",
+        alternatives=["Memcached", "In-memory only"],
+        consequences=["Requires Redis infrastructure"],
+        affected_files=["src/cache/client.py"],
+        affected_modules=["src/cache"],
+        tags=["performance", "infra"],
+    )
+    assert result["action"] == "created"
+    dec = result["decision"]
+    assert dec["title"] == "Use Redis for caching"
+    assert dec["source"] == "mcp_tool"
+    assert dec["confidence"] == 1.0
+    assert dec["status"] == "proposed"
+    assert "Memcached" in dec["alternatives"]
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_create_missing_title(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(action="create")
+    assert "error" in result
+    assert "title" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_get(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(action="get", decision_id="dec1")
+    assert result["action"] == "get"
+    assert result["decision"]["title"] == "Use JWT for authentication"
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_get_not_found(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(action="get", decision_id="nonexistent")
+    assert "error" in result
+    assert "not found" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_list(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(action="list")
+    assert result["action"] == "list"
+    assert result["count"] >= 2
+    titles = {d["title"] for d in result["decisions"]}
+    assert "Use JWT for authentication" in titles
+    assert "SQLAlchemy as ORM" in titles
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_list_with_filter(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(action="list", filter_source="readme_mining")
+    assert result["action"] == "list"
+    assert all(d["source"] == "readme_mining" for d in result["decisions"])
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_update(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(
+        action="update",
+        decision_id="dec1",
+        rationale="Updated: stateless and JWT is industry standard",
+        tags=["auth", "security", "api"],
+    )
+    assert result["action"] == "updated"
+    dec = result["decision"]
+    assert "industry standard" in dec["rationale"]
+    assert "api" in dec["tags"]
+    # Other fields should remain unchanged
+    assert dec["title"] == "Use JWT for authentication"
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_update_no_fields(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(action="update", decision_id="dec1")
+    assert "error" in result
+    assert "at least one field" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_update_status(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(
+        action="update_status", decision_id="dec1", status="active"
+    )
+    assert result["action"] == "status_updated"
+    assert result["decision"]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_update_status_deprecate(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(
+        action="update_status",
+        decision_id="dec1",
+        status="superseded",
+        superseded_by="dec2",
+    )
+    assert result["action"] == "status_updated"
+    assert result["decision"]["status"] == "superseded"
+    assert result["decision"]["superseded_by"] == "dec2"
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_delete(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(action="delete", decision_id="dec2")
+    assert result["action"] == "deleted"
+    assert result["decision_id"] == "dec2"
+
+    # Verify it's gone
+    get_result = await update_decision_records(action="get", decision_id="dec2")
+    assert "error" in get_result
+
+
+@pytest.mark.asyncio
+async def test_update_decision_records_invalid_action(setup_mcp):
+    from repowise.server.mcp_server import update_decision_records
+
+    result = await update_decision_records(action="foo")
+    assert "error" in result
+    assert "Unknown action" in result["error"]
 
 
 def test_generate_mcp_config():

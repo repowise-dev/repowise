@@ -13,6 +13,7 @@ dist/
 downloads/
 eggs/
 .eggs/
+.claude/
 # Python build dirs (only at root, not packages/web/src/lib/)
 /lib/
 /lib64/
