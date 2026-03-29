@@ -431,8 +431,6 @@ class GraphBuilder:
 
     def _add_conftest_edges(self, path_set: set[str]) -> int:
         """conftest.py → test files in the same or child directories."""
-        import re as _re
-
         count = 0
         conftest_paths = [p for p in path_set if Path(p).name == "conftest.py"]
 
@@ -446,15 +444,14 @@ class GraphBuilder:
                 if not node.get("is_test", False):
                     continue
                 # Test file must be in the same or a child directory
-                if p.startswith(prefix) or (prefix == "" and "/" not in p):
-                    if self._add_edge_if_new(p, conf):
-                        count += 1
+                if (
+                    p.startswith(prefix) or (prefix == "" and "/" not in p)
+                ) and self._add_edge_if_new(p, conf):
+                    count += 1
         return count
 
     def _add_django_edges(self, path_set: set[str]) -> int:
         """Django conventions: admin→models, urls→views in the same directory."""
-        import re as _re
-
         count = 0
         by_dir: dict[str, dict[str, str]] = {}  # dir → {stem: path}
         for p in path_set:
@@ -462,47 +459,60 @@ class GraphBuilder:
             d = pp.parent.as_posix()
             by_dir.setdefault(d, {})[pp.stem] = p
 
-        for d, stems in by_dir.items():
+        for _d, stems in by_dir.items():
             # admin.py → models.py
-            if "admin" in stems and "models" in stems:
-                if self._add_edge_if_new(stems["admin"], stems["models"]):
-                    count += 1
+            if (
+                "admin" in stems
+                and "models" in stems
+                and self._add_edge_if_new(stems["admin"], stems["models"])
+            ):
+                count += 1
             # urls.py → views.py
-            if "urls" in stems and "views" in stems:
-                if self._add_edge_if_new(stems["urls"], stems["views"]):
-                    count += 1
+            if (
+                "urls" in stems
+                and "views" in stems
+                and self._add_edge_if_new(stems["urls"], stems["views"])
+            ):
+                count += 1
             # forms.py → models.py
-            if "forms" in stems and "models" in stems:
-                if self._add_edge_if_new(stems["forms"], stems["models"]):
-                    count += 1
+            if (
+                "forms" in stems
+                and "models" in stems
+                and self._add_edge_if_new(stems["forms"], stems["models"])
+            ):
+                count += 1
             # serializers.py → models.py
-            if "serializers" in stems and "models" in stems:
-                if self._add_edge_if_new(stems["serializers"], stems["models"]):
-                    count += 1
+            if (
+                "serializers" in stems
+                and "models" in stems
+                and self._add_edge_if_new(stems["serializers"], stems["models"])
+            ):
+                count += 1
         return count
 
     def _add_fastapi_edges(self, path_set: set[str]) -> int:
         """Detect include_router() calls and link app files to router modules."""
-        import re as _re
+        import re
 
         count = 0
         # Build a map from imported variable names to source file paths
-        # by scanning imports across all parsed files
         var_to_file: dict[str, str] = {}
+        stem_map = {Path(p).stem.lower(): p for p in path_set}
         for path, parsed in self._parsed_files.items():
             for imp in parsed.imports:
                 for name in imp.imported_names:
                     if name.lower().endswith("router") or name.lower().endswith("app"):
                         resolved = self._resolve_import(
-                            imp.module_path, path, path_set,
-                            {Path(p).stem.lower(): p for p in path_set},
+                            imp.module_path,
+                            path,
+                            path_set,
+                            stem_map,
                             parsed.file_info.language,
                         )
                         if resolved and resolved in path_set:
                             var_to_file[name] = resolved
 
-        # Scan source for include_router / add_api_route patterns
-        router_re = _re.compile(r"(?:include_router|add_api_route)\s*\(\s*(\w+)")
+        router_re = re.compile(r"(?:include_router|add_api_route)\s*\(\s*(\w+)")
         for path, parsed in self._parsed_files.items():
             if parsed.file_info.language != "python":
                 continue
@@ -513,30 +523,32 @@ class GraphBuilder:
             for match in router_re.finditer(source):
                 var_name = match.group(1)
                 target = var_to_file.get(var_name)
-                if target and target in path_set:
-                    if self._add_edge_if_new(path, target):
-                        count += 1
+                if target and target in path_set and self._add_edge_if_new(path, target):
+                    count += 1
         return count
 
     def _add_flask_edges(self, path_set: set[str]) -> int:
         """Detect register_blueprint() calls and link app files to blueprint modules."""
-        import re as _re
+        import re
 
         count = 0
         var_to_file: dict[str, str] = {}
+        stem_map = {Path(p).stem.lower(): p for p in path_set}
         for path, parsed in self._parsed_files.items():
             for imp in parsed.imports:
                 for name in imp.imported_names:
                     if "blueprint" in name.lower() or name.lower().endswith("bp"):
                         resolved = self._resolve_import(
-                            imp.module_path, path, path_set,
-                            {Path(p).stem.lower(): p for p in path_set},
+                            imp.module_path,
+                            path,
+                            path_set,
+                            stem_map,
                             parsed.file_info.language,
                         )
                         if resolved and resolved in path_set:
                             var_to_file[name] = resolved
 
-        bp_re = _re.compile(r"register_blueprint\s*\(\s*(\w+)")
+        bp_re = re.compile(r"register_blueprint\s*\(\s*(\w+)")
         for path, parsed in self._parsed_files.items():
             if parsed.file_info.language != "python":
                 continue
@@ -547,9 +559,8 @@ class GraphBuilder:
             for match in bp_re.finditer(source):
                 var_name = match.group(1)
                 target = var_to_file.get(var_name)
-                if target and target in path_set:
-                    if self._add_edge_if_new(path, target):
-                        count += 1
+                if target and target in path_set and self._add_edge_if_new(path, target):
+                    count += 1
         return count
 
     def pagerank(self, alpha: float = 0.85) -> dict[str, float]:
