@@ -10,7 +10,7 @@ import {
 } from "recharts";
 
 interface ContributorBarProps {
-  owners: Array<{ name: string; email: string; file_count: number; pct: number }>;
+  owners: Array<{ name: string; email?: string; file_count: number; pct: number }>;
 }
 
 export function ContributorBar({ owners }: ContributorBarProps) {

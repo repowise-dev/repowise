@@ -75,14 +75,31 @@ export function formatLOC(n: number): string {
   return String(n);
 }
 
-/** Truncate a file path to fit in constrained UI: src/very/long/path/file.py → …/path/file.py */
-export function truncatePath(path: string, maxChars = 40): string {
+/** Truncate a file path keeping as many trailing components as fit: src/very/long/path/file.py → …/long/path/file.py */
+export function truncatePath(path: string, maxChars = 60): string {
   if (path.length <= maxChars) return path;
   const parts = path.split("/");
-  if (parts.length <= 2) return `…${path.slice(-(maxChars - 1))}`;
-  // Keep the filename + one parent
-  const tail = parts.slice(-2).join("/");
-  return `…/${tail}`;
+  if (parts.length <= 1) return `…${path.slice(-(maxChars - 1))}`;
+  // Progressively include more trailing path components until we exceed maxChars
+  for (let i = parts.length - 2; i >= 1; i--) {
+    const candidate = `…/${parts.slice(i).join("/")}`;
+    if (candidate.length <= maxChars) return candidate;
+  }
+  // Just filename
+  const filename = parts[parts.length - 1];
+  return filename.length <= maxChars ? `…/${filename}` : `…${filename.slice(-(maxChars - 1))}`;
+}
+
+/** Format age in days to human-readable: 45 → "1.5 months", 400 → "1.1 years" */
+export function formatAgeDays(n: number): string {
+  if (n < 1) return "< 1 day";
+  if (n < 30) return `${n} day${n !== 1 ? "s" : ""}`;
+  if (n < 365) {
+    const months = Math.round(n / 30 * 10) / 10;
+    return `${months} month${months !== 1 ? "s" : ""}`;
+  }
+  const years = Math.round(n / 365 * 10) / 10;
+  return `${years} year${years !== 1 ? "s" : ""}`;
 }
 
 /** Format a confidence score as a percentage string: 0.87 → "87%" */

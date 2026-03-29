@@ -150,7 +150,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
       ) : (
         <>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
-            <table className="w-full min-w-[600px] text-sm">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
                   {(
@@ -182,8 +182,8 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                     className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer"
                     onClick={() => setSelected(sym)}
                   >
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] max-w-xs">
-                      <span className="truncate block">{sym.name}</span>
+                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)]" style={{ maxWidth: 0 }}>
+                      <span className="truncate block" title={sym.qualified_name || sym.name}>{sym.name}</span>
                       {sym.parent_name && (
                         <span className="text-[var(--color-text-tertiary)]">.{sym.parent_name}</span>
                       )}
@@ -194,9 +194,10 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                     <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)]">
                       {sym.language}
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] max-w-xs truncate">
-                      {truncatePath(sym.file_path, 40)}
-                      <span className="text-[var(--color-text-tertiary)]">:{sym.start_line}</span>
+                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)]" style={{ maxWidth: 0 }}>
+                      <span className="block truncate" title={`${sym.file_path}:${sym.start_line}`}>
+                        {truncatePath(sym.file_path)}:{sym.start_line}
+                      </span>
                     </td>
                     <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums">
                       <span

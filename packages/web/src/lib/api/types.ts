@@ -292,6 +292,8 @@ export interface GitMetadataResponse {
   primary_owner_name: string | null;
   primary_owner_email: string | null;
   primary_owner_commit_pct: number | null;
+  recent_owner_name: string | null;
+  recent_owner_commit_pct: number | null;
   top_authors: Array<{ name: string; email: string; commit_count: number; pct: number }>;
   significant_commits: Array<{ sha: string; date: string; message: string; author: string }>;
   co_change_partners: Array<{ file_path: string; co_change_count: number }>;
@@ -299,14 +301,29 @@ export interface GitMetadataResponse {
   is_stable: boolean;
   churn_percentile: number;
   age_days: number;
+  bus_factor: number;
+  contributor_count: number;
+  lines_added_90d: number;
+  lines_deleted_90d: number;
+  avg_commit_size: number;
+  commit_categories: Record<string, number>;
+  merge_commit_count_90d: number;
 }
 
 export interface HotspotResponse {
   file_path: string;
   commit_count_90d: number;
+  commit_count_30d: number;
   churn_percentile: number;
   primary_owner: string | null;
   is_hotspot: boolean;
+  is_stable: boolean;
+  bus_factor: number;
+  contributor_count: number;
+  lines_added_90d: number;
+  lines_deleted_90d: number;
+  avg_commit_size: number;
+  commit_categories: Record<string, number>;
 }
 
 export interface OwnershipEntry {
@@ -322,7 +339,7 @@ export interface GitSummaryResponse {
   hotspot_count: number;
   stable_count: number;
   average_churn_percentile: number;
-  top_owners: Array<{ name: string; email: string; file_count: number; pct: number }>;
+  top_owners: Array<{ name: string; email?: string; file_count: number; pct: number }>;
 }
 
 // ---------------------------------------------------------------------------

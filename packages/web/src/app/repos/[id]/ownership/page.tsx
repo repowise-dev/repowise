@@ -3,15 +3,18 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
-import { Users } from "lucide-react";
+import { Users, Shield } from "lucide-react";
+import { StatCard } from "@/components/shared/stat-card";
 import { OwnershipTable } from "@/components/git/ownership-table";
 import { ContributorBar } from "@/components/git/contributor-bar";
+import { OwnershipTreemap } from "@/components/git/ownership-treemap";
+import { BusFactorPanel } from "@/components/git/bus-factor-panel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getOwnership, getGitSummary } from "@/lib/api/git";
+import { getOwnership, getGitSummary, getHotspots } from "@/lib/api/git";
 import { formatNumber } from "@/lib/utils/format";
 import { cn } from "@/lib/utils/cn";
-import type { OwnershipEntry, GitSummaryResponse } from "@/lib/api/types";
+import type { OwnershipEntry, GitSummaryResponse, HotspotResponse } from "@/lib/api/types";
 
 type Granularity = "module" | "file";
 
@@ -32,10 +35,17 @@ export default function OwnershipPage() {
     { revalidateOnFocus: false },
   );
 
+  const { data: hotspotData } = useSWR<HotspotResponse[]>(
+    `hotspots-for-ownership:${id}`,
+    () => getHotspots(id, 100),
+    { revalidateOnFocus: false },
+  );
+
   const siloCount = (entries ?? []).filter((e) => e.is_silo).length;
+  const busFactorRiskCount = (hotspotData ?? []).filter((h) => h.bus_factor <= 1).length;
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-6xl">
+    <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
       <div>
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
           <Users className="h-5 w-5 text-[var(--color-accent-primary)]" />
@@ -48,67 +58,76 @@ export default function OwnershipPage() {
 
       {/* Summary stats */}
       {summary && (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-            <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-1">
-              Total Files
-            </p>
-            <p className="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
-              {formatNumber(summary.total_files)}
-            </p>
-          </div>
-          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-            <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-1">
-              Silo Modules
-            </p>
-            <p className="text-2xl font-bold text-yellow-500 tabular-nums">{siloCount}</p>
-          </div>
-          <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
-            <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-1">
-              Contributors
-            </p>
-            <p className="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
-              {summary.top_owners.length}
-            </p>
-          </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatCard
+            label="Total Files"
+            value={formatNumber(summary.total_files)}
+            description="with git history"
+          />
+          <StatCard
+            label="Silo Modules"
+            value={siloCount}
+            description="owner >80%"
+            trend={siloCount > 0 ? { value: `${siloCount}`, positive: false } : undefined}
+          />
+          <StatCard
+            label="Contributors"
+            value={summary.top_owners.length}
+            description="unique owners"
+          />
+          <StatCard
+            label="Bus Factor Risk"
+            value={formatNumber(busFactorRiskCount)}
+            description="files with factor ≤ 1"
+            icon={<Shield className="h-4 w-4 text-red-400" />}
+          />
         </div>
       )}
 
-      {/* Granularity toggle */}
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-[var(--color-text-secondary)]">View by:</span>
-        <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
-          {(["module", "file"] as Granularity[]).map((g) => (
-            <button
-              key={g}
-              onClick={() => setGranularity(g)}
-              className={cn(
-                "px-3 py-1.5 font-medium transition-colors capitalize",
-                granularity === g
-                  ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
-                  : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
-              )}
-            >
-              {g}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          {loadingEntries ? (
-            <div className="space-y-2">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
+      {/* Treemap visualization */}
+      {entries && entries.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">Ownership Map</CardTitle>
+              {/* Granularity toggle */}
+              <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
+                {(["module", "file"] as Granularity[]).map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => setGranularity(g)}
+                    className={cn(
+                      "px-3 py-1.5 font-medium transition-colors capitalize",
+                      granularity === g
+                        ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+                        : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
+                    )}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
             </div>
-          ) : (
-            <OwnershipTable entries={entries ?? []} />
-          )}
-        </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <OwnershipTreemap entries={entries} />
+          </CardContent>
+        </Card>
+      )}
 
-        {/* Contributor chart */}
+      {/* Bus Factor + Contributor sidebar */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {hotspotData && hotspotData.length > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Bus Factor Analysis</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <BusFactorPanel hotspots={hotspotData} />
+            </CardContent>
+          </Card>
+        )}
+
         {summary && summary.top_owners.length > 0 && (
           <Card>
             <CardHeader className="pb-2">
@@ -130,6 +149,17 @@ export default function OwnershipPage() {
           </Card>
         )}
       </div>
+
+      {/* Detail table */}
+      {loadingEntries ? (
+        <div className="space-y-2">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      ) : (
+        <OwnershipTable entries={entries ?? []} />
+      )}
     </div>
   );
 }

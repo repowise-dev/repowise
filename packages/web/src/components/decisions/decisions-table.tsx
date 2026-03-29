@@ -91,10 +91,11 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
                   d.status === "proposed" ? "border-l-2 border-l-amber-400" : ""
                 }`}
               >
-                <td className="px-4 py-2.5">
+                <td className="px-4 py-2.5" style={{ maxWidth: 0 }}>
                   <Link
                     href={`/repos/${repoId}/decisions/${d.id}`}
-                    className="font-medium text-[var(--color-accent-primary)] hover:underline"
+                    className="font-medium text-[var(--color-accent-primary)] hover:underline block truncate"
+                    title={d.title}
                   >
                     {d.title}
                   </Link>
