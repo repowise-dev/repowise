@@ -1,0 +1,21 @@
+{
+  "name": "repowise",
+  "owner": {
+    "name": "Repowise",
+    "email": "hello@repowise.dev"
+  },
+  "metadata": {
+    "description": "Codebase intelligence layer — graph, git, docs, and architectural decisions for AI coding agents.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "repowise",
+      "source": ".",
+      "description": "Codebase intelligence for Claude Code. Understand architecture, ownership, hotspots, and decisions.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "tags": ["codebase", "documentation", "architecture", "mcp", "graph", "git-intelligence"]
+    }
+  ]
+}

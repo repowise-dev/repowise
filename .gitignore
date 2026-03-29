@@ -137,3 +137,19 @@ providers/
 
 # Private release notes
 docs/PYPI_RELEASE.md
+
+# Frontend (separate repo, not part of OSS)
+frontend/
+
+# Local dev artifacts
+.mcp.json
+!plugins/**/.mcp.json
+BUILD_STATUS.md
+PLAN.md
+TESTING_GUIDE.md
+provider_config.json
+run_ingest.py
+run_test.ps1
+smoke_test.py
+integrations/
+providers/

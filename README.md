@@ -23,6 +23,20 @@ MCP server so AI coding assistants can query it in real time.
 
 ## Install
 
+### Claude Code Plugin (recommended)
+
+The fastest way to get started — Claude handles installation, configuration, and indexing for you:
+
+```
+/plugin marketplace add repowise-dev/repowise-plugin
+/plugin install repowise@repowise
+/repowise:init
+```
+
+That's it. Claude walks you through choosing a mode, setting up your API key, and indexing your codebase. The plugin also auto-registers the MCP server and teaches Claude to use Repowise tools proactively.
+
+### pip
+
 ```bash
 pip install repowise
 ```
@@ -39,6 +53,12 @@ pip install "repowise[all]"          # Everything
 
 ## Quick Start
 
+### With Claude Code (interactive)
+
+After installing the plugin, just run `/repowise:init` and Claude guides you through everything. Or ask naturally — "set up repowise for this repo" works too.
+
+### From the CLI
+
 ```bash
 # Set your API key
 export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY, GEMINI_API_KEY
@@ -46,6 +66,9 @@ export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY, GEMINI_API_KEY
 # Generate documentation for your codebase
 cd /path/to/your-repo
 repowise init
+
+# Or skip LLM docs — just graph + git + dead code (free, <60 seconds)
+repowise init --index-only
 
 # Keep docs in sync after code changes
 repowise update
@@ -98,7 +121,7 @@ Once connected via `repowise mcp`, your AI editor gets 8 tools:
 | `get_dead_code` | Tiered dead code report grouped by confidence |
 | `get_architecture_diagram` | Mermaid diagram with optional churn heat map |
 
-Works with Claude Code, Cursor, Windsurf, Cline, and any MCP-compatible editor.
+Works with Claude Code, Cursor, Windsurf, Cline, and any MCP-compatible editor. For Claude Code, the [plugin](https://github.com/repowise-dev/repowise-plugin) auto-registers the MCP server — no manual config needed.
 
 ## Web UI
 

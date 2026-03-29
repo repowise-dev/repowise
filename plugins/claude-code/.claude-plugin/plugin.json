@@ -1,0 +1,13 @@
+{
+  "name": "repowise",
+  "description": "Codebase intelligence for Claude Code. Indexes your codebase into four layers (Graph, Git, Docs, Decisions) and gives Claude deep understanding of architecture, ownership, hotspots, and why code is built the way it is.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Repowise",
+    "email": "hello@repowise.dev"
+  },
+  "homepage": "https://repowise.dev",
+  "repository": "https://github.com/repowise/repowise",
+  "license": "AGPL-3.0",
+  "keywords": ["codebase", "documentation", "architecture", "mcp", "intelligence", "graph", "git"]
+}
