@@ -39,17 +39,19 @@ def _web_is_cached(version: str) -> bool:
 
 def _find_local_web() -> Path | None:
     """Check if running from the repo with packages/web available."""
-    # Walk up from this file to find the repo root
-    candidate = Path(__file__).resolve()
-    for _ in range(10):
-        candidate = candidate.parent
-        pkg_web = candidate / "packages" / "web"
-        if (pkg_web / "package.json").exists():
-            # Check if it's been built
-            standalone = pkg_web / ".next" / "standalone" / "server.js"
-            if standalone.exists():
-                return pkg_web
-            return pkg_web  # exists but may need build
+    # Check from both __file__ (source installs) and cwd (pip-installed runs)
+    roots = [Path(__file__).resolve(), Path.cwd().resolve()]
+    for start in roots:
+        candidate = start
+        for _ in range(10):
+            candidate = candidate.parent
+            pkg_web = candidate / "packages" / "web"
+            if (pkg_web / "package.json").exists():
+                # Next.js standalone in monorepos nests server under package path
+                standalone = pkg_web / ".next" / "standalone" / "packages" / "web" / "server.js"
+                if standalone.exists():
+                    return pkg_web
+                return pkg_web  # exists but may need build
     return None
 
 
@@ -144,21 +146,22 @@ def _start_frontend(node: str, backend_port: int, frontend_port: int) -> subproc
     local_web = _find_local_web()
     if local_web:
         standalone_dir = local_web / ".next" / "standalone"
-        server_js = standalone_dir / "server.js"
+        # Next.js standalone in monorepos nests server under the package path
+        server_js = standalone_dir / "packages" / "web" / "server.js"
         if server_js.exists():
             # Copy static files into standalone (Next.js requirement)
             static_src = local_web / ".next" / "static"
-            static_dst = standalone_dir / ".next" / "static"
+            static_dst = standalone_dir / "packages" / "web" / ".next" / "static"
             if static_src.exists() and not static_dst.exists():
                 shutil.copytree(str(static_src), str(static_dst))
             public_src = local_web / "public"
-            public_dst = standalone_dir / "public"
+            public_dst = standalone_dir / "packages" / "web" / "public"
             if public_src.exists() and not public_dst.exists():
                 shutil.copytree(str(public_src), str(public_dst))
 
             return subprocess.Popen(
                 [node, str(server_js)],
-                cwd=str(standalone_dir),
+                cwd=str(standalone_dir / "packages" / "web"),
                 env=env,
             )
 
@@ -209,7 +212,7 @@ def serve_command(port: int, host: str, workers: int, ui_port: int, no_ui: bool)
             if not ready:
                 local_web = _find_local_web()
                 if local_web:
-                    standalone = local_web / ".next" / "standalone" / "server.js"
+                    standalone = local_web / ".next" / "standalone" / "packages" / "web" / "server.js"
                     if standalone.exists():
                         ready = True
                     elif npm:

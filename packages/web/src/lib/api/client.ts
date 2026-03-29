@@ -10,7 +10,12 @@
 
 import type { ApiError } from "./types";
 
-const BASE_URL = process.env.NEXT_PUBLIC_REPOWISE_API_URL ?? "";
+// Client-side: empty string → relative requests proxied via Next.js rewrites.
+// Server-side: use REPOWISE_API_URL (the backend) since server `fetch` bypasses rewrites.
+const BASE_URL =
+  typeof window !== "undefined"
+    ? (process.env.NEXT_PUBLIC_REPOWISE_API_URL ?? "")
+    : (process.env.REPOWISE_API_URL || process.env.NEXT_PUBLIC_REPOWISE_API_URL || "http://localhost:7337");
 
 function getApiKey(): string | null {
   // In browser: check localStorage (set by settings page)

@@ -1,3 +1,6 @@
+# IDE/tool caches
+.sfdx/
+
 # Python
 __pycache__/
 *.py[cod]

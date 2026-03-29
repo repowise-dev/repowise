@@ -9,7 +9,7 @@ import {
   RefreshCw,
   Clock,
 } from "lucide-react";
-import { listRepos } from "@/lib/api/repos";
+import { listRepos, getRepoStats } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { StatCard } from "@/components/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,9 +33,22 @@ export default async function DashboardPage() {
   const jobList = jobs.status === "fulfilled" ? jobs.value : [];
 
   // Aggregate stats across all repos
-  const totalPages = 0; // fetched per repo in future
-  const freshPages = 0;
-  const stalePages = 0;
+  const statsResults = await Promise.allSettled(
+    repoList.map((r) => getRepoStats(r.id)),
+  );
+  const allStats = statsResults
+    .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof getRepoStats>>> => r.status === "fulfilled")
+    .map((r) => r.value);
+
+  const totalFiles = allStats.reduce((s, st) => s + st.file_count, 0);
+  const totalSymbols = allStats.reduce((s, st) => s + st.symbol_count, 0);
+  const avgCoverage = allStats.length > 0
+    ? Math.round(allStats.reduce((s, st) => s + st.doc_coverage_pct, 0) / allStats.length)
+    : 0;
+  const avgFreshness = allStats.length > 0
+    ? Math.round(allStats.reduce((s, st) => s + st.freshness_score, 0) / allStats.length)
+    : 0;
+  const totalDeadCode = allStats.reduce((s, st) => s + st.dead_export_count, 0);
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1200px]">
@@ -50,26 +63,25 @@ export default async function DashboardPage() {
       {/* Stat Cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
-          label="Total Pages"
-          value={formatNumber(totalPages)}
+          label="Files"
+          value={formatNumber(totalFiles)}
           icon={<FileText className="h-4 w-4" />}
         />
         <StatCard
-          label="Fresh Pages"
-          value={formatNumber(freshPages)}
-          description="Confidence ≥ 80%"
+          label="Symbols"
+          value={formatNumber(totalSymbols)}
+          icon={<Activity className="h-4 w-4" />}
+        />
+        <StatCard
+          label="Doc Coverage"
+          value={`${avgCoverage}%`}
+          description={`Freshness ${avgFreshness}%`}
           icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
         />
         <StatCard
-          label="Stale Pages"
-          value={formatNumber(stalePages)}
-          description="Need regeneration"
-          icon={<AlertCircle className="h-4 w-4 text-yellow-500" />}
-        />
-        <StatCard
           label="Dead Code"
-          value="—"
-          description="Analyze to detect"
+          value={formatNumber(totalDeadCode)}
+          description="Unused exports"
           icon={<Skull className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
         />
       </div>
