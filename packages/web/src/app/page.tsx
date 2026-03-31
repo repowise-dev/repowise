@@ -52,20 +52,15 @@ export default async function DashboardPage() {
   });
 
   // Aggregate stats across all repos
-  let totalFiles = 0;
-  let totalSymbols = 0;
-  let totalDeadCode = 0;
-  let totalCoverage = 0;
-  let totalFreshness = 0;
+  let totalPages = 0;
+  let freshPages = 0;
+  let deadCode = 0;
   for (const s of statsMap.values()) {
-    totalFiles += s.file_count;
-    totalSymbols += s.symbol_count;
-    totalDeadCode += s.dead_export_count;
-    totalCoverage += s.doc_coverage_pct;
-    totalFreshness += s.freshness_score;
+    totalPages += s.file_count;
+    freshPages += Math.round(s.file_count * s.doc_coverage_pct / 100);
+    deadCode += s.dead_export_count;
   }
-  const avgCoverage = statsMap.size > 0 ? Math.round(totalCoverage / statsMap.size) : 0;
-  const avgFreshness = statsMap.size > 0 ? Math.round(totalFreshness / statsMap.size) : 0;
+  const stalePages = totalPages - freshPages;
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1200px]">
@@ -80,25 +75,26 @@ export default async function DashboardPage() {
       {/* Stat Cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
-          label="Files"
-          value={formatNumber(totalFiles)}
+          label="Total Pages"
+          value={formatNumber(totalPages)}
           icon={<FileText className="h-4 w-4" />}
         />
         <StatCard
-          label="Symbols"
-          value={formatNumber(totalSymbols)}
-          icon={<Activity className="h-4 w-4" />}
-        />
-        <StatCard
-          label="Doc Coverage"
-          value={`${avgCoverage}%`}
-          description={`Freshness ${avgFreshness}%`}
+          label="Fresh Pages"
+          value={formatNumber(freshPages)}
+          description="Confidence ≥ 80%"
           icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
         />
         <StatCard
+          label="Stale Pages"
+          value={formatNumber(stalePages)}
+          description="Need regeneration"
+          icon={<AlertCircle className="h-4 w-4 text-yellow-500" />}
+        />
+        <StatCard
           label="Dead Code"
-          value={totalDeadCode > 0 ? formatNumber(totalDeadCode) : "—"}
-          description={totalDeadCode > 0 ? "Unused exports" : "Analyze to detect"}
+          value={deadCode > 0 ? formatNumber(deadCode) : "—"}
+          description={deadCode > 0 ? "Unused exports" : "Analyze to detect"}
           icon={<Skull className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
         />
       </div>
