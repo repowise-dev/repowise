@@ -50,8 +50,8 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
           className="rounded border-[var(--color-border-default)]"
         />
       </td>
-      <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] max-w-xs">
-        <span className="truncate block">{truncatePath(finding.file_path, 50)}</span>
+      <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)]" style={{ maxWidth: 0 }}>
+        <span className="truncate block" title={finding.file_path}>{finding.file_path}</span>
         {finding.symbol_name && (
           <span className="text-[var(--color-text-tertiary)]">{finding.symbol_name}</span>
         )}

@@ -301,6 +301,8 @@ class GitMetadataResponse(BaseModel):
     primary_owner_name: str | None
     primary_owner_email: str | None
     primary_owner_commit_pct: float | None
+    recent_owner_name: str | None
+    recent_owner_commit_pct: float | None
     top_authors: list[dict]
     significant_commits: list[dict]
     co_change_partners: list[dict]
@@ -308,6 +310,13 @@ class GitMetadataResponse(BaseModel):
     is_stable: bool
     churn_percentile: float
     age_days: int
+    bus_factor: int
+    contributor_count: int
+    lines_added_90d: int
+    lines_deleted_90d: int
+    avg_commit_size: float
+    commit_categories: dict
+    merge_commit_count_90d: int
 
     @classmethod
     def from_orm(cls, obj: object) -> GitMetadataResponse:
@@ -321,6 +330,8 @@ class GitMetadataResponse(BaseModel):
             primary_owner_name=obj.primary_owner_name,  # type: ignore[attr-defined]
             primary_owner_email=obj.primary_owner_email,  # type: ignore[attr-defined]
             primary_owner_commit_pct=obj.primary_owner_commit_pct,  # type: ignore[attr-defined]
+            recent_owner_name=obj.recent_owner_name,  # type: ignore[attr-defined]
+            recent_owner_commit_pct=obj.recent_owner_commit_pct,  # type: ignore[attr-defined]
             top_authors=json.loads(obj.top_authors_json),  # type: ignore[attr-defined]
             significant_commits=json.loads(obj.significant_commits_json),  # type: ignore[attr-defined]
             co_change_partners=json.loads(obj.co_change_partners_json),  # type: ignore[attr-defined]
@@ -328,15 +339,30 @@ class GitMetadataResponse(BaseModel):
             is_stable=obj.is_stable,  # type: ignore[attr-defined]
             churn_percentile=obj.churn_percentile,  # type: ignore[attr-defined]
             age_days=obj.age_days,  # type: ignore[attr-defined]
+            bus_factor=obj.bus_factor or 0,  # type: ignore[attr-defined]
+            contributor_count=obj.contributor_count or 0,  # type: ignore[attr-defined]
+            lines_added_90d=obj.lines_added_90d or 0,  # type: ignore[attr-defined]
+            lines_deleted_90d=obj.lines_deleted_90d or 0,  # type: ignore[attr-defined]
+            avg_commit_size=obj.avg_commit_size or 0.0,  # type: ignore[attr-defined]
+            commit_categories=json.loads(obj.commit_categories_json) if obj.commit_categories_json else {},  # type: ignore[attr-defined]
+            merge_commit_count_90d=obj.merge_commit_count_90d or 0,  # type: ignore[attr-defined]
         )
 
 
 class HotspotResponse(BaseModel):
     file_path: str
     commit_count_90d: int
+    commit_count_30d: int
     churn_percentile: float
     primary_owner: str | None
     is_hotspot: bool
+    is_stable: bool
+    bus_factor: int
+    contributor_count: int
+    lines_added_90d: int
+    lines_deleted_90d: int
+    avg_commit_size: float
+    commit_categories: dict
 
 
 class OwnershipEntry(BaseModel):

@@ -1,0 +1,79 @@
+title: repowise
+description: Codebase intelligence for developers and AI.
+baseurl: ""
+url: "https://repowise-dev.github.io"
+
+theme: just-the-docs
+
+logo: "/assets/images/logo.png"
+
+# Aux links for the upper right navigation
+aux_links:
+  "GitHub":
+    - "https://github.com/repowise-dev/repowise"
+  "PyPI":
+    - "https://pypi.org/project/repowise/"
+
+aux_links_new_tab: true
+
+# Footer content
+footer_content: "Copyright &copy; 2025 repowise. Distributed under the <a href=\"https://github.com/repowise-dev/repowise/blob/main/LICENSE\">AGPL-3.0 License</a>."
+
+# Color scheme
+color_scheme: dark
+
+# Enable search
+search_enabled: true
+search:
+  heading_level: 2
+  previews: 2
+  preview_words_before: 3
+  preview_words_after: 3
+  tokenizer_separator: /[\s/]+/
+  rel_url: true
+  button: false
+
+# Navigation
+nav_sort: order
+
+# Callouts
+callouts_level: quiet
+callouts:
+  highlight:
+    color: yellow
+  important:
+    title: Important
+    color: blue
+  new:
+    title: New
+    color: green
+  note:
+    title: Note
+    color: purple
+  warning:
+    title: Warning
+    color: red
+
+# Back to top button
+back_to_top: true
+back_to_top_text: "Back to top"
+
+# Last edit timestamp
+last_edit_timestamp: true
+last_edit_time_format: "%b %e %Y at %I:%M %p"
+
+# Heading anchors
+heading_anchors: true
+
+# Plugins
+plugins:
+  - jekyll-seo-tag
+  - jekyll-github-metadata
+
+# Exclude from processing
+exclude:
+  - "*.gemspec"
+  - "Gemfile"
+  - "Gemfile.lock"
+  - "node_modules"
+  - "vendor"

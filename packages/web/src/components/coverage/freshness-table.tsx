@@ -64,7 +64,7 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
         <EmptyState title="No pages" description="No pages match this filter." />
       ) : (
         <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
-          <table className="w-full min-w-[560px] text-sm">
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
@@ -93,8 +93,8 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
                     key={page.id}
                     className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0"
                   >
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] max-w-xs">
-                      <div className="truncate">{truncatePath(page.target_path, 50)}</div>
+                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)]" style={{ maxWidth: 0 }}>
+                      <div className="truncate" title={page.target_path}>{page.target_path}</div>
                       <div className="text-[var(--color-text-tertiary)]">{page.page_type}</div>
                     </td>
                     <td className="px-4 py-2.5">

@@ -59,9 +59,17 @@ async def get_hotspots(
         HotspotResponse(
             file_path=r.file_path,
             commit_count_90d=r.commit_count_90d,
+            commit_count_30d=r.commit_count_30d,
             churn_percentile=r.churn_percentile,
             primary_owner=r.primary_owner_name,
             is_hotspot=r.is_hotspot,
+            is_stable=r.is_stable,
+            bus_factor=r.bus_factor or 0,
+            contributor_count=r.contributor_count or 0,
+            lines_added_90d=r.lines_added_90d or 0,
+            lines_deleted_90d=r.lines_deleted_90d or 0,
+            avg_commit_size=r.avg_commit_size or 0.0,
+            commit_categories=json.loads(r.commit_categories_json) if r.commit_categories_json else {},
         )
         for r in rows
     ]
@@ -135,7 +143,7 @@ async def get_co_changes(
         raise HTTPException(status_code=404, detail="Git metadata not found")
 
     partners = json.loads(meta.co_change_partners_json)
-    filtered = [p for p in partners if p.get("count", 0) >= min_count]
+    filtered = [p for p in partners if p.get("co_change_count", 0) >= min_count]
 
     return {
         "file_path": file_path,
@@ -161,8 +169,12 @@ async def get_git_summary(
     for m in all_meta:
         if m.primary_owner_name:
             owners[m.primary_owner_name] = owners.get(m.primary_owner_name, 0) + 1
+    total = len(all_meta) or 1
     top_owners = sorted(
-        [{"name": k, "file_count": v} for k, v in owners.items()],
+        [
+            {"name": k, "file_count": v, "pct": v / total}
+            for k, v in owners.items()
+        ],
         key=lambda x: x["file_count"],
         reverse=True,
     )[:10]

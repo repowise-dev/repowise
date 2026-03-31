@@ -11,6 +11,7 @@ import { GitHistoryPanel } from "@/components/wiki/git-history-panel";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
+import { CoChangeList } from "@/components/git/co-change-list";
 import { Hash, Cpu } from "lucide-react";
 
 interface Props {
@@ -63,7 +64,7 @@ export default async function WikiPageRoute({ params }: Props) {
                 <span className="hidden sm:block">/</span>
               </>
             )}
-            <span className="font-mono truncate text-[var(--color-text-secondary)] max-w-[180px] sm:max-w-none">
+            <span className="font-mono truncate text-[var(--color-text-secondary)] max-w-[180px] sm:max-w-none" title={page.target_path || page.page_type}>
               {page.target_path || page.page_type}
             </span>
           </div>
@@ -78,7 +79,7 @@ export default async function WikiPageRoute({ params }: Props) {
           {/* Provider badge */}
           <Badge variant="outline" className="font-mono text-xs hidden sm:flex shrink-0">
             <Cpu className="h-3 w-3 mr-1" />
-            <span className="truncate max-w-[120px]">{page.provider_name}/{page.model_name}</span>
+            <span className="truncate max-w-[200px]" title={`${page.provider_name}/${page.model_name}`}>{page.provider_name}/{page.model_name}</span>
           </Badge>
 
           {/* Commit */}
@@ -156,26 +157,7 @@ export default async function WikiPageRoute({ params }: Props) {
             </div>
           )}
 
-          {/* Co-change partners */}
-          {git && git.co_change_partners.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
-                Co-change Partners
-              </p>
-              <ul className="space-y-1.5">
-                {git.co_change_partners.slice(0, 5).map((p) => (
-                  <li key={p.file_path} className="text-xs min-w-0">
-                    <span className="font-mono text-[var(--color-text-secondary)] block truncate">
-                      {p.file_path}
-                    </span>
-                    <span className="text-[var(--color-text-tertiary)]">
-                      {p.co_change_count}× together
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {/* Co-change partners — now uses the visual bar component */}
 
           {/* Page metadata */}
           <div>

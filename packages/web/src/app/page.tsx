@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { listRepos, getRepoStats } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
+import { getGitSummary } from "@/lib/api/git";
+import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
 import { StatCard } from "@/components/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -39,22 +41,33 @@ export default async function DashboardPage() {
   }
 
   // Aggregate stats across all repos
+
   const statsResults = await Promise.allSettled(
     repoList.map((r) => getRepoStats(r.id)),
   );
-  const allStats = statsResults
-    .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof getRepoStats>>> => r.status === "fulfilled")
-    .map((r) => r.value);
+  const gitResults = await Promise.allSettled(
+    repoList.map((r) => getGitSummary(r.id)),
+  );
 
-  const totalFiles = allStats.reduce((s, st) => s + st.file_count, 0);
-  const totalSymbols = allStats.reduce((s, st) => s + st.symbol_count, 0);
-  const avgCoverage = allStats.length > 0
-    ? Math.round(allStats.reduce((s, st) => s + st.doc_coverage_pct, 0) / allStats.length)
-    : 0;
-  const avgFreshness = allStats.length > 0
-    ? Math.round(allStats.reduce((s, st) => s + st.freshness_score, 0) / allStats.length)
-    : 0;
-  const totalDeadCode = allStats.reduce((s, st) => s + st.dead_export_count, 0);
+  const statsMap = new Map<string, RepoStatsResponse>();
+  const gitMap = new Map<string, GitSummaryResponse>();
+  repoList.forEach((r, i) => {
+    if (statsResults[i]?.status === "fulfilled")
+      statsMap.set(r.id, (statsResults[i] as PromiseFulfilledResult<RepoStatsResponse>).value);
+    if (gitResults[i]?.status === "fulfilled")
+      gitMap.set(r.id, (gitResults[i] as PromiseFulfilledResult<GitSummaryResponse>).value);
+  });
+
+  // Aggregate stats across all repos
+  let totalPages = 0;
+  let freshPages = 0;
+  let deadCode = 0;
+  for (const s of statsMap.values()) {
+    totalPages += s.file_count;
+    freshPages += Math.round(s.file_count * s.doc_coverage_pct / 100);
+    deadCode += s.dead_export_count;
+  }
+  const stalePages = totalPages - freshPages;
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1200px]">
@@ -69,25 +82,26 @@ export default async function DashboardPage() {
       {/* Stat Cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
-          label="Files"
-          value={formatNumber(totalFiles)}
+          label="Total Pages"
+          value={formatNumber(totalPages)}
           icon={<FileText className="h-4 w-4" />}
         />
         <StatCard
-          label="Symbols"
-          value={formatNumber(totalSymbols)}
-          icon={<Activity className="h-4 w-4" />}
-        />
-        <StatCard
-          label="Doc Coverage"
-          value={`${avgCoverage}%`}
-          description={`Freshness ${avgFreshness}%`}
+          label="Fresh Pages"
+          value={formatNumber(freshPages)}
+          description="Confidence ≥ 80%"
           icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
         />
         <StatCard
+          label="Stale Pages"
+          value={formatNumber(stalePages)}
+          description="Need regeneration"
+          icon={<AlertCircle className="h-4 w-4 text-yellow-500" />}
+        />
+        <StatCard
           label="Dead Code"
-          value={formatNumber(totalDeadCode)}
-          description="Unused exports"
+          value={deadCode > 0 ? formatNumber(deadCode) : "—"}
+          description={deadCode > 0 ? "Unused exports" : "Analyze to detect"}
           icon={<Skull className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
         />
       </div>
@@ -123,11 +137,11 @@ export default async function DashboardPage() {
                           </p>
                         </div>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <p className="text-xs text-[var(--color-text-tertiary)] font-mono truncate">
+                          <p className="text-xs text-[var(--color-text-tertiary)] font-mono truncate" title={repo.local_path}>
                             {repo.local_path}
                           </p>
                         </div>
-                        <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
                           {repo.head_commit && (
                             <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
                               {repo.head_commit.slice(0, 7)}
@@ -136,6 +150,19 @@ export default async function DashboardPage() {
                           <span className="text-xs text-[var(--color-text-tertiary)]">
                             Updated {formatRelativeTime(repo.updated_at)}
                           </span>
+                          {gitMap.has(repo.id) && (() => {
+                            const g = gitMap.get(repo.id)!;
+                            return (
+                              <>
+                                {g.hotspot_count > 0 && (
+                                  <Badge variant="outdated">{g.hotspot_count} hotspot{g.hotspot_count !== 1 ? "s" : ""}</Badge>
+                                )}
+                                {g.stable_count > 0 && (
+                                  <Badge variant="fresh">{g.stable_count} stable</Badge>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
                     </Link>

@@ -88,7 +88,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
             </h3>
             <ul className="space-y-1 text-sm text-[var(--color-text-tertiary)]">
               {decision.affected_files.slice(0, 10).map((f) => (
-                <li key={f} className="truncate font-mono text-xs">{f}</li>
+                <li key={f} className="truncate font-mono text-xs" title={f}>{f}</li>
               ))}
               {decision.affected_files.length > 10 && (
                 <li className="text-xs">...and {decision.affected_files.length - 10} more</li>

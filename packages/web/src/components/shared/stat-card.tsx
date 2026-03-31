@@ -16,6 +16,7 @@ export function StatCard({
   label,
   value,
   description,
+  trend,
   icon,
   className,
 }: StatCardProps) {
@@ -27,9 +28,23 @@ export function StatCard({
             <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
               {label}
             </p>
-            <p className="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
-              {value}
-            </p>
+            <div className="flex items-baseline gap-2">
+              <p className="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
+                {value}
+              </p>
+              {trend && (
+                <span
+                  className={cn(
+                    "text-xs font-medium tabular-nums",
+                    trend.positive
+                      ? "text-[var(--color-success)]"
+                      : "text-[var(--color-error)]",
+                  )}
+                >
+                  {trend.positive ? "\u2191" : "\u2193"} {trend.value}
+                </span>
+              )}
+            </div>
             {description && (
               <p className="text-xs text-[var(--color-text-secondary)]">{description}</p>
             )}

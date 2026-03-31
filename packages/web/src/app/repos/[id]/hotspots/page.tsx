@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
-import { Flame } from "lucide-react";
+import { Flame, Shield } from "lucide-react";
 import { StatCard } from "@/components/shared/stat-card";
 import { HotspotTable } from "@/components/git/hotspot-table";
 import { ContributorBar } from "@/components/git/contributor-bar";
+import { ChurnHistogram } from "@/components/git/churn-histogram";
+import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getHotspots, getGitSummary } from "@/lib/api/git";
 import { formatNumber } from "@/lib/utils/format";
@@ -21,15 +23,25 @@ export default async function HotspotsPage({
 
   try {
     [hotspots, summary] = await Promise.all([
-      getHotspots(id, 50),
+      getHotspots(id, 100),
       getGitSummary(id),
     ]);
   } catch {
     // API unavailable
   }
 
+  // Aggregate commit categories across all hotspot files
+  const aggregatedCategories: Record<string, number> = {};
+  for (const h of hotspots) {
+    for (const [cat, count] of Object.entries(h.commit_categories || {})) {
+      aggregatedCategories[cat] = (aggregatedCategories[cat] || 0) + (count as number);
+    }
+  }
+
+  const busFactorRiskCount = hotspots.filter((h) => h.bus_factor <= 1).length;
+
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-6xl">
+    <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
       <div>
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
           <Flame className="h-5 w-5 text-red-500" />
@@ -42,7 +54,7 @@ export default async function HotspotsPage({
 
       {/* Summary cards */}
       {summary && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <StatCard
             label="Hotspot Files"
             value={formatNumber(summary.hotspot_count)}
@@ -63,11 +75,43 @@ export default async function HotspotsPage({
             value={`${Math.round(summary.average_churn_percentile)}%`}
             description="percentile"
           />
+          <StatCard
+            label="Bus Factor Risk"
+            value={formatNumber(busFactorRiskCount)}
+            description="files with factor ≤ 1"
+            icon={<Shield className="h-4 w-4 text-red-400" />}
+          />
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+      {/* Charts row */}
+      {hotspots.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <Card className="lg:col-span-2">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Churn Distribution</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ChurnHistogram hotspots={hotspots} />
+            </CardContent>
+          </Card>
+
+          {Object.keys(aggregatedCategories).length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Commit Types</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0 flex items-center justify-center">
+                <CommitCategoryDonut categories={aggregatedCategories} />
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* Table + sidebar */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
+        <div className="xl:col-span-3">
           <HotspotTable hotspots={hotspots} />
         </div>
 
@@ -80,8 +124,8 @@ export default async function HotspotsPage({
             <CardContent className="pt-0">
               <ContributorBar owners={summary.top_owners} />
               <div className="mt-3 space-y-1.5">
-                {summary.top_owners.slice(0, 5).map((o) => (
-                  <div key={o.email || `owner-${o.name}`} className="flex items-center justify-between text-xs">
+                {summary.top_owners.slice(0, 5).map((o, i) => (
+                  <div key={o.email || `owner-${i}`} className="flex items-center justify-between text-xs">
                     <span className="text-[var(--color-text-secondary)] truncate">{o.name}</span>
                     <span className="text-[var(--color-text-tertiary)] tabular-nums ml-2">
                       {formatNumber(o.file_count)} files ({Math.round(o.pct * 100)}%)
