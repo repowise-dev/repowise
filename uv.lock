@@ -2336,21 +2336,25 @@ wheels = [
 
 [[package]]
 name = "repowise"
-version = "0.1.2"
+version = "0.1.25"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
+    { name = "anthropic" },
     { name = "apscheduler" },
     { name = "click" },
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "gitpython" },
+    { name = "google-genai" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "lancedb" },
+    { name = "litellm" },
     { name = "mcp" },
     { name = "networkx" },
+    { name = "openai" },
     { name = "pathspec" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -2372,17 +2376,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-all = [
-    { name = "anthropic" },
-    { name = "asyncpg" },
-    { name = "google-genai" },
-    { name = "litellm" },
-    { name = "openai" },
-    { name = "pgvector" },
-]
-anthropic = [
-    { name = "anthropic" },
-]
 dev = [
     { name = "build" },
     { name = "mypy" },
@@ -2393,15 +2386,6 @@ dev = [
     { name = "ruff" },
     { name = "time-machine" },
     { name = "types-networkx" },
-]
-gemini = [
-    { name = "google-genai" },
-]
-litellm = [
-    { name = "litellm" },
-]
-openai = [
-    { name = "openai" },
 ]
 postgres = [
     { name = "asyncpg" },
@@ -2425,7 +2409,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20,<1" },
     { name = "alembic", specifier = ">=1.13,<2" },
-    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40,<1" },
+    { name = "anthropic", specifier = ">=0.40,<1" },
     { name = "apscheduler", specifier = ">=3.10,<4" },
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29,<1" },
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.0" },
@@ -2433,15 +2417,15 @@ requires-dist = [
     { name = "cryptography", specifier = ">=43,<44" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "gitpython", specifier = ">=3.1,<4" },
-    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0,<2" },
+    { name = "google-genai", specifier = ">=1.0,<2" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "jinja2", specifier = ">=3.1,<4" },
     { name = "lancedb", specifier = ">=0.12,<1" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.50,<2" },
+    { name = "litellm", specifier = ">=1.50,<2" },
     { name = "mcp", specifier = ">=1.0,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11,<2" },
     { name = "networkx", specifier = ">=3.3,<4" },
-    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.50,<2" },
+    { name = "openai", specifier = ">=1.50,<2" },
     { name = "pathspec", specifier = ">=0.12,<1" },
     { name = "pgvector", marker = "extra == 'postgres'", specifier = ">=0.3,<1" },
     { name = "pydantic", specifier = ">=2.8,<3" },
@@ -2449,7 +2433,6 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23,<1" },
     { name = "pytest-snapshot", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
-    { name = "repowise", extras = ["anthropic", "openai", "gemini", "litellm", "postgres"], marker = "extra == 'all'" },
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21,<1" },
     { name = "rich", specifier = ">=13,<14" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6,<1" },
@@ -2470,7 +2453,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1" },
     { name = "watchdog", specifier = ">=4,<5" },
 ]
-provides-extras = ["anthropic", "openai", "gemini", "litellm", "postgres", "all", "dev"]
+provides-extras = ["postgres", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -187,7 +187,8 @@
       "Bash(find packages/web/src/lib -name *.ts -o -name *.tsx)",
       "Bash(npx tsc:*)",
       "Bash(kill %1)",
-      "Bash(lsof -ti:3002)"
+      "Bash(lsof -ti:3002)",
+      "WebSearch"
     ]
   },
   "enableAllProjectMcpServers": true,
