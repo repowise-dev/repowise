@@ -12,7 +12,7 @@ Four intelligence layers. Eight MCP tools. One `pip install`.
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/python-3.11%2B-F59520?labelColor=0A0A0A)](https://pypi.org/project/repowise/)
 [![MCP](https://img.shields.io/badge/MCP-compatible-F59520?labelColor=0A0A0A)](https://modelcontextprotocol.io)
-[![Stars](https://img.shields.io/github/stars/repowise/repowise?color=F59520&labelColor=0A0A0A)](https://github.com/repowise/repowise)
+[![Stars](https://img.shields.io/github/stars/repowise-dev/repowise?color=F59520&labelColor=0A0A0A)](https://github.com/repowise-dev/repowise)
 
 [**Live Demo →**](https://repowise.dev/examples) · [**Hosted for teams**](https://repowise.dev) · [**Docs**](https://repowise-dev.github.io) · [**Discord**](https://discord.gg/repowise)
 
