@@ -12,6 +12,8 @@ Recommended models (as of 2026):
 
 from __future__ import annotations
 
+import os
+
 import structlog
 from openai import AsyncOpenAI
 from openai import RateLimitError as _OpenAIRateLimitError
@@ -55,12 +57,18 @@ class OpenAIProvider(BaseProvider):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         model: str = "gpt-5.4-nano",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
     ) -> None:
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not resolved_key:
+            raise ProviderError(
+                "openai",
+                "No API key found. Pass api_key= or set the OPENAI_API_KEY env var.",
+            )
+        self._client = AsyncOpenAI(api_key=resolved_key, base_url=base_url)
         self._model = model
         self._rate_limiter = rate_limiter
 
