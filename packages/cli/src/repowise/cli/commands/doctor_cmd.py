@@ -102,7 +102,15 @@ def doctor_command(path: str | None, repair: bool) -> None:
     except Exception as e:
         checks.append(_check("Providers", False, str(e)))
 
-    # 6. Stale page count
+    # 6. Provider configuration?
+    from repowise.cli.helpers import validate_provider_config
+
+    config_warnings = validate_provider_config()
+    config_ok = len(config_warnings) == 0
+    config_detail = "All required API keys configured" if config_ok else "; ".join(config_warnings)
+    checks.append(_check("Provider config", config_ok, config_detail))
+
+    # 7. Stale page count
     stale_count = 0
     if db_ok and page_count > 0:
         try:
@@ -133,7 +141,7 @@ def doctor_command(path: str | None, repair: bool) -> None:
         except Exception:
             checks.append(_check("Stale pages", True, "Could not check"))
 
-    # 7-8. Three-store consistency (SQL vs Vector Store vs FTS)
+    # 8-9. Three-store consistency (SQL vs Vector Store vs FTS)
     missing_from_vector: set[str] = set()
     orphaned_vector: set[str] = set()
     missing_from_fts: set[str] = set()

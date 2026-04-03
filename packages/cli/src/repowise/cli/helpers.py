@@ -235,26 +235,149 @@ def resolve_provider(
                 model = cfg["model"]
 
     if provider_name is not None:
+        # Validate configuration before attempting to create provider
+        warnings = validate_provider_config(provider_name)
+        if warnings:
+            for warning in warnings:
+                err_console.print(f"[yellow]Warning:[/yellow] {warning}")
+            # For explicit provider requests, we still try to create it
+            # The provider constructor will fail if the API key is actually required
+
         kwargs: dict[str, Any] = {}
         if model:
             kwargs["model"] = model
+
+        # Pass API key from environment if available
+        if provider_name == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
+            kwargs["api_key"] = os.environ["ANTHROPIC_API_KEY"]
+        elif provider_name == "openai" and os.environ.get("OPENAI_API_KEY"):
+            kwargs["api_key"] = os.environ["OPENAI_API_KEY"]
+        elif provider_name == "gemini" and (
+            os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        ):
+            kwargs["api_key"] = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        elif provider_name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
+            kwargs["base_url"] = os.environ["OLLAMA_BASE_URL"]
+
         return get_provider(provider_name, **kwargs)
 
     # Auto-detect from env vars
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        kwargs = {"model": model} if model else {}
+    if os.environ.get("ANTHROPIC_API_KEY") and os.environ["ANTHROPIC_API_KEY"].strip():
+        kwargs = (
+            {"model": model, "api_key": os.environ["ANTHROPIC_API_KEY"]}
+            if model
+            else {"api_key": os.environ["ANTHROPIC_API_KEY"]}
+        )
         return get_provider("anthropic", **kwargs)
-    if os.environ.get("OPENAI_API_KEY"):
-        kwargs = {"model": model} if model else {}
+    if os.environ.get("OPENAI_API_KEY") and os.environ["OPENAI_API_KEY"].strip():
+        kwargs = (
+            {"model": model, "api_key": os.environ["OPENAI_API_KEY"]}
+            if model
+            else {"api_key": os.environ["OPENAI_API_KEY"]}
+        )
         return get_provider("openai", **kwargs)
-    if os.environ.get("OLLAMA_BASE_URL"):
-        kwargs = {"model": model} if model else {}
+    if os.environ.get("OLLAMA_BASE_URL") and os.environ["OLLAMA_BASE_URL"].strip():
+        kwargs = (
+            {"model": model, "base_url": os.environ["OLLAMA_BASE_URL"]}
+            if model
+            else {"base_url": os.environ["OLLAMA_BASE_URL"]}
+        )
         return get_provider("ollama", **kwargs)
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        kwargs = {"model": model} if model else {}
+    if (os.environ.get("GEMINI_API_KEY") and os.environ["GEMINI_API_KEY"].strip()) or (
+        os.environ.get("GOOGLE_API_KEY") and os.environ["GOOGLE_API_KEY"].strip()
+    ):
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        kwargs = {"model": model, "api_key": api_key} if model else {"api_key": api_key}
         return get_provider("gemini", **kwargs)
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
-        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY."
+        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY."
     )
+
+
+# ---------------------------------------------------------------------------
+# Provider validation
+# ---------------------------------------------------------------------------
+
+
+def validate_provider_config(provider_name: str | None = None) -> list[str]:
+    """Validate that required API keys/environment variables are set for the provider.
+
+    Args:
+        provider_name: The provider name to validate. If None, checks all possible providers.
+
+    Returns:
+        List of warning messages for missing or invalid configuration.
+        Empty list means all required config is present.
+    """
+    import os
+
+    warnings = []
+
+    def _is_env_var_set(var_name: str) -> bool:
+        """Check if environment variable is set and non-empty."""
+        value = os.environ.get(var_name)
+        return value is not None and value.strip() != ""
+
+    def _is_env_var_exists(var_name: str) -> bool:
+        """Check if environment variable exists (even if empty)."""
+        return var_name in os.environ
+
+    # Define required environment variables for each provider
+    provider_env_vars = {
+        "anthropic": ["ANTHROPIC_API_KEY"],
+        "openai": ["OPENAI_API_KEY"],
+        "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],  # Either one
+        "ollama": ["OLLAMA_BASE_URL"],
+        "litellm": ["LITELLM_API_KEY"],  # May need others depending on backend
+    }
+
+    if provider_name:
+        # Validate specific provider
+        if provider_name not in provider_env_vars:
+            warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")
+            return warnings
+
+        env_vars = provider_env_vars[provider_name]
+        missing_vars = []
+
+        if provider_name == "gemini":
+            # Special case: either GEMINI_API_KEY or GOOGLE_API_KEY
+            if not (_is_env_var_set("GEMINI_API_KEY") or _is_env_var_set("GOOGLE_API_KEY")):
+                missing_vars = env_vars
+        else:
+            for var in env_vars:
+                if not _is_env_var_set(var):
+                    missing_vars.append(var)
+
+        if missing_vars:
+            warnings.append(
+                f"Provider '{provider_name}' requires environment variables: {', '.join(missing_vars)}"
+            )
+    else:
+        # Check all providers - warn about any that could be configured but are missing keys
+        for name, env_vars in provider_env_vars.items():
+            if name == "gemini":
+                if os.environ.get("REPOWISE_PROVIDER") == "gemini" and not (
+                    _is_env_var_set("GEMINI_API_KEY") or _is_env_var_set("GOOGLE_API_KEY")
+                ):
+                    # Only warn if it looks like they might be trying to use gemini
+                    warnings.append(
+                        "Provider 'gemini' requires GEMINI_API_KEY or GOOGLE_API_KEY environment variable"
+                    )
+                continue
+
+            missing = [var for var in env_vars if not _is_env_var_set(var)]
+            if missing:
+                # Only warn if this provider is explicitly requested OR
+                # if the env var exists but is invalid (empty)
+                env_var_exists = any(_is_env_var_exists(var) for var in env_vars)
+                explicitly_requested = os.environ.get("REPOWISE_PROVIDER") == name
+
+                if explicitly_requested or env_var_exists:
+                    warnings.append(
+                        f"Provider '{name}' requires environment variables: {', '.join(missing)}"
+                    )
+
+    return warnings

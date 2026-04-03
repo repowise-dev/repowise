@@ -15,6 +15,7 @@ from repowise.cli.helpers import (
     resolve_repo_path,
     run_async,
     save_state,
+    validate_provider_config,
 )
 
 # ---------------------------------------------------------------------------
@@ -125,3 +126,107 @@ class TestStateFile:
 class TestGetHeadCommit:
     def test_non_git_returns_none(self, tmp_path):
         assert get_head_commit(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# Provider validation
+# ---------------------------------------------------------------------------
+
+
+class TestValidateProviderConfig:
+    def test_no_provider_returns_empty_warnings(self, monkeypatch):
+        # Clear all provider env vars
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+
+        assert validate_provider_config() == []
+
+    def test_anthropic_missing_key(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "anthropic")
+
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "anthropic" in warnings[0]
+        assert "ANTHROPIC_API_KEY" in warnings[0]
+
+    def test_anthropic_valid_key(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("REPOWISE_PROVIDER", "anthropic")
+
+        assert validate_provider_config() == []
+
+    def test_anthropic_empty_key(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        monkeypatch.setenv("REPOWISE_PROVIDER", "anthropic")
+
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "ANTHROPIC_API_KEY" in warnings[0]
+
+    def test_openai_missing_key(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
+
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "openai" in warnings[0]
+        assert "OPENAI_API_KEY" in warnings[0]
+
+    def test_gemini_with_gemini_key(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("REPOWISE_PROVIDER", "gemini")
+
+        assert validate_provider_config() == []
+
+    def test_gemini_with_google_key(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+        monkeypatch.setenv("REPOWISE_PROVIDER", "gemini")
+
+        assert validate_provider_config() == []
+
+    def test_gemini_missing_keys(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "gemini")
+
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "gemini" in warnings[0]
+
+    def test_ollama_missing_url(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "ollama")
+
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "ollama" in warnings[0]
+        assert "OLLAMA_BASE_URL" in warnings[0]
+
+    def test_unknown_provider(self, monkeypatch):
+        warnings = validate_provider_config("unknown")
+        assert len(warnings) == 1
+        assert "unknown provider" in warnings[0].lower()
+
+    def test_auto_detect_anthropic(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+        # Should not warn when env var is properly set
+        assert validate_provider_config() == []
+
+    def test_anthropic_empty_key_auto_detect(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+        # Should warn when env var exists but is empty
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "anthropic" in warnings[0]
+        assert "ANTHROPIC_API_KEY" in warnings[0]
