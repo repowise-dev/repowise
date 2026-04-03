@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob

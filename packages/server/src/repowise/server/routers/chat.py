@@ -6,9 +6,9 @@ import json
 import logging
 from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import StreamingResponse
 
-from fastapi import APIRouter, Depends, HTTPException, Request
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.providers.llm.base import ChatProvider, ProviderError

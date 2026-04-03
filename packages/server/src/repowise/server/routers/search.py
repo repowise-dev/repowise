@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+
 from repowise.server.deps import get_fts, get_vector_store, verify_api_key
 from repowise.server.schemas import SearchResultResponse
 

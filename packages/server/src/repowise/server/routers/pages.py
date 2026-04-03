@@ -7,9 +7,9 @@ parameter greedily matches the suffix as part of the page_id.
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import PageResponse, PageVersionResponse

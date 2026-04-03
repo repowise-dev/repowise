@@ -12,10 +12,10 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncGenerator
 
+from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import HTTPException, Request, Security
 from repowise.core.persistence.database import get_session
 
 _API_KEY = os.environ.get("REPOWISE_API_KEY")
