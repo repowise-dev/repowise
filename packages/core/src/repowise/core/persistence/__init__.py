@@ -68,9 +68,12 @@ from .database import (
     async_sessionmaker,
     create_engine,
     create_session_factory,
+    get_configured_db_url,
     get_db_url,
+    get_repo_db_path,
     get_session,
     init_db,
+    resolve_db_url,
 )
 from .models import (
     Base,
@@ -143,6 +146,7 @@ __all__ = [
     "delete_decision",
     # git metadata crud
     "get_all_git_metadata",
+    "get_configured_db_url",
     "get_conversation",
     "get_db_url",
     # dead code crud
@@ -155,6 +159,7 @@ __all__ = [
     "get_git_metadata_bulk",
     "get_page",
     "get_page_versions",
+    "get_repo_db_path",
     "get_repository",
     "get_repository_by_path",
     "get_session",
@@ -167,6 +172,7 @@ __all__ = [
     "list_pages",
     "mark_webhook_processed",
     "recompute_decision_staleness",
+    "resolve_db_url",
     "save_dead_code_findings",
     "store_webhook_event",
     "touch_conversation",

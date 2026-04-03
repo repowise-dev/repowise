@@ -11,7 +11,12 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from repowise.core.persistence.database import init_db
+from repowise.core.persistence.database import (
+    get_configured_db_url,
+    get_repo_db_path,
+    init_db,
+    resolve_db_url,
+)
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.providers.embedding.base import MockEmbedder
@@ -127,27 +132,24 @@ async def _lifespan(server: FastMCP):
 
     _log = _logging.getLogger("repowise.mcp")
 
-    db_url = os.environ.get("REPOWISE_DATABASE_URL", "sqlite+aiosqlite:///repowise.db")
+    configured_db_url = get_configured_db_url()
+    db_url = resolve_db_url(_state._repo_path, create_parent=False)
 
-    # If a repo path was configured, try .repowise/wiki.db
-    if _state._repo_path:
-        from pathlib import Path
-
-        repowise_dir = Path(_state._repo_path) / ".repowise"
+    # If a repo path was configured, prefer <repo>/.repowise/wiki.db unless an env
+    # override was provided explicitly.
+    if _state._repo_path and configured_db_url is None:
+        db_path = get_repo_db_path(_state._repo_path)
+        repowise_dir = db_path.parent
         if not repowise_dir.exists():
             _log.warning(
                 "No .repowise directory at %s — run 'repowise init' first",
                 _state._repo_path,
             )
-        elif not (repowise_dir / "wiki.db").exists():
+        elif not db_path.exists():
             _log.warning(
                 "No wiki.db in %s — run 'repowise init' to generate the wiki",
                 repowise_dir,
             )
-        if repowise_dir.exists():
-            db_path = repowise_dir / "wiki.db"
-            if db_path.exists():
-                db_url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
 
     connect_args: dict = {}
     if db_url.startswith("sqlite"):

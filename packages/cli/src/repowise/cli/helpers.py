@@ -11,6 +11,8 @@ from typing import Any, TypeVar
 import click
 from rich.console import Console
 
+from repowise.core.persistence.database import resolve_db_url
+
 CONFIG_FILENAME = "config.yaml"
 
 T = TypeVar("T")
@@ -69,16 +71,10 @@ def ensure_repowise_dir(repo_path: Path) -> Path:
 def get_db_url_for_repo(repo_path: Path) -> str:
     """Return a database URL for this repo.
 
-    If ``REPOWISE_DB_URL`` is set in the environment that URL is used.
-    Otherwise defaults to the global ``~/.repowise/wiki.db`` so all repos
-    are visible in one ``repowise serve`` regardless of working directory.
+    Prefers ``REPOWISE_DB_URL``, then the legacy ``REPOWISE_DATABASE_URL``.
+    Otherwise defaults to the repo-local ``<repo>/.repowise/wiki.db``.
     """
-    env_url = os.environ.get("REPOWISE_DB_URL")
-    if env_url:
-        return env_url
-    db_path = Path.home() / REPOWISE_DIR / DB_FILENAME
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite+aiosqlite:///{db_path}"
+    return resolve_db_url(repo_path)
 
 
 async def _ensure_db_async(repo_path: Path) -> tuple[Any, Any]:
@@ -220,7 +216,6 @@ def resolve_provider(
       3. ``.repowise/config.yaml`` (written by ``repowise init``)
       4. Auto-detect from API key env vars
     """
-    import os
 
     from repowise.core.providers import get_provider
 
@@ -311,7 +306,6 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         List of warning messages for missing or invalid configuration.
         Empty list means all required config is present.
     """
-    import os
 
     warnings = []
 

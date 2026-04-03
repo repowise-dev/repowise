@@ -74,6 +74,69 @@ async def vector_store():
     await vs.close()
 
 
+async def test_mcp_lifespan_uses_cli_database_env_var(monkeypatch):
+    import repowise.server.mcp_server._server as mcp_server
+    from repowise.server.mcp_server import _state
+
+    captured: dict[str, str] = {}
+
+    class DummyEngine:
+        async def dispose(self) -> None:
+            return None
+
+    class DummyFts:
+        def __init__(self, engine) -> None:
+            self.engine = engine
+
+        async def ensure_index(self) -> None:
+            return None
+
+    class DummyVectorStore:
+        def __init__(self, *, embedder) -> None:
+            self.embedder = embedder
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_init_db(engine) -> None:
+        return None
+
+    async def fake_load_vector_stores(repo_path: str | None) -> None:
+        return None
+
+    def fake_create_async_engine(url: str, connect_args: dict | None = None) -> DummyEngine:
+        captured["url"] = url
+        return DummyEngine()
+
+    monkeypatch.setenv("REPOWISE_DB_URL", "sqlite:///tmp/from-cli.db")
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    monkeypatch.setattr(mcp_server, "create_async_engine", fake_create_async_engine)
+    monkeypatch.setattr(mcp_server, "init_db", fake_init_db)
+    monkeypatch.setattr(mcp_server, "FullTextSearch", DummyFts)
+    monkeypatch.setattr(mcp_server, "InMemoryVectorStore", DummyVectorStore)
+    monkeypatch.setattr(mcp_server, "async_sessionmaker", lambda *args, **kwargs: object())
+    monkeypatch.setattr(mcp_server, "_load_vector_stores", fake_load_vector_stores)
+
+    original_repo_path = _state._repo_path
+    original_vector_store = _state._vector_store
+    original_decision_store = _state._decision_store
+    original_ready = _state._vector_store_ready
+
+    _state._repo_path = None
+    _state._vector_store = None
+    _state._decision_store = None
+    _state._vector_store_ready = None
+
+    try:
+        async with mcp_server._lifespan(mcp_server.mcp):
+            assert captured["url"] == "sqlite+aiosqlite:///tmp/from-cli.db"
+    finally:
+        _state._repo_path = original_repo_path
+        _state._vector_store = original_vector_store
+        _state._decision_store = original_decision_store
+        _state._vector_store_ready = original_ready
+
+
 @pytest.fixture
 async def repo_id(session: AsyncSession) -> str:
     """Create a test repository and return its ID."""
