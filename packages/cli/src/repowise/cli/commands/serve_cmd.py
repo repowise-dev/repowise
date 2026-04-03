@@ -17,6 +17,17 @@ from repowise.cli.helpers import console, load_config
 _GLOBAL_CONFIG_DIR = Path.home() / ".repowise"
 
 
+def _ollama_reachable(base_url: str = "http://localhost:11434") -> bool:
+    """Return True if an Ollama server is responding at *base_url*."""
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(f"{base_url}/api/tags", timeout=1) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 def _setup_embedder() -> None:
     """Ensure REPOWISE_EMBEDDER is set before the server starts.
 
@@ -38,9 +49,10 @@ def _setup_embedder() -> None:
             _set_api_key_env(saved_embedder, cfg["embedder_api_key"])
         return
 
-    # Detect which providers already have keys in the environment.
+    # Detect which providers already have keys / are available in the environment.
     has_gemini = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
+    has_ollama = bool(os.environ.get("OLLAMA_BASE_URL") or _ollama_reachable())
 
     console.print(
         "\n[bold]Chat & search require an embedder.[/bold] "
@@ -51,24 +63,32 @@ def _setup_embedder() -> None:
     labels = []
     if has_gemini:
         options.append("gemini")
-        labels.append("[1] gemini  [green]✓ key set[/green]")
+        labels.append(f"[{len(options)}] gemini  [green]✓ key set[/green]")
     else:
         options.append("gemini")
-        labels.append("[1] gemini  [dim]needs GEMINI_API_KEY / GOOGLE_API_KEY[/dim]")
+        labels.append(f"[{len(options)}] gemini  [dim]needs GEMINI_API_KEY / GOOGLE_API_KEY[/dim]")
     if has_openai:
         options.append("openai")
-        labels.append("[2] openai  [green]✓ key set[/green]")
+        labels.append(f"[{len(options)}] openai  [green]✓ key set[/green]")
     else:
         options.append("openai")
-        labels.append("[2] openai  [dim]needs OPENAI_API_KEY[/dim]")
+        labels.append(f"[{len(options)}] openai  [dim]needs OPENAI_API_KEY[/dim]")
+    if has_ollama:
+        options.append("ollama")
+        labels.append(f"[{len(options)}] ollama  [green]✓ local server detected[/green]")
+    else:
+        options.append("ollama")
+        labels.append(
+            f"[{len(options)}] ollama  [dim]local, no key needed — start with: ollama serve[/dim]"
+        )
     options.append("skip")
-    labels.append("[3] skip    [dim]no chat/search[/dim]")
+    labels.append(f"[{len(options)}] skip    [dim]no chat/search[/dim]")
 
     for label in labels:
         console.print(f"  {label}")
     console.print()
 
-    default = "1" if (has_gemini or has_openai) else "3"
+    default = "1" if (has_gemini or has_openai or has_ollama) else str(len(options))
     raw = click.prompt("  Select", default=default).strip()
 
     # Map number or name to option.
@@ -83,6 +103,14 @@ def _setup_embedder() -> None:
         return
 
     os.environ["REPOWISE_EMBEDDER"] = choice
+
+    if choice == "ollama":
+        # Ollama needs no API key — just ensure OLLAMA_BASE_URL is set
+        base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        os.environ.setdefault("OLLAMA_BASE_URL", base_url)
+        _save_global_embedder(choice, "")
+        console.print()
+        return
 
     # Ensure the API key is present; prompt if missing.
     api_key = _get_or_prompt_api_key(choice)

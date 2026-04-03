@@ -23,9 +23,10 @@ from typing import Any, Callable
 from repowise.core.providers.embedding.base import Embedder
 
 _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
-    "openai": ("repowise.core.providers.embedding.openai", "OpenAIEmbedder"),
-    "gemini": ("repowise.core.providers.embedding.gemini", "GeminiEmbedder"),
-    "mock":   ("repowise.core.providers.embedding.base",   "MockEmbedder"),
+    "openai":  ("repowise.core.providers.embedding.openai",  "OpenAIEmbedder"),
+    "gemini":  ("repowise.core.providers.embedding.gemini",  "GeminiEmbedder"),
+    "ollama":  ("repowise.core.providers.embedding.ollama",  "OllamaEmbedder"),
+    "mock":    ("repowise.core.providers.embedding.base",    "MockEmbedder"),
 }
 
 _custom_embedders: dict[str, Callable[..., Embedder]] = {}

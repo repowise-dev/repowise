@@ -79,6 +79,10 @@ def _search_semantic(repo_path, query: str, limit: int) -> None:
                     from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
                     embedder = OpenAIEmbedder()
+                elif embedder_name == "ollama":
+                    from repowise.core.providers.embedding.ollama import OllamaEmbedder
+
+                    embedder = OllamaEmbedder()
                 else:
                     embedder = MockEmbedder()
                 store = LanceDBVectorStore(str(lance_dir), embedder=embedder)

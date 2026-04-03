@@ -34,12 +34,13 @@ from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateL
 # This means `pip install repowise-core` without anthropic installed still works —
 # you just can't use the anthropic provider.
 _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
-    "anthropic": ("repowise.core.providers.llm.anthropic", "AnthropicProvider"),
-    "openai": ("repowise.core.providers.llm.openai", "OpenAIProvider"),
-    "gemini": ("repowise.core.providers.llm.gemini", "GeminiProvider"),
-    "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
-    "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
-    "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
+    "anthropic":   ("repowise.core.providers.llm.anthropic",   "AnthropicProvider"),
+    "openai":      ("repowise.core.providers.llm.openai",      "OpenAIProvider"),
+    "gemini":      ("repowise.core.providers.llm.gemini",      "GeminiProvider"),
+    "ollama":      ("repowise.core.providers.llm.ollama",      "OllamaProvider"),
+    "litellm":     ("repowise.core.providers.llm.litellm",     "LiteLLMProvider"),
+    "claudecode":  ("repowise.core.providers.llm.claudecode",  "ClaudeCodeProvider"),
+    "mock":        ("repowise.core.providers.llm.mock",        "MockProvider"),
 }
 
 # Runtime-registered custom providers (factory callables)

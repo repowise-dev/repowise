@@ -41,6 +41,8 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
         return "gemini"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
+    if os.environ.get("OLLAMA_BASE_URL"):
+        return "ollama"
     return "mock"
 
 
@@ -259,15 +261,15 @@ async def _persist_result(
     "--provider",
     "provider_name",
     default=None,
-    help="LLM provider name (anthropic, openai, gemini, ollama, mock).",
+    help="LLM provider name (anthropic, openai, gemini, ollama, claudecode, mock).",
 )
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option(
     "--embedder",
     "embedder_name",
     default=None,
-    type=click.Choice(["gemini", "openai", "mock"]),
-    help="Embedder for RAG: gemini | openai | mock (default: auto-detect).",
+    type=click.Choice(["gemini", "openai", "ollama", "mock"]),
+    help="Embedder for RAG: gemini | openai | ollama | mock (default: auto-detect).",
 )
 @click.option("--skip-tests", is_flag=True, default=False, help="Skip test files.")
 @click.option("--skip-infra", is_flag=True, default=False, help="Skip infrastructure files.")
@@ -576,6 +578,13 @@ def init_command(
                 from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
                 embedder_impl = OpenAIEmbedder()
+            except Exception:
+                embedder_impl = MockEmbedder()
+        elif embedder_name_resolved == "ollama":
+            try:
+                from repowise.core.providers.embedding.ollama import OllamaEmbedder
+
+                embedder_impl = OllamaEmbedder()
             except Exception:
                 embedder_impl = MockEmbedder()
         else:

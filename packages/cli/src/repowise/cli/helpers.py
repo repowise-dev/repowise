@@ -258,8 +258,9 @@ def resolve_provider(
             kwargs["api_key"] = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         elif provider_name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
             kwargs["base_url"] = os.environ["OLLAMA_BASE_URL"]
+        # claudecode needs no API key — uses the active Claude Code session
 
-        return get_provider(provider_name, **kwargs)
+        return get_provider(provider_name, with_rate_limiter=provider_name != "claudecode", **kwargs)
 
     # Auto-detect from env vars
     if os.environ.get("ANTHROPIC_API_KEY") and os.environ["ANTHROPIC_API_KEY"].strip():
@@ -324,6 +325,9 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         """Check if environment variable exists (even if empty)."""
         return var_name in os.environ
 
+    # Providers that require no API key or env var whatsoever
+    _no_key_providers = {"claudecode", "mock"}
+
     # Define required environment variables for each provider
     provider_env_vars = {
         "anthropic": ["ANTHROPIC_API_KEY"],
@@ -331,9 +335,14 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],  # Either one
         "ollama": ["OLLAMA_BASE_URL"],
         "litellm": ["LITELLM_API_KEY"],  # May need others depending on backend
+        # claudecode / mock need no env vars — always "valid"
     }
 
     if provider_name:
+        # Providers with no key requirements are always valid
+        if provider_name in _no_key_providers:
+            return warnings
+
         # Validate specific provider
         if provider_name not in provider_env_vars:
             warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")

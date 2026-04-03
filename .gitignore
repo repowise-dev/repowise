@@ -142,7 +142,8 @@ provider_config.json
 .mcp.json
 frontend/
 integrations/
-providers/
+# Only ignore a top-level /providers/ dir (legacy closed-source dir), not nested ones in packages/
+/providers/
 
 # Private release notes
 docs/PYPI_RELEASE.md
@@ -165,7 +166,7 @@ run_ingest.py
 run_test.ps1
 smoke_test.py
 integrations/
-providers/
+/providers/
 demo_init.py
 fastapi/
 openclaw/

@@ -18,7 +18,7 @@ from repowise.cli.helpers import (
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "auto"]),
+    type=click.Choice(["gemini", "openai", "ollama", "auto"]),
     default="auto",
     help="Embedder to use. 'auto' detects from env vars / config.",
 )
@@ -66,9 +66,15 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
         embedder_impl = OpenAIEmbedder()
         console.print("[green]Using OpenAI embedder[/green]")
+    elif embedder_name == "ollama":
+        from repowise.core.providers.embedding.ollama import OllamaEmbedder
+
+        embedder_impl = OllamaEmbedder()
+        console.print("[green]Using Ollama embedder (local)[/green]")
     else:
         console.print(
-            "[red]No real embedder available. Set GEMINI_API_KEY or OPENAI_API_KEY.[/red]"
+            "[red]No real embedder available. Set GEMINI_API_KEY, OPENAI_API_KEY, "
+            "or use --embedder ollama (requires local Ollama server).[/red]"
         )
         raise click.Abort()
 

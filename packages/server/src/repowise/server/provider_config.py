@@ -63,6 +63,14 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "env_keys": [],
         "requires_key": True,
     },
+    {
+        "id": "claudecode",
+        "name": "Claude Code (local CLI)",
+        "default_model": "haiku",
+        "models": ["haiku", "sonnet", "opus"],
+        "env_keys": [],
+        "requires_key": False,
+    },
 ]
 
 _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}

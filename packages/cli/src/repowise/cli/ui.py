@@ -82,13 +82,17 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "anthropic": "claude-sonnet-4-6",
     "ollama": "llama3.2",
     "litellm": "groq/llama-3.1-70b-versatile",
+    "claudecode": "haiku",
 }
 
+# Providers with no required env var have an empty string value.
+# _detect_provider_status handles the no-key-needed case separately.
 _PROVIDER_ENV: dict[str, str] = {
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "OLLAMA_BASE_URL",
+    "claudecode": "",  # No env var required — uses active claude CLI session
 }
 
 _PROVIDER_SIGNUP: dict[str, str] = {
@@ -96,7 +100,11 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
     "ollama": "https://ollama.com/download",
+    "claudecode": "https://claude.ai/code",
 }
+
+# Providers that require no API key at all
+_NO_KEY_PROVIDERS: frozenset[str] = frozenset({"ollama", "claudecode"})
 
 
 # ---------------------------------------------------------------------------
@@ -220,13 +228,16 @@ def interactive_mode_select(console: Console) -> str:
 
 
 def _detect_provider_status() -> dict[str, str]:
-    """Return {provider: env_var_name} for providers whose key is set."""
+    """Return {provider: env_var_name} for providers whose key is set (or not required)."""
     status: dict[str, str] = {}
     for prov, env_var in _PROVIDER_ENV.items():
-        if prov == "gemini":
+        if prov in _NO_KEY_PROVIDERS:
+            # Always "configured" — no key needed
+            status[prov] = env_var
+        elif prov == "gemini":
             if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
                 status[prov] = env_var
-        elif os.environ.get(env_var):
+        elif env_var and os.environ.get(env_var):
             status[prov] = env_var
     return status
 
@@ -258,7 +269,12 @@ def interactive_provider_select(
     table.add_column("Default Model", style="dim")
 
     for idx, prov in enumerate(providers, 1):
-        status_text = f"[{OK}]✓ API key set[/]" if prov in detected else "[dim]✗ no key[/dim]"
+        if prov in _NO_KEY_PROVIDERS:
+            status_text = f"[{OK}]✓ no key needed[/]"
+        elif prov in detected:
+            status_text = f"[{OK}]✓ API key set[/]"
+        else:
+            status_text = "[dim]✗ no key[/dim]"
         default_model = _PROVIDER_DEFAULTS.get(prov, "")
         # Mark gemini as recommended
         label = prov
@@ -287,8 +303,8 @@ def interactive_provider_select(
     )
     chosen = providers[int(chosen_idx) - 1]
 
-    # --- inline API key entry if missing ---
-    if chosen not in detected:
+    # --- inline API key entry if missing (skip for no-key providers) ---
+    if chosen not in detected and chosen not in _NO_KEY_PROVIDERS:
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")
         console.print()

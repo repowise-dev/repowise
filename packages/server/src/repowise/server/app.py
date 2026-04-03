@@ -53,6 +53,7 @@ def _build_embedder():
         mock    — deterministic 8-dim SHA-256 embedder (default, no API key needed)
         gemini  — GeminiEmbedder via GEMINI_API_KEY / GOOGLE_API_KEY env var
         openai  — OpenAIEmbedder via OPENAI_API_KEY env var
+        ollama  — OllamaEmbedder via OLLAMA_BASE_URL env var (local, no key needed)
     """
     name = os.environ.get("REPOWISE_EMBEDDER", "mock").lower()
     if name == "gemini":
@@ -65,7 +66,15 @@ def _build_embedder():
 
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "text-embedding-3-small")
         return OpenAIEmbedder(model=model)
-    logger.warning("embedder.mock_active — set REPOWISE_EMBEDDER=gemini or openai for real RAG")
+    if name == "ollama":
+        from repowise.core.providers.embedding.ollama import OllamaEmbedder
+
+        model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "nomic-embed-text")
+        base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        return OllamaEmbedder(model=model, base_url=base_url)
+    logger.warning(
+        "embedder.mock_active — set REPOWISE_EMBEDDER=gemini, openai, or ollama for real RAG"
+    )
     return MockEmbedder()
 
 
