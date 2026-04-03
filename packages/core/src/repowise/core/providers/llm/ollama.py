@@ -15,7 +15,7 @@ Popular models (pull with `ollama pull <model>`):
     - qwen2.5-coder     — excellent multilingual code model
 
 Usage:
-    provider = OllamaProvider(model="codellama", base_url="http://localhost:11434/v1")
+    provider = OllamaProvider(model="codellama", base_url="http://localhost:11434")
 """
 
 from __future__ import annotations
@@ -48,7 +48,15 @@ _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
 _MAX_WAIT = 8.0  # Ollama can be slow on first load, allow more wait time
 
-_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+_DEFAULT_BASE_URL = "http://localhost:11434"
+
+
+def _normalize_base_url(url: str) -> str:
+    """Ensure base_url ends with /v1 for OpenAI SDK compatibility."""
+    url = url.rstrip("/")
+    if not url.endswith("/v1"):
+        url += "/v1"
+    return url
 
 
 class OllamaProvider(BaseProvider):
@@ -59,7 +67,8 @@ class OllamaProvider(BaseProvider):
     Args:
         model:        Ollama model name (e.g., 'llama3.2', 'codellama').
                       Must be pulled first: `ollama pull <model>`
-        base_url:     Ollama API base URL. Defaults to http://localhost:11434/v1
+        base_url:     Ollama server URL. Defaults to http://localhost:11434.
+                      The /v1 suffix is appended automatically if missing.
         rate_limiter: Optional RateLimiter (useful when running multiple
                       concurrent requests against a resource-constrained machine).
     """
@@ -70,8 +79,7 @@ class OllamaProvider(BaseProvider):
         base_url: str = _DEFAULT_BASE_URL,
         rate_limiter: RateLimiter | None = None,
     ) -> None:
-        # Ollama's OpenAI-compatible endpoint accepts any non-empty api_key
-        self._client = AsyncOpenAI(api_key="ollama", base_url=base_url)
+        self._client = AsyncOpenAI(api_key="ollama", base_url=_normalize_base_url(base_url))
         self._model = model
         self._rate_limiter = rate_limiter
 
