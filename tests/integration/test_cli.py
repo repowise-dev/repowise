@@ -16,10 +16,14 @@ def runner():
 
 
 @pytest.fixture
-def work_repo(tmp_path, sample_repo_path):
+def work_repo(tmp_path, sample_repo_path, monkeypatch):
     """Copy sample_repo into a temporary directory for isolation."""
     dest = tmp_path / "repo"
     shutil.copytree(sample_repo_path, dest)
+    # Point the DB at the repo-local path so tests can assert on its existence
+    db_path = dest / ".repowise" / "wiki.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite+aiosqlite:///{db_path}")
     return dest
 
 

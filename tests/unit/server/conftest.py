@@ -21,10 +21,10 @@ def _create_test_app():
     """Create a FastAPI app without the lifespan (we manage state manually)."""
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
 
+    from fastapi import FastAPI
     from repowise.server.routers import (
         dead_code,
         git,

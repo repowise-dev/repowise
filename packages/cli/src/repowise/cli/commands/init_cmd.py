@@ -30,7 +30,7 @@ from repowise.cli.helpers import (
 
 def _register_mcp_with_claude(console_obj: Any, repo_path: Path) -> None:
     """Register the repowise MCP server with Claude Desktop and Claude Code."""
-    from repowise.cli.mcp_config import register_with_claude_desktop, register_with_claude_code
+    from repowise.cli.mcp_config import register_with_claude_code, register_with_claude_desktop
 
     desktop = register_with_claude_desktop(repo_path)
     if desktop:
@@ -733,8 +733,6 @@ def init_command(
         from repowise.cli.mcp_config import (
             save_mcp_config,
             save_root_mcp_config,
-            register_with_claude_desktop,
-            register_with_claude_code,
         )
 
         save_mcp_config(repo_path)
