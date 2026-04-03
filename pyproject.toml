@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.1.25"
+version = "0.1.29"
 description = "Codebase intelligence for developers and AI — generates and maintains a structured wiki for any codebase"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -194,7 +194,7 @@ known-first-party = ["repowise"]
 # mypy — strict type checking
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.11"
+python_version = "0.1.29"
 warn_unused_configs = true
 show_error_codes = true
 namespace_packages = true
