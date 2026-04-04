@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from click.testing import CliRunner
 
+from repowise.cli import __version__
 from repowise.cli.main import cli
 
 
@@ -23,7 +24,7 @@ class TestCliBasics:
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
         assert "repowise" in result.output
-        assert "0.1.2" in result.output
+        assert __version__ in result.output
 
     def test_help(self, runner):
         result = runner.invoke(cli, ["--help"])

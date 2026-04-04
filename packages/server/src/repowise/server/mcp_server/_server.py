@@ -11,11 +11,19 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from repowise.core.persistence.database import init_db
+from repowise.core.persistence.database import (
+    get_configured_db_url,
+    get_repo_db_path,
+    init_db,
+    resolve_db_url,
+)
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.server.mcp_server import _state
+
+
+_log = __import__("logging").getLogger("repowise.mcp")
 
 
 def _resolve_embedder():
@@ -27,12 +35,12 @@ def _resolve_embedder():
 
             cfg_path = Path(_state._repo_path) / ".repowise" / "config.yaml"
             if cfg_path.exists():
-                import yaml
+                import yaml  # type: ignore[import-untyped]
 
                 cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
                 name = (cfg.get("embedder") or "").lower()
         except Exception:
-            pass
+            _log.debug("Failed to read embedder from config.yaml", exc_info=True)
     if name == "gemini":
         try:
             from repowise.core.providers.embedding.gemini import GeminiEmbedder
@@ -40,7 +48,7 @@ def _resolve_embedder():
             dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
             return GeminiEmbedder(output_dimensionality=dims)
         except Exception:
-            pass
+            _log.warning("Failed to initialise Gemini embedder — falling back to mock", exc_info=True)
     if name == "openai":
         try:
             from repowise.core.providers.embedding.openai import OpenAIEmbedder
@@ -48,7 +56,7 @@ def _resolve_embedder():
             model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "text-embedding-3-small")
             return OpenAIEmbedder(model=model)
         except Exception:
-            pass
+            _log.warning("Failed to initialise OpenAI embedder — falling back to mock", exc_info=True)
     return MockEmbedder()
 
 
@@ -71,9 +79,7 @@ async def _load_vector_stores(repo_path: str | None) -> None:
        self._db is not None and skip the blocking import entirely.
     """
     import asyncio as _asyncio
-    import logging as _logging
 
-    _log = _logging.getLogger("repowise.mcp")
     try:
         embedder = _resolve_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
@@ -123,31 +129,25 @@ async def _lifespan(server: FastMCP):
     the server starts accepting tool calls immediately.  search_codebase awaits
     _state._vector_store_ready before querying the vector store.
     """
-    import logging as _logging
+    configured_db_url = get_configured_db_url()
 
-    _log = _logging.getLogger("repowise.mcp")
-
-    db_url = os.environ.get("REPOWISE_DATABASE_URL", "sqlite+aiosqlite:///repowise.db")
-
-    # If a repo path was configured, try .repowise/wiki.db
-    if _state._repo_path:
-        from pathlib import Path
-
-        repowise_dir = Path(_state._repo_path) / ".repowise"
+    # When repo path is set and no env override, prefer repo-local DB.
+    if _state._repo_path and configured_db_url is None:
+        db_path = get_repo_db_path(_state._repo_path)
+        repowise_dir = db_path.parent
         if not repowise_dir.exists():
             _log.warning(
                 "No .repowise directory at %s — run 'repowise init' first",
                 _state._repo_path,
             )
-        elif not (repowise_dir / "wiki.db").exists():
+            repowise_dir.mkdir(parents=True, exist_ok=True)
+        elif not db_path.exists():
             _log.warning(
                 "No wiki.db in %s — run 'repowise init' to generate the wiki",
                 repowise_dir,
             )
-        if repowise_dir.exists():
-            db_path = repowise_dir / "wiki.db"
-            if db_path.exists():
-                db_url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
+
+    db_url = resolve_db_url(_state._repo_path)
 
     connect_args: dict = {}
     if db_url.startswith("sqlite"):

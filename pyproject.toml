@@ -195,7 +195,7 @@ known-first-party = ["repowise"]
 # mypy — strict type checking
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "0.1.30"
+python_version = "3.11"
 warn_unused_configs = true
 show_error_codes = true
 namespace_packages = true

@@ -87,9 +87,17 @@ export async function apiPost<T>(
   path: string,
   body?: unknown,
   fetchOptions?: RequestInit,
+  params?: Record<string, string | number | boolean | undefined>,
 ): Promise<T> {
-  const url = `${BASE_URL}${path}`;
-  const res = await fetch(url, {
+  const url = new URL(`${BASE_URL}${path}`, typeof window !== "undefined" ? window.location.href : "http://localhost");
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) {
+        url.searchParams.set(k, String(v));
+      }
+    }
+  }
+  const res = await fetch(url.toString(), {
     method: "POST",
     headers: buildHeaders(),
     body: body !== undefined ? JSON.stringify(body) : undefined,

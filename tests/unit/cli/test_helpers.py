@@ -90,10 +90,11 @@ class TestrepowiseDir:
 
 
 class TestDbUrl:
-    def test_sqlite_url(self, tmp_path):
+    def test_defaults_to_repo_local_database(self, tmp_path):
         url = get_db_url_for_repo(tmp_path)
-        assert url.startswith("sqlite+aiosqlite:///")
-        assert "wiki.db" in url
+        expected_path = (tmp_path / ".repowise" / "wiki.db").as_posix()
+        assert url == f"sqlite+aiosqlite:///{expected_path}"
+        assert (tmp_path / ".repowise").exists()
 
 
 # ---------------------------------------------------------------------------

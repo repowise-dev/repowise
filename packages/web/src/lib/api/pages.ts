@@ -45,5 +45,5 @@ export async function getPageVersions(
 
 /** Force-regenerate a page by ID */
 export async function regeneratePage(pageId: string): Promise<{ job_id: string }> {
-  return apiPost<{ job_id: string }>(`/api/pages/lookup/regenerate?page_id=${encodeURIComponent(pageId)}`);
+  return apiPost<{ job_id: string }>("/api/pages/lookup/regenerate", undefined, undefined, { page_id: pageId });
 }

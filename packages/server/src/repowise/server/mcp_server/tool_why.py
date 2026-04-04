@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -431,7 +431,7 @@ async def _git_archaeology_fallback(
     # --- Layer 3: Live git log (when local repo exists) ---
     git_log_results = []
     local_path = getattr(repository, "local_path", None)
-    if local_path and os.path.isdir(os.path.join(local_path, ".git")):
+    if local_path and (Path(local_path) / ".git").is_dir():
         git_log_results = await _run_git_log(local_path, file_path, stem)
     result["git_log"] = git_log_results
 

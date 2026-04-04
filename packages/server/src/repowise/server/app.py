@@ -20,6 +20,7 @@ from repowise.core.persistence.database import (
     create_engine,
     create_session_factory,
     init_db,
+    resolve_db_url,
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
@@ -75,7 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Shutdown: dispose engine, stop scheduler, close vector store.
     """
     # Database
-    db_url = os.environ.get("REPOWISE_DB_URL")
+    db_url = resolve_db_url()
     engine = create_engine(db_url)
     await init_db(engine)
     session_factory = create_session_factory(engine)

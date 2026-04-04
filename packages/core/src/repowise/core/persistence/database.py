@@ -11,8 +11,10 @@ Call init_db() once at startup to create all tables and the FTS index.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -31,19 +33,35 @@ __all__ = [
     "async_sessionmaker",
     "create_engine",
     "create_session_factory",
+    "get_configured_db_url",
     "get_db_url",
+    "get_repo_db_path",
     "get_session",
     "init_db",
+    "resolve_db_url",
 ]
 
+DB_FILENAME = "wiki.db"
+REPOWISE_DIRNAME = ".repowise"
+DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
 
-def _default_db_url() -> str:
-    """Global SQLite DB at ~/.repowise/wiki.db — shared across all repos."""
-    from pathlib import Path
 
-    db_path = Path.home() / ".repowise" / "wiki.db"
+def get_repo_db_path(repo_path: str | Path) -> Path:
+    """Return the repo-local database path ``<repo>/.repowise/wiki.db``."""
+    return Path(repo_path).resolve() / REPOWISE_DIRNAME / DB_FILENAME
+
+
+def _default_db_url(repo_path: str | Path | None = None) -> str:
+    """Return the default SQLite URL for a repo-local or global wiki database.
+
+    Always creates the parent directory to prevent sqlite crashes.
+    """
+    if repo_path is not None:
+        db_path = get_repo_db_path(repo_path)
+    else:
+        db_path = Path.home() / REPOWISE_DIRNAME / DB_FILENAME
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite+aiosqlite:///{db_path}"
+    return f"sqlite+aiosqlite:///{db_path.as_posix()}"
 
 
 def get_db_url(raw_url: str | None = None) -> str:
@@ -67,6 +85,30 @@ def get_db_url(raw_url: str | None = None) -> str:
         return url.replace("://", "+asyncpg://", 1)
 
     return url
+
+
+def get_configured_db_url() -> str | None:
+    """Return the configured DB URL from supported env vars, if present."""
+    for env_name in DB_ENV_VARS:
+        env_url = os.environ.get(env_name)
+        if env_url:
+            return get_db_url(env_url)
+    return None
+
+
+def resolve_db_url(repo_path: str | Path | None = None) -> str:
+    """Resolve the active DB URL from env vars or the default filesystem path.
+
+    Resolution order:
+    1. ``REPOWISE_DB_URL``
+    2. ``REPOWISE_DATABASE_URL`` (legacy compatibility)
+    3. ``<repo>/.repowise/wiki.db`` when *repo_path* is provided
+    4. ``~/.repowise/wiki.db`` otherwise
+    """
+    configured = get_configured_db_url()
+    if configured is not None:
+        return configured
+    return _default_db_url(repo_path)
 
 
 def create_engine(

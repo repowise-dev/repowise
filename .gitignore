@@ -1,14 +1,3 @@
-# Hosted backend (private, not part of the open-source project)
-backend/
-hosted_backend_plan/
-migrations/
-
-# Outreach / marketing data
-repowise_outreach_targets.csv
-
-# IDE/tool caches
-.sfdx/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -21,8 +10,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-.claude/
-# Python build dirs (only at root, not packages/web/src/lib/)
 /lib/
 /lib64/
 parts/
@@ -72,15 +59,12 @@ dmypy.json
 *.swp
 *.swo
 *~
-.DS_Store
-Thumbs.db
 
 # Node / Next.js
 node_modules/
 .next/
 .nuxt/
 out/
-dist/
 .npm
 .eslintcache
 .parcel-cache
@@ -122,51 +106,8 @@ docker-compose.override.yml
 ._*
 .Spotlight-V100
 .Trashes
+Thumbs.db
 ehthumbs.db
 
-# repowise API keys (local)
-.repowise/.env
-
-# Google service account keys
-awesome-gist-*.json
-
-# Local dev scripts and notes
-CLAUDE.md
-BUILD_STATUS.md
-TESTING_GUIDE.md
-PLAN.md
-run_ingest.py
-run_test.ps1
-smoke_test.py
-provider_config.json
-.mcp.json
-frontend/
-integrations/
-providers/
-
-# Private release notes
-docs/PYPI_RELEASE.md
-
-# Frontend (separate repo, not part of OSS)
-frontend/
-
-# Embedded repos
-fastapi/
-repowise-hosted-frontend/
-
-# Local dev artifacts
-.mcp.json
-!plugins/**/.mcp.json
-BUILD_STATUS.md
-PLAN.md
-TESTING_GUIDE.md
-provider_config.json
-run_ingest.py
-run_test.ps1
-smoke_test.py
-integrations/
-providers/
-demo_init.py
-fastapi/
-openclaw/
-repowise.zip
+# Claude Code
+.claude/

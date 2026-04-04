@@ -59,6 +59,27 @@ class TestInitFullMock:
         assert "init complete" in result.output
 
 
+class TestInitDefaultDbLocation:
+    def test_creates_repo_local_db_without_env_override(
+        self,
+        runner,
+        tmp_path,
+        sample_repo_path,
+        monkeypatch,
+    ):
+        work_repo = tmp_path / "repo"
+        shutil.copytree(sample_repo_path, work_repo)
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert (work_repo / ".repowise" / "wiki.db").exists()
+
+
 class TestInitIdempotent:
     def test_running_init_twice(self, runner, work_repo):
         args = ["init", str(work_repo), "--provider", "mock", "--yes"]

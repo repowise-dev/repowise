@@ -19,7 +19,6 @@ console = Console()
 err_console = Console(stderr=True)
 
 STATE_FILENAME = "state.json"
-DB_FILENAME = "wiki.db"
 REPOWISE_DIR = ".repowise"
 
 
@@ -69,16 +68,12 @@ def ensure_repowise_dir(repo_path: Path) -> Path:
 def get_db_url_for_repo(repo_path: Path) -> str:
     """Return a database URL for this repo.
 
-    If ``REPOWISE_DB_URL`` is set in the environment that URL is used.
-    Otherwise defaults to the global ``~/.repowise/wiki.db`` so all repos
-    are visible in one ``repowise serve`` regardless of working directory.
+    Prefers ``REPOWISE_DB_URL``, then the legacy ``REPOWISE_DATABASE_URL``.
+    Otherwise defaults to the repo-local ``<repo>/.repowise/wiki.db``.
     """
-    env_url = os.environ.get("REPOWISE_DB_URL")
-    if env_url:
-        return env_url
-    db_path = Path.home() / REPOWISE_DIR / DB_FILENAME
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite+aiosqlite:///{db_path}"
+    from repowise.core.persistence.database import resolve_db_url
+
+    return resolve_db_url(repo_path)
 
 
 async def _ensure_db_async(repo_path: Path) -> tuple[Any, Any]:
@@ -220,8 +215,6 @@ def resolve_provider(
       3. ``.repowise/config.yaml`` (written by ``repowise init``)
       4. Auto-detect from API key env vars
     """
-    import os
-
     from repowise.core.providers import get_provider
 
     if provider_name is None:
@@ -311,8 +304,6 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         List of warning messages for missing or invalid configuration.
         Empty list means all required config is present.
     """
-    import os
-
     warnings = []
 
     def _is_env_var_set(var_name: str) -> bool:
