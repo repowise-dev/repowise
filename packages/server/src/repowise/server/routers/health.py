@@ -5,10 +5,10 @@ These endpoints are NOT protected by API key auth.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
 from sqlalchemy import func, select
 from sqlalchemy.sql import text
 
+from fastapi import APIRouter, Request
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob, Page
 from repowise.server import __version__

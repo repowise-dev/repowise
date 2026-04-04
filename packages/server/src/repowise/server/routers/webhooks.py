@@ -7,9 +7,9 @@ import hmac
 import json
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import APIRouter, Depends, HTTPException, Request
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.schemas import WebhookResponse

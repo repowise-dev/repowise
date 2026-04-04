@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import APIRouter, Depends, HTTPException
 from repowise.core.generation.editor_files import ClaudeMdGenerator, EditorFileDataFetcher
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key

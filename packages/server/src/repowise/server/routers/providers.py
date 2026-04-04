@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-
 from repowise.server.deps import verify_api_key
 from repowise.server.provider_config import (
     list_provider_status,

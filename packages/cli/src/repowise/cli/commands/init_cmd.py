@@ -27,7 +27,6 @@ from repowise.cli.helpers import (
     save_state,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers (kept in this file; _resolve_embedder also imported by other cmds)
 # ---------------------------------------------------------------------------

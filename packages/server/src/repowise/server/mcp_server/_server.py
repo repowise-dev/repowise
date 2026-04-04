@@ -22,7 +22,6 @@ from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.server.mcp_server import _state
 
-
 _log = __import__("logging").getLogger("repowise.mcp")
 
 
