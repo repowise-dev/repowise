@@ -5,6 +5,7 @@ import { getRepo } from "@/lib/api/repos";
 import { getCoordinatorHealth } from "@/lib/api/health";
 import { RepoSettingsForm } from "@/components/repos/repo-settings-form";
 import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-panel";
+import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { OperationsPanel } from "@/components/repos/operations-panel";
@@ -97,6 +98,20 @@ export default async function RepoSettingsPage({ params }: Props) {
           ))}
         </div>
       </div>
+
+      <Separator />
+
+      <Card className="border-red-900/30">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium text-red-400">Danger Zone</CardTitle>
+          <CardDescription>
+            Permanently delete this repository and all its generated pages, symbols, and history.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DeleteRepoButton repoId={id} repoName={repo.name} variant="button" />
+        </CardContent>
+      </Card>
     </div>
   );
 }
