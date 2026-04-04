@@ -2,7 +2,7 @@
 # repowise — multi-stage Docker build (backend + frontend)
 # =============================================================================
 # Usage:
-#   docker build -t repowise .
+#   docker build -t repowise -f docker/Dockerfile .
 #   docker run -p 7337:7337 -p 3000:3000 -v /path/to/repo/.repowise:/data -e GEMINI_API_KEY=... repowise
 # =============================================================================
 

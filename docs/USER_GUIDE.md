@@ -565,8 +565,11 @@ On first run, the pre-built frontend is downloaded (~50 MB) and cached in `~/.re
 ### Docker (no Node.js needed)
 
 ```bash
+git clone https://github.com/repowise-dev/repowise.git
+cd repowise
+
 # Build the image (one-time)
-docker build -t repowise https://github.com/RaghavChamadiya/repowise.git
+docker build -t repowise -f docker/Dockerfile .
 
 # Run with your indexed repo's .repowise directory
 docker run -p 7337:7337 -p 3000:3000 \
@@ -579,11 +582,11 @@ docker run -p 7337:7337 -p 3000:3000 \
 Or with docker compose:
 
 ```bash
-git clone https://github.com/RaghavChamadiya/repowise.git
+git clone https://github.com/repowise-dev/repowise.git
 cd repowise
 export REPOWISE_DATA=/path/to/your-repo/.repowise
 export GEMINI_API_KEY=your-key
-docker compose up
+docker compose -f docker/docker-compose.yml up
 ```
 
 Open **http://localhost:3000** for the Web UI, **http://localhost:7337** for the API.

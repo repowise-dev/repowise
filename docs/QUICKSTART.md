@@ -110,7 +110,9 @@ To skip the web UI and only run the API: `repowise serve --no-ui`
 ### With Docker (no Node.js needed)
 
 ```bash
-docker build -t repowise https://github.com/RaghavChamadiya/repowise.git
+git clone https://github.com/repowise-dev/repowise.git
+cd repowise
+docker build -t repowise -f docker/Dockerfile .
 
 docker run -p 7337:7337 -p 3000:3000 \
   -v /path/to/your-repo/.repowise:/data \

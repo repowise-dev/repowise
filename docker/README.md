@@ -10,7 +10,8 @@ Run the full repowise stack (API + Web UI) in a single container.
 ## Quick Start
 
 ```bash
-docker build -t repowise .
+# Run from the project root
+docker build -t repowise -f docker/Dockerfile .
 
 # Run with a mounted .repowise directory
 docker run -p 7337:7337 -p 3000:3000 \
@@ -36,7 +37,7 @@ docker compose up
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REPOWISE_DB_URL` | `sqlite+aiosqlite:///data/wiki.db` | Database URL |
+| `REPOWISE_DB_URL` | `sqlite+aiosqlite:////data/wiki.db` | Database URL |
 | `REPOWISE_EMBEDDER` | `mock` | Embedder: `gemini`, `openai`, `mock` |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (for chat) |
 | `OPENAI_API_KEY` | — | OpenAI API key (for chat) |
