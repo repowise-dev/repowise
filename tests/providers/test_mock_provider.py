@@ -7,11 +7,8 @@ access are required to run these tests.
 
 from __future__ import annotations
 
-import pytest
-
 from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
-
 
 # ---------------------------------------------------------------------------
 # Interface contract

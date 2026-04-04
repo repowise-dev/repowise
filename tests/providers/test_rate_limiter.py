@@ -50,14 +50,14 @@ class TestRateLimiterAcquire:
         limiter = RateLimiter(config)
         await limiter.acquire(estimated_tokens=500)
         # One request should now be recorded
-        assert len(limiter._request_times) == 1  # noqa: SLF001
+        assert len(limiter._request_times) == 1
 
     async def test_multiple_acquires_within_limits(self) -> None:
         config = RateLimitConfig(requests_per_minute=100, tokens_per_minute=1_000_000)
         limiter = RateLimiter(config)
         for _ in range(10):
             await limiter.acquire(estimated_tokens=100)
-        assert len(limiter._request_times) == 10  # noqa: SLF001
+        assert len(limiter._request_times) == 10
 
     async def test_acquire_respects_rpm_limit(self) -> None:
         """Acquiring more than RPM slots should block until window clears."""
@@ -71,8 +71,8 @@ class TestRateLimiterAcquire:
 
         # Manually expire the window by backdating the timestamps
         now = time.monotonic()
-        limiter._request_times = [now - 61.0, now - 61.0]  # noqa: SLF001
-        limiter._token_records = [(now - 61.0, 1), (now - 61.0, 1)]  # noqa: SLF001
+        limiter._request_times = [now - 61.0, now - 61.0]
+        limiter._token_records = [(now - 61.0, 1), (now - 61.0, 1)]
 
         # Third acquire should now succeed immediately (window cleared)
         await asyncio.wait_for(limiter.acquire(estimated_tokens=1), timeout=1.0)
@@ -87,8 +87,8 @@ class TestRateLimiterAcquire:
 
         # Manually expire the window
         now = time.monotonic()
-        limiter._request_times = [now - 61.0]  # noqa: SLF001
-        limiter._token_records = [(now - 61.0, 100)]  # noqa: SLF001
+        limiter._request_times = [now - 61.0]
+        limiter._token_records = [(now - 61.0, 100)]
 
         # Next acquire should succeed
         await asyncio.wait_for(limiter.acquire(estimated_tokens=100), timeout=1.0)
@@ -101,13 +101,13 @@ class TestRateLimiterPruning:
 
         # Inject old timestamps (> 60s ago)
         old_time = time.monotonic() - 65.0
-        limiter._request_times = [old_time, old_time]  # noqa: SLF001
-        limiter._token_records = [(old_time, 500), (old_time, 500)]  # noqa: SLF001
+        limiter._request_times = [old_time, old_time]
+        limiter._token_records = [(old_time, 500), (old_time, 500)]
 
         # Acquire should prune stale records and succeed
         await limiter.acquire(estimated_tokens=100)
         # After pruning, only the new request remains
-        assert len(limiter._request_times) == 1  # noqa: SLF001
+        assert len(limiter._request_times) == 1
 
 
 class TestRateLimiterBackoff:
