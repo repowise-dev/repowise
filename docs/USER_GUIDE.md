@@ -616,6 +616,20 @@ Open **http://localhost:3000** in your browser.
 **Dashboard** (`/`)
 Home page with aggregate stats (total pages, fresh/stale counts, dead code findings), a list of indexed repositories, and recent job status.
 
+**Repository Overview** (`/repos/[id]/overview`)
+A single-page dashboard for each repository that aggregates key health signals. Includes:
+- **Health score ring** — composite score (0–100) computed from documentation coverage, freshness, dead code ratio, hotspot density, and ownership silo risk
+- **Attention panel** — prioritized list of items needing action (stale docs, high-churn hotspots, dead code findings)
+- **Language donut** — breakdown of codebase by programming language
+- **Ownership treemap** — visualizes code ownership distribution across modules
+- **Hotspots mini** — top high-churn files at a glance
+- **Decisions timeline** — recent architectural decisions
+- **Module minimap** — compact interactive graph of module relationships
+- **Quick actions** — one-click buttons for sync, full re-index, CLAUDE.md generation, and export
+- **Active job banner** — shows progress of running pipeline jobs with live polling
+
+The overview page degrades gracefully — each data section loads independently, so partial data (e.g., missing git metadata) still renders a useful dashboard.
+
 **Wiki Browser** (`/repos/[id]/wiki/...`)
 The heart of repowise. Browse AI-generated documentation for every file and module. Each page includes:
 - Rendered markdown with syntax-highlighted code blocks and Mermaid diagrams

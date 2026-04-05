@@ -14,8 +14,9 @@ Callers:
 
 from __future__ import annotations
 
+import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -292,19 +293,29 @@ async def _run_ingestion(
     if progress:
         progress.on_phase_start("traverse", len(all_paths))
 
-    # Parallel stat + header reads (I/O bound)
+    # Parallel stat + header reads (I/O bound).
+    # Use asyncio.wrap_future so the event loop stays responsive while waiting.
     file_infos: list[Any] = []
-    with ThreadPoolExecutor(max_workers=8) as io_pool:
-        futures = [io_pool.submit(traverser._build_file_info, p) for p in all_paths]
-        for future in as_completed(futures):
+    io_pool = ThreadPoolExecutor(max_workers=8)
+    try:
+        aws = [
+            asyncio.wrap_future(io_pool.submit(traverser._build_file_info, p))
+            for p in all_paths
+        ]
+        for coro in asyncio.as_completed(aws):
             try:
-                result = future.result()
+                result = await coro
             except Exception:
                 result = None
             if result is not None:
                 file_infos.append(result)
             if progress:
                 progress.on_item_done("traverse")
+    finally:
+        # shutdown(wait=True) is blocking — run in a thread to keep the
+        # event loop responsive.  All submitted futures have already
+        # completed by the time we reach here (the for-loop awaited them).
+        await asyncio.to_thread(io_pool.shutdown, wait=True)
 
     repo_structure = traverser.get_repo_structure(file_infos)
 
@@ -327,7 +338,7 @@ async def _run_ingestion(
     source_map: dict[str, bytes] = {}
     graph_builder = GraphBuilder()
 
-    for fi in file_infos:
+    for i, fi in enumerate(file_infos):
         try:
             source = Path(fi.abs_path).read_bytes()
             parsed = parser.parse_file(fi, source)
@@ -338,11 +349,14 @@ async def _run_ingestion(
             pass  # skip unparseable files
         if progress:
             progress.on_item_done("parse")
+        # Yield control every 50 files so the event loop stays responsive
+        if i % 50 == 49:
+            await asyncio.sleep(0)
 
-    # Build graph
+    # Build graph (CPU-bound — run in thread to keep event loop free)
     if progress:
         progress.on_phase_start("graph", 1)
-    graph_builder.build()
+    await asyncio.to_thread(graph_builder.build)
 
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
     try:

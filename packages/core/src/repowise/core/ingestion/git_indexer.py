@@ -200,6 +200,47 @@ _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
 _FILE_INDEX_TIMEOUT_SECS: float = 45.0
 
 
+@dataclass
+class _CommitRec:
+    """Lightweight commit record parsed from ``git log --numstat``."""
+
+    sha: str
+    author_name: str
+    author_email: str
+    ts: int  # unix epoch
+    is_merge: bool
+    subject: str
+    added: int = 0
+    deleted: int = 0
+
+
+_RENAME_RE = re.compile(r"\{(.+?) => (.+?)\}")
+
+
+def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | None, str | None]:
+    """Extract old/new paths from a git numstat rename line and add to *known_paths*.
+
+    Git ``--numstat`` with ``--follow`` emits rename lines like::
+
+        10\t5\t{old => new}/shared_suffix
+        10\t5\told_dir/{old_name => new_name}.py
+
+    This helper parses both forms, adds both expanded paths to *known_paths*,
+    and returns ``(old_path, new_path)`` so the caller can attribute churn to
+    the correct file.  Returns ``(None, None)`` if the pattern is not found.
+    """
+    m = _RENAME_RE.search(stat_path)
+    if m:
+        prefix = stat_path[: m.start()]
+        suffix = stat_path[m.end() :]
+        old_path = prefix + m.group(1) + suffix
+        new_path = prefix + m.group(2) + suffix
+        known_paths.add(old_path)
+        known_paths.add(new_path)
+        return old_path, new_path
+    return None, None
+
+
 def _should_skip_index(file_path: str) -> bool:
     """Return True for files where per-file git indexing should be skipped.
 
@@ -471,10 +512,18 @@ class GitIndexer:
             return []
 
     def _index_file(self, file_path: str, repo: Any) -> dict:
-        """Index a single file's git history. Runs in executor."""
+        """Index a single file's git history. Runs in executor.
+
+        Uses a single ``git log --numstat`` call to collect commit metadata,
+        line-churn stats, and merge-commit flag in one subprocess instead of
+        the previous three separate calls (_get_commits, _get_line_stats,
+        _get_merge_commit_count).
+        """
         now = datetime.now(UTC)
         ninety_days_ago = now - timedelta(days=90)
         thirty_days_ago = now - timedelta(days=30)
+        ninety_days_ago_ts = ninety_days_ago.timestamp()
+        thirty_days_ago_ts = thirty_days_ago.timestamp()
 
         meta: dict[str, Any] = {
             "file_path": file_path,
@@ -509,9 +558,80 @@ class GitIndexer:
         }
 
         try:
-            commits = self._get_commits(file_path, repo)
+            # Single git log call: header line + optional numstat lines per commit.
+            # Format: NUL-delimited record per commit so we can split reliably.
+            # Fields: sha, author name, author email, unix timestamp, parent SHAs, subject
+            log_args: list[str] = []
+            if self.follow_renames:
+                log_args.append("--follow")
+            log_args += [
+                f"-{self.commit_limit}",
+                "--numstat",
+                "--format=%x00%H%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%s",
+                "--",
+                file_path,
+            ]
+            raw = repo.git.log(*log_args)
         except Exception:
             return meta
+
+        if not raw.strip():
+            return meta
+
+        # Parse records — each starts with a \x00 marker line followed by
+        # zero-or-more numstat lines (added\tdeleted\tpath).
+        # When --follow is active, older commits may reference previous file
+        # names so we track all names seen via rename markers ("{old => new}").
+        known_paths: set[str] = {file_path}
+        # When --follow is active, seed known_paths with the original path
+        # so that numstat lines referencing the old name (without a rename
+        # marker in the log window) are still counted.
+        orig_path: str | None = None
+        if self.follow_renames:
+            orig_path = self._detect_original_path(file_path, repo)
+            if orig_path:
+                known_paths.add(orig_path)
+        commits: list[_CommitRec] = []
+        current: _CommitRec | None = None
+
+        for line in raw.splitlines():
+            if line.startswith("\x00"):
+                parts = line.lstrip("\x00").split("\x1f")
+                if len(parts) >= 6:
+                    sha, an, ae, ct, parents, subj = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+                    try:
+                        ts = int(ct)
+                    except ValueError:
+                        ts = 0
+                    current = _CommitRec(
+                        sha=sha,
+                        author_name=an or "unknown",
+                        author_email=ae,
+                        ts=ts,
+                        is_merge=len(parents.split()) > 1,
+                        subject=subj,
+                    )
+                    commits.append(current)
+            elif current is not None and line.strip():
+                # numstat line: added\tdeleted\tpath — only count the target file.
+                # With --follow, git may emit rename lines like
+                # "10\t5\t{old_dir => new_dir}/file.py" or just the old path.
+                numstat_parts = line.split("\t")
+                if len(numstat_parts) >= 3:
+                    stat_path = numstat_parts[2]
+                    # Track renamed paths so we can match them in older commits.
+                    # For rename lines the raw stat_path (with {old => new}) won't
+                    # match known_paths directly — check the expanded new path instead.
+                    match_path = stat_path
+                    if "=>" in stat_path:
+                        _old, _new = _extract_rename_paths(stat_path, known_paths)
+                        match_path = _new or stat_path
+                    if match_path in known_paths or match_path == file_path:
+                        try:
+                            current.added += int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
+                            current.deleted += int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
+                        except ValueError:
+                            pass
 
         if not commits:
             return meta
@@ -520,30 +640,37 @@ class GitIndexer:
         meta["commit_count_capped"] = len(commits) >= self.commit_limit
 
         try:
-            # Timeline
-            dates = [c.committed_datetime for c in commits]
-            meta["first_commit_at"] = min(dates)
-            meta["last_commit_at"] = max(dates)
-            meta["age_days"] = (now - min(dates)).days
+            timestamps = [c.ts for c in commits if c.ts > 0]
+            if timestamps:
+                first_ts = min(timestamps)
+                last_ts = max(timestamps)
+                meta["first_commit_at"] = datetime.fromtimestamp(first_ts, tz=UTC)
+                meta["last_commit_at"] = datetime.fromtimestamp(last_ts, tz=UTC)
+                meta["age_days"] = (now - datetime.fromtimestamp(first_ts, tz=UTC)).days
 
-            # Commit counts by time window + recent author tracking
             author_counts: Counter[str] = Counter()
             author_emails: dict[str, str] = {}
             recent_author_counts: Counter[str] = Counter()
 
             for c in commits:
-                cd = c.committed_datetime
-                if cd.tzinfo is None:
-                    cd = cd.replace(tzinfo=UTC)
-                if cd >= ninety_days_ago:
+                is_recent_90 = c.ts >= ninety_days_ago_ts
+                is_recent_30 = c.ts >= thirty_days_ago_ts
+                if is_recent_90:
                     meta["commit_count_90d"] += 1
-                    recent_author_counts[c.author.name or "unknown"] += 1
-                if cd >= thirty_days_ago:
+                    recent_author_counts[c.author_name] += 1
+                    meta["lines_added_90d"] += c.added
+                    meta["lines_deleted_90d"] += c.deleted
+                    if c.is_merge:
+                        meta["merge_commit_count_90d"] += 1
+                if is_recent_30:
                     meta["commit_count_30d"] += 1
-                name = c.author.name or "unknown"
-                author_counts[name] += 1
-                if name not in author_emails and c.author.email:
-                    author_emails[name] = c.author.email
+                author_counts[c.author_name] += 1
+                if c.author_name not in author_emails and c.author_email:
+                    author_emails[c.author_name] = c.author_email
+
+            c90 = meta["commit_count_90d"]
+            total_churn = meta["lines_added_90d"] + meta["lines_deleted_90d"]
+            meta["avg_commit_size"] = total_churn / c90 if c90 > 0 else 0.0
 
             # Contributor count & bus factor
             meta["contributor_count"] = len(author_counts)
@@ -590,8 +717,7 @@ class GitIndexer:
 
             # Blame ownership (overrides author-based if available).
             # Skipped for large files — git blame is O(lines) and can block the
-            # executor thread for many seconds on files > 100 KB.  The commit-based
-            # ownership computed above is used as a fallback.
+            # executor thread for many seconds on files > 100 KB.
             try:
                 file_size = (self.repo_path / file_path).stat().st_size
                 if file_size <= _MAX_BLAME_SIZE_BYTES:
@@ -604,90 +730,47 @@ class GitIndexer:
                 pass  # blame is best-effort
 
             # Significant commits + classification + PR extraction
-            sig_commits = []
+            sig_commits: list[dict[str, Any]] = []
+            sig_full = False
             category_counts: Counter[str] = Counter()
             for c in commits:
-                msg = c.message.strip().split("\n")[0][:200]
-                if self._is_significant_commit(c.message, c.author.name or ""):
+                msg = c.subject[:200]
+                if not sig_full and self._is_significant_commit(msg, c.author_name):
                     entry: dict[str, Any] = {
-                        "sha": c.hexsha[:8],
-                        "date": c.committed_datetime.isoformat(),
+                        "sha": c.sha[:8],
+                        "date": datetime.fromtimestamp(c.ts, tz=UTC).isoformat() if c.ts else "",
                         "message": msg,
-                        "author": c.author.name or "unknown",
+                        "author": c.author_name,
                     }
-                    # Extract PR/MR number from commit message
-                    pr_match = _PR_NUMBER_RE.search(c.message)
+                    pr_match = _PR_NUMBER_RE.search(msg)
                     if pr_match:
                         pr_num = pr_match.group(1) or pr_match.group(2) or pr_match.group(3)
                         entry["pr_number"] = int(pr_num)
                     sig_commits.append(entry)
                     if len(sig_commits) >= 10:
-                        break
-                # Classify ALL commits (not just significant) for accurate ratios
+                        sig_full = True
+                # Classify ALL commits for accurate category ratios
                 for cat, pattern in _COMMIT_CATEGORIES.items():
                     if pattern.search(msg):
                         category_counts[cat] += 1
-                        break  # first match wins
+                        break
 
             meta["significant_commits_json"] = json.dumps(sig_commits)
             meta["commit_categories_json"] = json.dumps(dict(category_counts))
 
-            # Diff stats (lines added/deleted in last 90 days)
-            added, deleted = self._get_line_stats(file_path, repo, ninety_days_ago)
-            meta["lines_added_90d"] = added
-            meta["lines_deleted_90d"] = deleted
-            c90 = meta["commit_count_90d"]
-            meta["avg_commit_size"] = (added + deleted) / c90 if c90 > 0 else 0.0
-
-            # Original path detection (rename tracking)
-            if self.follow_renames:
-                orig = self._detect_original_path(file_path, repo)
-                if orig:
-                    meta["original_path"] = orig
-
-            # Merge commit count (coordination bottleneck signal)
-            meta["merge_commit_count_90d"] = self._get_merge_commit_count(
-                file_path,
-                repo,
-                ninety_days_ago,
-            )
+            # Original path detection (rename tracking) — reuse the result
+            # from the known_paths seeding above to avoid a duplicate subprocess.
+            if self.follow_renames and orig_path:
+                meta["original_path"] = orig_path
 
             # Stable classification
             if meta["commit_count_total"] > 10 and meta["commit_count_90d"] == 0:
                 meta["is_stable"] = True
 
         except Exception:
-            pass  # return whatever partial data we have
+            logger.debug("git_indexer_partial_failure", file_path=file_path, exc_info=True)
 
         return meta
-
-    def _get_commits(self, file_path: str, repo: Any) -> list[Any]:
-        """Get commits for a file, optionally following renames via --follow."""
-        if not self.follow_renames:
-            return list(repo.iter_commits(paths=file_path, max_count=self.commit_limit))
-
-        # --follow tracks the file across renames; iter_commits doesn't support it.
-        # Get SHAs via git log --follow, then resolve to commit objects.
-        try:
-            raw = repo.git.log(
-                "--follow",
-                f"-{self.commit_limit}",
-                "--format=%H",
-                "--",
-                file_path,
-            )
-        except Exception:
-            return []
-
-        commits = []
-        for line in raw.splitlines():
-            sha = line.strip()
-            if sha:
-                try:
-                    commits.append(repo.commit(sha))
-                except Exception:
-                    continue
-        return commits
 
     def _detect_original_path(self, file_path: str, repo: Any) -> str | None:
         """If --follow reveals the file was renamed, return its earliest prior path."""
@@ -710,25 +793,6 @@ class GitIndexer:
             if p and p != file_path:
                 prev_path = p  # keep overwriting — last one is oldest
         return prev_path
-
-    def _get_merge_commit_count(
-        self,
-        file_path: str,
-        repo: Any,
-        since: datetime,
-    ) -> int:
-        """Count how many merge commits touched this file since a given date."""
-        try:
-            raw = repo.git.log(
-                "--merges",
-                f"--since={since.strftime('%Y-%m-%d')}",
-                "--format=%H",
-                "--",
-                file_path,
-            )
-        except Exception:
-            return 0
-        return sum(1 for line in raw.splitlines() if line.strip())
 
     def _get_blame_ownership(
         self, file_path: str, repo: Any
@@ -757,41 +821,6 @@ class GitIndexer:
         top_name = line_counts.most_common(1)[0][0]
         pct = line_counts[top_name] / total_lines
         return top_name, emails.get(top_name), pct
-
-    def _get_line_stats(
-        self,
-        file_path: str,
-        repo: Any,
-        since: datetime,
-    ) -> tuple[int, int]:
-        """Get total lines added and deleted for a file since a given date.
-
-        Uses a single ``git log --numstat`` call — one subprocess per file.
-        """
-        try:
-            output = repo.git.log(
-                f"--since={since.strftime('%Y-%m-%d')}",
-                "--numstat",
-                "--format=",
-                "--",
-                file_path,
-            )
-        except Exception:
-            return 0, 0
-
-        added = 0
-        deleted = 0
-        for line in output.splitlines():
-            parts = line.split("\t")
-            if len(parts) >= 2:
-                try:
-                    a = int(parts[0]) if parts[0] != "-" else 0
-                    d = int(parts[1]) if parts[1] != "-" else 0
-                    added += a
-                    deleted += d
-                except ValueError:
-                    continue
-        return added, deleted
 
     def _is_significant_commit(self, message: str, author: str) -> bool:
         """Return True if the commit is considered significant.

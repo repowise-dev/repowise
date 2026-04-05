@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request
 from repowise.core.persistence.database import (
     create_engine,
     create_session_factory,
+    get_session,
     init_db,
     resolve_db_url,
 )
@@ -81,6 +82,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db(engine)
     session_factory = create_session_factory(engine)
 
+    # Reset any jobs left in "running" state from a previous server instance
+    # (crash or restart) — they can never complete now.
+    # Note: with multi-worker deployments this is a best-effort race; the
+    # try/except prevents a SQLite lock error from crashing startup.
+    try:
+        from sqlalchemy import update as sa_update
+        from repowise.core.persistence.models import GenerationJob
+        from datetime import datetime, UTC as _UTC
+
+        async with get_session(session_factory) as session:
+            stale_result = await session.execute(
+                sa_update(GenerationJob)
+                .where(GenerationJob.status == "running")
+                .values(
+                    status="failed",
+                    error_message="Server restarted — job interrupted",
+                    finished_at=datetime.now(_UTC),
+                )
+            )
+            if stale_result.rowcount:
+                logger.warning("reset_stale_jobs", extra={"count": stale_result.rowcount})
+    except Exception as exc:
+        logger.warning("stale_job_reset_failed", extra={"error": str(exc)})
+
     # Full-text search
     fts = FullTextSearch(engine)
     await fts.ensure_index()
@@ -99,6 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.fts = fts
     app.state.vector_store = vector_store
     app.state.scheduler = scheduler
+    app.state.background_tasks: set = set()  # Strong refs to prevent GC of asyncio tasks
 
     # Initialize chat tool state (bridges FastAPI state to MCP tool globals)
     from repowise.server.chat_tools import init_tool_state

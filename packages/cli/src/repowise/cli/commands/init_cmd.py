@@ -134,24 +134,24 @@ async def _persist_result(
     """
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
-        batch_upsert_graph_edges,
-        batch_upsert_graph_nodes,
-        batch_upsert_symbols,
+        FullTextSearch,
         create_engine,
         create_session_factory,
         get_session,
         init_db,
         upsert_repository,
     )
-    from repowise.core.persistence.crud import (
-        save_dead_code_findings,
-        upsert_git_metadata_bulk,
-    )
+    from repowise.core.pipeline import persist_pipeline_result
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
     await init_db(engine)
     sf = create_session_factory(engine)
+
+    fts = None
+    if result.generated_pages:
+        fts = FullTextSearch(engine)
+        await fts.ensure_index()
 
     async with get_session(sf) as session:
         repo = await upsert_repository(
@@ -159,88 +159,10 @@ async def _persist_result(
             name=result.repo_name,
             local_path=str(repo_path),
         )
-        repo_id = repo.id
+        await persist_pipeline_result(result, session, repo.id)
 
-        # Pages (if generated)
-        if result.generated_pages:
-            from repowise.core.persistence import upsert_page_from_generated
-
-            for page in result.generated_pages:
-                await upsert_page_from_generated(session, page, repo_id)
-
-        # Graph nodes
-        graph = result.graph_builder.graph()
-        pr = result.graph_builder.pagerank()
-        bc = result.graph_builder.betweenness_centrality()
-        cd = result.graph_builder.community_detection()
-        nodes = []
-        for node_path in graph.nodes:
-            data = graph.nodes[node_path]
-            nodes.append(
-                {
-                    "node_id": node_path,
-                    "symbol_count": data.get("symbol_count", 0),
-                    "has_error": data.get("has_error", False),
-                    "is_test": data.get("is_test", False),
-                    "is_entry_point": data.get("is_entry_point", False),
-                    "language": data.get("language", "unknown"),
-                    "pagerank": pr.get(node_path, 0.0),
-                    "betweenness": bc.get(node_path, 0.0),
-                    "community_id": cd.get(node_path, 0),
-                }
-            )
-        if nodes:
-            await batch_upsert_graph_nodes(session, repo_id, nodes)
-
-        # Graph edges
-        edges = []
-        for u, v, data in graph.edges(data=True):
-            edges.append(
-                {
-                    "source_node_id": u,
-                    "target_node_id": v,
-                    "imported_names_json": json.dumps(data.get("imported_names", [])),
-                    "edge_type": data.get("edge_type", "imports"),
-                }
-            )
-        if edges:
-            await batch_upsert_graph_edges(session, repo_id, edges)
-
-        # Symbols
-        all_symbols = []
-        for pf in result.parsed_files:
-            for sym in pf.symbols:
-                sym.file_path = pf.file_info.path
-                all_symbols.append(sym)
-        if all_symbols:
-            await batch_upsert_symbols(session, repo_id, all_symbols)
-
-        # Git metadata
-        if result.git_metadata_list:
-            await upsert_git_metadata_bulk(session, repo_id, result.git_metadata_list)
-
-        # Dead code findings
-        if result.dead_code_report and result.dead_code_report.findings:
-            await save_dead_code_findings(session, repo_id, result.dead_code_report.findings)
-
-        # Decision records
-        if result.decision_report and result.decision_report.decisions:
-            import dataclasses as _dc
-
-            from repowise.core.persistence.crud import bulk_upsert_decisions
-
-            await bulk_upsert_decisions(
-                session,
-                repo_id,
-                [_dc.asdict(d) for d in result.decision_report.decisions],
-            )
-
-    # FTS indexing (only when pages were generated)
-    if result.generated_pages:
-        from repowise.core.persistence import FullTextSearch
-
-        fts = FullTextSearch(engine)
-        await fts.ensure_index()
+    # FTS indexing is done outside the session to avoid SQLite write conflicts
+    if fts is not None and result.generated_pages:
         for page in result.generated_pages:
             await fts.index(page.page_id, page.title, page.content)
 

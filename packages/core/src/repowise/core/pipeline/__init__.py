@@ -11,12 +11,14 @@ Usage::
 """
 
 from .orchestrator import PipelineResult, run_generation, run_pipeline
+from .persist import persist_pipeline_result
 from .progress import LoggingProgressCallback, ProgressCallback
 
 __all__ = [
     "LoggingProgressCallback",
     "PipelineResult",
     "ProgressCallback",
+    "persist_pipeline_result",
     "run_generation",
     "run_pipeline",
 ]

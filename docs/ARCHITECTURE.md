@@ -132,6 +132,10 @@ repowise/
 │   │   │   │       ├── fetcher.py      # EditorFileDataFetcher (DB → EditorFileData)
 │   │   │   │       ├── tech_stack.py   # filesystem tech stack + build command detection
 │   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
+│   │   │   ├── pipeline/
+│   │   │   │   ├── orchestrator.py     # run_pipeline(), PipelineResult
+│   │   │   │   ├── persist.py          # persist_pipeline_result() — shared by CLI + server
+│   │   │   │   └── progress.py         # ProgressCallback protocol + LoggingProgressCallback
 │   │   │   ├── persistence/
 │   │   │   │   ├── models.py           # SQLAlchemy ORM models
 │   │   │   │   ├── crud.py             # async CRUD layer
@@ -165,6 +169,7 @@ repowise/
 │   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search, claude-md)
 │   │       ├── mcp_server/      # MCP server package (8 tools, split into focused modules)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
+│   │       ├── job_executor.py  # Background pipeline executor — bridges REST endpoints to core pipeline
 │   │       └── scheduler.py     # APScheduler background jobs
 │   │
 │   ├── cli/                    # Python: repowise CLI (click + rich)
@@ -172,9 +177,9 @@ repowise/
 │   │       └── commands/        # init, update, watch, serve, search, export, status, doctor, dead-code, decision, mcp, reindex, generate-claude-md
 │   │
 │   └── web/                    # Next.js 15 frontend
-│       ├── src/app/             # App Router pages (dashboard, wiki, search, graph, symbols, …)
-│       ├── src/components/      # UI primitives, layout, wiki, repos, jobs, settings
-│       └── src/lib/             # API client, SWR hooks, utilities, design tokens
+│       ├── src/app/             # App Router pages (dashboard, wiki, search, graph, symbols, overview, …)
+│       ├── src/components/      # UI primitives, layout, wiki, repos, jobs, settings, dashboard
+│       └── src/lib/             # API client, SWR hooks, utilities (health-score, format), design tokens
 │
 ├── integrations/
 │   ├── github-action/           # action.yml + Dockerfile entrypoint
@@ -613,6 +618,46 @@ are skipped, and generation continues from the last checkpoint.
 `repowise init` is fully idempotent. Running it twice produces the same result.
 Running it after a partial previous run completes only the remaining pages.
 
+### 5.7 Shared Persistence (`pipeline/persist.py`)
+
+The persistence logic for storing a `PipelineResult` into the database (graph nodes,
+edges, symbols, pages, git metadata, dead code findings, decision records) was
+extracted from the CLI's `init_cmd.py` into `core/pipeline/persist.py`. Both the
+CLI and the server's background job executor call `persist_pipeline_result()` — zero
+duplication.
+
+FTS indexing is intentionally excluded from this function. Callers must run it
+separately after the session closes to avoid SQLite write-lock conflicts.
+
+### 5.8 Background Job Executor (`server/job_executor.py`)
+
+The server can now run full pipeline jobs in the background, triggered by the
+`POST /api/repos/{id}/sync` and `POST /api/repos/{id}/full-resync` endpoints.
+
+`execute_job()` is the single entry point, launched via `asyncio.create_task()`:
+
+1. Marks the job as `running`
+2. Resolves the LLM provider from server config
+3. Runs `run_pipeline()` with a `JobProgressCallback` that writes progress to the
+   `GenerationJob` table (the SSE stream endpoint polls this table)
+4. Persists results via `persist_pipeline_result()`
+5. Marks the job as `completed` (or `failed` on error)
+
+Progress updates are batched (every 5 items) to avoid per-item DB overhead. Before
+writing the final job status, all in-flight progress tasks are drained to prevent a
+late `running` update from overwriting `completed`.
+
+Concurrent pipeline runs on the same repository are prevented at the endpoint level
+(returns HTTP 409 if a pending/running job already exists).
+
+### 5.9 Async Pipeline Improvements
+
+The pipeline orchestrator now keeps the event loop responsive during CPU-bound work:
+- File I/O uses `asyncio.wrap_future()` instead of blocking `as_completed()`
+- Graph building runs in a thread via `asyncio.to_thread()`
+- The parse loop yields control every 50 files with `asyncio.sleep(0)`
+- Thread pool shutdown is non-blocking via `asyncio.to_thread()`
+
 ---
 
 ## 6. Maintenance Path — Keeping Docs in Sync
@@ -983,7 +1028,7 @@ and Cline. This config is printed at the end of `repowise init`.
 Served on port `7337` alongside the web UI. All endpoints are prefixed with `/api/`.
 
 Key routers:
-- `/api/repos` — register repos, trigger sync, full-resync
+- `/api/repos` — register repos, trigger sync, full-resync (now launches background pipeline jobs with concurrent-run prevention)
 - `/api/pages` — read pages, version history, force-regenerate single page
 - `/api/search` — semantic (LanceDB or pgvector) and full-text (SQLite FTS5 / PostgreSQL tsvector) search
 - `/api/jobs` — job status, SSE stream for live progress updates
@@ -1004,6 +1049,12 @@ Key routers:
 - `/health` — liveness + readiness (checks DB + provider)
 - `/metrics` — Prometheus-compatible metrics (job counts, token totals, stale count)
 
+**Server lifecycle:**
+- On startup, any jobs left in `running` state from a previous server instance are
+  automatically reset to `failed` (crash recovery).
+- Background pipeline tasks are tracked in `app.state.background_tasks` to prevent
+  garbage collection of `asyncio.Task` references.
+
 Authentication is optional. Set `REPOWISE_API_KEY` to require bearer token auth on
 all non-`/health` endpoints. Default (no key set): fully open, suitable for local use.
 
@@ -1014,7 +1065,8 @@ Served from the same port as the API. All routes under `/`:
 | Route | Content |
 |-------|---------|
 | `/` | Dashboard: all repos, recent jobs, stale page counts, token usage |
-| `/repos/[id]` | Repo overview wiki page + file tree sidebar |
+| `/repos/[id]` | Repo layout with file tree sidebar |
+| `/repos/[id]/overview` | **Overview dashboard** — health score ring, attention panel, language donut, ownership treemap, hotspots mini, decisions timeline, module minimap, quick actions, active job banner |
 | `/repos/[id]/wiki/[...slug]` | Individual wiki page with MDX rendering |
 | `/repos/[id]/search` | Semantic search results |
 | `/repos/[id]/graph` | D3 force-directed dependency graph |
@@ -1023,6 +1075,8 @@ Served from the same port as the API. All routes under `/`:
 | `/repos/[id]/ownership` | Ownership treemap — files colored by primary owner, sized by LOC |
 | `/repos/[id]/hotspots` | Hotspot list — top 20 files with churn + complexity bars |
 | `/repos/[id]/dead-code` | Dead code report — three tabs: Files, Exports, Internals |
+| `/repos/[id]/decisions` | Architectural decision records |
+| `/repos/[id]/chat` | Codebase chat with streaming LLM responses |
 | `/settings` | Provider config, polling interval, cascade budget |
 
 **Key rendering behavior:**
@@ -1199,6 +1253,33 @@ For each page in `decay_only`:
     ▼
 repos.last_sync_commit = HEAD
 state.json updated
+```
+
+### Server-triggered pipeline flow
+
+```
+Web UI "Sync" / "Full Re-index" button
+    │
+    ▼
+POST /api/repos/{id}/sync (or /full-resync)
+    │
+    ├── Check: no pending/running job for this repo (else → 409)
+    ▼
+Create GenerationJob (status=pending, commit)
+    │
+    ▼
+asyncio.create_task(execute_job(job_id, app_state))
+    │  (strong ref in app.state.background_tasks)
+    ▼
+execute_job():
+    ├── Mark job "running"
+    ├── Resolve LLM provider from server config
+    ├── run_pipeline() with JobProgressCallback
+    │       └── writes progress to GenerationJob table every 5 items
+    ├── persist_pipeline_result() (shared with CLI)
+    ├── FTS index new pages
+    ├── drain_and_stop() progress tasks
+    └── Mark job "completed" (or "failed" on error)
 ```
 
 ### MCP query flow

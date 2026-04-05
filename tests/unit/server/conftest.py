@@ -106,6 +106,7 @@ async def app(test_engine, session_factory):
     test_app.state.session_factory = session_factory
     test_app.state.fts = fts
     test_app.state.vector_store = vector_store
+    test_app.state.background_tasks = set()  # Strong refs for background job tasks
 
     yield test_app
     await vector_store.close()

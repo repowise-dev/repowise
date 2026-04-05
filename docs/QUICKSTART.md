@@ -91,7 +91,7 @@ repowise watch
 
 ## Web UI
 
-Repowise includes a full web dashboard with a wiki browser, interactive dependency graph, codebase chat, search, code ownership, hotspots, and dead code detection.
+Repowise includes a full web dashboard with a repository overview, wiki browser, interactive dependency graph, codebase chat, search, code ownership, hotspots, and dead code detection. The overview page shows a health score, attention items, language breakdown, ownership treemap, and quick actions.
 
 ### With Node.js installed
 

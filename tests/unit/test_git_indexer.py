@@ -261,27 +261,178 @@ class TestStableClassification:
 
         mock_repo = MagicMock()
 
-        # Build 15 commits all older than 90 days
+        # Build 15 commits all older than 90 days.
+        # _index_file now uses repo.git.log with NUL-delimited format:
+        # \x00<sha>\x1f<author>\x1f<email>\x1f<unix_ts>\x1f<parents>\x1f<subject>
         old_date = datetime.now(UTC) - timedelta(days=180)
-        commits = [
-            _make_commit(
-                hexsha=f"sha{i:04d}",
-                committed_datetime=old_date - timedelta(days=i),
-            )
-            for i in range(15)
-        ]
-        mock_repo.iter_commits.return_value = commits
-
-        # Mock blame to return a simple result
-        mock_repo.blame.return_value = [
-            (_make_commit(author_name="Alice", author_email="alice@example.com"), ["line"] * 100),
-        ]
+        log_lines = []
+        for i in range(15):
+            ts = int((old_date - timedelta(days=i)).timestamp())
+            log_lines.append(f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1f{ts}\x1f\x1ffeat: old commit {i}")
+        mock_repo.git.log.return_value = "\n".join(log_lines)
 
         meta = indexer._index_file("stable_file.py", mock_repo)
 
         assert meta["commit_count_total"] == 15
         assert meta["commit_count_90d"] == 0
         assert meta["is_stable"] is True
+
+
+# ---------------------------------------------------------------------------
+# 4b. test_numstat_parsing
+# ---------------------------------------------------------------------------
+
+
+class TestNumstatParsing:
+    """Validate the single-git-log numstat parser only counts the target file."""
+
+    def _build_log_output(self, file_path: str, entries: list[dict]) -> str:
+        """Build a mock git log --numstat output string.
+
+        Each entry: {sha, author, email, ts, parents, subject, numstat_lines}
+        where numstat_lines is a list of (added, deleted, path) tuples.
+        """
+        lines = []
+        for e in entries:
+            header = (
+                f"\x00{e['sha']}\x1f{e.get('author', 'Dev')}"
+                f"\x1f{e.get('email', 'dev@x.com')}"
+                f"\x1f{e['ts']}\x1f{e.get('parents', '')}"
+                f"\x1f{e.get('subject', 'some commit')}"
+            )
+            lines.append(header)
+            for added, deleted, path in e.get("numstat_lines", []):
+                lines.append(f"{added}\t{deleted}\t{path}")
+            lines.append("")  # blank line between commits (git does this)
+        return "\n".join(lines)
+
+    def test_only_target_file_counted(self) -> None:
+        """Churn stats must only include the target file, not other files in the same commit."""
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+
+        now = datetime.now(UTC)
+        recent_ts = int((now - timedelta(days=5)).timestamp())
+
+        raw = self._build_log_output("src/app.py", [
+            {
+                "sha": "aaa11111",
+                "ts": recent_ts,
+                "subject": "feat: big change",
+                "numstat_lines": [
+                    ("100", "50", "src/app.py"),       # target: should count
+                    ("500", "300", "src/other.py"),     # not target: must NOT count
+                    ("200", "100", "src/utils.py"),     # not target: must NOT count
+                ],
+            },
+        ])
+        mock_repo.git.log.return_value = raw
+
+        meta = indexer._index_file("src/app.py", mock_repo)
+
+        assert meta["lines_added_90d"] == 100
+        assert meta["lines_deleted_90d"] == 50
+        assert meta["avg_commit_size"] == 150.0  # (100+50)/1
+
+    def test_binary_file_stats_ignored(self) -> None:
+        """Binary files emit '-' for added/deleted — should contribute 0."""
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+
+        recent_ts = int((datetime.now(UTC) - timedelta(days=5)).timestamp())
+
+        raw = self._build_log_output("icon.png", [
+            {
+                "sha": "bbb22222",
+                "ts": recent_ts,
+                "subject": "feat: add icon",
+                "numstat_lines": [
+                    ("-", "-", "icon.png"),
+                ],
+            },
+        ])
+        mock_repo.git.log.return_value = raw
+
+        meta = indexer._index_file("icon.png", mock_repo)
+
+        assert meta["lines_added_90d"] == 0
+        assert meta["lines_deleted_90d"] == 0
+
+    def test_empty_output_returns_defaults(self) -> None:
+        """Empty git log output returns default meta without errors."""
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+        mock_repo.git.log.return_value = ""
+
+        meta = indexer._index_file("new_file.py", mock_repo)
+
+        assert meta["commit_count_total"] == 0
+        assert meta["lines_added_90d"] == 0
+
+    def test_malformed_header_skipped(self) -> None:
+        """Lines with fewer than 6 fields are gracefully skipped."""
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+
+        recent_ts = int((datetime.now(UTC) - timedelta(days=5)).timestamp())
+        # First record is malformed (only 3 fields), second is valid
+        raw = (
+            f"\x00badsha\x1fAlice\x1falice@x.com\n"  # only 3 fields
+            f"\x00goodsha\x1fBob\x1fbob@x.com\x1f{recent_ts}\x1f\x1ffeat: valid commit\n"
+            f"10\t5\ttest.py\n"
+        )
+        mock_repo.git.log.return_value = raw
+
+        meta = indexer._index_file("test.py", mock_repo)
+
+        assert meta["commit_count_total"] == 1
+        assert meta["lines_added_90d"] == 10
+
+    def test_merge_commit_detected(self) -> None:
+        """Commits with multiple parent SHAs are flagged as merge commits."""
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+
+        recent_ts = int((datetime.now(UTC) - timedelta(days=5)).timestamp())
+        raw = (
+            f"\x00sha1\x1fAlice\x1fa@x.com\x1f{recent_ts}"
+            f"\x1fparent1 parent2\x1fMerge branch main\n"
+            f"5\t2\tmerged.py\n"
+        )
+        mock_repo.git.log.return_value = raw
+
+        meta = indexer._index_file("merged.py", mock_repo)
+
+        assert meta["merge_commit_count_90d"] == 1
+
+    def test_rename_tracking_with_follow(self) -> None:
+        """When follow_renames=True, numstat lines with old paths are counted."""
+        indexer = GitIndexer("/tmp/repo", follow_renames=True)
+        mock_repo = MagicMock()
+
+        recent_ts = int((datetime.now(UTC) - timedelta(days=5)).timestamp())
+        old_ts = int((datetime.now(UTC) - timedelta(days=30)).timestamp())
+
+        # Simulates --follow output: recent commit uses new name,
+        # older commit uses rename notation, oldest uses old name.
+        raw = (
+            f"\x00sha1\x1fAlice\x1fa@x.com\x1f{recent_ts}\x1f\x1ffeat: update\n"
+            f"10\t3\tsrc/new_name.py\n"
+            f"\n"
+            f"\x00sha2\x1fAlice\x1fa@x.com\x1f{old_ts}\x1f\x1frename file\n"
+            f"0\t0\t{{src/old_name.py => src/new_name.py}}\n"
+            f"\n"
+            f"\x00sha3\x1fAlice\x1fa@x.com\x1f{old_ts - 86400}\x1f\x1ffeat: old work\n"
+            f"20\t5\tsrc/old_name.py\n"
+        )
+        mock_repo.git.log.return_value = raw
+
+        meta = indexer._index_file("src/new_name.py", mock_repo)
+
+        assert meta["commit_count_total"] == 3
+        # Both the new-name and old-name stats should be counted
+        assert meta["lines_added_90d"] == 10 + 20  # sha1 + sha3
+        assert meta["lines_deleted_90d"] == 3 + 5
 
 
 # ---------------------------------------------------------------------------

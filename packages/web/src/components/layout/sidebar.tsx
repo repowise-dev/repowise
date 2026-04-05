@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import Image from "next/image";
 import {
   LayoutDashboard,
+  Activity,
   BookOpen,
   GitBranch,
   Lightbulb,
@@ -43,6 +44,7 @@ const GLOBAL_NAV: NavItem[] = [
 
 function repoNavItems(repoId: string): NavItem[] {
   return [
+    { label: "Overview", href: `/repos/${repoId}/overview`, icon: Activity },
     { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare },
     { label: "Docs", href: `/repos/${repoId}/docs`, icon: BookOpen },
     { label: "Search", href: `/repos/${repoId}/search`, icon: Search },

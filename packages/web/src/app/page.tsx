@@ -37,7 +37,7 @@ export default async function DashboardPage() {
 
   // If there's exactly one repo, go straight to it — no need for a dashboard.
   if (repoList.length === 1) {
-    redirect(`/repos/${repoList[0].id}`);
+    redirect(`/repos/${repoList[0].id}/overview`);
   }
 
   // Aggregate stats across all repos

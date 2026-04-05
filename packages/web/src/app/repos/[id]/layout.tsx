@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getRepo } from "@/lib/api/repos";
+import { ActiveJobBanner } from "@/components/dashboard/active-job-banner";
 
 interface RepoLayoutProps {
   children: React.ReactNode;
@@ -15,5 +16,10 @@ export default async function RepoLayout({ children, params }: RepoLayoutProps) 
     // project). Redirect to the dashboard so the user sees what's available.
     redirect("/");
   }
-  return <>{children}</>;
+  return (
+    <>
+      <ActiveJobBanner repoId={id} />
+      {children}
+    </>
+  );
 }

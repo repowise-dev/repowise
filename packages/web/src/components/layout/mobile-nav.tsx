@@ -6,8 +6,11 @@ import { usePathname } from "next/navigation";
 import Image from "next/image";
 import {
   Menu,
+  Activity,
   BookOpen,
   LayoutDashboard,
+  Lightbulb,
+  MessageSquare,
   Settings,
   Search,
   GitBranch,
@@ -36,7 +39,9 @@ const GLOBAL_NAV = [
 
 function repoNavItems(repoId: string) {
   return [
-    { label: "Overview", href: `/repos/${repoId}`, icon: BookOpen },
+    { label: "Overview", href: `/repos/${repoId}/overview`, icon: Activity },
+    { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare },
+    { label: "Docs", href: `/repos/${repoId}/docs`, icon: BookOpen },
     { label: "Search", href: `/repos/${repoId}/search`, icon: Search },
     { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
     { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
@@ -44,6 +49,7 @@ function repoNavItems(repoId: string) {
     { label: "Ownership", href: `/repos/${repoId}/ownership`, icon: Users },
     { label: "Hotspots", href: `/repos/${repoId}/hotspots`, icon: Flame },
     { label: "Dead Code", href: `/repos/${repoId}/dead-code`, icon: Trash2 },
+    { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },
     { label: "Settings", href: `/repos/${repoId}/settings`, icon: SlidersHorizontal },
   ];
 }
