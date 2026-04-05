@@ -6,4 +6,4 @@ git signals, dead code detection, architectural decisions, and
 AI-generated documentation.
 """
 
-__version__ = "0.1.30"
+__version__ = "0.1.31"
