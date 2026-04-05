@@ -596,10 +596,18 @@ class PageGenerator:
         _n_sym_cap = min(_n_sym_uncapped, _sym_budget)
 
         # Compute estimated total and notify progress (A7)
+        # Use the actual file_page count (files passing _is_significant_file), not
+        # _n_file_cap. The cap sets pr_threshold, but files with high betweenness or
+        # entry_point status bypass that threshold, so actual count > _n_file_cap.
+        _actual_file_page_count = sum(
+            1
+            for p in code_files
+            if _is_significant_file(p, pagerank, betweenness, self._config, pr_threshold)
+        )
         estimated_total = (
             sum(1 for p in parsed_files if p.file_info.is_api_contract)
             + _n_sym_cap
-            + _n_file_cap
+            + _actual_file_page_count
             + sum(1 for scc in sccs if len(scc) > 1)
             + len(
                 {
