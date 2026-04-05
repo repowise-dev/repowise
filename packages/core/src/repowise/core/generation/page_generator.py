@@ -453,14 +453,12 @@ class PageGenerator:
         # Determine already-completed pages (for resume support)
         completed_ids: set[str] = set()
         job_id: str | None = None
-        _is_resumed_job: bool = False
         if job_system is not None:
             repo_path_str = str(Path(repo_path).resolve()) if repo_path else str(getattr(repo_structure, "root_path", "."))
             # On resume, query the vector store directly — it is the ground truth
             if resume and self._vector_store is not None:
                 completed_ids = await self._vector_store.list_page_ids()
                 if completed_ids:
-                    _is_resumed_job = True
                     log.info(
                         "Resuming generation from vector store",
                         already_completed=len(completed_ids),
@@ -597,8 +595,8 @@ class PageGenerator:
         )
         _n_sym_cap = min(_n_sym_uncapped, _sym_budget)
 
-        # Start job with estimated total (A7) — skip if resuming existing job (already running)
-        if job_system is not None and job_id is not None and not _is_resumed_job:
+        # Start job with estimated total (A7)
+        if job_system is not None and job_id is not None:
             estimated_total = (
                 sum(1 for p in parsed_files if p.file_info.is_api_contract)
                 + _n_sym_cap
