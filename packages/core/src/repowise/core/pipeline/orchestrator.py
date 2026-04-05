@@ -560,6 +560,10 @@ async def run_generation(
     if progress:
         progress.on_phase_start("generation", None)
 
+    def on_total_known(total: int) -> None:
+        if progress:
+            progress.on_phase_start("generation", total)
+
     generated_pages = await generator.generate_all(
         parsed_files,
         source_map,
@@ -568,6 +572,7 @@ async def run_generation(
         repo_name,
         job_system=job_system,
         on_page_done=on_page_done,
+        on_total_known=on_total_known,
         git_meta_map=git_meta_map if git_meta_map else None,
         resume=resume,
         repo_path=repo_path,
