@@ -411,6 +411,7 @@ class PageGenerator:
         on_page_done: Callable[[str], None] | None = None,
         git_meta_map: dict[str, dict] | None = None,
         resume: bool = False,
+        repo_path: Path | str | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -453,7 +454,7 @@ class PageGenerator:
         completed_ids: set[str] = set()
         job_id: str | None = None
         if job_system is not None:
-            repo_path_str = str(getattr(repo_structure, "root_path", "."))
+            repo_path_str = str(Path(repo_path).resolve()) if repo_path else str(getattr(repo_structure, "root_path", "."))
             # On resume, find the most recent incomplete job for this repo
             if resume:
                 existing = [

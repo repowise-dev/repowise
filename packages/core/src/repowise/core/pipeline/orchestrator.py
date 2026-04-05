@@ -14,6 +14,7 @@ Callers:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -569,6 +570,7 @@ async def run_generation(
         on_page_done=on_page_done,
         git_meta_map=git_meta_map if git_meta_map else None,
         resume=resume,
+        repo_path=repo_path,
     )
 
     if progress:

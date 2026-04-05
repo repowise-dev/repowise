@@ -266,7 +266,7 @@ class GraphBuilder:
                 try:
                     with open(candidate) as f:
                         commands = json.load(f)
-                    self._compile_commands_cache = {}
+                    result: dict[str, dict] = {}
                     for entry in commands:
                         file_path = Path(entry.get("file", ""))
                         if file_path.is_absolute():
@@ -276,16 +276,19 @@ class GraphBuilder:
                                 continue
                         else:
                             file_rel = file_path
-                        self._compile_commands_cache[file_rel.as_posix()] = entry
-                    log.info(
-                        "Loaded compile_commands.json",
-                        path=str(candidate),
-                        entries=len(self._compile_commands_cache),
-                    )
-                    return self._compile_commands_cache
+                        result[file_rel.as_posix()] = entry
+                    if result:
+                        self._compile_commands_cache = result
+                        log.info(
+                            "Loaded compile_commands.json",
+                            path=str(candidate),
+                            entries=len(self._compile_commands_cache),
+                        )
+                        return self._compile_commands_cache
+                    # No valid entries — try next candidate
+                    log.debug("compile_commands.json had no resolvable entries", path=str(candidate))
                 except Exception as exc:
                     log.debug("Failed to load compile_commands.json", error=str(exc))
-                    return None
         return None
 
     def _extract_include_dirs(self, source_file: str) -> list[str]:
@@ -296,12 +299,17 @@ class GraphBuilder:
         if not commands or source_file not in commands:
             return []
         entry = commands[source_file]
-        command = entry.get("command", "")
         cmd_dir = Path(entry.get("directory", str(self._repo_path or "")))
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
-            return []
+        # compile_commands.json entries use either "arguments" (pre-split array)
+        # or "command" (shell-quoted string) — check arguments first
+        if "arguments" in entry:
+            tokens = list(entry["arguments"])
+        else:
+            command = entry.get("command", "")
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                return []
         include_dirs: list[str] = []
         i = 0
         while i < len(tokens):
