@@ -410,6 +410,7 @@ class PageGenerator:
         job_system: Any | None = None,  # JobSystem | None
         on_page_done: Callable[[str], None] | None = None,
         git_meta_map: dict[str, dict] | None = None,
+        resume: bool = False,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -452,12 +453,28 @@ class PageGenerator:
         completed_ids: set[str] = set()
         job_id: str | None = None
         if job_system is not None:
-            job_id = job_system.create_job(
-                str(getattr(repo_structure, "root_path", ".")),
-                self._config,
-                self._provider.provider_name,
-                self._provider.model_name,
-            )
+            repo_path_str = str(getattr(repo_structure, "root_path", "."))
+            # On resume, find the most recent incomplete job for this repo
+            if resume:
+                existing = [
+                    cp for cp in job_system.list_jobs()
+                    if cp.repo_path == repo_path_str and cp.status in ("running", "paused", "pending")
+                ]
+                if existing:
+                    job_id = existing[0].job_id
+                    completed_ids = job_system.get_completed_page_ids(job_id)
+                    log.info(
+                        "Resuming generation job",
+                        job_id=job_id,
+                        already_completed=len(completed_ids),
+                    )
+            if job_id is None:
+                job_id = job_system.create_job(
+                    repo_path_str,
+                    self._config,
+                    self._provider.provider_name,
+                    self._provider.model_name,
+                )
 
         async def run_level(named_coros: list[tuple[str, Any]], level: int) -> list[GeneratedPage]:
             if job_system is not None and job_id is not None:

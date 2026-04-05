@@ -615,6 +615,7 @@ def init_command(
                     vector_store=vector_store,
                     concurrency=concurrency,
                     progress=gen_callback,
+                    resume=resume,
                 )
             )
 

@@ -104,6 +104,7 @@ async def run_pipeline(
     vector_store: Any | None = None,
     concurrency: int = 5,
     test_run: bool = False,
+    resume: bool = False,
     progress: ProgressCallback | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
@@ -239,6 +240,7 @@ async def run_pipeline(
             vector_store=vector_store,
             concurrency=concurrency,
             progress=progress,
+            resume=resume,
         )
 
     # ---- Build result -------------------------------------------------------
@@ -512,6 +514,7 @@ async def run_generation(
     vector_store: Any | None,
     concurrency: int,
     progress: ProgressCallback | None,
+    resume: bool = False,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -565,6 +568,7 @@ async def run_generation(
         job_system=job_system,
         on_page_done=on_page_done,
         git_meta_map=git_meta_map if git_meta_map else None,
+        resume=resume,
     )
 
     if progress:
