@@ -129,17 +129,35 @@ spec:
               until curl -sf "$API/health" > /dev/null 2>&1; do sleep 3; done
               echo "API ready!"
               {{- range .Values.repos }}
-              echo "--- Registering {{ .name }} ---"
+              echo "--- {{ .name }} ---"
+              # Register (upsert)
               curl -sf -X POST "$API/api/repos" \
                 -H "Content-Type: application/json" \
                 -d '{"name":"{{ .name }}","local_path":"/data/repos/{{ .name }}","url":"{{ .url }}","default_branch":"{{ .branch | default "main" }}"}' \
-                && echo " registered" || echo " (exists)"
-              REPO_ID=$(curl -sf "$API/api/repos" | sed -n 's/.*"id":"\([^"]*\)","name":"{{ .name }}".*/\1/p')
-              if [ -n "$REPO_ID" ]; then
-                curl -sf -X POST "$API/api/repos/$REPO_ID/sync" && echo " sync triggered" || echo " (sync running)"
+                > /dev/null 2>&1 && echo "  registered" || echo "  (exists)"
+              # Check if already indexed (has head_commit)
+              REPO_DATA=$(curl -sf "$API/api/repos" 2>/dev/null || echo "[]")
+              REPO_ID=$(echo "$REPO_DATA" | sed -n 's/.*"id":"\([^"]*\)","name":"{{ .name }}".*/\1/p')
+              HEAD=$(echo "$REPO_DATA" | sed -n 's/.*"name":"{{ .name }}".*"head_commit":"\([^"]*\)".*/\1/p')
+              if [ -n "$REPO_ID" ] && [ -z "$HEAD" ]; then
+                echo "  not yet indexed, triggering sync..."
+                curl -sf -X POST "$API/api/repos/$REPO_ID/sync" > /dev/null 2>&1 && echo "  sync triggered" || echo "  (sync already running)"
+                # Wait for this sync to finish before next repo (SQLite can't handle concurrent writes)
+                echo "  waiting for sync to complete..."
+                while true; do
+                  sleep 10
+                  JOBS=$(curl -sf "$API/api/jobs?repo_id=$REPO_ID&status=running" 2>/dev/null || echo "[]")
+                  PENDING=$(curl -sf "$API/api/jobs?repo_id=$REPO_ID&status=pending" 2>/dev/null || echo "[]")
+                  if [ "$JOBS" = "[]" ] && [ "$PENDING" = "[]" ]; then
+                    echo "  sync done."
+                    break
+                  fi
+                done
+              elif [ -n "$HEAD" ]; then
+                echo "  already indexed (head: $HEAD), skipping sync."
               fi
               {{- end }}
-              echo "All repos registered. Exiting."
+              echo "All repos processed. Exiting."
         {{- end }}
       volumes:
         - name: data

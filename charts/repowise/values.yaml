@@ -141,14 +141,16 @@ tolerations: []
 affinity: {}
 
 # -- Liveness probe configuration
+# Note: indexing large repos is CPU-intensive and can starve the health
+# endpoint, so keep timeouts and failure thresholds generous.
 livenessProbe:
   httpGet:
     path: /health
     port: backend
-  initialDelaySeconds: 15
-  periodSeconds: 30
-  timeoutSeconds: 5
-  failureThreshold: 3
+  initialDelaySeconds: 30
+  periodSeconds: 60
+  timeoutSeconds: 15
+  failureThreshold: 10
 
 # -- Readiness probe configuration
 readinessProbe:
@@ -156,6 +158,6 @@ readinessProbe:
     path: /health
     port: backend
   initialDelaySeconds: 10
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
+  periodSeconds: 15
+  timeoutSeconds: 10
+  failureThreshold: 10
