@@ -27,6 +27,40 @@ spec:
       serviceAccountName: {{ include "repowise.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.repos }}
+      initContainers:
+        - name: clone-repos
+          image: bitnami/git:latest
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /data/repos
+              {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+              git config --global credential.helper 'store --file /tmp/.git-credentials'
+              cp /git-credentials/git-credentials /tmp/.git-credentials
+              chmod 600 /tmp/.git-credentials
+              {{- end }}
+              {{- range .Values.repos }}
+              echo "=== {{ .name }} ==="
+              if [ ! -d "/data/repos/{{ .name }}/.git" ]; then
+                git clone --branch {{ .branch | default "main" }} --single-branch {{ .url }} "/data/repos/{{ .name }}"
+              else
+                cd "/data/repos/{{ .name }}"
+                git fetch origin {{ .branch | default "main" }}
+                git reset --hard origin/{{ .branch | default "main" }}
+              fi
+              {{- end }}
+              echo "Done."
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+            - name: git-credentials
+              mountPath: /git-credentials
+              readOnly: true
+            {{- end }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -84,6 +118,29 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+        {{- if .Values.repos }}
+        - name: register-repos
+          image: curlimages/curl:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              API="http://localhost:{{ .Values.repowise.backendPort }}"
+              echo "Waiting for API..."
+              until curl -sf "$API/health" > /dev/null 2>&1; do sleep 3; done
+              echo "API ready!"
+              {{- range .Values.repos }}
+              echo "--- Registering {{ .name }} ---"
+              curl -sf -X POST "$API/api/repos" \
+                -H "Content-Type: application/json" \
+                -d '{"name":"{{ .name }}","local_path":"/data/repos/{{ .name }}","url":"{{ .url }}","default_branch":"{{ .branch | default "main" }}"}' \
+                && echo " registered" || echo " (exists)"
+              REPO_ID=$(curl -sf "$API/api/repos" | sed -n 's/.*"id":"\([^"]*\)","name":"{{ .name }}".*/\1/p')
+              if [ -n "$REPO_ID" ]; then
+                curl -sf -X POST "$API/api/repos/$REPO_ID/sync" && echo " sync triggered" || echo " (sync running)"
+              fi
+              {{- end }}
+              echo "All repos registered. Exiting."
+        {{- end }}
       volumes:
         - name: data
           {{- if .Values.persistence.enabled }}
@@ -92,6 +149,11 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+        - name: git-credentials
+          secret:
+            secretName: {{ .Values.gitCredentials.secretName | default (printf "%s-git-credentials" (include "repowise.fullname" .)) }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
