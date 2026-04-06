@@ -103,6 +103,25 @@ persistence:
   # -- Annotations for the PVC
   annotations: {}
 
+# -- Repositories to clone and register on install/upgrade.
+# A Kubernetes Job runs after deploy to clone each repo into /data/repos/<name>,
+# register it with the Repowise API, and trigger an initial sync.
+repos: []
+  # - name: my-app
+  #   url: https://github.com/org/my-app.git
+  #   branch: main
+
+# -- Git credentials for cloning private repositories
+gitCredentials:
+  # -- Use an existing Secret with a key "git-credentials" containing:
+  # https://<username>:<token>@github.com
+  secretName: ""
+  github:
+    # -- GitHub username (used if secretName is empty)
+    username: ""
+    # -- GitHub personal access token (used if secretName is empty)
+    token: ""
+
 # -- Resource requests and limits
 resources: {}
   # limits:

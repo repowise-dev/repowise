@@ -78,6 +78,61 @@ ingress:
         - repowise.example.com
 ```
 
+## Auto-Cloning Repositories
+
+You can declare repos in `values.yaml` and the chart will automatically clone them, register with the API, and trigger indexing via a post-install/upgrade Job.
+
+### Public repos
+
+```bash
+helm install repowise ./charts/repowise \
+  --set repos[0].name=my-app \
+  --set repos[0].url=https://github.com/org/my-app.git \
+  --set repos[0].branch=main
+```
+
+### Private repos (GitHub PAT)
+
+```bash
+helm install repowise ./charts/repowise \
+  --set repos[0].name=my-private-app \
+  --set repos[0].url=https://github.com/org/my-private-app.git \
+  --set gitCredentials.github.username=my-user \
+  --set gitCredentials.github.token=ghp_...
+```
+
+### Private repos (existing Secret)
+
+```bash
+kubectl create secret generic git-creds \
+  --from-literal=git-credentials='https://my-user:ghp_token@github.com'
+
+helm install repowise ./charts/repowise \
+  --set repos[0].name=my-private-app \
+  --set repos[0].url=https://github.com/org/my-private-app.git \
+  --set gitCredentials.secretName=git-creds
+```
+
+### Multiple repos
+
+```yaml
+repos:
+  - name: frontend
+    url: https://github.com/org/frontend.git
+    branch: main
+  - name: backend
+    url: https://github.com/org/backend.git
+    branch: develop
+  - name: infra
+    url: https://github.com/org/infra.git
+```
+
+The Job clones repos to `/data/repos/<name>`, waits for the API to be healthy, registers each repo, and triggers a sync. Monitor progress with:
+
+```bash
+kubectl logs job/repowise-repo-init -n <namespace>
+```
+
 ## Persistence
 
 Repowise stores its SQLite database and indexed repository data under `/data`. The chart creates a PVC by default. To disable (data lost on pod restart):

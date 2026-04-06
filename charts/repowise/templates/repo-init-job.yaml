@@ -1,0 +1,125 @@
+{{- if .Values.repos }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "repowise.fullname" . }}-repo-init
+  labels:
+    {{- include "repowise.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "repowise.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: repo-init
+    spec:
+      restartPolicy: OnFailure
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: repo-init
+          image: bitnami/git:latest
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+
+              API_URL="http://{{ include "repowise.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.backendPort }}"
+              REPOS_DIR="/data/repos"
+              mkdir -p "$REPOS_DIR"
+
+              {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+              # Configure git credentials
+              git config --global credential.helper 'store --file /tmp/.git-credentials'
+              cp /git-credentials/git-credentials /tmp/.git-credentials
+              chmod 600 /tmp/.git-credentials
+              {{- end }}
+
+              # Wait for Repowise API to be healthy
+              echo "Waiting for Repowise API at $API_URL ..."
+              until curl -sf "$API_URL/health" > /dev/null 2>&1; do
+                echo "  API not ready, retrying in 5s..."
+                sleep 5
+              done
+              echo "API is healthy!"
+
+              {{- range .Values.repos }}
+
+              echo "========================================="
+              echo "Processing repo: {{ .name }}"
+              echo "========================================="
+
+              REPO_DIR="$REPOS_DIR/{{ .name }}"
+
+              # Clone or pull
+              if [ ! -d "$REPO_DIR/.git" ]; then
+                echo "Cloning {{ .url }} -> $REPO_DIR"
+                git clone --branch {{ .branch | default "main" }} --single-branch {{ .url }} "$REPO_DIR"
+              else
+                echo "Repo exists, pulling latest..."
+                cd "$REPO_DIR"
+                git fetch origin {{ .branch | default "main" }}
+                git reset --hard origin/{{ .branch | default "main" }}
+              fi
+
+              # Register repo with API
+              echo "Registering repo with Repowise API..."
+              curl -sf -X POST "$API_URL/api/repos" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "name": "{{ .name }}",
+                  "local_path": "'"$REPO_DIR"'",
+                  "url": "{{ .url }}",
+                  "default_branch": "{{ .branch | default "main" }}"
+                }' || echo "  (repo may already exist, continuing)"
+
+              # Get repo ID and trigger sync
+              echo "Triggering sync..."
+              REPO_ID=$(curl -sf "$API_URL/api/repos" | grep -o '"id":"[^"]*","name":"{{ .name }}"' | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+              if [ -n "$REPO_ID" ]; then
+                curl -sf -X POST "$API_URL/api/repos/$REPO_ID/sync" || echo "  (sync may already be running)"
+                echo "Sync triggered for {{ .name }} (id: $REPO_ID)"
+              else
+                echo "  WARNING: Could not find repo ID for {{ .name }}"
+              fi
+
+              {{- end }}
+
+              echo ""
+              echo "All repos processed!"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+            - name: git-credentials
+              mountPath: /git-credentials
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "repowise.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+        - name: git-credentials
+          secret:
+            secretName: {{ .Values.gitCredentials.secretName | default (printf "%s-git-credentials" (include "repowise.fullname" .)) }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
