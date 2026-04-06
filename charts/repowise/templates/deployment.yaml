@@ -173,7 +173,8 @@ spec:
                 echo "  already indexed (head: $HEAD), skipping sync."
               fi
               {{- end }}
-              echo "All repos processed. Exiting."
+              echo "All repos processed. Sleeping forever."
+              sleep infinity
         {{- end }}
       volumes:
         - name: data

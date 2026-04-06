@@ -141,8 +141,11 @@ def create_engine(
         else:
             kwargs["poolclass"] = NullPool
     else:
-        # PostgreSQL — asyncpg handles its own connection pool
+        # PostgreSQL — increase pool for heavy indexing workloads
         kwargs["pool_pre_ping"] = True
+        kwargs["pool_size"] = 20
+        kwargs["max_overflow"] = 30
+        kwargs["pool_timeout"] = 120
 
     return create_async_engine(db_url, **kwargs)
 

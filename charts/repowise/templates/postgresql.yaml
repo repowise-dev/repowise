@@ -74,6 +74,9 @@ spec:
                   key: POSTGRES_DB
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_INITDB_ARGS
+              value: "--auth-host=md5"
+          args: ["-c", "max_connections=4000", "-c", "shared_buffers=2GB", "-c", "work_mem=16MB"]
           volumeMounts:
             - name: pgdata
               mountPath: /var/lib/postgresql/data
@@ -91,11 +94,11 @@ spec:
             timeoutSeconds: 5
           resources:
             requests:
-              cpu: 250m
-              memory: 512Mi
-            limits:
               cpu: 1000m
-              memory: 1Gi
+              memory: 4Gi
+            limits:
+              cpu: 4000m
+              memory: 8Gi
   {{- if .Values.postgresql.primary.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:
