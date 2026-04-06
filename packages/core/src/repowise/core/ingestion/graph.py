@@ -21,6 +21,7 @@ graph_edges).  Phase 4 will replace this with the full SQLAlchemy schema.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -46,10 +47,12 @@ class GraphBuilder:
         pr = builder.pagerank()
     """
 
-    def __init__(self) -> None:
+    def __init__(self, repo_path: Path | str | None = None) -> None:
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
         self._built = False
+        self._repo_path: Path | None = Path(repo_path) if repo_path else None
+        self._compile_commands_cache: dict[str, dict] | None = None
 
     # ------------------------------------------------------------------
     # Building
@@ -247,6 +250,91 @@ class GraphBuilder:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _load_compile_commands(self) -> dict[str, dict] | None:
+        """Load and cache compile_commands.json if present in the repo.
+
+        Returns dict[source_file_relpath] → command entry, or None if not found.
+        """
+        if self._compile_commands_cache is not None:
+            return self._compile_commands_cache
+        if not self._repo_path:
+            return None
+        for candidate in [
+            self._repo_path / "compile_commands.json",
+            self._repo_path / "build" / "compile_commands.json",
+        ]:
+            if candidate.exists():
+                try:
+                    with open(candidate) as f:
+                        commands = json.load(f)
+                    result: dict[str, dict] = {}
+                    for entry in commands:
+                        file_path = Path(entry.get("file", ""))
+                        if file_path.is_absolute():
+                            try:
+                                file_rel = file_path.relative_to(self._repo_path)
+                            except ValueError:
+                                continue
+                        else:
+                            file_rel = file_path
+                        result[file_rel.as_posix()] = entry
+                    if result:
+                        self._compile_commands_cache = result
+                        log.info(
+                            "Loaded compile_commands.json",
+                            path=str(candidate),
+                            entries=len(self._compile_commands_cache),
+                        )
+                        return self._compile_commands_cache
+                    # No valid entries — try next candidate
+                    log.debug("compile_commands.json had no resolvable entries", path=str(candidate))
+                except Exception as exc:
+                    log.debug("Failed to load compile_commands.json", error=str(exc))
+        return None
+
+    def _extract_include_dirs(self, source_file: str) -> list[str]:
+        """Return absolute include directories for source_file from compile_commands.json."""
+        commands = self._load_compile_commands()
+        if not commands or source_file not in commands:
+            return []
+        entry = commands[source_file]
+        cmd_dir = Path(entry.get("directory", str(self._repo_path or "")))
+        # compile_commands.json entries use either "arguments" (pre-split array)
+        # or "command" (shell-quoted string) — check arguments first
+        if "arguments" in entry:
+            tokens = list(entry["arguments"])
+        else:
+            command = entry.get("command", "")
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                return []
+        include_dirs: list[str] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok in ("-I", "-isystem", "-iquote"):
+                if i + 1 < len(tokens):
+                    include_dirs.append(tokens[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            elif tok.startswith("-I") and len(tok) > 2:
+                include_dirs.append(tok[2:])
+                i += 1
+            elif tok.startswith("-isystem") and len(tok) > 8:
+                include_dirs.append(tok[8:])
+                i += 1
+            else:
+                i += 1
+        result: list[str] = []
+        for d in include_dirs:
+            p = Path(d)
+            if not p.is_absolute():
+                p = cmd_dir / p
+            result.append(str(p.resolve()))
+        return result
+
     def _resolve_import(
         self,
         module_path: str,
@@ -318,6 +406,31 @@ class GraphBuilder:
         if language == "go":
             # Last segment of the import path is the package name
             stem = module_path.rsplit("/", 1)[-1].lower()
+            return stem_map.get(stem)
+
+        # --- C / C++ ---
+        if language in ("cpp", "c"):
+            repo_root = self._repo_path.resolve() if self._repo_path else None
+            # 1. Try compile_commands.json include paths
+            for inc_dir in self._extract_include_dirs(importer_path):
+                candidate = (Path(inc_dir) / module_path).resolve()
+                if repo_root:
+                    try:
+                        rel = candidate.relative_to(repo_root).as_posix()
+                        if rel in path_set:
+                            return rel
+                    except ValueError:
+                        pass
+            # 2. Try relative to the importer's directory
+            if repo_root:
+                try:
+                    rel = (importer_dir / module_path).resolve().relative_to(repo_root).as_posix()
+                    if rel in path_set:
+                        return rel
+                except ValueError:
+                    pass
+            # 3. Stem-matching fallback
+            stem = Path(module_path).stem.lower()
             return stem_map.get(stem)
 
         # --- Generic fallback: stem matching ---

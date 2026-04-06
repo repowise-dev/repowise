@@ -409,7 +409,10 @@ class PageGenerator:
         repo_name: str,
         job_system: Any | None = None,  # JobSystem | None
         on_page_done: Callable[[str], None] | None = None,
+        on_total_known: Callable[[int], None] | None = None,
         git_meta_map: dict[str, dict] | None = None,
+        resume: bool = False,
+        repo_path: Path | str | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -452,8 +455,17 @@ class PageGenerator:
         completed_ids: set[str] = set()
         job_id: str | None = None
         if job_system is not None:
+            repo_path_str = str(Path(repo_path).resolve()) if repo_path else str(getattr(repo_structure, "root_path", "."))
+            # On resume, query the vector store directly — it is the ground truth
+            if resume and self._vector_store is not None:
+                completed_ids = await self._vector_store.list_page_ids()
+                if completed_ids:
+                    log.info(
+                        "Resuming generation from vector store",
+                        already_completed=len(completed_ids),
+                    )
             job_id = job_system.create_job(
-                str(getattr(repo_structure, "root_path", ".")),
+                repo_path_str,
                 self._config,
                 self._provider.provider_name,
                 self._provider.model_name,
@@ -486,6 +498,9 @@ class PageGenerator:
                             completed_page_summaries[result.target_path] = _extract_summary(
                                 result.content
                             )
+                            # Report progress immediately (not batched after gather)
+                            if on_page_done is not None:
+                                on_page_done(result.page_type)
                         return result
                     except Exception as exc:
                         if job_system is not None and job_id is not None:
@@ -501,9 +516,6 @@ class PageGenerator:
             tasks = [guarded_named(pid, c) for pid, c in named_coros]
             results = await asyncio.gather(*tasks)
             pages = [r for r in results if isinstance(r, GeneratedPage)]
-            if on_page_done is not None:
-                for r in pages:
-                    on_page_done(r.page_type)
             if job_system is not None and job_id is not None:
                 for r in pages:
                     job_system.complete_page(job_id, r.page_id)
@@ -583,26 +595,37 @@ class PageGenerator:
         )
         _n_sym_cap = min(_n_sym_uncapped, _sym_budget)
 
-        # Start job with estimated total (A7)
-        if job_system is not None and job_id is not None:
-            estimated_total = (
-                sum(1 for p in parsed_files if p.file_info.is_api_contract)
-                + _n_sym_cap
-                + _n_file_cap
-                + sum(1 for scc in sccs if len(scc) > 1)
-                + len(
-                    {
-                        (
-                            Path(p.file_info.path).parts[0]
-                            if len(Path(p.file_info.path).parts) > 1
-                            else "root"
-                        )
-                        for p in code_files
-                    }
-                )
-                + 2  # repo_overview + arch_diagram
-                + sum(1 for p in parsed_files if _is_infra_file(p))
+        # Compute estimated total and notify progress (A7)
+        # Use the actual file_page count (files passing _is_significant_file), not
+        # _n_file_cap. The cap sets pr_threshold, but files with high betweenness or
+        # entry_point status bypass that threshold, so actual count > _n_file_cap.
+        _actual_file_page_count = sum(
+            1
+            for p in code_files
+            if _is_significant_file(p, pagerank, betweenness, self._config, pr_threshold)
+        )
+        estimated_total = (
+            sum(1 for p in parsed_files if p.file_info.is_api_contract)
+            + _n_sym_cap
+            + _actual_file_page_count
+            + sum(1 for scc in sccs if len(scc) > 1)
+            + len(
+                {
+                    (
+                        Path(p.file_info.path).parts[0]
+                        if len(Path(p.file_info.path).parts) > 1
+                        else "root"
+                    )
+                    for p in code_files
+                }
             )
+            + 2  # repo_overview + arch_diagram
+            + sum(1 for p in parsed_files if _is_infra_file(p))
+        )
+        remaining_total = max(0, estimated_total - len(completed_ids))
+        if on_total_known is not None:
+            on_total_known(remaining_total)
+        if job_system is not None and job_id is not None:
             job_system.start_job(job_id, estimated_total)
 
         # ---- Level 0: api_contract ----

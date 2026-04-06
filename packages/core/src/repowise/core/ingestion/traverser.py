@@ -192,6 +192,7 @@ class FileTraverser:
             str(self.repo_root): self._extra_ignore,
         }
         self._oversized_skip_count: int = 0
+        self._oversized_files: list[tuple[str, int]] = []  # (path, size_bytes)
         self._count_lock = threading.Lock()
         log.info(
             "FileTraverser initialised",
@@ -316,6 +317,8 @@ class FileTraverser:
         if size_bytes > self.max_file_size_bytes:
             with self._count_lock:
                 self._oversized_skip_count += 1
+                self._oversized_files.append((rel_str, size_bytes))
+            log.debug("Skipping oversized file", path=rel_str, size_kb=size_bytes // 1024)
             return None
 
         # Blocked extension

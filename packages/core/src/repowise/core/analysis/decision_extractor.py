@@ -271,7 +271,16 @@ class DecisionExtractor:
         else:
             files_to_scan = list(self._iter_source_files())
 
-        for file_path in files_to_scan:
+        total_files = len(files_to_scan)
+        logger.info("decision_extractor.scanning_inline_markers", total_files=total_files)
+        for idx, file_path in enumerate(files_to_scan):
+            if idx > 0 and idx % 1000 == 0:
+                logger.info(
+                    "decision_extractor.scan_progress",
+                    scanned=idx,
+                    total=total_files,
+                    markers_found=sum(len(v) for v in markers_by_file.values()),
+                )
             if not file_path.is_file():
                 continue
             try:
@@ -700,28 +709,39 @@ class DecisionExtractor:
 
         async def _safe_inline() -> list[ExtractedDecision]:
             try:
-                return await self.scan_inline_markers()
-            except Exception:
-                logger.warning("decision_extractor.inline_markers_failed")
+                logger.info("decision_extractor.starting_inline_markers")
+                result = await self.scan_inline_markers()
+                logger.info("decision_extractor.finished_inline_markers", count=len(result))
+                return result
+            except Exception as exc:
+                logger.warning("decision_extractor.inline_markers_failed", error=str(exc))
                 return []
 
         async def _safe_git() -> list[ExtractedDecision]:
             try:
-                return await self.mine_git_archaeology()
-            except Exception:
-                logger.warning("decision_extractor.git_archaeology_failed")
+                logger.info("decision_extractor.starting_git_archaeology")
+                result = await self.mine_git_archaeology()
+                logger.info("decision_extractor.finished_git_archaeology", count=len(result))
+                return result
+            except Exception as exc:
+                logger.warning("decision_extractor.git_archaeology_failed", error=str(exc))
                 return []
 
         async def _safe_readme() -> list[ExtractedDecision]:
             try:
-                return await self.mine_readme_docs()
-            except Exception:
-                logger.warning("decision_extractor.readme_mining_failed")
+                logger.info("decision_extractor.starting_readme_mining")
+                result = await self.mine_readme_docs()
+                logger.info("decision_extractor.finished_readme_mining", count=len(result))
+                return result
+            except Exception as exc:
+                logger.warning("decision_extractor.readme_mining_failed", error=str(exc))
                 return []
 
+        logger.info("decision_extractor.extract_all_start")
         inline, git_decisions, readme_decisions = await asyncio.gather(
             _safe_inline(), _safe_git(), _safe_readme()
         )
+        logger.info("decision_extractor.extract_all_done")
 
         decisions = inline + git_decisions + readme_decisions
         by_source = {

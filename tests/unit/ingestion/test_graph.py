@@ -409,4 +409,118 @@ class TestPersist:
                 assert row is not None
                 assert row[0] == "my-project"
 
-        asyncio.run(run())
+
+# ---------------------------------------------------------------------------
+# C++ compile_commands.json dependency resolution
+# ---------------------------------------------------------------------------
+
+
+def _cpp(path: str, imports: list[Import] | None = None) -> ParsedFile:
+    return _parsed(path, language="cpp", imports=imports or [])
+
+
+def _cinclude(header: str) -> Import:
+    return Import(
+        raw_statement=f'#include "{header}"',
+        module_path=header,
+        imported_names=[],
+        is_relative=False,
+        resolved_file=None,
+    )
+
+
+class TestCppCompileCommandsResolution:
+    def test_include_via_arguments_array(self, tmp_path: Path) -> None:
+        """compile_commands 'arguments' array format resolves #include via -I flag."""
+        inc_dir = tmp_path / "include"
+        inc_dir.mkdir()
+        (inc_dir / "foo.hpp").write_text("")  # header exists on disk
+
+        compile_commands = [
+            {
+                "file": "src/main.cpp",
+                "directory": str(tmp_path),
+                "arguments": ["g++", "-I", str(inc_dir), "-c", "src/main.cpp"],
+            }
+        ]
+        import json
+        (tmp_path / "compile_commands.json").write_text(json.dumps(compile_commands))
+        (tmp_path / "src").mkdir()
+
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_cpp("include/foo.hpp"))
+        b.add_file(_cpp("src/main.cpp", imports=[_cinclude("foo.hpp")]))
+        b.build()
+        assert b.graph().has_edge("src/main.cpp", "include/foo.hpp")
+
+    def test_include_via_command_string(self, tmp_path: Path) -> None:
+        """compile_commands 'command' shell-string format resolves #include via -I flag."""
+        inc_dir = tmp_path / "include"
+        inc_dir.mkdir()
+
+        compile_commands = [
+            {
+                "file": "src/main.cpp",
+                "directory": str(tmp_path),
+                "command": f"g++ -I{inc_dir} -c src/main.cpp",
+            }
+        ]
+        import json
+        (tmp_path / "compile_commands.json").write_text(json.dumps(compile_commands))
+        (tmp_path / "src").mkdir()
+
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_cpp("include/foo.hpp"))
+        b.add_file(_cpp("src/main.cpp", imports=[_cinclude("foo.hpp")]))
+        b.build()
+        assert b.graph().has_edge("src/main.cpp", "include/foo.hpp")
+
+    def test_relative_include_fallback(self, tmp_path: Path) -> None:
+        """Without compile_commands.json, #include resolves relative to importer dir."""
+        (tmp_path / "src").mkdir()
+
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_cpp("src/utils.hpp"))
+        b.add_file(_cpp("src/main.cpp", imports=[_cinclude("utils.hpp")]))
+        b.build()
+        assert b.graph().has_edge("src/main.cpp", "src/utils.hpp")
+
+    def test_stem_fallback_when_no_compile_commands(self, tmp_path: Path) -> None:
+        """When compile_commands.json is absent, stem-matching still works for C++."""
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_cpp("lib/crypto.hpp"))
+        b.add_file(_cpp("src/main.cpp", imports=[_cinclude("crypto.hpp")]))
+        b.build()
+        assert b.graph().has_edge("src/main.cpp", "lib/crypto.hpp")
+
+    def test_no_compile_commands_no_crash(self, tmp_path: Path) -> None:
+        """Missing compile_commands.json does not crash — falls through to stem matching."""
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_cpp("src/main.cpp", imports=[_cinclude("nonexistent.hpp")]))
+        b.build()
+        # No edge, no exception
+        assert b.graph().number_of_edges() == 0
+
+    def test_compile_commands_in_build_subdir(self, tmp_path: Path) -> None:
+        """compile_commands.json under build/ subdirectory is also found."""
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        inc_dir = tmp_path / "include"
+        inc_dir.mkdir()
+
+        compile_commands = [
+            {
+                "file": str(tmp_path / "src" / "main.cpp"),
+                "directory": str(tmp_path),
+                "arguments": ["g++", "-I", str(inc_dir), "-c", "src/main.cpp"],
+            }
+        ]
+        import json
+        (build_dir / "compile_commands.json").write_text(json.dumps(compile_commands))
+        (tmp_path / "src").mkdir()
+
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_cpp("include/bar.hpp"))
+        b.add_file(_cpp("src/main.cpp", imports=[_cinclude("bar.hpp")]))
+        b.build()
+        assert b.graph().has_edge("src/main.cpp", "include/bar.hpp")

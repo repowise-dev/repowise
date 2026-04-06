@@ -27,6 +27,10 @@ from repowise.core.pipeline.progress import ProgressCallback
 
 logger = structlog.get_logger(__name__)
 
+# Maximum seconds to spend on decision extraction before giving up.
+# Large repos with tens of thousands of files can take arbitrarily long.
+DECISION_EXTRACTION_TIMEOUT_SECS = 300
+
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -105,6 +109,7 @@ async def run_pipeline(
     vector_store: Any | None = None,
     concurrency: int = 5,
     test_run: bool = False,
+    resume: bool = False,
     progress: ProgressCallback | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
@@ -240,6 +245,7 @@ async def run_pipeline(
             vector_store=vector_store,
             concurrency=concurrency,
             progress=progress,
+            resume=resume,
         )
 
     # ---- Build result -------------------------------------------------------
@@ -336,7 +342,7 @@ async def _run_ingestion(
     parser = ASTParser()
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder()
+    graph_builder = GraphBuilder(repo_path=repo_path)
 
     for i, fi in enumerate(file_infos):
         try:
@@ -377,6 +383,14 @@ async def _run_ingestion(
             f"Skipped {traverser._oversized_skip_count} oversized files "
             f"(>{traverser.max_file_size_bytes // 1024} KB)",
         )
+        for path, size_bytes in sorted(
+            traverser._oversized_files, key=lambda x: x[1], reverse=True
+        ):
+            logger.info(
+                "oversized_file_skipped",
+                path=path,
+                size_kb=size_bytes // 1024,
+            )
 
     return parsed_files, file_infos, repo_structure, source_map, graph_builder
 
@@ -487,7 +501,7 @@ async def _run_decision_extraction(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
         )
-        report = await extractor.extract_all()
+        report = await asyncio.wait_for(extractor.extract_all(), timeout=DECISION_EXTRACTION_TIMEOUT_SECS)
 
         if progress:
             inline = report.by_source.get("inline_marker", 0)
@@ -518,6 +532,7 @@ async def run_generation(
     vector_store: Any | None,
     concurrency: int,
     progress: ProgressCallback | None,
+    resume: bool = False,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -562,6 +577,10 @@ async def run_generation(
     if progress:
         progress.on_phase_start("generation", None)
 
+    def on_total_known(total: int) -> None:
+        if progress:
+            progress.on_phase_start("generation", total)
+
     generated_pages = await generator.generate_all(
         parsed_files,
         source_map,
@@ -570,7 +589,10 @@ async def run_generation(
         repo_name,
         job_system=job_system,
         on_page_done=on_page_done,
+        on_total_known=on_total_known,
         git_meta_map=git_meta_map if git_meta_map else None,
+        resume=resume,
+        repo_path=repo_path,
     )
 
     if progress:
