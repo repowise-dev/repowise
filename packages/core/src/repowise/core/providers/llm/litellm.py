@@ -155,10 +155,8 @@ class LiteLLMProvider(BaseProvider):
             call_kwargs["api_key"] = self._api_key
         if self._api_base:
             call_kwargs["api_base"] = self._api_base
-            # Local proxy without auth: OpenAI SDK still requires a key.
-            # Use a dummy key if none provided.
             if not self._api_key:
-                call_kwargs["api_key"] = "sk-dummy"
+                call_kwargs["api_key"] = "sk-dummy"  # LiteLLM requires a non-empty key even for unauthenticated local proxies (OpenAI SDK requirement)
 
         try:
             response = await litellm.acompletion(**call_kwargs)
@@ -236,10 +234,8 @@ class LiteLLMProvider(BaseProvider):
             call_kwargs["api_key"] = self._api_key
         if self._api_base:
             call_kwargs["api_base"] = self._api_base
-            # Local proxy without auth: OpenAI SDK still requires a key.
-            # Use a dummy key if none provided.
             if not self._api_key:
-                call_kwargs["api_key"] = "sk-dummy"
+                call_kwargs["api_key"] = "sk-dummy"  # LiteLLM requires a non-empty key even for unauthenticated local proxies (OpenAI SDK requirement)
 
         try:
             stream = await litellm.acompletion(**call_kwargs)
