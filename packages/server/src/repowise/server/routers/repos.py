@@ -138,7 +138,9 @@ async def delete_repo(
     # Collect page IDs before CASCADE deletes the Page rows
     page_ids = await crud.list_page_ids(session, repo_id)
 
-    # Clean up FTS index (FTS5 virtual table has no FK cascade)
+    # Clean up FTS index (FTS5 virtual table has no FK cascade).
+    # fts is always initialized in the lifespan before the server accepts
+    # requests, so this guard is purely defensive.
     if fts is not None:
         await fts.delete_many(page_ids)
 

@@ -17,7 +17,7 @@ from repowise.cli.helpers import (
 @click.command("delete")
 @click.argument("repo_id", required=False, default=None)
 @click.option("--force", "-f", is_flag=True, default=False, help="Skip confirmation prompt.")
-@click.argument("path", required=False, default=None)
+@click.option("--path", "-p", default=None, help="Path to the repository directory.")
 def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
     """Delete a repository and all its generated data."""
     repo_path = resolve_repo_path(path)
