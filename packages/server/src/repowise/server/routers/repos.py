@@ -256,7 +256,7 @@ async def export_wiki(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    pages = await crud.list_pages(session, repo_id, limit=10000)
+    pages = (await session.execute(select(Page).where(Page.repository_id == repo_id))).scalars().all()
     if not pages:
         raise HTTPException(status_code=404, detail="No pages to export")
 
