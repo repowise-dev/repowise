@@ -103,6 +103,26 @@ persistence:
   # -- Annotations for the PVC
   annotations: {}
 
+# -- PostgreSQL database (replaces SQLite, eliminates "database is locked" errors)
+postgresql:
+  # -- Enable PostgreSQL instead of SQLite
+  enabled: false
+  auth:
+    # -- PostgreSQL username
+    username: repowise
+    # -- PostgreSQL password
+    password: repowise
+    # -- PostgreSQL database name
+    database: repowise
+  primary:
+    persistence:
+      # -- Enable persistent storage for PostgreSQL
+      enabled: true
+      # -- Storage class (leave empty for cluster default)
+      storageClass: ""
+      # -- Volume size
+      size: 10Gi
+
 # -- Repositories to clone and register on install/upgrade.
 # A Kubernetes Job runs after deploy to clone each repo into /data/repos/<name>,
 # register it with the Repowise API, and trigger an initial sync.

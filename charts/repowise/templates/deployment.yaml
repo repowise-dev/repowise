@@ -27,8 +27,21 @@ spec:
       serviceAccountName: {{ include "repowise.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- if .Values.repos }}
+      {{- if or .Values.repos .Values.postgresql.enabled }}
       initContainers:
+        {{- if .Values.postgresql.enabled }}
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for PostgreSQL..."
+              until pg_isready -h {{ include "repowise.fullname" . }}-postgresql -p 5432 -U {{ .Values.postgresql.auth.username }}; do
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+        {{- end }}
+        {{- if .Values.repos }}
         - name: clone-repos
           image: bitnami/git:latest
           command: ["/bin/bash", "-c"]
@@ -60,6 +73,7 @@ spec:
               mountPath: /git-credentials
               readOnly: true
             {{- end }}
+        {{- end }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -76,7 +90,11 @@ spec:
               protocol: TCP
           env:
             - name: REPOWISE_DB_URL
+              {{- if .Values.postgresql.enabled }}
+              value: "postgresql+asyncpg://{{ .Values.postgresql.auth.username }}:{{ .Values.postgresql.auth.password }}@{{ include "repowise.fullname" . }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+              {{- else }}
               value: {{ .Values.repowise.dbUrl | quote }}
+              {{- end }}
             - name: REPOWISE_EMBEDDER
               value: {{ .Values.repowise.embedder | quote }}
             - name: PORT_BACKEND
