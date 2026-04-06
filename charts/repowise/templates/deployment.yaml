@@ -49,6 +49,11 @@ spec:
             - |
               set -e
               mkdir -p /data/repos
+              # Allow git to work in repos owned by different users (initContainer runs
+              # as root, main container as uid 1000). Write gitconfig for both users.
+              git config --global --add safe.directory '*'
+              mkdir -p /data/.gitconfig-home
+              printf '[safe]\n\tdirectory = *\n' > /data/.gitconfig-home/.gitconfig
               {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
               git config --global credential.helper 'store --file /tmp/.git-credentials'
               cp /git-credentials/git-credentials /tmp/.git-credentials
@@ -103,6 +108,10 @@ spec:
               value: {{ .Values.repowise.frontendPort | quote }}
             - name: HOSTNAME
               value: "0.0.0.0"
+            {{- if .Values.repos }}
+            - name: HOME
+              value: "/data/.gitconfig-home"
+            {{- end }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
