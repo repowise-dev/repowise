@@ -56,8 +56,8 @@ export function ProviderSection() {
     setProvider(config.getProvider());
     setModel(config.getModel());
     setEmbedder(config.getEmbedder());
-    // Fetch current server config from /health
-    fetch("/health")
+    // Fetch current server config from /api/health
+    fetch("/api/health")
       .then((r) => r.json())
       .then((data) => {
         if (data?.provider) setServerProvider(data.provider);
@@ -80,7 +80,7 @@ export function ProviderSection() {
     setTestStatus("testing");
     setTestError("");
     try {
-      const res = await fetch("/health");
+      const res = await fetch("/api/health");
       const data = await res.json();
       if (res.ok && data.status === "healthy") {
         setTestStatus("ok");
