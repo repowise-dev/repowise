@@ -1,0 +1,19 @@
+Repowise has been deployed!
+
+1. Get the application URLs:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT_FRONTEND=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[1].nodePort}" services {{ include "repowise.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo "Web UI: http://$NODE_IP:$NODE_PORT_FRONTEND"
+{{- else if contains "ClusterIP" .Values.service.type }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "repowise.fullname" . }} 3000:{{ .Values.service.frontendPort }} 7337:{{ .Values.service.backendPort }}
+  echo "Web UI:  http://localhost:3000"
+  echo "API:     http://localhost:7337"
+{{- end }}
+
+2. To use as an MCP server, point your client at the API:
+   http://{{ include "repowise.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.backendPort }}

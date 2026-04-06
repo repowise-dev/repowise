@@ -1,0 +1,18 @@
+apiVersion: v2
+name: repowise
+description: A Helm chart for deploying Repowise — AI-powered codebase documentation and context engine
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/repowise-dev/repowise
+sources:
+  - https://github.com/repowise-dev/repowise
+maintainers:
+  - name: repowise-dev
+    url: https://github.com/repowise-dev
+keywords:
+  - repowise
+  - code-documentation
+  - ai
+  - mcp
+  - codebase-context
