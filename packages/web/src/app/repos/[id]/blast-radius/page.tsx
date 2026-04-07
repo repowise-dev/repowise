@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import useSWR from "swr";
 import { useParams } from "next/navigation";
-import { Radar } from "lucide-react";
+import { Radar, Plus, Flame } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils/cn";
@@ -14,6 +15,7 @@ import {
   type CochangeWarning,
   type ReviewerEntry,
 } from "@/lib/api/blast-radius";
+import { getHotspots } from "@/lib/api/git";
 
 // ---------------------------------------------------------------------------
 // Risk score gauge card
@@ -229,6 +231,28 @@ export default function BlastRadiusPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BlastRadiusResponse | null>(null);
 
+  // Suggestions: top 8 hotspots so users can prefill with one click instead
+  // of remembering paths. Falls back gracefully if the call fails.
+  const { data: hotspotSuggestions } = useSWR(
+    repoId ? ["blast-radius-suggestions", repoId] : null,
+    () => getHotspots(repoId, 8),
+  );
+
+  const addSuggestion = (path: string) => {
+    setFiles((prev) => {
+      const lines = prev.split("\n").map((l) => l.trim()).filter(Boolean);
+      if (lines.includes(path)) return prev;
+      return [...lines, path].join("\n");
+    });
+  };
+
+  const useAllHotspots = () => {
+    if (!hotspotSuggestions) return;
+    setFiles(hotspotSuggestions.map((h) => h.file_path).join("\n"));
+  };
+
+  const clearFiles = () => setFiles("");
+
   const handleAnalyze = async () => {
     const changedFiles = files
       .split("\n")
@@ -277,6 +301,38 @@ export default function BlastRadiusPage() {
           <CardTitle className="text-sm">Changed Files</CardTitle>
         </CardHeader>
         <CardContent className="pt-0 space-y-4">
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Paste a list of file paths (one per line) — typically the files in your PR diff.
+            Don&apos;t know what to try? Click a hotspot below to prefill, or use{" "}
+            <button
+              type="button"
+              onClick={useAllHotspots}
+              className="underline underline-offset-2 hover:text-[var(--color-text-primary)]"
+              disabled={!hotspotSuggestions || hotspotSuggestions.length === 0}
+            >
+              Use top hotspots
+            </button>
+            .
+          </p>
+
+          {hotspotSuggestions && hotspotSuggestions.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {hotspotSuggestions.map((h) => (
+                <button
+                  key={h.file_path}
+                  type="button"
+                  onClick={() => addSuggestion(h.file_path)}
+                  className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1 text-[11px] font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)] transition-colors"
+                  title={`Add ${h.file_path}`}
+                >
+                  <Flame className="h-3 w-3 text-orange-500" />
+                  <span className="truncate max-w-[260px]">{h.file_path}</span>
+                  <Plus className="h-3 w-3 opacity-60" />
+                </button>
+              ))}
+            </div>
+          )}
+
           <textarea
             className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2 text-xs font-mono text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] resize-y min-h-[120px]"
             placeholder={"src/auth/login.py\nsrc/models/user.py\n..."}
@@ -298,6 +354,11 @@ export default function BlastRadiusPage() {
             <Button onClick={handleAnalyze} disabled={loading} size="sm">
               {loading ? "Analyzing…" : "Analyze"}
             </Button>
+            {files && (
+              <Button onClick={clearFiles} disabled={loading} size="sm" variant="outline">
+                Clear
+              </Button>
+            )}
           </div>
           {error && (
             <p className="text-xs text-red-500">{error}</p>

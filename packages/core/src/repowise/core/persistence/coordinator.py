@@ -157,6 +157,12 @@ class AtomicStorageCoordinator:
             g = getattr(self._graph_builder, "_graph", None)
             if g is not None:
                 report["graph_nodes"] = g.number_of_nodes()
+        if report["graph_nodes"] is None:
+            try:
+                res = await self._session.execute(text("SELECT COUNT(*) FROM graph_nodes"))
+                report["graph_nodes"] = int(res.scalar() or 0)
+            except Exception as e:
+                report["graph_nodes_error"] = str(e)
         if self._vector_store is not None:
             try:
                 report["vector_count"] = await _vector_count(self._vector_store)
@@ -203,10 +209,15 @@ async def _vector_delete(store, vid: str) -> None:
 async def _vector_count(store) -> int:
     """Return the number of vectors in the store.
 
-    InMemoryVectorStore exposes __len__; LanceDB and PgVector do not have a
-    cheap count method, so we return -1 for those.
+    InMemoryVectorStore exposes __len__; LanceDB and PgVector are counted by
+    listing page IDs (cheap on small/medium repos and avoids backend-specific SQL).
+    Returns -1 if no count method is available.
     """
     fn = getattr(store, "__len__", None)
     if fn is not None:
         return int(fn())
+    list_ids = getattr(store, "list_page_ids", None)
+    if list_ids is not None:
+        ids = await list_ids()
+        return len(ids)
     return -1
