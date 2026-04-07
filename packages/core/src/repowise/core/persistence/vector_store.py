@@ -76,6 +76,14 @@ class VectorStore(ABC):
         """
         return set()  # default: empty (subclasses should override)
 
+    async def get_page_summary_by_path(self, path: str) -> dict | None:
+        """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
+
+        Used for RAG context injection during doc generation: when generating page B
+        that imports A, we fetch A's previously-generated summary and feed it to the LLM.
+        """
+        return None  # default: no-op (subclasses should override)
+
 
 # ---------------------------------------------------------------------------
 # InMemoryVectorStore
@@ -144,6 +152,23 @@ class InMemoryVectorStore(VectorStore):
 
     async def list_page_ids(self) -> set[str]:
         return set(self._store.keys())
+
+    async def get_page_summary_by_path(self, path: str) -> dict | None:
+        """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
+
+        Used for RAG context injection during doc generation: when generating page B
+        that imports A, we fetch A's previously-generated summary and feed it to the LLM.
+
+        Implementation note: reads 'summary' from metadata if present (set by the
+        generation pipeline), else falls back to the first 500 chars of 'content'.
+        'key_exports' reads the 'exports' metadata field if present, else [].
+        """
+        for _pid, (_, meta) in self._store.items():
+            if meta.get("target_path") == path:
+                summary = meta.get("summary") or str(meta.get("content", ""))[:500]
+                key_exports = meta.get("exports") or []
+                return {"summary": summary, "key_exports": list(key_exports)}
+        return None
 
     def __len__(self) -> int:
         return len(self._store)
@@ -294,6 +319,38 @@ class LanceDBVectorStore(VectorStore):
         rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
         return {r["page_id"] for r in rows}
 
+    async def get_page_summary_by_path(self, path: str) -> dict | None:
+        """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
+
+        Used for RAG context injection during doc generation: when generating page B
+        that imports A, we fetch A's previously-generated summary and feed it to the LLM.
+
+        Implementation note: LanceDB stores up to 200 chars of content in 'content_snippet'.
+        We use that as the summary. 'key_exports' is not stored in the LanceDB schema, so
+        we return [] — the caller only uses the text summary for prompt injection.
+        """
+        await self._ensure_connected()
+        if self._table is None:
+            return None
+
+        safe_path = path.replace("'", "''")
+        try:
+            rows = (
+                await self._table.query()  # type: ignore[union-attr]
+                .where(f"target_path = '{safe_path}'")
+                .select(["content_snippet"])
+                .limit(1)
+                .to_list()
+            )
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        summary = rows[0].get("content_snippet") or ""
+        return {"summary": str(summary), "key_exports": []}
+
 
 # ---------------------------------------------------------------------------
 # PgVectorStore
@@ -390,3 +447,44 @@ class PgVectorStore(VectorStore):
                 sa_text("SELECT id FROM wiki_pages WHERE embedding IS NOT NULL")
             )
             return {r[0] for r in rows.fetchall()}
+
+    async def get_page_summary_by_path(self, path: str) -> dict | None:
+        """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
+
+        Used for RAG context injection during doc generation: when generating page B
+        that imports A, we fetch A's previously-generated summary and feed it to the LLM.
+
+        Implementation note: reads the 'content' column (first 500 chars) from the
+        wiki_pages table matched by target_path. 'key_exports' is derived from the
+        page's exports if stored in a metadata JSON column; otherwise returns [].
+        """
+        from sqlalchemy.sql import text as sa_text
+
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                sa_text(
+                    "SELECT content, metadata FROM wiki_pages "
+                    "WHERE target_path = :path "
+                    "LIMIT 1"
+                ),
+                {"path": path},
+            )
+            row = rows.fetchone()
+
+        if row is None:
+            return None
+
+        content = str(row[0] or "")[:500]
+        # Extract key_exports from metadata JSON column if present
+        key_exports: list[str] = []
+        if row[1] and isinstance(row[1], dict):
+            key_exports = list(row[1].get("exports", []))
+        elif row[1] and isinstance(row[1], str):
+            import json
+            try:
+                meta = json.loads(row[1])
+                key_exports = list(meta.get("exports", []))
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        return {"summary": content, "key_exports": key_exports}

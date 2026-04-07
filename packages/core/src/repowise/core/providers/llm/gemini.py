@@ -36,8 +36,11 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
 )
 
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+
+if TYPE_CHECKING:
+    from repowise.core.generation.cost_tracker import CostTracker
 
 log = structlog.get_logger(__name__)
 
@@ -53,6 +56,7 @@ class GeminiProvider(BaseProvider):
         model:        Gemini model name. Defaults to gemini-3.1-flash-lite-preview.
         api_key:      Google API key. Falls back to GEMINI_API_KEY or GOOGLE_API_KEY env var.
         rate_limiter: Optional RateLimiter instance.
+        cost_tracker: Optional CostTracker for recording token usage and cost.
     """
 
     def __init__(
@@ -60,6 +64,7 @@ class GeminiProvider(BaseProvider):
         model: str = "gemini-3.1-flash-lite-preview",
         api_key: str | None = None,
         rate_limiter: RateLimiter | None = None,
+        cost_tracker: "CostTracker | None" = None,
     ) -> None:
         self._model = model
         self._api_key = (
@@ -73,6 +78,7 @@ class GeminiProvider(BaseProvider):
                 "No API key found. Pass api_key= or set GEMINI_API_KEY / GOOGLE_API_KEY env var.",
             )
         self._rate_limiter = rate_limiter
+        self._cost_tracker = cost_tracker
         self._client: object | None = None  # cached; created once on first call
 
     @property
@@ -185,6 +191,21 @@ class GeminiProvider(BaseProvider):
             output_tokens=result.output_tokens,
             request_id=request_id,
         )
+
+        if self._cost_tracker is not None:
+            try:
+                asyncio.get_event_loop().create_task(
+                    self._cost_tracker.record(
+                        model=self._model,
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        operation="doc_generation",
+                        file_path=None,
+                    )
+                )
+            except RuntimeError:
+                pass  # No running event loop — skip async record
+
         return result
 
     # --- ChatProvider protocol implementation ---

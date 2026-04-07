@@ -411,6 +411,7 @@ def init_command(
         BarColumn(),
         TextColumn("{task.completed}/{task.total}"),
         TimeElapsedColumn(),
+        TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
         console=console,
     ) as progress_bar:
         callback = RichProgressCallback(progress_bar, console)
@@ -520,9 +521,50 @@ def init_command(
             BarColumn(),
             TextColumn("{task.completed}/{task.total}"),
             TimeElapsedColumn(),
+            TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
             console=console,
         ) as gen_progress:
             gen_callback = RichProgressCallback(gen_progress, console)
+
+            # Construct a CostTracker backed by the real DB so every LLM call
+            # is persisted to the llm_costs table.  We need the repo_id from the
+            # database row that was created/upserted during _persist_result
+            # (which has not run yet), so we look it up or fall back to in-memory.
+            from repowise.core.generation.cost_tracker import CostTracker
+            from repowise.cli.helpers import get_db_url_for_repo
+            from repowise.core.persistence import (
+                create_engine as _create_engine,
+                create_session_factory as _create_sf,
+                get_session as _get_session,
+                init_db as _init_db,
+                upsert_repository as _upsert_repo,
+            )
+
+            async def _make_cost_tracker() -> CostTracker:
+                url = get_db_url_for_repo(repo_path)
+                engine = _create_engine(url)
+                await _init_db(engine)
+                sf = _create_sf(engine)
+                async with _get_session(sf) as _sess:
+                    _repo = await _upsert_repo(
+                        _sess,
+                        name=result.repo_name,
+                        local_path=str(repo_path),
+                    )
+                    _repo_id = _repo.id
+                # Keep engine alive for the duration of generation — it will be
+                # disposed by _persist_result's own engine later.
+                return CostTracker(session_factory=sf, repo_id=_repo_id)
+
+            try:
+                cost_tracker = run_async(_make_cost_tracker())
+            except Exception:
+                # Fallback to in-memory tracker if DB setup fails
+                cost_tracker = CostTracker()
+
+            # Attach tracker to provider unconditionally (all providers now
+            # accept _cost_tracker as an attribute)
+            provider._cost_tracker = cost_tracker
 
             generated_pages = run_async(
                 run_generation(
@@ -538,6 +580,7 @@ def init_command(
                     concurrency=concurrency,
                     progress=gen_callback,
                     resume=resume,
+                    cost_tracker=cost_tracker,
                 )
             )
 

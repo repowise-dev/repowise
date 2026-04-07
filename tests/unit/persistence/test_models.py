@@ -304,5 +304,7 @@ def test_base_includes_all_models():
         "decision_records",
         "conversations",
         "chat_messages",
+        "llm_costs",
+        "security_findings",
     }
     assert expected == table_names

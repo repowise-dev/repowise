@@ -15,8 +15,9 @@ Callers:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,35 @@ import structlog
 from repowise.core.pipeline.progress import ProgressCallback
 
 logger = structlog.get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Process-pool worker (module-level — must be picklable)
+# ---------------------------------------------------------------------------
+
+# Module-level process-local parser cache (one per worker process).
+_WORKER_PARSER: Any = None
+
+
+def _parse_one(path_and_fi_and_bytes: tuple) -> Any:
+    """Worker function for ProcessPoolExecutor parsing.
+
+    Constructs (or reuses) a process-local ASTParser and parses one file.
+    Returns a ParsedFile on success, or (abs_path_str, error_str) on failure.
+    The parser is constructed lazily inside the worker — the ASTParser itself
+    (which holds compiled tree-sitter Language/Query objects) is never pickled.
+    Only FileInfo (input) and ParsedFile (output) cross the process boundary;
+    both are plain dataclasses and therefore picklable.
+    """
+    global _WORKER_PARSER
+    fi, source = path_and_fi_and_bytes
+    try:
+        if _WORKER_PARSER is None:
+            from repowise.core.ingestion import ASTParser
+            _WORKER_PARSER = ASTParser()
+        return _WORKER_PARSER.parse_file(fi, source)
+    except Exception as exc:
+        return (fi.abs_path, str(exc))
 
 # Maximum seconds to spend on decision extraction before giving up.
 # Large repos with tens of thousands of files can take arbitrarily long.
@@ -111,6 +141,7 @@ async def run_pipeline(
     test_run: bool = False,
     resume: bool = False,
     progress: ProgressCallback | None = None,
+    cost_tracker: Any | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -156,28 +187,47 @@ async def run_pipeline(
 
     commit_depth = max(1, min(commit_depth, 5000))
 
+    # Attach cost tracker to provider if supplied
+    if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
+        llm_client._cost_tracker = cost_tracker
+
     # ---- Phase 1: Ingestion ------------------------------------------------
     if progress:
         progress.on_message("info", "Phase 1: Ingestion")
 
-    parsed_files, file_infos, repo_structure, source_map, graph_builder = (
-        await _run_ingestion(
+    # Launch git indexing as a background task immediately — it is independent
+    # of parsing and graph-build, so the two stages can run concurrently.
+    # _run_ingestion does: traverse → ProcessPool parse → graph build → dynamic hints.
+    # _run_git_indexing does: git log → co-change accumulation (I/O bound, own executor).
+
+    async def _git_stage() -> tuple:
+        return await _run_git_indexing(
+            repo_path,
+            commit_depth=commit_depth,
+            follow_renames=follow_renames,
+            progress=progress,
+        )
+
+    async def _ingestion_stage() -> tuple:
+        return await _run_ingestion(
             repo_path,
             exclude_patterns=exclude_patterns,
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             progress=progress,
         )
-    )
 
-    # Git indexing (runs concurrently with ingestion in the CLI, but here
-    # we start it after traversal since we're already async)
-    git_summary, git_metadata_list, git_meta_map = await _run_git_indexing(
-        repo_path,
-        commit_depth=commit_depth,
-        follow_renames=follow_renames,
-        progress=progress,
-    )
+    (
+        parsed_files,
+        file_infos,
+        repo_structure,
+        source_map,
+        graph_builder,
+    ), (
+        git_summary,
+        git_metadata_list,
+        git_meta_map,
+    ) = await asyncio.gather(_ingestion_stage(), _git_stage())
 
     # Add co-change edges to the graph
     if git_meta_map:
@@ -335,31 +385,77 @@ async def _run_ingestion(
             if fi.language not in ("dockerfile", "makefile", "terraform", "shell")
         ]
 
-    # Parse (sequential — GraphBuilder is not thread-safe)
+    # ---- Parse phase: CPU-bound, run in ProcessPoolExecutor ----------------
     if progress:
         progress.on_phase_start("parse", len(file_infos))
 
-    parser = ASTParser()
+    # Read source bytes up front (I/O, sequential — fast enough; keeps worker
+    # args small: FileInfo + bytes, both picklable plain dataclasses/bytes).
+    fi_and_bytes: list[tuple] = []
+    for fi in file_infos:
+        try:
+            source = Path(fi.abs_path).read_bytes()
+            fi_and_bytes.append((fi, source))
+        except Exception:
+            if progress:
+                progress.on_item_done("parse")
+
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
     graph_builder = GraphBuilder(repo_path=repo_path)
 
-    for i, fi in enumerate(file_infos):
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            parsed_files.append(parsed)
-            source_map[fi.path] = source
-            graph_builder.add_file(parsed)
-        except Exception:
-            pass  # skip unparseable files
-        if progress:
-            progress.on_item_done("parse")
-        # Yield control every 50 files so the event loop stays responsive
-        if i % 50 == 49:
-            await asyncio.sleep(0)
+    loop = asyncio.get_running_loop()
+    workers = max(1, os.cpu_count() or 4)
 
-    # Build graph (CPU-bound — run in thread to keep event loop free)
+    _use_process_pool = True
+    parse_results: list[Any] = []
+
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            tasks = [
+                loop.run_in_executor(pool, _parse_one, item)
+                for item in fi_and_bytes
+            ]
+            # Use as_completed via asyncio.as_completed to report per-file progress.
+            # We need to preserve (task → fi_and_bytes index) for source_map so we
+            # wrap tasks in a list and drain with gather instead.
+            parse_results = await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as pool_exc:
+        logger.warning(
+            "process_pool_parse_failed_falling_back",
+            error=str(pool_exc),
+        )
+        _use_process_pool = False
+        # Fallback: in-process sequential parse
+        _fallback_parser = ASTParser()
+        for i, (fi, source) in enumerate(fi_and_bytes):
+            try:
+                result = _fallback_parser.parse_file(fi, source)
+                parse_results.append(result)
+            except Exception as exc:
+                parse_results.append((fi.abs_path, str(exc)))
+            if progress:
+                progress.on_item_done("parse")
+            if i % 50 == 49:
+                await asyncio.sleep(0)
+
+    # Aggregate results into GraphBuilder on the main loop (not thread-safe).
+    for idx, result in enumerate(parse_results):
+        fi, source = fi_and_bytes[idx]
+        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], str):
+            # Error tuple: (abs_path_str, error_str)
+            logger.debug("parse_error_in_worker", path=result[0], error=result[1])
+        elif isinstance(result, Exception):
+            logger.debug("parse_exception_in_worker", path=fi.abs_path, error=str(result))
+        else:
+            parsed_files.append(result)
+            source_map[fi.path] = source
+            graph_builder.add_file(result)
+        # Report per-file progress if we used the process pool (fallback already reported above).
+        if _use_process_pool and progress:
+            progress.on_item_done("parse")
+
+    # ---- Graph build phase -------------------------------------------------
     if progress:
         progress.on_phase_start("graph", 1)
     await asyncio.to_thread(graph_builder.build)
@@ -372,6 +468,17 @@ async def _run_ingestion(
         graph_builder.add_framework_edges([item.name for item in tech_items])
     except Exception:
         pass  # framework edge detection is best-effort
+
+    # ---- Dynamic hints wiring (after static graph is fully built) ----------
+    try:
+        from repowise.core.ingestion.dynamic_hints import HintRegistry
+
+        registry = HintRegistry()
+        dynamic_edges = await loop.run_in_executor(None, registry.extract_all, repo_path)
+        graph_builder.add_dynamic_edges(dynamic_edges)
+        logger.info("dynamic_hints_added", count=len(dynamic_edges))
+    except Exception as hints_exc:
+        logger.warning("dynamic_hints_failed", error=str(hints_exc))
 
     if progress:
         progress.on_item_done("graph")
@@ -533,6 +640,7 @@ async def run_generation(
     concurrency: int,
     progress: ProgressCallback | None,
     resume: bool = False,
+    cost_tracker: Any | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -546,6 +654,10 @@ async def run_generation(
     )
     from repowise.core.persistence.vector_store import InMemoryVectorStore
     from repowise.core.providers.embedding.base import MockEmbedder
+
+    # Attach cost tracker to LLM client if available
+    if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
+        llm_client._cost_tracker = cost_tracker
 
     config = GenerationConfig(max_concurrency=concurrency)
     assembler = ContextAssembler(config)
@@ -573,6 +685,9 @@ async def run_generation(
         _pages_done += 1
         if progress:
             progress.on_item_done("generation")
+            # Push live cost update if the callback supports it
+            if cost_tracker is not None and hasattr(progress, "set_cost"):
+                progress.set_cost(cost_tracker.session_cost)
 
     if progress:
         progress.on_phase_start("generation", None)

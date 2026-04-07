@@ -299,6 +299,9 @@ class GitMetadata(Base):
     original_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     merge_commit_count_90d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Temporal hotspot score: exponentially time-decayed churn signal
+    temporal_hotspot_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -397,6 +400,45 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False)  # user | assistant
     content_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
+class LlmCost(Base):
+    """A single LLM API call cost record."""
+
+    __tablename__ = "llm_costs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    operation: Mapped[str] = mapped_column(String(50), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+
+class SecurityFinding(Base):
+    """A security signal detected during file ingestion."""
+
+    __tablename__ = "security_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    kind: Mapped[str] = mapped_column(String(100), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    line_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 

@@ -226,6 +226,77 @@ def doctor_command(path: str | None, repair: bool) -> None:
         except Exception:
             checks.append(_check("Store consistency", True, "Could not check"))
 
+    # 10. AtomicStorageCoordinator drift check
+    coord_drift: float | None = None
+    coord_sql_pages: int | None = None
+    coord_vector_count: int | None = None
+    coord_graph_nodes: int | None = None
+    if db_ok:
+        try:
+
+            async def _check_coordinator():
+                from repowise.core.persistence import (
+                    create_engine,
+                    create_session_factory,
+                    get_session,
+                )
+                from repowise.core.persistence.coordinator import AtomicStorageCoordinator
+                from repowise.core.persistence.vector_store import LanceDBVectorStore
+                from repowise.core.providers.embedding.base import MockEmbedder
+
+                url = get_db_url_for_repo(repo_path)
+                engine = create_engine(url)
+                sf = create_session_factory(engine)
+
+                vector_store = None
+                lance_dir = repowise_dir / "lancedb"
+                if lance_dir.exists():
+                    try:
+                        embedder = MockEmbedder()
+                        vector_store = LanceDBVectorStore(str(lance_dir), embedder=embedder)
+                    except Exception:
+                        pass
+
+                async with get_session(sf) as session:
+                    coord = AtomicStorageCoordinator(
+                        session, graph_builder=None, vector_store=vector_store
+                    )
+                    result = await coord.health_check()
+
+                if vector_store is not None:
+                    try:
+                        await vector_store.close()
+                    except Exception:
+                        pass
+                await engine.dispose()
+                return result
+
+            coord_result = run_async(_check_coordinator())
+            coord_sql_pages = coord_result.get("sql_pages")
+            coord_vector_count = coord_result.get("vector_count")
+            coord_graph_nodes = coord_result.get("graph_nodes")
+            coord_drift = coord_result.get("drift")
+
+            drift_pct = f"{coord_drift * 100:.1f}%" if coord_drift is not None else "N/A"
+            if coord_drift is None:
+                drift_color = "white"
+            elif coord_drift < 0.05:
+                drift_color = "green"
+            elif coord_drift < 0.15:
+                drift_color = "yellow"
+            else:
+                drift_color = "red"
+
+            vec_display = str(coord_vector_count) if coord_vector_count != -1 and coord_vector_count is not None else "unknown"
+            drift_detail = (
+                f"SQL={coord_sql_pages}, Vector={vec_display}, "
+                f"Drift=[{drift_color}]{drift_pct}[/{drift_color}]"
+            )
+            coord_ok = coord_drift is None or coord_drift < 0.05
+            checks.append(_check("Coordinator drift", coord_ok, drift_detail))
+        except Exception as exc:
+            checks.append(_check("Coordinator drift", True, f"Could not check: {exc}"))
+
     # Display
     table = Table(title="repowise Doctor")
     table.add_column("Check", style="cyan")

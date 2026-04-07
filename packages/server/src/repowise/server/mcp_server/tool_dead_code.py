@@ -28,6 +28,10 @@ async def get_dead_code(
     directory: str | None = None,
     owner: str | None = None,
     group_by: str | None = None,
+    include_internals: bool = False,
+    include_zombie_packages: bool = True,
+    no_unreachable: bool = False,
+    no_unused_exports: bool = False,
 ) -> dict:
     """Get a tiered refactor plan for dead and unused code.
 
@@ -39,16 +43,39 @@ async def get_dead_code(
     group_by="owner" to see who owns the most dead code. Use tier
     to focus on a single confidence band.
 
+    Scan scope flags (mirror the DeadCodeAnalyzer.analyze config):
+    - Use ``min_confidence=0.7`` for high-confidence cleanups — filters out
+      speculative findings and surfaces only code with zero references that
+      hasn't been touched in months. Ideal before a release or refactor sprint.
+    - Use ``include_internals=True`` for aggressive scans of private symbols
+      (functions/variables prefixed with _ or declared without exports). This
+      has a higher false-positive rate and is off by default; enable it when
+      doing a thorough dead-code purge of a stable, well-tested module.
+    - Use ``no_unreachable=True`` to skip file-level reachability checks and
+      focus only on symbol-level findings (unused exports/internals).
+    - Use ``no_unused_exports=True`` to skip public-export checks, e.g. when
+      you know the repo exposes a public API consumed externally.
+    - Use ``include_zombie_packages=False`` to suppress monorepo package
+      findings, useful in repos where cross-package imports are intentionally
+      absent during development.
+
     Args:
         repo: Repository path, name, or ID.
         kind: Filter by kind (unreachable_file, unused_export, unused_internal, zombie_package).
-        min_confidence: Minimum confidence threshold (default 0.5).
+        min_confidence: Minimum confidence threshold (default 0.5). Use 0.7 for high-confidence
+            cleanups only.
         safe_only: Only return findings marked safe_to_delete (default false).
         limit: Maximum findings per tier (default 20).
         tier: Focus on a single tier: "high" (>=0.8), "medium" (0.5-0.8), or "low" (<0.5).
         directory: Filter findings to a specific directory prefix.
         owner: Filter findings by primary owner name.
         group_by: "directory" for per-directory rollup, "owner" for ownership hotspots.
+        include_internals: Include unused private/internal symbol findings (default false).
+            Enable for aggressive scans of private symbols.
+        include_zombie_packages: Include zombie-package findings for monorepo packages with
+            no external importers (default true).
+        no_unreachable: Suppress unreachable-file findings (default false).
+        no_unused_exports: Suppress unused-export findings (default false).
     """
     async with get_session(_state._session_factory) as session:
         repository = await _get_repo(session, repo)
@@ -73,10 +100,23 @@ async def get_dead_code(
             )
             git_meta_map = {g.file_path: g for g in git_res.scalars().all()}
 
+    # --- Build excluded kinds from scope flags ---
+    _excluded_kinds: set[str] = set()
+    if no_unreachable:
+        _excluded_kinds.add("unreachable_file")
+    if no_unused_exports:
+        _excluded_kinds.add("unused_export")
+    if not include_internals:
+        _excluded_kinds.add("unused_internal")
+    if not include_zombie_packages:
+        _excluded_kinds.add("zombie_package")
+
     # --- Apply filters ---
     filtered = all_findings
     if kind:
         filtered = [f for f in filtered if f.kind == kind]
+    elif _excluded_kinds:
+        filtered = [f for f in filtered if f.kind not in _excluded_kinds]
     if safe_only:
         filtered = [f for f in filtered if f.safe_to_delete]
     if min_confidence > 0:

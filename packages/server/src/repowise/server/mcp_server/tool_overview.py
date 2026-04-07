@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Any
 
 from sqlalchemy import select
@@ -117,6 +117,78 @@ async def get_overview(repo: str | None = None) -> dict:
                 "top_churn_modules": top_modules,
             }
 
+        # B. Knowledge map -------------------------------------------------------
+        knowledge_map: dict[str, Any] = {}
+        if all_git:
+            # top_owners: aggregate primary_owner_email across all files
+            owner_file_count: dict[str, int] = defaultdict(int)
+            owner_pct_sum: dict[str, float] = defaultdict(float)
+            for g in all_git:
+                email = g.primary_owner_email or ""
+                if email:
+                    owner_file_count[email] += 1
+                    owner_pct_sum[email] += float(g.primary_owner_commit_pct or 0.0)
+
+            total_files = len(all_git) or 1
+            top_owners = sorted(
+                [
+                    {
+                        "email": email,
+                        "files_owned": count,
+                        "percentage": round(count / total_files * 100.0, 1),
+                    }
+                    for email, count in owner_file_count.items()
+                ],
+                key=lambda x: -x["files_owned"],
+            )[:10]
+
+            # knowledge_silos: files where primary owner has > 80% ownership
+            knowledge_silos = [
+                g.file_path
+                for g in all_git
+                if (g.primary_owner_commit_pct or 0.0) > 0.8
+            ]
+
+            # onboarding_targets: high-centrality files with least docs
+            # pagerank from graph_nodes; doc length from wiki_pages
+            node_result = await session.execute(
+                select(GraphNode).where(
+                    GraphNode.repository_id == repository.id,
+                    GraphNode.is_test == False,  # noqa: E712
+                )
+            )
+            all_nodes = node_result.scalars().all()
+
+            # Build word-count map from wiki_pages (file pages)
+            page_result = await session.execute(
+                select(Page).where(
+                    Page.repository_id == repository.id,
+                    Page.page_type == "file_page",
+                )
+            )
+            doc_words: dict[str, int] = {
+                p.target_path: len(p.content.split()) for p in page_result.scalars().all()
+            }
+
+            onboarding_candidates = [
+                {
+                    "path": n.node_id,
+                    "pagerank": n.pagerank,
+                    "doc_words": doc_words.get(n.node_id, 0),
+                }
+                for n in all_nodes
+                if n.pagerank > 0.0
+            ]
+            # Sort by fewest doc words first (least documented), then by highest pagerank
+            onboarding_candidates.sort(key=lambda x: (x["doc_words"], -x["pagerank"]))
+            onboarding_targets = [c["path"] for c in onboarding_candidates[:5]]
+
+            knowledge_map = {
+                "top_owners": top_owners,
+                "knowledge_silos": knowledge_silos,
+                "onboarding_targets": onboarding_targets,
+            }
+
         return {
             "title": overview_page.title if overview_page else repository.name,
             "content_md": overview_page.content if overview_page else "No overview generated yet.",
@@ -135,4 +207,5 @@ async def get_overview(repo: str | None = None) -> dict:
             ],
             "entry_points": [n.node_id for n in entry_nodes],
             "git_health": git_health,
+            "knowledge_map": knowledge_map,
         }

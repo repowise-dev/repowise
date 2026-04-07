@@ -501,6 +501,26 @@ class GraphBuilder:
         self.add_co_change_edges(updated_meta, min_count)
 
     # ------------------------------------------------------------------
+    # Dynamic-hint edges
+    # ------------------------------------------------------------------
+
+    def add_dynamic_edges(self, edges: list) -> None:
+        """Add dynamic-hint edges to the graph. Each edge is a DynamicEdge."""
+        for e in edges:
+            if e.source not in self._graph:
+                continue
+            if e.target not in self._graph:
+                # add a stub node so dead-code analysis sees it as reachable
+                self._graph.add_node(e.target)
+            self._graph.add_edge(
+                e.source,
+                e.target,
+                edge_type="dynamic",
+                hint_source=e.hint_source,
+                weight=e.weight,
+            )
+
+    # ------------------------------------------------------------------
     # Framework-aware synthetic edges
     # ------------------------------------------------------------------
 

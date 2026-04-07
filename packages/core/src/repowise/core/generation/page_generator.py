@@ -482,6 +482,7 @@ class PageGenerator:
                         # Embed page for RAG (B1)
                         if self._vector_store is not None and isinstance(result, GeneratedPage):
                             try:
+                                page_summary = _extract_summary(result.content)
                                 await self._vector_store.embed_and_upsert(
                                     result.page_id,
                                     result.content,
@@ -489,6 +490,7 @@ class PageGenerator:
                                         "page_type": result.page_type,
                                         "target_path": result.target_path,
                                         "content": result.content[:600],
+                                        "summary": page_summary,
                                     },
                                 )
                             except Exception as e:
@@ -668,10 +670,70 @@ class PageGenerator:
         # Context is assembled for ALL code files (module pages need it).
         # Pages are generated only for files that cross the significance bar.
         # page_summaries from level 0+1 are available here (B2).
+        #
+        # Topo-sort: process leaves (no internal out-edges) before roots so that
+        # dependency summaries are available when assembling dependents' contexts.
+        # Falls back to existing priority order if networkx is unavailable or graph
+        # has cycles.
+        code_file_paths = [p.file_info.path for p in code_files]
+        try:
+            import networkx as nx  # type: ignore[import]
+
+            # Build a subgraph of just the code files we are about to generate
+            code_file_set = set(code_file_paths)
+            dag = nx.DiGraph()
+            dag.add_nodes_from(code_file_paths)
+            for path_ in code_file_paths:
+                if path_ in graph:
+                    for succ in graph.successors(path_):
+                        if succ in code_file_set:
+                            dag.add_edge(path_, succ)  # path_ depends on succ
+
+            if nx.is_directed_acyclic_graph(dag):
+                # topological_sort yields nodes in an order where for each edge u→v,
+                # u comes before v — i.e. dependents before dependencies.
+                # We want leaves (dependencies) first, so reverse the order.
+                topo_order = list(reversed(list(nx.topological_sort(dag))))
+            else:
+                # Cycle present: condense SCCs, topo-sort condensation, then expand.
+                condensation = nx.condensation(dag)
+                topo_order_scc = list(reversed(list(nx.topological_sort(condensation))))
+                scc_members: dict[int, list[str]] = {
+                    n: list(condensation.nodes[n]["members"]) for n in condensation.nodes
+                }
+                topo_order = [
+                    node for scc_id in topo_order_scc for node in scc_members[scc_id]
+                ]
+
+            # Preserve priority ordering within the topo-sort by mapping paths to
+            # their original priority index.
+            priority_index = {p: i for i, p in enumerate(code_file_paths)}
+            topo_order = [p for p in topo_order if p in priority_index]
+            # Re-sort code_files to match topo_order
+            path_to_parsed = {p.file_info.path: p for p in code_files}
+            code_files = [path_to_parsed[p] for p in topo_order if p in path_to_parsed]
+        except Exception:
+            pass  # Keep existing priority order on any failure
+
         file_page_contexts: dict[str, FilePageContext] = {}
 
         level2_coros: list[tuple[str, Any]] = []
         for p in code_files:
+            # Pre-fetch dependency summaries from vector store for deps not yet
+            # in the completed_page_summaries accumulator (e.g. from prior runs).
+            if self._vector_store is not None:
+                path_ = p.file_info.path
+                out_edges = list(graph.successors(path_)) if path_ in graph else []
+                internal_deps = [e for e in out_edges if not e.startswith("external:")]
+                for dep in internal_deps:
+                    if dep not in completed_page_summaries:
+                        try:
+                            result = await self._vector_store.get_page_summary_by_path(dep)
+                            if result and result.get("summary"):
+                                completed_page_summaries[dep] = result["summary"]
+                        except Exception:
+                            pass  # Non-fatal — dep context is optional
+
             ctx = self._assembler.assemble_file_page(
                 p,
                 graph,

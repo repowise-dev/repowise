@@ -30,12 +30,40 @@ from repowise.cli.helpers import (
     type=click.Choice(["table", "json", "md"]),
     help="Output format.",
 )
+@click.option(
+    "--include-internals/--no-include-internals",
+    default=False,
+    help="Detect unused private/internal symbols (higher false-positive rate, off by default).",
+)
+@click.option(
+    "--include-zombie-packages/--no-include-zombie-packages",
+    default=True,
+    help="Detect monorepo packages with no external importers (on by default).",
+)
+@click.option(
+    "--no-unreachable",
+    "no_unreachable",
+    is_flag=True,
+    default=False,
+    help="Skip detection of unreachable files (in_degree=0).",
+)
+@click.option(
+    "--no-unused-exports",
+    "no_unused_exports",
+    is_flag=True,
+    default=False,
+    help="Skip detection of unused public exports.",
+)
 def dead_code_command(
     path: str | None,
     min_confidence: float,
     safe_only: bool,
     kind: str | None,
     fmt: str,
+    include_internals: bool,
+    include_zombie_packages: bool,
+    no_unreachable: bool,
+    no_unused_exports: bool,
 ) -> None:
     """Detect dead and unused code."""
     from pathlib import Path as PathlibPath
@@ -74,9 +102,15 @@ def dead_code_command(
         pass
 
     # Analyze
-    config = {"min_confidence": min_confidence}
+    config: dict = {
+        "min_confidence": min_confidence,
+        "detect_unused_internals": include_internals,
+        "detect_zombie_packages": include_zombie_packages,
+        "detect_unreachable_files": not no_unreachable,
+        "detect_unused_exports": not no_unused_exports,
+    }
     if kind:
-        # Enable only the requested kind
+        # --kind overrides the individual detection flags to focus on one type
         config["detect_unreachable_files"] = kind == "unreachable_file"
         config["detect_unused_exports"] = kind == "unused_export"
         config["detect_unused_internals"] = kind == "unused_internal"

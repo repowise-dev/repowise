@@ -29,6 +29,48 @@ The result: Claude Code answers *"why does auth work this way?"* instead of *"he
 
 ---
 
+## What's new
+
+### Faster indexing
+Indexing is now fully parallel. A `ProcessPoolExecutor` distributes AST parsing across all CPU cores. Graph construction and git history indexing run concurrently via `asyncio.gather`. Per-file git history is fetched through a thread executor with a semaphore to cap concurrency — full parallelism without overwhelming the system. Large repos index noticeably faster.
+
+### RAG-aware documentation generation
+Every wiki page is generated with richer context: before calling the LLM, repowise fetches the already-generated summaries of each file's direct dependencies from the vector store and injects them into the prompt. Generation is topologically sorted so leaf files are always written first. The LLM sees what its dependencies actually do, not just their names — producing more accurate, cross-referenced documentation.
+
+### Atomic three-store transactions
+`AtomicStorageCoordinator` buffers writes across the SQL database, the in-memory dependency graph, and the vector store, then flushes them in a single coordinated operation. If any store fails, all three are rolled back — no partial writes, no silent drift. Run `repowise doctor` to inspect drift across all three stores and repair mismatches.
+
+### Dynamic import hints
+The dependency graph now captures edges that pure AST parsing misses:
+- Django `INSTALLED_APPS`, `ROOT_URLCONF`, and `MIDDLEWARE` settings
+- pytest fixture wiring through `conftest.py`
+- Node/TypeScript path aliases from `tsconfig.json` `paths` and `package.json` `exports`
+
+These edges appear in `get_context`, `get_risk`, and `get_dependency_path` like any other dependency.
+
+### Temporal hotspot decay
+Hotspot scoring now uses an exponentially time-decayed score with a 180-day half-life layered on top of the raw 90-day churn count. A commit from a year ago contributes roughly 25% as much as a commit from today. The score reflects recent activity, not just total volume. Surfaced in `get_overview` and `get_risk`.
+
+### Percentile ranks via SQL window function
+Incremental updates now recompute global percentile ranks for every file using a single `PERCENT_RANK()` SQL window function. Previously this required loading all rows into Python. The new approach is both faster and correct on large repos — no sampling, no approximation.
+
+### PR blast radius
+`get_risk(changed_files=[...])` now returns a full blast-radius report: transitive affected files, co-change warnings for historical co-change partners not included in the PR, recommended reviewers ranked by temporal ownership, test gap detection, and an overall 0–10 risk score. Same eight tools — substantially more signal per call.
+
+### Knowledge map in `get_overview`
+`get_overview` now surfaces: top owners across the codebase, "bus factor 1" knowledge silos (files where one person owns >80% of commits), and onboarding targets — high-centrality files with the weakest documentation coverage. Useful for team planning and risk review.
+
+### Test gaps and security signals in `get_risk`
+`get_risk` now includes a `test_gap` flag per file (no test file co-changes detected) and `security_signals` — static pattern detection for common risk categories: authentication bypass patterns, `eval`-family calls, raw SQL string construction, and weak cryptography. Signals appear alongside the existing hotspot and ownership data.
+
+### LLM cost tracking
+Every LLM call is logged to a new `llm_costs` table with operation type, model, token counts, and estimated cost. A new `repowise costs` CLI command lets you group spending by operation, model, or day. The indexing progress bar now shows a live `Cost: $X.XXX` counter next to the spinner.
+
+### Configurable dead-code sensitivity
+The `repowise dead-code` command and the `get_dead_code` MCP tool now expose sensitivity controls: `--min-confidence` (default 0.70), `--include-internals` (include private/underscore-prefixed symbols), and `--include-zombie-packages` (packages present in `package.json` / `pyproject.toml` but unused in the graph). Tune the output to your cleanup goals.
+
+---
+
 ## What repowise builds
 
 repowise runs once, builds everything, then keeps it in sync on every commit.
@@ -94,11 +136,11 @@ Most tools are designed around data entities — one module, one file, one symbo
 |---|---|---|
 | `get_overview()` | Architecture summary, module map, entry points | First call on any unfamiliar codebase |
 | `get_context(targets, include?)` | Docs, ownership, decisions, freshness for any targets — files, modules, or symbols | Before reading or modifying code. Pass all relevant targets in one call. |
-| `get_risk(targets)` | Hotspot scores, dependents, co-change partners, plain-English risk summary | Before modifying files — understand what could break |
+| `get_risk(targets?, changed_files?)` | Hotspot scores, dependents, co-change partners, blast radius, recommended reviewers, test gaps, security signals, 0–10 risk score | Before modifying files — understand what could break |
 | `get_why(query?)` | Three modes: NL search over decisions · path-based decisions for a file · no-arg health dashboard | Before architectural changes — understand existing intent |
 | `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When you don't know where something lives |
 | `get_dependency_path(from, to)` | Connection path between two files, modules, or symbols | When tracing how two things are connected |
-| `get_dead_code()` | Unreachable code sorted by confidence and cleanup impact | Cleanup tasks |
+| `get_dead_code(min_confidence?, include_internals?, include_zombie_packages?)` | Unreachable code sorted by confidence and cleanup impact | Cleanup tasks |
 | `get_architecture_diagram(module?)` | Mermaid diagram for the repo or a specific module | Documentation and presentation |
 
 ### Tool call comparison — a real task
@@ -333,9 +375,18 @@ repowise search "<query>"         # semantic search over the wiki
 repowise status                   # coverage, freshness, dead code summary
 
 # Dead code
-repowise dead-code                # full report
-repowise dead-code --safe-only    # only safe-to-delete findings
-repowise dead-code resolve <id>   # mark resolved / false positive
+repowise dead-code                          # full report
+repowise dead-code --safe-only              # only safe-to-delete findings
+repowise dead-code --min-confidence 0.8     # raise the confidence threshold
+repowise dead-code --include-internals      # include private/underscore symbols
+repowise dead-code --include-zombie-packages  # include unused declared packages
+repowise dead-code resolve <id>             # mark resolved / false positive
+
+# Cost tracking
+repowise costs                    # total LLM spend to date
+repowise costs --by operation     # grouped by operation type
+repowise costs --by model         # grouped by model
+repowise costs --by day           # grouped by day
 
 # Decisions
 repowise decision add             # record a decision (interactive)
@@ -348,7 +399,8 @@ repowise generate-claude-md       # regenerate CLAUDE.md
 
 # Utilities
 repowise export [PATH]            # export wiki as markdown files
-repowise doctor                   # check setup, API keys, connectivity
+repowise doctor                   # check setup, API keys, store drift
+repowise doctor --repair          # check and fix detected store mismatches
 repowise reindex                  # rebuild vector store (no LLM calls)
 ```
 

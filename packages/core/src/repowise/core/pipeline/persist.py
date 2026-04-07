@@ -108,6 +108,25 @@ async def persist_pipeline_result(
     if all_symbols:
         await batch_upsert_symbols(session, repo_id, all_symbols)
 
+    # ---- Security scan -------------------------------------------------------
+    # Choice: persist.py (rather than orchestrator.py) because there is already
+    # a clear per-file loop over parsed_files here, and the instructions ask for
+    # a minimal, non-invasive addition.  The orchestrator parse stage is owned
+    # by another agent and must not be touched.
+    try:
+        from repowise.core.analysis.security_scan import SecurityScanner
+
+        scanner = SecurityScanner(session, repo_id)
+        for pf in result.parsed_files:
+            source_text = getattr(pf.file_info, "content", "") or ""
+            findings = await scanner.scan_file(
+                pf.file_info.path, source_text, pf.symbols
+            )
+            if findings:
+                await scanner.persist(pf.file_info.path, findings)
+    except Exception as _sec_err:  # noqa: BLE001 — scanner must never break the pipeline
+        logger.warning("security_scan_skipped", error=str(_sec_err))
+
     # ---- Git metadata --------------------------------------------------------
     if result.git_metadata_list:
         await upsert_git_metadata_bulk(session, repo_id, result.git_metadata_list)

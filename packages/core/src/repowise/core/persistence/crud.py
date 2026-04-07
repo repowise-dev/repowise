@@ -18,7 +18,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
@@ -709,31 +709,41 @@ async def recompute_git_percentiles(
     session: AsyncSession,
     repository_id: str,
 ) -> int:
-    """Reload all git_metadata rows and recompute churn_percentile + is_hotspot.
+    """Recompute churn_percentile + is_hotspot using a SQL PERCENT_RANK window function.
 
     Called after incremental updates so that percentile rankings stay fresh
     without a full ``repowise init``.  Returns the number of rows updated.
+
+    Primary ranking signal is temporal_hotspot_score (exponentially decayed churn);
+    commit_count_90d is the tiebreak.  Works on both SQLite (3.25+) and PostgreSQL.
     """
-    result = await session.execute(
+    # First check how many rows exist so we can return the count without an
+    # extra query after the UPDATE.
+    count_result = await session.execute(
         select(GitMetadata).where(GitMetadata.repository_id == repository_id)
     )
-    rows = result.scalars().all()
+    rows = count_result.scalars().all()
     if not rows:
         return 0
 
-    # Sort by 90-day commit count for percentile ranking
-    sorted_rows = sorted(rows, key=lambda r: r.commit_count_90d or 0)
-    total = len(sorted_rows)
-
-    for rank, row in enumerate(sorted_rows):
-        pct = rank / total if total > 0 else 0.0
-        row.churn_percentile = pct
-        c90 = row.commit_count_90d or 0
-        row.is_hotspot = pct >= 0.75 and c90 > 0
-        row.updated_at = _now_utc()
-
+    sql = """
+WITH ranked AS (
+  SELECT id, PERCENT_RANK() OVER (
+    PARTITION BY repository_id
+    ORDER BY COALESCE(temporal_hotspot_score, 0.0), commit_count_90d
+  ) AS prank
+  FROM git_metadata
+  WHERE repository_id = :repo_id
+)
+UPDATE git_metadata
+SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
+    is_hotspot = ((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id) >= 0.75
+                  AND git_metadata.commit_count_90d > 0)
+WHERE repository_id = :repo_id;
+"""
+    await session.execute(text(sql), {"repo_id": repository_id})
     await session.flush()
-    return total
+    return len(rows)
 
 
 # ---------------------------------------------------------------------------

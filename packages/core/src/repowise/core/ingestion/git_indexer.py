@@ -100,6 +100,9 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
 # Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
 _CO_CHANGE_DECAY_TAU: float = 180.0
 
+# Hotspot temporal decay: half-life for exponentially weighted churn score.
+HOTSPOT_HALFLIFE_DAYS: float = 180.0
+
 # Regex to extract PR/MR numbers from commit messages.
 # Matches: "#123", "Merge pull request #456", "(#789)", "!42" (GitLab MR)
 _PR_NUMBER_RE = re.compile(r"(?:pull request |)\#(\d+)|\(#(\d+)\)|!(\d+)")
@@ -555,6 +558,8 @@ class GitIndexer:
             # Phase 3 fields
             "original_path": None,
             "merge_commit_count_90d": 0,
+            # Temporal hotspot score (exponentially decayed churn)
+            "temporal_hotspot_score": 0.0,
         }
 
         try:
@@ -671,6 +676,18 @@ class GitIndexer:
             c90 = meta["commit_count_90d"]
             total_churn = meta["lines_added_90d"] + meta["lines_deleted_90d"]
             meta["avg_commit_size"] = total_churn / c90 if c90 > 0 else 0.0
+
+            # Temporal hotspot score: exponentially decayed per-commit churn.
+            # Each commit contributes weight * clamped_lines where weight decays
+            # with a half-life of HOTSPOT_HALFLIFE_DAYS days from now.
+            _ln2 = math.log(2)
+            temporal_score = 0.0
+            for c in commits:
+                age_days = max((now.timestamp() - c.ts) / 86400.0, 0.0)
+                weight = math.exp(-_ln2 * age_days / HOTSPOT_HALFLIFE_DAYS)
+                lines = min((c.added + c.deleted) / 100.0, 3.0)
+                temporal_score += weight * lines
+            meta["temporal_hotspot_score"] = temporal_score
 
             # Contributor count & bus factor
             meta["contributor_count"] = len(author_counts)
@@ -964,14 +981,21 @@ class GitIndexer:
 
     @staticmethod
     def _compute_percentiles(metadata_list: list[dict]) -> None:
-        """Compute churn_percentile and is_hotspot. Mutates in place."""
+        """Compute churn_percentile and is_hotspot. Mutates in place.
+
+        Primary sort key is temporal_hotspot_score (exponentially decayed churn);
+        commit_count_90d is used as a tiebreak, matching the SQL PERCENT_RANK path.
+        """
         if not metadata_list:
             return
 
-        # Sort by commit_count_90d for percentile ranking
+        # Sort by temporal_hotspot_score (primary) then commit_count_90d (tiebreak)
         sorted_by_churn = sorted(
             range(len(metadata_list)),
-            key=lambda i: metadata_list[i].get("commit_count_90d", 0),
+            key=lambda i: (
+                metadata_list[i].get("temporal_hotspot_score") or 0.0,
+                metadata_list[i].get("commit_count_90d", 0),
+            ),
         )
 
         total = len(metadata_list)

@@ -569,7 +569,9 @@ class RichProgressCallback:
         if phase in self._tasks:
             self._progress.update(self._tasks[phase], total=total, visible=True)
         else:
-            self._tasks[phase] = self._progress.add_task(label, total=total, visible=True)
+            self._tasks[phase] = self._progress.add_task(
+                label, total=total, visible=True, cost=0.0
+            )
 
     def on_item_done(self, phase: str) -> None:
         if phase in self._tasks:
@@ -582,3 +584,11 @@ class RichProgressCallback:
             self._progress.console.print(f"  [{style}]{text}[/{style}]")
         else:
             self._progress.console.print(f"  {text}")
+
+    def set_cost(self, total_cost: float) -> None:
+        """Update the live cost display on all active progress tasks."""
+        for task_id in self._tasks.values():
+            try:
+                self._progress.update(task_id, cost=total_cost)
+            except Exception:
+                pass

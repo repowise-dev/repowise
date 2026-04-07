@@ -11,6 +11,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import text
+
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -127,6 +129,48 @@ def _compute_impact_surface(
     return ranked[:3]
 
 
+async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> bool:
+    """Return True if no test file corresponding to *target* exists in graph_nodes."""
+    import os
+
+    base = os.path.splitext(os.path.basename(target))[0]
+    ext = os.path.splitext(target)[1].lstrip(".")
+    # Build a LIKE pattern broad enough to catch test_<base>, <base>_test, <base>.spec.*
+    patterns = [f"%test_{base}%", f"%{base}_test%", f"%{base}.spec.{ext}%"]
+    for pat in patterns:
+        row = await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.is_test == True,  # noqa: E712
+                GraphNode.node_id.like(pat),
+            ).limit(1)
+        )
+        if row.scalar_one_or_none() is not None:
+            return False
+    return True
+
+
+async def _get_security_signals(
+    session: AsyncSession, repo_id: str, target: str
+) -> list[dict]:
+    """Fetch stored security findings for *target* from security_findings table."""
+    try:
+        rows = await session.execute(
+            text(
+                "SELECT kind, severity, snippet FROM security_findings "
+                "WHERE repository_id = :repo_id AND file_path = :fp "
+                "ORDER BY severity DESC, kind"
+            ),
+            {"repo_id": repo_id, "fp": target},
+        )
+        return [
+            {"kind": r[0], "severity": r[1], "snippet": r[2]}
+            for r in rows.all()
+        ]
+    except Exception:  # noqa: BLE001 — table may not exist pre-migration
+        return []
+
+
 async def _assess_one_target(
     session: AsyncSession,
     repository: Repository,
@@ -136,7 +180,12 @@ async def _assess_one_target(
     reverse_deps: dict[str, set[str]],
     node_meta: dict[str, Any],
 ) -> dict:
-    """Assess risk for a single target file."""
+    """Assess risk for a single target file.
+
+    Enriches each result with:
+    - test_gap: bool — True when no test file matching this file's basename exists.
+    - security_signals: list of {kind, severity, snippet} from security_findings.
+    """
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
@@ -164,6 +213,8 @@ async def _assess_one_target(
             reverse_deps,
             node_meta,
         )
+        result_data["test_gap"] = await _check_test_gap(session, repo_id, target)
+        result_data["security_signals"] = await _get_security_signals(session, repo_id, target)
         result_data["risk_summary"] = f"{target} — no git metadata available"
         return result_data
 
@@ -240,6 +291,10 @@ async def _assess_one_target(
     if merge_commit_count > 0:
         result_data["merge_commit_count_90d"] = merge_commit_count
 
+    # C. Test gaps + security signals
+    result_data["test_gap"] = await _check_test_gap(session, repo_id, target)
+    result_data["security_signals"] = await _get_security_signals(session, repo_id, target)
+
     capped = getattr(meta, "commit_count_capped", False)
     capped_note = " (history truncated — actual count may be higher)" if capped else ""
     result_data["commit_count_capped"] = capped
@@ -262,6 +317,7 @@ async def _assess_one_target(
 async def get_risk(
     targets: list[str],
     repo: str | None = None,
+    changed_files: list[str] | None = None,
 ) -> dict:
     """Assess modification risk for one or more files before making changes.
 
@@ -270,14 +326,26 @@ async def get_risk(
     - risk_type ("churn-heavy"/"bug-prone"/"high-coupling"/"stable")
     - impact_surface: top 3 critical modules that would break
     - dependents, co-change partners, ownership
+    - test_gap: bool — True if no test file exists for this file
+    - security_signals: list of {kind, severity, snippet} from static analysis
 
     Plus the top 5 global hotspots for ambient awareness.
 
-    Example: get_risk(["src/auth/service.py", "src/auth/middleware.py"])
+    Pass ``changed_files`` for PR review / blast radius analysis. When provided,
+    the response includes an additional ``pr_blast_radius`` key containing:
+    - direct_risks: per-file risk score (centrality × temporal hotspot)
+    - transitive_affected: files that import any changed file (up to depth 3)
+    - cochange_warnings: historical co-change partners missing from the PR
+    - recommended_reviewers: top 5 owners of affected files
+    - test_gaps: changed/affected files lacking a corresponding test
+    - overall_risk_score: 0-10 composite score
+
+    Example: get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
 
     Args:
-        targets: List of file paths to assess.
+        targets: List of file paths to assess (standard per-file risk).
         repo: Repository path, name, or ID.
+        changed_files: Optional list of files changed in a PR for blast-radius analysis.
     """
     async with get_session(_state._session_factory) as session:
         repository = await _get_repo(session, repo)
@@ -343,7 +411,18 @@ async def get_risk(
             if h.file_path not in target_set
         ][:5]
 
-    return {
+        # A. PR blast radius (only when caller passes changed_files)
+        pr_blast_radius: dict | None = None
+        if changed_files:
+            from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
+
+            analyzer = PRBlastRadiusAnalyzer(session, repo_id)
+            pr_blast_radius = await analyzer.analyze_files(changed_files)
+
+    response: dict = {
         "targets": {r["target"]: r for r in results},
         "global_hotspots": global_hotspots,
     }
+    if pr_blast_radius is not None:
+        response["pr_blast_radius"] = pr_blast_radius
+    return response

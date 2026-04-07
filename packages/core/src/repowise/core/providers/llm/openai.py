@@ -35,8 +35,11 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
 )
 
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+
+if TYPE_CHECKING:
+    from repowise.core.generation.cost_tracker import CostTracker
 
 log = structlog.get_logger(__name__)
 
@@ -61,6 +64,7 @@ class OpenAIProvider(BaseProvider):
         model: str = "gpt-5.4-nano",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
+        cost_tracker: "CostTracker | None" = None,
     ) -> None:
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not resolved_key:
@@ -71,6 +75,7 @@ class OpenAIProvider(BaseProvider):
         self._client = AsyncOpenAI(api_key=resolved_key, base_url=base_url)
         self._model = model
         self._rate_limiter = rate_limiter
+        self._cost_tracker = cost_tracker
 
     @property
     def provider_name(self) -> str:
@@ -161,6 +166,23 @@ class OpenAIProvider(BaseProvider):
             output_tokens=result.output_tokens,
             request_id=request_id,
         )
+
+        if self._cost_tracker is not None:
+            import asyncio
+
+            try:
+                asyncio.get_event_loop().create_task(
+                    self._cost_tracker.record(
+                        model=self._model,
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        operation="doc_generation",
+                        file_path=None,
+                    )
+                )
+            except RuntimeError:
+                pass  # No running event loop — skip async record
+
         return result
 
     # --- ChatProvider protocol implementation ---

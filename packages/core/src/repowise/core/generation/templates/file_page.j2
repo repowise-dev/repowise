@@ -51,6 +51,15 @@ Module docstring: {{ ctx.docstring }}
 {% endfor %}
 {% endif %}
 
+{% if ctx.dependency_summaries %}
+## Dependency Context
+The following are summaries of files that this file imports. Use these to understand how the imports are intended to be used:
+{% for dep_path, dep_summary in ctx.dependency_summaries.items() %}
+### `{{ dep_path }}`
+{{ dep_summary }}
+{% endfor %}
+{% endif %}
+
 {% if ctx.file_source_snippet %}
 ## Source Snippet
 ```{{ ctx.language }}
