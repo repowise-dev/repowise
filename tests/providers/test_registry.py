@@ -22,6 +22,7 @@ class TestListProviders:
     def test_includes_all_builtin_providers(self) -> None:
         providers = list_providers()
         assert "anthropic" in providers
+        assert "minimax" in providers
         assert "openai" in providers
         assert "ollama" in providers
         assert "litellm" in providers
@@ -114,5 +115,5 @@ class TestCustomProviderRegistration:
         assert received.get("api_key") == "key-123"
 
     def test_builtin_count(self) -> None:
-        """Sanity check: we have exactly 6 built-in providers."""
-        assert len(_BUILTIN_PROVIDERS) == 6
+        """Sanity check: we have exactly 7 built-in providers."""
+        assert len(_BUILTIN_PROVIDERS) == 7

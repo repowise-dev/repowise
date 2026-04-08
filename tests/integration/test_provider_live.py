@@ -7,6 +7,7 @@ Run a specific provider:
     pytest tests/integration/test_provider_live.py -k openai -v
     pytest tests/integration/test_provider_live.py -k gemini -v
     pytest tests/integration/test_provider_live.py -k anthropic -v
+    pytest tests/integration/test_provider_live.py -k minimax -v
 """
 
 from __future__ import annotations
@@ -105,6 +106,33 @@ async def test_anthropic_live(model):
     )
     assert isinstance(result, GeneratedResponse)
     assert result.content.strip()
+    print(
+        f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MiniMax
+# ---------------------------------------------------------------------------
+
+MINIMAX_KEY = os.environ.get("MINIMAX_API_KEY", "")
+
+
+@pytest.mark.skipif(not MINIMAX_KEY, reason="MINIMAX_API_KEY not set")
+@pytest.mark.parametrize("model", ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"])
+async def test_minimax_live(model):
+    from repowise.core.providers.llm.minimax import MiniMaxProvider
+
+    provider = MiniMaxProvider(api_key=MINIMAX_KEY, model=model)
+    result = await provider.generate(
+        system_prompt="You are a concise assistant.",
+        user_prompt="Reply with exactly: OK",
+        max_tokens=512,
+    )
+    assert isinstance(result, GeneratedResponse)
+    assert result.content.strip()
+    assert result.input_tokens > 0
+    assert result.output_tokens > 0
     print(
         f"\n[{model}] tokens: {result.input_tokens}in / {result.output_tokens}out | content: {result.content!r}"
     )

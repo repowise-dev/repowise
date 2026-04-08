@@ -35,6 +35,7 @@ from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateL
 # you just can't use the anthropic provider.
 _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "anthropic": ("repowise.core.providers.llm.anthropic", "AnthropicProvider"),
+    "minimax": ("repowise.core.providers.llm.minimax", "MiniMaxProvider"),
     "openai": ("repowise.core.providers.llm.openai", "OpenAIProvider"),
     "gemini": ("repowise.core.providers.llm.gemini", "GeminiProvider"),
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
@@ -131,6 +132,7 @@ def get_provider(
         # Give a helpful error message naming the missing package
         _missing = {
             "anthropic": "anthropic",
+            "minimax": "anthropic",  # minimax uses the anthropic package for Anthropic-compatible API
             "openai": "openai",
             "gemini": "google-genai",
             "ollama": "openai",  # ollama uses the openai package

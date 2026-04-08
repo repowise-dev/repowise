@@ -44,6 +44,7 @@ class RateLimitConfig:
 # These are conservative defaults; operators can override via config.
 PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     "anthropic": RateLimitConfig(requests_per_minute=50, tokens_per_minute=100_000),
+    "minimax": RateLimitConfig(requests_per_minute=60, tokens_per_minute=200_000),
     "openai": RateLimitConfig(requests_per_minute=60, tokens_per_minute=150_000),
     "gemini": RateLimitConfig(requests_per_minute=60, tokens_per_minute=1_000_000),
     # Ollama runs locally — effectively unlimited, but we cap to avoid OOM

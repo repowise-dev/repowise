@@ -40,6 +40,14 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "minimax",
+        "name": "MiniMax",
+        "default_model": "MiniMax-M2.7",
+        "models": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+        "env_keys": ["MINIMAX_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "openai",
         "name": "OpenAI",
         "default_model": "gpt-5.4-nano",
