@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GitMetadata
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.mcp_server.tool_risk import _check_test_gap
 from repowise.server.schemas import (
     GitMetadataResponse,
     GitSummaryResponse,
@@ -35,7 +36,9 @@ async def get_git_metadata(
     meta = await crud.get_git_metadata(session, repo_id, file_path)
     if meta is None:
         raise HTTPException(status_code=404, detail="Git metadata not found")
-    return GitMetadataResponse.from_orm(meta)
+    response = GitMetadataResponse.from_orm(meta)
+    response.test_gap = await _check_test_gap(session, repo_id, file_path)
+    return response
 
 
 @router.get("/{repo_id}/hotspots", response_model=list[HotspotResponse])
@@ -51,7 +54,10 @@ async def get_hotspots(
             GitMetadata.repository_id == repo_id,
             GitMetadata.is_hotspot.is_(True),
         )
-        .order_by(GitMetadata.churn_percentile.desc())
+        .order_by(
+            GitMetadata.temporal_hotspot_score.desc().nulls_last(),
+            GitMetadata.churn_percentile.desc(),
+        )
         .limit(limit)
     )
     rows = result.scalars().all()
@@ -61,6 +67,7 @@ async def get_hotspots(
             commit_count_90d=r.commit_count_90d,
             commit_count_30d=r.commit_count_30d,
             churn_percentile=r.churn_percentile,
+            temporal_hotspot_score=r.temporal_hotspot_score,
             primary_owner=r.primary_owner_name,
             is_hotspot=r.is_hotspot,
             is_stable=r.is_stable,

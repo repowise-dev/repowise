@@ -8,6 +8,7 @@ import { WikiRenderer } from "@/components/wiki/wiki-renderer";
 import { TableOfContents } from "@/components/wiki/table-of-contents";
 import { RegenerateButton } from "@/components/wiki/regenerate-button";
 import { GitHistoryPanel } from "@/components/wiki/git-history-panel";
+import { SecurityPanel } from "@/components/wiki/security-panel";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
@@ -158,6 +159,16 @@ export default async function WikiPageRoute({ params }: Props) {
           )}
 
           {/* Co-change partners — now uses the visual bar component */}
+
+          {/* Security findings panel */}
+          {page.target_path && (
+            <div>
+              <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                Security Signals
+              </p>
+              <SecurityPanel repoId={id} filePath={page.target_path} />
+            </div>
+          )}
 
           {/* Page metadata */}
           <div>

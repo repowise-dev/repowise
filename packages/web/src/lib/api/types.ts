@@ -116,6 +116,7 @@ export interface JobProgressEvent {
   tokens_input?: number;
   tokens_output?: number;
   estimated_cost?: number;
+  actual_cost_usd?: number | null;
   error?: string;
 }
 
@@ -308,6 +309,7 @@ export interface GitMetadataResponse {
   avg_commit_size: number;
   commit_categories: Record<string, number>;
   merge_commit_count_90d: number;
+  test_gap?: boolean | null;
 }
 
 export interface HotspotResponse {
@@ -315,6 +317,7 @@ export interface HotspotResponse {
   commit_count_90d: number;
   commit_count_30d: number;
   churn_percentile: number;
+  temporal_hotspot_score?: number | null;
   primary_owner: string | null;
   is_hotspot: boolean;
   is_stable: boolean;

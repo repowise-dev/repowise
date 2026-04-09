@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.1.31"
+version = "0.2.1"
 description = "Codebase intelligence for developers and AI — generates and maintains a structured wiki for any codebase"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -137,6 +137,7 @@ packages = [
     "repowise.server",
     "repowise.server.routers",
     "repowise.server.mcp_server",
+    "repowise.server.services",
 ]
 
 [tool.setuptools.package-data]

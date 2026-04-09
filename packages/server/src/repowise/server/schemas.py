@@ -317,6 +317,7 @@ class GitMetadataResponse(BaseModel):
     avg_commit_size: float
     commit_categories: dict
     merge_commit_count_90d: int
+    test_gap: bool | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> GitMetadataResponse:
@@ -356,6 +357,7 @@ class HotspotResponse(BaseModel):
     commit_count_90d: int
     commit_count_30d: int
     churn_percentile: float
+    temporal_hotspot_score: float | None = None
     primary_owner: str | None
     is_hotspot: bool
     is_stable: bool
@@ -431,6 +433,20 @@ class DeadCodeSummaryResponse(BaseModel):
     deletable_lines: int
     total_lines: int
     by_kind: dict
+
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+
+
+class SecurityFindingResponse(BaseModel):
+    id: int
+    file_path: str
+    kind: str
+    severity: str
+    snippet: str | None
+    detected_at: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +556,49 @@ class HotFilesGraphResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Blast Radius
+# ---------------------------------------------------------------------------
+
+
+class BlastRadiusRequest(BaseModel):
+    changed_files: list[str]
+    max_depth: int = Field(default=3, ge=1, le=10)
+
+
+class DirectRiskEntry(BaseModel):
+    path: str
+    risk_score: float
+    temporal_hotspot: float
+    centrality: float
+
+
+class TransitiveEntry(BaseModel):
+    path: str
+    depth: int
+
+
+class CochangeWarning(BaseModel):
+    changed: str
+    missing_partner: str
+    score: float
+
+
+class ReviewerEntry(BaseModel):
+    email: str
+    files: int
+    ownership_pct: float
+
+
+class BlastRadiusResponse(BaseModel):
+    direct_risks: list[DirectRiskEntry]
+    transitive_affected: list[TransitiveEntry]
+    cochange_warnings: list[CochangeWarning]
+    recommended_reviewers: list[ReviewerEntry]
+    test_gaps: list[str]
+    overall_risk_score: float
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 
@@ -548,6 +607,44 @@ class HealthResponse(BaseModel):
     status: str
     db: str
     version: str
+
+
+class CoordinatorHealthResponse(BaseModel):
+    sql_pages: int | None
+    vector_count: int | None
+    graph_nodes: int | None
+    drift_pct: float | None
+    status: str  # "ok" | "warning" | "critical"
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Map
+# ---------------------------------------------------------------------------
+
+
+class KnowledgeMapOwner(BaseModel):
+    email: str
+    name: str
+    files_owned: int
+    percentage: float
+
+
+class KnowledgeMapSilo(BaseModel):
+    file_path: str
+    owner_email: str
+    owner_pct: float
+
+
+class KnowledgeMapTarget(BaseModel):
+    path: str
+    pagerank: float
+    doc_words: int
+
+
+class KnowledgeMapResponse(BaseModel):
+    top_owners: list[KnowledgeMapOwner]
+    knowledge_silos: list[KnowledgeMapSilo]
+    onboarding_targets: list[KnowledgeMapTarget]
 
 
 # ---------------------------------------------------------------------------
@@ -691,3 +788,24 @@ class SetActiveProviderRequest(BaseModel):
 
 class SetApiKeyRequest(BaseModel):
     api_key: str
+
+
+# ---------------------------------------------------------------------------
+# Cost Tracking
+# ---------------------------------------------------------------------------
+
+
+class CostGroupResponse(BaseModel):
+    group: str
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+
+
+class CostSummaryResponse(BaseModel):
+    total_cost_usd: float
+    total_calls: int
+    total_input_tokens: int
+    total_output_tokens: int
+    since: str | None

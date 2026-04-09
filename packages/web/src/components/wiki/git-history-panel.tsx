@@ -67,10 +67,11 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
           File Status
         </p>
         <div className="space-y-1.5">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {git.is_hotspot && <Badge variant="outdated">Hotspot</Badge>}
             {git.is_stable && <Badge variant="fresh">Stable</Badge>}
             {!git.is_hotspot && !git.is_stable && <Badge variant="default">Active</Badge>}
+            {git.test_gap === true && <Badge variant="outdated">No tests</Badge>}
             <span className={`text-xs ${velocity.color}`}>{velocity.label}</span>
           </div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">

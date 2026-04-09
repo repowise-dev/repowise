@@ -17,6 +17,8 @@ import {
   Users,
   Flame,
   Trash2,
+  Radar,
+  DollarSign,
   Settings,
   ChevronDown,
   ChevronRight,
@@ -54,7 +56,9 @@ function repoNavItems(repoId: string): NavItem[] {
     { label: "Ownership", href: `/repos/${repoId}/ownership`, icon: Users },
     { label: "Hotspots", href: `/repos/${repoId}/hotspots`, icon: Flame },
     { label: "Dead Code", href: `/repos/${repoId}/dead-code`, icon: Trash2 },
+    { label: "Blast Radius", href: `/repos/${repoId}/blast-radius`, icon: Radar },
     { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },
+    { label: "Costs", href: `/repos/${repoId}/costs`, icon: DollarSign },
     { label: "Settings", href: `/repos/${repoId}/settings`, icon: Settings },
   ];
 }

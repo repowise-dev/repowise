@@ -21,6 +21,7 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
   const { job, sse } = useJob(jobId);
   const [log, setLog] = useState<Array<{ text: string }>>([]);
   const [elapsed, setElapsed] = useState(0);
+  const [actualCost, setActualCost] = useState<number | null>(null);
   const startRef = useRef(Date.now());
   const notifiedRef = useRef(false);
 
@@ -30,7 +31,7 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
     return () => clearInterval(id);
   }, []);
 
-  // Accumulate log entries from SSE progress events
+  // Accumulate log entries and track running cost from SSE progress events
   useEffect(() => {
     if (!sse.data) return;
     const ev = sse.data as JobProgressEvent;
@@ -39,6 +40,9 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
         ...prev,
         { text: `[L${ev.current_level ?? "?"}] ${ev.current_page}` },
       ]);
+    }
+    if (ev.actual_cost_usd != null) {
+      setActualCost(ev.actual_cost_usd);
     }
   }, [sse.data]);
 
@@ -109,6 +113,19 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
           <span>{progress}%</span>
         </div>
       </div>
+
+      {/* Live cost */}
+      {actualCost != null && (
+        <div className="flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)]">
+          <span>Cost: ${actualCost.toFixed(4)}</span>
+          {isRunning && (
+            <span className="inline-flex items-center gap-0.5 rounded bg-[var(--color-accent-primary)]/15 px-1 py-px text-[10px] font-medium text-[var(--color-accent-primary)]">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-accent-primary)]" />
+              live
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Summary on done */}
       {isDone && (

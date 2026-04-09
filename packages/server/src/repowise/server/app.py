@@ -28,18 +28,22 @@ from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
+    blast_radius,
     chat,
     claude_md,
+    costs,
     dead_code,
     decisions,
     git,
     graph,
     health,
     jobs,
+    knowledge_map,
     pages,
     providers,
     repos,
     search,
+    security,
     symbols,
     webhooks,
 )
@@ -187,5 +191,9 @@ def create_app() -> FastAPI:
     app.include_router(decisions.router)
     app.include_router(chat.router)
     app.include_router(providers.router)
+    app.include_router(costs.router)
+    app.include_router(security.router)
+    app.include_router(blast_radius.router)
+    app.include_router(knowledge_map.router)
 
     return app

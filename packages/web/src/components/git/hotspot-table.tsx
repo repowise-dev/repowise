@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { TrendingUp, TrendingDown, Search } from "lucide-react";
+import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -15,10 +15,30 @@ interface HotspotTableProps {
 }
 
 type Filter = "all" | "hot" | "risk" | "accelerating";
+type SortKey = "trend" | "churn" | "commits";
+type SortDir = "asc" | "desc";
+
+function SortIcon({ column, sortKey, sortDir }: { column: SortKey; sortKey: SortKey; sortDir: SortDir }) {
+  if (column !== sortKey) return <ArrowUpDown className="inline h-3 w-3 ml-1 opacity-40" />;
+  return sortDir === "desc"
+    ? <ArrowDown className="inline h-3 w-3 ml-1" />
+    : <ArrowUp className="inline h-3 w-3 ml-1" />;
+}
 
 export function HotspotTable({ hotspots }: HotspotTableProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const [sortKey, setSortKey] = useState<SortKey>("trend");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function handleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+  }
 
   const filtered = useMemo(() => {
     let items = hotspots;
@@ -44,8 +64,21 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
         break;
     }
 
+    // Client-side sort
+    const sign = sortDir === "desc" ? -1 : 1;
+    items = [...items].sort((a, b) => {
+      if (sortKey === "trend") {
+        const av = a.temporal_hotspot_score ?? -1;
+        const bv = b.temporal_hotspot_score ?? -1;
+        return sign * (av - bv);
+      }
+      if (sortKey === "churn") return sign * (a.churn_percentile - b.churn_percentile);
+      if (sortKey === "commits") return sign * (a.commit_count_90d - b.commit_count_90d);
+      return 0;
+    });
+
     return items;
-  }, [hotspots, search, filter]);
+  }, [hotspots, search, filter, sortKey, sortDir]);
 
   if (hotspots.length === 0) {
     return (
@@ -109,11 +142,24 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                   File
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
-                  Commits 90d
+                <th
+                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  onClick={() => handleSort("commits")}
+                >
+                  Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32">
-                  Churn
+                <th
+                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  onClick={() => handleSort("churn")}
+                >
+                  Churn<SortIcon column="churn" sortKey={sortKey} sortDir={sortDir} />
+                </th>
+                <th
+                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  onClick={() => handleSort("trend")}
+                  title="Exponential decay score weighting recent commits more heavily (180-day half-life)"
+                >
+                  Trend<SortIcon column="trend" sortKey={sortKey} sortDir={sortDir} />
                 </th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20">
                   Bus Factor
@@ -130,6 +176,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
             <tbody>
               {filtered.map((h, i) => {
                 const accelerating = h.commit_count_30d * 3 > h.commit_count_90d;
+                const trendScore = h.temporal_hotspot_score;
                 return (
                   <tr
                     key={h.file_path}
@@ -160,6 +207,20 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                           {Math.round(h.churn_percentile)}%
                         </span>
                       </div>
+                    </td>
+                    <td className="px-3 py-2.5 tabular-nums text-xs">
+                      <span className="flex items-center gap-1">
+                        {trendScore != null ? (
+                          <>
+                            <Flame className={cn("h-3 w-3 shrink-0", trendScore >= 5 ? "text-red-500" : trendScore >= 2 ? "text-orange-400" : "text-[var(--color-text-tertiary)]")} />
+                            <span className="text-[var(--color-text-secondary)]">
+                              {trendScore.toFixed(2)}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[var(--color-text-tertiary)]">—</span>
+                        )}
+                      </span>
                     </td>
                     <td className="px-3 py-2.5">
                       <span

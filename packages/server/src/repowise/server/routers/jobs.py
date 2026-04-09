@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GenerationJob
+from repowise.core.persistence.models import GenerationJob, LlmCost
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import JobResponse
 
@@ -79,6 +79,16 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
                 yield f"event: error\ndata: {data}\n\n"
                 return
 
+            # Sum LLM costs recorded since the job started
+            actual_cost_usd: float | None = None
+            if job.started_at is not None:
+                cost_q = select(func.sum(LlmCost.cost_usd)).where(
+                    LlmCost.repository_id == job.repository_id,
+                    LlmCost.ts >= job.started_at,
+                )
+                async with get_session(factory) as cost_session:
+                    actual_cost_usd = await cost_session.scalar(cost_q)
+
             progress = {
                 "job_id": job.id,
                 "status": job.status,
@@ -86,6 +96,7 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
                 "total_pages": job.total_pages,
                 "failed_pages": job.failed_pages,
                 "current_level": job.current_level,
+                "actual_cost_usd": actual_cost_usd,
             }
             data = json.dumps(progress)
             yield f"event: progress\ndata: {data}\n\n"

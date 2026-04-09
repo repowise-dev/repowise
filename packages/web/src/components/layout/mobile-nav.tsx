@@ -19,6 +19,7 @@ import {
   Users,
   Flame,
   Trash2,
+  Radar,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -49,6 +50,7 @@ function repoNavItems(repoId: string) {
     { label: "Ownership", href: `/repos/${repoId}/ownership`, icon: Users },
     { label: "Hotspots", href: `/repos/${repoId}/hotspots`, icon: Flame },
     { label: "Dead Code", href: `/repos/${repoId}/dead-code`, icon: Trash2 },
+    { label: "Blast Radius", href: `/repos/${repoId}/blast-radius`, icon: Radar },
     { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },
     { label: "Settings", href: `/repos/${repoId}/settings`, icon: SlidersHorizontal },
   ];

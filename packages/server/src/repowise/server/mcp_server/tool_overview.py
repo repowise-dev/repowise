@@ -16,6 +16,7 @@ from repowise.core.persistence.models import (
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _get_repo
 from repowise.server.mcp_server._server import mcp
+from repowise.server.services.knowledge_map import compute_knowledge_map
 
 
 @mcp.tool()

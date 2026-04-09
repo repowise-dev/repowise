@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Settings } from "lucide-react";
 import { getRepo } from "@/lib/api/repos";
+import { getCoordinatorHealth } from "@/lib/api/health";
 import { RepoSettingsForm } from "@/components/repos/repo-settings-form";
+import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-panel";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { OperationsPanel } from "@/components/repos/operations-panel";
@@ -30,6 +32,8 @@ export default async function RepoSettingsPage({ params }: Props) {
   } catch {
     notFound();
   }
+
+  const coordinatorHealth = await getCoordinatorHealth(id).catch(() => null);
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-2xl">
@@ -60,6 +64,16 @@ export default async function RepoSettingsPage({ params }: Props) {
         </CardHeader>
         <CardContent className="pt-0">
           <OperationsPanel repoId={id} repoName={repo.name} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">System Health</CardTitle>
+          <CardDescription>Coordinator drift across SQL, vector, and graph stores</CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <CoordinatorHealthPanel repoId={id} initial={coordinatorHealth} />
         </CardContent>
       </Card>
 

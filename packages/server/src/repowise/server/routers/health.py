@@ -6,13 +6,16 @@ These endpoints are NOT protected by API key auth.
 from __future__ import annotations
 
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
+from repowise.core.persistence.coordinator import AtomicStorageCoordinator
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob, Page
 from repowise.server import __version__
-from repowise.server.schemas import HealthResponse
+from repowise.server.deps import get_db_session, get_vector_store
+from repowise.server.schemas import CoordinatorHealthResponse, HealthResponse
 
 router = APIRouter(tags=["health"])
 
@@ -74,3 +77,50 @@ async def metrics(request: Request) -> str:
     from starlette.responses import Response
 
     return Response(content="\n".join(lines) + "\n", media_type="text/plain")
+
+
+_repo_health_router = APIRouter(prefix="/api/repos", tags=["health"])
+
+
+@_repo_health_router.get("/{repo_id}/health/coordinator", response_model=CoordinatorHealthResponse)
+async def coordinator_health(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    vector_store=Depends(get_vector_store),  # noqa: B008
+) -> CoordinatorHealthResponse:
+    """Return coordinator drift health for a repository."""
+    coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
+    result = await coord.health_check()
+
+    sql_pages: int | None = result.get("sql_pages")
+    vector_count: int | None = result.get("vector_count")
+    graph_nodes: int | None = result.get("graph_nodes")
+    drift: float | None = result.get("drift")
+
+    # Normalise vector_count: -1 means unsupported (return None)
+    if vector_count == -1:
+        vector_count = None
+
+    # Drift percentage (0–100)
+    drift_pct: float | None = round(drift * 100, 2) if drift is not None else None
+
+    if drift_pct is None:
+        status = "ok"
+    elif drift_pct <= 1.0:
+        status = "ok"
+    elif drift_pct <= 5.0:
+        status = "warning"
+    else:
+        status = "critical"
+
+    return CoordinatorHealthResponse(
+        sql_pages=sql_pages,
+        vector_count=vector_count,
+        graph_nodes=graph_nodes,
+        drift_pct=drift_pct,
+        status=status,
+    )
+
+
+# Merge repo-scoped routes into the main router so they are registered together.
+router.include_router(_repo_health_router)
