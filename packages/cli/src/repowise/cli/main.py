@@ -41,9 +41,3 @@ cli.add_command(watch_command)
 cli.add_command(serve_command)
 cli.add_command(mcp_command)
 cli.add_command(reindex_command)
-
-
-if __name__ == "__main__":
-    # Allow `python -m repowise.cli.main` (used by repowise-bench when running
-    # against a local source checkout instead of a pip-installed package).
-    cli()
