@@ -111,6 +111,30 @@ async def get_repository_by_path(session: AsyncSession, local_path: str) -> Repo
     return result.scalar_one_or_none()
 
 
+async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
+    """Delete a repository and all cascaded children.
+
+    Returns True if deleted, False if not found.
+
+    NOTE: The caller should clean up the FTS index *before* calling this,
+    since the CASCADE will delete Page rows and we lose the page IDs.
+    """
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        return False
+    await session.delete(repo)
+    await session.flush()
+    return True
+
+
+async def list_page_ids(session: AsyncSession, repository_id: str) -> list[str]:
+    """Return all page IDs for a repository (lightweight, ID-only query)."""
+    result = await session.execute(
+        select(Page.id).where(Page.repository_id == repository_id)
+    )
+    return list(result.scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # GenerationJob CRUD
 # ---------------------------------------------------------------------------

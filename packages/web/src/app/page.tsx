@@ -21,6 +21,7 @@ import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
 import { EmptyState } from "@/components/shared/empty-state";
 import { formatRelativeTime, formatNumber } from "@/lib/utils/format";
 import { scoreToStatus } from "@/lib/utils/confidence";
+import { DeleteRepoButton } from "@/components/repos/delete-repo-button";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -124,48 +125,51 @@ export default async function DashboardPage() {
             ) : (
               <ul className="divide-y divide-[var(--color-border-default)]">
                 {repoList.map((repo) => (
-                  <li key={repo.id}>
-                    <Link
-                      href={`/repos/${repo.id}`}
-                      className="flex items-start gap-3 px-6 py-3.5 transition-colors hover:bg-[var(--color-bg-elevated)] group"
-                    >
-                      <div className="mt-0.5 h-2 w-2 rounded-full bg-[var(--color-accent-primary)] shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium text-[var(--color-text-primary)] truncate group-hover:text-[var(--color-accent-primary)] transition-colors">
-                            {repo.name}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <p className="text-xs text-[var(--color-text-tertiary)] font-mono truncate" title={repo.local_path}>
-                            {repo.local_path}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 flex-wrap">
-                          {repo.head_commit && (
-                            <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
-                              {repo.head_commit.slice(0, 7)}
+                  <li key={repo.id} className="group">
+                    <div className="flex items-start gap-3 px-6 py-3.5 transition-colors hover:bg-[var(--color-bg-elevated)]">
+                      <Link
+                        href={`/repos/${repo.id}`}
+                        className="flex items-start gap-3 flex-1 min-w-0"
+                      >
+                        <div className="mt-0.5 h-2 w-2 rounded-full bg-[var(--color-accent-primary)] shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium text-[var(--color-text-primary)] truncate group-hover:text-[var(--color-accent-primary)] transition-colors">
+                              {repo.name}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <p className="text-xs text-[var(--color-text-tertiary)] font-mono truncate" title={repo.local_path}>
+                              {repo.local_path}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            {repo.head_commit && (
+                              <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
+                                {repo.head_commit.slice(0, 7)}
+                              </span>
+                            )}
+                            <span className="text-xs text-[var(--color-text-tertiary)]">
+                              Updated {formatRelativeTime(repo.updated_at)}
                             </span>
-                          )}
-                          <span className="text-xs text-[var(--color-text-tertiary)]">
-                            Updated {formatRelativeTime(repo.updated_at)}
-                          </span>
-                          {gitMap.has(repo.id) && (() => {
-                            const g = gitMap.get(repo.id)!;
-                            return (
-                              <>
-                                {g.hotspot_count > 0 && (
-                                  <Badge variant="outdated">{g.hotspot_count} hotspot{g.hotspot_count !== 1 ? "s" : ""}</Badge>
-                                )}
-                                {g.stable_count > 0 && (
-                                  <Badge variant="fresh">{g.stable_count} stable</Badge>
-                                )}
-                              </>
-                            );
-                          })()}
+                            {gitMap.has(repo.id) && (() => {
+                              const g = gitMap.get(repo.id)!;
+                              return (
+                                <>
+                                  {g.hotspot_count > 0 && (
+                                    <Badge variant="outdated">{g.hotspot_count} hotspot{g.hotspot_count !== 1 ? "s" : ""}</Badge>
+                                  )}
+                                  {g.stable_count > 0 && (
+                                    <Badge variant="fresh">{g.stable_count} stable</Badge>
+                                  )}
+                                </>
+                              );
+                            })()}
+                          </div>
                         </div>
-                      </div>
-                    </Link>
+                      </Link>
+                      <DeleteRepoButton repoId={repo.id} repoName={repo.name} />
+                    </div>
                   </li>
                 ))}
               </ul>

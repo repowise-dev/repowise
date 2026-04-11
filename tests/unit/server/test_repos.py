@@ -127,6 +127,24 @@ async def test_full_resync_duplicate_returns_409(client: AsyncClient) -> None:
         assert resp2.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_delete_repo_success(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.delete(f"/api/repos/{repo['id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+
+    # Verify repo is gone
+    resp = await client.get(f"/api/repos/{repo['id']}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_repo_not_found(client: AsyncClient) -> None:
+    resp = await client.delete("/api/repos/nonexistent")
+    assert resp.status_code == 404
+
 
 @pytest.mark.asyncio
 async def test_export_wiki_not_found(client: AsyncClient) -> None:

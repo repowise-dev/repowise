@@ -217,6 +217,19 @@ class FullTextSearch:
                     {"pid": page_id},
                 )
 
+    async def delete_many(self, page_ids: list[str]) -> None:
+        """Remove multiple pages from the FTS index in a single transaction."""
+        if not page_ids:
+            return
+        if self._dialect == "sqlite":
+            async with self._engine.begin() as conn:
+                for pid in page_ids:
+                    await conn.execute(
+                        text("DELETE FROM page_fts WHERE page_id = :pid"),
+                        {"pid": pid},
+                    )
+        # PostgreSQL: rows deleted via CASCADE automatically remove from GIN index.
+
     async def list_indexed_ids(self) -> set[str]:
         """Return the set of page IDs currently in the FTS index.
 
