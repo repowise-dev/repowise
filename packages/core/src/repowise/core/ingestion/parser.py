@@ -31,7 +31,7 @@ from pathlib import Path
 import structlog
 from tree_sitter import Language, Node, Parser
 
-from .models import FileInfo, Import, ParsedFile, Symbol
+from .models import CallSite, FileInfo, Import, ParsedFile, Symbol
 
 log = structlog.get_logger(__name__)
 
@@ -398,6 +398,7 @@ class ASTParser:
 
         symbols = self._extract_symbols(tree, query, config, file_info, src)
         imports = self._extract_imports(tree, query, config, file_info, src)
+        calls = self._extract_calls(tree, query, config, file_info, src, symbols)
         exports = self._derive_exports(symbols, config, src)
         docstring = _extract_module_docstring(root, src, lang)
 
@@ -406,6 +407,7 @@ class ASTParser:
             symbols=symbols,
             imports=imports,
             exports=exports,
+            calls=calls,
             docstring=docstring,
             parse_errors=parse_errors,
         )
@@ -624,6 +626,84 @@ class ASTParser:
             )
 
         return imports
+
+    # ------------------------------------------------------------------
+    # Call extraction
+    # ------------------------------------------------------------------
+
+    def _extract_calls(
+        self,
+        tree: object,
+        query: object,
+        config: LanguageConfig,
+        file_info: FileInfo,
+        src: str,
+        symbols: list[Symbol],
+    ) -> list[CallSite]:
+        """Extract function/method call sites from the AST.
+
+        Uses @call.target, @call.receiver, and @call.arguments captures
+        defined in the .scm query files. Each call is associated with its
+        enclosing symbol (caller) by checking which symbol's line range
+        contains the call site.
+        """
+        if query is None:
+            return []
+
+        # Build a sorted list of (start_line, end_line, symbol_id) for
+        # fast enclosing-symbol lookup via binary search.
+        symbol_ranges = sorted(
+            [(s.start_line, s.end_line, s.id) for s in symbols],
+            key=lambda t: (t[0], -t[1]),  # start asc, widest span first
+        )
+
+        calls: list[CallSite] = []
+        seen: set[tuple[int, str, str | None]] = set()  # (line, target, receiver) dedup
+
+        for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+            site_nodes = capture_dict.get("call.site", [])
+            target_nodes = capture_dict.get("call.target", [])
+            arg_nodes = capture_dict.get("call.arguments", [])
+            receiver_nodes = capture_dict.get("call.receiver", [])
+
+            if not site_nodes or not target_nodes:
+                continue
+
+            site_node = site_nodes[0]
+            target_name = _node_text(target_nodes[0], src).strip()
+            if not target_name:
+                continue
+
+            line = site_node.start_point[0] + 1  # 1-indexed
+            receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+
+            # Dedup: same line + target + receiver means same call captured
+            # by multiple overlapping query patterns
+            dedup_key = (line, target_name, receiver_name)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            # Count arguments
+            arg_count: int | None = None
+            if arg_nodes:
+                arg_node = arg_nodes[0]
+                arg_count = _count_arguments(arg_node)
+
+            # Find enclosing symbol
+            caller_id = _find_enclosing_symbol(line, symbol_ranges)
+
+            calls.append(
+                CallSite(
+                    target_name=target_name,
+                    receiver_name=receiver_name,
+                    caller_symbol_id=caller_id,
+                    line=line,
+                    argument_count=arg_count,
+                )
+            )
+
+        return calls
 
     # ------------------------------------------------------------------
     # Export derivation
@@ -1009,3 +1089,44 @@ def _build_qualified_name(file_path: str, parent_name: str | None, name: str) ->
     if parent_name:
         return f"{module}.{parent_name}.{name}"
     return f"{module}.{name}"
+
+
+# ---------------------------------------------------------------------------
+# Call extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _count_arguments(arg_node: Node) -> int:
+    """Count the number of arguments in an argument/argument_list node.
+
+    Skips punctuation children (commas, parens) and counts only
+    substantive argument nodes.
+    """
+    _SKIP_TYPES = frozenset({"(", ")", ",", "[", "]"})
+    return sum(1 for child in arg_node.children if child.type not in _SKIP_TYPES)
+
+
+def _find_enclosing_symbol(
+    line: int,
+    symbol_ranges: list[tuple[int, int, str]],
+) -> str | None:
+    """Find the innermost symbol whose line range contains *line*.
+
+    Uses a linear scan on the pre-sorted ranges. For typical file sizes
+    (< 500 symbols) this is faster than bisect due to low constant factor.
+    Returns the tightest (smallest span) enclosing symbol ID, or None if
+    the call is at module level.
+    """
+    best_id: str | None = None
+    best_span = float("inf")
+
+    for start, end, sym_id in symbol_ranges:
+        if start > line:
+            break  # ranges sorted by start_line — no further match possible
+        if start <= line <= end:
+            span = end - start
+            if span < best_span:
+                best_span = span
+                best_id = sym_id
+
+    return best_id

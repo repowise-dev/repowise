@@ -196,6 +196,40 @@ class Import:
 
 
 @dataclass
+class CallSite:
+    """A function or method call extracted from a source file.
+
+    Used by GraphBuilder to create CALLS edges between symbol nodes.
+    """
+
+    target_name: str  # function/method name being called
+    receiver_name: str | None  # object/class for method calls (e.g. "user" in user.save())
+    caller_symbol_id: str | None  # enclosing symbol ID (e.g. "src/app.py::main")
+    line: int  # 1-indexed line number of the call
+    argument_count: int | None  # number of arguments (None if unknown)
+
+
+# ---------------------------------------------------------------------------
+# Edge types used in the symbol-level dependency graph
+# ---------------------------------------------------------------------------
+
+EdgeType = Literal[
+    "imports",
+    "defines",
+    "calls",
+    "has_method",
+    "has_property",
+    "extends",
+    "implements",
+    "method_overrides",
+    "method_implements",
+    "co_changes",
+    "framework",
+    "dynamic",
+]
+
+
+@dataclass
 class ParsedFile:
     """Full result of parsing a single source file."""
 
@@ -203,8 +237,9 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
-    docstring: str | None  # module/file-level docstring
-    parse_errors: list[str]  # non-fatal parser warnings/errors
+    calls: list[CallSite] = field(default_factory=list)
+    docstring: str | None = None  # module/file-level docstring
+    parse_errors: list[str] = field(default_factory=list)  # non-fatal parser warnings/errors
     content_hash: str = ""  # SHA-256 hex of raw file bytes
 
 

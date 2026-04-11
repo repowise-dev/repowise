@@ -1,21 +1,26 @@
 """Dependency graph builder for the repowise ingestion pipeline.
 
-GraphBuilder constructs a directed multigraph from ParsedFile objects.
+GraphBuilder constructs a directed graph from ParsedFile objects with two
+tiers of nodes:
 
-Node types:
-    "file"     — every source file
-    "external" — third-party / unresolvable imports (prefix "external:")
+    File-level nodes:
+        "file"     — every source file
+        "external" — third-party / unresolvable imports (prefix "external:")
 
-Edge attributes:
-    imported_names: list[str] — specific names imported across this edge
+    Symbol-level nodes:
+        "symbol"   — functions, classes, methods, interfaces, etc.
+                     keyed by Symbol.id (e.g. "src/app.py::main")
+
+Edge types:
+    "imports"     — file-to-file import relationship
+    "defines"     — file-to-symbol containment
+    "has_method"  — class-to-method ownership
+    "calls"       — symbol-to-symbol call relationship (with confidence)
 
 After calling build(), graph metrics are available:
     pagerank()                  — dict[path, float]
     strongly_connected_components() — list[frozenset[str]]
     betweenness_centrality()    — dict[path, float]
-
-Graph persistence uses a lightweight SQLite schema (two tables: graph_nodes,
-graph_edges).  Phase 4 will replace this with the full SQLAlchemy schema.
 """
 
 from __future__ import annotations
@@ -132,12 +137,15 @@ class GraphBuilder:
     # ------------------------------------------------------------------
 
     def add_file(self, parsed: ParsedFile) -> None:
-        """Register one parsed file in the graph."""
+        """Register one parsed file and its symbols in the graph."""
         path = parsed.file_info.path
         self._parsed_files[path] = parsed
         self._built = False  # invalidate cached metrics
+
+        # --- File node ---
         self._graph.add_node(
             path,
+            node_type="file",
             language=parsed.file_info.language,
             symbol_count=len(parsed.symbols),
             has_error=bool(parsed.parse_errors),
@@ -145,24 +153,71 @@ class GraphBuilder:
             is_entry_point=parsed.file_info.is_entry_point,
         )
 
+        # --- Symbol nodes ---
+        for sym in parsed.symbols:
+            self._graph.add_node(
+                sym.id,
+                node_type="symbol",
+                kind=sym.kind,
+                name=sym.name,
+                qualified_name=sym.qualified_name,
+                file_path=path,
+                start_line=sym.start_line,
+                end_line=sym.end_line,
+                visibility=sym.visibility,
+                is_async=sym.is_async,
+                language=sym.language,
+                parent_name=sym.parent_name,
+                signature=sym.signature,
+            )
+
+            # DEFINES edge: file → symbol
+            self._graph.add_edge(
+                path,
+                sym.id,
+                edge_type="defines",
+            )
+
+            # HAS_METHOD edge: class/struct → method
+            if sym.parent_name and sym.kind == "method":
+                parent_id = f"{path}::{sym.parent_name}"
+                if parent_id in self._graph:
+                    self._graph.add_edge(
+                        parent_id,
+                        sym.id,
+                        edge_type="has_method",
+                    )
+
     def build(self) -> nx.DiGraph:
-        """Resolve imports and add edges. Returns the finalized graph.
+        """Resolve imports and calls, add edges. Returns the finalized graph.
 
         Idempotent: can be called multiple times; re-resolves edges each time.
+        Preserves symbol nodes and structural edges (defines, has_method)
+        while rebuilding import and call edges.
         """
-        # Clear old edges, keep nodes
-        self._graph.remove_edges_from(list(self._graph.edges()))
+        # Clear import/call edges but keep structural edges (defines, has_method)
+        edges_to_remove = [
+            (u, v)
+            for u, v, d in self._graph.edges(data=True)
+            if d.get("edge_type") not in ("defines", "has_method")
+        ]
+        self._graph.remove_edges_from(edges_to_remove)
 
         # Build lookup tables for import resolution
         path_set = set(self._parsed_files.keys())
         stem_map = self._build_stem_map(path_set)
 
+        # --- Phase 1: Resolve file-level imports ---
+        import_targets: dict[str, set[str]] = {}  # file → set of imported files
+
         for path, parsed in self._parsed_files.items():
+            file_imports: set[str] = set()
             for imp in parsed.imports:
                 target = self._resolve_import(
                     imp.module_path, path, path_set, stem_map, parsed.file_info.language
                 )
                 if target:
+                    file_imports.add(target)
                     # Aggregate imported_names on parallel edges
                     if self._graph.has_edge(path, target):
                         existing = self._graph[path][target].get("imported_names", [])
@@ -172,16 +227,69 @@ class GraphBuilder:
                         self._graph.add_edge(
                             path,
                             target,
+                            edge_type="imports",
                             imported_names=list(imp.imported_names),
                         )
+            import_targets[path] = file_imports
+
+        # --- Phase 2: Resolve symbol-level calls ---
+        self._resolve_calls(import_targets)
 
         self._built = True
+
+        # Count edge types for logging
+        edge_counts: dict[str, int] = {}
+        for _, _, d in self._graph.edges(data=True):
+            et = d.get("edge_type", "imports")
+            edge_counts[et] = edge_counts.get(et, 0) + 1
+
+        file_nodes = sum(
+            1 for _, d in self._graph.nodes(data=True) if d.get("node_type", "file") == "file"
+        )
+        symbol_nodes = sum(
+            1 for _, d in self._graph.nodes(data=True) if d.get("node_type") == "symbol"
+        )
+
         log.info(
             "Graph built",
-            nodes=self._graph.number_of_nodes(),
+            file_nodes=file_nodes,
+            symbol_nodes=symbol_nodes,
             edges=self._graph.number_of_edges(),
+            edge_types=edge_counts,
         )
         return self._graph
+
+    def _resolve_calls(self, import_targets: dict[str, set[str]]) -> None:
+        """Run three-tier call resolution and add CALLS edges to the graph."""
+        from .call_resolver import CallResolver
+
+        resolver = CallResolver(self._parsed_files, import_targets)
+        total_resolved = 0
+
+        for path, parsed in self._parsed_files.items():
+            if not parsed.calls:
+                continue
+
+            resolved = resolver.resolve_file(path, parsed.calls)
+            for rc in resolved:
+                # Only add edge if both nodes exist in graph
+                if rc.caller_id in self._graph and rc.callee_id in self._graph:
+                    # Avoid duplicate call edges between same pair
+                    if not self._graph.has_edge(rc.caller_id, rc.callee_id):
+                        self._graph.add_edge(
+                            rc.caller_id,
+                            rc.callee_id,
+                            edge_type="calls",
+                            confidence=rc.confidence,
+                        )
+                        total_resolved += 1
+                    else:
+                        # Update confidence if this resolution is higher
+                        existing = self._graph[rc.caller_id][rc.callee_id]
+                        if rc.confidence > existing.get("confidence", 0):
+                            existing["confidence"] = rc.confidence
+
+        log.info("Call edges resolved", total=total_resolved)
 
     def graph(self) -> nx.DiGraph:
         """Return the graph (building it first if necessary)."""
@@ -194,15 +302,19 @@ class GraphBuilder:
     # ------------------------------------------------------------------
 
     def strongly_connected_components(self) -> list[frozenset[str]]:
-        """Return SCCs as a list of frozensets. SCCs of size > 1 are circular deps."""
-        return [frozenset(scc) for scc in nx.strongly_connected_components(self.graph())]
+        """Return SCCs as a list of frozensets. SCCs of size > 1 are circular deps.
+
+        Operates on the file-level subgraph only.
+        """
+        return [frozenset(scc) for scc in nx.strongly_connected_components(self.file_subgraph())]
 
     def betweenness_centrality(self) -> dict[str, float]:
-        """Return betweenness centrality. High value → bridge file.
+        """Return betweenness centrality for file nodes. High value → bridge file.
 
         Approximated with k=min(500, n) samples for large graphs.
+        Operates on the file-level subgraph only.
         """
-        g = self.graph()
+        g = self.file_subgraph()
         n = g.number_of_nodes()
         if n == 0:
             return {}
@@ -212,11 +324,11 @@ class GraphBuilder:
         return nx.betweenness_centrality(g, normalized=True)
 
     def community_detection(self) -> dict[str, int]:
-        """Assign a community ID to each node using the Louvain algorithm.
+        """Assign a community ID to each file node using the Louvain algorithm.
 
-        Returns dict[path, community_id].
+        Returns dict[path, community_id]. Operates on file-level subgraph only.
         """
-        g = self.graph()
+        g = self.file_subgraph()
         if g.number_of_nodes() == 0:
             return {}
         try:
@@ -1009,22 +1121,35 @@ class GraphBuilder:
                     count += 1
         return count
 
-    def pagerank(self, alpha: float = 0.85) -> dict[str, float]:
-        """Return PageRank scores for each node.
+    def file_subgraph(self) -> nx.DiGraph:
+        """Return a subgraph containing only file-level nodes and import edges.
 
-        High PageRank → file is imported by many others → high documentation priority.
-        Co-change edges are filtered out before computing PageRank.
+        Used for PageRank, betweenness, and other file-level metrics that
+        should not be affected by symbol-level nodes.
         """
         g = self.graph()
-        if g.number_of_nodes() == 0:
-            return {}
+        file_nodes = [
+            n
+            for n, d in g.nodes(data=True)
+            if d.get("node_type", "file") in ("file", "external")
+        ]
+        sub = g.subgraph(file_nodes).copy()
+        # Remove non-import edges (co_changes, framework, dynamic)
+        edges_to_remove = [
+            (u, v) for u, v, d in sub.edges(data=True) if d.get("edge_type") in ("co_changes",)
+        ]
+        sub.remove_edges_from(edges_to_remove)
+        return sub
 
-        # Create a filtered view excluding co_changes edges
-        filtered = nx.DiGraph()
-        filtered.add_nodes_from(g.nodes(data=True))
-        for u, v, data in g.edges(data=True):
-            if data.get("edge_type") != "co_changes":
-                filtered.add_edge(u, v, **data)
+    def pagerank(self, alpha: float = 0.85) -> dict[str, float]:
+        """Return PageRank scores for file nodes only.
+
+        High PageRank → file is imported by many others → high documentation priority.
+        Operates on the file-level subgraph (excludes symbol nodes and co-change edges).
+        """
+        filtered = self.file_subgraph()
+        if filtered.number_of_nodes() == 0:
+            return {}
 
         try:
             return nx.pagerank(filtered, alpha=alpha)

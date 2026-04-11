@@ -455,16 +455,21 @@ async def batch_upsert_graph_edges(
     """Upsert graph edges for a repository.
 
     Each element of *edges* should have ``source_node_id``, ``target_node_id``,
-    and optionally ``imported_names_json``.
+    ``edge_type``, and optionally ``imported_names_json`` and ``confidence``.
+
+    The unique constraint is (repository_id, source, target, edge_type),
+    allowing multiple edge types between the same pair of nodes.
     """
     for edge_data in edges:
         source = edge_data.get("source_node_id", "")
         target = edge_data.get("target_node_id", "")
+        edge_type = edge_data.get("edge_type", "imports")
         result = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repository_id,
                 GraphEdge.source_node_id == source,
                 GraphEdge.target_node_id == target,
+                GraphEdge.edge_type == edge_type,
             )
         )
         existing = result.scalar_one_or_none()
@@ -473,9 +478,9 @@ async def batch_upsert_graph_edges(
             imported = edge_data.get("imported_names_json")
             if imported is not None:
                 existing.imported_names_json = imported
-            edge_type = edge_data.get("edge_type")
-            if edge_type is not None:
-                existing.edge_type = edge_type
+            confidence = edge_data.get("confidence")
+            if confidence is not None:
+                existing.confidence = confidence
         else:
             session.add(
                 GraphEdge(
@@ -484,7 +489,8 @@ async def batch_upsert_graph_edges(
                     source_node_id=source,
                     target_node_id=target,
                     imported_names_json=edge_data.get("imported_names_json", "[]"),
-                    edge_type=edge_data.get("edge_type", "imports"),
+                    edge_type=edge_type,
+                    confidence=edge_data.get("confidence", 1.0),
                 )
             )
 
