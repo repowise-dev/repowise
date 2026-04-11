@@ -12,16 +12,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Graph query MCP tools** — 4 new tools expose the full graph intelligence to AI coding assistants:
+  - `get_callers_callees` — find who calls a symbol, what it calls, and class hierarchy via `edge_types` parameter (supports `calls`, `extends`, `implements`)
+  - `get_community` — explore architectural communities: members, cohesion score, label, neighboring communities with cross-edge counts
+  - `get_graph_metrics` — PageRank, betweenness centrality, percentile ranks, in/out degree for any file or symbol node
+  - `get_execution_flows` — top scored entry points with BFS call-path traces, cross-community classification
+- **8 read-side graph CRUD functions** — `get_graph_node`, `get_graph_edges_for_node`, `get_graph_nodes_by_ids`, `get_community_members`, `get_all_file_metrics`, `get_cross_community_edges`, `get_top_entry_points`, `get_node_degree_counts`
+- **Entry point score persistence** — execution flow entry point scores stored in `community_meta_json` on symbol graph nodes, enabling fast retrieval without recomputing
+- **Graph query indexes** (migration `0017`) — composite indexes on `(repo, node_type, community)` and `(repo, source/target, edge_type)` for sub-millisecond graph queries
+- **Leiden community detection** — `graspologic.partition.leiden` with automatic fallback to NetworkX Louvain. Two-level: file communities (import/framework edges) and symbol communities (call/heritage edges). Oversized community splitting, cohesion scoring, heuristic labeling.
+- **Execution flow tracing** — 5-signal entry point scoring (fan-out ratio, in-degree, visibility, name pattern, framework hint) with BFS call-path discovery and cross-community classification
+- **Heritage extraction** — class inheritance and interface implementation for 11 languages (Python, TypeScript, JavaScript, Java, Go, Rust, C++, Kotlin, Ruby, C#, C). `HeritageResolver` uses 3-tier resolution with `extends`/`implements` graph edges.
 - **Symbol-level dependency graph** — the `networkx.DiGraph` is now two-tier. `GraphBuilder.add_file()` adds symbol nodes (functions, classes, methods) alongside file nodes and creates `DEFINES` and `HAS_METHOD` edges. `CALLS` edges link call sites to their resolved targets, each carrying a `confidence` score (0.0–1.0).
 - **`CallResolver` module** (`ingestion/call_resolver.py`) — 3-tier call resolution engine. Tier 1: same-file targets (confidence 0.95). Tier 2: import-scoped targets matched via named bindings (0.85–0.93 depending on alias type). Tier 3: global unique match (0.50). Call sites are extracted by tree-sitter for all 7 languages (Python, TypeScript, JavaScript, Go, Rust, Java, C++) using the existing `.scm` query infrastructure.
 - **`CallSite` dataclass** (`ingestion/models.py`) — represents a single call site extracted during AST parsing: caller symbol id, callee name, call line, and source file.
 - **`file_subgraph()` method** (`ingestion/graph.py`) — returns a filtered view of the DiGraph containing only `file` and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, Louvain, dead code in-degree) run on this subgraph to prevent symbol-node cardinality from distorting centrality scores.
-- **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) — tracks `local_name`, `exported_name`, `source_file`, and `is_module_alias` for each import binding. The parser's `_extract_import_bindings()` covers alias forms across all 7 languages: Python (`import X as Y`, `from X import Y as Z`), TypeScript/JavaScript (named aliases, default, namespace), Go (aliased imports), Rust (`use_as_clause`, destructured `use_list`), Java (last-segment inference).
+- **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) — tracks `local_name`, `exported_name`, `source_file`, and `is_module_alias` for each import binding. The parser's `_extract_import_bindings()` covers alias forms across all 7 languages.
 - **`Import.resolved_file`** — populated during `GraphBuilder.build()` using `NamedBinding` data. Barrel files (`__init__.py`, `index.ts`) are followed one hop during resolution to handle re-exports.
-- **Alembic migration `0015_symbol_graph`** — adds `kind` and `confidence` columns to `graph_nodes` and `confidence` column to `graph_edges` to persist symbol metadata and edge confidence scores.
 - **Proactive context enrichment via Claude Code hooks** — `repowise init` now registers PreToolUse and PostToolUse hooks in `~/.claude/settings.json`. PreToolUse enriches every `Grep`/`Glob` call with graph context (importers, dependencies, symbols, git signals) at ~24ms latency. PostToolUse detects git commits and notifies the agent when the wiki is stale.
 - **`repowise augment` CLI command** — hook-driven context enrichment engine. Reads Claude Code hook payloads from stdin, queries local wiki.db, and returns enriched context as JSON. Not meant to be called manually.
 - **`install_claude_code_hooks()`** — idempotent hook registration in `mcp_config.py`. Merges repowise hooks into existing user hooks without clobbering.
+
+### Changed
+- **`get_overview`** now includes `community_summary` — top communities by size with labels and cohesion scores
+- **`get_context`** (compact=False) now includes `community` block per file target with community ID and label
+- **`get_architecture_diagram`** now differentiates edge types in Mermaid diagrams: `calls` → dashed arrows, `extends`/`implements` → inheritance arrows
 
 ---
 

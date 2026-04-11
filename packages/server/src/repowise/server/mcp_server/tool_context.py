@@ -292,6 +292,25 @@ async def _resolve_one_target(
                 importers = res.scalars().all()
                 docs["imported_by"] = [e.source_node_id for e in importers]
 
+                # Community info (compact=False only, ~80 bytes)
+                res = await session.execute(
+                    select(GraphNode).where(
+                        GraphNode.repository_id == repo_id,
+                        GraphNode.node_id == target,
+                    )
+                )
+                gn = res.scalar_one_or_none()
+                if gn and gn.community_id is not None:
+                    _cmeta: dict[str, Any] = {}
+                    try:
+                        _cmeta = json.loads(gn.community_meta_json or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    docs["community"] = {
+                        "id": gn.community_id,
+                        "label": _cmeta.get("label", ""),
+                    }
+
         elif target_type == "module":
             docs["title"] = page.title
             docs["summary"] = page.summary or ""

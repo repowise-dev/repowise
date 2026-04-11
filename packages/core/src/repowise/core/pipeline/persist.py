@@ -65,6 +65,15 @@ async def persist_pipeline_result(
     sc = result.graph_builder.symbol_communities()
     ci = result.graph_builder.community_info()
 
+    # Entry point scores from execution flow analysis
+    ep_scores: dict[str, float] = {}
+    if result.execution_flow_report and getattr(result.execution_flow_report, "flows", None):
+        ep_scores = {
+            f.entry_point_id: f.entry_point_score
+            for f in result.execution_flow_report.flows
+            if hasattr(f, "entry_point_id") and hasattr(f, "entry_point_score")
+        }
+
     nodes = []
     for node_id in graph.nodes:
         data = graph.nodes[node_id]
@@ -97,6 +106,8 @@ async def persist_pipeline_result(
             sym_cid = sc.get(node_id)
             if sym_cid is not None:
                 community_meta = {"symbol_community_id": sym_cid}
+            if node_id in ep_scores:
+                community_meta["entry_point_score"] = ep_scores[node_id]
         node_dict["community_meta_json"] = json.dumps(community_meta)
 
         # Symbol-specific fields

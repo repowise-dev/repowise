@@ -65,7 +65,7 @@ There's a small genre of "token efficiency" benchmarks going around. It would be
 repowise runs once, builds everything, then keeps it in sync on every commit.
 
 ### ◈ Graph Intelligence
-tree-sitter parses every file into symbols. NetworkX builds a two-tier dependency graph — file nodes for module-level relationships and symbol nodes (functions, classes, methods) for fine-grained call resolution. A 3-tier resolver links call sites to their targets with confidence scoring. Import aliases, barrel re-exports, and namespace imports all resolve correctly. PageRank identifies your most central code. Community detection finds logical modules even when your directory structure doesn't reflect them.
+tree-sitter parses every file into symbols. NetworkX builds a two-tier dependency graph — file nodes for module-level relationships and symbol nodes (functions, classes, methods) for fine-grained call resolution. A 3-tier resolver links call sites to their targets with confidence scoring. Import aliases, barrel re-exports, and namespace imports all resolve correctly. Inheritance hierarchies are extracted across 11 languages (extends, implements, trait impls, mixins) and resolved to concrete symbol edges. Leiden community detection identifies logical modules at both file and symbol level — with cohesion scoring and heuristic labeling — even when your directory structure doesn't reflect them. Execution flow tracing discovers call paths from entry points through your codebase, classifying them as intra- or cross-community. PageRank, betweenness centrality, and SCC analysis identify your most central and most coupled code.
 
 ### ◈ Git Intelligence
 500 commits of history turned into signals: hotspot files (high churn × high complexity), ownership percentages per engineer, co-change pairs (files that change together without an import link — hidden coupling), and significant commit messages that explain *why* code evolved.
@@ -453,10 +453,10 @@ repowise reindex                  # rebuild vector store (no LLM calls)
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java | AST parsing, import resolution, dependency graph edges |
-| **Good** | Go · Rust | AST parsing, partial import resolution (`crate::` / module paths) |
-| **Basic** | C · C++ | AST parsing (structs, functions, classes), `#include` resolution with `compile_commands.json` |
-| **Traversal** | Ruby · Kotlin · C# · Swift · Scala · PHP | Files indexed and searchable, but no AST symbol extraction yet |
+| **Full** | Python · TypeScript · JavaScript · Java | AST parsing, import resolution, dependency graph edges, call resolution, heritage extraction |
+| **Good** | Go · Rust · C++ · Kotlin · C# · Ruby | AST parsing, symbol extraction, heritage extraction (extends/implements/trait impls), partial import resolution |
+| **Basic** | C | AST parsing (structs, functions), `#include` resolution with `compile_commands.json` |
+| **Traversal** | Swift · Scala · PHP | Files indexed and searchable, but no AST symbol extraction yet |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · SQL · Terraform | Included in the file tree; special handlers extract endpoints/targets where applicable |
 
 Dart and Elixir are on the roadmap. Adding a new language requires one `.scm` tree-sitter query file and one config entry. No changes to the parser core. PRs welcome. See [Adding a new language](docs/CONTRIBUTING.md#adding-a-new-language).
@@ -469,7 +469,7 @@ Dart and Elixir are on the roadmap. Adding a new language requires one `.scm` tr
 
 **BYOK:** Bring your own Anthropic or OpenAI API key. We never see your LLM calls. Zero data retention via Anthropic's API policy — your code is never used to train any model.
 
-**What is stored:** NetworkX graph (file and symbol relationships), LanceDB embeddings (non-reversible vectors), generated wiki pages, git metadata. Raw source code is processed transiently and never persisted.
+**What is stored:** NetworkX graph (file and symbol relationships, communities, call edges with confidence), LanceDB embeddings (non-reversible vectors), generated wiki pages, git metadata. Raw source code is processed transiently and never persisted.
 
 **Fully offline:** Ollama for LLM + local embedding models = zero external API calls.
 
