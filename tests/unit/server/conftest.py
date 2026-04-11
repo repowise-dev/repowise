@@ -6,6 +6,8 @@ provides an httpx AsyncClient for making requests.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -128,13 +130,25 @@ async def session(session_factory) -> AsyncSession:
         await s.commit()
 
 
-async def create_test_repo(client: AsyncClient) -> dict:
-    """Helper: create a test repository via the API and return its response."""
+async def create_test_repo(client: AsyncClient, tmp_path: Path | None = None) -> dict:
+    """Helper: create a test repository via the API and return its response.
+
+    Uses a real temp directory with a ``.git`` folder to pass server-side
+    path validation (``RepoCreate.validate_local_path``).
+    """
+    import tempfile
+
+    if tmp_path is None:
+        tmp_path = Path(tempfile.mkdtemp())
+    repo_dir = tmp_path / "test-repo"
+    repo_dir.mkdir(exist_ok=True)
+    (repo_dir / ".git").mkdir(exist_ok=True)
+
     resp = await client.post(
         "/api/repos",
         json={
             "name": "test-repo",
-            "local_path": "/tmp/test-repo",
+            "local_path": str(repo_dir),
             "url": "https://github.com/example/test-repo",
         },
     )

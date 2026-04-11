@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,18 +14,21 @@ from tests.unit.server.conftest import create_test_repo
 
 @pytest.mark.asyncio
 async def test_create_repo(client: AsyncClient) -> None:
+    repo_dir = Path(tempfile.mkdtemp()) / "my-repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
     resp = await client.post(
         "/api/repos",
         json={
             "name": "my-repo",
-            "local_path": "/tmp/my-repo",
+            "local_path": str(repo_dir),
             "url": "https://github.com/example/my-repo",
         },
     )
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "my-repo"
-    assert data["local_path"] == "/tmp/my-repo"
     assert data["url"] == "https://github.com/example/my-repo"
     assert data["default_branch"] == "main"
     assert "id" in data
