@@ -89,6 +89,7 @@ class PageResponse(BaseModel):
     confidence: float
     freshness_status: str
     metadata: dict
+    human_notes: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -112,6 +113,7 @@ class PageResponse(BaseModel):
             confidence=obj.confidence,  # type: ignore[attr-defined]
             freshness_status=obj.freshness_status,  # type: ignore[attr-defined]
             metadata=json.loads(obj.metadata_json),  # type: ignore[attr-defined]
+            human_notes=obj.human_notes,  # type: ignore[attr-defined]
             created_at=obj.created_at,  # type: ignore[attr-defined]
             updated_at=obj.updated_at,  # type: ignore[attr-defined]
         )

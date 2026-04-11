@@ -16,7 +16,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 |---------|--------|----------------|
 | `packages/core` | [`packages/core/README.md`](../packages/core/README.md) | Ingestion, generation, persistence, providers — all key classes with code examples |
 | `packages/cli` | [`packages/cli/README.md`](../packages/cli/README.md) | All 10 CLI commands with every flag documented |
-| `packages/server` | [`packages/server/README.md`](../packages/server/README.md) | All REST API endpoints, 10 MCP tools, webhook setup, scheduler jobs |
+| `packages/server` | [`packages/server/README.md`](../packages/server/README.md) | All REST API endpoints, 11 MCP tools, webhook setup, scheduler jobs |
 | `packages/web` | [`packages/web/README.md`](../packages/web/README.md) | Every frontend file with purpose — API client, hooks, components, pages |
 
 ---
@@ -959,9 +959,10 @@ affected files, modules, tags, and evidence commits. Deduplication key:
 
 ### Staleness Tracking
 
-Decisions have a `staleness_score` (0.0 = fresh, 1.0 = very stale) recomputed on every
-`repowise update`. Staleness rises when affected files receive commits after the decision
-was recorded. Decisions with `staleness_score > 0.5` are flagged as stale.
+Decisions have a `staleness_score` (0.0 = fresh, 1.0 = very stale) computed during
+`repowise init` and recomputed on every `repowise update`. Staleness rises when affected
+files receive commits after the decision was recorded. Decisions with `staleness_score > 0.5`
+are flagged as stale.
 
 ### MCP Tools
 
@@ -1008,7 +1009,7 @@ and supports two transports:
 - **stdio** — for Claude Code, Cursor, Cline (add to their MCP config)
 - **SSE** — for web-based MCP clients (served on port 7338)
 
-### Tools (9 total)
+### Tools (11 total)
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|
@@ -1021,6 +1022,9 @@ and supports two transports:
 | `get_dependency_path(from, to)` | Connection path between two files/modules in the dependency graph. | When you need to understand how two things are connected. |
 | `get_dead_code` | Dead/unused code findings sorted by confidence and cleanup impact. | Before cleanup tasks. |
 | `get_architecture_diagram` | Mermaid diagram for repo or specific module. | For documentation or presentation. |
+| `get_answer` | One-call RAG: confidence-gated synthesis with cited answers and question cache. | First call on any code question — collapses search → read → reason. |
+| `get_symbol` | Resolve a qualified symbol id to source body, signature, and docstring. | When the question names a specific class, function, or method. |
+| `annotate_file` | Attach human-authored notes to a wiki page — survives re-indexing. | Adding rationale, known issues, or context the LLM shouldn't overwrite. |
 
 ### Auto-generated Config
 
@@ -1112,7 +1116,7 @@ file, tokens used, estimated cost, estimated time remaining).
 repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
-the user has configured and has access to all 10 MCP tools.
+the user has configured and has access to all 11 MCP tools.
 
 See [`docs/CHAT.md`](CHAT.md) for the full technical reference covering the
 backend agentic loop, SSE streaming protocol, provider abstraction extensions,
@@ -1123,7 +1127,7 @@ database schema, frontend component architecture, and artifact rendering system.
 - **Provider-agnostic** — the chat agent goes through the same provider abstraction
   as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
   `stream_chat()` for streaming + tool use without breaking existing callers.
-- **Tool reuse** — the 10 MCP tools are called directly as Python functions (no
+- **Tool reuse** — the 11 MCP tools are called directly as Python functions (no
   subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
   fed to both the LLM and the executor.
 - **SSE streaming** — `POST /api/repos/{repo_id}/chat/messages` runs the agentic

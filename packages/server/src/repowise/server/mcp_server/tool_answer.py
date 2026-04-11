@@ -510,10 +510,10 @@ async def get_answer(
 ) -> dict:
     """One-call RAG: answer a code question. Always your first call.
 
-    Returns {answer, citations, confidence, fallback_targets}. If
-    confidence=="high" and the answer names concrete files/symbols, cite it
-    directly — do NOT verify by Read. Only fall back to search_codebase +
-    get_context if confidence=="low" or the answer is hedged.
+    Returns {answer, citations, confidence, fallback_targets}. High-confidence
+    answers name concrete files/symbols and can be used with less verification.
+    For medium/low confidence, cross-reference with search_codebase + get_context.
+    Always verify cited file paths exist before acting on them.
 
     Args:
         question: developer question.
@@ -776,14 +776,12 @@ async def get_answer(
         "fallback_targets": fallback_targets,
         "retrieval": hits,
     }
-    # When confidence is high, document what the signal means so the consumer
-    # knows it can cite the answer directly without falling back to Read.
+    # When confidence is high, document the signal strength for the consumer.
     if confidence == "high":
         payload["note"] = (
             "High confidence: top retrieval result clearly dominates "
-            f"(dominance ratio {_ratio:.2f}x). Cite this answer directly; "
-            "no further verification needed unless the question explicitly "
-            "requires checking additional files."
+            f"(dominance ratio {_ratio:.2f}x). This answer is likely accurate, "
+            "but verify cited file paths exist before acting on them."
         )
 
     # Persist to cache. Best-effort: cache failures must NEVER block the

@@ -620,7 +620,9 @@ async def _run_dead_code_analysis(
         if progress:
             progress.on_phase_start("dead_code", None)
 
-        analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+        analyzer = DeadCodeAnalyzer(
+            graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+        )
         report = analyzer.analyze()
 
         if progress:

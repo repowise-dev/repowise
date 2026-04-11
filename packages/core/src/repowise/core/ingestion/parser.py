@@ -246,6 +246,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "function_declaration": "function",
             "method_declaration": "method",
             "type_spec": "struct",  # refined in post-processing
+            "const_spec": "variable",  # const MaxRetries = 3
+            "var_spec": "variable",  # var ErrNotFound = errors.New(...)
         },
         import_node_types=["import_declaration"],
         export_node_types=[],
@@ -264,6 +266,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "const_item": "constant",
             "type_item": "type_alias",
             "mod_item": "module",
+            "macro_definition": "function",  # macro_rules! my_macro { ... }
         },
         import_node_types=["use_declaration"],
         export_node_types=[],
@@ -296,6 +299,11 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "struct_specifier": "struct",
             "enum_specifier": "enum",
             "namespace_definition": "module",
+            "template_declaration": "class",  # template<> class/struct/function
+            "type_definition": "struct",  # typedef struct { ... } Name;
+            "preproc_def": "variable",  # #define MACRO value
+            "preproc_function_def": "function",  # #define MACRO(x) ...
+            "declaration": "function",  # forward declarations
         },
         import_node_types=["preproc_include"],
         export_node_types=[],
@@ -309,6 +317,10 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "function_definition": "function",
             "struct_specifier": "struct",
             "enum_specifier": "enum",
+            "type_definition": "struct",  # typedef struct { ... } Name;
+            "preproc_def": "variable",  # #define MACRO value
+            "preproc_function_def": "function",  # #define MACRO(x) ...
+            "declaration": "function",  # forward declarations
         },
         import_node_types=["preproc_include"],
         export_node_types=[],

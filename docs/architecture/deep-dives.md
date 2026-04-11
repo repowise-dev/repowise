@@ -43,9 +43,9 @@ For each node in the dependency graph:
 
 **Why in_degree alone isn't enough:**
 
-Consider `plugin_auth.py`. Nothing imports it directly because the plugin framework loads it dynamically at runtime via `importlib.import_module()`. The graph doesn't capture dynamic imports because they don't appear in the AST as static import statements.
+Consider `plugin_auth.py`. Nothing imports it directly because the plugin framework loads it dynamically at runtime via `importlib.import_module()`. The graph doesn't capture dynamic imports as edges because they don't appear in the AST as static import statements.
 
-Repowise handles this with multiple layers of filtering:
+Repowise handles this with multiple layers of filtering, including **dynamic import detection** — files in the same package as `importlib.import_module()` or `__import__()` calls automatically get reduced confidence scores:
 
 **Layer 1 — Structural exclusions** (never flagged):
 
@@ -69,12 +69,32 @@ _DEFAULT_DYNAMIC_PATTERNS = (
     "*Handler",      # Event handler registration
     "*Adapter",      # Adapter patterns
     "*Middleware",    # Middleware chains
+    "*Mixin",        # Mixin classes
+    "*Command",      # CLI/management commands
     "register_*",    # Registration functions
     "on_*",          # Event callbacks
+    "*_view",        # Django/Flask views
+    "*_endpoint",    # API endpoints
+    "*_route",       # Route handlers
+    "*_callback",    # Callback functions
+    "*_signal",      # Signal handlers
+    "*_task",        # Background tasks
 )
 ```
 
 Files matching these patterns aren't marked `safe_to_delete` even if confidence is high, because they're likely loaded dynamically.
+
+**Layer 2b — Framework decorator awareness:**
+
+Functions decorated with framework-specific route/endpoint decorators are never flagged as dead code:
+
+- Flask: `@app.route`, `@blueprint.route`, `@app.before_request`, `@app.errorhandler`, etc.
+- FastAPI: `@app.get`, `@app.post`, `@router.get`, `@app.on_event`, `@app.middleware`, etc.
+- Django: `@admin.register`, `@receiver`, `@login_required`, etc.
+
+**Layer 2c — Dynamic import detection:**
+
+Files in the same package as `importlib.import_module()` or `__import__()` calls automatically receive a reduced confidence score (capped at 0.4), since they may be loaded dynamically at runtime.
 
 **Layer 3 — Confidence scoring with git metadata:**
 

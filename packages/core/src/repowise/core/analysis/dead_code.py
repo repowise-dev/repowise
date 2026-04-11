@@ -98,8 +98,26 @@ _NEVER_FLAG_PATTERNS = (
     "*vitest.config.*",
 )
 
-# Decorator patterns that indicate framework usage
-_FRAMEWORK_DECORATORS = ("pytest.fixture", "pytest.mark")
+# Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
+_FRAMEWORK_DECORATORS = (
+    "pytest.fixture",
+    "pytest.mark",
+    # Flask
+    "app.route",
+    "blueprint.route",
+    "bp.route",
+    # FastAPI
+    "router.get",
+    "router.post",
+    "router.put",
+    "router.delete",
+    "router.patch",
+    "app.get",
+    "app.post",
+    # Django
+    "admin.register",
+    "receiver",
+)
 
 # Default dynamic patterns (plugins, handlers, etc.)
 _DEFAULT_DYNAMIC_PATTERNS = (
@@ -107,8 +125,17 @@ _DEFAULT_DYNAMIC_PATTERNS = (
     "*Handler",
     "*Adapter",
     "*Middleware",
+    "*Mixin",
+    "*Command",
     "register_*",
     "on_*",
+    # Common route/view patterns
+    "*_view",
+    "*_endpoint",
+    "*_route",
+    "*_callback",
+    "*_signal",
+    "*_task",
 )
 
 # Path segments that indicate test fixture / sample data directories.
@@ -141,13 +168,47 @@ class DeadCodeAnalyzer:
     All analysis is graph traversal + SQL. No LLM calls.
     """
 
+    # Patterns in source that indicate dynamic/runtime imports.
+    _DYNAMIC_IMPORT_MARKERS = (
+        "importlib.import_module",
+        "__import__(",
+        "importlib.reload",
+        "pkgutil.iter_modules",
+    )
+
     def __init__(
         self,
         graph: Any,  # nx.DiGraph
         git_meta_map: dict | None = None,
+        parsed_files: dict | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
+        self._dynamic_import_files = self._find_dynamic_import_files(parsed_files or {})
+
+    @classmethod
+    def _find_dynamic_import_files(cls, parsed_files: dict) -> set[str]:
+        """Return set of file paths that contain dynamic import calls.
+
+        When a repo uses ``importlib.import_module`` or ``__import__``,
+        unreachable modules in the same package may be loaded at runtime.
+        We use this to lower confidence on those findings.
+        """
+        result: set[str] = set()
+        for path, pf in parsed_files.items():
+            try:
+                abs_path = getattr(pf, "file_info", None)
+                if abs_path is None:
+                    continue
+                src_path = Path(abs_path.abs_path)
+                if src_path.suffix != ".py":
+                    continue
+                source = src_path.read_text(errors="ignore")
+                if any(marker in source for marker in cls._DYNAMIC_IMPORT_MARKERS):
+                    result.add(path)
+            except Exception:
+                continue
+        return result
 
     def analyze(self, config: dict | None = None) -> DeadCodeReport:
         """Full analysis. Returns report with all findings."""
@@ -300,6 +361,15 @@ class DeadCodeAnalyzer:
         else:
             confidence = 0.4
 
+        # Reduce confidence when dynamic imports exist in the same package —
+        # importlib.import_module / __import__ may load this file at runtime.
+        if self._dynamic_import_files:
+            node_pkg = str(Path(node).parent)
+            for dif in self._dynamic_import_files:
+                if str(Path(dif).parent) == node_pkg:
+                    confidence = min(confidence, 0.4)
+                    break
+
         # safe_to_delete only if confidence >= 0.7 AND not matching dynamic patterns
         safe = confidence >= 0.7
         if safe and self._matches_dynamic_patterns(node, dynamic_patterns):
@@ -308,6 +378,8 @@ class DeadCodeAnalyzer:
         evidence = ["in_degree=0 (no files import this)"]
         if commit_90d == 0:
             evidence.append("No commits in last 90 days")
+        if self._dynamic_import_files and confidence <= 0.4:
+            evidence.append("Package uses dynamic imports (importlib/__import__)")
 
         return DeadCodeFindingData(
             kind=DeadCodeKind.UNREACHABLE_FILE,

@@ -121,6 +121,7 @@ class GraphBuilder:
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
         self._compile_commands_cache: dict[str, dict] | None = None
         self._tsconfig_resolver: Any | None = None  # TsconfigResolver (lazy import)
+        self._go_module_path: str | None = self._read_go_module_path()
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -538,9 +539,7 @@ class GraphBuilder:
 
         # --- Go ---
         if language == "go":
-            # Last segment of the import path is the package name
-            stem = module_path.rsplit("/", 1)[-1].lower()
-            return self._stem_lookup(stem_map, stem)
+            return self._resolve_go_import(module_path, path_set, stem_map)
 
         # --- C / C++ ---
         if language in ("cpp", "c"):
@@ -567,9 +566,189 @@ class GraphBuilder:
             stem = Path(module_path).stem.lower()
             return self._stem_lookup(stem_map, stem)
 
+        # --- Rust ---
+        if language == "rust":
+            return self._resolve_rust_import(module_path, importer_path, path_set, stem_map)
+
         # --- Generic fallback: stem matching ---
         stem = Path(module_path).stem.lower()
         return self._stem_lookup(stem_map, stem)
+
+    # ------------------------------------------------------------------
+    # Go module resolution
+    # ------------------------------------------------------------------
+
+    def _read_go_module_path(self) -> str | None:
+        """Read the ``module`` directive from ``go.mod``, if present."""
+        if self._repo_path is None:
+            return None
+        go_mod = self._repo_path / "go.mod"
+        if not go_mod.is_file():
+            return None
+        try:
+            for line in go_mod.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line.startswith("module "):
+                    return line.split(None, 1)[1].strip()
+        except Exception:
+            pass
+        return None
+
+    def _resolve_go_import(
+        self,
+        module_path: str,
+        path_set: set[str],
+        stem_map: dict[str, str],
+    ) -> str | None:
+        """Resolve a Go import path.
+
+        If ``go.mod`` declares ``module github.com/org/repo``, then an
+        import ``github.com/org/repo/pkg/util`` maps to ``pkg/util/*.go``
+        in the repository.  Unmatched imports are classified as external.
+        """
+        # If we know the module path and the import starts with it,
+        # strip the prefix to get the repo-relative package dir.
+        if self._go_module_path and module_path.startswith(self._go_module_path):
+            suffix = module_path[len(self._go_module_path) :]
+            rel_dir = suffix.lstrip("/")
+            # Find any Go file in that directory
+            for p in path_set:
+                if p.endswith(".go"):
+                    p_dir = str(Path(p).parent.as_posix())
+                    if p_dir == rel_dir or p_dir.endswith(f"/{rel_dir}"):
+                        return p
+            # Try stem matching as fallback for the package name
+            pkg_name = rel_dir.rsplit("/", 1)[-1].lower() if rel_dir else ""
+            if pkg_name:
+                result = self._stem_lookup(stem_map, pkg_name)
+                if result:
+                    return result
+
+        # No go.mod match — fall back to stem matching on the last segment
+        stem = module_path.rsplit("/", 1)[-1].lower()
+        result = self._stem_lookup(stem_map, stem)
+        if result:
+            return result
+
+        # External package
+        external_key = f"external:{module_path}"
+        if external_key not in self._graph.nodes:
+            self._graph.add_node(
+                external_key, language="external", symbol_count=0, has_error=False
+            )
+        return external_key
+
+    # ------------------------------------------------------------------
+    # Rust import resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_rust_import(
+        self,
+        module_path: str,
+        importer_path: str,
+        path_set: set[str],
+        stem_map: dict[str, str],
+    ) -> str | None:
+        """Resolve a Rust ``use`` path to a repo-relative file.
+
+        Handles ``crate::``, ``self::``, ``super::`` prefixes by mapping
+        them to filesystem paths, then probing for ``<name>.rs`` or
+        ``<name>/mod.rs``.  External crates are classified as ``external:``
+        nodes.
+        """
+        parts = module_path.split("::")
+        if not parts:
+            return None
+
+        prefix = parts[0]
+
+        # --- crate:: — resolve from the crate root ---
+        if prefix == "crate":
+            crate_root = self._find_rust_crate_root(importer_path)
+            return self._probe_rust_path(crate_root, parts[1:], path_set)
+
+        # --- self:: — resolve from the current module's directory ---
+        if prefix == "self":
+            importer_dir = str(Path(importer_path).parent.as_posix())
+            return self._probe_rust_path(importer_dir, parts[1:], path_set)
+
+        # --- super:: — resolve from the parent directory ---
+        if prefix == "super":
+            parent_dir = str(Path(importer_path).parent.parent.as_posix())
+            return self._probe_rust_path(parent_dir, parts[1:], path_set)
+
+        # --- External crate (no prefix or unknown crate name) ---
+        # Check if it might be a local module at the crate root first
+        crate_root = self._find_rust_crate_root(importer_path)
+        resolved = self._probe_rust_path(crate_root, parts, path_set)
+        if resolved is not None:
+            return resolved
+
+        # External crate
+        external_key = f"external:{module_path}"
+        if external_key not in self._graph.nodes:
+            self._graph.add_node(
+                external_key, language="external", symbol_count=0, has_error=False
+            )
+        return external_key
+
+    def _find_rust_crate_root(self, importer_path: str) -> str:
+        """Find the ``src/`` directory containing the importer (Rust crate root).
+
+        Walks up from the importer looking for ``lib.rs`` or ``main.rs``
+        siblings, returning the directory containing them.  Falls back
+        to the nearest ``src/`` directory.
+        """
+        parts = Path(importer_path).parts
+        for i in range(len(parts) - 1, -1, -1):
+            candidate_dir = Path(*parts[:i]) if i > 0 else Path(".")
+            for root_file in ("lib.rs", "main.rs"):
+                root_path = (candidate_dir / root_file).as_posix()
+                if root_path in self._parsed_files:
+                    return candidate_dir.as_posix()
+            if parts[i] == "src" and i > 0:
+                return candidate_dir.as_posix()
+        return Path(importer_path).parent.as_posix()
+
+    @staticmethod
+    def _probe_rust_path(
+        base_dir: str,
+        path_parts: list[str],
+        path_set: set[str],
+    ) -> str | None:
+        """Probe the file system for a Rust module path.
+
+        For ``[\"models\", \"Calculator\"]`` from base ``src/``, tries:
+        - ``src/models.rs`` (module file)
+        - ``src/models/mod.rs`` (directory module)
+        Then recurses into deeper segments.  The last segment is often
+        a symbol name (struct/fn), so we try without it too.
+        """
+        if not path_parts:
+            return None
+
+        base = Path(base_dir)
+
+        # Try progressively deeper path segments — the last N segments
+        # may be symbol names rather than module names.
+        for depth in range(len(path_parts), 0, -1):
+            module_parts = path_parts[:depth]
+            # Build the path: base / part1 / part2 / ... / partN-1
+            module_dir = base
+            for p in module_parts[:-1]:
+                module_dir = module_dir / p
+
+            last = module_parts[-1]
+            # Try <dir>/<last>.rs
+            candidate = (module_dir / f"{last}.rs").as_posix()
+            if candidate in path_set:
+                return candidate
+            # Try <dir>/<last>/mod.rs
+            candidate = (module_dir / last / "mod.rs").as_posix()
+            if candidate in path_set:
+                return candidate
+
+        return None
 
     # ------------------------------------------------------------------
     # Co-change edges (Phase 5.5)

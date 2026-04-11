@@ -26,6 +26,16 @@
   name: (type_identifier) @symbol.name
 ) @symbol.def
 
+; Package-level const: const MaxRetries = 3
+(const_spec
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; Package-level var: var ErrNotFound = errors.New("not found")
+(var_spec
+  name: (identifier) @symbol.name
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports
 ; ---------------------------------------------------------------------------

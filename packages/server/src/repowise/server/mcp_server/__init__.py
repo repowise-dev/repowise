@@ -27,6 +27,7 @@ from repowise.server.mcp_server._server import (
     mcp,
     run_mcp,
 )
+from repowise.server.mcp_server.tool_annotate import annotate_file
 from repowise.server.mcp_server.tool_answer import get_answer
 from repowise.server.mcp_server.tool_context import get_context
 from repowise.server.mcp_server.tool_dead_code import get_dead_code

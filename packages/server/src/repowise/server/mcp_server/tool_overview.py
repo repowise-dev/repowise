@@ -58,7 +58,7 @@ async def get_overview(repo: str | None = None) -> dict:
             )
             .order_by(Page.title)
         )
-        module_pages = result.scalars().all()
+        module_pages = result.scalars().all()[:20]  # Cap to keep response bounded
 
         # Get entry point files from graph nodes (exclude tests & fixtures)
         result = await session.execute(
@@ -148,7 +148,7 @@ async def get_overview(repo: str | None = None) -> dict:
                 g.file_path
                 for g in all_git
                 if (g.primary_owner_commit_pct or 0.0) > 0.8
-            ]
+            ][:30]  # Cap to keep response size bounded
 
             # onboarding_targets: high-centrality files with least docs
             # pagerank from graph_nodes; doc length from wiki_pages
@@ -206,7 +206,7 @@ async def get_overview(repo: str | None = None) -> dict:
                 }
                 for p in module_pages
             ],
-            "entry_points": [n.node_id for n in entry_nodes],
+            "entry_points": [n.node_id for n in entry_nodes[:15]],
             "git_health": git_health,
             "knowledge_map": knowledge_map,
         }

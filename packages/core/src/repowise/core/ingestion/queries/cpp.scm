@@ -47,6 +47,61 @@
   name: (namespace_identifier) @symbol.name
 ) @symbol.def
 
+; Template class: template<typename T> class Foo { ... }
+(template_declaration
+  (class_specifier
+    name: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; Template struct: template<typename T> struct Bar { ... }
+(template_declaration
+  (struct_specifier
+    name: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; Template function: template<typename T> T func(T x) { ... }
+(template_declaration
+  (function_definition
+    declarator: (function_declarator
+      declarator: (identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    )
+  )
+) @symbol.def
+
+; typedef struct { ... } MyType;
+(type_definition
+  type: (struct_specifier)
+  declarator: (type_identifier) @symbol.name
+) @symbol.def
+
+; typedef enum { ... } MyEnum;
+(type_definition
+  type: (enum_specifier)
+  declarator: (type_identifier) @symbol.name
+) @symbol.def
+
+; #define MACRO_NAME ...
+(preproc_def
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; #define FUNC_MACRO(x) ...
+(preproc_function_def
+  name: (identifier) @symbol.name
+  parameters: (preproc_params) @symbol.params
+) @symbol.def
+
+; Forward declarations: void func(int x);
+(declaration
+  declarator: (function_declarator
+    declarator: (identifier) @symbol.name
+    parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports (#include directives)
 ; ---------------------------------------------------------------------------

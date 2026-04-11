@@ -41,6 +41,11 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; macro_rules! my_macro { ... }
+(macro_definition
+  name: (identifier) @symbol.name
+) @symbol.def
+
 ; pub visibility modifier
 (function_item
   (visibility_modifier) @symbol.modifiers

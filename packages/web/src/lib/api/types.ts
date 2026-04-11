@@ -59,6 +59,7 @@ export interface PageResponse {
   confidence: number;
   freshness_status: string;
   metadata: Record<string, unknown>;
+  human_notes: string | null;
   created_at: string;
   updated_at: string;
 }

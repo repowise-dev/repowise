@@ -44,6 +44,7 @@ class DecisionSummary:
 class EditorFileData:
     repo_name: str
     indexed_at: str  # date only: "2026-03-28"
+    indexed_commit: str  # short SHA of HEAD at index time, e.g. "a1b2c3d"
     architecture_summary: str  # 2-4 sentences from repo_overview page
     key_modules: list[KeyModule] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)

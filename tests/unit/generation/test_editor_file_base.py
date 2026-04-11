@@ -23,6 +23,7 @@ def _minimal_data() -> EditorFileData:
     return EditorFileData(
         repo_name="test-repo",
         indexed_at="2026-03-28",
+        indexed_commit="a1b2c3d",
         architecture_summary="A test repo.",
     )
 

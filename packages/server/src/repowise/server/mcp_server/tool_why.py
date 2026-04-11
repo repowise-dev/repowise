@@ -387,7 +387,7 @@ async def _git_archaeology_fallback(
             }
             for c in commits
         ]
-    result["file_commits"] = file_commits
+    result["file_commits"] = file_commits[:10]  # Cap to keep response bounded
 
     # --- Layer 2: Cross-file search — other files' commits mentioning this file ---
     basename = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path

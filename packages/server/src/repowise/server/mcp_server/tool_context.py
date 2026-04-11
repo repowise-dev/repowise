@@ -220,6 +220,8 @@ async def _resolve_one_target(
                 docs["summary"] = page.summary or ""
                 if want_full_doc:
                     docs["content_md"] = page.content
+                if page.human_notes:
+                    docs["human_notes"] = page.human_notes
             # Symbols in this file
             res = await session.execute(
                 select(WikiSymbol).where(
@@ -681,11 +683,12 @@ async def get_context(
         compact: default True (signatures only). False adds structure+imports+docstrings.
         repo: usually omitted.
     """
-    # Default to docs-only when include is omitted. The other blocks
-    # (ownership/last_change/decisions/freshness) are 200–500 bytes each and
-    # bloat every subsequent agent turn via cache replay. Callers that want
-    # them must pass include explicitly.
-    include_set = set(include) if include else {"docs"}
+    # Default to docs + freshness when include is omitted. Freshness is
+    # critical for the agent to detect stale index data.  The other blocks
+    # (ownership/last_change/decisions) are 200–500 bytes each and bloat
+    # every subsequent agent turn via cache replay. Callers that want them
+    # must pass include explicitly.
+    include_set = set(include) if include else {"docs", "freshness"}
 
     import time as _time
     _t0 = _time.perf_counter()

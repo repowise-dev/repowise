@@ -3,7 +3,7 @@
 <img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
 **Codebase intelligence for AI-assisted engineering teams.**
 
-Four intelligence layers. Ten MCP tools. One `pip install`.
+Four intelligence layers. Eleven MCP tools. One `pip install`.
 
 [![PyPI version](https://img.shields.io/pypi/v/repowise?color=F59520&labelColor=0A0A0A)](https://pypi.org/project/repowise/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
@@ -23,7 +23,7 @@ Four intelligence layers. Ten MCP tools. One `pip install`.
 
 Your AI coding agent reads files. It does not know who owns them, which ones change together, which ones are dead, or why they were built the way they were. It has the source code and zero institutional knowledge.
 
-repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through ten precisely designed tools. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
+repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through eleven precisely designed tools. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
 
 The result: your agent answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
@@ -115,7 +115,7 @@ Add to your Claude Code config (optional, `repowise init` already initializes `.
 
 ---
 
-## Ten MCP tools
+## Eleven MCP tools
 
 Most tools are designed around data entities — one module, one file, one symbol — which forces AI agents into long chains of sequential calls. repowise tools are designed around **tasks**. Pass multiple targets in one call. Get complete context back.
 
@@ -131,6 +131,7 @@ Most tools are designed around data entities — one module, one file, one symbo
 | `get_dependency_path(from, to)` | Connection path between two files, modules, or symbols | When tracing how two things are connected |
 | `get_dead_code(min_confidence?, include_internals?, include_zombie_packages?)` | Unreachable code sorted by confidence and cleanup impact | Cleanup tasks |
 | `get_architecture_diagram(module?)` | Mermaid diagram for the repo or a specific module | Documentation and presentation |
+| `annotate_file(target, notes)` | Attach human-authored notes to a wiki page — survives re-indexing | Adding rationale, known issues, or context that the LLM shouldn't overwrite |
 
 ### Tool call comparison — a real task
 
@@ -274,7 +275,7 @@ repowise dead-code
   ✗ analytics/v1/tracker.ts         file      0.41   recent activity — review first
 ```
 
-Conservative by design. `safe_to_delete` requires confidence ≥ 0.70 and excludes dynamically-loaded patterns (`*Plugin`, `*Handler`, `*Adapter`, `*Middleware`). repowise surfaces candidates. Engineers decide.
+Conservative by design. `safe_to_delete` requires confidence ≥ 0.70 and excludes dynamically-loaded patterns (`*Plugin`, `*Handler`, `*Adapter`, `*Middleware`). Dynamic import detection (`importlib.import_module()`, `__import__()`) and framework decorator awareness (Flask/FastAPI/Django routes) further reduce false positives. repowise surfaces candidates. Engineers decide.
 
 ---
 
@@ -317,7 +318,7 @@ When a senior engineer leaves, the "why" usually leaves with them. Decision inte
 | Git intelligence (hotspots, ownership, co-changes) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
-| MCP server for AI agents | ✅ 10 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
+| MCP server for AI agents | ✅ 11 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Doc freshness scoring | ✅ | ❌ | ❌ | ⚠️ staleness only | ❌ |
 | Incremental updates on commit | ✅ <30s | ✅ | ❌ | ✅ | ✅ |
@@ -395,6 +396,7 @@ repowise generate-claude-md       # regenerate CLAUDE.md
 
 # Utilities
 repowise export [PATH]            # export wiki as markdown files
+repowise export --full --format json  # full export with decisions, dead code, hotspots
 repowise doctor                   # check setup, API keys, store drift
 repowise doctor --repair          # check and fix detected store mismatches
 repowise reindex                  # rebuild vector store (no LLM calls)
@@ -404,13 +406,15 @@ repowise reindex                  # rebuild vector store (no LLM calls)
 
 ## Supported languages
 
-**Code:** Python · TypeScript · JavaScript · Go · Rust · Java · C · C++ · Ruby · Kotlin
+| Tier | Languages | What works |
+|------|-----------|------------|
+| **Full** | Python · TypeScript · JavaScript · Java | AST parsing, import resolution, dependency graph edges |
+| **Good** | Go · Rust | AST parsing, partial import resolution (`crate::` / module paths) |
+| **Basic** | C · C++ | AST parsing (structs, functions, classes), `#include` resolution with `compile_commands.json` |
+| **Traversal** | Ruby · Kotlin · C# · Swift · Scala · PHP | Files indexed and searchable, but no AST symbol extraction yet |
+| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · SQL · Terraform | Included in the file tree; special handlers extract endpoints/targets where applicable |
 
-**Config / contracts:** OpenAPI · Protobuf · GraphQL · Dockerfile · GitHub Actions YAML · Makefile
-
-More languages coming soon — Swift, Scala, PHP, Dart, and Elixir are on the roadmap.
-
-Adding a new language requires one `.scm` tree-sitter query file and one config entry. No changes to the parser. PRs welcome. See [Adding a new language](docs/CONTRIBUTING.md#adding-a-new-language).
+Dart and Elixir are on the roadmap. Adding a new language requires one `.scm` tree-sitter query file and one config entry. No changes to the parser core. PRs welcome. See [Adding a new language](docs/CONTRIBUTING.md#adding-a-new-language).
 
 ---
 

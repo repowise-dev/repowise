@@ -118,6 +118,8 @@ class Page(Base):
     freshness_status: Mapped[str] = mapped_column(String(32), nullable=False, default="fresh")
     # JSON-encoded dict (metadata is a reserved SQLAlchemy attribute name)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # Developer-authored notes that survive LLM re-generation.
+    human_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

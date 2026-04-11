@@ -47,6 +47,7 @@ async def persist_pipeline_result(
     )
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
+        recompute_decision_staleness,
         save_dead_code_findings,
         upsert_git_metadata_bulk,
     )
@@ -142,6 +143,23 @@ async def persist_pipeline_result(
             repo_id,
             [dataclasses.asdict(d) for d in result.decision_report.decisions],
         )
+        # Recompute staleness scores using git metadata.
+        if result.git_metadata_list:
+            try:
+                git_meta_map: dict[str, dict] = {}
+                for gm in result.git_metadata_list:
+                    gm_dict = gm if isinstance(gm, dict) else dataclasses.asdict(gm)
+                    fp = gm_dict.get("file_path", "")
+                    if fp:
+                        git_meta_map[fp] = gm_dict
+                if git_meta_map:
+                    updated = await recompute_decision_staleness(
+                        session, repo_id, git_meta_map
+                    )
+                    if updated:
+                        logger.info("decision_staleness_recomputed", updated=updated)
+            except Exception as _stale_err:
+                logger.debug("staleness_scoring_skipped", error=str(_stale_err))
 
     logger.info(
         "pipeline_result_persisted",

@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
 import { CoChangeList } from "@/components/git/co-change-list";
-import { Hash, Cpu } from "lucide-react";
+import { Hash, Cpu, StickyNote } from "lucide-react";
 
 interface Props {
   params: Promise<{ id: string; slug: string[] }>;
@@ -100,6 +100,20 @@ export default async function WikiPageRoute({ params }: Props) {
           <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-4 break-words">
             {page.title}
           </h1>
+
+          {page.human_notes && (
+            <div className="mb-5 rounded-lg border border-[var(--color-border-accent)] bg-[var(--color-accent-blue)]/5 px-4 py-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <StickyNote className="h-3.5 w-3.5 text-[var(--color-accent-blue)]" />
+                <span className="text-xs font-medium text-[var(--color-accent-blue)] uppercase tracking-wider">
+                  Human Notes
+                </span>
+              </div>
+              <p className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap leading-relaxed">
+                {page.human_notes}
+              </p>
+            </div>
+          )}
 
           <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
             <WikiRenderer content={page.content} />

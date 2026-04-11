@@ -720,3 +720,158 @@ class TestCppCompileCommandsResolution:
         b.add_file(_cpp("src/main.cpp", imports=[_cinclude("bar.hpp")]))
         b.build()
         assert b.graph().has_edge("src/main.cpp", "include/bar.hpp")
+
+
+# ---------------------------------------------------------------------------
+# Rust import resolution
+# ---------------------------------------------------------------------------
+
+
+class TestRustImports:
+    def test_crate_import_resolves_to_file(self) -> None:
+        """use crate::models::Calculator -> src/models.rs"""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/models.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/main.rs",
+                language="rust",
+                imports=[_imp("crate::models::Calculator")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/main.rs", "src/models.rs")
+
+    def test_crate_import_resolves_to_mod_rs(self) -> None:
+        """use crate::utils -> src/utils/mod.rs when src/utils.rs doesn't exist."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/utils/mod.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/main.rs",
+                language="rust",
+                imports=[_imp("crate::utils")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/main.rs", "src/utils/mod.rs")
+
+    def test_super_import(self) -> None:
+        """use super::sibling -> resolves to parent dir's sibling.rs."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/sibling.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/sub/child.rs",
+                language="rust",
+                imports=[_imp("super::sibling")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/sub/child.rs", "src/sibling.rs")
+
+    def test_self_import(self) -> None:
+        """use self::helper -> resolves to current dir's helper.rs."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/utils/helper.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/utils/mod.rs",
+                language="rust",
+                imports=[_imp("self::helper")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/utils/mod.rs", "src/utils/helper.rs")
+
+    def test_external_crate(self) -> None:
+        """use serde::Deserialize -> external:serde::Deserialize."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/main.rs",
+                language="rust",
+                imports=[_imp("serde::Deserialize")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert any(n.startswith("external:") for n in g.nodes)
+
+    def test_nested_crate_import(self) -> None:
+        """use crate::api::handlers::auth -> src/api/handlers/auth.rs."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/api/handlers/auth.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/main.rs",
+                language="rust",
+                imports=[_imp("crate::api::handlers::auth")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/main.rs", "src/api/handlers/auth.rs")
+
+
+# ---------------------------------------------------------------------------
+# Go import resolution with go.mod
+# ---------------------------------------------------------------------------
+
+
+class TestGoImports:
+    def test_go_mod_resolves_local_import(self, tmp_path: Path) -> None:
+        """go.mod module path enables resolving internal package imports."""
+        (tmp_path / "go.mod").write_text("module github.com/org/myapp\n\ngo 1.21\n")
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_parsed("pkg/util/util.go", language="go"))
+        b.add_file(
+            _parsed(
+                "cmd/main.go",
+                language="go",
+                imports=[_imp("github.com/org/myapp/pkg/util")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("cmd/main.go", "pkg/util/util.go")
+
+    def test_go_external_package(self, tmp_path: Path) -> None:
+        """Imports not matching go.mod module path become external: nodes."""
+        (tmp_path / "go.mod").write_text("module github.com/org/myapp\n\ngo 1.21\n")
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(
+            _parsed(
+                "main.go",
+                language="go",
+                imports=[_imp("github.com/gin-gonic/gin")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert any(n.startswith("external:") for n in g.nodes)
+
+    def test_go_no_go_mod_falls_back_to_stem(self) -> None:
+        """Without go.mod, Go resolution falls back to stem matching."""
+        b = GraphBuilder()
+        b.add_file(_parsed("calculator/calculator.go", language="go"))
+        b.add_file(
+            _parsed(
+                "main.go",
+                language="go",
+                imports=[_imp("github.com/example/app/calculator")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("main.go", "calculator/calculator.go")

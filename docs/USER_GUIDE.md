@@ -315,7 +315,7 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `--transport` | Protocol: `stdio` (default, for editors) or `sse` (for web clients) |
 | `--port` | Port for SSE transport (default: 7338) |
 
-**MCP tools exposed (10 tools):**
+**MCP tools exposed (11 tools):**
 
 | Tool | What it does |
 |------|-------------|
@@ -329,6 +329,7 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `get_dependency_path` | Find how two modules connect through the dependency graph |
 | `get_dead_code` | Tiered dead code report grouped by confidence |
 | `get_architecture_diagram` | Mermaid diagram with optional churn heat map |
+| `annotate_file` | Attach human-authored notes to a wiki page — survives re-indexing |
 
 See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions.
 
@@ -485,6 +486,7 @@ repowise export [PATH]
 |------|-------------|
 | `--format` | `markdown` (default), `html`, `json` |
 | `--output / -o` | Output directory (default: `.repowise/export`) |
+| `--full` | Include decisions, dead code findings, hotspots, and provenance metadata (JSON format only) |
 
 **Examples:**
 

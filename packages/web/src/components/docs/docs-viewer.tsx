@@ -9,6 +9,7 @@ import {
   Hash,
   ExternalLink,
   Download,
+  StickyNote,
   ArrowRight,
   RefreshCw,
   Loader2,
@@ -128,6 +129,21 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
               {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
             </span>
           </div>
+
+          {/* Human notes */}
+          {page.human_notes && (
+            <div className="mb-4 rounded-lg border border-[var(--color-border-accent)] bg-[var(--color-accent-blue)]/5 px-4 py-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <StickyNote className="h-3.5 w-3.5 text-[var(--color-accent-blue)]" />
+                <span className="text-xs font-medium text-[var(--color-accent-blue)] uppercase tracking-wider">
+                  Human Notes
+                </span>
+              </div>
+              <p className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap leading-relaxed">
+                {page.human_notes}
+              </p>
+            </div>
+          )}
 
           {/* Markdown content */}
           <article className="prose-chat">
