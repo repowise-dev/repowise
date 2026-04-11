@@ -121,6 +121,36 @@ def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     return None
 
 
+def callers_hint(caller_count: int, callee_count: int) -> str | None:
+    """Hint for `get_callers_callees` callers."""
+    if caller_count + callee_count == 0:
+        return "No call edges found — this symbol may be unused or only called dynamically."
+    if caller_count > 10:
+        return "Many callers — use get_risk to assess change impact."
+    return "Use get_symbol(symbol_id) to read the source of any caller/callee."
+
+
+def community_hint(neighbor_count: int) -> str | None:
+    """Hint for `get_community` callers."""
+    if neighbor_count > 3:
+        return "This community has many cross-boundary connections — refactoring may have wide impact."
+    return None
+
+
+def metrics_hint(node_type: str, node_id: str) -> str | None:
+    """Hint for `get_graph_metrics` callers."""
+    if node_type == "file":
+        return f"Use get_community('{node_id}') to see all community members."
+    if node_type == "symbol":
+        return f"Use get_callers_callees('{node_id}') to explore call relationships."
+    return None
+
+
+def flows_hint() -> str | None:
+    """Hint for `get_execution_flows` callers."""
+    return "Use get_callers_callees on any trace node for detail."
+
+
 def answer_hint(confidence: str, retrieval_count: int) -> str | None:
     """Hint for `get_answer` callers.
 

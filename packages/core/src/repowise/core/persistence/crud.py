@@ -18,7 +18,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
@@ -1340,11 +1340,247 @@ async def list_chat_messages(session: AsyncSession, conversation_id: str) -> lis
 
 
 async def count_chat_messages(session: AsyncSession, conversation_id: str) -> int:
-    from sqlalchemy import func
-
     result = await session.execute(
         select(func.count())
         .select_from(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
     )
     return result.scalar() or 0
+
+
+# ---------------------------------------------------------------------------
+# Graph read-side queries (Phase 5 — MCP graph tools)
+# ---------------------------------------------------------------------------
+
+
+async def get_graph_node(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+) -> GraphNode | None:
+    """Look up a single GraphNode by its ``node_id`` (file path or symbol ID)."""
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_id == node_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_graph_edges_for_node(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+    *,
+    direction: str = "both",
+    edge_types: list[str] | None = None,
+    limit: int = 50,
+) -> list[GraphEdge]:
+    """Return edges adjacent to *node_id*.
+
+    Parameters
+    ----------
+    direction:
+        ``"callers"`` → inbound edges (target == node_id),
+        ``"callees"`` → outbound edges (source == node_id),
+        ``"both"`` → union of both.
+    edge_types:
+        Optional filter, e.g. ``["calls"]`` or ``["extends", "implements"]``.
+    limit:
+        Max edges per direction.
+    """
+    results: list[GraphEdge] = []
+
+    if direction in ("callers", "both"):
+        q = select(GraphEdge).where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.target_node_id == node_id,
+        )
+        if edge_types:
+            q = q.where(GraphEdge.edge_type.in_(edge_types))
+        q = q.limit(limit)
+        res = await session.execute(q)
+        results.extend(res.scalars().all())
+
+    if direction in ("callees", "both"):
+        q = select(GraphEdge).where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.source_node_id == node_id,
+        )
+        if edge_types:
+            q = q.where(GraphEdge.edge_type.in_(edge_types))
+        q = q.limit(limit)
+        res = await session.execute(q)
+        results.extend(res.scalars().all())
+
+    return results
+
+
+async def get_graph_nodes_by_ids(
+    session: AsyncSession,
+    repository_id: str,
+    node_ids: list[str],
+) -> dict[str, GraphNode]:
+    """Batch-lookup GraphNodes by node_id. Returns ``{node_id: GraphNode}``."""
+    if not node_ids:
+        return {}
+    # Process in batches to stay under SQLite parameter limits
+    out: dict[str, GraphNode] = {}
+    for i in range(0, len(node_ids), _BATCH_SIZE):
+        batch = node_ids[i : i + _BATCH_SIZE]
+        result = await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_id.in_(batch),
+            )
+        )
+        for node in result.scalars().all():
+            out[node.node_id] = node
+    return out
+
+
+async def get_community_members(
+    session: AsyncSession,
+    repository_id: str,
+    community_id: int,
+    *,
+    node_type: str = "file",
+    limit: int = 50,
+) -> list[GraphNode]:
+    """Return all nodes in a community, ordered by PageRank descending."""
+    result = await session.execute(
+        select(GraphNode)
+        .where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == node_type,
+            GraphNode.community_id == community_id,
+        )
+        .order_by(GraphNode.pagerank.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def get_all_file_metrics(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[GraphNode]:
+    """Return all file-type GraphNodes (for percentile computation)."""
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def get_cross_community_edges(
+    session: AsyncSession,
+    repository_id: str,
+    community_id: int,
+) -> list[dict]:
+    """Count edges crossing from *community_id* to other communities.
+
+    Returns a list of ``{"target_community_id": int, "edge_count": int}``.
+    Uses a join through ``graph_nodes`` to resolve target community.
+    """
+    # Alias for the target node lookup
+    target_node = GraphNode.__table__.alias("tn")
+    source_node = GraphNode.__table__.alias("sn")
+
+    q = (
+        select(
+            target_node.c.community_id.label("target_community_id"),
+            func.count().label("edge_count"),
+        )
+        .select_from(GraphEdge.__table__)
+        .join(
+            source_node,
+            (GraphEdge.__table__.c.source_node_id == source_node.c.node_id)
+            & (GraphEdge.__table__.c.repository_id == source_node.c.repository_id),
+        )
+        .join(
+            target_node,
+            (GraphEdge.__table__.c.target_node_id == target_node.c.node_id)
+            & (GraphEdge.__table__.c.repository_id == target_node.c.repository_id),
+        )
+        .where(
+            GraphEdge.__table__.c.repository_id == repository_id,
+            source_node.c.community_id == community_id,
+            target_node.c.community_id != community_id,
+            # Only count file-level edges for meaningful community crossing
+            source_node.c.node_type == "file",
+            target_node.c.node_type == "file",
+        )
+        .group_by(target_node.c.community_id)
+        .order_by(func.count().desc())
+    )
+    result = await session.execute(q)
+    return [
+        {"target_community_id": row.target_community_id, "edge_count": row.edge_count}
+        for row in result.all()
+    ]
+
+
+async def get_top_entry_points(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    min_score: float = 0.3,
+    limit: int = 20,
+) -> list[GraphNode]:
+    """Return symbol nodes with stored entry_point_score >= *min_score*.
+
+    Scores are stored inside ``community_meta_json``. Since the count of
+    symbol nodes is typically < 5000, an in-memory filter is acceptable.
+    """
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "symbol",
+        )
+    )
+    all_symbols = result.scalars().all()
+
+    scored: list[tuple[float, GraphNode]] = []
+    for node in all_symbols:
+        try:
+            meta = json.loads(node.community_meta_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        score = meta.get("entry_point_score")
+        if score is not None and score >= min_score:
+            scored.append((score, node))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [node for _, node in scored[:limit]]
+
+
+async def get_node_degree_counts(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+) -> dict[str, int]:
+    """Return in-degree and out-degree for a node from edge counts."""
+    in_result = await session.execute(
+        select(func.count())
+        .select_from(GraphEdge)
+        .where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.target_node_id == node_id,
+        )
+    )
+    out_result = await session.execute(
+        select(func.count())
+        .select_from(GraphEdge)
+        .where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.source_node_id == node_id,
+        )
+    )
+    return {
+        "in_degree": in_result.scalar() or 0,
+        "out_degree": out_result.scalar() or 0,
+    }

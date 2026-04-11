@@ -179,7 +179,15 @@ async def get_architecture_diagram(
                         )
                 seen_nodes.add(tgt)
 
-            lines.append(f"    {src} --> {tgt}")
+            # Differentiate arrow style by edge type
+            etype = getattr(e, "edge_type", None) or "imports"
+            if etype == "calls":
+                arrow = "-.->"
+            elif etype in ("extends", "implements"):
+                arrow = "--|>"
+            else:
+                arrow = "-->"
+            lines.append(f"    {src} {arrow} {tgt}")
 
         # Apply heat + external classes
         if node_classes:

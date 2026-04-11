@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -190,6 +191,44 @@ async def get_overview(repo: str | None = None) -> dict:
                 "onboarding_targets": onboarding_targets,
             }
 
+        # C. Community summary ---------------------------------------------------
+        community_summary: list[dict[str, Any]] = []
+        # Use all_nodes if available (from knowledge map block), otherwise fetch
+        if not all_git:
+            node_result = await session.execute(
+                select(GraphNode).where(
+                    GraphNode.repository_id == repository.id,
+                    GraphNode.node_type == "file",
+                )
+            )
+            all_nodes = node_result.scalars().all()
+
+        # Group file nodes by community_id
+        community_groups: dict[int, list[GraphNode]] = defaultdict(list)
+        for n in all_nodes:
+            if n.node_type == "file" and n.community_id is not None:
+                community_groups[n.community_id].append(n)
+
+        # Sort communities by size descending, take top 10
+        for cid, members in sorted(
+            community_groups.items(), key=lambda x: -len(x[1])
+        )[:10]:
+            label = ""
+            cohesion = 0.0
+            if members:
+                try:
+                    meta = json.loads(members[0].community_meta_json or "{}")
+                    label = meta.get("label", "")
+                    cohesion = meta.get("cohesion", 0.0)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            community_summary.append({
+                "id": cid,
+                "label": label or f"cluster_{cid}",
+                "size": len(members),
+                "cohesion": round(cohesion, 3),
+            })
+
         return {
             "title": overview_page.title if overview_page else repository.name,
             "content_md": overview_page.content if overview_page else "No overview generated yet.",
@@ -209,4 +248,5 @@ async def get_overview(repo: str | None = None) -> dict:
             "entry_points": [n.node_id for n in entry_nodes[:15]],
             "git_health": git_health,
             "knowledge_map": knowledge_map,
+            "community_summary": community_summary,
         }
