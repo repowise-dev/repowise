@@ -14,6 +14,8 @@ from .change_detector import AffectedPages, ChangeDetector, FileDiff, SymbolDiff
 from .graph import GraphBuilder
 from .models import (
     EXTENSION_TO_LANGUAGE,
+    CallSite,
+    EdgeType,
     FileInfo,
     Import,
     PackageInfo,
@@ -29,6 +31,8 @@ from .tsconfig_resolver import TsconfigResolver
 
 __all__ = [
     # Models
+    "CallSite",
+    "EdgeType",
     "EXTENSION_TO_LANGUAGE",
     "LANGUAGE_CONFIGS",
     # Parsing

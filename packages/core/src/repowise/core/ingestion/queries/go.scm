@@ -44,3 +44,35 @@
 (import_spec
   (interpreted_string_literal) @import.module
 ) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple function call: foo(arg1, arg2)
+(call_expression
+  function: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Method call: obj.Method(args)
+(call_expression
+  function: (selector_expression
+    operand: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Package-qualified call: pkg.Function(args)
+; (same pattern as method call — receiver is the package alias)
+; Captured by the selector_expression pattern above.
+
+; Chained call: obj.Method1().Method2(args)
+(call_expression
+  function: (selector_expression
+    operand: (call_expression)
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
