@@ -206,9 +206,7 @@ class TestStemDisambiguation:
         b.build()
         g = b.graph()
         assert g.has_edge("src/flask/app.py", "src/flask/__init__.py")
-        assert not g.has_edge(
-            "src/flask/app.py", "tests/test_apps/cliapp/inner1/inner2/flask.py"
-        )
+        assert not g.has_edge("src/flask/app.py", "tests/test_apps/cliapp/inner1/inner2/flask.py")
 
     def test_test_fixture_loses_to_source_file(self) -> None:
         """When two files share a stem and one is under tests/, the
@@ -326,6 +324,93 @@ class TestTypeScriptImports:
         assert any("external:" in n for n in g.nodes)
         external_node = next(n for n in g.nodes if n.startswith("external:"))
         assert g.has_edge("src/app.ts", external_node)
+
+    def test_tsconfig_alias_resolves_to_file(self, tmp_path: Path) -> None:
+        """Non-relative import resolved via TsconfigResolver instead of external:."""
+        import json
+
+        from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
+
+        # Write a tsconfig with @/* -> ./src/*
+        tsconfig = tmp_path / "tsconfig.json"
+        tsconfig.write_text(
+            json.dumps(
+                {
+                    "compilerOptions": {
+                        "baseUrl": ".",
+                        "paths": {"@/*": ["./src/*"]},
+                    }
+                }
+            )
+        )
+
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_parsed("src/utils.ts", language="typescript"))
+        b.add_file(
+            _parsed(
+                "src/app.ts",
+                language="typescript",
+                imports=[_imp("@/utils")],
+            )
+        )
+        # Attach resolver before build.
+        path_set = set(b._parsed_files.keys())
+        resolver = TsconfigResolver(repo_path=tmp_path, path_set=path_set)
+        b.set_tsconfig_resolver(resolver)
+        b.build()
+
+        g = b.graph()
+        assert g.has_edge("src/app.ts", "src/utils.ts")
+        assert not any(n.startswith("external:@/") for n in g.nodes)
+
+    def test_tsconfig_alias_fallback_to_external(self, tmp_path: Path) -> None:
+        """Unmatched alias still creates external: node."""
+        import json
+
+        from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
+
+        tsconfig = tmp_path / "tsconfig.json"
+        tsconfig.write_text(
+            json.dumps(
+                {
+                    "compilerOptions": {
+                        "baseUrl": ".",
+                        "paths": {"@/*": ["./src/*"]},
+                    }
+                }
+            )
+        )
+
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(
+            _parsed(
+                "src/app.ts",
+                language="typescript",
+                imports=[_imp("react")],
+            )
+        )
+        path_set = set(b._parsed_files.keys())
+        resolver = TsconfigResolver(repo_path=tmp_path, path_set=path_set)
+        b.set_tsconfig_resolver(resolver)
+        b.build()
+
+        g = b.graph()
+        assert g.has_edge("src/app.ts", "external:react")
+
+    def test_no_resolver_backwards_compatible(self) -> None:
+        """GraphBuilder without resolver behaves identically to before."""
+        b = GraphBuilder()
+        b.add_file(
+            _parsed(
+                "src/app.ts",
+                language="typescript",
+                imports=[_imp("@/utils")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        # Without resolver, @/utils becomes external:@/utils.
+        assert g.has_edge("src/app.ts", "external:@/utils")
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +637,7 @@ class TestCppCompileCommandsResolution:
             }
         ]
         import json
+
         (tmp_path / "compile_commands.json").write_text(json.dumps(compile_commands))
         (tmp_path / "src").mkdir()
 
@@ -574,6 +660,7 @@ class TestCppCompileCommandsResolution:
             }
         ]
         import json
+
         (tmp_path / "compile_commands.json").write_text(json.dumps(compile_commands))
         (tmp_path / "src").mkdir()
 
@@ -624,6 +711,7 @@ class TestCppCompileCommandsResolution:
             }
         ]
         import json
+
         (build_dir / "compile_commands.json").write_text(json.dumps(compile_commands))
         (tmp_path / "src").mkdir()
 

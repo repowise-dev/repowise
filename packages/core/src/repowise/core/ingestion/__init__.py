@@ -25,6 +25,7 @@ from .models import (
 )
 from .parser import LANGUAGE_CONFIGS, ASTParser, LanguageConfig, parse_file
 from .traverser import FileTraverser, TraversalStats
+from .tsconfig_resolver import TsconfigResolver
 
 __all__ = [
     # Models
@@ -42,6 +43,7 @@ __all__ = [
     "TraversalStats",
     # Graph
     "GraphBuilder",
+    "TsconfigResolver",
     "Import",
     "LanguageConfig",
     "PackageInfo",

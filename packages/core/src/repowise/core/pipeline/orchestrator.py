@@ -469,6 +469,18 @@ async def _run_ingestion(
         if _use_process_pool and progress:
             progress.on_item_done("parse")
 
+    # ---- tsconfig path-alias resolver (before graph build) ------------------
+    try:
+        from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
+
+        _ts_langs = {"typescript", "javascript"}
+        if any(pf.file_info.language in _ts_langs for pf in parsed_files):
+            _path_set = set(graph_builder._parsed_files.keys())
+            _resolver = TsconfigResolver(repo_path=repo_path, path_set=_path_set)
+            graph_builder.set_tsconfig_resolver(_resolver)
+    except Exception as _resolver_exc:
+        logger.warning("tsconfig_resolver_init_failed", error=str(_resolver_exc))
+
     # ---- Graph build phase -------------------------------------------------
     if progress:
         progress.on_phase_start("graph", 1)

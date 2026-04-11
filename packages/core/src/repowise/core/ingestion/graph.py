@@ -120,6 +120,11 @@ class GraphBuilder:
         self._built = False
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
         self._compile_commands_cache: dict[str, dict] | None = None
+        self._tsconfig_resolver: Any | None = None  # TsconfigResolver (lazy import)
+
+    def set_tsconfig_resolver(self, resolver: Any) -> None:
+        """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
+        self._tsconfig_resolver = resolver
 
     # ------------------------------------------------------------------
     # Building
@@ -350,7 +355,9 @@ class GraphBuilder:
                         )
                         return self._compile_commands_cache
                     # No valid entries — try next candidate
-                    log.debug("compile_commands.json had no resolvable entries", path=str(candidate))
+                    log.debug(
+                        "compile_commands.json had no resolvable entries", path=str(candidate)
+                    )
                 except Exception as exc:
                     log.debug("Failed to load compile_commands.json", error=str(exc))
         return None
@@ -510,7 +517,18 @@ class GraphBuilder:
                     )
                     if candidate in path_set:
                         return candidate
-            # External npm package
+                return None
+
+            # Non-relative: try tsconfig path-alias resolution first.
+            if self._tsconfig_resolver is not None:
+                importer_abs = (
+                    str(self._repo_path / importer_path) if self._repo_path else importer_path
+                )
+                alias_resolved = self._tsconfig_resolver.resolve(module_path, importer_abs)
+                if alias_resolved is not None:
+                    return alias_resolved
+
+            # Fallback: external npm package.
             external_key = f"external:{module_path}"
             if external_key not in self._graph.nodes:
                 self._graph.add_node(
