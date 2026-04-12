@@ -201,6 +201,23 @@ async def _lifespan(server: FastMCP):
         _state._decision_store = default_ctx.decision_store
         _state._vector_store_ready = default_ctx.vector_store_ready
 
+        # Load cross-repo enricher (Phase 3)
+        try:
+            from repowise.core.workspace.config import WORKSPACE_DATA_DIR
+            from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+            cross_repo_path = ws_root / WORKSPACE_DATA_DIR / "cross_repo_edges.json"
+            enricher = CrossRepoEnricher(cross_repo_path)
+            if enricher.has_data:
+                _state._cross_repo_enricher = enricher
+                _log.info(
+                    "Cross-repo enricher loaded: %d co-change edges, %d package deps",
+                    len(enricher._co_changes),
+                    len(enricher._package_deps),
+                )
+        except Exception:
+            _log.debug("Cross-repo enricher not available", exc_info=True)
+
         _log.info(
             "repowise MCP: workspace mode — %d repos, default='%s'",
             len(ws_config.repos),
@@ -209,6 +226,7 @@ async def _lifespan(server: FastMCP):
 
         yield
 
+        _state._cross_repo_enricher = None
         await registry.close()
         _state._registry = None
         _state._workspace_root = None

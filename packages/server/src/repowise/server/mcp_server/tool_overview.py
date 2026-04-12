@@ -86,7 +86,20 @@ async def _workspace_overview() -> dict:
                 "is_default": is_default,
             })
 
-    return {
+    # Cross-repo topology (Phase 3)
+    cross_repo_topology: dict[str, Any] = {}
+    enricher = _state._cross_repo_enricher
+    if enricher is not None and enricher.has_data:
+        cross_repo_topology = enricher.get_cross_repo_summary()
+        # Add per-repo package deps
+        for repo_info in repos_info:
+            deps = enricher.get_package_deps(repo_info["alias"])
+            if deps:
+                repo_info["depends_on"] = sorted(
+                    set(d["target_repo"] for d in deps)
+                )
+
+    result: dict[str, Any] = {
         "workspace": True,
         "workspace_root": str(registry.workspace_root) if registry else "",
         "total_repos": len(repos_info),
@@ -98,6 +111,10 @@ async def _workspace_overview() -> dict:
             "Omit repo to use the default."
         ),
     }
+    if cross_repo_topology:
+        result["cross_repo_topology"] = cross_repo_topology
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +135,7 @@ def _build_workspace_footer() -> dict | None:
     if not other_repos:
         return None
 
-    return {
+    footer: dict[str, Any] = {
         "workspace_root": str(registry.workspace_root),
         "default_repo": default_alias,
         "other_repos": other_repos,
@@ -129,6 +146,13 @@ def _build_workspace_footer() -> dict | None:
             "or repo='all' for workspace-wide results."
         ),
     }
+
+    # Cross-repo intelligence (Phase 3)
+    enricher = _state._cross_repo_enricher
+    if enricher is not None and enricher.has_data:
+        footer["cross_repo"] = enricher.get_cross_repo_summary()
+
+    return footer
 
 
 @mcp.tool()

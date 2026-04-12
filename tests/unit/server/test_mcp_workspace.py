@@ -275,6 +275,7 @@ async def workspace_mcp():
     mcp_mod._decision_store = None
     mcp_mod._repo_path = None
     mcp_mod._vector_store_ready = None
+    mcp_mod._cross_repo_enricher = None
 
 
 # ---------------------------------------------------------------------------
@@ -434,3 +435,169 @@ async def test_single_repo_mode_no_workspace():
     from repowise.server.mcp_server._helpers import _is_workspace_mode
 
     assert _is_workspace_mode() is False
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo enricher
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def enricher_data(tmp_path):
+    """Write a cross_repo_edges.json and return its path."""
+    data = {
+        "version": 1,
+        "generated_at": "2026-04-12T12:00:00Z",
+        "co_changes": [
+            {
+                "source_repo": "backend",
+                "source_file": "src/api/server.py",
+                "target_repo": "frontend",
+                "target_file": "src/api/client.ts",
+                "strength": 4.2,
+                "frequency": 6,
+                "last_date": "2026-04-10",
+            },
+        ],
+        "package_deps": [
+            {
+                "source_repo": "frontend",
+                "target_repo": "backend",
+                "source_manifest": "package.json",
+                "kind": "npm_local_path",
+            },
+        ],
+        "repo_summaries": {
+            "backend": {"cross_repo_edge_count": 1},
+            "frontend": {"cross_repo_edge_count": 1},
+        },
+    }
+    path = tmp_path / "cross_repo_edges.json"
+    path.write_text(json.dumps(data))
+    return path
+
+
+def test_enricher_loads_and_has_data(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    assert enricher.has_data is True
+
+
+def test_enricher_get_cross_repo_partners(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    partners = enricher.get_cross_repo_partners("backend", "src/api/server.py")
+    assert len(partners) == 1
+    assert partners[0]["repo"] == "frontend"
+    assert partners[0]["file"] == "src/api/client.ts"
+    assert partners[0]["strength"] == 4.2
+
+
+def test_enricher_bidirectional_index(enricher_data):
+    """Co-change edges should be indexed from both sides."""
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    # Reverse direction
+    partners = enricher.get_cross_repo_partners("frontend", "src/api/client.ts")
+    assert len(partners) == 1
+    assert partners[0]["repo"] == "backend"
+
+
+def test_enricher_get_package_deps(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    deps = enricher.get_package_deps("frontend")
+    assert len(deps) == 1
+    assert deps[0]["target_repo"] == "backend"
+
+
+def test_enricher_get_repos_depending_on(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    # frontend depends on backend
+    depending = enricher.get_repos_depending_on("backend")
+    assert "frontend" in depending
+
+
+def test_enricher_has_cross_repo_consumers(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    consumers = enricher.has_cross_repo_consumers("backend", "src/api/server.py")
+    assert len(consumers) == 1
+    assert consumers[0]["repo"] == "frontend"
+
+
+def test_enricher_get_affected_repos(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    affected = enricher.get_affected_repos("backend", "src/api/server.py")
+    assert "frontend" in affected
+
+
+def test_enricher_missing_file_returns_empty(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    assert enricher.get_cross_repo_partners("backend", "nonexistent.py") == []
+    assert enricher.has_cross_repo_consumers("backend", "nonexistent.py") == []
+
+
+def test_enricher_missing_json_has_no_data(tmp_path):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(tmp_path / "does_not_exist.json")
+    assert enricher.has_data is False
+    assert enricher.get_cross_repo_partners("x", "y") == []
+
+
+def test_enricher_get_cross_repo_summary(enricher_data):
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    enricher = CrossRepoEnricher(enricher_data)
+    summary = enricher.get_cross_repo_summary()
+    assert summary["co_change_count"] == 1
+    assert summary["package_dep_count"] == 1
+    assert len(summary["top_connections"]) >= 1
+
+
+# ---------------------------------------------------------------------------
+# MCP tool enrichment with cross-repo data
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def workspace_mcp_with_enricher(workspace_mcp, enricher_data):
+    """Extend workspace_mcp with a cross-repo enricher."""
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+    mcp_mod._cross_repo_enricher = CrossRepoEnricher(enricher_data)
+    yield
+    mcp_mod._cross_repo_enricher = None
+
+
+@pytest.mark.asyncio
+async def test_overview_footer_includes_cross_repo(workspace_mcp_with_enricher):
+    from repowise.server.mcp_server import get_overview
+
+    result = await get_overview()
+    assert "workspace" in result
+    ws = result["workspace"]
+    assert "cross_repo" in ws
+    assert ws["cross_repo"]["co_change_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_overview_all_includes_cross_repo_topology(workspace_mcp_with_enricher):
+    from repowise.server.mcp_server import get_overview
+
+    result = await get_overview(repo="all")
+    assert "cross_repo_topology" in result
+    assert result["cross_repo_topology"]["co_change_count"] == 1

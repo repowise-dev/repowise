@@ -58,6 +58,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _resolve_repo_context,
@@ -1117,5 +1118,21 @@ async def get_context(
             hint=_context_hint(targets, compact, include_set),
         ),
     }
+
+    # Cross-repo enrichment (Phase 3)
+    from repowise.server.mcp_server._helpers import _is_workspace_mode
+
+    enricher = _state._cross_repo_enricher
+    if enricher is not None and enricher.has_data and _is_workspace_mode():
+        for target_key, target_data in response["targets"].items():
+            partners = enricher.get_cross_repo_partners(ctx.alias, target_key)
+            if partners:
+                target_data["cross_repo"] = {
+                    "co_changes_with": [
+                        {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
+                        for p in partners[:5]
+                    ],
+                }
+
     # Enforce the global token cap. See ``_truncate_to_budget`` for strategy.
     return _truncate_to_budget(response)

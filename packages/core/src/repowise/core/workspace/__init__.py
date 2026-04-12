@@ -29,6 +29,15 @@ from .update import (
     update_single_repo_index,
     update_workspace,
 )
+from .cross_repo import (
+    CROSS_REPO_EDGES_FILENAME,
+    CrossRepoCoChange,
+    CrossRepoOverlay,
+    CrossRepoPackageDep,
+    load_overlay,
+    run_cross_repo_analysis,
+    save_overlay,
+)
 
 __all__ = [
     # Scanner
@@ -51,4 +60,12 @@ __all__ = [
     "run_cross_repo_hooks",
     "update_single_repo_index",
     "update_workspace",
+    # Cross-repo intelligence
+    "CROSS_REPO_EDGES_FILENAME",
+    "CrossRepoCoChange",
+    "CrossRepoOverlay",
+    "CrossRepoPackageDep",
+    "load_overlay",
+    "run_cross_repo_analysis",
+    "save_overlay",
 ]

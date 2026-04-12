@@ -12,8 +12,10 @@ from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
 )
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
     _get_repo,
+    _is_workspace_mode,
     _resolve_all_contexts,
     _resolve_repo_context,
 )
@@ -197,6 +199,9 @@ async def get_dead_code(
                 "Low confidence (<0.5): Potentially used via dynamic imports or reflection. Investigate first.",
             )
 
+        # Cross-repo confidence adjustment for workspace-wide findings
+        _adjust_dead_code_cross_repo(tiers, None)
+
         return {
             "workspace": True,
             "summary": summary,
@@ -275,6 +280,9 @@ async def get_dead_code(
         "by_kind": by_kind,
     }
 
+    # Cross-repo confidence adjustment (Phase 3)
+    _adjust_dead_code_cross_repo(tiers, ctx.alias)
+
     result: dict[str, Any] = {"summary": summary, "tiers": tiers}
 
     # --- Grouping views ---
@@ -287,6 +295,42 @@ async def get_dead_code(
     result["impact"] = _compute_impact(tiers)
 
     return result
+
+
+def _adjust_dead_code_cross_repo(tiers: dict, repo_alias: str | None) -> None:
+    """Reduce confidence for dead code findings that have cross-repo consumers.
+
+    Mutates findings in-place within the tier dicts.
+    """
+    enricher = _state._cross_repo_enricher
+    if enricher is None or not enricher.has_data or not _is_workspace_mode():
+        return
+
+    for tier_data in tiers.values():
+        for finding in tier_data.get("findings", []):
+            alias = finding.get("repo", repo_alias)
+            if not alias:
+                continue
+            file_path = finding.get("file_path", "")
+            consumers = enricher.has_cross_repo_consumers(alias, file_path)
+            if consumers:
+                original = finding["confidence"]
+                finding["confidence"] = round(original * 0.5, 2)
+                consumer_repos = sorted(set(c["repo"] for c in consumers))
+                finding["cross_repo_note"] = (
+                    f"Confidence reduced: {len(consumers)} cross-repo consumer(s) "
+                    f"in {', '.join(consumer_repos)}."
+                )
+            # Also check if other repos depend on this repo via package deps
+            if alias and finding.get("kind") == "unused_export":
+                depending = enricher.get_repos_depending_on(alias)
+                if depending and not consumers:
+                    original = finding["confidence"]
+                    finding["confidence"] = round(original * 0.3, 2)
+                    finding["cross_repo_note"] = (
+                        f"This export may be consumed by: {', '.join(depending)}. "
+                        "Verify before deletion."
+                    )
 
 
 def _find_last_meaningful_change(gm: Any) -> str | None:

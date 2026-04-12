@@ -1,12 +1,13 @@
 """Workspace-level update orchestration.
 
-Handles staleness detection, parallel multi-repo updates, and hook points
-for future cross-repo analysis (Phase 3/4).
+Handles staleness detection, parallel multi-repo updates, and cross-repo
+analysis hooks (Phase 3).
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import WorkspaceConfig
+
+_log = logging.getLogger("repowise.workspace.update")
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -330,13 +333,17 @@ async def run_cross_repo_hooks(
 ) -> None:
     """Run cross-repo analysis after workspace repos are updated.
 
-    Currently a no-op placeholder. Phase 3 will add:
-    - Co-change detection across repos
-    - Package dependency detection
-
-    Phase 4 will add:
-    - Contract extraction for changed repos
-    - Contract re-matching across all repos
-    - Overlay graph rebuild
+    Detects cross-repo co-changes (files committed by the same author within
+    a time window across repos) and package/manifest dependencies. Results are
+    persisted to ``.repowise-workspace/cross_repo_edges.json`` and loaded by
+    the MCP server's :class:`CrossRepoEnricher` at startup.
     """
-    pass
+    if len(ws_config.repos) < 2:
+        return
+
+    from .cross_repo import run_cross_repo_analysis
+
+    try:
+        await run_cross_repo_analysis(ws_config, workspace_root, changed_repos)
+    except Exception:
+        _log.warning("Cross-repo analysis failed", exc_info=True)

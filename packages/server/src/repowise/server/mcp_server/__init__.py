@@ -60,6 +60,7 @@ _STATE_NAMES = frozenset(
         "_vector_store_ready",
         "_registry",
         "_workspace_root",
+        "_cross_repo_enricher",
     }
 )
 

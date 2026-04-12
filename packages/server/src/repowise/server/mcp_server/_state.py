@@ -19,3 +19,4 @@ _vector_store_ready: asyncio.Event | None = None
 # Workspace mode — set by _lifespan when a workspace is detected.
 _registry: Any = None          # RepoRegistry | None
 _workspace_root: str | None = None
+_cross_repo_enricher: Any = None  # CrossRepoEnricher | None

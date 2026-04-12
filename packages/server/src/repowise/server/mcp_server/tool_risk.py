@@ -20,8 +20,10 @@ from repowise.core.persistence.models import (
     GraphNode,
     Repository,
 )
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
     _get_repo,
+    _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
 )
@@ -445,6 +447,23 @@ async def get_risk(
 
             analyzer = PRBlastRadiusAnalyzer(session, repo_id)
             pr_blast_radius = await analyzer.analyze_files(changed_files)
+
+    # Cross-repo blast radius enrichment (Phase 3)
+    enricher = _state._cross_repo_enricher
+    if enricher is not None and enricher.has_data and _is_workspace_mode():
+        for r in results:
+            target = r["target"]
+            cross_partners = enricher.get_cross_repo_partners(ctx.alias, target)
+            affected_repos = enricher.get_affected_repos(ctx.alias, target)
+            if cross_partners or affected_repos:
+                r["cross_repo_impact"] = {
+                    "cross_repo_consumers": [
+                        {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
+                        for p in cross_partners[:5]
+                    ],
+                    "affected_repos": affected_repos,
+                }
+                r["dependents_count"] = r.get("dependents_count", 0) + len(cross_partners)
 
     response: dict = {
         "targets": {r["target"]: r for r in results},
