@@ -268,6 +268,16 @@ def resolve_provider(
                 kwargs["api_key"] = os.environ["LITELLM_API_KEY"]
             if os.environ.get("LITELLM_BASE_URL"):
                 kwargs["api_base"] = os.environ["LITELLM_BASE_URL"]
+        elif provider_name == "zai":
+            # Z.AI: API key, plan, base URL, and thinking mode
+            if os.environ.get("ZAI_API_KEY"):
+                kwargs["api_key"] = os.environ["ZAI_API_KEY"]
+            if os.environ.get("ZAI_PLAN"):
+                kwargs["plan"] = os.environ["ZAI_PLAN"]
+            if os.environ.get("ZAI_BASE_URL"):
+                kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
+            if os.environ.get("ZAI_THINKING"):
+                kwargs["thinking"] = os.environ["ZAI_THINKING"]
 
         return get_provider(provider_name, **kwargs)
 
@@ -314,11 +324,23 @@ def resolve_provider(
             else {"api_base": os.environ["LITELLM_BASE_URL"]}
         )
         return get_provider("litellm", **kwargs)
+    # Z.AI: check for API key
+    if os.environ.get("ZAI_API_KEY") and os.environ["ZAI_API_KEY"].strip():
+        kwargs = {"api_key": os.environ["ZAI_API_KEY"]}
+        if model:
+            kwargs["model"] = model
+        if os.environ.get("ZAI_PLAN"):
+            kwargs["plan"] = os.environ["ZAI_PLAN"]
+        if os.environ.get("ZAI_BASE_URL"):
+            kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
+        if os.environ.get("ZAI_THINKING"):
+            kwargs["thinking"] = os.environ["ZAI_THINKING"]
+        return get_provider("zai", **kwargs)
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / "
-        "LITELLM_API_KEY / LITELLM_BASE_URL."
+        "LITELLM_API_KEY / LITELLM_BASE_URL / ZAI_API_KEY."
     )
 
 
@@ -358,6 +380,7 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
             "LITELLM_API_KEY",
             "LITELLM_BASE_URL",
         ],  # Either one (API key for cloud, base URL for local)
+        "zai": ["ZAI_API_KEY"],
     }
 
     if provider_name:
