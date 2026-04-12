@@ -8,8 +8,11 @@ from typing import Any
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import DecisionRecord
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._server import mcp
 
 _VALID_ACTIONS = frozenset({"create", "update", "update_status", "delete", "list", "get"})
@@ -111,6 +114,10 @@ async def update_decision_records(
         limit: Max results for list (default 50).
         offset: Offset for list pagination.
     """
+    if repo == "all":
+        return _unsupported_repo_all("update_decision_records")
+    ctx = await _resolve_repo_context(repo)
+
     if action not in _VALID_ACTIONS:
         return {
             "error": f"Unknown action {action!r}. Valid actions: {', '.join(sorted(_VALID_ACTIONS))}"
@@ -120,8 +127,8 @@ async def update_decision_records(
     if action == "create":
         if not title:
             return {"error": "action 'create' requires 'title'"}
-        async with get_session(_state._session_factory) as session:
-            repository = await _get_repo(session, repo)
+        async with get_session(ctx.session_factory) as session:
+            repository = await _get_repo(session)
             rec = await crud.upsert_decision(
                 session,
                 repository_id=repository.id,
@@ -144,7 +151,7 @@ async def update_decision_records(
     if action == "get":
         if not decision_id:
             return {"error": "action 'get' requires 'decision_id'"}
-        async with get_session(_state._session_factory) as session:
+        async with get_session(ctx.session_factory) as session:
             rec = await crud.get_decision(session, decision_id)
             if rec is None:
                 return {"error": f"Decision {decision_id} not found"}
@@ -152,8 +159,8 @@ async def update_decision_records(
 
     # --- list ---
     if action == "list":
-        async with get_session(_state._session_factory) as session:
-            repository = await _get_repo(session, repo)
+        async with get_session(ctx.session_factory) as session:
+            repository = await _get_repo(session)
             decisions = await crud.list_decisions(
                 session,
                 repository.id,
@@ -196,7 +203,7 @@ async def update_decision_records(
             fields["tags"] = tags
         if not fields:
             return {"error": "action 'update' requires at least one field to change"}
-        async with get_session(_state._session_factory) as session:
+        async with get_session(ctx.session_factory) as session:
             rec = await crud.update_decision_by_id(session, decision_id, **fields)
             if rec is None:
                 return {"error": f"Decision {decision_id} not found"}
@@ -208,7 +215,7 @@ async def update_decision_records(
             return {"error": "action 'update_status' requires 'decision_id'"}
         if not status:
             return {"error": "action 'update_status' requires 'status'"}
-        async with get_session(_state._session_factory) as session:
+        async with get_session(ctx.session_factory) as session:
             try:
                 rec = await crud.update_decision_status(
                     session,
@@ -226,7 +233,7 @@ async def update_decision_records(
     if action == "delete":
         if not decision_id:
             return {"error": "action 'delete' requires 'decision_id'"}
-        async with get_session(_state._session_factory) as session:
+        async with get_session(ctx.session_factory) as session:
             deleted = await crud.delete_decision(session, decision_id)
             if not deleted:
                 return {"error": f"Decision {decision_id} not found"}

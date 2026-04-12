@@ -32,8 +32,11 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import AnswerCache, Page, WikiSymbol
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._server import mcp
@@ -292,7 +295,7 @@ def _read_signature_from_source(
 
 
 async def _hydrate_symbols_for_hits(
-    session, repo_id: str, hits: list[dict]
+    session, repo_id: str, hits: list[dict], ctx: Any = None,
 ) -> None:
     """Mutate `hits` in place: attach `symbols` list to top-N file_page hits.
 
@@ -327,7 +330,7 @@ async def _hydrate_symbols_for_hits(
         .order_by(WikiSymbol.file_path, WikiSymbol.start_line)
     )
     by_file: dict[str, list[dict]] = {}
-    repo_root = Path(_state._repo_path) if _state._repo_path else None
+    repo_root = Path(str(ctx.path)) if ctx and ctx.path else None
     for row in res.scalars().all():
         rich_sig = _read_signature_from_source(
             repo_root, row.file_path, row.start_line
@@ -377,7 +380,7 @@ def _split_relational(question: str) -> list[str] | None:
     return None
 
 
-async def _intersection_boost(question: str, hits: list[dict]) -> None:
+async def _intersection_boost(question: str, hits: list[dict], ctx: Any = None) -> None:
     """For relational questions, boost any hit that appears in both halves
     of a split-FTS retrieval. Mutates `hits` in place: adds a multiplicative
     bonus to `score` for hits that appear in both subset retrievals.
@@ -387,13 +390,13 @@ async def _intersection_boost(question: str, hits: list[dict]) -> None:
     top of either half alone. Independent of repo or domain.
     """
     parts = _split_relational(question)
-    if parts is None or _state._fts is None:
+    if parts is None or ctx is None or ctx.fts is None:
         return
     sub_hit_ids: list[set] = []
     for sub_q in parts:
         try:
             sub = await asyncio.wait_for(
-                _state._fts.search(sub_q, limit=15), timeout=3.0
+                ctx.fts.search(sub_q, limit=15), timeout=3.0
             )
             sub_hit_ids.append({h.page_id for h in sub})
         except Exception:
@@ -412,7 +415,7 @@ async def _intersection_boost(question: str, hits: list[dict]) -> None:
     hits.sort(key=lambda h: h["score"], reverse=True)
 
 
-async def _enrich_gated_excerpts(hits: list[dict]) -> None:
+async def _enrich_gated_excerpts(hits: list[dict], ctx: Any = None) -> None:
     """For the gated (low-confidence) return path, fetch real page content
     for top hits so the agent has substantive raw material instead of
     one-line summaries. Mutates `hits` in place — adds an `excerpt` field.
@@ -427,7 +430,7 @@ async def _enrich_gated_excerpts(hits: list[dict]) -> None:
     if not page_ids:
         return
     try:
-        async with get_session(_state._session_factory) as session:
+        async with get_session(ctx.session_factory) as session:
             res = await session.execute(
                 select(Page.id, Page.content_md).where(Page.id.in_(page_ids))
             )
@@ -502,7 +505,12 @@ async def get_answer(
         scope: optional path prefix to restrict retrieval (e.g. "src/pkg/").
         repo: repository identifier; usually omitted.
     """
+    if repo == "all":
+        return _unsupported_repo_all("get_answer")
+
     t0 = time.perf_counter()
+    ctx = await _resolve_repo_context(repo)
+
     if not question or not question.strip():
         return {
             "answer": "",
@@ -514,8 +522,8 @@ async def get_answer(
             "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
         }
 
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
         repo_id = repository.id
 
     # --- Cache lookup --------------------------------------------------------
@@ -523,7 +531,7 @@ async def get_answer(
     # scoped queries are uncommon and including scope would balloon hit rate
     # variance. We hash on (repo_id, normalized_question) only.
     qhash = _hash_question(question)
-    async with get_session(_state._session_factory) as session:
+    async with get_session(ctx.session_factory) as session:
         res = await session.execute(
             select(AnswerCache).where(
                 AnswerCache.repository_id == repo_id,
@@ -543,19 +551,19 @@ async def get_answer(
 
     # --- Retrieval (FTS) ---------------------------------------------------
     raw_hits: list[Any] = []
-    if _state._fts is not None:
+    if ctx.fts is not None:
         with contextlib.suppress(Exception):
             # Pull a wider candidate set so the term-coverage re-ranker has
             # room to push conjunctive matches up the list before we cap to 5.
             raw_hits = await asyncio.wait_for(
-                _state._fts.search(question, limit=15), timeout=5.0
+                ctx.fts.search(question, limit=15), timeout=5.0
             )
 
     # Hydrate hits with target_path + summary from the Page table.
     hits: list[dict] = []
     if raw_hits:
         page_ids = [h.page_id for h in raw_hits]
-        async with get_session(_state._session_factory) as session:
+        async with get_session(ctx.session_factory) as session:
             res = await session.execute(
                 select(
                     Page.id,
@@ -594,7 +602,7 @@ async def get_answer(
     # Intersection-retrieval boost for relational questions (multi-entity).
     # Pages at the intersection of two split-FTS halves get a 2× bonus.
     with contextlib.suppress(Exception):
-        await _intersection_boost(question, hits)
+        await _intersection_boost(question, hits, ctx)
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 
@@ -604,8 +612,8 @@ async def get_answer(
     # classes/functions named in the question.
     if hits:
         with contextlib.suppress(Exception):
-            async with get_session(_state._session_factory) as session:
-                await _hydrate_symbols_for_hits(session, repo_id, hits)
+            async with get_session(ctx.session_factory) as session:
+                await _hydrate_symbols_for_hits(session, repo_id, hits, ctx)
 
     fallback_targets = [
         h["target_path"] for h in hits if h.get("target_path")
@@ -657,7 +665,7 @@ async def get_answer(
         if not dominant:
             # Enrich top hits with substantive excerpts so the agent has
             # real material to ground in (not one-line summaries).
-            await _enrich_gated_excerpts(hits)
+            await _enrich_gated_excerpts(hits, ctx)
             return {
                 "answer": "",
                 "citations": [],
@@ -779,7 +787,7 @@ async def get_answer(
     # response (we already have the answer in hand).
     if answer_text:
         with contextlib.suppress(Exception):
-            async with get_session(_state._session_factory) as session:
+            async with get_session(ctx.session_factory) as session:
                 row = AnswerCache(
                     repository_id=repo_id,
                     question_hash=qhash,

@@ -10,8 +10,11 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._server import mcp
 
 
@@ -32,10 +35,14 @@ async def annotate_file(
         notes: the note text to attach (empty string to clear).
         repo: repository identifier; usually omitted.
     """
+    if repo == "all":
+        return _unsupported_repo_all("annotate_file")
+    ctx = await _resolve_repo_context(repo)
+
     from repowise.core.persistence.models import Page
 
-    async with get_session(_state._session_factory) as session:
-        await _get_repo(session, repo)  # validates repo exists
+    async with get_session(ctx.session_factory) as session:
+        await _get_repo(session)  # validates repo exists
 
         # Try file_page first, then module_page
         page_id = f"file_page:{target}"

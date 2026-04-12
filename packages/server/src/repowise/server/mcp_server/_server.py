@@ -120,6 +120,46 @@ async def _load_vector_stores(repo_path: str | None) -> None:
             _state._vector_store_ready.set()
 
 
+def _detect_workspace(repo_path: str | None):
+    """Check if ``repo_path`` is inside a workspace.
+
+    Returns ``(workspace_root, ws_config, repo_alias)`` or ``(None, None, None)``.
+    """
+    if not repo_path:
+        return None, None, None
+    try:
+        from pathlib import Path as _Path
+
+        from repowise.core.workspace import WorkspaceConfig, find_workspace_root
+
+        ws_root = find_workspace_root(_Path(repo_path))
+        if ws_root is None:
+            return None, None, None
+
+        ws_config = WorkspaceConfig.load(ws_root)
+        if not ws_config.repos:
+            return None, None, None
+
+        # Determine which repo the given path belongs to
+        resolved = _Path(repo_path).resolve()
+        repo_alias = None
+        for entry in ws_config.repos:
+            entry_abs = (ws_root / entry.path).resolve()
+            if resolved == entry_abs or str(resolved).startswith(str(entry_abs)):
+                repo_alias = entry.alias
+                break
+
+        if repo_alias is None:
+            # Path is inside workspace but doesn't match a repo — use default
+            primary = ws_config.get_primary()
+            repo_alias = primary.alias if primary else ws_config.repos[0].alias
+
+        return ws_root, ws_config, repo_alias
+    except Exception:
+        _log.debug("Workspace detection failed", exc_info=True)
+        return None, None, None
+
+
 @asynccontextmanager
 async def _lifespan(server: FastMCP):
     """Initialize DB engine, session factory, and FTS synchronously on startup.
@@ -128,6 +168,53 @@ async def _lifespan(server: FastMCP):
     the server starts accepting tool calls immediately.  search_codebase awaits
     _state._vector_store_ready before querying the vector store.
     """
+
+    # --- Workspace detection ------------------------------------------------
+    ws_root, ws_config, ws_repo_alias = _detect_workspace(_state._repo_path)
+
+    if ws_root is not None and ws_config is not None:
+        # Workspace mode — use RepoRegistry for multi-repo serving
+        from pathlib import Path as _Path
+
+        from repowise.core.workspace.registry import RepoRegistry
+
+        # Override default repo to the one the path points at
+        if ws_repo_alias and ws_config.get_repo(ws_repo_alias):
+            ws_config.default_repo = ws_repo_alias
+
+        registry = RepoRegistry(
+            workspace_root=ws_root,
+            ws_config=ws_config,
+            embedder_factory=lambda: _resolve_embedder(),
+        )
+
+        # Eagerly load the default repo so tools work immediately
+        default_ctx = await registry.get_default()
+
+        _state._registry = registry
+        _state._workspace_root = str(ws_root)
+
+        # Alias default repo's resources into _state for backward compat
+        _state._session_factory = default_ctx.session_factory
+        _state._fts = default_ctx.fts
+        _state._vector_store = default_ctx.vector_store
+        _state._decision_store = default_ctx.decision_store
+        _state._vector_store_ready = default_ctx.vector_store_ready
+
+        _log.info(
+            "repowise MCP: workspace mode — %d repos, default='%s'",
+            len(ws_config.repos),
+            registry.get_default_alias(),
+        )
+
+        yield
+
+        await registry.close()
+        _state._registry = None
+        _state._workspace_root = None
+        return
+
+    # --- Single-repo mode (existing behavior) --------------------------------
     configured_db_url = get_configured_db_url()
 
     # When repo path is set and no env override, prefer repo-local DB.

@@ -563,12 +563,14 @@ async def setup_mcp(factory, fts, vector_store, populated_db):
 
     yield populated_db
 
-    # Reset globals
+    # Reset globals (including workspace state)
     mcp_mod._session_factory = None
     mcp_mod._fts = None
     mcp_mod._vector_store = None
     mcp_mod._decision_store = None
     mcp_mod._repo_path = None
+    mcp_mod._registry = None
+    mcp_mod._workspace_root = None
 
 
 # ---- Tool 1: get_overview ----

@@ -18,8 +18,11 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._server import mcp
 
@@ -46,6 +49,10 @@ async def get_graph_metrics(
         target: File path (e.g. "src/auth/service.py") or symbol ID ("path::Name").
         repo: Usually omitted.
     """
+    if repo == "all":
+        return _unsupported_repo_all("get_graph_metrics")
+    ctx = await _resolve_repo_context(repo)
+
     t0 = time.perf_counter()
     if not target or not target.strip():
         return {
@@ -54,8 +61,8 @@ async def get_graph_metrics(
             "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
         }
 
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
         repo_id = repository.id
 
         # Try exact lookup first
