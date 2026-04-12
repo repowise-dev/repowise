@@ -209,7 +209,9 @@ def update_command(
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
-    config = GenerationConfig()
+    cfg = load_config(repo_path)
+    language = cfg.get("language", "en")
+    config = GenerationConfig(max_concurrency=concurrency, language=language)()
 
     # Read exclude patterns from config (set during init or via web UI)
     repo_config = load_config(repo_path)

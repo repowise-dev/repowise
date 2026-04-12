@@ -135,12 +135,14 @@ class PageGenerator:
         assembler: ContextAssembler,
         config: GenerationConfig,
         jinja_env: jinja2.Environment | None = None,
-        vector_store: Any | None = None,  # VectorStore | None
+        vector_store: Any | None = None,
+        language: str = "en",
     ) -> None:
         self._provider = provider
         self._assembler = assembler
         self._config = config
         self._vector_store = vector_store
+        self._language = language
         self._cache: dict[str, GeneratedResponse] = {}
 
         if jinja_env is None:
@@ -152,7 +154,6 @@ class PageGenerator:
                 autoescape=False,
             )
         self._jinja_env = jinja_env
-
     # ------------------------------------------------------------------
     # Per-type generation methods
     # ------------------------------------------------------------------
@@ -921,21 +922,31 @@ class PageGenerator:
             )
             page.metadata["hallucination_warnings"] = hal_warnings
         return page
-
+    
     async def _call_provider(
         self,
         page_type: str,
         user_prompt: str,
         request_id: str,
     ) -> GeneratedResponse:
-        """Call the provider with caching."""
         key = self._compute_cache_key(page_type, user_prompt)
         if self._config.cache_enabled and key in self._cache:
             log.debug("Cache hit", page_type=page_type, key=key[:8])
             return self._cache[key]
 
+        base_system = SYSTEM_PROMPTS[page_type]
+        if self._language != "en":
+            language_instruction = (
+                f"Generate all documentation content in {self._language}. "
+                "Keep all code, file paths, and symbol names in their original form. "
+                "Do not translate them.\n\n"
+            )
+            system_prompt = language_instruction + base_system
+        else:
+            system_prompt = base_system
+
         response = await self._provider.generate(
-            SYSTEM_PROMPTS[page_type],
+            system_prompt,
             user_prompt,
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
@@ -946,7 +957,7 @@ class PageGenerator:
             self._cache[key] = response
 
         return response
-
+   
     def _compute_cache_key(self, page_type: str, user_prompt: str) -> str:
         """Return SHA256(model + page_type + user_prompt) as cache key."""
         raw = f"{self._provider.model_name}:{page_type}:{user_prompt}"
@@ -1299,6 +1310,7 @@ def _validate_symbol_references(
             continue
         # Check against known names
         base = ref.split(".")[-1]
+
         if ref in known or base in known:
             continue
         # Skip if the ref is a substring of any known symbol (covers partial

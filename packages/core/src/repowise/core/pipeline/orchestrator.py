@@ -723,6 +723,7 @@ async def run_generation(
     progress: ProgressCallback | None,
     resume: bool = False,
     cost_tracker: Any | None = None,
+    generation_config: Any,   # <-- ДОБАВЛЕННЫЙ ПАРАМЕТР
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -741,7 +742,23 @@ async def run_generation(
     if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
         llm_client._cost_tracker = cost_tracker
 
-    config = GenerationConfig(max_concurrency=concurrency)
+    # Создаём новый конфиг на основе переданного generation_config, но с нужным max_concurrency
+    config = GenerationConfig(
+        max_tokens=generation_config.max_tokens,
+        temperature=generation_config.temperature,
+        token_budget=generation_config.token_budget,
+        max_concurrency=concurrency,
+        cache_enabled=generation_config.cache_enabled,
+        staleness_threshold_days=generation_config.staleness_threshold_days,
+        expiry_threshold_days=generation_config.expiry_threshold_days,
+        top_symbol_percentile=generation_config.top_symbol_percentile,
+        file_page_top_percentile=generation_config.file_page_top_percentile,
+        file_page_min_symbols=generation_config.file_page_min_symbols,
+        max_pages_pct=generation_config.max_pages_pct,
+        jobs_dir=generation_config.jobs_dir,
+        large_file_source_pct=generation_config.large_file_source_pct,
+        language=generation_config.language,
+    )
     assembler = ContextAssembler(config)
 
     # Resolve embedder and vector store
@@ -749,8 +766,6 @@ async def run_generation(
 
     if vector_store is None:
         vector_store = InMemoryVectorStore(embedder_impl)
-
-    generator = PageGenerator(llm_client, assembler, config, vector_store=vector_store)
 
     # Job system — use a temp-like dir under repo_path for checkpoints
     jobs_dir = repo_path / ".repowise" / "jobs"
@@ -777,6 +792,14 @@ async def run_generation(
     def on_total_known(total: int) -> None:
         if progress:
             progress.on_phase_start("generation", total)
+
+    generator = PageGenerator(
+        llm_client,
+        assembler,
+        config,
+        vector_store=vector_store,
+        language=config.language,
+    )
 
     generated_pages = await generator.generate_all(
         parsed_files,

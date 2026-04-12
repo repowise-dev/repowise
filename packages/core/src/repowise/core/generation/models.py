@@ -82,7 +82,7 @@ class GenerationConfig:
     max_pages_pct: float = 0.10  # hard cap: total pages ≤ max(50, N_files * this)
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
-
+    language: str = "en"
 
 # ---------------------------------------------------------------------------
 # GeneratedPage
