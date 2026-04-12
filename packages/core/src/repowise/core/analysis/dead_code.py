@@ -548,6 +548,28 @@ class DeadCodeAnalyzer:
                     for f in files
                     if f in self.graph
                 )
+                # Aggregate git metadata across package files for enrichment
+                pkg_last_commit: datetime | None = None
+                pkg_total_commits_90d = 0
+                pkg_owner: str | None = None
+                owner_counts: dict[str, int] = {}
+                for f in files:
+                    gm = self.git_meta_map.get(f)
+                    if gm is None:
+                        continue
+                    f_last = getattr(gm, "last_commit_at", None)
+                    if f_last and (pkg_last_commit is None or f_last > pkg_last_commit):
+                        pkg_last_commit = f_last
+                    pkg_total_commits_90d += getattr(gm, "commit_count_90d", 0) or 0
+                    f_owner = getattr(gm, "primary_owner_name", None)
+                    if f_owner:
+                        owner_counts[f_owner] = owner_counts.get(f_owner, 0) + 1
+                if owner_counts:
+                    pkg_owner = max(owner_counts, key=lambda k: owner_counts[k])
+                pkg_age_days: int | None = None
+                if pkg_last_commit:
+                    pkg_age_days = (datetime.now(UTC) - pkg_last_commit).days
+
                 findings.append(
                     DeadCodeFindingData(
                         kind=DeadCodeKind.ZOMBIE_PACKAGE,
@@ -556,14 +578,14 @@ class DeadCodeAnalyzer:
                         symbol_kind=None,
                         confidence=0.5,
                         reason=f"Package '{pkg}' has no importers from other packages",
-                        last_commit_at=None,
-                        commit_count_90d=0,
+                        last_commit_at=pkg_last_commit,
+                        commit_count_90d=pkg_total_commits_90d,
                         lines=total_lines,
                         package=pkg,
                         evidence=[f"No inter-package imports into '{pkg}'"],
                         safe_to_delete=False,
-                        primary_owner=None,
-                        age_days=None,
+                        primary_owner=pkg_owner,
+                        age_days=pkg_age_days,
                     )
                 )
 

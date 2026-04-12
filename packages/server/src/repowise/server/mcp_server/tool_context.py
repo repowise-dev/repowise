@@ -116,7 +116,9 @@ async def _resolve_one_target(
         target_type = "file"
         file_path_for_git = target
     else:
-        # 2. Try module page
+        # 1b. Normalise directory targets: strip trailing slash and try module
+        clean_target = target.rstrip("/")
+        # 2. Try module page (exact, then cleaned, then partial)
         res = await session.execute(
             select(Page).where(
                 Page.repository_id == repo_id,
@@ -125,13 +127,22 @@ async def _resolve_one_target(
             )
         )
         page = res.scalar_one_or_none()
+        if page is None and clean_target != target:
+            res = await session.execute(
+                select(Page).where(
+                    Page.repository_id == repo_id,
+                    Page.page_type == "module_page",
+                    Page.target_path == clean_target,
+                )
+            )
+            page = res.scalar_one_or_none()
         if page is None:
             # Partial match fallback for modules
             res = await session.execute(
                 select(Page).where(
                     Page.repository_id == repo_id,
                     Page.page_type == "module_page",
-                    Page.target_path.contains(target),
+                    Page.target_path.contains(clean_target),
                 )
             )
             page = res.scalar_one_or_none()
@@ -213,16 +224,29 @@ async def _resolve_one_target(
         # Fallback 3: fuzzy path suggestions — match by filename or partial path.
         # Only runs if the prior fallbacks didn't resolve the target.
         if target_type is None:
-            tail = target.rsplit("/", 1)[-1]
+            # For directory-like targets, suggest files within that directory
+            dir_prefix = clean_target.rstrip("/") + "/"
             res = await session.execute(
                 select(GitMetadata.file_path)
                 .where(
                     GitMetadata.repository_id == repo_id,
-                    GitMetadata.file_path.contains(tail),
+                    GitMetadata.file_path.like(f"{dir_prefix}%"),
                 )
                 .limit(5)
             )
-            suggestions = [row[0] for row in res.all() if row[0] != target]
+            suggestions = [row[0] for row in res.all()]
+            if not suggestions:
+                # Fall back to filename / partial path match
+                tail = target.rsplit("/", 1)[-1]
+                res = await session.execute(
+                    select(GitMetadata.file_path)
+                    .where(
+                        GitMetadata.repository_id == repo_id,
+                        GitMetadata.file_path.contains(tail),
+                    )
+                    .limit(5)
+                )
+                suggestions = [row[0] for row in res.all() if row[0] != target]
             if suggestions:
                 return {
                     "target": target,
@@ -665,7 +689,16 @@ async def _resolve_call_graph(
             node = next((r for r in rows if r.file_path == file_hint), rows[0])
 
     if node is None or node.node_type != "symbol":
-        # For file targets, skip silently — callers/callees is symbol-only
+        # For file targets, return empty with explanation — callers/callees is symbol-only
+        if want_callers:
+            result_data["callers"] = []
+        if want_callees:
+            result_data["callees"] = []
+        if node is not None and node.node_type != "symbol":
+            result_data["_call_graph_note"] = (
+                "callers/callees require a symbol target (function/class/method), "
+                f"but '{target}' is a {node.node_type}. Pass a symbol name or file::Symbol."
+            )
         return
 
     direction = "both"
@@ -733,7 +766,8 @@ async def _resolve_metrics(
 
     node = await get_graph_node(session, repo_id, target)
     if node is None:
-        return  # Silently skip — metrics are supplementary
+        result_data["metrics"] = None
+        return
 
     try:
         meta = json.loads(node.community_meta_json or "{}")
@@ -775,6 +809,7 @@ async def _resolve_community(
 
     node = await get_graph_node(session, repo_id, target)
     if node is None or node.community_id is None:
+        result_data["community"] = None
         return
 
     try:

@@ -43,7 +43,7 @@ def _derive_change_pattern(categories: dict[str, int]) -> str:
         labels = {
             "feature": "feature-active",
             "refactor": "primarily refactored",
-            "fix": "bug-prone",
+            "fix": "fix-heavy",
             "dependency": "dependency-churn",
         }
         return labels.get(dominant, dominant)
@@ -130,22 +130,36 @@ def _compute_impact_surface(
 
 
 async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> bool:
-    """Return True if no test file corresponding to *target* exists in graph_nodes."""
+    """Return True if no test file corresponding to *target* exists in graph_nodes.
+
+    Test files themselves (is_test=True) are never considered to have a test gap.
+    """
     import os
+
+    # Test files don't need tests — skip the check entirely
+    node_res = await session.execute(
+        select(GraphNode.is_test).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_id == target,
+        ).limit(1)
+    )
+    row = node_res.scalar_one_or_none()
+    if row is True:
+        return False
 
     base = os.path.splitext(os.path.basename(target))[0]
     ext = os.path.splitext(target)[1].lstrip(".")
     # Build a LIKE pattern broad enough to catch test_<base>, <base>_test, <base>.spec.*
     patterns = [f"%test_{base}%", f"%{base}_test%", f"%{base}.spec.{ext}%"]
     for pat in patterns:
-        row = await session.execute(
+        res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
                 GraphNode.is_test == True,  # noqa: E712
                 GraphNode.node_id.like(pat),
             ).limit(1)
         )
-        if row.scalar_one_or_none() is not None:
+        if res.scalar_one_or_none() is not None:
             return False
     return True
 
