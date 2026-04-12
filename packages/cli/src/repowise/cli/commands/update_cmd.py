@@ -5,10 +5,12 @@ from __future__ import annotations
 import time
 
 import click
+from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
+    find_workspace_root,
     get_head_commit,
     load_config,
     load_state,
@@ -17,6 +19,101 @@ from repowise.cli.helpers import (
     run_async,
     save_state,
 )
+
+
+# ---------------------------------------------------------------------------
+# Workspace update flow
+# ---------------------------------------------------------------------------
+
+
+def _workspace_update(
+    start_path: "Path",
+    *,
+    repo_alias: str | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Update stale repos in a workspace."""
+    from pathlib import Path
+
+    from repowise.core.workspace import WorkspaceConfig, check_repo_staleness, update_workspace
+
+    ws_root = find_workspace_root(start_path)
+    if ws_root is None:
+        raise click.ClickException(
+            "No .repowise-workspace.yaml found. "
+            "Run 'repowise init <workspace-dir>' first."
+        )
+
+    ws_config = WorkspaceConfig.load(ws_root)
+
+    # Show staleness summary first
+    console.print(f"[bold]repowise update[/bold] — workspace: {ws_root.name}")
+    console.print()
+
+    stale_count = 0
+    for entry in ws_config.repos:
+        if repo_alias and entry.alias != repo_alias:
+            continue
+        abs_path = (ws_root / entry.path).resolve()
+        stored = entry.last_commit_at_index
+        is_stale, head, behind = check_repo_staleness(abs_path, stored)
+        status = f"[yellow]{behind} new commit(s)[/yellow]" if is_stale else "[green]up to date[/green]"
+        if not (abs_path / ".repowise").is_dir():
+            status = "[dim]not indexed[/dim]"
+        console.print(f"  {entry.alias:<20} {status}")
+        if is_stale:
+            stale_count += 1
+
+    console.print()
+
+    if stale_count == 0:
+        console.print("[green]All repos are up to date.[/green]")
+        return
+
+    if dry_run:
+        console.print(f"[yellow]Dry run — {stale_count} repo(s) would be updated.[/yellow]")
+        return
+
+    # Run the updates
+    def _on_start(alias: str) -> None:
+        console.print(f"  Updating [bold]{alias}[/bold]...")
+
+    def _on_done(result: "RepoUpdateResult") -> None:
+        if result.error:
+            console.print(f"    [red]\u2717 {result.alias}: {result.error}[/red]")
+        elif result.updated:
+            console.print(
+                f"    [green]\u2713[/green] {result.alias}: "
+                f"{result.file_count} files, {result.symbol_count:,} symbols"
+            )
+
+    from repowise.core.workspace import RepoUpdateResult
+
+    results = run_async(
+        update_workspace(
+            ws_root,
+            ws_config,
+            repo_filter=repo_alias,
+            dry_run=False,
+            on_repo_start=_on_start,
+            on_repo_done=_on_done,
+        )
+    )
+
+    # Summary
+    updated = sum(1 for r in results if r.updated)
+    errors = sum(1 for r in results if r.error)
+    skipped = sum(1 for r in results if r.skipped_reason)
+    console.print()
+    console.print(
+        f"[bold]Done:[/bold] {updated} updated, {skipped} skipped"
+        + (f", {errors} errors" if errors else "")
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI command
+# ---------------------------------------------------------------------------
 
 
 @click.command("update")
@@ -33,6 +130,19 @@ from repowise.cli.helpers import (
 @click.option(
     "--dry-run", is_flag=True, default=False, help="Show affected pages without regenerating."
 )
+@click.option(
+    "--workspace",
+    "-w",
+    is_flag=True,
+    default=False,
+    help="Update all stale repos in the workspace.",
+)
+@click.option(
+    "--repo",
+    "repo_alias",
+    default=None,
+    help="Update only this repo alias within the workspace.",
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -40,10 +150,18 @@ def update_command(
     since: str | None,
     cascade_budget: int | None,
     dry_run: bool,
+    workspace: bool,
+    repo_alias: str | None,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync."""
     start = time.monotonic()
     repo_path = resolve_repo_path(path)
+
+    # --- Workspace mode ---
+    if workspace or repo_alias:
+        _workspace_update(repo_path, repo_alias=repo_alias, dry_run=dry_run)
+        return
+
     ensure_repowise_dir(repo_path)
 
     # Load saved API keys from .repowise/.env (won't overwrite existing env vars)

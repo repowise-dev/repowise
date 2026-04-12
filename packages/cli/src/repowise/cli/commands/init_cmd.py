@@ -180,6 +180,183 @@ async def _persist_result(
 
 
 # ---------------------------------------------------------------------------
+# Workspace init — multi-repo flow
+# ---------------------------------------------------------------------------
+
+
+def _workspace_init(
+    *,
+    scan: Any,
+    init_all: bool,
+    exclude_patterns: list[str],
+    commit_limit: int | None,
+    follow_renames: bool,
+    no_claude_md: bool,
+    include_submodules: bool,
+) -> None:
+    """Multi-repo workspace initialization.
+
+    Detects repos, prompts for selection and primary, creates a workspace
+    config, and runs index-only on each selected repo.
+    """
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+    from repowise.cli.mcp_config import save_mcp_config, save_root_mcp_config
+    from repowise.cli.ui import (
+        BRAND,
+        RichProgressCallback,
+        build_completion_panel,
+        format_elapsed,
+        interactive_primary_select,
+        interactive_repo_select,
+        print_banner,
+    )
+    from repowise.core.pipeline import run_pipeline
+    from repowise.core.workspace import RepoEntry, WorkspaceConfig
+
+    start = time.monotonic()
+    root = scan.root
+
+    print_banner(console, repo_name=f"Workspace: {root.name}")
+    console.print(f"  Detected [bold]{len(scan.repos)}[/bold] repositories in {root}\n")
+
+    # Step 1: Select repos to index
+    if init_all:
+        selected = list(scan.repos)
+    else:
+        selected = interactive_repo_select(console, scan.repos)
+
+    if not selected:
+        console.print("[yellow]No repositories selected. Aborting.[/yellow]")
+        return
+
+    # Step 2: Select primary repo
+    if init_all:
+        primary_alias = selected[0].alias
+    else:
+        primary_alias = interactive_primary_select(console, selected)
+
+    # Step 3: Create workspace config
+    entries = [
+        RepoEntry(
+            path=repo.path.relative_to(root).as_posix(),
+            alias=repo.alias,
+            is_primary=(repo.alias == primary_alias),
+        )
+        for repo in selected
+    ]
+    ws_config = WorkspaceConfig(
+        version=1,
+        repos=entries,
+        default_repo=primary_alias,
+    )
+    config_path = ws_config.save(root)
+    console.print(f"  [green]\u2713[/green] Created {config_path.name}")
+    console.print()
+
+    # Step 4: Index each selected repo (index-only, no LLM cost)
+    resolved_commit_limit = max(1, min(commit_limit or 500, 5000))
+    total_files = 0
+    total_symbols = 0
+    errors: list[tuple[str, str]] = []
+
+    for i, repo in enumerate(selected, 1):
+        console.print(
+            f"  [{BRAND}][{i}/{len(selected)}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name})..."
+        )
+        ensure_repowise_dir(repo.path)
+
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("{task.completed}/{task.total}"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress_bar:
+                callback = RichProgressCallback(progress_bar, console)
+
+                result = run_async(
+                    run_pipeline(
+                        repo.path,
+                        commit_depth=resolved_commit_limit,
+                        follow_renames=follow_renames,
+                        exclude_patterns=exclude_patterns if exclude_patterns else None,
+                        include_submodules=include_submodules,
+                        generate_docs=False,
+                        progress=callback,
+                    )
+                )
+
+            # Persist to repo-local DB
+            run_async(_persist_result(result, repo.path))
+
+            # Write state.json so `repowise update` knows the base commit
+            head = get_head_commit(repo.path)
+            save_state(repo.path, {
+                "last_sync_commit": head,
+                "total_pages": 0,
+            })
+
+            # Update workspace config with indexing metadata
+            from datetime import datetime, timezone
+
+            entry = ws_config.get_repo(repo.alias)
+            if entry is not None:
+                entry.indexed_at = datetime.now(timezone.utc).isoformat()
+                entry.last_commit_at_index = head
+
+            # MCP config + CLAUDE.md per repo
+            save_mcp_config(repo.path)
+            save_root_mcp_config(repo.path)
+            _maybe_generate_claude_md(console, repo.path, no_claude_md=no_claude_md)
+
+            total_files += result.file_count
+            total_symbols += result.symbol_count
+            console.print(
+                f"    [green]\u2713[/green] {result.file_count} files, "
+                f"{result.symbol_count:,} symbols\n"
+            )
+        except Exception as exc:
+            errors.append((repo.alias, str(exc)))
+            console.print(f"    [red]\u2717 Failed: {exc}[/red]\n")
+
+    # Save workspace config with updated timestamps
+    ws_config.save(root)
+
+    # Step 5: Register MCP for primary repo with Claude
+    primary_entry = ws_config.get_primary()
+    if primary_entry:
+        primary_path = (root / primary_entry.path).resolve()
+        _register_mcp_with_claude(console, primary_path)
+
+    # Step 6: Completion summary
+    elapsed = time.monotonic() - start
+    metrics: list[tuple[str, str]] = [
+        ("Repositories", f"{len(selected) - len(errors)} indexed"),
+        ("Total files", str(total_files)),
+        ("Total symbols", f"{total_symbols:,}"),
+        ("Primary repo", primary_alias),
+        ("Elapsed", format_elapsed(elapsed)),
+    ]
+    if errors:
+        metrics.append(("Errors", f"{len(errors)} repos failed"))
+
+    next_steps = [
+        ("repowise mcp <repo-path>", "start MCP server for a repo"),
+        ("repowise status --workspace", "show workspace status"),
+        ("repowise init <repo> --provider gemini", "generate full docs for a repo"),
+    ]
+
+    console.print()
+    console.print(
+        build_completion_panel("repowise workspace init complete", metrics, next_steps=next_steps)
+    )
+    console.print()
+
+
+# ---------------------------------------------------------------------------
 # CLI command
 # ---------------------------------------------------------------------------
 
@@ -255,6 +432,13 @@ async def _persist_result(
     default=False,
     help="Include git submodule directories (excluded by default).",
 )
+@click.option(
+    "--all",
+    "init_all",
+    is_flag=True,
+    default=False,
+    help="In multi-repo mode, index all detected repos without prompting.",
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -274,6 +458,7 @@ def init_command(
     follow_renames: bool,
     no_claude_md: bool,
     include_submodules: bool,
+    init_all: bool,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -299,6 +484,29 @@ def init_command(
 
     if not repo_path.is_dir():
         raise click.ClickException(f"Not a directory: {repo_path}")
+
+    # ---- Workspace detection ----
+    # If the path contains multiple git repos (and is not itself a single repo),
+    # branch into the multi-repo workspace flow.
+    from repowise.core.workspace import scan_for_repos
+
+    scan = scan_for_repos(repo_path, include_submodules=include_submodules)
+    if len(scan.repos) > 1:
+        _workspace_init(
+            scan=scan,
+            init_all=init_all,
+            exclude_patterns=list(exclude),
+            commit_limit=commit_limit,
+            follow_renames=follow_renames,
+            no_claude_md=no_claude_md,
+            include_submodules=include_submodules,
+        )
+        return
+
+    # If a single repo was found inside the given directory (not at root),
+    # redirect to it so the user doesn't have to specify the exact path.
+    if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
+        repo_path = scan.repos[0].path
 
     ensure_repowise_dir(repo_path)
     load_dotenv(repo_path)
