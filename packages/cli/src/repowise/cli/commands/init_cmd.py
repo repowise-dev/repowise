@@ -294,10 +294,13 @@ def _workspace_init(
 
             # Write state.json so `repowise update` knows the base commit
             head = get_head_commit(repo.path)
-            save_state(repo.path, {
-                "last_sync_commit": head,
-                "total_pages": 0,
-            })
+            save_state(
+                repo.path,
+                {
+                    "last_sync_commit": head,
+                    "total_pages": 0,
+                },
+            )
 
             # Update workspace config with indexing metadata
             from datetime import datetime, timezone
@@ -468,7 +471,9 @@ def init_command(
     from repowise.cli.ui import (
         BRAND,
         RichProgressCallback,
+        build_analysis_summary_panel,
         build_completion_panel,
+        build_contextual_next_steps,
         format_elapsed,
         interactive_advanced_config,
         interactive_mode_select,
@@ -477,6 +482,8 @@ def init_command(
         print_banner,
         print_index_only_intro,
         print_phase_header,
+        print_scan_summary,
+        quick_repo_scan,
     )
 
     start = time.monotonic()
@@ -531,15 +538,20 @@ def init_command(
     # ---- Interactive mode (TTY, no explicit flags) ----
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
 
+    # Pre-scan for interactive mode — fast stats to inform choices
+    scan_info = None
     if is_interactive:
         print_banner(console, repo_name=repo_path.name)
+        with console.status("  Scanning repository…", spinner="dots"):
+            scan_info = quick_repo_scan(repo_path)
+        print_scan_summary(console, scan_info)
         mode = interactive_mode_select(console)
 
         if mode == "index_only":
             index_only = True
         elif mode == "advanced":
             provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
-            adv = interactive_advanced_config(console)
+            adv = interactive_advanced_config(console, scan=scan_info)
             commit_limit = adv["commit_limit"]
             follow_renames = adv["follow_renames"]
             skip_tests = adv["skip_tests"]
@@ -547,6 +559,9 @@ def init_command(
             concurrency = adv["concurrency"]
             exclude = adv["exclude"]
             test_run = adv["test_run"]
+            embedder_name = adv.get("embedder") or embedder_name
+            include_submodules = adv.get("include_submodules", include_submodules)
+            no_claude_md = adv.get("no_claude_md", no_claude_md)
         else:
             provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
 
@@ -659,6 +674,58 @@ def init_command(
                 progress=callback,
             )
         )
+
+    # ---- Analysis summary (shown between analysis and generation) ----
+    _graph = result.graph_builder.graph()
+    _dc_unreachable_pre = sum(
+        1
+        for f in (result.dead_code_report.findings if result.dead_code_report else [])
+        if f.kind.value == "unreachable_file"
+    )
+    _dc_unused_pre = sum(
+        1
+        for f in (result.dead_code_report.findings if result.dead_code_report else [])
+        if f.kind.value == "unused_export"
+    )
+    _dc_lines_pre = result.dead_code_report.deletable_lines if result.dead_code_report else 0
+    _n_decisions_pre = (
+        sum(result.decision_report.by_source.values()) if result.decision_report else 0
+    )
+    _lang_dist = result.repo_structure.root_language_distribution
+    _lang_summary = ""
+    if _lang_dist:
+        _top = sorted(_lang_dist.items(), key=lambda x: -x[1])[:4]
+        _lang_summary = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top)
+        if len(_lang_dist) > 4:
+            _lang_summary += f" +{len(_lang_dist) - 4} more"
+
+    # Community count (best-effort)
+    _community_count = 0
+    try:
+        if hasattr(result.graph_builder, "communities"):
+            _community_count = len(result.graph_builder.communities())
+    except Exception:
+        pass
+
+    console.print()
+    console.print(
+        build_analysis_summary_panel(
+            file_count=result.file_count,
+            symbol_count=result.symbol_count,
+            graph_nodes=_graph.number_of_nodes(),
+            graph_edges=_graph.number_of_edges(),
+            dead_unreachable=_dc_unreachable_pre,
+            dead_unused=_dc_unused_pre,
+            dead_lines=_dc_lines_pre,
+            decision_count=_n_decisions_pre,
+            git_files=result.git_summary.files_indexed if result.git_summary else 0,
+            hotspot_count=result.git_summary.hotspots
+            if result.git_summary and hasattr(result.git_summary, "hotspots")
+            else 0,
+            community_count=_community_count,
+            lang_summary=_lang_summary,
+        )
+    )
 
     # ---- Phase 3: Generation (full mode only) ----
     if not index_only:
@@ -908,7 +975,7 @@ def init_command(
     # ---- Completion panel ----
     elapsed = time.monotonic() - start
 
-    _graph = result.graph_builder.graph()
+    _graph_final = result.graph_builder.graph()
     _dc_unreachable = sum(
         1
         for f in (result.dead_code_report.findings if result.dead_code_report else [])
@@ -920,27 +987,46 @@ def init_command(
         if f.kind.value == "unused_export"
     )
     _n_decisions = sum(result.decision_report.by_source.values()) if result.decision_report else 0
+    _hotspot_count_final = (
+        result.git_summary.hotspots
+        if result.git_summary and hasattr(result.git_summary, "hotspots")
+        else 0
+    )
+
+    # Find top hotspot file for contextual next steps
+    _top_hotspot = ""
+    if result.git_meta_map:
+        _by_churn = sorted(
+            result.git_meta_map.items(),
+            key=lambda x: x[1].get("commit_count", 0),
+            reverse=True,
+        )
+        if _by_churn:
+            _top_hotspot = _by_churn[0][0]
+            # Shorten to basename for display
+            if "/" in _top_hotspot:
+                _top_hotspot = _top_hotspot.rsplit("/", 1)[-1]
 
     # Build a compact language summary for the completion panel
-    _lang_dist = result.repo_structure.root_language_distribution
-    if _lang_dist:
-        _top = sorted(_lang_dist.items(), key=lambda x: -x[1])[:4]
-        _lang_summary = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top)
-        if len(_lang_dist) > 4:
-            _lang_summary += f" +{len(_lang_dist) - 4} more"
+    _lang_dist_final = result.repo_structure.root_language_distribution
+    if _lang_dist_final:
+        _top_final = sorted(_lang_dist_final.items(), key=lambda x: -x[1])[:4]
+        _lang_summary_final = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top_final)
+        if len(_lang_dist_final) > 4:
+            _lang_summary_final += f" +{len(_lang_dist_final) - 4} more"
     else:
-        _lang_summary = str(len(result.languages))
+        _lang_summary_final = str(len(result.languages))
 
     if index_only:
         metrics: list[tuple[str, str]] = [
             ("Files indexed", str(result.file_count)),
             ("Symbols", f"{result.symbol_count:,}"),
-            ("Languages", _lang_summary),
+            ("Languages", _lang_summary_final),
             ("Elapsed", format_elapsed(elapsed)),
             ("", ""),
             (
                 "Graph",
-                f"{_graph.number_of_nodes()} nodes · {_graph.number_of_edges()} edges",
+                f"{_graph_final.number_of_nodes()} nodes · {_graph_final.number_of_edges()} edges",
             ),
             ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
             ("Decisions", str(_n_decisions)),
@@ -949,16 +1035,18 @@ def init_command(
             metrics.append(
                 (
                     "Git history",
-                    f"{result.git_summary.files_indexed} files · {result.git_summary.hotspots} hotspots",
+                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
                 )
             )
 
-        next_steps = [
-            ("repowise mcp .", "start MCP server for AI assistants"),
-            ("repowise init --provider gemini", "generate full documentation"),
-            ("repowise dead-code", "explore dead code findings"),
-            ("repowise search <query>", "search the index"),
-        ]
+        next_steps = build_contextual_next_steps(
+            index_only=True,
+            dead_unreachable=_dc_unreachable,
+            dead_unused=_dc_unused,
+            hotspot_count=_hotspot_count_final,
+            decision_count=_n_decisions,
+            top_hotspot=_top_hotspot,
+        )
         console.print()
         console.print(
             build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
@@ -979,14 +1067,25 @@ def init_command(
             metrics.append(
                 (
                     "Git history",
-                    f"{result.git_summary.files_indexed} files · {result.git_summary.hotspots} hotspots",
+                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
                 )
             )
+
+        next_steps = build_contextual_next_steps(
+            index_only=False,
+            dead_unreachable=_dc_unreachable,
+            dead_unused=_dc_unused,
+            hotspot_count=_hotspot_count_final,
+            decision_count=_n_decisions,
+            top_hotspot=_top_hotspot,
+        )
 
         from repowise.cli.mcp_config import format_setup_instructions
 
         console.print()
-        console.print(build_completion_panel("repowise init complete", metrics))
+        console.print(
+            build_completion_panel("repowise init complete", metrics, next_steps=next_steps)
+        )
         console.print()
         console.print(format_setup_instructions(repo_path))
         console.print()
