@@ -1,0 +1,203 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "repowise.fullname" . }}
+  labels:
+    {{- include "repowise.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "repowise.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "repowise.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "repowise.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if or .Values.repos .Values.postgresql.enabled }}
+      initContainers:
+        {{- if .Values.postgresql.enabled }}
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for PostgreSQL..."
+              until pg_isready -h {{ include "repowise.fullname" . }}-postgresql -p 5432 -U {{ .Values.postgresql.auth.username }}; do
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+        {{- end }}
+        {{- if .Values.repos }}
+        - name: clone-repos
+          image: bitnami/git:latest
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /data/repos
+              # Allow git to work in repos owned by different users (initContainer runs
+              # as root, main container as uid 1000). Write gitconfig for both users.
+              git config --global --add safe.directory '*'
+              mkdir -p /data/.gitconfig-home
+              printf '[safe]\n\tdirectory = *\n' > /data/.gitconfig-home/.gitconfig
+              {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+              git config --global credential.helper 'store --file /tmp/.git-credentials'
+              cp /git-credentials/git-credentials /tmp/.git-credentials
+              chmod 600 /tmp/.git-credentials
+              {{- end }}
+              {{- range .Values.repos }}
+              echo "=== {{ .name }} ==="
+              if [ ! -d "/data/repos/{{ .name }}/.git" ]; then
+                git clone --branch {{ .branch | default "main" }} --single-branch {{ .url }} "/data/repos/{{ .name }}"
+              else
+                cd "/data/repos/{{ .name }}"
+                git fetch origin {{ .branch | default "main" }}
+                git reset --hard origin/{{ .branch | default "main" }}
+              fi
+              {{- end }}
+              echo "Done."
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+            - name: git-credentials
+              mountPath: /git-credentials
+              readOnly: true
+            {{- end }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: backend
+              containerPort: {{ .Values.repowise.backendPort }}
+              protocol: TCP
+            - name: frontend
+              containerPort: {{ .Values.repowise.frontendPort }}
+              protocol: TCP
+          env:
+            - name: REPOWISE_DB_URL
+              {{- if .Values.postgresql.enabled }}
+              value: "postgresql+asyncpg://{{ .Values.postgresql.auth.username }}:{{ .Values.postgresql.auth.password }}@{{ include "repowise.fullname" . }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+              {{- else }}
+              value: {{ .Values.repowise.dbUrl | quote }}
+              {{- end }}
+            - name: REPOWISE_EMBEDDER
+              value: {{ .Values.repowise.embedder | quote }}
+            - name: PORT_BACKEND
+              value: {{ .Values.repowise.backendPort | quote }}
+            - name: PORT_FRONTEND
+              value: {{ .Values.repowise.frontendPort | quote }}
+            - name: HOSTNAME
+              value: "0.0.0.0"
+            {{- if .Values.repos }}
+            - name: HOME
+              value: "/data/.gitconfig-home"
+            {{- end }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "repowise.secretName" . }}
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "repowise.secretName" . }}
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "repowise.secretName" . }}
+                  key: GEMINI_API_KEY
+                  optional: true
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- if .Values.repos }}
+        - name: register-repos
+          image: curlimages/curl:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              API="http://localhost:{{ .Values.repowise.backendPort }}"
+              echo "Waiting for API..."
+              until curl -sf "$API/health" > /dev/null 2>&1; do sleep 3; done
+              echo "API ready!"
+              {{- range .Values.repos }}
+              echo "--- {{ .name }} ---"
+              # Register (upsert)
+              curl -sf -X POST "$API/api/repos" \
+                -H "Content-Type: application/json" \
+                -d '{"name":"{{ .name }}","local_path":"/data/repos/{{ .name }}","url":"{{ .url }}","default_branch":"{{ .branch | default "main" }}"}' \
+                > /dev/null 2>&1 && echo "  registered" || echo "  (exists)"
+              # Check if already indexed (has head_commit)
+              REPO_DATA=$(curl -sf "$API/api/repos" 2>/dev/null || echo "[]")
+              REPO_ID=$(echo "$REPO_DATA" | sed -n 's/.*"id":"\([^"]*\)","name":"{{ .name }}".*/\1/p')
+              HEAD=$(echo "$REPO_DATA" | sed -n 's/.*"name":"{{ .name }}".*"head_commit":"\([^"]*\)".*/\1/p')
+              if [ -n "$REPO_ID" ] && [ -z "$HEAD" ]; then
+                echo "  not yet indexed, triggering sync..."
+                curl -sf -X POST "$API/api/repos/$REPO_ID/sync" > /dev/null 2>&1 && echo "  sync triggered" || echo "  (sync already running)"
+              elif [ -n "$HEAD" ]; then
+                echo "  already indexed (head: $HEAD), skipping sync."
+              fi
+              {{- end }}
+              echo "All repos processed. Sleeping forever."
+              sleep infinity
+        {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "repowise.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if or .Values.gitCredentials.secretName .Values.gitCredentials.github.token }}
+        - name: git-credentials
+          secret:
+            secretName: {{ .Values.gitCredentials.secretName | default (printf "%s-git-credentials" (include "repowise.fullname" .)) }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

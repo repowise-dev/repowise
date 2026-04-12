@@ -1,0 +1,178 @@
+# -- Number of replicas (only 1 supported with SQLite; PostgreSQL allows more)
+replicaCount: 1
+
+image:
+  # -- Container image repository
+  repository: repowise/repowise
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Override the image tag (defaults to Chart appVersion)
+  tag: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+# -- Override the release name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount
+  create: true
+  # -- Annotations for the ServiceAccount
+  annotations: {}
+  # -- Override the ServiceAccount name
+  name: ""
+
+# -- Pod-level annotations
+podAnnotations: {}
+
+# -- Pod-level security context
+podSecurityContext:
+  fsGroup: 1000
+
+# -- Container-level security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# -- Repowise configuration
+repowise:
+  # -- Embedder to use: mock, openai, gemini, etc.
+  embedder: mock
+  # -- Database URL (uses the PVC-backed SQLite by default)
+  dbUrl: "sqlite+aiosqlite:////data/wiki.db"
+  # -- Backend API port
+  backendPort: 7337
+  # -- Frontend Web UI port
+  frontendPort: 3000
+
+# -- API keys for LLM providers (stored in a Secret)
+apiKeys:
+  # -- Anthropic API key
+  anthropic: ""
+  # -- OpenAI API key
+  openai: ""
+  # -- Gemini API key
+  gemini: ""
+
+# -- Reference an existing Secret instead of creating one.
+# The Secret must contain keys: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY
+existingSecret: ""
+
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Backend API port
+  backendPort: 7337
+  # -- Frontend Web UI port
+  frontendPort: 3000
+
+ingress:
+  # -- Enable Ingress
+  enabled: false
+  # -- Ingress class name
+  className: ""
+  # -- Ingress annotations
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  # -- Ingress hosts
+  hosts:
+    - host: repowise.local
+      paths:
+        - path: /
+          pathType: Prefix
+          # -- Which port to route to: "frontend" or "backend"
+          servicePort: frontend
+  # -- TLS configuration
+  tls: []
+  #  - secretName: repowise-tls
+  #    hosts:
+  #      - repowise.local
+
+persistence:
+  # -- Enable persistent storage for /data (SQLite DB + indexed repos)
+  enabled: true
+  # -- Storage class (leave empty for cluster default)
+  storageClass: ""
+  # -- Access mode
+  accessMode: ReadWriteOnce
+  # -- Volume size
+  size: 10Gi
+  # -- Annotations for the PVC
+  annotations: {}
+
+# -- PostgreSQL database (default). Set enabled=false to use SQLite instead.
+postgresql:
+  # -- Enable PostgreSQL (recommended). Disable for SQLite (single-user/dev only).
+  enabled: true
+  auth:
+    # -- PostgreSQL username
+    username: repowise
+    # -- PostgreSQL password
+    password: repowise
+    # -- PostgreSQL database name
+    database: repowise
+  primary:
+    persistence:
+      # -- Enable persistent storage for PostgreSQL
+      enabled: true
+      # -- Storage class (leave empty for cluster default)
+      storageClass: ""
+      # -- Volume size
+      size: 10Gi
+
+# -- Repositories to clone and register on install/upgrade.
+# A Kubernetes Job runs after deploy to clone each repo into /data/repos/<name>,
+# register it with the Repowise API, and trigger an initial sync.
+repos: []
+  # - name: my-app
+  #   url: https://github.com/org/my-app.git
+  #   branch: main
+
+# -- Git credentials for cloning private repositories
+gitCredentials:
+  # -- Use an existing Secret with a key "git-credentials" containing:
+  # https://<username>:<token>@github.com
+  secretName: ""
+  github:
+    # -- GitHub username (used if secretName is empty)
+    username: ""
+    # -- GitHub personal access token (used if secretName is empty)
+    token: ""
+
+# -- Resource requests and limits
+resources: {}
+  # limits:
+  #   cpu: 1000m
+  #   memory: 2Gi
+  # requests:
+  #   cpu: 250m
+  #   memory: 512Mi
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity rules
+affinity: {}
+
+# -- Liveness probe configuration
+# Disabled by default: indexing large repos is CPU-intensive and can starve
+# the health endpoint, causing unnecessary restarts. Use readiness probe
+# instead (it only removes from service, doesn't restart).
+# Uncomment below to enable if you don't use heavy indexing.
+livenessProbe: {}
+
+# -- Readiness probe configuration
+readinessProbe:
+  httpGet:
+    path: /health
+    port: backend
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 10
+  failureThreshold: 10
