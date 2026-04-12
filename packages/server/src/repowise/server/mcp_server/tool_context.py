@@ -1,10 +1,20 @@
-"""MCP Tool 2: get_context — complete context for files, modules, or symbols."""
+"""MCP Tool: get_context — the workhorse tool for files, modules, or symbols.
+
+Absorbs functionality from the former get_symbol, get_callers_callees,
+get_graph_metrics, and get_community tools via the ``include`` parameter:
+  - include=["source"]   → symbol source body (replaces get_symbol)
+  - include=["callers"]  → who calls this symbol (replaces get_callers_callees)
+  - include=["callees"]  → what this symbol calls
+  - include=["metrics"]  → PageRank, betweenness, percentiles (replaces get_graph_metrics)
+  - include=["community"]→ community membership + neighbors (replaces get_community)
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -29,6 +39,15 @@ _CHAR_BUDGET = _TOKEN_BUDGET * _CHARS_PER_TOKEN
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence.crud import (
+    get_all_file_metrics,
+    get_community_members,
+    get_cross_community_edges,
+    get_graph_edges_for_node,
+    get_graph_node,
+    get_graph_nodes_by_ids,
+    get_node_degree_counts,
+)
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -44,6 +63,11 @@ from repowise.server.mcp_server._helpers import _get_repo
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server._server import mcp
+
+# Safety cap for source retrieval (from former get_symbol)
+_MAX_SOURCE_LINES = 400
+# Minimum confidence for call edges to filter false positives
+_MIN_CALL_CONFIDENCE = 0.7
 
 
 def _synthesize_structural_summary(
@@ -488,7 +512,309 @@ async def _resolve_one_target(
             freshness["is_stale"] = None
         result_data["freshness"] = freshness
 
+    # --- Source (replaces get_symbol) ---
+    if include and "source" in include:
+        await _resolve_source(session, repository, target, target_type, result_data)
+
+    # --- Callers / Callees (replaces get_callers_callees) ---
+    want_callers = bool(include and "callers" in include)
+    want_callees = bool(include and "callees" in include)
+    if want_callers or want_callees:
+        await _resolve_call_graph(
+            session, repository, target, target_type, result_data,
+            want_callers=want_callers, want_callees=want_callees,
+        )
+
+    # --- Metrics (replaces get_graph_metrics) ---
+    if include and "metrics" in include:
+        await _resolve_metrics(session, repository, target, result_data)
+
+    # --- Community (replaces get_community) ---
+    if include and "community" in include:
+        await _resolve_community(session, repository, target, result_data)
+
     return result_data
+
+
+# ---------------------------------------------------------------------------
+# Merged tool helpers (source, callers/callees, metrics, community)
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_source(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    target_type: str | None,
+    result_data: dict[str, Any],
+) -> None:
+    """Resolve symbol source body and attach to result_data["source"]."""
+    repo_id = repository.id
+
+    # Find the symbol — target could be "path::Name" or a bare name
+    file_path, name = None, None
+    if "::" in target:
+        file_path, _, name = target.partition("::")
+    else:
+        name = target
+
+    # Try exact symbol_id match first
+    res = await session.execute(
+        select(WikiSymbol).where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.symbol_id == target,
+        )
+    )
+    row = res.scalar_one_or_none()
+
+    if row is None and file_path and name:
+        # Try (file_path, qualified_name)
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.file_path == file_path,
+                WikiSymbol.qualified_name == name,
+            )
+        )
+        row = res.scalar_one_or_none()
+
+    if row is None and file_path and name:
+        # Try (file_path, name) — bare name
+        bare = name.split("::")[-1] if "::" in name else name
+        res = await session.execute(
+            select(WikiSymbol).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.file_path == file_path,
+                WikiSymbol.name == bare,
+            )
+        )
+        row = res.scalar_one_or_none()
+
+    if row is None:
+        result_data["source"] = {"error": f"Symbol not found: {target!r}"}
+        return
+
+    if not _state._repo_path:
+        result_data["source"] = {"error": "MCP server has no repo path configured"}
+        return
+
+    repo_root = Path(_state._repo_path)
+    abs_path = (repo_root / row.file_path).resolve()
+    try:
+        abs_path.relative_to(repo_root.resolve())
+    except ValueError:
+        result_data["source"] = {"error": "Path escape attempt blocked"}
+        return
+
+    try:
+        text = abs_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        result_data["source"] = {"error": "Source file could not be read"}
+        return
+
+    lines = text.splitlines()
+    total = len(lines)
+    s = max(1, min(row.start_line, total))
+    e = max(s, min(row.end_line, total))
+
+    span = e - s + 1
+    truncated = False
+    if span > _MAX_SOURCE_LINES:
+        e = s + _MAX_SOURCE_LINES - 1
+        truncated = True
+
+    sliced = "\n".join(lines[s - 1 : e])
+    result_data["source"] = {
+        "body": sliced,
+        "start_line": s,
+        "end_line": e,
+        "language": row.language,
+        "truncated": truncated,
+    }
+
+
+async def _resolve_call_graph(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    target_type: str | None,
+    result_data: dict[str, Any],
+    *,
+    want_callers: bool = False,
+    want_callees: bool = False,
+) -> None:
+    """Resolve callers/callees for a symbol and attach to result_data."""
+    repo_id = repository.id
+    limit = 20
+
+    # Resolve to a graph node (symbol)
+    node = await get_graph_node(session, repo_id, target)
+    if node is None and "::" in target:
+        # Fuzzy: try bare name
+        bare_name = target.split("::")[-1]
+        res = await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.node_type == "symbol",
+                GraphNode.name == bare_name,
+            )
+        )
+        rows = list(res.scalars().all())
+        if rows:
+            file_hint = target.split("::")[0]
+            node = next((r for r in rows if r.file_path == file_hint), rows[0])
+
+    if node is None or node.node_type != "symbol":
+        # For file targets, skip silently — callers/callees is symbol-only
+        return
+
+    direction = "both"
+    if want_callers and not want_callees:
+        direction = "callers"
+    elif want_callees and not want_callers:
+        direction = "callees"
+
+    edges = await get_graph_edges_for_node(
+        session, repo_id, node.node_id,
+        direction=direction, edge_types=["calls", "extends", "implements"],
+        limit=limit,
+    )
+
+    # Hydrate other nodes
+    other_ids = list({
+        e.source_node_id if e.target_node_id == node.node_id else e.target_node_id
+        for e in edges
+    })
+    node_map = await get_graph_nodes_by_ids(session, repo_id, other_ids)
+
+    callers: list[dict[str, Any]] = []
+    callees: list[dict[str, Any]] = []
+
+    for e in edges:
+        # Filter out low-confidence edges (false positives from Tier 3 global resolution)
+        if (e.confidence or 0) < _MIN_CALL_CONFIDENCE:
+            continue
+
+        is_caller = e.target_node_id == node.node_id
+        other_id = e.source_node_id if is_caller else e.target_node_id
+        other_node = node_map.get(other_id)
+
+        entry: dict[str, Any] = {
+            "symbol_id": other_id,
+            "name": other_node.name if other_node else (other_id.split("::")[-1] if "::" in other_id else other_id),
+            "kind": other_node.kind if other_node else None,
+            "file": other_node.file_path if other_node else (other_id.split("::")[0] if "::" in other_id else other_id),
+            "confidence": e.confidence,
+            "edge_type": e.edge_type,
+        }
+        if is_caller:
+            callers.append(entry)
+        else:
+            callees.append(entry)
+
+    # Sort by confidence DESC
+    callers.sort(key=lambda x: -(x.get("confidence") or 0))
+    callees.sort(key=lambda x: -(x.get("confidence") or 0))
+
+    if want_callers:
+        result_data["callers"] = callers
+    if want_callees:
+        result_data["callees"] = callees
+
+
+async def _resolve_metrics(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    result_data: dict[str, Any],
+) -> None:
+    """Resolve graph importance metrics and attach to result_data["metrics"]."""
+    repo_id = repository.id
+
+    node = await get_graph_node(session, repo_id, target)
+    if node is None:
+        return  # Silently skip — metrics are supplementary
+
+    try:
+        meta = json.loads(node.community_meta_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        meta = {}
+
+    degrees = await get_node_degree_counts(session, repo_id, node.node_id)
+
+    # Percentile computation against same-type peers
+    all_nodes = await get_all_file_metrics(session, repo_id)
+    pr_values = [n.pagerank for n in all_nodes if n.pagerank is not None]
+    bt_values = [n.betweenness for n in all_nodes if n.betweenness is not None]
+
+    def _pct(value: float, all_vals: list[float]) -> int:
+        if not all_vals:
+            return 0
+        return round(100 * sum(1 for v in all_vals if v < value) / len(all_vals))
+
+    result_data["metrics"] = {
+        "pagerank": round(node.pagerank or 0.0, 6),
+        "pagerank_percentile": _pct(node.pagerank or 0.0, pr_values),
+        "betweenness": round(node.betweenness or 0.0, 6),
+        "betweenness_percentile": _pct(node.betweenness or 0.0, bt_values),
+        "in_degree": degrees["in_degree"],
+        "out_degree": degrees["out_degree"],
+        "community_id": node.community_id,
+        "community_label": meta.get("label") or None,
+    }
+
+
+async def _resolve_community(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    result_data: dict[str, Any],
+) -> None:
+    """Resolve community membership and attach to result_data["community"]."""
+    repo_id = repository.id
+
+    node = await get_graph_node(session, repo_id, target)
+    if node is None or node.community_id is None:
+        return
+
+    try:
+        meta = json.loads(node.community_meta_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        meta = {}
+
+    label = meta.get("label") or f"cluster_{node.community_id}"
+    cohesion = float(meta.get("cohesion", 0.0) or 0.0)
+
+    # Get top members (cap at 10 for compact output)
+    members = await get_community_members(session, repo_id, node.community_id, limit=10)
+    member_paths = [m.node_id for m in members]
+
+    # Neighboring communities (cap at 5)
+    cross_edges = await get_cross_community_edges(session, repo_id, node.community_id)
+    neighbors: list[dict[str, Any]] = []
+    for ce in cross_edges[:5]:
+        nid = ce["target_community_id"]
+        nm = await get_community_members(session, repo_id, nid, limit=1)
+        nlabel = ""
+        if nm:
+            try:
+                nmeta = json.loads(nm[0].community_meta_json or "{}")
+                nlabel = nmeta.get("label", "")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        neighbors.append({
+            "id": nid,
+            "label": nlabel or f"cluster_{nid}",
+            "cross_edges": ce["edge_count"],
+        })
+
+    result_data["community"] = {
+        "id": node.community_id,
+        "label": label,
+        "cohesion": round(cohesion, 3),
+        "top_members": member_paths,
+        "neighbors": neighbors,
+    }
 
 
 def _estimate_tokens(obj: Any) -> int:
@@ -688,17 +1014,28 @@ async def get_context(
     compact: bool = True,
     repo: str | None = None,
 ) -> dict:
-    """Get a compact navigation index for files/modules/symbols. Batch targets.
+    """Compact context for files, modules, or symbols. Batch multiple targets.
 
-    Default returns title + summary + symbol signatures (~3× smaller than
-    full mode). For full structure block + imported_by + docstrings pass
-    compact=False. For the full wiki content_md pass include=["docs","full_doc"].
+    Default returns title + summary + symbol signatures. Add include options
+    for richer data. Pass all relevant targets in one call.
+
+    Include options:
+      - "docs" (default): wiki summary + symbol signatures
+      - "full_doc": full wiki markdown content
+      - "ownership": primary owner, bus factor, contributor count
+      - "last_change": last commit date and author
+      - "source": symbol source body (for symbol targets like "path::Name")
+      - "callers": who calls this symbol (symbol targets only)
+      - "callees": what this symbol calls (symbol targets only)
+      - "metrics": PageRank, betweenness centrality, percentile ranks
+      - "community": architectural community membership + neighbors
 
     Example: get_context(["src/auth/service.py", "src/auth/middleware.py"])
+    Example: get_context(["src/auth/service.py::verify_token"], include=["source","callers"])
 
     Args:
-        targets: file paths, module paths, or symbol names.
-        include: ["docs"] (default) | add "full_doc"/"ownership"/"last_change".
+        targets: file paths, module paths, or qualified symbol IDs.
+        include: list of data blocks to include (default: ["docs","freshness"]).
         compact: default True (signatures only). False adds structure+imports+docstrings.
         repo: usually omitted.
     """
@@ -725,7 +1062,7 @@ async def get_context(
         "targets": {r["target"]: r for r in results},
         "_meta": _build_meta(
             timing_ms=(_time.perf_counter() - _t0) * 1000,
-            hint=_context_hint(targets, compact),
+            hint=_context_hint(targets, compact, include_set),
         ),
     }
     # Enforce the global token cap. See ``_truncate_to_budget`` for strategy.

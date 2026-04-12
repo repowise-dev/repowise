@@ -285,21 +285,23 @@ class TestIngestSampleRepo:
         )
         assert models_file is not None
         heritage_names = [(h.child_name, h.parent_name) for h in models_file.heritage]
-        assert ("Operation", "Enum") in heritage_names
+        # Enum is a Python builtin parent — filtered out by language_data.py
+        assert ("Operation", "Enum") not in heritage_names
 
     def test_typescript_heritage_extracted(self, ingestion_result) -> None:
-        """ApiClientError and ValidationError should extend Error."""
+        """Error is a builtin parent — should be filtered out."""
         client_file = next(
             (p for p in ingestion_result["parsed"] if p.file_info.path.endswith("client.ts")),
             None,
         )
         assert client_file is not None
         heritage_names = [(h.child_name, h.parent_name, h.kind) for h in client_file.heritage]
-        assert ("ApiClientError", "Error", "extends") in heritage_names
-        assert ("ValidationError", "Error", "extends") in heritage_names
+        # Error is a TS builtin — filtered out by language_data.py
+        assert ("ApiClientError", "Error", "extends") not in heritage_names
+        assert ("ValidationError", "Error", "extends") not in heritage_names
 
     def test_rust_trait_impl_heritage_extracted(self, ingestion_result) -> None:
-        """Rust impl Default for Calculator should be extracted."""
+        """Rust std trait impls (Default, Debug, etc.) are filtered as builtins."""
         calc_file = next(
             (
                 p
@@ -310,7 +312,8 @@ class TestIngestSampleRepo:
         )
         assert calc_file is not None
         heritage_names = [(h.child_name, h.parent_name, h.kind) for h in calc_file.heritage]
-        assert ("Calculator", "Default", "trait_impl") in heritage_names
+        # Default is a Rust builtin trait — filtered by language_data.py
+        assert ("Calculator", "Default", "trait_impl") not in heritage_names
 
     def test_heritage_all_have_valid_kind(self, ingestion_result) -> None:
         """Every heritage relation must have a valid kind."""

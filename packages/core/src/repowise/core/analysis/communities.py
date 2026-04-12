@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import io
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -26,8 +27,8 @@ log = structlog.get_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_MAX_COMMUNITY_FRACTION = 0.25
-_MIN_SPLIT_SIZE = 10
+_MAX_COMMUNITY_FRACTION = 0.30
+_MIN_SPLIT_SIZE = 20
 
 # Edge types to include when building file-level community subgraph
 _FILE_COMMUNITY_EDGE_TYPES = frozenset({
@@ -39,10 +40,14 @@ _SYMBOL_COMMUNITY_EDGE_TYPES = frozenset({
     "calls", "extends", "implements", "has_method",
 })
 
-# Generic directory segments excluded from heuristic labeling
+# Generic directory segments excluded from heuristic labeling.
+# These are organisational containers, not meaningful domain labels.
 _GENERIC_SEGMENTS = frozenset({
     "src", "lib", "core", "common", "shared", "internal", "pkg",
     "main", "app", "utils", "helpers", "index", "mod",
+    # Monorepo organisational directories
+    "packages", "modules", "workspace", "workspaces", "libs",
+    "projects", "services", "apps",
 })
 
 # Keywords checked in filename stems for fallback labeling
@@ -184,24 +189,81 @@ def _cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _collect_path_segments(member_paths: list[str]) -> Counter[str]:
+    """Count non-generic directory segments across all member paths.
+
+    Each path contributes at most once per segment to avoid
+    double-counting files deep in the same directory tree.
+    """
+    counter: Counter[str] = Counter()
+    for path in member_paths:
+        parts = PurePosixPath(path).parts
+        seen: set[str] = set()
+        for part in parts[:-1]:  # exclude filename
+            lower = part.lower()
+            if lower not in _GENERIC_SEGMENTS and len(lower) > 1 and not lower.startswith("."):
+                if lower not in seen:
+                    counter[lower] += 1
+                    seen.add(lower)
+    return counter
+
+
+def _best_sub_label(member_paths: list[str], primary: str) -> str:
+    """Find the best distinguishing sub-segment within paths that contain *primary*.
+
+    Given a community labeled "web", looks at paths containing "web" and
+    picks the most common *other* non-generic segment (e.g. "components",
+    "api", "hooks") as a sub-label.
+    """
+    sub_counter: Counter[str] = Counter()
+    primary_lower = primary.lower()
+
+    for path in member_paths:
+        parts = PurePosixPath(path).parts
+        # Only consider paths that actually contain the primary segment
+        lowers = [p.lower() for p in parts[:-1]]
+        if primary_lower not in lowers:
+            continue
+        seen: set[str] = set()
+        for part in parts[:-1]:
+            lower = part.lower()
+            if (
+                lower != primary_lower
+                and lower not in _GENERIC_SEGMENTS
+                and len(lower) > 1
+                and not lower.startswith(".")
+                and lower not in seen
+            ):
+                sub_counter[lower] += 1
+                seen.add(lower)
+
+    if sub_counter:
+        best, best_count = sub_counter.most_common(1)[0]
+        # Require at least 30% of members to share this sub-segment
+        if best_count / max(len(member_paths), 1) >= 0.3:
+            return best
+    return ""
+
+
 def _heuristic_label(member_paths: list[str], community_id: int) -> str:
-    """Derive a human-readable label from member file paths."""
+    """Derive a human-readable label from member file paths.
+
+    Produces labels like ``"web/components"`` or ``"repowise/ingestion"``.
+    When multiple communities share the same top-level segment, the
+    sub-label differentiates them.
+    """
     if not member_paths:
         return f"cluster_{community_id}"
 
-    # Strategy 1: dominant directory segment
-    seg_counter: Counter[str] = Counter()
-    for path in member_paths:
-        parts = PurePosixPath(path).parts
-        for part in parts[:-1]:  # exclude filename
-            lower = part.lower()
-            if lower not in _GENERIC_SEGMENTS and len(lower) > 1:
-                seg_counter[lower] += 1
+    # Strategy 1: most common non-generic directory segment
+    seg_counter = _collect_path_segments(member_paths)
 
     if seg_counter:
         best_seg, best_count = seg_counter.most_common(1)[0]
-        if best_count / len(member_paths) > 0.6:
-            return best_seg
+        if best_count / len(member_paths) >= 0.4:
+            # Try to find a distinguishing sub-segment
+            sub = _best_sub_label(member_paths, best_seg)
+            return f"{best_seg}/{sub}" if sub else best_seg
 
     # Strategy 2: keyword frequency in filenames
     stem_counter: Counter[str] = Counter()
@@ -213,20 +275,54 @@ def _heuristic_label(member_paths: list[str], community_id: int) -> str:
 
     if stem_counter:
         best_kw, best_kw_count = stem_counter.most_common(1)[0]
-        if best_kw_count / len(member_paths) > 0.4:
+        if best_kw_count / len(member_paths) >= 0.3:
             return best_kw
 
-    # Strategy 3: most common top-level directory
-    top_dirs: Counter[str] = Counter()
+    # Strategy 3: most common filename stem (excluding generic names)
+    stem_counter2: Counter[str] = Counter()
     for path in member_paths:
-        parts = PurePosixPath(path).parts
-        if len(parts) > 1:
-            top_dirs[parts[0]] += 1
-
-    if top_dirs:
-        return top_dirs.most_common(1)[0][0]
+        stem = PurePosixPath(path).stem.lower()
+        if stem not in _GENERIC_SEGMENTS and len(stem) > 1:
+            stem_counter2[stem] += 1
+    if stem_counter2:
+        return stem_counter2.most_common(1)[0][0]
 
     return f"cluster_{community_id}"
+
+
+def _deduplicate_labels(communities_info: dict[int, "CommunityInfo"]) -> None:
+    """Add sub-labels to disambiguate communities that share the same label.
+
+    Mutates *communities_info* in place.  Only touches communities whose
+    label (before the ``/``) duplicates another community.
+    """
+    # Group by base label (part before "/")
+    by_base: dict[str, list[int]] = {}
+    for cid, ci in communities_info.items():
+        base = ci.label.split("/")[0]
+        by_base.setdefault(base, []).append(cid)
+
+    for base, cids in by_base.items():
+        if len(cids) <= 1:
+            continue
+
+        # Multiple communities share the same base — try to differentiate
+        for cid in cids:
+            ci = communities_info[cid]
+            if "/" in ci.label:
+                continue  # already has a sub-label
+
+            sub = _best_sub_label(ci.members, base)
+            if sub:
+                ci.label = f"{base}/{sub}"
+
+        # If duplicates still remain, append size as disambiguator
+        seen_labels: dict[str, int] = {}
+        for cid in sorted(cids, key=lambda c: -communities_info[c].size):
+            ci = communities_info[cid]
+            if ci.label in seen_labels:
+                ci.label = f"{ci.label} ({ci.size})"
+            seen_labels[ci.label] = cid
 
 
 def _dominant_language(
@@ -242,6 +338,57 @@ def _dominant_language(
     if lang_counter:
         return lang_counter.most_common(1)[0][0]
     return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Test / production separation
+# ---------------------------------------------------------------------------
+
+_TEST_PATH_RE = re.compile(
+    r"(test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|fixture[s]?[/.])",
+    re.IGNORECASE,
+)
+
+
+def _is_test_file(path: str) -> bool:
+    """True if *path* looks like a test, fixture, or spec file."""
+    return bool(_TEST_PATH_RE.search(path))
+
+
+def _assign_tests_to_communities(
+    test_nodes: list[str],
+    prod_assignment: dict[str, int],
+    graph: nx.DiGraph,
+) -> dict[str, int]:
+    """Assign each test file to the community of its most-imported production file.
+
+    Falls back to a catch-all "tests" community when no import link exists.
+    """
+    result: dict[str, int] = {}
+    next_cid = max(prod_assignment.values(), default=-1) + 1
+    test_community_id = next_cid  # shared fallback
+
+    for test_path in test_nodes:
+        # Find which production file this test imports most
+        best_prod: str | None = None
+        best_weight = 0
+        for _, target, d in graph.out_edges(test_path, data=True):
+            if target in prod_assignment:
+                w = 1
+                best_prod = target if w > best_weight else best_prod
+                best_weight = max(best_weight, w)
+        for source, _, d in graph.in_edges(test_path, data=True):
+            if source in prod_assignment:
+                w = 1
+                best_prod = source if w > best_weight else best_prod
+                best_weight = max(best_weight, w)
+
+        if best_prod is not None:
+            result[test_path] = prod_assignment[best_prod]
+        else:
+            result[test_path] = test_community_id
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +416,16 @@ def detect_file_communities(
     if not file_nodes:
         return {}, {}, "none"
 
-    # Build undirected subgraph with relevant edges only
+    # Separate test files from production files.  Test files are clustered
+    # separately then assigned to the community of their most-imported
+    # production file, preventing test directories from dominating labels
+    # and mixing unrelated production modules.
+    prod_nodes = [n for n in file_nodes if not _is_test_file(n)]
+    test_nodes = [n for n in file_nodes if _is_test_file(n)]
+
+    # Build undirected subgraph from production files + relevant edges
     undirected = nx.Graph()
-    undirected.add_nodes_from(file_nodes)
+    undirected.add_nodes_from(prod_nodes)
 
     for u, v, d in graph.edges(data=True):
         edge_type = d.get("edge_type", "imports")
@@ -305,27 +459,51 @@ def detect_file_communities(
     # Re-index by size descending for deterministic ordering
     split_lists.sort(key=len, reverse=True)
 
-    # Build final assignment and info
-    file_assignment: dict[str, int] = {}
-    communities_info: dict[int, CommunityInfo] = {}
-
+    # Build production file assignment
+    prod_assignment: dict[str, int] = {}
     for cid, members in enumerate(split_lists):
-        sorted_members = sorted(members)
-        for node in sorted_members:
-            file_assignment[node] = cid
+        for node in members:
+            prod_assignment[node] = cid
 
+    # Assign test files to their most-related production community
+    test_assignment = _assign_tests_to_communities(test_nodes, prod_assignment, graph)
+    file_assignment = {**prod_assignment, **test_assignment}
+
+    # Build community info (using all members including tests)
+    community_members: dict[int, list[str]] = {}
+    for node, cid in file_assignment.items():
+        community_members.setdefault(cid, []).append(node)
+
+    communities_info: dict[int, CommunityInfo] = {}
+    # Also build an undirected graph including test edges for cohesion scoring
+    full_undirected = nx.Graph()
+    full_undirected.add_nodes_from(file_nodes)
+    for u, v, d in graph.edges(data=True):
+        edge_type = d.get("edge_type", "imports")
+        if edge_type in _FILE_COMMUNITY_EDGE_TYPES and u in full_undirected and v in full_undirected:
+            if not full_undirected.has_edge(u, v):
+                full_undirected.add_edge(u, v)
+
+    for cid, members in community_members.items():
+        sorted_members = sorted(members)
         communities_info[cid] = CommunityInfo(
             community_id=cid,
             label=_heuristic_label(sorted_members, cid),
             members=sorted_members,
             size=len(sorted_members),
-            cohesion=_cohesion_score(undirected, sorted_members),
+            cohesion=_cohesion_score(full_undirected, sorted_members),
             dominant_language=_dominant_language(sorted_members, graph),
         )
+
+    # Deduplicate labels — add sub-labels when multiple communities
+    # share the same base (e.g. "web" → "web/components", "web/api")
+    _deduplicate_labels(communities_info)
 
     log.info(
         "file_communities_detected",
         total_files=len(file_nodes),
+        prod_files=len(prod_nodes),
+        test_files=len(test_nodes),
         communities=len(communities_info),
         algorithm=algorithm,
     )

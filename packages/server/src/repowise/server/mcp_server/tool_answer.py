@@ -484,24 +484,6 @@ def _rerank_by_coverage(hits: list[dict], question: str) -> list[dict]:
     return hits
 
 
-def _confidence_from_scores(scores: list[float]) -> str:
-    """Map raw FTS scores to a coarse confidence label.
-
-    The thresholds are intentionally generous on the low end — when retrieval
-    finds *anything* we still let the agent see it, but mark it 'low' so the
-    workflow forces verification.
-    """
-    if not scores:
-        return "low"
-    top = scores[0]
-    gap = top - (scores[1] if len(scores) > 1 else 0.0)
-    if top >= 1.0 and gap >= 0.2:
-        return "high"
-    if top >= 0.5:
-        return "medium"
-    return "low"
-
-
 @mcp.tool()
 async def get_answer(
     question: str,
@@ -662,7 +644,16 @@ async def get_answer(
     if len(hits) >= 2:
         top_score = hits[0].get("score", 0.0)
         second_score = hits[1].get("score", 0.0) or 1e-9
-        dominant = (top_score / second_score) >= _DOMINANCE_RATIO
+
+        # Two-tier gating: at high retrieval quality (both scores
+        # excellent), close ratios are expected and normal — use an
+        # absolute gap instead.  At lower quality, the ratio-based
+        # gate prevents synthesis on genuinely ambiguous retrievals.
+        if top_score >= 3.0:
+            dominant = (top_score - second_score) >= 0.5
+        else:
+            dominant = (top_score / second_score) >= _DOMINANCE_RATIO
+
         if not dominant:
             # Enrich top hits with substantive excerpts so the agent has
             # real material to ground in (not one-line summaries).

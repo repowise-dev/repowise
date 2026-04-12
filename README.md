@@ -3,7 +3,7 @@
 <img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
 **Codebase intelligence for AI-assisted engineering teams.**
 
-Four intelligence layers. Sixteen MCP tools. Proactive hooks. One `pip install`.
+Four intelligence layers. Seven MCP tools. Proactive hooks. One `pip install`.
 
 [![PyPI version](https://img.shields.io/pypi/v/repowise?color=F59520&labelColor=0A0A0A)](https://pypi.org/project/repowise/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
@@ -23,7 +23,7 @@ Four intelligence layers. Sixteen MCP tools. Proactive hooks. One `pip install`.
 
 Your AI coding agent reads files. It does not know who owns them, which ones change together, which ones are dead, or why they were built the way they were. It has the source code and zero institutional knowledge.
 
-repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through sixteen precisely designed tools. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
+repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through seven precisely designed tools. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
 
 The result: your agent answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
@@ -117,28 +117,19 @@ To manually add the MCP server to another editor:
 
 ---
 
-## Sixteen MCP tools
+## Seven MCP tools
 
 Most tools are designed around data entities — one module, one file, one symbol — which forces AI agents into long chains of sequential calls. repowise tools are designed around **tasks**. Pass multiple targets in one call. Get complete context back.
 
 | Tool | What it answers | When Claude Code calls it |
 |---|---|---|
-| `get_answer(question)` | One-call RAG: retrieves over the wiki, gates on confidence, and synthesizes a cited 2–5 sentence answer. High-confidence answers cite directly; ambiguous queries return ranked excerpts. Responses are cached per repository by question hash. | First call on any code question — collapses search → read → reason into one round-trip |
-| `get_symbol(symbol_id)` | Resolves a qualified symbol id (`path::Class::method`) to its source body, signature, and docstring | When the question names a specific class, function, or method |
-| `get_overview()` | Architecture summary, module map, entry points, community summary | First call on any unfamiliar codebase |
-| `get_context(targets, include?, compact?)` | Docs, ownership, decisions, freshness for any targets — files, modules, or symbols. `compact=True` is the default and bounds the response to ~10K characters; pass `compact=False` for the full structure block, importer list, and per-symbol docstrings | Before reading or modifying code. Pass all relevant targets in one call. |
+| `get_overview()` | Architecture summary, module map, entry points, git health, community summary | First call on any unfamiliar codebase |
+| `get_answer(question)` | One-call RAG: retrieves over the wiki, gates on confidence, and synthesizes a cited 2–5 sentence answer. High-confidence answers cite directly; ambiguous queries return ranked excerpts. | First call on any code question — collapses search → read → reason into one round-trip |
+| `get_context(targets, include?)` | The workhorse. Docs, symbols, ownership, freshness for any targets. `include` options: `"source"` (symbol body), `"callers"`/`"callees"` (call graph), `"metrics"` (PageRank, centrality), `"community"` (cluster membership). Batch multiple targets. | Before reading or modifying code. Pass all relevant targets in one call. |
+| `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When `get_answer` returned low confidence and you need to discover candidate pages by topic |
 | `get_risk(targets?, changed_files?)` | Hotspot scores, dependents, co-change partners, blast radius, recommended reviewers, test gaps, security signals, 0–10 risk score | Before modifying files — understand what could break |
 | `get_why(query?)` | Three modes: NL search over decisions · path-based decisions for a file · no-arg health dashboard | Before architectural changes — understand existing intent |
-| `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When `get_answer` returned low confidence and you need to discover candidate pages by topic |
-| `get_dependency_path(from, to)` | Connection path between two files, modules, or symbols | When tracing how two things are connected |
-| `get_dead_code(min_confidence?, include_internals?, include_zombie_packages?)` | Unreachable code sorted by confidence and cleanup impact | Cleanup tasks |
-| `get_architecture_diagram(module?)` | Mermaid diagram for the repo or a specific module, with edge-type differentiated arrows (imports, calls, extends/implements) | Documentation and presentation |
-| `annotate_file(target, notes)` | Attach human-authored notes to a wiki page — survives re-indexing | Adding rationale, known issues, or context that the LLM shouldn't overwrite |
-| `get_callers_callees(symbol_id)` | Who calls a symbol, what it calls, and class hierarchy (extends/implements) via `edge_types` parameter. Confidence-scored edges. | Understanding call relationships and class hierarchy for any symbol |
-| `get_community(target)` | Architectural community membership, cohesion score, member list, neighboring communities with cross-boundary edge counts | Understanding module boundaries, refactoring safety, architectural clustering |
-| `get_graph_metrics(target)` | PageRank, betweenness centrality with percentile ranks, in/out degree, community label, entry point score | Assessing how central or important a file or symbol is in the codebase |
-| `get_execution_flows(top_n?)` | Top scored entry points with BFS call-path traces, cross-community classification, depth tracking | Understanding how the codebase executes — which functions are called from where |
-| `update_decision_records(action)` | Create, update, list, or deprecate architectural decision records | After making architectural changes — keep decision records current |
+| `get_dead_code(min_confidence?, include_internals?)` | Unreachable code sorted by confidence tier with cleanup impact estimates | Cleanup tasks |
 
 ### Tool call comparison — a real task
 
@@ -147,7 +138,7 @@ Most tools are designed around data entities — one module, one file, one symbo
 | Approach | Tool calls | Time to first change | What it misses |
 |---|---|---|---|
 | Claude Code alone (no MCP) | grep + read ~30 files | ~8 min | Ownership, prior decisions, hidden coupling |
-| **repowise (10 tools)** | **5 calls** | **~2 min** | **Nothing** |
+| **repowise (7 tools)** | **5 calls** | **~2 min** | **Nothing** |
 
 The 5 calls for that task:
 
@@ -365,7 +356,7 @@ When a senior engineer leaves, the "why" usually leaves with them. Decision inte
 | Git intelligence (hotspots, ownership, co-changes) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
-| MCP server for AI agents | ✅ 16 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
+| MCP server for AI agents | ✅ 7 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Proactive agent hooks | ✅ PreToolUse + PostToolUse | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Doc freshness scoring | ✅ | ❌ | ❌ | ⚠️ staleness only | ❌ |

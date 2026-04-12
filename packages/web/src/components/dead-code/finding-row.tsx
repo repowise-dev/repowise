@@ -70,20 +70,20 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
           {formatConfidence(finding.confidence)}
         </span>
       </td>
-      <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)]">
+      <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
         {finding.primary_owner ?? "—"}
       </td>
-      <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] tabular-nums">
+      <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] tabular-nums hidden md:table-cell">
         {finding.lines}
       </td>
-      <td className="px-4 py-2.5">
+      <td className="px-4 py-2.5 hidden sm:table-cell">
         {finding.safe_to_delete ? (
           <Badge variant="fresh">Safe</Badge>
         ) : (
           <Badge variant="default">Review</Badge>
         )}
       </td>
-      <td className="px-4 py-2.5">
+      <td className="px-4 py-2.5 hidden sm:table-cell">
         <span
           className={cn(
             "inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium",
@@ -93,7 +93,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
           {finding.status.replace(/_/g, " ")}
         </span>
       </td>
-      <td className="px-4 py-2.5">
+      <td className="px-4 py-2.5 hidden lg:table-cell">
         {finding.status === "open" && (
           <div className="flex items-center gap-1">
             <Button

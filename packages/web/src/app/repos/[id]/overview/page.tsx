@@ -22,6 +22,7 @@ import { DecisionsTimeline } from "@/components/dashboard/decisions-timeline";
 import { ModuleMinimap } from "@/components/dashboard/module-minimap";
 import { CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid";
 import { ExecutionFlowsPanel } from "@/components/dashboard/execution-flows-panel";
+import { DependencyHeatmap } from "@/components/dashboard/dependency-heatmap";
 import { BusFactorPanel } from "@/components/git/bus-factor-panel";
 import { ChurnHistogram } from "@/components/git/churn-histogram";
 import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
@@ -298,13 +299,28 @@ export default async function OverviewPage({ params }: Props) {
         );
       })()}
 
-      {/* ── Module Architecture Map (full width) ── */}
+      {/* ── Module Architecture Map + Dependency Heatmap ── */}
       {moduleGraph && moduleGraph.nodes.length > 0 && (
-        <ModuleMinimap
-          nodes={moduleGraph.nodes}
-          edges={moduleGraph.edges}
-          repoId={id}
-        />
+        <div className="space-y-4">
+          <ModuleMinimap
+            nodes={moduleGraph.nodes}
+            edges={moduleGraph.edges}
+            repoId={id}
+          />
+          {moduleGraph.nodes.length >= 2 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium">Dependency Heatmap</CardTitle>
+                <p className="text-xs text-[var(--color-text-tertiary)]">
+                  Module-to-module dependency density — brighter cells indicate more connections
+                </p>
+              </CardHeader>
+              <CardContent>
+                <DependencyHeatmap moduleGraph={moduleGraph} />
+              </CardContent>
+            </Card>
+          )}
+        </div>
       )}
 
       {/* ── Graph Intelligence: Communities & Execution Flows ── */}

@@ -27,6 +27,7 @@ function FileNodeInner({ id, data }: NodeProps) {
   const isOnPath = ctx.highlightedPath.has(id);
   const hasActivePath = ctx.highlightedPath.size > 0;
   const isDimmed = hasActivePath && !isOnPath;
+  const isSearchDimmed = ctx.searchDimmedNodes?.has(id) ?? false;
   const isSelected = ctx.selectedNodeId === id;
   const isHovered = ctx.hoveredNodeId === id;
   const hasHover = ctx.hoveredNodeId !== null;
@@ -51,8 +52,10 @@ function FileNodeInner({ id, data }: NodeProps) {
   }
 
   // Compute opacity
+  const searchDimmed = isSearchDimmed && !isOnPath && !isSelected;
   let opacity = 1;
   if (isDimmed) opacity = 0.15;
+  else if (searchDimmed) opacity = 0.12;
   else if (isHoverDimmed) opacity = 0.35;
 
   return (

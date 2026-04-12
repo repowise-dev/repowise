@@ -33,9 +33,16 @@ _TIER3_NAMES = re.compile(
     r"^(get_|create_|execute_|invoke_|fetch_|submit_|send_|post_)", re.IGNORECASE,
 )
 
-# File path patterns that suggest framework entry points
-_TEST_PATH_PATTERNS = re.compile(
-    r"(test[s_/]|_test\.py|\.test\.|\.spec\.|__tests__|conftest)", re.IGNORECASE,
+# Files to exclude from entry point scoring — test, demo, fixture, etc.
+_EXCLUDE_PATH_PATTERNS = re.compile(
+    r"("
+    r"test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|"
+    r"fixture[s]?[/.]|mock[s]?[/.]|stub[s]?[/.]|fake[s]?[/.]|"
+    r"demo[_/.]|example[s]?[/.]|sample[s]?[/.]|"
+    r"benchmark[s]?[/.]|_bench\.|"
+    r"scripts?/"
+    r")",
+    re.IGNORECASE,
 )
 
 
@@ -48,7 +55,7 @@ _TEST_PATH_PATTERNS = re.compile(
 class FlowConfig:
     """Configuration for execution flow tracing."""
 
-    max_depth: int = 15
+    max_depth: int = 8
     max_flows: int = 50
     min_fan_out: int = 2
     deduplicate: bool = True
@@ -108,7 +115,7 @@ def _score_entry_point(
     if data.get("node_type") == "external":
         return 0.0
     file_path = data.get("file_path", "") or ""
-    if _TEST_PATH_PATTERNS.search(file_path):
+    if _EXCLUDE_PATH_PATTERNS.search(file_path):
         return 0.0
 
     # Signal 1: Fan-out ratio (weight 0.35)

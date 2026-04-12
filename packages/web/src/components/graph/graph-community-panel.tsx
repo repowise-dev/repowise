@@ -21,7 +21,7 @@ export function GraphCommunityPanel({
   const { community, isLoading } = useCommunityDetail(repoId, communityId);
 
   return (
-    <div className="absolute right-0 top-0 bottom-0 w-[360px] border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-10 flex flex-col shadow-lg shadow-black/20">
+    <div className="absolute right-0 top-0 bottom-0 w-full sm:w-[360px] border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-10 flex flex-col shadow-lg shadow-black/20">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-default)]">
         <div className="min-w-0">
@@ -74,7 +74,7 @@ export function GraphCommunityPanel({
                         </p>
                       </div>
                       {/* PageRank bar */}
-                      <div className="w-12 h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden shrink-0">
+                      <div className="w-16 h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden shrink-0">
                         <div
                           className="h-full rounded-full bg-[var(--color-accent)]"
                           style={{ width: `${barWidth}%` }}
