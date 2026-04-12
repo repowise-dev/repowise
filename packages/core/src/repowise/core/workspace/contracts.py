@@ -211,6 +211,14 @@ def _find_matching_keys(
             if k.startswith("http::") and k.endswith(f"::{path_suffix}")
         ]
 
+    # HTTP: check for wildcard providers (http::*::/path from Go HandleFunc)
+    if normalized.startswith("http::") and not normalized.startswith("http::*::"):
+        parts = normalized.split("::", 2)
+        if len(parts) == 3:
+            wildcard_key = f"http::*::{parts[2]}"
+            if wildcard_key in provider_index:
+                return [wildcard_key]
+
     # gRPC wildcard: grpc::service/* matches grpc::service/Method
     if normalized.endswith("/*"):
         prefix = normalized[:-1]  # "grpc::service/"
@@ -247,9 +255,7 @@ def match_contracts(contracts: list[Contract]) -> list[ContractLink]:
                 # Same-repo same-service filter: skip internal calls
                 if provider.repo == consumer.repo:
                     if (
-                        not provider.service
-                        or not consumer.service
-                        or provider.service == consumer.service
+                        provider.service == consumer.service  # includes both-None case
                     ):
                         continue
 

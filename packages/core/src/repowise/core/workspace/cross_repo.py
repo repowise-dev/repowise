@@ -251,7 +251,11 @@ def detect_cross_repo_co_changes(
 
                 for fa in files_a:
                     for fb in files_b:
-                        key = (repo_a, fa, repo_b, fb)
+                        # Normalize key ordering to avoid symmetric duplicates
+                        if (repo_a, fa) > (repo_b, fb):
+                            key = (repo_b, fb, repo_a, fa)
+                        else:
+                            key = (repo_a, fa, repo_b, fb)
                         pair_scores[key] += weight
                         pair_freq[key] += 1
                         ts = max(commit_a.timestamp, commit_b.timestamp)

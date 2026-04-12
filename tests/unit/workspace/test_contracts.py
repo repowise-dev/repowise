@@ -112,6 +112,30 @@ class TestHttpExtractor:
         assert len(providers) == 1
         assert providers[0].contract_id == "http::GET::/api/v1/users"
 
+    def test_spring_multiple_classes_correct_prefix(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "MultiController.java", """
+            @RequestMapping("/api/v1")
+            @RestController
+            public class UserController {
+                @GetMapping("/users")
+                public List<User> list() { ... }
+            }
+
+            @RequestMapping("/internal")
+            @RestController
+            public class AdminController {
+                @PostMapping("/admin")
+                public void doAdmin() { ... }
+            }
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "backend")
+        providers = [c for c in contracts if c.role == "provider"]
+        ids = {c.contract_id for c in providers}
+        assert "http::GET::/api/v1/users" in ids
+        assert "http::POST::/internal/admin" in ids
+        # The inner class prefix must NOT be applied to the first class's methods
+        assert "http::GET::/internal/users" not in ids
+
     def test_laravel_provider(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "routes/web.php", """
             Route::delete('/posts/{id}', [PostController::class, 'destroy']);

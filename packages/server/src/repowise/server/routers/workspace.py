@@ -7,6 +7,8 @@ startup from ``.repowise-workspace/`` JSON files) — no DB access needed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from repowise.server.deps import (
@@ -84,7 +86,7 @@ async def get_workspace(
     return WorkspaceResponse(
         is_workspace=True,
         workspace_root=ws_root,
-        workspace_name=ws_root.rstrip("/\\").rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if ws_root else None,
+        workspace_name=Path(ws_root).name if ws_root else None,
         repos=repo_entries,
         default_repo=ws_config.default_repo,
         cross_repo_summary=cross_repo_summary,
@@ -115,8 +117,8 @@ async def get_contracts(
             contracts=[], links=[], total_contracts=0, total_links=0,
         )
 
-    contracts = list(enricher._contracts)
-    links = list(enricher._contract_links)
+    contracts = list(getattr(enricher, "_contracts", []))
+    links = list(getattr(enricher, "_contract_links", []))
 
     # Apply filters to contracts
     if contract_type:
@@ -197,7 +199,7 @@ async def get_co_changes(
     if enricher is None:
         return WorkspaceCoChangesResponse(co_changes=[], total=0)
 
-    co_changes = list(enricher._co_changes)
+    co_changes = list(getattr(enricher, "_co_changes", []))
 
     if repo:
         co_changes = [

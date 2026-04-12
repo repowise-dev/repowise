@@ -96,7 +96,7 @@ export default function CoChangesPage() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium">
-            Co-Change Pairs ({data?.co_changes.length ?? 0})
+            Co-Change Pairs ({data?.co_changes?.length ?? 0})
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0">

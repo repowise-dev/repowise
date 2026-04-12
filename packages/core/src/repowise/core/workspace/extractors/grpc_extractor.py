@@ -58,9 +58,25 @@ def _extract_service_blocks(content: str) -> list[tuple[str, str]]:
         body_start = header_match.end()
         depth = 1
         pos = body_start
+        in_line_comment = False
+        in_block_comment = False
         while pos < len(content) and depth > 0:
             ch = content[pos]
-            if ch == "{":
+            # Track comment state to ignore braces inside comments
+            if in_line_comment:
+                if ch == "\n":
+                    in_line_comment = False
+            elif in_block_comment:
+                if ch == "*" and pos + 1 < len(content) and content[pos + 1] == "/":
+                    in_block_comment = False
+                    pos += 1  # skip the '/'
+            elif ch == "/" and pos + 1 < len(content):
+                if content[pos + 1] == "/":
+                    in_line_comment = True
+                elif content[pos + 1] == "*":
+                    in_block_comment = True
+                    pos += 1  # skip the '*'
+            elif ch == "{":
                 depth += 1
             elif ch == "}":
                 depth -= 1

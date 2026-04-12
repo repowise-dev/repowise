@@ -148,14 +148,17 @@ _RABBITMQ_PATTERNS: list[_PatternDef] = [
 
 _NATS_PATTERNS: list[_PatternDef] = [
     # Go/Python/Node: nc.Subscribe("events") or nc.subscribe("events")
+    # Requires a NATS-idiomatic variable name (nc, nats, conn, js, sub, client)
+    # to avoid false-positives from RxJS, EventEmitter, custom publishers, etc.
     _PatternDef(
-        regex=re.compile(r"""\.(?:Subscribe|subscribe)\s*\(\s*['"]([^'"]+)['"]"""),
+        regex=re.compile(r"""(?:nc|nats|conn|js|sub|client)\s*\.\s*(?:Subscribe|subscribe)\s*\(\s*['"]([^'"]+)['"]"""),
         role="consumer", broker="nats", confidence=0.8,
         topic_group=1, label="nc.Subscribe",
     ),
     # Go/Python/Node: nc.Publish("events") or nc.publish("events")
+    # Requires a NATS-idiomatic variable name to avoid false-positives.
     _PatternDef(
-        regex=re.compile(r"""\.(?:Publish|publish)\s*\(\s*['"]([^'"]+)['"]"""),
+        regex=re.compile(r"""(?:nc|nats|conn|js|sub|client)\s*\.\s*(?:Publish|publish)\s*\(\s*['"]([^'"]+)['"]"""),
         role="provider", broker="nats", confidence=0.8,
         topic_group=1, label="nc.Publish",
     ),

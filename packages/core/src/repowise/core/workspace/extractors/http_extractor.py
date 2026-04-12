@@ -65,6 +65,8 @@ def normalize_http_path(path: str) -> str:
     s = re.sub(r"\{[^}]+\}", "{param}", s)
     # Unify Next.js [name] → {param}
     s = re.sub(r"\[[^\]]+\]", "{param}", s)
+    # Unify JS template literal ${expr} → {param}
+    s = re.sub(r"\$\{[^}]+\}", "{param}", s)
     return s or "/"
 
 
@@ -200,12 +202,13 @@ class HttpExtractor:
 
                 # --- Providers ---
                 if suffix in _PROVIDER_EXTENSIONS:
-                    # Spring: detect class-level prefix
-                    spring_prefix = ""
+                    # Spring: collect all class-level @RequestMapping positions and prefixes
+                    # so each method-level annotation gets the prefix from the nearest
+                    # preceding class declaration rather than always the first one in the file.
+                    spring_class_mappings: list[tuple[int, str]] = []
                     if suffix == ".java":
-                        m = _SPRING_CLASS_RE.search(content)
-                        if m:
-                            spring_prefix = m.group(1).rstrip("/")
+                        for cm in _SPRING_CLASS_RE.finditer(content):
+                            spring_class_mappings.append((cm.start(), cm.group(1).rstrip("/")))
 
                     for pattern, framework in _PROVIDER_PATTERNS:
                         for match in pattern.finditer(content):
@@ -218,9 +221,19 @@ class HttpExtractor:
                             else:
                                 method = method_raw.upper()
 
-                            # Apply Spring class-level prefix
-                            if framework == "spring" and spring_prefix:
-                                path_raw = spring_prefix + "/" + path_raw.lstrip("/")
+                            # Apply Spring class-level prefix: pick the nearest preceding
+                            # @RequestMapping (highest start position that is still before
+                            # this match).
+                            if framework == "spring" and spring_class_mappings:
+                                match_pos = match.start()
+                                spring_prefix = ""
+                                for cls_pos, cls_prefix in spring_class_mappings:
+                                    if cls_pos < match_pos:
+                                        spring_prefix = cls_prefix
+                                    else:
+                                        break
+                                if spring_prefix:
+                                    path_raw = spring_prefix + "/" + path_raw.lstrip("/")
 
                             norm_path = normalize_http_path(path_raw)
 

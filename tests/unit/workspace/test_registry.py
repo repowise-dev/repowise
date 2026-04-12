@@ -176,24 +176,25 @@ class TestLazyLoading:
 class TestLRUEviction:
     @pytest.mark.asyncio
     async def test_evicts_at_capacity(self, tmp_path: Path) -> None:
-        # Create 4 repos, set MAX_LOADED=3
+        # MAX_LOADED caps non-default repos; default is always kept.
+        # With MAX_LOADED=2: at most 2 non-default + 1 default = 3 total.
         names = ["repo1", "repo2", "repo3", "repo4"]
         config = _make_workspace(tmp_path, names, default="repo1")
         for name in names:
             await _seed_repo_db(tmp_path / name, name)
 
         registry = RepoRegistry(tmp_path, config)
-        registry.MAX_LOADED = 3
+        registry.MAX_LOADED = 2
 
-        # Load 3 repos — should be at capacity
+        # Load default + 2 non-default — at capacity (2 non-default)
         await registry.get("repo1")
         await registry.get("repo2")
         await registry.get("repo3")
         assert len(registry._contexts) == 3
+        non_default = [a for a in registry._contexts if a != "repo1"]
+        assert len(non_default) == 2
 
-        # Loading repo4 should evict the LRU (repo1 is default, so repo2 gets evicted)
-        # Access repo1 again to make repo2 the LRU
-        await registry.get("repo1")
+        # repo2 is LRU non-default; loading repo4 must evict repo2
         await registry.get("repo4")
         assert len(registry._contexts) == 3
         assert "repo2" not in registry._contexts
@@ -202,16 +203,47 @@ class TestLRUEviction:
         await registry.close()
 
     @pytest.mark.asyncio
+    async def test_cap_not_bypassed_when_default_loaded(self, tmp_path: Path) -> None:
+        """Non-default context count must not exceed MAX_LOADED even when the
+        default repo occupies one of the loaded slots."""
+        names = ["default_repo", "r1", "r2", "r3", "r4"]
+        config = _make_workspace(tmp_path, names, default="default_repo")
+        for name in names:
+            await _seed_repo_db(tmp_path / name, name)
+
+        registry = RepoRegistry(tmp_path, config)
+        registry.MAX_LOADED = 3
+
+        # Load default + MAX_LOADED non-default repos — fills the cap
+        await registry.get("default_repo")
+        await registry.get("r1")
+        await registry.get("r2")
+        await registry.get("r3")
+        # 4 total loaded: default + 3 non-default (exactly at cap)
+        assert len(registry._contexts) == 4
+
+        # Loading one more non-default must evict an existing non-default,
+        # keeping the total non-default count at MAX_LOADED (3).
+        await registry.get("r4")
+        non_default = [a for a in registry._contexts if a != "default_repo"]
+        assert len(non_default) == registry.MAX_LOADED
+        assert "r4" in registry._contexts
+        assert "default_repo" in registry._contexts
+
+        await registry.close()
+
+    @pytest.mark.asyncio
     async def test_default_never_evicted(self, tmp_path: Path) -> None:
+        # MAX_LOADED=1 caps non-default repos at 1; default is always kept.
         names = ["default_repo", "other1", "other2", "other3"]
         config = _make_workspace(tmp_path, names, default="default_repo")
         for name in names:
             await _seed_repo_db(tmp_path / name, name)
 
         registry = RepoRegistry(tmp_path, config)
-        registry.MAX_LOADED = 2
+        registry.MAX_LOADED = 1
 
-        # Load default + other1
+        # Load default + other1 — at capacity (1 non-default)
         await registry.get("default_repo")
         await registry.get("other1")
         assert len(registry._contexts) == 2

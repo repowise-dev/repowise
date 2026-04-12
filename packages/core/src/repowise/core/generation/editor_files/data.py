@@ -53,3 +53,34 @@ class EditorFileData:
     decisions: list[DecisionSummary] = field(default_factory=list)
     build_commands: dict[str, str] = field(default_factory=dict)
     avg_confidence: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Workspace-level data containers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WorkspaceRepoSummary:
+    """Per-repo summary row within a workspace CLAUDE.md."""
+
+    alias: str
+    is_primary: bool
+    file_count: int
+    symbol_count: int
+    hotspot_count: int
+    entry_points: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class WorkspaceEditorFileData:
+    """All data needed to render the workspace-level CLAUDE.md template."""
+
+    workspace_name: str
+    workspace_root: str  # absolute path string (for display only)
+    repos: list[WorkspaceRepoSummary] = field(default_factory=list)
+    default_repo: str = ""
+    co_changes: list[dict] = field(default_factory=list)  # from cross_repo_edges.json
+    package_deps: list[dict] = field(default_factory=list)  # package dep entries
+    contract_links: list[dict] = field(default_factory=list)  # matched contract links
+    contracts_by_type: dict[str, int] = field(default_factory=dict)  # {"http": 5, …}

@@ -168,14 +168,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             enricher = CrossRepoEnricher(cross_repo_path, contracts_path=contracts_path)
             if enricher.has_data or enricher.has_contract_data:
                 app.state.cross_repo_enricher = enricher
-            logger.info(
-                "repowise_workspace_detected",
-                extra={
-                    "repos": len(ws_config.repos),
-                    "co_changes": len(enricher._co_changes),
-                    "contract_links": len(enricher._contract_links),
-                },
-            )
+                logger.info(
+                    "repowise_workspace_detected",
+                    extra={
+                        "repos": len(ws_config.repos),
+                        "co_changes": len(getattr(enricher, "_co_changes", [])),
+                        "contract_links": len(getattr(enricher, "_contract_links", [])),
+                    },
+                )
+            else:
+                logger.info("repowise_workspace_detected", extra={"repos": len(ws_config.repos)})
     except Exception:
         logger.debug("Workspace detection skipped", exc_info=True)
 

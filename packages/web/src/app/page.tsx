@@ -38,8 +38,8 @@ export default async function DashboardPage() {
   const jobList = jobs.status === "fulfilled" ? jobs.value : [];
   const workspace = ws.status === "fulfilled" ? ws.value : null;
 
-  // Workspace mode with multiple repos → workspace dashboard
-  if (workspace?.is_workspace && repoList.length > 1) {
+  // Workspace mode → workspace dashboard
+  if (workspace?.is_workspace) {
     redirect("/workspace");
   }
 

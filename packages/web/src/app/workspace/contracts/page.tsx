@@ -38,18 +38,12 @@ export default function ContractsPage() {
   const repos = workspace?.repos ?? [];
 
   // Count unmatched contracts (providers with no link, consumers with no link)
-  const linkedProviderFiles = new Set(
-    (data?.links ?? []).map((l) => `${l.provider_repo}:${l.provider_file}`),
+  const linkedContractIds = new Set(
+    (data?.links ?? []).map((l) => l.contract_id),
   );
-  const linkedConsumerFiles = new Set(
-    (data?.links ?? []).map((l) => `${l.consumer_repo}:${l.consumer_file}`),
-  );
-  const unmatchedCount = (data?.contracts ?? []).filter((c) => {
-    const key = `${c.repo}:${c.file_path}`;
-    return c.role === "provider"
-      ? !linkedProviderFiles.has(key)
-      : !linkedConsumerFiles.has(key);
-  }).length;
+  const unmatchedCount = (data?.contracts ?? []).filter(
+    (c) => !linkedContractIds.has(c.contract_id),
+  ).length;
 
   const selectClass =
     "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-primary)]";

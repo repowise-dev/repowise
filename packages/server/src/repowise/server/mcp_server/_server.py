@@ -145,9 +145,12 @@ def _detect_workspace(repo_path: str | None):
         repo_alias = None
         for entry in ws_config.repos:
             entry_abs = (ws_root / entry.path).resolve()
-            if resolved == entry_abs or str(resolved).startswith(str(entry_abs)):
+            try:
+                resolved.relative_to(entry_abs)
                 repo_alias = entry.alias
                 break
+            except ValueError:
+                continue
 
         if repo_alias is None:
             # Path is inside workspace but doesn't match a repo — use default

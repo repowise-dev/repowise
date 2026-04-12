@@ -61,22 +61,26 @@ class CrossRepoEnricher:
 
         # Build co-change index: (repo, file) -> list of partner dicts
         for cc in self._co_changes:
-            src_key = (cc["source_repo"], cc["source_file"])
-            tgt_key = (cc["target_repo"], cc["target_file"])
+            try:
+                src_key = (cc["source_repo"], cc["source_file"])
+                tgt_key = (cc["target_repo"], cc["target_file"])
+            except KeyError:
+                _log.debug("Skipping malformed co-change entry: %s", cc)
+                continue
 
             partner_for_src = {
-                "repo": cc["target_repo"],
-                "file": cc["target_file"],
-                "strength": cc["strength"],
-                "frequency": cc["frequency"],
-                "last_date": cc["last_date"],
+                "repo": cc.get("target_repo", ""),
+                "file": cc.get("target_file", ""),
+                "strength": cc.get("strength", 0),
+                "frequency": cc.get("frequency", 0),
+                "last_date": cc.get("last_date", ""),
             }
             partner_for_tgt = {
-                "repo": cc["source_repo"],
-                "file": cc["source_file"],
-                "strength": cc["strength"],
-                "frequency": cc["frequency"],
-                "last_date": cc["last_date"],
+                "repo": cc.get("source_repo", ""),
+                "file": cc.get("source_file", ""),
+                "strength": cc.get("strength", 0),
+                "frequency": cc.get("frequency", 0),
+                "last_date": cc.get("last_date", ""),
             }
 
             self._co_change_index[src_key].append(partner_for_src)
@@ -94,13 +98,19 @@ class CrossRepoEnricher:
 
         # Build package dep indexes
         for pd in self._package_deps:
-            self._package_dep_index[pd["source_repo"]].append({
-                "target_repo": pd["target_repo"],
-                "source_manifest": pd["source_manifest"],
-                "kind": pd["kind"],
+            try:
+                src_repo = pd["source_repo"]
+                tgt_repo = pd["target_repo"]
+            except KeyError:
+                _log.debug("Skipping malformed package dep entry: %s", pd)
+                continue
+            self._package_dep_index[src_repo].append({
+                "target_repo": tgt_repo,
+                "source_manifest": pd.get("source_manifest", ""),
+                "kind": pd.get("kind", ""),
             })
             # Reverse: who depends on target_repo
-            self._package_dep_reverse[pd["target_repo"]].append(pd["source_repo"])
+            self._package_dep_reverse[tgt_repo].append(src_repo)
 
         _log.debug(
             "Cross-repo enricher loaded: %d co-change edges, %d package deps",
@@ -126,8 +136,12 @@ class CrossRepoEnricher:
         self._contract_links = data.get("contract_links", [])
 
         for link in self._contract_links:
-            provider_key = (link["provider_repo"], link["provider_file"])
-            consumer_key = (link["consumer_repo"], link["consumer_file"])
+            try:
+                provider_key = (link["provider_repo"], link["provider_file"])
+                consumer_key = (link["consumer_repo"], link["consumer_file"])
+            except KeyError:
+                _log.debug("Skipping malformed contract link: %s", link)
+                continue
             self._contract_provider_index[provider_key].append(link)
             self._contract_consumer_index[consumer_key].append(link)
 

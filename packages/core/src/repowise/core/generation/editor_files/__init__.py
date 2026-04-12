@@ -6,25 +6,30 @@ Provides generators that create and maintain AI-editor configuration files
 No LLM calls are made — all content is derived from the repowise DB.
 """
 
-from .claude_md import ClaudeMdGenerator
+from .claude_md import ClaudeMdGenerator, WorkspaceClaudeMdGenerator
 from .data import (
     DecisionSummary,
     EditorFileData,
     HotspotFile,
     KeyModule,
     TechStackItem,
+    WorkspaceEditorFileData,
+    WorkspaceRepoSummary,
 )
 from .fetcher import EditorFileDataFetcher
 
 __all__ = [
     # Generators
     "ClaudeMdGenerator",
+    "WorkspaceClaudeMdGenerator",
     # Data containers
     "DecisionSummary",
     "EditorFileData",
-    # Fetcher
-    "EditorFileDataFetcher",
     "HotspotFile",
     "KeyModule",
     "TechStackItem",
+    "WorkspaceEditorFileData",
+    "WorkspaceRepoSummary",
+    # Fetcher
+    "EditorFileDataFetcher",
 ]

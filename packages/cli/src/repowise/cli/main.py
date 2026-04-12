@@ -20,6 +20,7 @@ from repowise.cli.commands.serve_cmd import serve_command
 from repowise.cli.commands.status_cmd import status_command
 from repowise.cli.commands.update_cmd import update_command
 from repowise.cli.commands.watch_cmd import watch_command
+from repowise.cli.commands.workspace_cmd import workspace_group
 
 
 @click.group()
@@ -43,3 +44,4 @@ cli.add_command(watch_command)
 cli.add_command(serve_command)
 cli.add_command(mcp_command)
 cli.add_command(reindex_command)
+cli.add_command(workspace_group)

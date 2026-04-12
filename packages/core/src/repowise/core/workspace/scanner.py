@@ -123,7 +123,12 @@ def scan_for_repos(
             if _is_git_repo(child):
                 is_sub = _is_submodule(child)
                 if not is_sub or include_submodules:
-                    found.append((child.resolve(), is_sub))
+                    try:
+                        resolved = child.resolve()
+                        resolved.relative_to(root)
+                        found.append((resolved, is_sub))
+                    except (OSError, ValueError):
+                        continue  # broken symlink or resolved outside root
                 repos_at_this_level.append(dirname)
 
         # Don't descend into discovered repos

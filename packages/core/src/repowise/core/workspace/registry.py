@@ -63,6 +63,7 @@ class RepoRegistry:
         self._embedder_factory = embedder_factory
         self._contexts: dict[str, RepoContext] = {}
         self._access_order: dict[str, float] = {}
+        self._vs_tasks: dict[str, asyncio.Task[None]] = {}
 
     # -- Public API --------------------------------------------------------
 
@@ -83,7 +84,11 @@ class RepoRegistry:
         primary = self._ws_config.get_primary()
         if primary:
             return primary.alias
-        return self._ws_config.default_repo or self._ws_config.repos[0].alias
+        if self._ws_config.default_repo:
+            return self._ws_config.default_repo
+        if not self._ws_config.repos:
+            raise RuntimeError("Workspace has no repos configured")
+        return self._ws_config.repos[0].alias
 
     def resolve_repo_param(self, repo: str | None) -> str | list[str]:
         """Resolve the ``repo`` tool parameter.
@@ -112,8 +117,12 @@ class RepoRegistry:
             self._access_order[alias] = time.monotonic()
             return self._contexts[alias]
 
-        # Evict if at capacity
-        if len(self._contexts) >= self.MAX_LOADED:
+        # Evict if at capacity.  The default repo is protected from eviction, so
+        # only count non-default contexts against the cap — this prevents the
+        # cap from being silently bypassed when the default is always loaded.
+        default_alias = self.get_default_alias()
+        evictable = [a for a in self._contexts if a != default_alias]
+        if len(evictable) >= self.MAX_LOADED:
             await self._evict_lru()
 
         ctx = await self._load_context(alias)
@@ -192,11 +201,12 @@ class RepoRegistry:
             _engine=engine,
         )
 
-        # Load real vector stores in background
-        asyncio.create_task(
+        # Load real vector stores in background; track task for cancellation on eviction
+        task = asyncio.create_task(
             self._load_vector_stores(ctx, repo_path, embedder),
             name=f"vs-load-{alias}",
         )
+        self._vs_tasks[alias] = task
 
         return ctx
 
@@ -230,7 +240,19 @@ class RepoRegistry:
                     ctx.alias,
                 )
         finally:
-            ctx.vector_store_ready.set()
+            # Only signal ready if this context is still the active one.
+            # If it was evicted before we finished loading, a fresh context
+            # will have its own event — setting the stale one would leave the
+            # new context's event unset and cause callers to hang forever.
+            if self._contexts.get(ctx.alias) is ctx:
+                ctx.vector_store_ready.set()
+            else:
+                _log.debug(
+                    "VS load for '%s' completed after eviction — skipping set()",
+                    ctx.alias,
+                )
+            # Remove task reference regardless
+            self._vs_tasks.pop(ctx.alias, None)
 
     async def _evict_lru(self) -> None:
         """Evict the least-recently-used context to free resources."""
@@ -256,6 +278,17 @@ class RepoRegistry:
         if ctx is None:
             return
         self._access_order.pop(alias, None)
+
+        # Cancel any in-flight background VS-load task so it cannot race with
+        # a fresh context that will be created when this alias is re-accessed.
+        task = self._vs_tasks.pop(alias, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
         try:
             if ctx._engine is not None:
                 await ctx._engine.dispose()

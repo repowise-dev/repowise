@@ -48,6 +48,8 @@ class RepoEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RepoEntry:
+        if "path" not in data or "alias" not in data:
+            raise ValueError(f"RepoEntry requires 'path' and 'alias', got: {sorted(data.keys())}")
         return cls(
             path=str(data["path"]),
             alias=str(data["alias"]),

@@ -107,12 +107,15 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
         )
         if not has_source:
             # Check immediate subdirs for source files
-            has_source = any(
-                Path(dirpath, d, f).suffix.lower() in _SOURCE_EXTENSIONS
-                for d in dirnames
-                for f in os.listdir(Path(dirpath, d))
-                if os.path.isfile(Path(dirpath, d, f))
-            ) if dirnames else False
+            try:
+                has_source = any(
+                    Path(dirpath, d, f).suffix.lower() in _SOURCE_EXTENSIONS
+                    for d in dirnames
+                    for f in os.listdir(Path(dirpath, d))
+                    if os.path.isfile(Path(dirpath, d, f))
+                ) if dirnames else False
+            except (PermissionError, OSError):
+                has_source = False
 
         if not has_source:
             continue
