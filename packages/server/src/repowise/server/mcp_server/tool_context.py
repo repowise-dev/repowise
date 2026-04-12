@@ -58,8 +58,11 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server._server import mcp
@@ -100,6 +103,8 @@ async def _resolve_one_target(
     target: str,
     include: set[str] | None,
     compact: bool = False,
+    *,
+    repo_path: str | None = None,
 ) -> dict:
     """Resolve a single target and return its full context."""
     repo_id = repository.id
@@ -538,7 +543,10 @@ async def _resolve_one_target(
 
     # --- Source (replaces get_symbol) ---
     if include and "source" in include:
-        await _resolve_source(session, repository, target, target_type, result_data)
+        await _resolve_source(
+            session, repository, target, target_type, result_data,
+            repo_path=repo_path,
+        )
 
     # --- Callers / Callees (replaces get_callers_callees) ---
     want_callers = bool(include and "callers" in include)
@@ -571,6 +579,8 @@ async def _resolve_source(
     target: str,
     target_type: str | None,
     result_data: dict[str, Any],
+    *,
+    repo_path: str | None = None,
 ) -> None:
     """Resolve symbol source body and attach to result_data["source"]."""
     repo_id = repository.id
@@ -618,11 +628,11 @@ async def _resolve_source(
         result_data["source"] = {"error": f"Symbol not found: {target!r}"}
         return
 
-    if not _state._repo_path:
+    if not repo_path:
         result_data["source"] = {"error": "MCP server has no repo path configured"}
         return
 
-    repo_root = Path(_state._repo_path)
+    repo_root = Path(repo_path)
     abs_path = (repo_root / row.file_path).resolve()
     try:
         abs_path.relative_to(repo_root.resolve())
@@ -1074,6 +1084,10 @@ async def get_context(
         compact: default True (signatures only). False adds structure+imports+docstrings.
         repo: usually omitted.
     """
+    if repo == "all":
+        return _unsupported_repo_all("get_context")
+    ctx = await _resolve_repo_context(repo)
+
     # Default to docs + freshness when include is omitted. Freshness is
     # critical for the agent to detect stale index data.  The other blocks
     # (ownership/last_change/decisions) are 200–500 bytes each and bloat
@@ -1083,12 +1097,15 @@ async def get_context(
 
     import time as _time
     _t0 = _time.perf_counter()
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
 
         results = await asyncio.gather(
             *[
-                _resolve_one_target(session, repository, t, include_set, compact)
+                _resolve_one_target(
+                    session, repository, t, include_set, compact,
+                    repo_path=str(ctx.path),
+                )
                 for t in targets
             ]
         )

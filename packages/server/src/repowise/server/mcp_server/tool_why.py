@@ -15,12 +15,14 @@ from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
 )
-from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
     _build_origin_story,
     _compute_alignment,
     _get_repo,
     _is_path,
+    _resolve_all_contexts,
+    _resolve_repo_context,
+    _unsupported_repo_all,
 )
 from repowise.server.mcp_server._server import mcp
 
@@ -49,12 +51,48 @@ async def get_why(
                  these files are prioritized in results.
         repo: Repository path, name, or ID.
     """
+    # --- repo="all": search decisions across ALL repos ---
+    if repo == "all":
+        if not query:
+            return _unsupported_repo_all("get_why (health dashboard)")
+
+        contexts = await _resolve_all_contexts()
+        merged: list[dict] = []
+        for ctx in contexts:
+            async with get_session(ctx.session_factory) as session:
+                repository = await _get_repo(session)
+                res = await session.execute(
+                    select(DecisionRecord).where(
+                        DecisionRecord.repository_id == repository.id,
+                    )
+                )
+                for d in res.scalars().all():
+                    text = f"{d.title} {d.decision} {d.rationale} {d.context}".lower()
+                    if any(w in text for w in query.lower().split()):
+                        merged.append({
+                            "repo": ctx.alias,
+                            "id": d.id,
+                            "title": d.title,
+                            "status": d.status,
+                            "decision": d.decision,
+                            "rationale": d.rationale,
+                            "source": d.source,
+                            "confidence": d.confidence,
+                        })
+        return {
+            "mode": "search",
+            "query": query,
+            "workspace": True,
+            "decisions": merged[:15],
+        }
+
     # --- Mode 1: No query → health dashboard ---
     if not query:
         from repowise.core.persistence.crud import get_decision_health_summary
 
-        async with get_session(_state._session_factory) as session:
-            repository = await _get_repo(session, repo)
+        ctx = await _resolve_repo_context(repo)
+        async with get_session(ctx.session_factory) as session:
+            repository = await _get_repo(session)
             health = await get_decision_health_summary(session, repository.id)
 
             stale = health["stale_decisions"]
@@ -93,8 +131,9 @@ async def get_why(
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
-        async with get_session(_state._session_factory) as session:
-            repository = await _get_repo(session, repo)
+        ctx = await _resolve_repo_context(repo)
+        async with get_session(ctx.session_factory) as session:
+            repository = await _get_repo(session)
             res = await session.execute(
                 select(DecisionRecord).where(
                     DecisionRecord.repository_id == repository.id,
@@ -163,8 +202,9 @@ async def get_why(
     # --- Mode 3: Natural language → target-aware search ---
     from repowise.core.persistence.crud import list_decisions as _list_decisions
 
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    ctx = await _resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
         all_decisions = await _list_decisions(
             session, repository.id, include_proposed=True, limit=200
         )
@@ -223,15 +263,15 @@ async def get_why(
     # Semantic search over decision vector store
     decision_results = []
     with contextlib.suppress(Exception):
-        decision_results = await _state._decision_store.search(query, limit=5)
+        decision_results = await ctx.decision_store.search(query, limit=5)
 
     # Semantic search over documentation
     doc_results = []
     try:
-        doc_results = await _state._vector_store.search(query, limit=3)
+        doc_results = await ctx.vector_store.search(query, limit=3)
     except Exception:
         with contextlib.suppress(Exception):
-            doc_results = await _state._fts.search(query, limit=3)
+            doc_results = await ctx.fts.search(query, limit=3)
 
     # Merge keyword matches with semantic results (dedup by ID)
     seen_ids: set[str] = set()
@@ -284,7 +324,7 @@ async def get_why(
 
     # If targets provided, include target context
     if targets:
-        async with get_session(_state._session_factory) as session2:
+        async with get_session(ctx.session_factory) as session2:
             # Load all git metadata for cross-file search
             all_git_res = await session2.execute(
                 select(GitMetadata).where(

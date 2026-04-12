@@ -20,8 +20,11 @@ from repowise.core.persistence.models import (
     GraphNode,
     Repository,
 )
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._server import mcp
 
 _FIX_PATTERN = re.compile(
@@ -368,8 +371,11 @@ async def get_risk(
         repo: Repository path, name, or ID.
         changed_files: Optional list of files changed in a PR for blast-radius analysis.
     """
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    if repo == "all":
+        return _unsupported_repo_all("get_risk")
+    ctx = await _resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
         repo_id = repository.id
 
         # Pre-load edges

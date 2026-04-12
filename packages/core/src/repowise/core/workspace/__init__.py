@@ -18,6 +18,10 @@ from .scanner import (
     ScanResult,
     scan_for_repos,
 )
+from .registry import (
+    RepoContext,
+    RepoRegistry,
+)
 from .update import (
     RepoUpdateResult,
     check_repo_staleness,
@@ -38,6 +42,9 @@ __all__ = [
     "WorkspaceConfig",
     "ensure_workspace_data_dir",
     "find_workspace_root",
+    # Registry
+    "RepoContext",
+    "RepoRegistry",
     # Update
     "RepoUpdateResult",
     "check_repo_staleness",

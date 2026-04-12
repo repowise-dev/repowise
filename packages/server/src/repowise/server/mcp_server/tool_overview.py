@@ -6,7 +6,7 @@ import json
 from collections import Counter, defaultdict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func as sa_func, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -15,8 +15,120 @@ from repowise.core.persistence.models import (
     Page,
 )
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _is_workspace_mode,
+    _resolve_all_contexts,
+    _resolve_repo_context,
+)
 from repowise.server.mcp_server._server import mcp
+
+
+# ---------------------------------------------------------------------------
+# repo="all" — workspace-level summary
+# ---------------------------------------------------------------------------
+
+
+async def _workspace_overview() -> dict:
+    """Build a concise workspace-level overview across all repos."""
+    contexts = await _resolve_all_contexts()
+    registry = _state._registry
+
+    repos_info: list[dict] = []
+    total_files = 0
+    total_symbols = 0
+
+    for ctx in contexts:
+        async with get_session(ctx.session_factory) as session:
+            repo_obj = await _get_repo(session)
+
+            # One-line summary from repo_overview page
+            ov_result = await session.execute(
+                select(Page.content).where(
+                    Page.repository_id == repo_obj.id,
+                    Page.page_type == "repo_overview",
+                )
+            )
+            ov_content = ov_result.scalar_one_or_none() or ""
+            summary = ov_content.split("\n")[0].strip("# ").strip()[:200] if ov_content else ""
+
+            # File and symbol counts
+            file_count_res = await session.execute(
+                select(sa_func.count()).select_from(GraphNode).where(
+                    GraphNode.repository_id == repo_obj.id,
+                    GraphNode.node_type == "file",
+                )
+            )
+            file_count = file_count_res.scalar_one()
+
+            symbol_count_res = await session.execute(
+                select(sa_func.count()).select_from(GraphNode).where(
+                    GraphNode.repository_id == repo_obj.id,
+                    GraphNode.node_type == "symbol",
+                )
+            )
+            symbol_count = symbol_count_res.scalar_one()
+
+            total_files += file_count
+            total_symbols += symbol_count
+
+            is_default = (
+                registry is not None
+                and ctx.alias == registry.get_default_alias()
+            )
+
+            repos_info.append({
+                "alias": ctx.alias,
+                "path": str(ctx.path),
+                "summary": summary,
+                "file_count": file_count,
+                "symbol_count": symbol_count,
+                "is_default": is_default,
+            })
+
+    return {
+        "workspace": True,
+        "workspace_root": str(registry.workspace_root) if registry else "",
+        "total_repos": len(repos_info),
+        "total_files": total_files,
+        "total_symbols": total_symbols,
+        "repos": repos_info,
+        "hint": (
+            "Use repo='<alias>' to query a specific repo. "
+            "Omit repo to use the default."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Workspace footer — appended to default-repo overview
+# ---------------------------------------------------------------------------
+
+
+def _build_workspace_footer() -> dict | None:
+    """Build workspace context footer for the default overview."""
+    registry = _state._registry
+    if registry is None:
+        return None
+
+    default_alias = registry.get_default_alias()
+    other_repos = [
+        a for a in registry.get_all_aliases() if a != default_alias
+    ]
+    if not other_repos:
+        return None
+
+    return {
+        "workspace_root": str(registry.workspace_root),
+        "default_repo": default_alias,
+        "other_repos": other_repos,
+        "hint": (
+            "This repo is part of a workspace. "
+            f"Other repos: {', '.join(other_repos)}. "
+            "Use repo='<alias>' to query another repo, "
+            "or repo='all' for workspace-wide results."
+        ),
+    }
 
 
 @mcp.tool()
@@ -25,11 +137,20 @@ async def get_overview(repo: str | None = None) -> dict:
 
     Best first call when starting to explore an unfamiliar codebase.
 
+    In workspace mode:
+    - Omit ``repo`` for the default repo overview (includes workspace context).
+    - Use ``repo="all"`` for a workspace-level summary of all repos.
+    - Use ``repo="<alias>"`` to query a specific repo.
+
     Args:
-        repo: Repository path, name, or ID. Omit if only one repo exists.
+        repo: Repository alias, path, or ID. Use ``"all"`` for workspace overview.
     """
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    if repo == "all":
+        return await _workspace_overview()
+
+    ctx = await _resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
 
         # Get repo overview page
         result = await session.execute(
@@ -221,7 +342,7 @@ async def get_overview(repo: str | None = None) -> dict:
                 "cohesion": round(cohesion, 3),
             })
 
-        return {
+        result = {
             "title": overview_page.title if overview_page else repository.name,
             "content_md": overview_page.content if overview_page else "No overview generated yet.",
             "key_modules": [
@@ -241,3 +362,10 @@ async def get_overview(repo: str | None = None) -> dict:
             "knowledge_map": knowledge_map,
             "community_summary": community_summary,
         }
+
+        # Append workspace context footer when in workspace mode
+        ws_footer = _build_workspace_footer()
+        if ws_footer:
+            result["workspace"] = ws_footer
+
+        return result

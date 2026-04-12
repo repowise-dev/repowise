@@ -13,8 +13,11 @@ from repowise.core.persistence.models import (
     GraphEdge,
     GraphNode,
 )
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._server import mcp
 
 
@@ -31,8 +34,12 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
         target: Target file or module path.
         repo: Repository path, name, or ID.
     """
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    if repo == "all":
+        return _unsupported_repo_all("get_dependency_path")
+    ctx = await _resolve_repo_context(repo)
+
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
 
         edge_result = await session.execute(
             select(GraphEdge).where(
@@ -88,7 +95,7 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
             "visual_context": _build_visual_context(graph, source, target, nodes, nx),
         }
         # Phase 4: check co-change coupling even without import dependency
-        async with get_session(_state._session_factory) as session:
+        async with get_session(ctx.session_factory) as session:
             src_res = await session.execute(
                 select(GitMetadata).where(
                     GitMetadata.repository_id == repository.id,

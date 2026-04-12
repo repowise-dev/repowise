@@ -37,8 +37,11 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import symbol_hint as _symbol_hint
 from repowise.server.mcp_server._server import mcp
@@ -290,6 +293,10 @@ async def get_symbol(
         context_lines: extra source lines before/after (0–50, default 0).
         repo: usually omitted.
     """
+    if repo == "all":
+        return _unsupported_repo_all("get_symbol")
+    ctx = await _resolve_repo_context(repo)
+
     t0 = time.perf_counter()
     if not symbol_id or not symbol_id.strip():
         return {
@@ -302,8 +309,8 @@ async def get_symbol(
         # defeat the whole point of symbol-level retrieval.
         context_lines = max(0, min(50, context_lines))
 
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
         row = await _resolve_symbol(session, repository.id, symbol_id)
 
     if row is None:
@@ -317,14 +324,14 @@ async def get_symbol(
             "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
         }
 
-    if not _state._repo_path:
+    if not ctx.path:
         return {
             "symbol_id": symbol_id,
             "error": "MCP server has no repo path configured",
             "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
         }
 
-    repo_root = Path(_state._repo_path)
+    repo_root = Path(str(ctx.path))
     source, start, end, total = _slice_source(
         repo_root, row.file_path, row.start_line, row.end_line, context_lines
     )
