@@ -5,6 +5,7 @@ import { HotspotTable } from "@/components/git/hotspot-table";
 import { ContributorBar } from "@/components/git/contributor-bar";
 import { ChurnHistogram } from "@/components/git/churn-histogram";
 import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
+import { RiskDistributionChart } from "@/components/git/risk-distribution-chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getHotspots, getGitSummary } from "@/lib/api/git";
 import { formatNumber } from "@/lib/utils/format";
@@ -107,6 +108,21 @@ export default async function HotspotsPage({
             </Card>
           )}
         </div>
+      )}
+
+      {/* Risk distribution */}
+      {hotspots.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Risk Distribution</CardTitle>
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              Composite risk score: churn (40%) + bus factor (35%) + trend (25%)
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <RiskDistributionChart hotspots={hotspots} />
+          </CardContent>
+        </Card>
       )}
 
       {/* Table + sidebar */}

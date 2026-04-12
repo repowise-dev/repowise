@@ -30,6 +30,15 @@ from .models import HeritageRelation, ParsedFile
 
 log = structlog.get_logger(__name__)
 
+
+def _file_language(
+    parsed_files: dict[str, ParsedFile], symbol_id: str
+) -> str | None:
+    """Extract language from a symbol ID's file via the parsed files map."""
+    file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
+    parsed = parsed_files.get(file_path)
+    return parsed.file_info.language if parsed else None
+
 # Symbol kinds that can be parents in heritage relationships
 _PARENT_KINDS = frozenset({
     "class", "interface", "trait", "struct", "enum", "type_alias", "impl",
@@ -71,6 +80,9 @@ class HeritageResolver:
 
         # Import name mapping (reuses resolved_file from Import objects)
         self._import_names: dict[str, dict[str, str]] = defaultdict(dict)
+
+        # Keep reference for cross-language checks in Tier 3
+        self._parsed_files = parsed_files
 
         self._build_indices(parsed_files)
 
@@ -159,9 +171,13 @@ class HeritageResolver:
                     line=rel.line,
                 )
 
-        # Tier 3: global unique match
+        # Tier 3: global unique match — only within the same language
         candidates = self._global_types.get(parent_name, [])
         if len(candidates) == 1:
+            caller_lang = _file_language(self._parsed_files, child_id)
+            callee_lang = _file_language(self._parsed_files, candidates[0])
+            if caller_lang and callee_lang and caller_lang != callee_lang:
+                return None  # reject cross-language Tier 3 match
             return ResolvedHeritage(
                 child_id=child_id,
                 parent_id=candidates[0],

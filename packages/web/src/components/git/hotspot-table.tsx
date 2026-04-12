@@ -106,7 +106,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
             placeholder="Search files or owners…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-8 w-56 text-xs"
+            className="pl-8 h-8 w-full sm:w-56 text-xs"
           />
         </div>
         <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
@@ -149,7 +149,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                   Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
                 </th>
                 <th
-                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 cursor-pointer select-none hover:text-[var(--color-text-secondary)] hidden lg:table-cell"
                   onClick={() => handleSort("churn")}
                 >
                   Churn<SortIcon column="churn" sortKey={sortKey} sortDir={sortDir} />
@@ -161,13 +161,13 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                 >
                   Trend<SortIcon column="trend" sortKey={sortKey} sortDir={sortDir} />
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20">
+                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-20 hidden md:table-cell">
                   Bus Factor
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
+                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 hidden lg:table-cell">
                   Lines ±90d
                 </th>
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                   Owner
                 </th>
                 <th className="px-3 py-2.5 w-20" />
@@ -200,7 +200,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                         )}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-2.5 hidden lg:table-cell">
                       <div className="flex items-center gap-2">
                         <ChurnBar percentile={h.churn_percentile} className="w-16" />
                         <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8">
@@ -222,7 +222,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                         )}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-2.5 hidden md:table-cell">
                       <span
                         className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-medium tabular-nums ${
                           h.bus_factor <= 1
@@ -235,12 +235,12 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                         {h.bus_factor}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-xs tabular-nums">
+                    <td className="px-3 py-2.5 text-xs tabular-nums hidden lg:table-cell">
                       <span className="text-green-400">+{formatLOC(h.lines_added_90d)}</span>
                       {" "}
                       <span className="text-red-400">-{formatLOC(h.lines_deleted_90d)}</span>
                     </td>
-                    <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)]">
+                    <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
                       {h.primary_owner ?? "—"}
                     </td>
                     <td className="px-3 py-2.5 flex items-center gap-1">

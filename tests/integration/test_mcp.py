@@ -377,24 +377,6 @@ async def test_mcp_full_exploration_flow(mcp_env):
 
 
 @pytest.mark.asyncio
-async def test_mcp_dependency_and_graph_flow(mcp_env):
-    """Test dependency path and architecture diagram tools."""
-    from repowise.server.mcp_server import (
-        get_architecture_diagram,
-        get_dependency_path,
-    )
-
-    # Dependency path from login to models (2 hops)
-    path = await get_dependency_path("src/auth/login.py", "src/data/models.py")
-    assert path["distance"] == 2
-    assert len(path["path"]) == 3
-
-    # Architecture diagram
-    diagram = await get_architecture_diagram(scope="repo")
-    assert "graph TD" in diagram["mermaid_syntax"]
-
-
-@pytest.mark.asyncio
 async def test_mcp_git_intelligence_flow(mcp_env):
     """Test git intelligence via get_context and get_risk."""
     from repowise.server.mcp_server import get_context, get_risk

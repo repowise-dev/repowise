@@ -42,7 +42,7 @@ function DependencyEdgeInner({
     targetPosition,
   });
 
-  const strokeWidth = Math.max(1.5, Math.min(4, 1.5 + Math.sqrt(d.edgeCount) * 0.6));
+  const strokeWidth = Math.max(1, Math.min(6, 1 + Math.sqrt(d.edgeCount) * 0.8));
 
   let stroke: string;
   let opacity: number;
@@ -72,17 +72,32 @@ function DependencyEdgeInner({
     opacity = 1;
   }
 
+  const tooltip = d.importedNames.length > 0
+    ? d.importedNames.slice(0, 10).join(", ") + (d.importedNames.length > 10 ? ` (+${d.importedNames.length - 10} more)` : "")
+    : `${d.edgeCount} connection${d.edgeCount > 1 ? "s" : ""}`;
+
   return (
-    <path
-      d={edgePath}
-      fill="none"
-      stroke={stroke}
-      strokeWidth={isHoverHighlighted && !isOnPath ? strokeWidth + 0.5 : strokeWidth}
-      strokeOpacity={opacity}
-      strokeDasharray={dashArray}
-      style={{ animation }}
-      className="transition-all duration-200"
-    />
+    <g>
+      {/* Invisible wider path for easier hover */}
+      <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={Math.max(12, strokeWidth + 8)}
+      >
+        <title>{tooltip}</title>
+      </path>
+      <path
+        d={edgePath}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={isHoverHighlighted && !isOnPath ? strokeWidth + 0.5 : strokeWidth}
+        strokeOpacity={opacity}
+        strokeDasharray={dashArray}
+        style={{ animation, pointerEvents: "none" }}
+        className="transition-all duration-200"
+      />
+    </g>
   );
 }
 

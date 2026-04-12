@@ -277,12 +277,13 @@ export async function layoutFileGraph(
     }
   }
 
-  // Add file nodes
+  // Add file nodes (sized by pagerank importance)
   for (const n of nodes) {
+    const scale = 1 + Math.min(0.6, n.pagerank * 25);
     const elkFileNode: ElkNode = {
       id: n.node_id,
-      width: FILE_NODE_WIDTH,
-      height: FILE_NODE_HEIGHT,
+      width: Math.round(FILE_NODE_WIDTH * scale),
+      height: Math.round(FILE_NODE_HEIGHT * scale),
       labels: [{ text: n.node_id.split("/").pop() ?? n.node_id }],
     };
     const dir = dirOf(n.node_id);

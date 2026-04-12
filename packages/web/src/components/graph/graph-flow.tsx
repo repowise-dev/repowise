@@ -20,8 +20,10 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Loader2, ChevronRight, Home } from "lucide-react";
+import { Loader2, ChevronRight, Home, Search } from "lucide-react";
+import Fuse from "fuse.js";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/shared/empty-state";
 import {
   useModuleGraph,
@@ -30,6 +32,7 @@ import {
   useDeadCodeGraph,
   useHotFilesGraph,
   useCommunities,
+  useExecutionFlows,
 } from "@/lib/hooks/use-graph";
 import { ModuleGroupNode } from "./nodes/module-group-node";
 import { FileNode } from "./nodes/file-node";
@@ -55,6 +58,7 @@ export interface GraphContextValue {
   connectedNodeIds: Set<string>;
   connectedEdgeIds: Set<string>;
   selectedNodeId: string | null;
+  searchDimmedNodes: Set<string> | null;
 }
 
 export const GraphContext = createContext<GraphContextValue>({
@@ -66,6 +70,7 @@ export const GraphContext = createContext<GraphContextValue>({
   connectedNodeIds: new Set(),
   connectedEdgeIds: new Set(),
   selectedNodeId: null,
+  searchDimmedNodes: null,
 });
 
 // ---- Node/Edge types ----
@@ -128,6 +133,14 @@ function GraphFlowInner({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeScreen, setSelectedNodeScreen] = useState<{ x: number; y: number } | null>(null);
 
+  // Graph search
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchDimmedNodes, setSearchDimmedNodes] = useState<Set<string> | null>(null);
+
+  // Execution flow highlighting
+  const [activeFlowIdx, setActiveFlowIdx] = useState<number | null>(null);
+  const [showFlows, setShowFlows] = useState(false);
+
   // ---- Data fetching ----
   const isModuleView = viewMode === "module";
 
@@ -161,6 +174,9 @@ function GraphFlowInner({
     return m;
   }, [communities]);
   const [communityPanelId, setCommunityPanelId] = useState<number | null>(null);
+
+  // Execution flows data
+  const { flows: executionFlowsData } = useExecutionFlows(repoId, { top_n: 10, max_depth: 6 });
 
   // ---- Derived data ----
 
@@ -255,6 +271,74 @@ function GraphFlowInner({
     return { connectedNodeIds: nodeIds, connectedEdgeIds: edgeIds };
   }, [hoveredNodeId, currentEdges]);
 
+  // Fuse search index over visible nodes
+  const fuseIndex = useMemo(() => {
+    const items = filteredNodes.map((n) => ({ id: n.id, label: (n.data as { label?: string }).label ?? n.id }));
+    return new Fuse(items, { keys: ["id", "label"], threshold: 0.4 });
+  }, [filteredNodes]);
+
+  // Search: compute dimmed set when query is active
+  useEffect(() => {
+    if (!searchQuery || searchQuery.length < 2) {
+      setSearchDimmedNodes(null);
+      return;
+    }
+    const results = fuseIndex.search(searchQuery);
+    const matchIds = new Set(results.map((r) => r.item.id));
+    const dimmed = new Set<string>();
+    for (const n of filteredNodes) {
+      if (!matchIds.has(n.id)) dimmed.add(n.id);
+    }
+    setSearchDimmedNodes(dimmed);
+
+    // Zoom to matched nodes
+    if (results.length > 0 && results.length <= 20) {
+      const matchedRfNodes = results
+        .map((r) => reactFlow.getNode(r.item.id))
+        .filter(Boolean) as Node[];
+      if (matchedRfNodes.length > 0) {
+        reactFlow.fitView({ nodes: matchedRfNodes, padding: 0.4, duration: 500 });
+      }
+    }
+  }, [searchQuery, fuseIndex, filteredNodes, reactFlow]);
+
+  // Execution flow highlighting
+  useEffect(() => {
+    if (activeFlowIdx === null || !executionFlowsData) {
+      // Don't clear if a manual path is highlighted
+      if (activeFlowIdx === null && showFlows) {
+        setHighlightedPath(new Set());
+        setHighlightedEdges(new Set());
+      }
+      return;
+    }
+    const flow = executionFlowsData.flows[activeFlowIdx];
+    if (!flow) return;
+    const pathSet = new Set(flow.trace);
+    const edgeKeys = new Set<string>();
+    for (let i = 0; i < flow.trace.length - 1; i++) {
+      edgeKeys.add(`${flow.trace[i]}→${flow.trace[i + 1]}`);
+      edgeKeys.add(`${flow.trace[i + 1]}→${flow.trace[i]}`);
+    }
+    setHighlightedPath(pathSet);
+    setHighlightedEdges(edgeKeys);
+
+    // Switch to full view if in module view to show the trace
+    if (viewMode === "module") {
+      setViewMode("full");
+      setModulePath([]);
+    }
+
+    setTimeout(() => {
+      const traceNodes = flow.trace
+        .map((id) => reactFlow.getNode(id))
+        .filter(Boolean) as Node[];
+      if (traceNodes.length > 0) {
+        reactFlow.fitView({ nodes: traceNodes, padding: 0.3, duration: 600 });
+      }
+    }, 800);
+  }, [activeFlowIdx, executionFlowsData]);
+
   // Context value
   const ctxValue = useMemo<GraphContextValue>(
     () => ({
@@ -266,8 +350,9 @@ function GraphFlowInner({
       connectedNodeIds,
       connectedEdgeIds,
       selectedNodeId,
+      searchDimmedNodes,
     }),
-    [highlightedPath, highlightedEdges, colorMode, hoveredNodeId, connectedNodeIds, connectedEdgeIds, selectedNodeId],
+    [highlightedPath, highlightedEdges, colorMode, hoveredNodeId, connectedNodeIds, connectedEdgeIds, selectedNodeId, searchDimmedNodes],
   );
 
   // ---- Handlers ----
@@ -576,6 +661,10 @@ function GraphFlowInner({
             onFitView={handleFitView}
             showPathFinder={showPathFinder}
             onTogglePathFinder={() => setShowPathFinder((s) => !s)}
+            showFlows={showFlows}
+            onToggleFlows={() => { setShowFlows((s) => !s); setActiveFlowIdx(null); }}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
           />
         </div>
 
@@ -590,6 +679,44 @@ function GraphFlowInner({
               initialFrom={pathFrom}
               initialTo={pathTo}
             />
+          </div>
+        )}
+
+        {/* Execution Flows Panel */}
+        {showFlows && executionFlowsData && executionFlowsData.flows.length > 0 && (
+          <div className="absolute top-14 right-3 z-10 w-64">
+            <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm shadow-lg shadow-black/20 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] font-medium text-[var(--color-text-primary)]">
+                  Execution Flows
+                </span>
+                <span className="text-[10px] text-[var(--color-text-tertiary)]">
+                  {executionFlowsData.flows.length} entry points
+                </span>
+              </div>
+              <div className="space-y-1 max-h-60 overflow-y-auto">
+                {executionFlowsData.flows.map((flow, idx) => (
+                  <button
+                    key={flow.entry_point}
+                    onClick={() => setActiveFlowIdx(activeFlowIdx === idx ? null : idx)}
+                    className={`w-full text-left px-2 py-1.5 rounded-md text-[11px] transition-colors ${
+                      activeFlowIdx === idx
+                        ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+                        : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)] hover:text-[var(--color-text-primary)]"
+                    }`}
+                  >
+                    <div className="font-mono truncate">{flow.entry_point_name}</div>
+                    <div className="flex items-center gap-2 mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
+                      <span>depth {flow.depth}</span>
+                      <span>{flow.trace.length} nodes</span>
+                      {flow.crosses_community && (
+                        <span className="text-yellow-500">cross-community</span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 

@@ -38,7 +38,7 @@ export default function GraphPage({
   );
 
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex flex-col h-full">
       {/* Header */}
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
         <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">

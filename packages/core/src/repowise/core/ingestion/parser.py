@@ -663,6 +663,10 @@ class ASTParser:
         if query is None:
             return []
 
+        from .language_data import get_builtin_calls
+
+        _call_builtins = get_builtin_calls(file_info.language)
+
         # Build a sorted list of (start_line, end_line, symbol_id) for
         # fast enclosing-symbol lookup via binary search.
         symbol_ranges = sorted(
@@ -685,6 +689,12 @@ class ASTParser:
             site_node = site_nodes[0]
             target_name = _node_text(target_nodes[0], src).strip()
             if not target_name:
+                continue
+
+            # Skip language builtins — they pollute the call graph
+            # because Tier 3 global resolution can match them to
+            # unrelated user symbols with the same name.
+            if target_name in _call_builtins:
                 continue
 
             line = site_node.start_point[0] + 1  # 1-indexed
@@ -1308,6 +1318,10 @@ def _extract_heritage(
     if not heritage_types:
         return []
 
+    from .language_data import get_builtin_parents
+
+    _parent_builtins = get_builtin_parents(lang)
+
     relations: list[HeritageRelation] = []
     seen: set[tuple[int, str]] = set()
 
@@ -1335,6 +1349,11 @@ def _extract_heritage(
         extractor = _HERITAGE_EXTRACTORS.get(lang)
         if extractor:
             extractor(def_node, name, line, src, relations)
+
+    # Filter out builtin/stdlib parent types — they carry no architectural
+    # signal and pollute the heritage graph.
+    if _parent_builtins:
+        relations = [r for r in relations if r.parent_name not in _parent_builtins]
 
     return relations
 

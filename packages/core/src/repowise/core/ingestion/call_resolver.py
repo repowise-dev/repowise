@@ -32,6 +32,15 @@ from .models import CallSite, NamedBinding, ParsedFile
 log = structlog.get_logger(__name__)
 
 
+def _file_language(
+    parsed_files: dict[str, ParsedFile], symbol_id: str
+) -> str | None:
+    """Extract language from a symbol ID's file via the parsed files map."""
+    file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
+    parsed = parsed_files.get(file_path)
+    return parsed.file_info.language if parsed else None
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedCall:
     """A call resolved to concrete symbol IDs with a confidence score."""
@@ -81,6 +90,9 @@ class CallResolver:
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
         self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
+
+        # Keep reference for cross-language checks in Tier 3
+        self._parsed_files = parsed_files
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
@@ -218,9 +230,13 @@ class CallResolver:
             if target_name in imported_syms:
                 return ResolvedCall(caller_id, imported_syms[target_name], 0.85, call.line)
 
-        # Tier 3: global unique match
+        # Tier 3: global unique match — only within the same language
         candidates = self._global_symbols.get(target_name, [])
         if len(candidates) == 1 and candidates[0] != caller_id:
+            caller_lang = _file_language(self._parsed_files, caller_id)
+            callee_lang = _file_language(self._parsed_files, candidates[0])
+            if caller_lang and callee_lang and caller_lang != callee_lang:
+                return None  # reject cross-language Tier 3 match
             return ResolvedCall(caller_id, candidates[0], 0.50, call.line)
 
         return None

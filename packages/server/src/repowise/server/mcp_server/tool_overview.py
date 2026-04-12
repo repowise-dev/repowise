@@ -17,7 +17,6 @@ from repowise.core.persistence.models import (
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _get_repo
 from repowise.server.mcp_server._server import mcp
-from repowise.server.services.knowledge_map import compute_knowledge_map
 
 
 @mcp.tool()
@@ -40,15 +39,6 @@ async def get_overview(repo: str | None = None) -> dict:
             )
         )
         overview_page = result.scalar_one_or_none()
-
-        # Get architecture diagram page
-        result = await session.execute(
-            select(Page).where(
-                Page.repository_id == repository.id,
-                Page.page_type == "architecture_diagram",
-            )
-        )
-        arch_page = result.scalar_one_or_none()
 
         # Get module pages
         result = await session.execute(
@@ -145,60 +135,39 @@ async def get_overview(repo: str | None = None) -> dict:
             )[:10]
 
             # knowledge_silos: files where primary owner has > 80% ownership
+            # Filter out boilerplate (migrations, __init__.py, config, lock files)
+            silo_exclude_patterns = (
+                "alembic/versions/", "__init__.py", "migrations/",
+                ".lock", "package-lock", "conftest.py",
+            )
             knowledge_silos = [
                 g.file_path
-                for g in all_git
+                for g in sorted(all_git, key=lambda g: -(g.primary_owner_commit_pct or 0.0))
                 if (g.primary_owner_commit_pct or 0.0) > 0.8
-            ][:30]  # Cap to keep response size bounded
-
-            # onboarding_targets: high-centrality files with least docs
-            # pagerank from graph_nodes; doc length from wiki_pages
-            node_result = await session.execute(
-                select(GraphNode).where(
-                    GraphNode.repository_id == repository.id,
-                    GraphNode.is_test == False,  # noqa: E712
-                )
-            )
-            all_nodes = node_result.scalars().all()
-
-            # Build word-count map from wiki_pages (file pages)
-            page_result = await session.execute(
-                select(Page).where(
-                    Page.repository_id == repository.id,
-                    Page.page_type == "file_page",
-                )
-            )
-            doc_words: dict[str, int] = {
-                p.target_path: len(p.content.split()) for p in page_result.scalars().all()
-            }
-
-            onboarding_candidates = [
-                {
-                    "path": n.node_id,
-                    "pagerank": n.pagerank,
-                    "doc_words": doc_words.get(n.node_id, 0),
-                }
-                for n in all_nodes
-                if n.pagerank > 0.0
-            ]
-            # Sort by fewest doc words first (least documented), then by highest pagerank
-            onboarding_candidates.sort(key=lambda x: (x["doc_words"], -x["pagerank"]))
-            onboarding_targets = [c["path"] for c in onboarding_candidates[:5]]
+                and not any(pat in g.file_path for pat in silo_exclude_patterns)
+            ][:10]
 
             knowledge_map = {
                 "top_owners": top_owners,
                 "knowledge_silos": knowledge_silos,
-                "onboarding_targets": onboarding_targets,
             }
 
         # C. Community summary ---------------------------------------------------
         community_summary: list[dict[str, Any]] = []
-        # Use all_nodes if available (from knowledge map block), otherwise fetch
+        # Fetch file nodes for community grouping
         if not all_git:
             node_result = await session.execute(
                 select(GraphNode).where(
                     GraphNode.repository_id == repository.id,
                     GraphNode.node_type == "file",
+                )
+            )
+            all_nodes = node_result.scalars().all()
+        else:
+            node_result = await session.execute(
+                select(GraphNode).where(
+                    GraphNode.repository_id == repository.id,
+                    GraphNode.is_test == False,  # noqa: E712
                 )
             )
             all_nodes = node_result.scalars().all()
@@ -210,9 +179,13 @@ async def get_overview(repo: str | None = None) -> dict:
                 community_groups[n.community_id].append(n)
 
         # Sort communities by size descending, take top 10
+        # Skip communities with generic/unhelpful labels
+        generic_labels = {"packages", "src", "lib", "core", "app", ""}
         for cid, members in sorted(
             community_groups.items(), key=lambda x: -len(x[1])
-        )[:10]:
+        ):
+            if len(community_summary) >= 10:
+                break
             label = ""
             cohesion = 0.0
             if members:
@@ -222,9 +195,28 @@ async def get_overview(repo: str | None = None) -> dict:
                     cohesion = meta.get("cohesion", 0.0)
                 except (json.JSONDecodeError, TypeError):
                     pass
+
+            # Build a useful label: if the heuristic label is generic,
+            # use the most common directory segment among members
+            display_label = label
+            if not label or label.lower() in generic_labels:
+                # Find dominant specific directory
+                dir_counts: Counter = Counter()
+                for m in members:
+                    parts = m.node_id.split("/")
+                    # Use the deepest meaningful directory segment
+                    for p in reversed(parts[:-1]):
+                        if p.lower() not in generic_labels and p not in ("src",):
+                            dir_counts[p] += 1
+                            break
+                if dir_counts:
+                    display_label = dir_counts.most_common(1)[0][0]
+                else:
+                    display_label = f"cluster_{cid}"
+
             community_summary.append({
                 "id": cid,
-                "label": label or f"cluster_{cid}",
+                "label": display_label,
                 "size": len(members),
                 "cohesion": round(cohesion, 3),
             })
@@ -232,7 +224,6 @@ async def get_overview(repo: str | None = None) -> dict:
         return {
             "title": overview_page.title if overview_page else repository.name,
             "content_md": overview_page.content if overview_page else "No overview generated yet.",
-            "architecture_diagram_mermaid": arch_page.content if arch_page else None,
             "key_modules": [
                 {
                     "name": p.title,

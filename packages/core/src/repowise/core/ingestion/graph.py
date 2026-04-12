@@ -434,9 +434,26 @@ class GraphBuilder:
             trace_execution_flows,
         )
 
-        cd = self.community_detection()
+        # Build a merged community map that covers both file paths and
+        # symbol IDs, so crosses_community detection works correctly.
+        # community_detection() returns {file_path: cid} but traces
+        # contain symbol IDs like "path::Name".
+        file_cd = self.community_detection()
+        merged_cd: dict[str, int] = dict(file_cd)
+
+        # Add symbol-level communities
+        sym_cd = self.symbol_communities()
+        merged_cd.update(sym_cd)
+
+        # For symbols missing from both maps, inherit from their file
+        for node_id in self._graph.nodes():
+            if node_id not in merged_cd and "::" in node_id:
+                file_path = node_id.split("::")[0]
+                if file_path in file_cd:
+                    merged_cd[node_id] = file_cd[file_path]
+
         try:
-            return trace_execution_flows(self._graph, cd, config)
+            return trace_execution_flows(self._graph, merged_cd, config)
         except Exception as exc:
             log.warning("execution_flow_tracing_failed", error=str(exc))
             return ExecutionFlowReport(

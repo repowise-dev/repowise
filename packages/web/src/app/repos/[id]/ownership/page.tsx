@@ -9,6 +9,7 @@ import { OwnershipTable } from "@/components/git/ownership-table";
 import { ContributorBar } from "@/components/git/contributor-bar";
 import { OwnershipTreemap } from "@/components/git/ownership-treemap";
 import { BusFactorPanel } from "@/components/git/bus-factor-panel";
+import { ContributorNetwork } from "@/components/git/contributor-network";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getOwnership, getGitSummary, getHotspots } from "@/lib/api/git";
@@ -149,6 +150,21 @@ export default function OwnershipPage() {
           </Card>
         )}
       </div>
+
+      {/* Contributor Network */}
+      {hotspotData && hotspotData.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Contributor Network</CardTitle>
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              Contributors linked by shared file ownership — larger nodes own more files
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <ContributorNetwork hotspots={hotspotData} />
+          </CardContent>
+        </Card>
+      )}
 
       {/* Detail table */}
       {loadingEntries ? (

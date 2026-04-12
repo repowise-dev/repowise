@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import useSWR from "swr";
-import { ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
+import useSWRInfinite from "swr/infinite";
+import { ChevronUp, ChevronDown, ChevronsUpDown, TrendingUp } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,12 +12,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SymbolDrawer } from "./symbol-drawer";
 import { listSymbols } from "@/lib/api/symbols";
+import { getGraph } from "@/lib/api/graph";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { truncatePath } from "@/lib/utils/format";
 import { cn } from "@/lib/utils/cn";
-import type { SymbolResponse } from "@/lib/api/types";
+import type { SymbolResponse, GraphExportResponse } from "@/lib/api/types";
 
-type SortCol = "name" | "kind" | "language" | "complexity_estimate" | "start_line";
+type SortCol = "importance" | "name" | "kind" | "language" | "complexity_estimate" | "start_line";
 type SortDir = "asc" | "desc";
 
 const LIMIT = 50;
@@ -37,42 +39,76 @@ function SortIcon({ col, sortCol, sortDir }: { col: SortCol; sortCol: SortCol; s
   );
 }
 
+function ImportanceBar({ score }: { score: number }) {
+  const pct = Math.min(100, Math.round(score * 100));
+  const color = pct >= 70 ? "bg-[var(--color-accent-primary)]" : pct >= 40 ? "bg-yellow-500" : "bg-[var(--color-text-tertiary)]";
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="h-1.5 w-16 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
+        <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">{pct}</span>
+    </div>
+  );
+}
+
 export function SymbolTable({ repoId }: SymbolTableProps) {
   const [q, setQ] = useState("");
   const debouncedQ = useDebounce(q, 300);
   const [kind, setKind] = useState("all");
   const [language, setLanguage] = useState("all");
-  const [offset, setOffset] = useState(0);
-  const [items, setItems] = useState<SymbolResponse[]>([]);
-  const [sortCol, setSortCol] = useState<SortCol>("name");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [sortCol, setSortCol] = useState<SortCol>("importance");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selected, setSelected] = useState<SymbolResponse | null>(null);
 
-  const swrKey = `symbols:${repoId}:${debouncedQ}:${kind}:${language}:${offset}`;
-  const { data, isLoading } = useSWR<SymbolResponse[]>(
-    swrKey,
-    () =>
-      listSymbols({
+  // Fetch graph data for pagerank-based importance scoring
+  const { data: graphData } = useSWR<GraphExportResponse>(
+    `graph:${repoId}`,
+    () => getGraph(repoId),
+    { revalidateOnFocus: false, revalidateOnReconnect: false },
+  );
+
+  const pagerankMap = useMemo(() => {
+    if (!graphData) return new Map<string, number>();
+    const m = new Map<string, number>();
+    for (const n of graphData.nodes) m.set(n.node_id, n.pagerank);
+    return m;
+  }, [graphData]);
+
+  const { data, size, setSize, isLoading, isValidating } = useSWRInfinite<SymbolResponse[]>(
+    (pageIndex, previousPageData) => {
+      if (previousPageData && previousPageData.length < LIMIT) return null;
+      return `symbols:${repoId}:${debouncedQ}:${kind}:${language}:${pageIndex}`;
+    },
+    (key) => {
+      const pageIndex = parseInt(key.split(":").pop()!, 10);
+      return listSymbols({
         repo_id: repoId,
         q: debouncedQ || undefined,
         kind: kind !== "all" ? kind : undefined,
         language: language !== "all" ? language : undefined,
         limit: LIMIT,
-        offset,
-      }),
-    { revalidateOnFocus: false },
+        offset: pageIndex * LIMIT,
+      });
+    },
+    { revalidateOnFocus: false, revalidateFirstPage: false },
   );
 
-  useEffect(() => {
-    if (!data) return;
-    setItems((prev) => (offset === 0 ? data : [...prev, ...data]));
-  }, [data, offset]);
+  const items = useMemo(() => (data ? data.flat() : []), [data]);
 
-  // Reset when filters change
-  useEffect(() => {
-    setOffset(0);
-    setItems([]);
-  }, [debouncedQ, kind, language]);
+  // Compute importance score per symbol: file pagerank * (1 + log(complexity))
+  const importanceScores = useMemo(() => {
+    const scores = new Map<string, number>();
+    for (const sym of items) {
+      const fileRank = pagerankMap.get(sym.file_path) ?? 0;
+      const complexity = Math.max(1, sym.complexity_estimate);
+      scores.set(sym.id, fileRank * (1 + Math.log(complexity)));
+    }
+    // Normalize to 0-1 range
+    const max = Math.max(...scores.values(), 0.0001);
+    for (const [k, v] of scores) scores.set(k, v / max);
+    return scores;
+  }, [items, pagerankMap]);
 
   const handleSort = useCallback(
     (col: SortCol) => {
@@ -80,20 +116,37 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
         setSortDir((d) => (d === "asc" ? "desc" : "asc"));
       } else {
         setSortCol(col);
-        setSortDir("asc");
+        setSortDir(col === "importance" ? "desc" : "asc");
       }
     },
     [sortCol],
   );
 
-  const sorted = [...items].sort((a, b) => {
-    const va = a[sortCol] ?? "";
-    const vb = b[sortCol] ?? "";
-    const cmp = String(va).localeCompare(String(vb), undefined, { numeric: true });
-    return sortDir === "asc" ? cmp : -cmp;
-  });
+  const sorted = useMemo(() => {
+    return [...items].sort((a, b) => {
+      if (sortCol === "importance") {
+        const ia = importanceScores.get(a.id) ?? 0;
+        const ib = importanceScores.get(b.id) ?? 0;
+        return sortDir === "asc" ? ia - ib : ib - ia;
+      }
+      const va = a[sortCol] ?? "";
+      const vb = b[sortCol] ?? "";
+      const cmp = String(va).localeCompare(String(vb), undefined, { numeric: true });
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [items, sortCol, sortDir, importanceScores]);
 
-  const hasMore = data?.length === LIMIT;
+  const lastPage = data ? data[data.length - 1] : undefined;
+  const hasMore = lastPage?.length === LIMIT;
+
+  const columns: Array<{ col: SortCol; label: string; hideOnMobile?: boolean }> = [
+    { col: "importance", label: "Importance" },
+    { col: "name", label: "Name" },
+    { col: "kind", label: "Kind" },
+    { col: "language", label: "Language", hideOnMobile: true },
+    { col: "start_line", label: "File", hideOnMobile: true },
+    { col: "complexity_estimate", label: "Complexity", hideOnMobile: true },
+  ];
 
   return (
     <div className="space-y-4">
@@ -153,21 +206,17 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-                  {(
-                    [
-                      { col: "name" as SortCol, label: "Name" },
-                      { col: "kind" as SortCol, label: "Kind" },
-                      { col: "language" as SortCol, label: "Language" },
-                      { col: "start_line" as SortCol, label: "File" },
-                      { col: "complexity_estimate" as SortCol, label: "Complexity" },
-                    ] as Array<{ col: SortCol; label: string }>
-                  ).map(({ col, label }) => (
+                  {columns.map(({ col, label, hideOnMobile }) => (
                     <th
                       key={col}
-                      className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider cursor-pointer select-none hover:text-[var(--color-text-primary)] transition-colors"
+                      className={cn(
+                        "px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider cursor-pointer select-none hover:text-[var(--color-text-primary)] transition-colors",
+                        hideOnMobile && "hidden sm:table-cell",
+                      )}
                       onClick={() => handleSort(col)}
                     >
                       <span className="inline-flex items-center gap-1">
+                        {col === "importance" && <TrendingUp className="h-3 w-3" />}
                         {label}
                         <SortIcon col={col} sortCol={sortCol} sortDir={sortDir} />
                       </span>
@@ -182,7 +231,10 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                     className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer"
                     onClick={() => setSelected(sym)}
                   >
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)]" style={{ maxWidth: 0 }}>
+                    <td className="px-4 py-2.5">
+                      <ImportanceBar score={importanceScores.get(sym.id) ?? 0} />
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-0" style={{ maxWidth: 0 }}>
                       <span className="truncate block" title={sym.qualified_name || sym.name}>{sym.name}</span>
                       {sym.parent_name && (
                         <span className="text-[var(--color-text-tertiary)]">.{sym.parent_name}</span>
@@ -191,15 +243,15 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                     <td className="px-4 py-2.5">
                       <Badge variant={sym.kind === "class" ? "accent" : "default"}>{sym.kind}</Badge>
                     </td>
-                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)]">
+                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] hidden sm:table-cell">
                       {sym.language}
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)]" style={{ maxWidth: 0 }}>
+                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] min-w-0 hidden sm:table-cell" style={{ maxWidth: 0 }}>
                       <span className="block truncate" title={`${sym.file_path}:${sym.start_line}`}>
                         {truncatePath(sym.file_path)}:{sym.start_line}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums">
+                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums hidden sm:table-cell">
                       <span
                         className={cn(
                           sym.complexity_estimate > 15
@@ -223,10 +275,10 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setOffset((o) => o + LIMIT)}
-                disabled={isLoading}
+                onClick={() => setSize(size + 1)}
+                disabled={isValidating}
               >
-                {isLoading ? "Loading…" : "Load more"}
+                {isValidating ? "Loading…" : "Load more"}
               </Button>
             </div>
           )}
