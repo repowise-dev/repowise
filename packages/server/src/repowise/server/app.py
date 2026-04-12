@@ -46,6 +46,7 @@ from repowise.server.routers import (
     security,
     symbols,
     webhooks,
+    workspace,
 )
 from repowise.server.scheduler import setup_scheduler
 
@@ -139,6 +140,45 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         vector_store=vector_store,
     )
 
+    # Workspace detection — mirrors MCP _server.py:_detect_workspace()
+    app.state.workspace_config = None
+    app.state.workspace_root = None
+    app.state.cross_repo_enricher = None
+
+    try:
+        from pathlib import Path as _Path
+
+        from repowise.core.workspace.config import (
+            WORKSPACE_DATA_DIR,
+            WorkspaceConfig,
+            find_workspace_root,
+        )
+
+        ws_root = find_workspace_root()
+        if ws_root is not None:
+            ws_config = WorkspaceConfig.load(ws_root)
+            app.state.workspace_config = ws_config
+            app.state.workspace_root = str(ws_root)
+
+            from repowise.core.workspace.contracts import CONTRACTS_FILENAME
+            from repowise.server.mcp_server._enrichment import CrossRepoEnricher
+
+            cross_repo_path = _Path(ws_root) / WORKSPACE_DATA_DIR / "cross_repo_edges.json"
+            contracts_path = _Path(ws_root) / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
+            enricher = CrossRepoEnricher(cross_repo_path, contracts_path=contracts_path)
+            if enricher.has_data or enricher.has_contract_data:
+                app.state.cross_repo_enricher = enricher
+            logger.info(
+                "repowise_workspace_detected",
+                extra={
+                    "repos": len(ws_config.repos),
+                    "co_changes": len(enricher._co_changes),
+                    "contract_links": len(enricher._contract_links),
+                },
+            )
+    except Exception:
+        logger.debug("Workspace detection skipped", exc_info=True)
+
     logger.info("repowise_server_started", extra={"version": __version__})
     yield
 
@@ -195,5 +235,6 @@ def create_app() -> FastAPI:
     app.include_router(security.router)
     app.include_router(blast_radius.router)
     app.include_router(knowledge_map.router)
+    app.include_router(workspace.router)
 
     return app

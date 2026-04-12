@@ -24,13 +24,16 @@ import {
   ChevronRight,
   Circle,
   PanelLeft,
+  Layers,
+  Link2,
+  GitMerge,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
-import type { RepoResponse } from "@/lib/api/types";
+import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface NavItem {
   label: string;
@@ -41,6 +44,12 @@ interface NavItem {
 const GLOBAL_NAV: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
   { label: "Settings", href: "/settings", icon: Settings },
+];
+
+const WORKSPACE_NAV: NavItem[] = [
+  { label: "Overview", href: "/workspace", icon: Layers },
+  { label: "Contracts", href: "/workspace/contracts", icon: Link2 },
+  { label: "Co-Changes", href: "/workspace/co-changes", icon: GitMerge },
 ];
 
 
@@ -66,9 +75,11 @@ function repoNavItems(repoId: string): NavItem[] {
 interface SidebarProps {
   repos?: RepoResponse[];
   activeRepoId?: string;
+  workspace?: WorkspaceResponse | null;
 }
 
-export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
+export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
+  const isWorkspace = workspace?.is_workspace ?? false;
   const pathname = usePathname();
   const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(
     activeRepoId ? new Set([activeRepoId]) : new Set(),
@@ -128,8 +139,36 @@ export function Sidebar({ repos = [], activeRepoId }: SidebarProps) {
                 iconOnly={isIconOnly}
               />
             ))}
-
           </nav>
+
+          {/* Workspace nav — only shown in workspace mode */}
+          {isWorkspace && (
+            <>
+              {!isIconOnly && (
+                <>
+                  <Separator className="my-4" />
+                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                    Workspace
+                  </p>
+                </>
+              )}
+              {isIconOnly && <Separator className="my-4" />}
+              <nav className="space-y-1">
+                {WORKSPACE_NAV.map((item) => (
+                  <SidebarNavItem
+                    key={item.href}
+                    item={item}
+                    isActive={
+                      item.href === "/workspace"
+                        ? pathname === "/workspace"
+                        : pathname.startsWith(`${item.href}`)
+                    }
+                    iconOnly={isIconOnly}
+                  />
+                ))}
+              </nav>
+            </>
+          )}
 
           {repos.length > 0 && (
             <>

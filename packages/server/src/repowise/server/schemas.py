@@ -920,3 +920,85 @@ class CostSummaryResponse(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     since: str | None
+
+
+# ---------------------------------------------------------------------------
+# Workspace
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceRepoEntry(BaseModel):
+    alias: str
+    path: str
+    is_primary: bool = False
+    indexed_at: str | None = None
+    last_commit_at_index: str | None = None
+
+
+class WorkspaceCrossRepoSummary(BaseModel):
+    co_change_count: int = 0
+    package_dep_count: int = 0
+    top_connections: list[dict] = []
+
+
+class WorkspaceContractSummary(BaseModel):
+    total_contracts: int = 0
+    total_links: int = 0
+    by_type: dict[str, int] = {}
+
+
+class WorkspaceResponse(BaseModel):
+    is_workspace: bool
+    workspace_root: str | None = None
+    workspace_name: str | None = None
+    repos: list[WorkspaceRepoEntry] = []
+    default_repo: str | None = None
+    cross_repo_summary: WorkspaceCrossRepoSummary | None = None
+    contract_summary: WorkspaceContractSummary | None = None
+
+
+class WorkspaceContractEntry(BaseModel):
+    contract_id: str
+    contract_type: str
+    role: str
+    repo: str
+    file_path: str
+    symbol_name: str
+    confidence: float
+    service: str | None = None
+
+
+class WorkspaceContractLinkEntry(BaseModel):
+    contract_id: str
+    contract_type: str
+    match_type: str
+    confidence: float
+    provider_repo: str
+    provider_file: str
+    provider_symbol: str
+    consumer_repo: str
+    consumer_file: str
+    consumer_symbol: str
+
+
+class WorkspaceContractsResponse(BaseModel):
+    contracts: list[WorkspaceContractEntry]
+    links: list[WorkspaceContractLinkEntry]
+    total_contracts: int
+    total_links: int
+    by_type: dict[str, int] = {}
+
+
+class WorkspaceCoChangeEntry(BaseModel):
+    source_repo: str
+    source_file: str
+    target_repo: str
+    target_file: str
+    strength: float
+    frequency: int
+    last_date: str
+
+
+class WorkspaceCoChangesResponse(BaseModel):
+    co_changes: list[WorkspaceCoChangeEntry]
+    total: int

@@ -8,6 +8,8 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
 import { listRepos } from "@/lib/api/repos";
+import { getWorkspace } from "@/lib/api/workspace";
+import type { WorkspaceResponse } from "@/lib/api/types";
 import "@/styles/globals.css";
 
 export const metadata: Metadata = {
@@ -23,11 +25,17 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // Fetch repos server-side for the sidebar.
-  // Gracefully fall back to empty if the API is unavailable.
+  // Fetch repos + workspace info server-side for the sidebar.
+  // Gracefully fall back to empty/null if the API is unavailable.
   let repos: Awaited<ReturnType<typeof listRepos>> = [];
+  let workspace: WorkspaceResponse | null = null;
   try {
-    repos = await listRepos();
+    const [reposResult, wsResult] = await Promise.allSettled([
+      listRepos(),
+      getWorkspace(),
+    ]);
+    if (reposResult.status === "fulfilled") repos = reposResult.value;
+    if (wsResult.status === "fulfilled") workspace = wsResult.value;
   } catch {
     // API not available — show empty sidebar
   }
@@ -41,15 +49,15 @@ export default async function RootLayout({
         <NuqsAdapter>
         <TooltipProvider delayDuration={300}>
           <div className="flex h-screen overflow-hidden">
-            <Sidebar repos={repos} />
+            <Sidebar repos={repos} workspace={workspace} />
             <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-              <MobileNav repos={repos} />
+              <MobileNav repos={repos} workspace={workspace} />
               <main className="flex-1 overflow-auto min-w-0">
                 {children}
               </main>
             </div>
           </div>
-          <CommandPalette repos={repos} />
+          <CommandPalette repos={repos} workspace={workspace} />
         </TooltipProvider>
         </NuqsAdapter>
         <Toaster

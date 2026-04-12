@@ -626,3 +626,84 @@ export interface ApiError {
   detail: string;
   status: number;
 }
+
+// ---------------------------------------------------------------------------
+// Workspace
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceRepoEntry {
+  alias: string;
+  path: string;
+  is_primary: boolean;
+  indexed_at: string | null;
+  last_commit_at_index: string | null;
+}
+
+export interface WorkspaceCrossRepoSummary {
+  co_change_count: number;
+  package_dep_count: number;
+  top_connections: Array<{ repos: string[]; edge_count: number }>;
+}
+
+export interface WorkspaceContractSummary {
+  total_contracts: number;
+  total_links: number;
+  by_type: Record<string, number>;
+}
+
+export interface WorkspaceResponse {
+  is_workspace: boolean;
+  workspace_root: string | null;
+  workspace_name: string | null;
+  repos: WorkspaceRepoEntry[];
+  default_repo: string | null;
+  cross_repo_summary: WorkspaceCrossRepoSummary | null;
+  contract_summary: WorkspaceContractSummary | null;
+}
+
+export interface WorkspaceContractEntry {
+  contract_id: string;
+  contract_type: string;
+  role: string;
+  repo: string;
+  file_path: string;
+  symbol_name: string;
+  confidence: number;
+  service: string | null;
+}
+
+export interface WorkspaceContractLinkEntry {
+  contract_id: string;
+  contract_type: string;
+  match_type: string;
+  confidence: number;
+  provider_repo: string;
+  provider_file: string;
+  provider_symbol: string;
+  consumer_repo: string;
+  consumer_file: string;
+  consumer_symbol: string;
+}
+
+export interface WorkspaceContractsResponse {
+  contracts: WorkspaceContractEntry[];
+  links: WorkspaceContractLinkEntry[];
+  total_contracts: number;
+  total_links: number;
+  by_type: Record<string, number>;
+}
+
+export interface WorkspaceCoChangeEntry {
+  source_repo: string;
+  source_file: string;
+  target_repo: string;
+  target_file: string;
+  strength: number;
+  frequency: number;
+  last_date: string;
+}
+
+export interface WorkspaceCoChangesResponse {
+  co_changes: WorkspaceCoChangeEntry[];
+  total: number;
+}

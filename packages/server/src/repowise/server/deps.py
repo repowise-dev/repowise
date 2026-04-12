@@ -53,6 +53,16 @@ async def get_fts(request: Request):
     return request.app.state.fts
 
 
+async def get_workspace_config(request: Request):
+    """Return WorkspaceConfig from app state, or None in single-repo mode."""
+    return getattr(request.app.state, "workspace_config", None)
+
+
+async def get_cross_repo_enricher(request: Request):
+    """Return CrossRepoEnricher from app state, or None."""
+    return getattr(request.app.state, "cross_repo_enricher", None)
+
+
 async def verify_api_key(
     auth: str | None = Security(_header_scheme),
 ) -> None:
