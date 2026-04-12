@@ -251,6 +251,22 @@ def resolve_provider(
             kwargs["api_key"] = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         elif provider_name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
             kwargs["base_url"] = os.environ["OLLAMA_BASE_URL"]
+        elif provider_name == "litellm":
+            # LiteLLM: API key for cloud, base URL for local proxy
+            if os.environ.get("LITELLM_API_KEY"):
+                kwargs["api_key"] = os.environ["LITELLM_API_KEY"]
+            if os.environ.get("LITELLM_BASE_URL"):
+                kwargs["api_base"] = os.environ["LITELLM_BASE_URL"]
+        elif provider_name == "zai":
+            # Z.AI: API key, plan, base URL, and thinking mode
+            if os.environ.get("ZAI_API_KEY"):
+                kwargs["api_key"] = os.environ["ZAI_API_KEY"]
+            if os.environ.get("ZAI_PLAN"):
+                kwargs["plan"] = os.environ["ZAI_PLAN"]
+            if os.environ.get("ZAI_BASE_URL"):
+                kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
+            if os.environ.get("ZAI_THINKING"):
+                kwargs["thinking"] = os.environ["ZAI_THINKING"]
 
         return get_provider(provider_name, **kwargs)
 
@@ -282,10 +298,38 @@ def resolve_provider(
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         kwargs = {"model": model, "api_key": api_key} if model else {"api_key": api_key}
         return get_provider("gemini", **kwargs)
+    # LiteLLM: check for API key (cloud) or base URL (local proxy)
+    if os.environ.get("LITELLM_API_KEY") and os.environ["LITELLM_API_KEY"].strip():
+        kwargs = (
+            {"model": model, "api_key": os.environ["LITELLM_API_KEY"]}
+            if model
+            else {"api_key": os.environ["LITELLM_API_KEY"]}
+        )
+        return get_provider("litellm", **kwargs)
+    if os.environ.get("LITELLM_BASE_URL") and os.environ["LITELLM_BASE_URL"].strip():
+        kwargs = (
+            {"model": model, "api_base": os.environ["LITELLM_BASE_URL"]}
+            if model
+            else {"api_base": os.environ["LITELLM_BASE_URL"]}
+        )
+        return get_provider("litellm", **kwargs)
+    # Z.AI: check for API key
+    if os.environ.get("ZAI_API_KEY") and os.environ["ZAI_API_KEY"].strip():
+        kwargs = {"api_key": os.environ["ZAI_API_KEY"]}
+        if model:
+            kwargs["model"] = model
+        if os.environ.get("ZAI_PLAN"):
+            kwargs["plan"] = os.environ["ZAI_PLAN"]
+        if os.environ.get("ZAI_BASE_URL"):
+            kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
+        if os.environ.get("ZAI_THINKING"):
+            kwargs["thinking"] = os.environ["ZAI_THINKING"]
+        return get_provider("zai", **kwargs)
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
-        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY."
+        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / "
+        "LITELLM_API_KEY / LITELLM_BASE_URL / ZAI_API_KEY."
     )
 
 
@@ -321,7 +365,11 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         "openai": ["OPENAI_API_KEY"],
         "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],  # Either one
         "ollama": ["OLLAMA_BASE_URL"],
-        "litellm": ["LITELLM_API_KEY"],  # May need others depending on backend
+        "litellm": [
+            "LITELLM_API_KEY",
+            "LITELLM_BASE_URL",
+        ],  # Either one (API key for cloud, base URL for local)
+        "zai": ["ZAI_API_KEY"],
     }
 
     if provider_name:
@@ -336,6 +384,10 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         if provider_name == "gemini":
             # Special case: either GEMINI_API_KEY or GOOGLE_API_KEY
             if not (_is_env_var_set("GEMINI_API_KEY") or _is_env_var_set("GOOGLE_API_KEY")):
+                missing_vars = env_vars
+        elif provider_name == "litellm":
+            # Special case: LITELLM_API_KEY (cloud) OR LITELLM_BASE_URL (local proxy)
+            if not (_is_env_var_set("LITELLM_API_KEY") or _is_env_var_set("LITELLM_BASE_URL")):
                 missing_vars = env_vars
         else:
             for var in env_vars:
@@ -356,6 +408,17 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
                     # Only warn if it looks like they might be trying to use gemini
                     warnings.append(
                         "Provider 'gemini' requires GEMINI_API_KEY or GOOGLE_API_KEY environment variable"
+                    )
+                continue
+
+            if name == "litellm":
+                # Special case: LITELLM_API_KEY (cloud) OR LITELLM_BASE_URL (local proxy)
+                # Only warn if explicitly requested and neither is set
+                if os.environ.get("REPOWISE_PROVIDER") == "litellm" and not (
+                    _is_env_var_set("LITELLM_API_KEY") or _is_env_var_set("LITELLM_BASE_URL")
+                ):
+                    warnings.append(
+                        "Provider 'litellm' requires LITELLM_API_KEY or LITELLM_BASE_URL environment variable"
                     )
                 continue
 

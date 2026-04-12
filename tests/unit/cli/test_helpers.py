@@ -231,3 +231,30 @@ class TestValidateProviderConfig:
         assert len(warnings) == 1
         assert "anthropic" in warnings[0]
         assert "ANTHROPIC_API_KEY" in warnings[0]
+
+    # --- litellm tests ---
+
+    def test_litellm_with_api_key(self, monkeypatch):
+        monkeypatch.setenv("LITELLM_API_KEY", "test-key")
+        monkeypatch.setenv("REPOWISE_PROVIDER", "litellm")
+
+        assert validate_provider_config() == []
+
+    def test_litellm_with_base_url(self, monkeypatch):
+        """Local proxy without API key should be valid."""
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+        monkeypatch.setenv("LITELLM_BASE_URL", "http://localhost:4000/v1")
+        monkeypatch.setenv("REPOWISE_PROVIDER", "litellm")
+
+        assert validate_provider_config() == []
+
+    def test_litellm_missing_both(self, monkeypatch):
+        """Should warn when neither API key nor base URL is set."""
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+        monkeypatch.delenv("LITELLM_BASE_URL", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "litellm")
+
+        warnings = validate_provider_config()
+        assert len(warnings) == 1
+        assert "litellm" in warnings[0]
+        assert "LITELLM_API_KEY" in warnings[0] or "LITELLM_BASE_URL" in warnings[0]
