@@ -53,6 +53,7 @@ COPY --from=frontend-builder /app/.next/static /app/web/.next/static
 COPY --from=frontend-builder /app/public /app/web/public
 
 # Data volume for .repowise directory
+RUN mkdir -p /data
 VOLUME /data
 
 # Environment defaults
