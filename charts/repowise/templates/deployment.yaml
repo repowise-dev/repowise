@@ -163,7 +163,6 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-        {{- end }}
       volumes:
         - name: data
           {{- if .Values.persistence.enabled }}
