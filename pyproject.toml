@@ -90,6 +90,10 @@ postgres = [
 graph-extra = [
     "graspologic>=3.4,<4",
 ]
+all = [
+    "repowise[postgres]",
+    "repowise[graph-extra]",
+]
 dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
