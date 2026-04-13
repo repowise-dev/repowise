@@ -48,16 +48,16 @@ from repowise.core.providers.llm.base import (
     ProviderError,
     RateLimitError,
 )
-from repowise.core.rate_limiter import RateLimiter
+from repowise.core.rate_limiter import RateLimiter, ZAI_TIER_DEFAULTS
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
 
 log = structlog.get_logger(__name__)
 
-_MAX_RETRIES = 3
+_MAX_RETRIES = 5
 _MIN_WAIT = 1.0
-_MAX_WAIT = 4.0
+_MAX_WAIT = 30.0
 
 # Z.AI API endpoints by plan
 _PLAN_BASE_URLS: dict[str, str] = {
@@ -91,7 +91,14 @@ class ZAIProvider(BaseProvider):
         thinking: Thinking mode for GLM-5 family. 'disabled' by default
                   to avoid reasoning token overhead. Set to 'enabled' for
                   complex reasoning tasks.
-        rate_limiter: Optional RateLimiter instance.
+        tier: Z.AI subscription tier for rate limiting. One of 'lite',
+              'pro', 'max'. When set, overrides the default rate limiter
+              with tier-appropriate limits. Can also be set via ZAI_TIER
+              environment variable.
+        rate_limiter: Optional RateLimiter instance. If not provided and
+                      tier is set, a tier-appropriate limiter is created.
+                      If neither is provided, the registry attaches a
+                      conservative default.
         cost_tracker: Optional CostTracker for usage tracking.
     """
 
@@ -102,14 +109,32 @@ class ZAIProvider(BaseProvider):
         plan: PlanType = "coding",
         base_url: str | None = None,
         thinking: str = "disabled",
+        tier: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: "CostTracker | None" = None,  # noqa: UP037
     ) -> None:
         self._model = model
         self._plan = plan
         self._thinking = thinking
-        self._rate_limiter = rate_limiter
+        self._tier = tier
         self._cost_tracker = cost_tracker
+
+        # Resolve rate limiter: tier > explicit instance > none (registry attaches default)
+        # When tier is set, it takes precedence -- it's a specific Z.AI signal that
+        # overrides the generic registry default.
+        if tier is not None:
+            tier_key = tier.lower()
+            tier_config = ZAI_TIER_DEFAULTS.get(tier_key)
+            if tier_config is None:
+                valid = ", ".join(sorted(ZAI_TIER_DEFAULTS))
+                msg = f"Unknown Z.AI tier {tier!r}. Valid tiers: {valid}"
+                raise ValueError(msg)
+            self._rate_limiter = RateLimiter(tier_config)
+            log.info("zai.tier_rate_limiter", tier=tier_key, rpm=tier_config.requests_per_minute)
+        elif rate_limiter is not None:
+            self._rate_limiter = rate_limiter
+        else:
+            self._rate_limiter = None  # None — registry will attach default
 
         # Resolve base URL: explicit base_url > plan lookup
         effective_base_url = base_url or _PLAN_BASE_URLS.get(plan, _PLAN_BASE_URLS["coding"])

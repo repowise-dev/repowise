@@ -49,7 +49,23 @@ PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     # Ollama runs locally — effectively unlimited, but we cap to avoid OOM
     "ollama": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
     "litellm": RateLimitConfig(requests_per_minute=60, tokens_per_minute=150_000),
-    "zai": RateLimitConfig(requests_per_minute=60, tokens_per_minute=150_000),
+    # Z.AI: conservative default (matches Lite tier). Override via ZAI_TIER env var.
+    "zai": RateLimitConfig(requests_per_minute=10, tokens_per_minute=50_000),
+}
+
+# Z.AI subscription tier rate limits.
+# Derived from Z.AI support guidance (April 2026):
+#   - Lite: 2-3 concurrent, lower tolerance
+#   - Pro:  5-8 concurrent, moderate tolerance
+#   - Max:  10-15 concurrent, highest tolerance
+# Limits are aggregate across all models. Advanced models (GLM-5 family)
+# consume 2-3x quota per prompt, so effective concurrency is lower when
+# using those models.
+# Ref: https://docs.z.ai/devpack/usage-policy
+ZAI_TIER_DEFAULTS: dict[str, RateLimitConfig] = {
+    "lite": RateLimitConfig(requests_per_minute=10, tokens_per_minute=50_000),
+    "pro": RateLimitConfig(requests_per_minute=30, tokens_per_minute=150_000),
+    "max": RateLimitConfig(requests_per_minute=60, tokens_per_minute=300_000),
 }
 
 

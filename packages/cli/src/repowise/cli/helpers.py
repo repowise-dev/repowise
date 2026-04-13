@@ -269,7 +269,7 @@ def resolve_provider(
             if os.environ.get("LITELLM_BASE_URL"):
                 kwargs["api_base"] = os.environ["LITELLM_BASE_URL"]
         elif provider_name == "zai":
-            # Z.AI: API key, plan, base URL, and thinking mode
+            # Z.AI: API key, plan, base URL, thinking mode, and tier
             if os.environ.get("ZAI_API_KEY"):
                 kwargs["api_key"] = os.environ["ZAI_API_KEY"]
             if os.environ.get("ZAI_PLAN"):
@@ -278,6 +278,8 @@ def resolve_provider(
                 kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
             if os.environ.get("ZAI_THINKING"):
                 kwargs["thinking"] = os.environ["ZAI_THINKING"]
+            if os.environ.get("ZAI_TIER"):
+                kwargs["tier"] = os.environ["ZAI_TIER"]
 
         return get_provider(provider_name, **kwargs)
 
@@ -335,6 +337,8 @@ def resolve_provider(
             kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
         if os.environ.get("ZAI_THINKING"):
             kwargs["thinking"] = os.environ["ZAI_THINKING"]
+        if os.environ.get("ZAI_TIER"):
+            kwargs["tier"] = os.environ["ZAI_TIER"]
         return get_provider("zai", **kwargs)
 
     raise click.ClickException(
