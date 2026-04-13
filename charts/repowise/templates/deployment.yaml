@@ -44,7 +44,7 @@ spec:
         {{- if .Values.repos }}
         - name: clone-repos
           image: alpine/git:2.47.2
-          command: ["/bin/bash", "-c"]
+          command: ["/bin/sh", "-c"]
           args:
             - |
               set -e
@@ -75,11 +75,10 @@ spec:
               echo '[' > /data/repos.json
               FIRST=true
               {{- range .Values.repos }}
-              if [ "$FIRST" = true ]; then FIRST=false; else echo ',' >> /data/repos.json; fi
-              cat >> /data/repos.json <<'ENTRY'
-              {"name":"{{ .name }}","local_path":"/data/repos/{{ .name }}","url":"{{ .url }}","default_branch":"{{ .branch | default "main" }}"}
-              ENTRY
+              if [ "$FIRST" = true ]; then FIRST=false; else printf ',' >> /data/repos.json; fi
+              printf '{"name":"{{ .name }}","local_path":"/data/repos/{{ .name }}","url":"{{ .url }}","default_branch":"{{ .branch | default "main" }}"}' >> /data/repos.json
               {{- end }}
+              echo '' >> /data/repos.json
               echo ']' >> /data/repos.json
               echo "Wrote /data/repos.json"
           volumeMounts:
