@@ -317,7 +317,7 @@ class TestIngestSampleRepo:
 
     def test_heritage_all_have_valid_kind(self, ingestion_result) -> None:
         """Every heritage relation must have a valid kind."""
-        valid_kinds = {"extends", "implements", "trait_impl", "mixin"}
+        valid_kinds = {"extends", "implements", "trait_impl", "mixin", "derive"}
         for p in ingestion_result["parsed"]:
             for h in p.heritage:
                 assert h.kind in valid_kinds, (

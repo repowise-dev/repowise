@@ -266,7 +266,7 @@ def _extract_go_heritage(
 def _extract_rust_heritage(
     def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
 ) -> None:
-    """Rust: impl Trait for Type, trait Foo: Bar + Baz."""
+    """Rust: impl Trait for Type, trait Foo: Bar + Baz, #[derive(Trait)]."""
     if def_node.type == "impl_item":
         trait_node = def_node.child_by_field_name("trait")
         type_node = def_node.child_by_field_name("type")
@@ -299,6 +299,31 @@ def _extract_rust_heritage(
                             line=line,
                         )
                     )
+
+    elif def_node.type in ("struct_item", "enum_item"):
+        # Check preceding siblings for #[derive(Trait1, Trait2)]
+        prev = def_node.prev_named_sibling
+        while prev is not None and prev.type == "attribute_item":
+            attr_text = node_text(prev, src).strip()
+            if "derive(" in attr_text:
+                # Extract trait names from token_tree
+                for child in prev.children:
+                    if child.type == "attribute":
+                        for sub in child.children:
+                            if sub.type == "token_tree":
+                                for tok in sub.children:
+                                    if tok.type == "identifier":
+                                        trait_name = node_text(tok, src).strip()
+                                        if trait_name:
+                                            out.append(
+                                                HeritageRelation(
+                                                    child_name=name,
+                                                    parent_name=trait_name,
+                                                    kind="derive",
+                                                    line=line,
+                                                )
+                                            )
+            prev = prev.prev_named_sibling
 
 
 def _extract_cpp_heritage(
@@ -363,7 +388,7 @@ def _extract_kotlin_heritage(
 def _extract_ruby_heritage(
     def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
 ) -> None:
-    """Ruby: class Foo < Bar."""
+    """Ruby: class Foo < Bar; include Mod; extend Mod; prepend Mod."""
     superclass = def_node.child_by_field_name("superclass")
     if superclass:
         parent = node_text(superclass, src).strip()
@@ -378,6 +403,46 @@ def _extract_ruby_heritage(
                     line=line,
                 )
             )
+
+    # include/extend/prepend — call nodes inside body_statement
+    _mixin_methods = {"include", "extend", "prepend"}
+    for child in def_node.children:
+        if child.type == "body_statement":
+            for stmt in child.children:
+                if stmt.type != "call":
+                    continue
+                method_node = stmt.child_by_field_name("method")
+                if method_node is None:
+                    # Fallback: first identifier child
+                    for sc in stmt.children:
+                        if sc.type == "identifier":
+                            method_node = sc
+                            break
+                if method_node is None:
+                    continue
+                method_name = node_text(method_node, src).strip()
+                if method_name not in _mixin_methods:
+                    continue
+                args = stmt.child_by_field_name("arguments")
+                if args is None:
+                    for sc in stmt.children:
+                        if sc.type == "argument_list":
+                            args = sc
+                            break
+                if args is None:
+                    continue
+                for arg in args.children:
+                    if arg.type == "constant":
+                        mixin_name = node_text(arg, src).strip().split("::")[-1]
+                        if mixin_name:
+                            out.append(
+                                HeritageRelation(
+                                    child_name=name,
+                                    parent_name=mixin_name,
+                                    kind="mixin",
+                                    line=stmt.start_point[0] + 1,
+                                )
+                            )
 
 
 def _extract_swift_heritage(
@@ -459,7 +524,7 @@ def _extract_scala_heritage(
 def _extract_php_heritage(
     def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
 ) -> None:
-    """PHP: ``class Foo extends Bar implements IFoo, IBar``."""
+    """PHP: ``class Foo extends Bar implements IFoo, IBar; use TraitName;``."""
     for child in def_node.children:
         if child.type == "base_clause":
             for sub in child.children:
@@ -487,6 +552,22 @@ def _extract_php_heritage(
                                 line=line,
                             )
                         )
+        elif child.type == "declaration_list":
+            # use TraitName; inside class body
+            for stmt in child.children:
+                if stmt.type == "use_declaration":
+                    for sub in stmt.children:
+                        if sub.type == "name":
+                            trait_name = node_text(sub, src).strip()
+                            if trait_name and trait_name != name:
+                                out.append(
+                                    HeritageRelation(
+                                        child_name=name,
+                                        parent_name=trait_name,
+                                        kind="mixin",
+                                        line=stmt.start_point[0] + 1,
+                                    )
+                                )
 
 
 HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {

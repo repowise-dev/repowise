@@ -21,6 +21,13 @@
   (type_identifier) @symbol.name
 ) @symbol.def
 
+; extension Foo: Protocol — name is nested under user_type
+(class_declaration
+  (user_type
+    (type_identifier) @symbol.name
+  )
+) @symbol.def
+
 (protocol_declaration
   (type_identifier) @symbol.name
 ) @symbol.def
