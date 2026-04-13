@@ -43,7 +43,7 @@ spec:
         {{- end }}
         {{- if .Values.repos }}
         - name: clone-repos
-          image: bitnami/git:2.47.1
+          image: alpine/git:2.47.2
           command: ["/bin/bash", "-c"]
           args:
             - |
