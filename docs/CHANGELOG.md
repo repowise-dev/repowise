@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.1] — Unreleased
+
+### Changed
+- **PreToolUse hook** — replaced FTS-only file retrieval with multi-signal ranking: symbol name match (highest weight), file path match, then FTS on wiki content. Returns top 3 files instead of 5. Removed git signals (HOTSPOT, bus-factor, owner) from enrichment output — use `get_risk` for that. Removed Bash command interception. Dependencies shown as "Uses" (2 per file) alongside symbols (3) and importers (3).
+
+---
+
 ## [0.3.0] — 2026-04-13
 
 ### Added
@@ -286,7 +293,8 @@ See git history for releases prior to 0.2.0.
 
 ---
 
-[0.3.0]: https://github.com/repowise-dev/repowise/compare/v0.2.3...HEAD
+[0.3.1]: https://github.com/repowise-dev/repowise/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/repowise-dev/repowise/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/repowise-dev/repowise/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/repowise-dev/repowise/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/repowise-dev/repowise/compare/v0.2.0...v0.2.1

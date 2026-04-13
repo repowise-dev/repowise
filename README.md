@@ -269,24 +269,25 @@ Most MCP tools are passive — the agent has to know to call them. repowise hook
 
 ### PreToolUse — every search gets graph context
 
-When your AI agent runs `Grep` or `Glob`, repowise intercepts the call and enriches it with:
+When your AI agent runs `Grep` or `Glob`, repowise intercepts the call and enriches it with the top 3 related files — found via multi-signal search (symbol name match, file path match, and full-text search on wiki content), ranked by relevance then PageRank:
 
-- **Matching files** from the wiki's full-text search index
-- **Symbols** — functions, classes, and methods in those files
-- **Importers** — who depends on this file (callers)
-- **Dependencies** — what this file imports (callees)
-- **Git signals** — hotspot status, bus factor, primary owner
+- **Symbols** — top functions, classes, and methods in each file
+- **Imported by** — who depends on this file
+- **Uses** — what this file depends on
 
-Average latency: **24ms**. No LLM calls. No network. Pure local SQLite queries.
+No LLM calls. No network. Pure local SQLite queries.
 
 ```
-[repowise] 2 related file(s) found:
+[repowise] 3 related file(s) found:
 
-  src/auth/middleware.ts
-    Symbols: class:AuthMiddleware, function:validateToken, function:refreshSession
-    Imported by: api/routes/index.ts, api/routes/payments.ts, api/routes/admin.ts
-    Depends on: auth/jwt.ts, db/sessions.ts, config/auth.ts
-    Git: HOTSPOT, bus-factor=1, owner=@alex
+  src/core/ingestion/graph.py
+    Symbols: class:GraphBuilder, method:__init__, method:build
+    Imported by: src/core/ingestion/__init__.py
+    Uses: src/core/analysis/communities.py, src/core/analysis/execution_flows.py
+
+  src/core/ingestion/__init__.py
+    Imported by: src/cli/commands/update_cmd.py, src/core/pipeline/orchestrator.py
+    Uses: src/core/ingestion/graph.py
 ```
 
 ### PostToolUse — auto-detect stale wiki
