@@ -10,6 +10,8 @@ Deploy [Repowise](https://github.com/repowise-dev/repowise) on Kubernetes.
 
 ## Quick Start
 
+The chart expects you to build and push your own container image from the repo's `docker/Dockerfile`:
+
 ```bash
 # Build and push the image
 docker build -t your-registry/repowise:0.1.0 -f docker/Dockerfile .
@@ -21,6 +23,12 @@ helm install repowise ./charts/repowise \
   --set image.tag=0.1.0 \
   --set apiKeys.anthropic=sk-ant-...
 ```
+
+> **Important:** Change the default PostgreSQL credentials (`repowise`/`repowise`) before deploying to production:
+> ```bash
+> --set postgresql.auth.username=myuser \
+> --set postgresql.auth.password=<strong-password>
+> ```
 
 ## Configuration
 
@@ -80,7 +88,7 @@ ingress:
 
 ## Auto-Cloning Repositories
 
-You can declare repos in `values.yaml` and the chart will automatically clone them, register with the API, and trigger indexing via a post-install/upgrade Job.
+You can declare repos in `values.yaml` and the chart will automatically clone them via init containers and write a repos manifest (`/data/repos.json`) for the app to auto-register on startup.
 
 ### Public repos
 
@@ -127,10 +135,10 @@ repos:
     url: https://github.com/org/infra.git
 ```
 
-The Job clones repos to `/data/repos/<name>`, waits for the API to be healthy, registers each repo, and triggers a sync. Monitor progress with:
+The init container clones repos to `/data/repos/<name>` and writes a manifest to `/data/repos.json`. The app picks up the manifest on startup, registers each repo, and triggers indexing. Monitor clone progress with:
 
 ```bash
-kubectl logs job/repowise-repo-init -n <namespace>
+kubectl logs <pod-name> -c clone-repos -n <namespace>
 ```
 
 ## Persistence

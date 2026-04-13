@@ -43,7 +43,7 @@ spec:
         {{- end }}
         {{- if .Values.repos }}
         - name: clone-repos
-          image: bitnami/git:latest
+          image: bitnami/git:2.47.1
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -69,7 +69,19 @@ spec:
                 git reset --hard origin/{{ .branch | default "main" }}
               fi
               {{- end }}
-              echo "Done."
+              echo "Done cloning."
+
+              # Write repos manifest so the app auto-registers on startup
+              echo '[' > /data/repos.json
+              FIRST=true
+              {{- range .Values.repos }}
+              if [ "$FIRST" = true ]; then FIRST=false; else echo ',' >> /data/repos.json; fi
+              cat >> /data/repos.json <<'ENTRY'
+              {"name":"{{ .name }}","local_path":"/data/repos/{{ .name }}","url":"{{ .url }}","default_branch":"{{ .branch | default "main" }}"}
+              ENTRY
+              {{- end }}
+              echo ']' >> /data/repos.json
+              echo "Wrote /data/repos.json"
           volumeMounts:
             - name: data
               mountPath: /data
@@ -108,9 +120,15 @@ spec:
               value: {{ .Values.repowise.frontendPort | quote }}
             - name: HOSTNAME
               value: "0.0.0.0"
+            {{- if .Values.postgresql.enabled }}
+            - name: REPOWISE_HIGH_CONCURRENCY
+              value: "true"
+            {{- end }}
             {{- if .Values.repos }}
             - name: HOME
               value: "/data/.gitconfig-home"
+            - name: REPOWISE_REPOS_MANIFEST
+              value: "/data/repos.json"
             {{- end }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
@@ -145,36 +163,6 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-        {{- if .Values.repos }}
-        - name: register-repos
-          image: curlimages/curl:latest
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              API="http://localhost:{{ .Values.repowise.backendPort }}"
-              echo "Waiting for API..."
-              until curl -sf "$API/health" > /dev/null 2>&1; do sleep 3; done
-              echo "API ready!"
-              {{- range .Values.repos }}
-              echo "--- {{ .name }} ---"
-              # Register (upsert)
-              curl -sf -X POST "$API/api/repos" \
-                -H "Content-Type: application/json" \
-                -d '{"name":"{{ .name }}","local_path":"/data/repos/{{ .name }}","url":"{{ .url }}","default_branch":"{{ .branch | default "main" }}"}' \
-                > /dev/null 2>&1 && echo "  registered" || echo "  (exists)"
-              # Check if already indexed (has head_commit)
-              REPO_DATA=$(curl -sf "$API/api/repos" 2>/dev/null || echo "[]")
-              REPO_ID=$(echo "$REPO_DATA" | sed -n 's/.*"id":"\([^"]*\)","name":"{{ .name }}".*/\1/p')
-              HEAD=$(echo "$REPO_DATA" | sed -n 's/.*"name":"{{ .name }}".*"head_commit":"\([^"]*\)".*/\1/p')
-              if [ -n "$REPO_ID" ] && [ -z "$HEAD" ]; then
-                echo "  not yet indexed, triggering sync..."
-                curl -sf -X POST "$API/api/repos/$REPO_ID/sync" > /dev/null 2>&1 && echo "  sync triggered" || echo "  (sync already running)"
-              elif [ -n "$HEAD" ]; then
-                echo "  already indexed (head: $HEAD), skipping sync."
-              fi
-              {{- end }}
-              echo "All repos processed. Sleeping forever."
-              sleep infinity
         {{- end }}
       volumes:
         - name: data

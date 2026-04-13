@@ -76,7 +76,7 @@ spec:
               value: /var/lib/postgresql/data/pgdata
             - name: POSTGRES_INITDB_ARGS
               value: "--auth-host=md5"
-          args: ["-c", "max_connections=4000", "-c", "shared_buffers=2GB", "-c", "work_mem=16MB"]
+          args: ["-c", "max_connections=10000", "-c", "shared_buffers=2GB", "-c", "work_mem=16MB"]
           volumeMounts:
             - name: pgdata
               mountPath: /var/lib/postgresql/data

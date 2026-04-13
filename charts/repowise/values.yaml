@@ -103,14 +103,19 @@ persistence:
   # -- Annotations for the PVC
   annotations: {}
 
-# -- PostgreSQL database (default). Set enabled=false to use SQLite instead.
+# -- PostgreSQL database (recommended for production).
+# SQLite only supports 1 write at a time — impractical for indexing monorepos
+# or any concurrent workload. PostgreSQL is required for production use.
+# Set enabled=false ONLY for single-user local development.
 postgresql:
-  # -- Enable PostgreSQL (recommended). Disable for SQLite (single-user/dev only).
+  # -- Enable PostgreSQL (recommended for production). Disable for SQLite (single-user/dev only).
   enabled: true
   auth:
     # -- PostgreSQL username
+    # WARNING: Change these defaults before deploying to production!
     username: repowise
     # -- PostgreSQL password
+    # WARNING: Change this before deploying to production!
     password: repowise
     # -- PostgreSQL database name
     database: repowise
@@ -143,6 +148,13 @@ gitCredentials:
     token: ""
 
 # -- Resource requests and limits
+# Recommended for production (indexing large/monorepos):
+#   requests:
+#     cpu: 2000m
+#     memory: 4Gi
+#   limits:
+#     cpu: 4000m
+#     memory: 8Gi
 resources: {}
   # limits:
   #   cpu: 1000m

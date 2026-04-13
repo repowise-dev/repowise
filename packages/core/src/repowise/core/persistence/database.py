@@ -141,11 +141,15 @@ def create_engine(
         else:
             kwargs["poolclass"] = NullPool
     else:
-        # PostgreSQL — increase pool for heavy indexing workloads
+        # PostgreSQL — asyncpg handles its own connection pool
         kwargs["pool_pre_ping"] = True
-        kwargs["pool_size"] = 200
-        kwargs["max_overflow"] = 300
-        kwargs["pool_timeout"] = 120
+        if os.environ.get("REPOWISE_HIGH_CONCURRENCY", "").lower() in ("true", "1", "yes"):
+            # Production/K8s: aggressive pool for heavy parallel indexing workloads.
+            # pool_size=1000 + max_overflow=2000 = up to 3000 concurrent connections.
+            # Requires PostgreSQL max_connections >= 3000 (the Helm chart sets 4000).
+            kwargs["pool_size"] = 1000
+            kwargs["max_overflow"] = 2000
+            kwargs["pool_timeout"] = 120
 
     return create_async_engine(db_url, **kwargs)
 
