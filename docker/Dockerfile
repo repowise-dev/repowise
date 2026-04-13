@@ -28,15 +28,13 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
 
-# Install git (required by gitpython)
+# Install git (required by gitpython) and Node.js (required for Next.js server)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    curl \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
-
-# Copy Node.js from the official image instead of piping curl|bash
-COPY --from=frontend-builder /usr/local/bin/node /usr/local/bin/node
-COPY --from=frontend-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 
 WORKDIR /app
 
