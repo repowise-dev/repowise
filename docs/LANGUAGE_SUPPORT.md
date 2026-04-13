@@ -163,9 +163,10 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
 
 ## Adding a New Language
 
-All language configuration lives in the centralised `LanguageRegistry`
-(`packages/core/src/repowise/core/ingestion/languages/`). Adding a new
-language touches at most five places:
+The pipeline is fully modular. Language identity data lives in the
+centralised `LanguageRegistry`, per-language extraction logic lives in
+`extractors/`, and per-language import resolution lives in `resolvers/`.
+Adding a new language touches these places:
 
 ### Step 1: Add a `LanguageSpec` to the registry
 
@@ -228,7 +229,7 @@ Add a parser configuration to `LANGUAGE_CONFIGS` in
     },
     import_node_types=["import_statement"],
     export_node_types=[],
-    visibility_fn=_public_by_default,
+    visibility_fn=public_by_default,  # from extractors.visibility
     parent_extraction="nesting",
     parent_class_types=frozenset({"class_definition"}),
     entry_point_patterns=["main.ml"],
@@ -247,18 +248,28 @@ dependencies = [
 ]
 ```
 
-### Optional: Import resolver
+### Step 6 (optional): Binding extractor
 
-If the language has a non-trivial import system, add resolution logic to
-`_resolve_import()` in `packages/core/src/repowise/core/ingestion/graph.py`.
-For simple languages, the generic stem-map fallback (matching by filename)
-works out of the box.
+For full-tier support, add a `extract_mylang_bindings()` function in
+`packages/core/src/repowise/core/ingestion/extractors/bindings.py` and
+register it in the `extract_import_bindings()` dispatcher. Without this,
+imports are still resolved but named-binding-level call resolution won't
+work.
 
-### Optional: Binding and heritage extractors
+### Step 7 (optional): Heritage extractor
 
-For full-tier support, add:
-- `_extract_mylang_bindings()` in `parser.py` (maps import nodes to named symbols)
-- `_extract_mylang_heritage()` in `parser.py` (extracts inheritance chains)
+Add a `_extract_mylang_heritage()` function in
+`packages/core/src/repowise/core/ingestion/extractors/heritage.py` and
+register it in the `HERITAGE_EXTRACTORS` dict. Without this, inheritance
+chains won't appear in the graph.
+
+### Step 8 (optional): Import resolver
+
+If the language has a non-trivial import system, create a resolver in
+`packages/core/src/repowise/core/ingestion/resolvers/mylang.py` and
+register it in the `_RESOLVERS` dict in `resolvers/__init__.py`. For simple
+languages, the generic stem-map fallback (matching by filename) works out
+of the box.
 
 ### Verify
 
@@ -270,10 +281,39 @@ pytest tests/ -k "mylang or sample_repo" -x
 repowise init /path/to/mylang-project
 ```
 
-No changes are needed to `traverser.py`, `graph.py` (for basic support),
-`dead_code.py`, `page_generator.py`, `cost_estimator.py`, or any other
-consumer file --- they all derive their language sets from the registry
-automatically.
+No changes are needed to `traverser.py`, `dead_code.py`,
+`page_generator.py`, `cost_estimator.py`, or any other consumer file ---
+they all derive their language sets from the registry automatically.
+
+---
+
+## Architecture
+
+The language pipeline is fully modular:
+
+```
+ingestion/
+  languages/           # LanguageRegistry + LanguageSpec (identity data)
+  extractors/          # Per-language AST extraction
+    visibility.py      #   symbol visibility (public/private/protected)
+    signatures.py      #   human-readable signature building
+    docstrings.py      #   module + symbol docstring extraction
+    bindings.py        #   import name + alias binding extraction
+    heritage.py        #   inheritance/interface/trait extraction
+  resolvers/           # Per-language import resolution
+    python.py          #   dotted imports, __init__.py, src/ layout
+    typescript.py      #   multi-ext probe, tsconfig aliases
+    go.py              #   go.mod module path stripping
+    rust.py            #   crate::/self::/super::, mod.rs probing
+    cpp.py             #   compile_commands.json include paths
+    generic.py         #   stem-matching fallback
+  framework_edges.py   # Django, FastAPI, Flask, pytest detection
+  parser.py            # ASTParser (language-agnostic orchestration)
+  graph.py             # GraphBuilder (import/call/heritage resolution)
+```
+
+Adding a new language requires zero changes to `parser.py`, `graph.py`,
+`traverser.py`, `dead_code.py`, or any other core file.
 
 ---
 
@@ -283,13 +323,17 @@ Languages planned for future support, in rough priority order:
 
 | Language | Target Tier | Status |
 |----------|------------|--------|
-| Kotlin | Good (AST + imports + calls) | `.scm` and heritage extractor exist, grammar wiring needed |
-| Ruby | Good | `.scm` and heritage extractor exist, grammar wiring needed |
-| C# | Good | Heritage extractor exists, `.scm` + grammar needed |
+| C++ | Full | AST + imports + heritage work; needs binding extractor + docstrings |
+| C | Partial+ | Shares cpp grammar; needs `@call.*` captures in `.scm` + binding extractor |
+| Kotlin | Good | `.scm` and heritage extractor exist, grammar wiring + binding extractor needed |
+| Ruby | Good | `.scm` and heritage extractor exist, grammar wiring + binding extractor needed |
+| C# | Good | Heritage extractor exists, `.scm` + grammar + binding extractor needed |
 | Swift | Good | Spec exists, all extractors needed |
 | Scala | Good | Spec exists, all extractors needed |
 | PHP | Good | Spec exists, all extractors needed |
 | Dart | Good | Stretch goal |
 | Elixir | Good | Stretch goal |
 
-See `docs/LANGUAGE_SUPPORT_PLAN.md` for the detailed implementation plan.
+See `docs/LANGUAGE_SUPPORT_PLAN.md` for the detailed implementation plan
+and `docs/internals/LANGUAGE_PHASE3_HANDOFF.md` for the next-session
+handoff.
