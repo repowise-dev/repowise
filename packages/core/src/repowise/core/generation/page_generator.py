@@ -232,8 +232,12 @@ class PageGenerator:
         file_contexts: list[FilePageContext],
         graph: Any,
         git_meta_map: dict[str, dict] | None = None,
+        page_summaries: dict[str, str] | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_module_page(module_path, language, file_contexts, graph)
+        ctx = self._assembler.assemble_module_page(
+            module_path, language, file_contexts, graph,
+            page_summaries=page_summaries,
+        )
         module_git_summary = None
         if git_meta_map:
             from collections import Counter
@@ -288,8 +292,12 @@ class PageGenerator:
         sccs: list[Any],
         community: dict[str, int],
         git_meta_map: dict[str, dict] | None = None,
+        graph_builder: Any | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_repo_overview(repo_structure, pagerank, sccs, community)
+        ctx = self._assembler.assemble_repo_overview(
+            repo_structure, pagerank, sccs, community,
+            graph_builder=graph_builder,
+        )
         repo_git_summary = None
         if git_meta_map:
             metas = list(git_meta_map.values())
@@ -741,6 +749,7 @@ class PageGenerator:
                 betweenness,
                 community,
                 source_map.get(p.file_info.path, b""),
+                git_meta=git_meta_map.get(p.file_info.path) if git_meta_map else None,
                 page_summaries=completed_page_summaries,
             )
             file_page_contexts[p.file_info.path] = ctx
@@ -788,6 +797,7 @@ class PageGenerator:
                     fcs,
                     graph,
                     git_meta_map=git_meta_map,
+                    page_summaries=completed_page_summaries,
                 ),
             )
             for module, fcs in module_groups.items()
@@ -833,7 +843,9 @@ class PageGenerator:
                 (
                     compute_page_id("repo_overview", repo_name),
                     self.generate_repo_overview(
-                        repo_structure, pagerank, sccs, community, git_meta_map=git_meta_map
+                        repo_structure, pagerank, sccs, community,
+                        git_meta_map=git_meta_map,
+                        graph_builder=graph_builder,
                     ),
                 )
             )
@@ -1088,69 +1100,43 @@ def _is_significant_file(
 # Common words that appear in backticks but are not code symbols.
 _BACKTICK_SKIP = frozenset(
     {
-        "True",
-        "False",
-        "None",
-        "null",
-        "undefined",
-        "self",
-        "cls",
-        "this",
-        "str",
-        "int",
-        "float",
-        "bool",
-        "list",
-        "dict",
-        "set",
-        "tuple",
-        "bytes",
-        "object",
-        "type",
-        "Any",
-        "Optional",
-        "Union",
-        "async",
-        "await",
-        "return",
-        "yield",
-        "import",
-        "from",
-        "class",
-        "def",
-        "if",
-        "else",
-        "for",
-        "while",
-        "try",
-        "except",
-        "raise",
-        "with",
-        "pass",
-        "break",
-        "continue",
-        "lambda",
-        "in",
-        "not",
-        "and",
-        "or",
-        "is",
-        "del",
-        "assert",
-        "finally",
-        "elif",
-        "as",
-        "pip",
-        "npm",
-        "go",
-        "rust",
-        "python",
-        "node",
+        # Python builtins & keywords
+        "True", "False", "None", "self", "cls", "super",
+        "str", "int", "float", "bool", "list", "dict", "set", "tuple",
+        "bytes", "object", "type", "Any", "Optional", "Union",
+        "async", "await", "return", "yield", "import", "from",
+        "class", "def", "if", "else", "for", "while", "try", "except",
+        "raise", "with", "pass", "break", "continue", "lambda",
+        "in", "not", "and", "or", "is", "del", "assert", "finally",
+        "elif", "as", "global", "nonlocal",
+        # JS/TS keywords
+        "null", "undefined", "this", "const", "let", "var", "function",
+        "export", "default", "extends", "implements", "interface",
+        "enum", "new", "typeof", "instanceof", "void", "never",
+        "string", "number", "boolean", "symbol", "bigint", "unknown",
+        "readonly", "abstract", "static", "private", "protected", "public",
+        "require", "module", "exports", "Promise", "Map", "Set", "Array",
+        "Object", "Error", "Date", "RegExp", "JSON", "Math", "console",
+        # Common tool/ecosystem names
+        "pip", "npm", "npx", "yarn", "pnpm", "go", "rust", "python",
+        "node", "cargo", "uv", "git", "docker", "make",
+        # Common framework/lib names the LLM mentions in prose
+        "FastAPI", "React", "Next", "Express", "Django", "Flask",
+        "SQLAlchemy", "Pydantic", "Click", "Typer", "pytest",
+        "asyncio", "pathlib", "dataclass", "dataclasses",
     }
 )
 
 # Regex: single-backtick references that look like identifiers.
 _BACKTICK_REF_RE = re.compile(r"(?<!`)` *([A-Za-z_]\w*(?:\.\w+)*) *`(?!`)")
+
+# Patterns that indicate the backtick content is a path, command, or
+# value rather than a symbol reference — these should never be flagged.
+_PATH_OR_CMD_RE = re.compile(
+    r"[/\\]"             # contains path separator
+    r"|\.(?:py|ts|js|json|yaml|yml|toml|md|sh|sql|css|html)$"  # file extension
+    r"|^[a-z][\w-]*$"   # all-lowercase with hyphens = CLI command/flag
+)
 
 
 def _validate_symbol_references(
@@ -1160,27 +1146,67 @@ def _validate_symbol_references(
     """Cross-check backtick-quoted names in LLM output against actual symbols.
 
     Returns a list of warning strings for references that don't match any
-    known symbol, export, or import in the ParsedFile.
+    known symbol, export, or import in the ParsedFile. Designed to have low
+    false-positive rates — only flags references that look like symbol names
+    but can't be found anywhere in the file's AST, imports, or source text.
     """
     refs = set(_BACKTICK_REF_RE.findall(content))
     if not refs:
         return []
 
+    # Build the known-names set from AST data
     known: set[str] = set()
     for s in parsed.symbols:
         known.add(s.name)
         known.add(s.qualified_name)
+        # Decorator names are valid references (e.g. @app.command("init"))
+        for dec in s.decorators:
+            # Extract the decorator function name: "@app.command" → "command"
+            dec_name = dec.lstrip("@").split("(")[0]
+            known.add(dec_name)
+            known.add(dec_name.split(".")[-1])
     known.update(parsed.exports)
     for imp in parsed.imports:
         if imp.module_path:
-            known.add(imp.module_path.split(".")[-1])
+            # Add both the final component and intermediate segments
+            parts = imp.module_path.split(".")
+            known.update(parts)
         known.update(imp.imported_names)
+        # Named bindings from import resolution
+        for binding in getattr(imp, "bindings", []):
+            known.add(binding.local_name)
+            if binding.exported_name:
+                known.add(binding.exported_name)
+
+    # Also add all string literals from the source that look like identifiers
+    # (catches Click command names, decorator arguments, dict keys, etc.)
+    source_text = ""
+    if hasattr(parsed, "file_info") and hasattr(parsed.file_info, "path"):
+        # The source is in the context, but we only have the parsed file here.
+        # Use docstring and symbol names as a cheap approximation.
+        if parsed.docstring:
+            known.update(w for w in parsed.docstring.split() if w.isidentifier())
 
     warnings: list[str] = []
     for ref in refs:
-        if ref in _BACKTICK_SKIP or len(ref) < 2:
+        if ref in _BACKTICK_SKIP:
             continue
+        # Skip short refs (1-2 chars are usually variables like `x`, `i`, `db`)
+        if len(ref) <= 2:
+            continue
+        # Skip anything that looks like a path, file, or CLI command
+        if _PATH_OR_CMD_RE.search(ref):
+            continue
+        # Skip all-uppercase (likely constants from other files: `MAX_RETRIES`)
+        if ref.isupper():
+            continue
+        # Check against known names
         base = ref.split(".")[-1]
-        if ref not in known and base not in known:
-            warnings.append(ref)
+        if ref in known or base in known:
+            continue
+        # Skip if the ref is a substring of any known symbol (covers partial
+        # references like `parse` when `parse_file` exists)
+        if any(ref in k for k in known if len(k) > len(ref)):
+            continue
+        warnings.append(ref)
     return warnings

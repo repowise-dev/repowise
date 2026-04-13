@@ -204,7 +204,21 @@ ParsedFile
 
 ### 2.3 GraphBuilder — "How do files depend on each other?"
 
-See `graph-algorithms-guide.md` for full coverage. The key point: GraphBuilder takes ParsedFiles and resolves their imports into actual file paths, creating a directed dependency graph.
+See `graph-algorithms-guide.md` for full coverage. The key point: GraphBuilder takes ParsedFiles and resolves their imports into actual file paths, creating a directed dependency graph. The graph is **two-tier**: file nodes for module-level relationships and symbol nodes for fine-grained call relationships, all in the same `networkx.DiGraph`.
+
+**Named binding resolution** (`NamedBinding` in `ingestion/models.py`) happens during `GraphBuilder.build()`. For each import in a `ParsedFile`, the parser's `_extract_import_bindings()` produces `NamedBinding` objects tracking `local_name`, `exported_name`, `source_file`, and `is_module_alias`. These are used to populate `Import.resolved_file` and to build the alias lookup tables that `CallResolver` relies on. Barrel files (`__init__.py`, `index.ts`) are followed one hop during resolution to handle re-exports.
+
+**Call resolution** runs after import graph construction. `CallResolver` (`ingestion/call_resolver.py`) extracts call sites from the tree-sitter parse tree using `_extract_calls()` (per-language `.scm` captures for all 7 languages), then resolves each `CallSite` in three tiers:
+
+| Tier | Confidence | How it resolves |
+|------|-----------|-----------------|
+| Same-file | 0.95 | Target defined in the same `ParsedFile` |
+| Import-scoped | 0.85–0.93 | Target matched via `NamedBinding` from the file's imports; higher confidence for direct named imports vs namespace aliases |
+| Global unique | 0.50 | Target name appears exactly once across the whole repo |
+
+Resolved call sites become `CALLS` edges in the graph. Unresolvable call sites are discarded. Each `CALLS` edge stores the confidence score on the edge data. `DEFINES` and `HAS_METHOD` edges are added during `add_file()` when symbol nodes are created.
+
+`file_subgraph()` returns a filtered view of the `DiGraph` containing only `file` and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, Louvain, in-degree dead code) run on this subgraph to prevent symbol-node cardinality from distorting centrality scores.
 
 After building the static import graph, GraphBuilder also adds **framework-aware synthetic edges** via `add_framework_edges()`. This detects common framework patterns and creates edges for dependencies that static import resolution misses:
 
@@ -224,6 +238,8 @@ TypeScript:        "./utils"                  → try utils.ts, utils.tsx, utils
 Go:                "github.com/foo/bar"       → match last segment "bar" by stem
 Generic fallback:  stem matching              → "calculator" matches calculator.py
 ```
+
+Alias forms (`import X as Y`, `from X import Y as Z`, Go aliased imports, Rust `use_as_clause`, TS namespace imports) are handled by `_extract_import_bindings()` and stored in separate `module_aliases` tracking so `CallResolver` can look up both the alias and the original name.
 
 ### 2.4 GitIndexer — "What's the history of each file?"
 

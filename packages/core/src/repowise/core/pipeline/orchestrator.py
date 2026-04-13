@@ -121,6 +121,9 @@ class PipelineResult:
     languages: set[str] = field(default_factory=set)
     elapsed_seconds: float = 0.0
 
+    execution_flow_report: Any | None = None
+    """``ExecutionFlowReport`` or None (populated after graph build)."""
+
     # Traversal stats
     traversal_stats: Any | None = None
     """``TraversalStats`` from the file traverser, or None."""
@@ -245,16 +248,28 @@ async def run_pipeline(
     if git_meta_map:
         graph_builder.add_co_change_edges(git_meta_map)
 
+    # Emit rich insight summary for the ingestion phase
     if progress:
+        _g = graph_builder.graph()
+        _n_nodes = _g.number_of_nodes()
+        _n_edges = _g.number_of_edges()
         progress.on_message(
             "info",
-            f"Ingested {len(parsed_files)} files"
-            + (
-                f" · Git: {git_summary.files_indexed} files"
-                if git_summary and git_summary.files_indexed
-                else ""
-            ),
+            f"→ {len(parsed_files):,} files parsed · "
+            f"{sum(len(pf.symbols) for pf in parsed_files):,} symbols extracted",
         )
+        progress.on_message(
+            "info",
+            f"→ Graph: {_n_nodes:,} nodes · {_n_edges:,} edges",
+        )
+        if git_summary and git_summary.files_indexed:
+            _hotspot_msg = ""
+            if hasattr(git_summary, "hotspots") and git_summary.hotspots:
+                _hotspot_msg = f" · {git_summary.hotspots} hotspots"
+            progress.on_message(
+                "info",
+                f"→ Git: {git_summary.files_indexed:,} files indexed{_hotspot_msg}",
+            )
 
     # Test-run: limit to top 10 files by PageRank
     if test_run and generate_docs:
@@ -308,6 +323,13 @@ async def run_pipeline(
             resume=resume,
         )
 
+    # ---- Execution flow tracing -----------------------------------------------
+    execution_flow_report = None
+    try:
+        execution_flow_report = graph_builder.execution_flows()
+    except Exception as _flow_err:
+        logger.warning("execution_flow_tracing_skipped", error=str(_flow_err))
+
     # ---- Build result -------------------------------------------------------
     elapsed = time.monotonic() - start
     languages = {fi.language for fi in file_infos if hasattr(fi, "language") and fi.language}
@@ -324,6 +346,7 @@ async def run_pipeline(
         git_summary=git_summary,
         dead_code_report=dead_code_report,
         decision_report=decision_report,
+        execution_flow_report=execution_flow_report,
         generated_pages=generated_pages,
         traversal_stats=traversal_stats,
         repo_name=repo_path.name,
@@ -630,8 +653,8 @@ async def _run_dead_code_analysis(
             unused_exports = sum(1 for f in report.findings if f.kind.value == "unused_export")
             progress.on_message(
                 "info",
-                f"Dead code: {unreachable} unreachable files "
-                f"· {unused_exports} unused exports (~{report.deletable_lines:,} lines)",
+                f"→ {unreachable} unreachable files · "
+                f"{unused_exports} unused exports · ~{report.deletable_lines:,} deletable lines",
             )
 
         return report
@@ -672,9 +695,10 @@ async def _run_decision_extraction(
             inline = report.by_source.get("inline_marker", 0)
             readme = report.by_source.get("readme_mining", 0)
             git_arch = report.by_source.get("git_archaeology", 0)
+            total_decisions = inline + readme + git_arch
             progress.on_message(
                 "info",
-                f"Decisions: {inline} inline · {readme} from docs · {git_arch} from git",
+                f"→ {total_decisions} decisions: {inline} inline · {readme} from docs · {git_arch} from git",
             )
 
         return report

@@ -185,6 +185,20 @@ class Symbol:
 
 
 @dataclass
+class NamedBinding:
+    """One resolved name from an import statement.
+
+    Tracks the local alias, the original exported name, and the resolved
+    source file so that call resolution can map aliases back to symbols.
+    """
+
+    local_name: str  # name used in calling file (e.g., "np", "Calc")
+    exported_name: str | None  # original name in source (None for module aliases)
+    source_file: str | None  # resolved file path (populated during graph build)
+    is_module_alias: bool = False  # True for "import x" / "import * as ns"
+
+
+@dataclass
 class Import:
     """An import statement extracted from a source file."""
 
@@ -193,6 +207,58 @@ class Import:
     imported_names: list[str]  # specific names, or ["*"] for wildcard
     is_relative: bool
     resolved_file: str | None  # absolute path if successfully resolved
+    bindings: list[NamedBinding] = field(default_factory=list)
+
+
+@dataclass
+class CallSite:
+    """A function or method call extracted from a source file.
+
+    Used by GraphBuilder to create CALLS edges between symbol nodes.
+    """
+
+    target_name: str  # function/method name being called
+    receiver_name: str | None  # object/class for method calls (e.g. "user" in user.save())
+    caller_symbol_id: str | None  # enclosing symbol ID (e.g. "src/app.py::main")
+    line: int  # 1-indexed line number of the call
+    argument_count: int | None  # number of arguments (None if unknown)
+
+
+HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
+
+
+@dataclass
+class HeritageRelation:
+    """A class/struct/impl inheritance or interface implementation relationship.
+
+    Extracted from AST class definitions. Resolved to graph edges by
+    HeritageResolver during the graph build phase.
+    """
+
+    child_name: str  # the class/struct being defined
+    parent_name: str  # superclass, interface, or trait name
+    kind: HeritageKind  # relationship type
+    line: int  # 1-indexed line of the class definition
+
+
+# ---------------------------------------------------------------------------
+# Edge types used in the symbol-level dependency graph
+# ---------------------------------------------------------------------------
+
+EdgeType = Literal[
+    "imports",
+    "defines",
+    "calls",
+    "has_method",
+    "has_property",
+    "extends",
+    "implements",
+    "method_overrides",
+    "method_implements",
+    "co_changes",
+    "framework",
+    "dynamic",
+]
 
 
 @dataclass
@@ -203,8 +269,10 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
-    docstring: str | None  # module/file-level docstring
-    parse_errors: list[str]  # non-fatal parser warnings/errors
+    calls: list[CallSite] = field(default_factory=list)
+    heritage: list[HeritageRelation] = field(default_factory=list)
+    docstring: str | None = None  # module/file-level docstring
+    parse_errors: list[str] = field(default_factory=list)  # non-fatal parser warnings/errors
     content_hash: str = ""  # SHA-256 hex of raw file bytes
 
 

@@ -10,7 +10,9 @@ Next.js 15 frontend for the repowise codebase documentation engine. Provides an 
 | Styling | Tailwind CSS v4 (CSS-first, no config file), custom design tokens in `globals.css` |
 | Components | Radix UI primitives, class-variance-authority for variants |
 | Data Fetching | SWR (stale-while-revalidate) with 30s polling, Server-Sent Events for live job progress |
-| Visualization | D3.js (force-directed graphs), Recharts (bar/donut charts), Mermaid (diagrams) |
+| Graph Viz | @xyflow/react (React Flow) with ELK layout (elkjs) |
+| Charts | Recharts (bar/donut charts), D3.js (force-directed minimap, treemap) |
+| Diagrams | Mermaid v11 (embedded in wiki pages) |
 | Code Rendering | Shiki (syntax highlighting), next-mdx-remote (wiki content) |
 | Search | cmdk command palette (Cmd+K), Fuse.js client-side fuzzy search |
 | URL State | nuqs (type-safe URL search params for bookmarkable views) |
@@ -26,29 +28,33 @@ The home page. Shows aggregate stats across all registered repositories (total f
 
 ### Repository Overview (`/repos/[id]`)
 
-Landing page for a single repo. Displays git stats (HEAD commit, branch, contributor count), documentation coverage at a glance, and quick links to all sub-pages. Includes an operations panel for triggering sync and full-resync jobs.
+Landing page for a single repo. Displays health score, git insights (commit activity, churn distribution, bus factor), documentation coverage, and quick links to all sub-pages. Includes a **Graph Intelligence** section with expandable architecture communities (cohesion scores, member lists, neighboring communities) and execution flows panel (entry point scoring, BFS call traces, cross-community classification). Operations panel for triggering sync and full-resync jobs.
 
 ### Wiki Pages (`/repos/[id]/wiki/[...slug]`)
 
 The core documentation viewer. Renders AI-generated wiki pages as MDX with:
 - Shiki syntax-highlighted code blocks
 - Embedded Mermaid diagrams (flowcharts, sequence diagrams, etc.)
-- Auto-generated sticky table of contents from headings
+- Auto-generated sticky table of contents with anchor-linked headings (scroll-to-heading)
 - Confidence badge showing freshness (fresh/stale/outdated) with last-updated tooltip
 - Git history panel showing the file's change timeline
 - Regenerate button to force a fresh AI pass on stale pages
+- Graph intelligence sidebar (XL screens) with PageRank/betweenness percentiles, community label, degree counts, entry point badge
+- Hallucination warnings — surfaces LLM validation findings (symbol references not found in source) as amber banners
+- Version history with diff view — browse previous page versions and compare changes inline
 
 ### Dependency Graph (`/repos/[id]/graph`)
 
-Interactive D3 force-directed graph rendered on HTML Canvas. Supports six view modes:
-- **Module view** — hierarchical module organization
-- **Ego graph** — neighborhood of a selected node with context sidebar
+Interactive React Flow graph with ELK layout engine. Supports five view modes:
+- **Module view** — hierarchical module organization with drill-down
 - **Architecture view** — entry point reachability analysis
-- **Dead code view** — highlights unreachable files
+- **Dead code view** — highlights unreachable files with confidence groups
 - **Hot files view** — commit activity heatmap overlay
 - **Full graph** — complete dependency graph
 
-Features pan/zoom, a minimap for orientation, a filter panel (by language, node type, edge type), node sizing controls, and a path finder to trace dependency chains between any two files.
+Three color modes: **Language** (per-language coloring), **Community** (Leiden community clusters with real labels from analysis), **Risk** (churn-based).
+
+Features pan/zoom, minimap, path finder for dependency chains, community detail panel (click any node in community mode to see members, cohesion, and neighboring communities with cross-edge counts), and URL param support for deep-linking color modes.
 
 ### Search (`/repos/[id]/search`)
 
@@ -56,7 +62,7 @@ Full-text and semantic search across all wiki pages. Includes a type toggle (FTS
 
 ### Symbol Index (`/repos/[id]/symbols`)
 
-Sortable, filterable table of all extracted symbols (functions, classes, constants, etc.). Filter by kind and language. Click any row to open a detail drawer with the symbol's signature, location, and relationships.
+Sortable, filterable table of all extracted symbols (functions, classes, constants, etc.). Filter by kind and language. Click any row to open a two-panel detail drawer: left side shows the symbol's signature, docstring, and location; right side shows **graph intelligence** — PageRank/betweenness percentile badges, in/out degree, community membership, callers and callees with confidence scoring, and class heritage (extends/implements relationships).
 
 ### Documentation Coverage (`/repos/[id]/coverage`)
 
@@ -74,9 +80,19 @@ Ranked table of high-churn files with churn bar charts and an owner leaderboard.
 
 Tabbed view of dead code findings (unreachable files, unused exports). Supports row-level actions (ignore, mark as false positive), bulk selection, and a trigger to run fresh analysis. Summary bar shows counts by category.
 
+### Documentation Explorer (`/repos/[id]/docs`)
+
+Split-pane documentation browser (VS Code-style). Left panel is a searchable file tree with type/freshness filters and colored freshness dots. Right panel renders full wiki content with:
+- Mermaid diagram rendering and syntax-highlighted code blocks with copy buttons
+- Graph intelligence sidebar (PageRank/betweenness percentiles, community, callers/callees)
+- Version history browser with LCS-based inline diff view
+- Hallucination warning banners for pages with detected inaccuracies
+- Deep-linkable page selection via URL search params (`?page=...`)
+- Export All (single `.md`) and Download ZIP buttons
+
 ### Architectural Decisions (`/repos/[id]/decisions`)
 
-Lists extracted architectural decision records with health metrics. Each decision has a detail page (`/repos/[id]/decisions/[decisionId]`) showing rationale, status, and related code.
+Lists extracted architectural decision records with health metrics. Each decision has a detail page (`/repos/[id]/decisions/[decisionId]`) showing context, rationale, alternatives, and consequences rendered as markdown, with Confirm/Dismiss/Deprecate actions.
 
 ### Settings (`/settings` and `/repos/[id]/settings`)
 
@@ -113,6 +129,10 @@ Organized by domain — `repos.ts`, `pages.ts`, `graph.ts`, `search.ts`, `symbol
 | `usePage`, `usePageVersions` | Page content and version history |
 | `useSearch` | Debounced search (300ms, min 2 chars) |
 | `useGraph` (+ variants) | Graph data with stable caching (no revalidate on focus) |
+| `useCommunities`, `useCommunityDetail` | Community summaries and detail data |
+| `useGraphMetrics` | Per-node PageRank, betweenness, percentiles |
+| `useCallersCallees` | Symbol call graph with confidence and heritage |
+| `useExecutionFlows` | Entry point traces with community crossing |
 | `useSSE` | Generic SSE hook with reconnection, exponential backoff, named events |
 | `useJob` | Combines SWR polling + SSE streaming for real-time job monitoring |
 | `useDebounce` | Generic value debounce |
@@ -123,8 +143,8 @@ Organized by domain — `repos.ts`, `pages.ts`, `graph.ts`, `search.ts`, `symbol
 components/
   ui/           Radix-based primitives (button, card, dialog, tabs, tooltip, etc.)
   layout/       Sidebar, mobile nav
-  wiki/         Wiki renderer, code blocks, Mermaid, ToC, confidence badge
-  graph/        D3 canvas, filter panel, minimap, tooltip, ego sidebar, path finder
+  wiki/         Wiki renderer (RSC + client), code blocks, Mermaid, ToC, confidence badge, version history with diff
+  graph/        React Flow canvas, toolbar, legend, tooltip, community panel, path finder
   search/       Command palette, search bar, result cards
   jobs/         Generation progress (SSE), job logs
   repos/        Add repo dialog, operations panel, run config form
@@ -132,6 +152,9 @@ components/
   dead-code/    Findings table, row actions, summary bar
   decisions/    Decisions table, detail view, health widget
   git/          Churn bars, contributor charts, hotspot/ownership tables
+  symbols/      Symbol table, symbol drawer, symbol graph panel (metrics + callers)
+  dashboard/    Health ring, attention panel, quick actions, language donut,
+                ownership treemap, community summary grid, execution flows panel
   shared/       Stat cards, empty states
 ```
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { BookOpen, PanelLeftClose, PanelLeft } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { usePages } from "@/lib/hooks/use-pages";
@@ -17,10 +18,26 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   const { pages, isLoading } = usePages(repoId);
   const [selectedPage, setSelectedPage] = useState<PageResponse | null>(null);
   const [treePanelOpen, setTreePanelOpen] = useState(true);
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // Restore selection from URL on mount / when pages load
+  useEffect(() => {
+    if (pages.length === 0) return;
+    const pageId = searchParams.get("page");
+    if (pageId && !selectedPage) {
+      const match = pages.find((p) => p.id === pageId);
+      if (match) setSelectedPage(match);
+    }
+  }, [pages, searchParams, selectedPage]);
 
   const handleSelectPage = useCallback((page: PageResponse) => {
     setSelectedPage(page);
-  }, []);
+    // Update URL without full navigation
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("page", page.id);
+    router.replace(`?${params.toString()}`, { scroll: false });
+  }, [searchParams, router]);
 
   if (isLoading) {
     return (

@@ -48,6 +48,17 @@ def resolve_repo_path(path: str | None) -> Path:
     return Path(path).resolve()
 
 
+def find_workspace_root(start: Path | None = None) -> Path | None:
+    """Walk up from *start* (default: cwd) looking for ``.repowise-workspace.yaml``.
+
+    Returns the directory containing the file, or ``None`` if not found.
+    Delegates to :func:`repowise.core.workspace.config.find_workspace_root`.
+    """
+    from repowise.core.workspace.config import find_workspace_root as _find
+
+    return _find(start)
+
+
 def get_repowise_dir(repo_path: Path) -> Path:
     """Return the ``.repowise/`` directory for a given repo root."""
     return repo_path / REPOWISE_DIR

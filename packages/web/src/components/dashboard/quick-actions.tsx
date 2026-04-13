@@ -88,12 +88,12 @@ const ACTIONS: ActionDef[] = [
   {
     key: "sync",
     label: "Sync",
-    description: "Incremental re-index — only changed files",
+    description: "Update everything — only affected pages regenerated",
     icon: Zap,
     destructive: false,
     needsConfirm: true,
     confirmTitle: "Sync Repository",
-    confirmDescription: "This will re-index changed files and regenerate affected pages.",
+    confirmDescription: "Re-indexes the dependency graph, git metadata, dead code, and decisions. Only wiki pages affected by recent changes are regenerated (minimal LLM cost).",
   },
   {
     key: "resync",
@@ -131,9 +131,11 @@ export function QuickActions({ repoId, repoName, pageCount = 0, modelName = "", 
   const [pendingAction, setPendingAction] = useState<ActionDef | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
+  // Sync regenerates ~10-15% of pages (only affected by changes).
+  // Full resync regenerates all pages.
   const estimate = pageCount > 0 && pendingAction?.key !== "dead-code"
     ? estimateCost(
-        pendingAction?.key === "sync" ? Math.ceil(pageCount * 0.15) : pageCount,
+        pendingAction?.key === "sync" ? Math.max(1, Math.ceil(pageCount * 0.1)) : pageCount,
         modelName
       )
     : null;
@@ -248,7 +250,7 @@ export function QuickActions({ repoId, repoName, pageCount = 0, modelName = "", 
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div>
                     <p className="text-sm font-semibold text-[var(--color-text-primary)] tabular-nums">
-                      {formatNumber(pendingAction.key === "sync" ? Math.ceil(pageCount * 0.15) : pageCount)}
+                      {formatNumber(pendingAction.key === "sync" ? Math.max(1, Math.ceil(pageCount * 0.1)) : pageCount)}
                     </p>
                     <p className="text-[10px] text-[var(--color-text-tertiary)]">pages</p>
                   </div>

@@ -13,8 +13,11 @@ from repowise.core.persistence.models import (
     GraphNode,
     Page,
 )
-from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._server import mcp
 
 
@@ -52,8 +55,12 @@ async def get_architecture_diagram(
         show_heat: Annotate nodes with churn heat colors (red=hot, yellow=warm, green=cold).
         repo: Repository path, name, or ID.
     """
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    if repo == "all":
+        return _unsupported_repo_all("get_architecture_diagram")
+    ctx = await _resolve_repo_context(repo)
+
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
 
         if scope == "repo":
             # Return the architecture diagram page
@@ -179,7 +186,15 @@ async def get_architecture_diagram(
                         )
                 seen_nodes.add(tgt)
 
-            lines.append(f"    {src} --> {tgt}")
+            # Differentiate arrow style by edge type
+            etype = getattr(e, "edge_type", None) or "imports"
+            if etype == "calls":
+                arrow = "-.->"
+            elif etype in ("extends", "implements"):
+                arrow = "--|>"
+            else:
+                arrow = "-->"
+            lines.append(f"    {src} {arrow} {tgt}")
 
         # Apply heat + external classes
         if node_classes:

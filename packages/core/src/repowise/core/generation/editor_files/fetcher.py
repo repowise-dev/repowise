@@ -179,13 +179,16 @@ class EditorFileDataFetcher:
         records = list(result.scalars().all())
         summaries: list[DecisionSummary] = []
         for rec in records:
-            rationale = (rec.rationale or rec.decision or "").strip()
+            rationale = (rec.rationale or "").strip()
             rationale = rationale[:100].rstrip(".,;") if rationale else ""
+            decision_text = (rec.decision or "").strip()
+            decision_text = decision_text[:120].rstrip(".,;") if decision_text else ""
             summaries.append(
                 DecisionSummary(
                     title=rec.title,
                     status=rec.status,
                     rationale=rationale,
+                    decision=decision_text,
                 )
             )
         return summaries

@@ -57,3 +57,34 @@
 (import_statement
   name: (_) @import.module
 ) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple function call: foo(arg1, arg2)
+(call
+  function: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Method call: obj.method(arg1, arg2)
+(call
+  function: (attribute
+    object: (identifier) @call.receiver
+    attribute: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Chained method call: obj.method1().method2(args)
+(call
+  function: (attribute
+    object: (call)
+    attribute: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Constructor call via class name: MyClass(args)
+; (captured by the simple function call pattern above — class names are identifiers)

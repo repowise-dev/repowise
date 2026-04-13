@@ -119,6 +119,30 @@ Mention this relationship explicitly.
 {% endif %}
 {# ── End git context block ────────────────────────────────────── #}
 
+{% if ctx.call_graph %}
+## Call Graph
+Key function calls involving this file's symbols:
+{% for cg in ctx.call_graph %}
+- `{{ cg.caller }}` → `{{ cg.callee }}`{% if cg.callee_file and cg.callee_file != ctx.file_path %} (in `{{ cg.callee_file }}`){% endif %}{% if cg.caller_file is defined and cg.caller_file and cg.caller_file != ctx.file_path %} (from `{{ cg.caller_file }}`){% endif %}
+
+{% endfor %}
+Use this to explain how the file's functions connect to callers and callees.
+{% endif %}
+
+{% if ctx.heritage %}
+## Class Hierarchy
+{% for h in ctx.heritage %}
+- `{{ h.child }}` {{ h.kind }} `{{ h.parent }}`{% if h.parent_file is defined and h.parent_file %} (in `{{ h.parent_file }}`){% endif %}{% if h.child_file is defined and h.child_file %} (from `{{ h.child_file }}`){% endif %}
+
+{% endfor %}
+{% endif %}
+
+{% if ctx.community_label %}
+## Architectural Community
+This file belongs to the **{{ ctx.community_label }}** community{% if ctx.community_cohesion > 0 %} (cohesion: {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}.
+Use this to explain the file's role within its architectural cluster.
+{% endif %}
+
 {% if ctx.dead_code_findings %}
 ## Potentially unused code
 {% for finding in ctx.dead_code_findings %}

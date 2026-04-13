@@ -37,8 +37,22 @@ if _API_KEY is None and _REPOWISE_HOST in ("0.0.0.0", "::"):
 
 
 async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
-    """Yield an async DB session with auto-commit on success, rollback on error."""
+    """Yield an async DB session with auto-commit on success, rollback on error.
+
+    In workspace mode, routes to the correct repo's DB based on the
+    ``repo_id`` path parameter when a matching session factory exists.
+    """
     factory = request.app.state.session_factory
+
+    # In workspace mode, check if the request targets a specific repo DB
+    # Check both path params (e.g. /api/repos/{repo_id}/stats) and
+    # query params (e.g. /api/pages?repo_id=xxx) for the repo_id
+    repo_id = request.path_params.get("repo_id") or request.query_params.get("repo_id")
+    if repo_id:
+        ws_sessions = getattr(request.app.state, "workspace_sessions", None)
+        if ws_sessions and repo_id in ws_sessions:
+            factory = ws_sessions[repo_id]
+
     async with get_session(factory) as session:
         yield session
 
@@ -51,6 +65,16 @@ async def get_vector_store(request: Request):
 async def get_fts(request: Request):
     """Return the full-text search engine from app state."""
     return request.app.state.fts
+
+
+async def get_workspace_config(request: Request):
+    """Return WorkspaceConfig from app state, or None in single-repo mode."""
+    return getattr(request.app.state, "workspace_config", None)
+
+
+async def get_cross_repo_enricher(request: Request):
+    """Return CrossRepoEnricher from app state, or None."""
+    return getattr(request.app.state, "cross_repo_enricher", None)
 
 
 async def verify_api_key(

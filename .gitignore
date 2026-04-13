@@ -80,6 +80,8 @@ next-env.d.ts
 # repowise runtime data
 .repowise/
 !.repowise/mcp.json.example
+.repowise-workspace/
+.repowise-workspace.yaml
 
 # Database
 *.db
@@ -111,3 +113,11 @@ ehthumbs.db
 
 # Claude Code
 .claude/
+
+# repowise API keys (local)
+.repowise/.env
+
+# Internal docs (not for distribution)
+docs/COMPETITIVE_ANALYSIS.md
+docs/GRAPH_INTELLIGENCE_UPGRADE.md
+docs/multi-repo/

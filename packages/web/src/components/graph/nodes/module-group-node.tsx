@@ -48,8 +48,12 @@ function ModuleGroupNodeInner({ id, data }: NodeProps) {
   const isConnected = ctx.connectedNodeIds.has(id);
   const isHoverDimmed = hasHover && !isConnected && !hasActivePath;
 
+  const isSearchDimmed = ctx.searchDimmedNodes?.has(id) ?? false;
+  const searchDimmed = isSearchDimmed && !isOnPath && !isSelected;
+
   let opacity = 1;
   if (isDimmed) opacity = 0.15;
+  else if (searchDimmed) opacity = 0.12;
   else if (isHoverDimmed) opacity = 0.35;
 
   return (

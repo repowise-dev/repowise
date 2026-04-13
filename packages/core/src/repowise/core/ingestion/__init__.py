@@ -14,8 +14,12 @@ from .change_detector import AffectedPages, ChangeDetector, FileDiff, SymbolDiff
 from .graph import GraphBuilder
 from .models import (
     EXTENSION_TO_LANGUAGE,
+    CallSite,
+    EdgeType,
     FileInfo,
+    HeritageRelation,
     Import,
+    NamedBinding,
     PackageInfo,
     ParsedFile,
     RepoStructure,
@@ -29,7 +33,11 @@ from .tsconfig_resolver import TsconfigResolver
 
 __all__ = [
     # Models
+    "CallSite",
+    "EdgeType",
     "EXTENSION_TO_LANGUAGE",
+    "HeritageRelation",
+    "NamedBinding",
     "LANGUAGE_CONFIGS",
     # Parsing
     "ASTParser",

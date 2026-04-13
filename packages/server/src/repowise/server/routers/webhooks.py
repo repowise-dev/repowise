@@ -47,6 +47,25 @@ def _verify_gitlab_token(token_header: str) -> None:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
+def _launch_webhook_job(request: Request, job_id: str) -> None:
+    """Launch a webhook-triggered job as a background task."""
+    import asyncio
+
+    from repowise.server.job_executor import execute_job
+
+    task = asyncio.create_task(
+        execute_job(job_id, request.app.state),
+        name=f"webhook-job-{job_id}",
+    )
+    bg_tasks: set = request.app.state.background_tasks
+    bg_tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        bg_tasks.discard(t)
+
+    task.add_done_callback(_on_done)
+
+
 @router.post("/github", response_model=WebhookResponse)
 async def github_webhook(
     request: Request,
@@ -109,6 +128,8 @@ async def github_webhook(
                     },
                 )
                 await crud.mark_webhook_processed(session, event.id, job_id=job.id)
+                await session.commit()
+                _launch_webhook_job(request, job.id)
 
     return WebhookResponse(event_id=event.id)
 
@@ -165,5 +186,7 @@ async def gitlab_webhook(
                     },
                 )
                 await crud.mark_webhook_processed(session, event.id, job_id=job.id)
+                await session.commit()
+                _launch_webhook_job(request, job.id)
 
     return WebhookResponse(event_id=event.id)

@@ -115,3 +115,39 @@
 (preproc_include
   path: (string_literal) @import.module
 ) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple function call: foo(args)
+(call_expression
+  function: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Method call: obj.method(args) or obj->method(args)
+(call_expression
+  function: (field_expression
+    argument: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Scoped call: ClassName::method(args) or namespace::function(args)
+(call_expression
+  function: (qualified_identifier
+    name: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Chained call: obj.method1().method2(args)
+(call_expression
+  function: (field_expression
+    argument: (call_expression)
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site

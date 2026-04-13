@@ -13,50 +13,47 @@ method that fits your setup.
 
 ---
 
-## 1. Post-Commit Git Hook
+## 1. Post-Commit Git Hook (Recommended)
 
 Runs `repowise update` in the background after every local commit. Your
-terminal is never blocked.
+terminal is never blocked. This is the recommended auto-sync method for
+local development.
 
 ### Setup
 
+`repowise init` will offer to install the hook automatically at the end
+of the setup wizard. You can also install or manage it manually:
+
 ```bash
-cat > .git/hooks/post-commit << 'EOF'
-#!/bin/sh
-echo "[repowise] Triggering wiki update..."
-(
-  cd "$(git rev-parse --show-toplevel)" || exit 1
-  repowise update > /tmp/repowise-update.log 2>&1
-) &
-exit 0
-EOF
-chmod +x .git/hooks/post-commit
+repowise hook install              # install for current repo
+repowise hook install --workspace  # install for all workspace repos
+repowise hook status               # check if installed
+repowise hook uninstall            # remove the hook
 ```
 
-> **Windows (Git Bash):** If `repowise` isn't on your bash PATH (e.g. installed
-> via `uv`), replace the `repowise update` line with:
-> ```bash
-> powershell.exe -Command "uv run repowise update" > /tmp/repowise-update.log 2>&1
-> ```
+The hook is marker-delimited, so it safely coexists with other tools'
+hooks (linters, formatters, etc.) in the same `post-commit` file.
 
 ### What happens
 
 1. You run `git commit`
-2. The hook fires in the background
+2. The hook fires in the background (non-blocking)
 3. `repowise update` diffs the new commit against the last synced commit
 4. Only affected pages are regenerated (typically 3-10 for a small commit)
-5. Output is logged to `/tmp/repowise-update.log`
+5. Graph, git stats, dead code, and decisions are also refreshed
 
-### Check the last run
+### Check hook status
 
 ```bash
-cat /tmp/repowise-update.log
+repowise hook status
+repowise hook status --workspace   # check all repos in workspace
 ```
 
 ### Remove the hook
 
 ```bash
-rm .git/hooks/post-commit
+repowise hook uninstall
+repowise hook uninstall --workspace
 ```
 
 ---
@@ -170,19 +167,49 @@ with `repowise serve`.
 
 ---
 
-## How Incremental Updates Work
+## How Updates Work
 
-Regardless of which trigger method you use, the update process is the same:
+There are two update paths, depending on the trigger:
+
+### CLI incremental update (`repowise update`)
 
 1. **Diff** -- compare the new HEAD against the last synced commit
-2. **Detect affected pages** -- find directly changed files, then cascade to
-   files that import them (1-hop), capped at 30 pages per run
-3. **Regenerate** -- call the LLM only for affected pages
-4. **Persist** -- update the database and search index
-5. **Save state** -- record the new HEAD as the last synced commit
+2. **Full graph rebuild** -- re-traverse and re-parse all files to rebuild
+   the dependency graph (needed for cascade analysis)
+3. **Incremental git re-index** -- re-index git metadata only for changed files,
+   then recompute percentiles across the whole repo
+4. **Dead code analysis** -- run partial dead code detection on changed files
+   and their graph neighbors
+5. **Decision re-scan** -- re-scan changed files for inline decision markers
+6. **Detect affected pages** -- find directly changed files, cascade to 1-hop
+   importers, capped by an adaptive budget (auto-scaled based on change size)
+7. **Regenerate** -- call the LLM only for affected pages
+8. **Cross-repo hooks** -- if the repo is part of a workspace, re-run cross-repo
+   co-change and contract analysis
+9. **Persist** -- update the database, search index, and record a GenerationJob
+10. **Save state** -- record the new HEAD as the last synced commit
 
 A typical single-commit update touches 3-10 pages and completes in under a
 minute.
+
+### Server sync (`POST /api/repos/{id}/sync`)
+
+1. **Full re-traverse** -- re-parse all files and rebuild the dependency graph
+2. **Full git re-index** -- re-index git metadata for all files
+3. **Dead code analysis** -- full dead code scan
+4. **Decision extraction** -- full decision marker scan
+5. **Persist** -- update the database
+6. **Save state** -- record the new HEAD
+
+Server sync does **not** regenerate wiki pages (no LLM cost). Use
+**Full Re-index** (`POST /api/repos/{id}/full-resync`) to also regenerate
+all wiki pages.
+
+### Workspace updates (`repowise update --workspace`)
+
+Updates all stale repos in parallel (up to 4 concurrent), then re-runs
+cross-repo analysis (co-changes, package dependencies, API contracts).
+Use `--repo <alias>` to target a single repo within the workspace.
 
 ### Dry run
 
@@ -195,9 +222,12 @@ repowise update --dry-run
 ### Manual update
 
 ```bash
-repowise update                    # diff since last sync
-repowise update --since abc123     # diff from a specific commit
-repowise update --cascade-budget 50  # allow more cascade pages (default: 30)
+repowise update                        # diff since last sync
+repowise update --since abc123         # diff from a specific commit
+repowise update --cascade-budget 50    # allow more cascade pages (default: auto)
+repowise update --workspace            # update all stale workspace repos
+repowise update --repo backend         # update a specific workspace repo
+repowise watch --workspace             # auto-update all workspace repos on file change
 ```
 
 ---

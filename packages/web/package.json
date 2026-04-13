@@ -1,6 +1,6 @@
 {
   "name": "repowise-web",
-  "version": "0.1.21",
+  "version": "0.3.0",
   "private": true,
   "description": "repowise Web UI — Next.js 15 dashboard and wiki viewer",
   "scripts": {

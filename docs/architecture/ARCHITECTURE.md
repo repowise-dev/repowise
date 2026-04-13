@@ -111,13 +111,14 @@ repowise/
 │   │   ├── src/repowise/core/
 │   │   │   ├── ingestion/
 │   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .repowiseIgnore + extra exclude patterns
-│   │   │   │   ├── parser.py           # ASTParser — one class, all languages
+│   │   │   │   ├── parser.py           # ASTParser — one class, all languages; _extract_calls(), _extract_import_bindings()
 │   │   │   │   ├── parsers/            # per-language parser helpers
-│   │   │   │   ├── graph.py            # NetworkX dep graph builder
+│   │   │   │   ├── graph.py            # NetworkX dep graph builder; add_file(), _resolve_calls(), file_subgraph()
+│   │   │   │   ├── call_resolver.py    # CallResolver — 3-tier call resolution engine (NEW)
 │   │   │   │   ├── change_detector.py  # git diff + change propagation
 │   │   │   │   ├── git_indexer.py      # git history mining → git_metadata table
 │   │   │   │   ├── special_handlers.py # OpenAPI, Protobuf, GraphQL, Dockerfile, CI YAML
-│   │   │   │   └── models.py           # ParsedFile, FileInfo, Symbol, Import, etc.
+│   │   │   │   └── models.py           # ParsedFile, FileInfo, Symbol, Import, CallSite, NamedBinding, EdgeType, etc.
 │   │   │   ├── analysis/
 │   │   │   │   └── dead_code.py        # dead code detection (graph + SQL, no LLM)
 │   │   │   ├── generation/
@@ -276,12 +277,17 @@ the configured embedder (Gemini or OpenAI). No LLM calls — only embedding API 
 
 **Answers: how are things connected, and how important are they.**
 
-The dependency graph is a directed multigraph where nodes are files and symbols,
-and edges are relationships (`imports`, `calls`, `inherits`, `implements`, etc.).
+The dependency graph is a two-tier directed graph where **file nodes** represent source
+files and **symbol nodes** represent individual functions, classes, and methods. Edges
+include `imports`, `DEFINES`, `HAS_METHOD`, `CALLS` (with confidence 0.0–1.0),
+`inherits`, `implements`, and `co_changes`. `CALLS` edges are built by `CallResolver`
+using 3-tier resolution; all others are built by `GraphBuilder` during AST ingestion.
 
-It is built by the `ASTParser` + `GraphBuilder` during ingestion and persisted to
-`.repowise/graph.json` (for repos ≤ 30K nodes) or the `graph_nodes`/`graph_edges`
-SQL tables (for larger repos, using the `networkit` library as a drop-in).
+It is built by the `ASTParser` + `GraphBuilder` + `CallResolver` during ingestion and
+persisted to `.repowise/graph.json` (for repos ≤ 30K nodes) or the `graph_nodes`/`graph_edges`
+SQL tables (for larger repos, using the `networkit` library as a drop-in). The `graph_nodes`
+table includes a `kind` column (file, symbol, package, external) and `confidence` column;
+`graph_edges` includes a `confidence` column for `CALLS` edges (Alembic migration `0015`).
 
 The graph is used for:
 
@@ -290,8 +296,8 @@ The graph is used for:
   richer context is available via RAG when the importing file is generated)
 - **Change propagation** — when a file changes, walk the graph to find all
   pages that reference its symbols and mark them as stale
-- **PageRank** — identifies the most central, important symbols; these get
-  "spotlight" wiki pages and richer generation prompts
+- **PageRank** — runs on `file_subgraph()` (file + package nodes only) to identify
+  the most central files; these get "spotlight" wiki pages and richer generation prompts
 - **SCC detection** — circular dependency clusters require a special generation
   strategy (see [Section 5.3](#53-circular-dependencies))
 - **Co-change edges** — temporal coupling from git history. Files that frequently
@@ -473,13 +479,15 @@ instead of tree-sitter.
 
 **Node types:**
 - `file` — every source file
-- `symbol` — every function, class, interface, etc.
+- `symbol` — every function, class, method, interface, etc. (added via `add_file()`)
 - `package` — every package/module directory
 - `external` — third-party packages (lightweight node, not fully documented)
 
 **Edge types:**
 - `imports` — file A imports from file B
-- `calls` — symbol A calls symbol B
+- `DEFINES` — file A defines symbol B
+- `HAS_METHOD` — class A has method B
+- `CALLS` — symbol A calls symbol B (with confidence score 0.0–1.0)
 - `inherits` — class A extends class B
 - `implements` — class A implements interface B
 - `instantiates` — code in A creates an instance of B
@@ -489,6 +497,32 @@ instead of tree-sitter.
 - `co_changes` — A and B frequently change in the same commit (from git history,
   added by `GitIndexer` after graph construction). Weight = co-change count.
   Filtered out of PageRank but included in change propagation and visualization.
+
+**Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
+which runs after the static import graph is built. It operates in three tiers:
+
+1. **Same-file resolution** (confidence 0.95) — call target defined in the same file
+2. **Import-scoped resolution** (confidence 0.85–0.93) — target matched via named bindings
+   from the file's import list
+3. **Global unique match** (confidence 0.50) — target is unique across the whole repo
+
+Call sites are extracted by tree-sitter for all 7 supported languages (Python, TypeScript,
+JavaScript, Go, Rust, Java, C++) using per-language `.scm` query files. Results are stored
+as `CallSite` dataclasses and become `CALLS` edges in the graph.
+
+**Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) ensures
+that aliased imports, barrel re-exports, and namespace imports resolve to the correct
+definition site. The parser's `_extract_import_bindings()` produces bindings for each
+import statement, and `GraphBuilder.build()` populates `Import.resolved_file` from them.
+Barrel files (`__init__.py`, `index.ts`) are followed one hop to resolve re-exports.
+
+**Two-tier graph isolation:**
+
+Symbol nodes and their `DEFINES`/`HAS_METHOD`/`CALLS` edges are stored in the same
+`DiGraph` as file nodes, but `file_subgraph()` returns a view containing only `file`
+and `package` nodes. All file-level metrics (PageRank, betweenness, SCCs, Louvain)
+run on this subgraph so that the large number of symbol nodes does not distort centrality
+scores.
 
 After graph construction, the builder computes:
 

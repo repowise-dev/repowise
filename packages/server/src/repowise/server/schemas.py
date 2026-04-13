@@ -571,6 +571,102 @@ class HotFilesGraphResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Graph Intelligence
+# ---------------------------------------------------------------------------
+
+
+class SymbolNodeSummary(BaseModel):
+    symbol_id: str
+    name: str
+    kind: str
+    file: str
+    start_line: int | None = None
+    signature: str | None = None
+
+
+class CallerCalleeEntry(BaseModel):
+    symbol_id: str
+    name: str
+    kind: str
+    file: str
+    start_line: int | None = None
+    edge_type: str
+    confidence: float
+
+
+class CallersCalleesResponse(BaseModel):
+    symbol_id: str
+    symbol: SymbolNodeSummary
+    callers: list[CallerCalleeEntry]
+    callees: list[CallerCalleeEntry]
+    caller_count: int
+    callee_count: int
+    truncated: bool
+
+
+class CommunityMember(BaseModel):
+    path: str
+    pagerank: float
+    is_entry_point: bool
+
+
+class NeighboringCommunity(BaseModel):
+    community_id: int
+    label: str
+    cross_edge_count: int
+
+
+class CommunityDetailResponse(BaseModel):
+    community_id: int
+    label: str
+    cohesion: float
+    member_count: int
+    members: list[CommunityMember]
+    truncated: bool
+    neighboring_communities: list[NeighboringCommunity]
+
+
+class CommunitySummaryItem(BaseModel):
+    community_id: int
+    label: str
+    cohesion: float
+    member_count: int
+    top_file: str
+
+
+class GraphMetricsResponse(BaseModel):
+    target: str
+    node_type: str
+    pagerank: float
+    pagerank_percentile: int
+    betweenness: float
+    betweenness_percentile: int
+    community_id: int
+    community_label: str | None
+    is_entry_point: bool
+    in_degree: int
+    out_degree: int
+    entry_point_score: float | None = None
+    kind: str | None = None
+    file: str | None = None
+
+
+class ExecutionFlowEntry(BaseModel):
+    entry_point: str
+    entry_point_name: str
+    entry_point_score: float
+    trace: list[str]
+    depth: int
+    crosses_community: bool
+    communities_visited: list[int]
+
+
+class ExecutionFlowsResponse(BaseModel):
+    total_entry_points: int
+    flows: list[ExecutionFlowEntry]
+
+
+# ---------------------------------------------------------------------------
 # Blast Radius
 # ---------------------------------------------------------------------------
 
@@ -824,3 +920,92 @@ class CostSummaryResponse(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     since: str | None
+
+
+# ---------------------------------------------------------------------------
+# Workspace
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceRepoEntry(BaseModel):
+    alias: str
+    path: str
+    is_primary: bool = False
+    indexed_at: str | None = None
+    last_commit_at_index: str | None = None
+    # Per-repo stats (populated from each repo's wiki.db)
+    repo_id: str | None = None
+    file_count: int = 0
+    symbol_count: int = 0
+    page_count: int = 0
+    doc_coverage_pct: float = 0.0
+    hotspot_count: int = 0
+
+
+class WorkspaceCrossRepoSummary(BaseModel):
+    co_change_count: int = 0
+    package_dep_count: int = 0
+    top_connections: list[dict] = []
+
+
+class WorkspaceContractSummary(BaseModel):
+    total_contracts: int = 0
+    total_links: int = 0
+    by_type: dict[str, int] = {}
+
+
+class WorkspaceResponse(BaseModel):
+    is_workspace: bool
+    workspace_root: str | None = None
+    workspace_name: str | None = None
+    repos: list[WorkspaceRepoEntry] = []
+    default_repo: str | None = None
+    cross_repo_summary: WorkspaceCrossRepoSummary | None = None
+    contract_summary: WorkspaceContractSummary | None = None
+
+
+class WorkspaceContractEntry(BaseModel):
+    contract_id: str
+    contract_type: str
+    role: str
+    repo: str
+    file_path: str
+    symbol_name: str
+    confidence: float
+    service: str | None = None
+
+
+class WorkspaceContractLinkEntry(BaseModel):
+    contract_id: str
+    contract_type: str
+    match_type: str
+    confidence: float
+    provider_repo: str
+    provider_file: str
+    provider_symbol: str
+    consumer_repo: str
+    consumer_file: str
+    consumer_symbol: str
+
+
+class WorkspaceContractsResponse(BaseModel):
+    contracts: list[WorkspaceContractEntry]
+    links: list[WorkspaceContractLinkEntry]
+    total_contracts: int
+    total_links: int
+    by_type: dict[str, int] = {}
+
+
+class WorkspaceCoChangeEntry(BaseModel):
+    source_repo: str
+    source_file: str
+    target_repo: str
+    target_file: str
+    strength: float
+    frequency: int
+    last_date: str
+
+
+class WorkspaceCoChangesResponse(BaseModel):
+    co_changes: list[WorkspaceCoChangeEntry]
+    total: int

@@ -77,19 +77,11 @@ This project has a Repowise MCP server configured. These tools provide documenta
 | `get_dependency_path(source=..., target=...)` | When tracing module connections |
 | `get_dead_code()` | Before any cleanup or removal |
 | `get_architecture_diagram(scope=...)` | For visual structure or documentation |
-{% if data.decisions or data.build_commands %}
+{% if data.build_commands %}
 
 ### Codebase Conventions
-{% if data.decisions %}
-**Architectural Decisions:**
-{% for d in data.decisions %}
-- **{{ d.title }}**: {{ d.rationale }}{% if d.rationale %}.{% endif %}
-{% endfor %}
-{% endif %}
-{% if data.build_commands %}
 **Commands:**
 {% for label, cmd in data.build_commands.items() %}
 - {{ label | capitalize }}: `{{ cmd }}`
 {% endfor %}
-{% endif %}
 {% endif %}

@@ -42,3 +42,33 @@
 (import_declaration
   (scoped_identifier) @import.module
 ) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple function/static method call: foo(args)
+(method_invocation
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Method call on object: obj.method(args)
+(method_invocation
+  object: (identifier) @call.receiver
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Chained method call: obj.method1().method2(args)
+(method_invocation
+  object: (method_invocation)
+  name: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Constructor: new ClassName(args)
+(object_creation_expression
+  type: (type_identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site

@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.2.3"
+version = "0.3.0"
 description = "Codebase intelligence for developers and AI — generates and maintains a structured wiki for any codebase"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -87,6 +87,9 @@ postgres = [
     "pgvector>=0.3,<1",
     "asyncpg>=0.29,<1",
 ]
+graph-extra = [
+    "graspologic>=3.4,<4",
+]
 dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
@@ -125,11 +128,14 @@ packages = [
     "repowise.core.generation.editor_files",
     "repowise.core.ingestion",
     "repowise.core.ingestion.parsers",
+    "repowise.core.ingestion.dynamic_hints",
     "repowise.core.pipeline",
     "repowise.core.persistence",
     "repowise.core.providers",
     "repowise.core.providers.llm",
     "repowise.core.providers.embedding",
+    "repowise.core.workspace",
+    "repowise.core.workspace.extractors",
     # cli
     "repowise.cli",
     "repowise.cli.commands",

@@ -195,13 +195,31 @@ async def execute_job(job_id: str, app_state: Any) -> None:
             progress=progress,
         )
 
+        # ---- Incremental page regeneration for sync mode ------------------
+        # Sync runs run_pipeline(generate_docs=False) for the full index,
+        # then regenerates only the wiki pages affected by recent changes.
+        # This keeps docs fresh without the cost of a full re-index.
+        incremental_pages: list = []
+        if not is_full_resync and llm_client is not None:
+            incremental_pages = await _incremental_page_regen(
+                Path(repo_path), result, llm_client, config, progress,
+            )
+
         # ---- Persist results -----------------------------------------------
         async with get_session(session_factory) as session:
             await persist_pipeline_result(result, session, repo_id)
 
+            # Persist incrementally regenerated pages
+            if incremental_pages:
+                from repowise.core.persistence import upsert_page_from_generated
+
+                for page in incremental_pages:
+                    await upsert_page_from_generated(session, page, repo_id)
+
         # FTS indexing runs after session closes to avoid SQLite write conflicts
-        if fts is not None and result.generated_pages:
-            for page in result.generated_pages:
+        all_pages = (result.generated_pages or []) + incremental_pages
+        if fts is not None and all_pages:
+            for page in all_pages:
                 await fts.index(page.page_id, page.title, page.content)
 
         # ---- Mark completed ------------------------------------------------
@@ -210,8 +228,9 @@ async def execute_job(job_id: str, app_state: Any) -> None:
         await progress.drain_and_stop()
 
         elapsed = time.monotonic() - start
-        total_input = sum(p.input_tokens for p in (result.generated_pages or []))
-        total_output = sum(p.output_tokens for p in (result.generated_pages or []))
+        total_input = sum(p.input_tokens for p in all_pages)
+        total_output = sum(p.output_tokens for p in all_pages)
+        pages_generated = len(all_pages)
 
         async with get_session(session_factory) as session:
             job = await get_generation_job(session, job_id)
@@ -224,7 +243,7 @@ async def execute_job(job_id: str, app_state: Any) -> None:
                     "elapsed_seconds": round(elapsed, 1),
                     "file_count": result.file_count,
                     "symbol_count": result.symbol_count,
-                    "pages_generated": len(result.generated_pages) if result.generated_pages else 0,
+                    "pages_generated": pages_generated,
                 }
             )
             if job is not None:
@@ -234,9 +253,40 @@ async def execute_job(job_id: str, app_state: Any) -> None:
                 session,
                 job_id,
                 "completed",
-                completed_pages=len(result.generated_pages) if result.generated_pages else result.file_count,
-                total_pages=len(result.generated_pages) if result.generated_pages else result.file_count,
+                completed_pages=pages_generated if pages_generated else result.file_count,
+                total_pages=pages_generated if pages_generated else result.file_count,
             )
+
+        # Update state.json so CLI incremental updates know the new baseline
+        try:
+            _state_path = Path(repo_path) / ".repowise" / "state.json"
+            import subprocess as _sp
+
+            _head_result = _sp.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if _head_result.returncode == 0:
+                _head_sha = _head_result.stdout.strip()
+                _state_data: dict = {}
+                if _state_path.is_file():
+                    _state_data = json.loads(_state_path.read_text(encoding="utf-8"))
+                _state_data["last_sync_commit"] = _head_sha
+                _state_path.parent.mkdir(parents=True, exist_ok=True)
+                _state_path.write_text(json.dumps(_state_data, indent=2), encoding="utf-8")
+        except Exception:
+            logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
+
+        # Hot-reload cross-repo enricher if available (workspace mode)
+        try:
+            enricher = getattr(app_state, "cross_repo_enricher", None)
+            if enricher is not None and hasattr(enricher, "reload"):
+                enricher.reload()
+        except Exception:
+            logger.debug("enricher_reload_failed", job_id=job_id, exc_info=True)
 
         logger.info(
             "job_completed",
@@ -244,7 +294,7 @@ async def execute_job(job_id: str, app_state: Any) -> None:
             elapsed=round(elapsed, 1),
             files=result.file_count,
             symbols=result.symbol_count,
-            pages=len(result.generated_pages) if result.generated_pages else 0,
+            pages=pages_generated,
         )
 
     except Exception as exc:
@@ -266,3 +316,107 @@ async def execute_job(job_id: str, app_state: Any) -> None:
                 )
         except Exception:
             logger.exception("job_status_update_failed", job_id=job_id)
+
+
+# ---------------------------------------------------------------------------
+# Incremental page regeneration helper
+# ---------------------------------------------------------------------------
+
+
+async def _incremental_page_regen(
+    repo_path: Path,
+    result: Any,
+    llm_client: Any,
+    job_config: dict,
+    progress: Any | None,
+) -> list:
+    """Regenerate only wiki pages affected by recent changes.
+
+    Uses the graph from the just-completed pipeline run + git diff to detect
+    which pages need updating.  Returns a list of GeneratedPage objects (may
+    be empty if nothing changed or no base ref is available).
+    """
+    try:
+        # Read base ref from state.json (the commit we last synced to)
+        state_path = repo_path / ".repowise" / "state.json"
+        base_ref: str | None = None
+        if state_path.is_file():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            base_ref = state.get("last_sync_commit")
+
+        # Webhook jobs may carry explicit before/after refs
+        if not base_ref:
+            base_ref = job_config.get("before")
+
+        if not base_ref:
+            logger.info("incremental_page_regen_skipped", reason="no_base_ref")
+            return []
+
+        import subprocess as _sp
+
+        head_result = _sp.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if head_result.returncode != 0:
+            return []
+        head = head_result.stdout.strip()
+
+        if head == base_ref:
+            logger.info("incremental_page_regen_skipped", reason="no_new_commits")
+            return []
+
+        from repowise.core.ingestion import ChangeDetector
+        from repowise.core.ingestion.change_detector import compute_adaptive_budget
+
+        detector = ChangeDetector(repo_path)
+        file_diffs = detector.get_changed_files(base_ref, head)
+        if not file_diffs:
+            return []
+
+        cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
+        affected = detector.get_affected_pages(file_diffs, result.graph_builder.graph(), cascade_budget)
+
+        if not affected.regenerate:
+            logger.info("incremental_page_regen_skipped", reason="no_affected_pages")
+            return []
+
+        logger.info(
+            "incremental_page_regen_start",
+            changed_files=len(file_diffs),
+            affected_pages=len(affected.regenerate),
+            cascade_budget=cascade_budget,
+        )
+
+        if progress:
+            progress.on_phase_start("generation", len(affected.regenerate))
+
+        # Filter parsed files to only affected ones
+        regen_set = set(affected.regenerate)
+        affected_parsed = [pf for pf in result.parsed_files if pf.file_info.path in regen_set]
+        affected_source = {p: s for p, s in result.source_map.items() if p in regen_set}
+
+        from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
+
+        config = GenerationConfig()
+        assembler = ContextAssembler(config)
+        generator = PageGenerator(llm_client, assembler, config)
+
+        pages = await generator.generate_all(
+            affected_parsed,
+            affected_source,
+            result.graph_builder,
+            result.repo_structure,
+            result.repo_name,
+            git_meta_map=result.git_meta_map,
+        )
+
+        logger.info("incremental_page_regen_done", pages=len(pages))
+        return pages
+
+    except Exception as exc:
+        logger.warning("incremental_page_regen_failed", error=str(exc))
+        return []

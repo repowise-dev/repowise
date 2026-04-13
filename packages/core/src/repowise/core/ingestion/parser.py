@@ -31,7 +31,15 @@ from pathlib import Path
 import structlog
 from tree_sitter import Language, Node, Parser
 
-from .models import FileInfo, Import, ParsedFile, Symbol
+from .models import (
+    CallSite,
+    FileInfo,
+    HeritageRelation,
+    Import,
+    NamedBinding,
+    ParsedFile,
+    Symbol,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -398,6 +406,8 @@ class ASTParser:
 
         symbols = self._extract_symbols(tree, query, config, file_info, src)
         imports = self._extract_imports(tree, query, config, file_info, src)
+        calls = self._extract_calls(tree, query, config, file_info, src, symbols)
+        heritage = _extract_heritage(tree, query, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
         docstring = _extract_module_docstring(root, src, lang)
 
@@ -406,6 +416,8 @@ class ASTParser:
             symbols=symbols,
             imports=imports,
             exports=exports,
+            calls=calls,
+            heritage=heritage,
             docstring=docstring,
             parse_errors=parse_errors,
         )
@@ -609,8 +621,10 @@ class ASTParser:
             if not module_text:
                 continue
 
-            # Language-specific import name extraction
-            imported_names = _extract_import_names(stmt_node, src, file_info.language)
+            # Language-specific import name + binding extraction
+            imported_names, bindings = _extract_import_bindings(
+                stmt_node, src, file_info.language
+            )
             is_relative = module_text.startswith(".") or module_text.startswith("./")
 
             imports.append(
@@ -620,10 +634,99 @@ class ASTParser:
                     imported_names=imported_names,
                     is_relative=is_relative,
                     resolved_file=None,
+                    bindings=bindings,
                 )
             )
 
         return imports
+
+    # ------------------------------------------------------------------
+    # Call extraction
+    # ------------------------------------------------------------------
+
+    def _extract_calls(
+        self,
+        tree: object,
+        query: object,
+        config: LanguageConfig,
+        file_info: FileInfo,
+        src: str,
+        symbols: list[Symbol],
+    ) -> list[CallSite]:
+        """Extract function/method call sites from the AST.
+
+        Uses @call.target, @call.receiver, and @call.arguments captures
+        defined in the .scm query files. Each call is associated with its
+        enclosing symbol (caller) by checking which symbol's line range
+        contains the call site.
+        """
+        if query is None:
+            return []
+
+        from .language_data import get_builtin_calls
+
+        _call_builtins = get_builtin_calls(file_info.language)
+
+        # Build a sorted list of (start_line, end_line, symbol_id) for
+        # fast enclosing-symbol lookup via binary search.
+        symbol_ranges = sorted(
+            [(s.start_line, s.end_line, s.id) for s in symbols],
+            key=lambda t: (t[0], -t[1]),  # start asc, widest span first
+        )
+
+        calls: list[CallSite] = []
+        seen: set[tuple[int, str, str | None]] = set()  # (line, target, receiver) dedup
+
+        for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+            site_nodes = capture_dict.get("call.site", [])
+            target_nodes = capture_dict.get("call.target", [])
+            arg_nodes = capture_dict.get("call.arguments", [])
+            receiver_nodes = capture_dict.get("call.receiver", [])
+
+            if not site_nodes or not target_nodes:
+                continue
+
+            site_node = site_nodes[0]
+            target_name = _node_text(target_nodes[0], src).strip()
+            if not target_name:
+                continue
+
+            # Skip language builtins — they pollute the call graph
+            # because Tier 3 global resolution can match them to
+            # unrelated user symbols with the same name.
+            if target_name in _call_builtins:
+                continue
+
+            line = site_node.start_point[0] + 1  # 1-indexed
+            receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+
+            # Dedup: same line + target + receiver means same call captured
+            # by multiple overlapping query patterns
+            dedup_key = (line, target_name, receiver_name)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            # Count arguments
+            arg_count: int | None = None
+            if arg_nodes:
+                arg_node = arg_nodes[0]
+                arg_count = _count_arguments(arg_node)
+
+            # Find enclosing symbol
+            caller_id = _find_enclosing_symbol(line, symbol_ranges)
+
+            calls.append(
+                CallSite(
+                    target_name=target_name,
+                    receiver_name=receiver_name,
+                    caller_symbol_id=caller_id,
+                    line=line,
+                    argument_count=arg_count,
+                )
+            )
+
+        return calls
 
     # ------------------------------------------------------------------
     # Export derivation
@@ -878,49 +981,665 @@ def _build_signature(node_type: str, name: str, params_text: str, def_node: Node
     return f"{name}{params_text}"
 
 
-def _extract_import_names(stmt_node: Node, src: str, lang: str) -> list[str]:
-    """Extract specific imported names from an import statement node."""
+def _extract_import_bindings(
+    stmt_node: Node, src: str, lang: str
+) -> tuple[list[str], list[NamedBinding]]:
+    """Extract imported names and structured bindings from an import statement.
+
+    Returns (imported_names, bindings) where imported_names is the backward-
+    compatible list of local names and bindings carries alias/source detail.
+    """
     names: list[str] = []
+    bindings: list[NamedBinding] = []
 
     if lang == "python":
-        for child in stmt_node.children:
-            if child.type == "wildcard_import":
-                return ["*"]
-            if child.type == "dotted_name":
-                text = _node_text(child, src)
-                # Skip the module name itself (it's the first dotted_name in import_from)
-                if names or stmt_node.type == "import_statement":
-                    names.append(text.split(".")[-1])
-                else:
-                    names.append(text.split(".")[-1])
-            elif child.type == "aliased_import":
-                name_child = child.child_by_field_name("name") or (
-                    child.children[0] if child.children else None
-                )
-                if name_child:
-                    names.append(_node_text(name_child, src))
-        return names
+        return _extract_python_bindings(stmt_node, src)
 
     if lang in ("typescript", "javascript"):
-        # Find import_clause → named_imports → import_specifier
-        for child in stmt_node.children:
-            if child.type == "import_clause":
-                for sub in child.children:
-                    if sub.type == "identifier":
-                        names.append(_node_text(sub, src))  # default import
-                    elif sub.type == "named_imports":
-                        for spec in sub.children:
-                            if spec.type == "import_specifier":
-                                name_node = spec.child_by_field_name("name") or (
-                                    spec.children[0] if spec.children else None
-                                )
-                                if name_node:
-                                    names.append(_node_text(name_node, src))
-                    elif sub.type == "namespace_import":
-                        names = ["*"]
-        return names
+        return _extract_ts_js_bindings(stmt_node, src)
 
-    return []
+    if lang == "go":
+        return _extract_go_bindings(stmt_node, src)
+
+    if lang == "rust":
+        return _extract_rust_bindings(stmt_node, src)
+
+    if lang == "java":
+        return _extract_java_bindings(stmt_node, src)
+
+    return names, bindings
+
+
+def _extract_python_bindings(
+    stmt_node: Node, src: str
+) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from Python import/import_from statements."""
+    names: list[str] = []
+    bindings: list[NamedBinding] = []
+    is_from_import = stmt_node.type == "import_from_statement"
+    first_dotted_seen = False
+
+    for child in stmt_node.children:
+        if child.type == "wildcard_import":
+            return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
+
+        if child.type == "aliased_import":
+            name_node = child.child_by_field_name("name") or (
+                child.children[0] if child.children else None
+            )
+            alias_node = child.child_by_field_name("alias")
+            if name_node:
+                exported = _node_text(name_node, src)
+                local = _node_text(alias_node, src) if alias_node else exported
+                if is_from_import:
+                    # from X import Y as Z
+                    names.append(local)
+                    bindings.append(
+                        NamedBinding(local_name=local, exported_name=exported, source_file=None)
+                    )
+                else:
+                    # import X.Y as Z — module alias
+                    bare = exported.split(".")[-1]
+                    local = _node_text(alias_node, src) if alias_node else bare
+                    names.append(local)
+                    bindings.append(
+                        NamedBinding(
+                            local_name=local,
+                            exported_name=None,
+                            source_file=None,
+                            is_module_alias=True,
+                        )
+                    )
+
+        elif child.type == "dotted_name":
+            text = _node_text(child, src)
+            bare = text.split(".")[-1]
+            if is_from_import and not first_dotted_seen:
+                # First dotted_name in from-import is the module path — skip
+                first_dotted_seen = True
+                continue
+            names.append(bare)
+            if is_from_import:
+                bindings.append(
+                    NamedBinding(local_name=bare, exported_name=bare, source_file=None)
+                )
+            else:
+                # import X.Y.Z — module alias
+                bindings.append(
+                    NamedBinding(
+                        local_name=bare,
+                        exported_name=None,
+                        source_file=None,
+                        is_module_alias=True,
+                    )
+                )
+
+    return names, bindings
+
+
+def _extract_ts_js_bindings(
+    stmt_node: Node, src: str
+) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from TypeScript/JavaScript import statements."""
+    names: list[str] = []
+    bindings: list[NamedBinding] = []
+
+    for child in stmt_node.children:
+        if child.type != "import_clause":
+            continue
+        for sub in child.children:
+            if sub.type == "identifier":
+                # default import: import React from 'react'
+                local = _node_text(sub, src)
+                names.append(local)
+                bindings.append(
+                    NamedBinding(local_name=local, exported_name="default", source_file=None)
+                )
+            elif sub.type == "named_imports":
+                for spec in sub.children:
+                    if spec.type != "import_specifier":
+                        continue
+                    name_node = spec.child_by_field_name("name") or (
+                        spec.children[0] if spec.children else None
+                    )
+                    alias_node = spec.child_by_field_name("alias")
+                    if name_node:
+                        exported = _node_text(name_node, src)
+                        local = _node_text(alias_node, src) if alias_node else exported
+                        names.append(local)
+                        bindings.append(
+                            NamedBinding(
+                                local_name=local, exported_name=exported, source_file=None
+                            )
+                        )
+            elif sub.type == "namespace_import":
+                # import * as ns from 'mod'
+                ns_name = None
+                for ns_child in sub.children:
+                    if ns_child.type == "identifier":
+                        ns_name = _node_text(ns_child, src)
+                if ns_name:
+                    names.append(ns_name)
+                    bindings.append(
+                        NamedBinding(
+                            local_name=ns_name,
+                            exported_name=None,
+                            source_file=None,
+                            is_module_alias=True,
+                        )
+                    )
+                else:
+                    names.append("*")
+                    bindings.append(
+                        NamedBinding(local_name="*", exported_name=None, source_file=None)
+                    )
+
+    return names, bindings
+
+
+def _extract_go_bindings(
+    stmt_node: Node, src: str
+) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from Go import specs."""
+    # Go import_spec: optional alias identifier + string literal path
+    alias_node = stmt_node.child_by_field_name("name")
+    path_node = stmt_node.child_by_field_name("path")
+
+    if path_node is None:
+        # Fallback: find the first string literal child
+        for child in stmt_node.children:
+            if child.type == "interpreted_string_literal":
+                path_node = child
+                break
+    if path_node is None:
+        return [], []
+
+    path_text = _node_text(path_node, src).strip("\"'` ")
+    default_name = path_text.rsplit("/", 1)[-1]
+
+    if alias_node:
+        alias = _node_text(alias_node, src)
+        if alias == ".":
+            return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
+        if alias == "_":
+            return [], []
+        return [alias], [
+            NamedBinding(
+                local_name=alias, exported_name=None, source_file=None, is_module_alias=True
+            )
+        ]
+
+    return [default_name], [
+        NamedBinding(
+            local_name=default_name,
+            exported_name=None,
+            source_file=None,
+            is_module_alias=True,
+        )
+    ]
+
+
+def _extract_rust_bindings(
+    stmt_node: Node, src: str
+) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from Rust use declarations."""
+    arg_node = stmt_node.child_by_field_name("argument")
+    if arg_node is None:
+        # Fallback: first meaningful child
+        for child in stmt_node.children:
+            if child.type not in ("use", ";", "pub", "visibility_modifier"):
+                arg_node = child
+                break
+    if arg_node is None:
+        return [], []
+
+    names: list[str] = []
+    bindings: list[NamedBinding] = []
+    _parse_rust_use_tree(arg_node, src, names, bindings, depth=0)
+    return names, bindings
+
+
+def _parse_rust_use_tree(
+    node: Node,
+    src: str,
+    names: list[str],
+    bindings: list[NamedBinding],
+    depth: int,
+) -> None:
+    """Recursively parse a Rust use-tree into named bindings."""
+    if depth > 10:
+        return
+
+    if node.type == "use_as_clause":
+        path_child = node.child_by_field_name("path") or (
+            node.children[0] if node.children else None
+        )
+        alias_child = node.child_by_field_name("alias") or (
+            node.children[-1] if len(node.children) >= 2 else None
+        )
+        if path_child and alias_child and path_child != alias_child:
+            exported = _node_text(path_child, src).rsplit("::", 1)[-1]
+            local = _node_text(alias_child, src)
+            names.append(local)
+            bindings.append(
+                NamedBinding(local_name=local, exported_name=exported, source_file=None)
+            )
+        return
+
+    if node.type == "use_wildcard":
+        names.append("*")
+        bindings.append(NamedBinding(local_name="*", exported_name=None, source_file=None))
+        return
+
+    if node.type == "use_list":
+        for child in node.children:
+            if child.type in ("{", "}", ","):
+                continue
+            _parse_rust_use_tree(child, src, names, bindings, depth + 1)
+        return
+
+    if node.type == "scoped_use_list":
+        # e.g., std::collections::{HashMap, BTreeMap}
+        for child in node.children:
+            if child.type == "use_list":
+                _parse_rust_use_tree(child, src, names, bindings, depth + 1)
+        return
+
+    # scoped_identifier or identifier — bare name, last segment
+    text = _node_text(node, src)
+    bare = text.rsplit("::", 1)[-1]
+    if bare and bare != "*":
+        names.append(bare)
+        bindings.append(
+            NamedBinding(local_name=bare, exported_name=bare, source_file=None)
+        )
+
+
+def _extract_java_bindings(
+    stmt_node: Node, src: str
+) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from Java import declarations."""
+    # Java: import com.example.Foo; → local_name="Foo"
+    for child in stmt_node.children:
+        if child.type == "scoped_identifier":
+            full = _node_text(child, src)
+            local = full.rsplit(".", 1)[-1]
+            if local == "*":
+                return ["*"], [
+                    NamedBinding(local_name="*", exported_name=None, source_file=None)
+                ]
+            return [local], [
+                NamedBinding(local_name=local, exported_name=local, source_file=None)
+            ]
+        if child.type == "asterisk":
+            return ["*"], [
+                NamedBinding(local_name="*", exported_name=None, source_file=None)
+            ]
+    return [], []
+
+
+# ---------------------------------------------------------------------------
+# Heritage (inheritance / interface implementation) extraction
+# ---------------------------------------------------------------------------
+
+# Maps language → set of node types that can have heritage info
+_HERITAGE_NODE_TYPES: dict[str, frozenset[str]] = {
+    "python": frozenset({"class_definition"}),
+    "typescript": frozenset({"class_declaration", "abstract_class_declaration", "interface_declaration"}),
+    "javascript": frozenset({"class_declaration"}),
+    "java": frozenset({"class_declaration", "interface_declaration", "enum_declaration"}),
+    "go": frozenset({"type_spec"}),
+    "rust": frozenset({"impl_item", "trait_item"}),
+    "cpp": frozenset({"class_specifier", "struct_specifier"}),
+    "c": frozenset(),
+    "kotlin": frozenset({"class_declaration", "object_declaration"}),
+    "ruby": frozenset({"class"}),
+    "csharp": frozenset({"class_declaration", "interface_declaration", "struct_declaration"}),
+}
+
+
+def _extract_heritage(
+    tree: object,
+    query: object,
+    config: "LanguageConfig",
+    file_info: "FileInfo",
+    src: str,
+) -> list[HeritageRelation]:
+    """Extract inheritance/implementation relationships from class definitions.
+
+    Walks the same @symbol.def captures used by _extract_symbols, extracting
+    superclass/interface/trait information from the definition AST nodes.
+    """
+    if query is None:
+        return []
+
+    lang = file_info.language
+    heritage_types = _HERITAGE_NODE_TYPES.get(lang, frozenset())
+    if not heritage_types:
+        return []
+
+    from .language_data import get_builtin_parents
+
+    _parent_builtins = get_builtin_parents(lang)
+
+    relations: list[HeritageRelation] = []
+    seen: set[tuple[int, str]] = set()
+
+    for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+        def_nodes = capture_dict.get("symbol.def", [])
+        name_nodes = capture_dict.get("symbol.name", [])
+
+        if not def_nodes or not name_nodes:
+            continue
+
+        def_node = def_nodes[0]
+        if def_node.type not in heritage_types:
+            continue
+
+        name = _node_text(name_nodes[0], src)
+        if not name:
+            continue
+
+        line = def_node.start_point[0] + 1
+        dedup_key = (line, name)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        extractor = _HERITAGE_EXTRACTORS.get(lang)
+        if extractor:
+            extractor(def_node, name, line, src, relations)
+
+    # Filter out builtin/stdlib parent types — they carry no architectural
+    # signal and pollute the heritage graph.
+    if _parent_builtins:
+        relations = [r for r in relations if r.parent_name not in _parent_builtins]
+
+    return relations
+
+
+def _extract_python_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Python: class Foo(Bar, Baz, metaclass=Meta)."""
+    superclasses = def_node.child_by_field_name("superclasses")
+    if superclasses is None:
+        # Also check for argument_list child (some grammar versions)
+        for child in def_node.children:
+            if child.type == "argument_list":
+                superclasses = child
+                break
+    if superclasses is None:
+        return
+
+    for child in superclasses.children:
+        if child.type in ("(", ")", ","):
+            continue
+        # Skip keyword arguments like metaclass=Meta
+        if child.type == "keyword_argument":
+            continue
+        parent = _node_text(child, src).strip()
+        if parent:
+            # Strip module prefix for qualified names (e.g., abc.ABC → ABC)
+            bare = parent.split(".")[-1]
+            out.append(HeritageRelation(
+                child_name=name, parent_name=bare, kind="extends", line=line
+            ))
+
+
+def _extract_ts_js_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """TypeScript/JavaScript: class Foo extends Bar implements IFoo, IBar."""
+    for child in def_node.children:
+        if child.type == "class_heritage":
+            for clause in child.children:
+                if clause.type == "extends_clause":
+                    for type_node in clause.children:
+                        if type_node.type in ("extends", ","):
+                            continue
+                        parent = _node_text(type_node, src).strip()
+                        if parent:
+                            out.append(HeritageRelation(
+                                child_name=name, parent_name=parent,
+                                kind="extends", line=line,
+                            ))
+                elif clause.type == "implements_clause":
+                    for type_node in clause.children:
+                        if type_node.type in ("implements", ","):
+                            continue
+                        parent = _node_text(type_node, src).strip()
+                        if parent:
+                            out.append(HeritageRelation(
+                                child_name=name, parent_name=parent,
+                                kind="implements", line=line,
+                            ))
+        # interface extends: interface Foo extends Bar
+        if child.type == "extends_type_clause":
+            for type_node in child.children:
+                if type_node.type in ("extends", ","):
+                    continue
+                parent = _node_text(type_node, src).strip()
+                if parent:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=parent,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_java_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Java: class Foo extends Bar implements IFoo, IBar."""
+    superclass = def_node.child_by_field_name("superclass")
+    if superclass:
+        parent = _node_text(superclass, src).strip()
+        # Strip 'extends' keyword if captured
+        parent = parent.removeprefix("extends").strip()
+        if parent:
+            out.append(HeritageRelation(
+                child_name=name, parent_name=parent.split(".")[-1],
+                kind="extends", line=line,
+            ))
+
+    interfaces = def_node.child_by_field_name("interfaces")
+    if interfaces:
+        for child in interfaces.children:
+            if child.type in ("implements", "extends", ",", "type_list"):
+                if child.type == "type_list":
+                    for type_node in child.children:
+                        if type_node.type != ",":
+                            parent = _node_text(type_node, src).strip().split(".")[-1]
+                            if parent:
+                                kind = "implements" if def_node.type == "class_declaration" else "extends"
+                                out.append(HeritageRelation(
+                                    child_name=name, parent_name=parent,
+                                    kind=kind, line=line,
+                                ))
+                continue
+            parent = _node_text(child, src).strip().split(".")[-1]
+            if parent and parent not in ("implements", "extends"):
+                kind = "implements" if def_node.type == "class_declaration" else "extends"
+                out.append(HeritageRelation(
+                    child_name=name, parent_name=parent, kind=kind, line=line,
+                ))
+
+
+def _extract_go_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Go: struct embedding (type Foo struct { Bar; baz.Qux })."""
+    # type_spec → type field is the body (struct_type or interface_type)
+    type_node = def_node.child_by_field_name("type")
+    if type_node is None:
+        return
+
+    if type_node.type == "struct_type":
+        body = type_node.child_by_field_name("body") or type_node
+        if body is None:
+            return
+        for field_decl in body.children:
+            if field_decl.type != "field_declaration":
+                continue
+            # Embedded field: no name, just a type
+            name_node = field_decl.child_by_field_name("name")
+            type_child = field_decl.child_by_field_name("type")
+            if name_node is None and type_child is not None:
+                # This is an embedded field
+                parent = _node_text(type_child, src).strip().lstrip("*")
+                bare = parent.split(".")[-1]
+                if bare:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="mixin", line=line,
+                    ))
+
+    elif type_node.type == "interface_type":
+        # Interface embedding: interface { io.Reader }
+        for child in type_node.children:
+            if child.type in ("{", "}", "\n"):
+                continue
+            # Embedded interfaces appear as type names without method signatures
+            if child.type in ("type_identifier", "qualified_type"):
+                parent = _node_text(child, src).strip()
+                bare = parent.split(".")[-1]
+                if bare:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_rust_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Rust: impl Trait for Type, trait Foo: Bar + Baz."""
+    if def_node.type == "impl_item":
+        # Check for 'impl Trait for Type' pattern
+        trait_node = def_node.child_by_field_name("trait")
+        type_node = def_node.child_by_field_name("type")
+        if trait_node and type_node:
+            trait_name = _node_text(trait_node, src).strip().rsplit("::", 1)[-1]
+            type_name = _node_text(type_node, src).strip()
+            if trait_name and type_name:
+                out.append(HeritageRelation(
+                    child_name=type_name, parent_name=trait_name,
+                    kind="trait_impl", line=line,
+                ))
+
+    elif def_node.type == "trait_item":
+        # trait Foo: Bar + Baz (supertrait bounds)
+        bounds = def_node.child_by_field_name("bounds")
+        if bounds:
+            for child in bounds.children:
+                if child.type in ("+", ":"):
+                    continue
+                parent = _node_text(child, src).strip().rsplit("::", 1)[-1]
+                if parent:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=parent,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_cpp_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """C++: class Foo : public Bar, protected Baz."""
+    for child in def_node.children:
+        if child.type == "base_class_clause":
+            for base in child.children:
+                if base.type in (":", ","):
+                    continue
+                # base_class_clause children may include access specifiers
+                text = _node_text(base, src).strip()
+                # Strip access specifier (public/protected/private/virtual)
+                for prefix in ("public", "protected", "private", "virtual"):
+                    text = text.removeprefix(prefix).strip()
+                bare = text.split("::")[-1].strip()
+                if bare:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_kotlin_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Kotlin: class Foo : Bar(), IFoo."""
+    for child in def_node.children:
+        if child.type == "delegation_specifier":
+            for delegate in child.children:
+                text = _node_text(delegate, src).strip()
+                # Remove constructor call parens
+                bare = text.split("(")[0].split(".")[-1].strip()
+                if bare and bare != name:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="extends", line=line,
+                    ))
+        elif child.type == "delegation_specifiers":
+            for delegate in child.children:
+                if delegate.type in (":", ","):
+                    continue
+                text = _node_text(delegate, src).strip()
+                bare = text.split("(")[0].split(".")[-1].strip()
+                if bare and bare != name:
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare,
+                        kind="extends", line=line,
+                    ))
+
+
+def _extract_ruby_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Ruby: class Foo < Bar."""
+    superclass = def_node.child_by_field_name("superclass")
+    if superclass:
+        parent = _node_text(superclass, src).strip()
+        # Strip the '<' if it was captured
+        parent = parent.removeprefix("<").strip()
+        bare = parent.split("::")[-1]
+        if bare:
+            out.append(HeritageRelation(
+                child_name=name, parent_name=bare, kind="extends", line=line,
+            ))
+
+
+def _extract_csharp_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """C#: class Foo : Bar, IFoo."""
+    for child in def_node.children:
+        if child.type == "base_list":
+            for base in child.children:
+                if base.type in (":", ","):
+                    continue
+                text = _node_text(base, src).strip()
+                bare = text.split(".")[-1].split("<")[0].strip()
+                if bare and bare != name:
+                    # Convention: interfaces start with I
+                    kind = "implements" if bare.startswith("I") and len(bare) > 1 and bare[1].isupper() else "extends"
+                    out.append(HeritageRelation(
+                        child_name=name, parent_name=bare, kind=kind, line=line,
+                    ))
+
+
+_HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
+    "python": _extract_python_heritage,
+    "typescript": _extract_ts_js_heritage,
+    "javascript": _extract_ts_js_heritage,
+    "java": _extract_java_heritage,
+    "go": _extract_go_heritage,
+    "rust": _extract_rust_heritage,
+    "cpp": _extract_cpp_heritage,
+    "c": lambda *_: None,
+    "kotlin": _extract_kotlin_heritage,
+    "ruby": _extract_ruby_heritage,
+    "csharp": _extract_csharp_heritage,
+}
 
 
 def _extract_go_receiver_type(receiver_text: str) -> str | None:
@@ -1009,3 +1728,44 @@ def _build_qualified_name(file_path: str, parent_name: str | None, name: str) ->
     if parent_name:
         return f"{module}.{parent_name}.{name}"
     return f"{module}.{name}"
+
+
+# ---------------------------------------------------------------------------
+# Call extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _count_arguments(arg_node: Node) -> int:
+    """Count the number of arguments in an argument/argument_list node.
+
+    Skips punctuation children (commas, parens) and counts only
+    substantive argument nodes.
+    """
+    _SKIP_TYPES = frozenset({"(", ")", ",", "[", "]"})
+    return sum(1 for child in arg_node.children if child.type not in _SKIP_TYPES)
+
+
+def _find_enclosing_symbol(
+    line: int,
+    symbol_ranges: list[tuple[int, int, str]],
+) -> str | None:
+    """Find the innermost symbol whose line range contains *line*.
+
+    Uses a linear scan on the pre-sorted ranges. For typical file sizes
+    (< 500 symbols) this is faster than bisect due to low constant factor.
+    Returns the tightest (smallest span) enclosing symbol ID, or None if
+    the call is at module level.
+    """
+    best_id: str | None = None
+    best_span = float("inf")
+
+    for start, end, sym_id in symbol_ranges:
+        if start > line:
+            break  # ranges sorted by start_line — no further match possible
+        if start <= line <= end:
+            span = end - start
+            if span < best_span:
+                best_span = span
+                best_id = sym_id
+
+    return best_id

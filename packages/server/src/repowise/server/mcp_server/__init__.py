@@ -1,4 +1,4 @@
-"""repowise MCP Server — 10 tools for AI coding assistants.
+"""repowise MCP Server — 7 tools for AI coding assistants.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports both stdio transport (Claude Code, Cursor, Cline) and SSE transport
@@ -27,20 +27,15 @@ from repowise.server.mcp_server._server import (
     mcp,
     run_mcp,
 )
-from repowise.server.mcp_server.tool_annotate import annotate_file
+from repowise.server.mcp_server._graph_utils import (  # used by routers/graph.py
+    build_visual_context as _build_visual_context,
+)
 from repowise.server.mcp_server.tool_answer import get_answer
 from repowise.server.mcp_server.tool_context import get_context
 from repowise.server.mcp_server.tool_dead_code import get_dead_code
-from repowise.server.mcp_server.tool_decision_records import update_decision_records
-from repowise.server.mcp_server.tool_dependency import (
-    _build_visual_context,
-    get_dependency_path,
-)
-from repowise.server.mcp_server.tool_diagram import get_architecture_diagram
 from repowise.server.mcp_server.tool_overview import get_overview
 from repowise.server.mcp_server.tool_risk import get_risk
 from repowise.server.mcp_server.tool_search import search_codebase
-from repowise.server.mcp_server.tool_symbol import get_symbol
 from repowise.server.mcp_server.tool_why import get_why
 
 # ---------------------------------------------------------------------------
@@ -63,6 +58,9 @@ _STATE_NAMES = frozenset(
         "_fts",
         "_repo_path",
         "_vector_store_ready",
+        "_registry",
+        "_workspace_root",
+        "_cross_repo_enricher",
     }
 )
 
@@ -94,16 +92,12 @@ __all__ = [
     "_is_path",
     "create_mcp_server",
     "get_answer",
-    "get_architecture_diagram",
     "get_context",
     "get_dead_code",
-    "get_dependency_path",
     "get_overview",
     "get_risk",
-    "get_symbol",
     "get_why",
     "mcp",
     "run_mcp",
     "search_codebase",
-    "update_decision_records",
 ]

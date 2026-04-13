@@ -281,6 +281,101 @@ export interface RepoStatsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Graph Intelligence
+// ---------------------------------------------------------------------------
+
+export interface SymbolNodeSummary {
+  symbol_id: string;
+  name: string;
+  kind: string;
+  file: string;
+  start_line?: number | null;
+  signature?: string | null;
+}
+
+export interface CallerCalleeEntry {
+  symbol_id: string;
+  name: string;
+  kind: string;
+  file: string;
+  start_line?: number | null;
+  edge_type: string;
+  confidence: number;
+}
+
+export interface CallersCalleesResponse {
+  symbol_id: string;
+  symbol: SymbolNodeSummary;
+  callers: CallerCalleeEntry[];
+  callees: CallerCalleeEntry[];
+  caller_count: number;
+  callee_count: number;
+  truncated: boolean;
+}
+
+export interface CommunityMember {
+  path: string;
+  pagerank: number;
+  is_entry_point: boolean;
+}
+
+export interface NeighboringCommunity {
+  community_id: number;
+  label: string;
+  cross_edge_count: number;
+}
+
+export interface CommunityDetailResponse {
+  community_id: number;
+  label: string;
+  cohesion: number;
+  member_count: number;
+  members: CommunityMember[];
+  truncated: boolean;
+  neighboring_communities: NeighboringCommunity[];
+}
+
+export interface CommunitySummaryItem {
+  community_id: number;
+  label: string;
+  cohesion: number;
+  member_count: number;
+  top_file: string;
+}
+
+export interface GraphMetricsResponse {
+  target: string;
+  node_type: string;
+  pagerank: number;
+  pagerank_percentile: number;
+  betweenness: number;
+  betweenness_percentile: number;
+  community_id: number;
+  community_label: string | null;
+  is_entry_point: boolean;
+  in_degree: number;
+  out_degree: number;
+  entry_point_score?: number | null;
+  kind?: string | null;
+  file?: string | null;
+}
+
+export interface ExecutionFlowEntry {
+  entry_point: string;
+  entry_point_name: string;
+  entry_point_score: number;
+  trace: string[];
+  depth: number;
+  crosses_community: boolean;
+  communities_visited: number[];
+}
+
+export interface ExecutionFlowsResponse {
+  total_entry_points: number;
+  flows: ExecutionFlowEntry[];
+}
+
+// ---------------------------------------------------------------------------
 // Git Intelligence
 // ---------------------------------------------------------------------------
 
@@ -530,4 +625,92 @@ export interface ProvidersResponse {
 export interface ApiError {
   detail: string;
   status: number;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceRepoEntry {
+  alias: string;
+  path: string;
+  is_primary: boolean;
+  indexed_at: string | null;
+  last_commit_at_index: string | null;
+  // Per-repo stats from each repo's wiki.db
+  repo_id: string | null;
+  file_count: number;
+  symbol_count: number;
+  page_count: number;
+  doc_coverage_pct: number;
+  hotspot_count: number;
+}
+
+export interface WorkspaceCrossRepoSummary {
+  co_change_count: number;
+  package_dep_count: number;
+  top_connections: Array<{ repos: string[]; edge_count: number }>;
+}
+
+export interface WorkspaceContractSummary {
+  total_contracts: number;
+  total_links: number;
+  by_type: Record<string, number>;
+}
+
+export interface WorkspaceResponse {
+  is_workspace: boolean;
+  workspace_root: string | null;
+  workspace_name: string | null;
+  repos: WorkspaceRepoEntry[];
+  default_repo: string | null;
+  cross_repo_summary: WorkspaceCrossRepoSummary | null;
+  contract_summary: WorkspaceContractSummary | null;
+}
+
+export interface WorkspaceContractEntry {
+  contract_id: string;
+  contract_type: string;
+  role: string;
+  repo: string;
+  file_path: string;
+  symbol_name: string;
+  confidence: number;
+  service: string | null;
+}
+
+export interface WorkspaceContractLinkEntry {
+  contract_id: string;
+  contract_type: string;
+  match_type: string;
+  confidence: number;
+  provider_repo: string;
+  provider_file: string;
+  provider_symbol: string;
+  consumer_repo: string;
+  consumer_file: string;
+  consumer_symbol: string;
+}
+
+export interface WorkspaceContractsResponse {
+  contracts: WorkspaceContractEntry[];
+  links: WorkspaceContractLinkEntry[];
+  total_contracts: number;
+  total_links: number;
+  by_type: Record<string, number>;
+}
+
+export interface WorkspaceCoChangeEntry {
+  source_repo: string;
+  source_file: string;
+  target_repo: string;
+  target_file: string;
+  strength: number;
+  frequency: number;
+  last_date: string;
+}
+
+export interface WorkspaceCoChangesResponse {
+  co_changes: WorkspaceCoChangeEntry[];
+  total: number;
 }

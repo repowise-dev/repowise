@@ -3,16 +3,18 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Command } from "cmdk";
-import { Search, LayoutDashboard, Settings, BookOpen } from "lucide-react";
+import { Search, LayoutDashboard, Settings, BookOpen, Layers, Link2, GitMerge } from "lucide-react";
 import { useSearch } from "@/lib/hooks/use-search";
 import { truncatePath } from "@/lib/utils/format";
-import type { RepoResponse } from "@/lib/api/types";
+import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface CommandPaletteProps {
   repos: RepoResponse[];
+  workspace?: WorkspaceResponse | null;
 }
 
-export function CommandPalette({ repos }: CommandPaletteProps) {
+export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
+  const isWorkspace = workspace?.is_workspace ?? false;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const router = useRouter();
@@ -91,6 +93,36 @@ export function CommandPalette({ repos }: CommandPaletteProps) {
               Settings
             </Command.Item>
           </Command.Group>
+
+          {/* Workspace */}
+          {isWorkspace && (
+            <Command.Group heading="Workspace" className="px-2 pb-1">
+              <Command.Item
+                value="workspace-overview"
+                onSelect={() => navigate("/workspace")}
+                className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
+              >
+                <Layers className="h-4 w-4" />
+                Workspace Overview
+              </Command.Item>
+              <Command.Item
+                value="workspace-contracts"
+                onSelect={() => navigate("/workspace/contracts")}
+                className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
+              >
+                <Link2 className="h-4 w-4" />
+                Contracts
+              </Command.Item>
+              <Command.Item
+                value="workspace-co-changes"
+                onSelect={() => navigate("/workspace/co-changes")}
+                className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
+              >
+                <GitMerge className="h-4 w-4" />
+                Co-Changes
+              </Command.Item>
+            </Command.Group>
+          )}
 
           {/* Repos */}
           {repos.length > 0 && (

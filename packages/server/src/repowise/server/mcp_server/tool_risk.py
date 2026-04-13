@@ -21,7 +21,12 @@ from repowise.core.persistence.models import (
     Repository,
 )
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _is_workspace_mode,
+    _resolve_repo_context,
+    _unsupported_repo_all,
+)
 from repowise.server.mcp_server._server import mcp
 
 _FIX_PATTERN = re.compile(
@@ -43,7 +48,7 @@ def _derive_change_pattern(categories: dict[str, int]) -> str:
         labels = {
             "feature": "feature-active",
             "refactor": "primarily refactored",
-            "fix": "bug-prone",
+            "fix": "fix-heavy",
             "dependency": "dependency-churn",
         }
         return labels.get(dominant, dominant)
@@ -130,22 +135,36 @@ def _compute_impact_surface(
 
 
 async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> bool:
-    """Return True if no test file corresponding to *target* exists in graph_nodes."""
+    """Return True if no test file corresponding to *target* exists in graph_nodes.
+
+    Test files themselves (is_test=True) are never considered to have a test gap.
+    """
     import os
+
+    # Test files don't need tests — skip the check entirely
+    node_res = await session.execute(
+        select(GraphNode.is_test).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_id == target,
+        ).limit(1)
+    )
+    row = node_res.scalar_one_or_none()
+    if row is True:
+        return False
 
     base = os.path.splitext(os.path.basename(target))[0]
     ext = os.path.splitext(target)[1].lstrip(".")
     # Build a LIKE pattern broad enough to catch test_<base>, <base>_test, <base>.spec.*
     patterns = [f"%test_{base}%", f"%{base}_test%", f"%{base}.spec.{ext}%"]
     for pat in patterns:
-        row = await session.execute(
+        res = await session.execute(
             select(GraphNode).where(
                 GraphNode.repository_id == repo_id,
                 GraphNode.is_test == True,  # noqa: E712
                 GraphNode.node_id.like(pat),
             ).limit(1)
         )
-        if row.scalar_one_or_none() is not None:
+        if res.scalar_one_or_none() is not None:
             return False
     return True
 
@@ -310,6 +329,10 @@ async def _assess_one_target(
     if bus_factor == 1 and (meta.commit_count_total or 0) > 20:
         bus_note = f", bus factor risk (sole maintainer: {owner})"
 
+    # NOTE: risk_summary is built here but dependents_count may be updated
+    # later by cross-repo enrichment. We store dep_count now and let the
+    # outer function rebuild the summary after enrichment if needed.
+    result_data["_base_dep_count"] = dep_count
     result_data["risk_summary"] = (
         f"{target} — hotspot score {hotspot_score:.0%} ({trend}), "
         f"{dep_count} dependents, {risk_type}, {change_pattern}, "
@@ -336,6 +359,11 @@ async def get_risk(
     - test_gap: bool — True if no test file exists for this file
     - security_signals: list of {kind, severity, snippet} from static analysis
 
+    In workspace mode, includes cross-repo impact: co-change partners from
+    other repos, affected repos, and API contract links (files in other repos
+    that consume HTTP/gRPC/topic contracts provided by this file, or providers
+    this file depends on). Cross-repo consumers increase the dependents count.
+
     Plus the top 5 global hotspots for ambient awareness.
 
     Pass ``changed_files`` for PR review / blast radius analysis. When provided,
@@ -354,8 +382,11 @@ async def get_risk(
         repo: Repository path, name, or ID.
         changed_files: Optional list of files changed in a PR for blast-radius analysis.
     """
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    if repo == "all":
+        return _unsupported_repo_all("get_risk")
+    ctx = await _resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
         repo_id = repository.id
 
         # Pre-load edges
@@ -425,6 +456,73 @@ async def get_risk(
 
             analyzer = PRBlastRadiusAnalyzer(session, repo_id)
             pr_blast_radius = await analyzer.analyze_files(changed_files)
+
+    # Cross-repo blast radius enrichment (Phase 3 + 4)
+    enricher = _state._cross_repo_enricher
+    if enricher is not None and enricher.has_data and _is_workspace_mode():
+        for r in results:
+            target = r["target"]
+            cross_partners = enricher.get_cross_repo_partners(ctx.alias, target)
+            affected_repos = enricher.get_affected_repos(ctx.alias, target)
+            if cross_partners or affected_repos:
+                r["cross_repo_impact"] = {
+                    "cross_repo_consumers": [
+                        {"repo": p["repo"], "file": p["file"], "strength": p["strength"]}
+                        for p in cross_partners[:5]
+                    ],
+                    "affected_repos": affected_repos,
+                }
+                r["dependents_count"] = r.get("dependents_count", 0) + len(cross_partners)
+                # Rebuild risk_summary with updated dependents count
+                if "_base_dep_count" in r:
+                    r["risk_summary"] = r["risk_summary"].replace(
+                        f"{r['_base_dep_count']} dependents",
+                        f"{r['dependents_count']} dependents",
+                    )
+
+            # Contract links (Phase 4)
+            if enricher.has_contract_data:
+                provider_links = enricher.get_contract_links_as_provider(
+                    ctx.alias, target
+                )
+                consumer_links = enricher.get_contract_links_as_consumer(
+                    ctx.alias, target
+                )
+                if provider_links or consumer_links:
+                    impact = r.setdefault("cross_repo_impact", {})
+                    if provider_links:
+                        impact["contract_consumers"] = [
+                            {
+                                "consumer_repo": lk["consumer_repo"],
+                                "consumer_file": lk["consumer_file"],
+                                "contract_id": lk["contract_id"],
+                                "type": lk["contract_type"],
+                            }
+                            for lk in provider_links[:5]
+                        ]
+                        r["dependents_count"] = (
+                            r.get("dependents_count", 0) + len(provider_links)
+                        )
+                    if consumer_links:
+                        impact["contract_providers"] = [
+                            {
+                                "provider_repo": lk["provider_repo"],
+                                "provider_file": lk["provider_file"],
+                                "contract_id": lk["contract_id"],
+                                "type": lk["contract_type"],
+                            }
+                            for lk in consumer_links[:5]
+                        ]
+
+    # Final risk_summary rebuild for any remaining dependents_count updates
+    # (e.g. contract provider links) and cleanup of internal keys.
+    for r in results:
+        base = r.pop("_base_dep_count", None)
+        if base is not None and r.get("dependents_count", base) != base:
+            r["risk_summary"] = r["risk_summary"].replace(
+                f"{base} dependents",
+                f"{r['dependents_count']} dependents",
+            )
 
     response: dict = {
         "targets": {r["target"]: r for r in results},

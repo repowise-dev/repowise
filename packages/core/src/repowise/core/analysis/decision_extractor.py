@@ -83,6 +83,9 @@ _SKIP_DIRS = frozenset(
     }
 )
 
+# Regex to detect fenced code blocks in markdown files (``` or ~~~).
+_CODE_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+
 _BINARY_EXTENSIONS = frozenset(
     {
         ".png",
@@ -289,7 +292,18 @@ class DecisionExtractor:
                 continue
 
             lines = text.splitlines()
+            # Track whether we're inside a fenced code block in markdown
+            # files so we don't treat example markers as real decisions.
+            is_markdown = file_path.suffix.lower() in (".md", ".mdx", ".rst")
+            in_code_fence = False
             for line_num, line in enumerate(lines, start=1):
+                if is_markdown:
+                    fence_match = _CODE_FENCE_RE.match(line)
+                    if fence_match:
+                        in_code_fence = not in_code_fence
+                        continue
+                    if in_code_fence:
+                        continue
                 m = MARKER_RE.match(line)
                 if m:
                     # Collect continuation lines (same comment prefix, no keyword)
@@ -559,6 +573,10 @@ class DecisionExtractor:
             if len(content) > 50_000:
                 continue
 
+            # Strip fenced code blocks to avoid treating example markers
+            # (e.g. `# WHY: ...` in code examples) as real decisions.
+            content = self._strip_code_blocks(content)
+
             try:
                 rel_path = str(doc_path.relative_to(self._repo_path))
             except ValueError:
@@ -761,12 +779,27 @@ class DecisionExtractor:
     # ------------------------------------------------------------------
 
     def _iter_source_files(self):
-        """Yield source files under repo_path, skipping irrelevant dirs."""
-        for child in self._repo_path.rglob("*"):
-            if any(part in _SKIP_DIRS for part in child.parts):
-                continue
-            if child.is_file() and child.suffix.lower() not in _BINARY_EXTENSIONS:
-                yield child
+        """Yield source files under repo_path, skipping irrelevant dirs.
+
+        Uses os.walk so we can prune entire subtrees (nested git repos,
+        node_modules, etc.) without descending into them.
+        """
+        import os
+
+        for dirpath, dirnames, filenames in os.walk(self._repo_path):
+            # Prune skip-listed directories in-place so os.walk won't descend
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _SKIP_DIRS
+                # Skip nested git repositories — they are separate codebases
+                # and should not contribute decisions to the parent repo.
+                and not (Path(dirpath) / d / ".git").exists()
+            ]
+
+            for fname in filenames:
+                fpath = Path(dirpath) / fname
+                if fpath.suffix.lower() not in _BINARY_EXTENSIONS:
+                    yield fpath
 
     def _get_neighbors(self, file_path: str) -> list[str]:
         """Get 1-hop graph neighbors for a file."""
@@ -778,6 +811,20 @@ class DecisionExtractor:
             neighbors.update(self._graph.predecessors(file_path))
         neighbors.discard(file_path)
         return list(neighbors)[:20]  # Cap at 20
+
+    @staticmethod
+    def _strip_code_blocks(text: str) -> str:
+        """Remove fenced code blocks from markdown to avoid parsing examples."""
+        lines = text.splitlines()
+        out: list[str] = []
+        in_fence = False
+        for line in lines:
+            if _CODE_FENCE_RE.match(line):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                out.append(line)
+        return "\n".join(out)
 
     def _infer_modules(self, file_paths: list[str]) -> list[str]:
         """Infer top-level module paths from file paths."""

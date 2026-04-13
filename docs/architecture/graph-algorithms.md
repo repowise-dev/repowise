@@ -6,13 +6,11 @@ This document covers every graph algorithm used in Repowise: what it does, the i
 
 ## The Foundation: What Is the Graph?
 
-Before any algorithm runs, Repowise builds a **directed graph** from your codebase.
+Before any algorithm runs, Repowise builds a **directed graph** from your codebase. The graph is two-tier: it contains both **file nodes** and **symbol nodes** in the same `networkx.DiGraph`, connected by different edge types.
 
-- Each **node** is a source file (e.g., `auth/login.py`)
-- Each **edge** is an import (e.g., `login.py` imports `utils.py` → edge from `login.py` to `utils.py`)
-- Edge direction matters: `A → B` means "A depends on B", not the other way around
+**File-level nodes** (e.g., `auth/login.py`) represent source files. **Symbol-level nodes** represent individual functions, classes, methods, and interfaces extracted by the AST parser.
 
-There are three types of edges:
+File-level edges:
 
 | Edge type | Source | Example |
 |-----------|--------|---------|
@@ -20,9 +18,21 @@ There are three types of edges:
 | `co_changes` | Git co-change analysis | `auth.py` and `config.py` frequently change together |
 | `framework` | Framework-aware synthetic edges | pytest conftest→tests, Django admin→models, FastAPI include_router→routers, Flask register_blueprint→blueprints |
 
+Symbol-level edges (all carry a `confidence` score from 0.0 to 1.0):
+
+| Edge type | Source | Example |
+|-----------|--------|---------|
+| `DEFINES` | GraphBuilder `add_file()` | `login.py` DEFINES `validate_token` |
+| `HAS_METHOD` | GraphBuilder `add_file()` | `AuthService` HAS_METHOD `login` |
+| `CALLS` | `CallResolver` (3-tier resolution) | `validate_token` CALLS `hash_password` |
+
 Framework edges are detected automatically when the tech stack includes Django, FastAPI, Flask, or pytest. They capture real runtime dependencies that static import resolution misses (e.g., `conftest.py` fixtures are loaded by pytest, not imported directly by test files).
 
-This is the raw material. Every algorithm below operates on this graph.
+**`file_subgraph()` — keeping metrics accurate across both tiers**
+
+All centrality algorithms (PageRank, betweenness, SCCs, Louvain) operate on the file-level subgraph, not the full graph. `file_subgraph()` returns a view of the `DiGraph` containing only `file` and `package` nodes. Without this isolation, the large number of symbol nodes would inflate degree counts and distort every metric. Call `file_subgraph()` before running any file-level algorithm; call the full graph when you need symbol-level traversal.
+
+This is the raw material. Every algorithm below operates on the file subgraph unless otherwise noted.
 
 ---
 
@@ -134,21 +144,19 @@ except nx.PowerIterationFailedConvergence:
 
 If PageRank doesn't converge, every file gets equal score `1/N`. This is safe — no file gets unfairly prioritized.
 
-### Why co-change edges are excluded
+### Why co-change edges and symbol edges are excluded
 
-Repowise's graph has two edge types:
-1. **Import edges**: `auth.py` imports `utils.py` (structural dependency)
-2. **Co-change edges**: `auth.py` and `config.py` often change in the same commit (behavioral correlation)
+Repowise's graph has several edge types. PageRank runs only on `imports` edges within the file subgraph. Why?
 
-PageRank runs only on import edges. Why?
-
-Co-change is noisy and doesn't indicate dependency. Examples of co-change that would corrupt PageRank:
+**Co-change** is noisy and doesn't indicate dependency. Examples of co-change that would corrupt PageRank:
 
 - A developer renames a constant across 20 files in one commit. None of those files structurally depend on each other through that rename.
 - Every bug fix touches `handler.py` and `test_handler.py`. The test file isn't architecturally important just because it changes alongside the handler.
 - A release process updates `CHANGELOG.md`, `version.py`, and `setup.cfg` together. None import each other.
 
 If co-change edges fed into PageRank, files that happen to change alongside many others would appear "important" even when nothing imports them. PageRank should answer "if this file breaks, what else breaks?" — that's a structural question, answered only by import edges.
+
+**Symbol edges** (`DEFINES`, `HAS_METHOD`, `CALLS`) are also excluded from file-level PageRank for a different reason: they operate at a finer granularity than files. Including them would give outsized weight to files that define many small functions. `file_subgraph()` filters them out before any file-level metric runs. Symbol-level PageRank (when needed) runs on the full graph separately.
 
 ### How Repowise uses PageRank
 

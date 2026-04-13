@@ -82,42 +82,22 @@ def build_meta(
     return out
 
 
-def context_hint(targets: list[str], compact: bool) -> str | None:
+def context_hint(targets: list[str], compact: bool, include: set[str] | None = None) -> str | None:
     """Hint for `get_context` callers.
 
     Conservative: only fires when the call shape suggests the agent could
     have used a cheaper tool, AND the suggestion is unambiguously safe.
     """
-    if compact:
-        # Already in compact mode — don't push further.
-        return None
     if not targets:
         return None
-    # Single file target where the agent is likely to follow up with a Read:
-    # nudge toward get_symbol so they slice instead of reading the whole file.
-    if len(targets) == 1 and "::" not in targets[0] and "/" in targets[0]:
-        return (
-            "If you only need one function from this file, call "
-            "get_symbol(symbol_id='{path}::{name}') to get just that "
-            "function body — cheaper than Read.".format(
-                path=targets[0], name="<symbol_name>"
-            )
-        )
+    # If caller requested source and got a large symbol, nudge toward Read with offset
+    if include and "source" in include and len(targets) == 1:
+        return None  # source mode provides its own truncation info
     return None
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
-    """Hint for `get_symbol` callers.
-
-    Suggests context_lines expansion only for very small symbols where the
-    body alone may be insufficient.
-    """
-    span = max(end_line - start_line, 0)
-    if span < 5:
-        return (
-            "Small symbol — pass context_lines=10 if you need surrounding "
-            "context (imports, sibling defs)."
-        )
+    """Hint for source retrieval (kept for backward compat with tool_symbol.py)."""
     return None
 
 
