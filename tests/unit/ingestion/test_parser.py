@@ -565,6 +565,130 @@ class TestCppParser:
 
 
 # ---------------------------------------------------------------------------
+# Kotlin
+# ---------------------------------------------------------------------------
+
+KOTLIN_SOURCE = b"""\
+package sample
+
+import sample.models.Operation
+
+/** Calculator for basic arithmetic. */
+class Calculator {
+    fun add(x: Double, y: Double): Double {
+        val result = x + y
+        return result
+    }
+
+    private fun helper() {}
+}
+
+enum class Operation {
+    ADD, SUBTRACT
+}
+"""
+
+
+class TestKotlinParser:
+    def test_finds_class(self, parser: ASTParser) -> None:
+        fi = _make_file_info("kotlin_pkg/Calculator.kt", "kotlin")
+        result = parser.parse_file(fi, KOTLIN_SOURCE)
+        classes = [s for s in result.symbols if s.kind == "class"]
+        assert any(s.name == "Calculator" for s in classes)
+
+    def test_finds_functions(self, parser: ASTParser) -> None:
+        fi = _make_file_info("kotlin_pkg/Calculator.kt", "kotlin")
+        result = parser.parse_file(fi, KOTLIN_SOURCE)
+        # add is inside Calculator so it becomes a method; check both kinds
+        fns = [s for s in result.symbols if s.kind in ("function", "method")]
+        assert any(s.name == "add" for s in fns)
+
+    def test_parses_imports(self, parser: ASTParser) -> None:
+        fi = _make_file_info("kotlin_pkg/Calculator.kt", "kotlin")
+        result = parser.parse_file(fi, KOTLIN_SOURCE)
+        assert len(result.imports) >= 1
+        modules = {imp.module_path for imp in result.imports}
+        assert any("Operation" in m for m in modules)
+
+    def test_no_parse_errors(self, parser: ASTParser) -> None:
+        fi = _make_file_info("kotlin_pkg/Calculator.kt", "kotlin")
+        result = parser.parse_file(fi, KOTLIN_SOURCE)
+        assert result.parse_errors == []
+
+    def test_private_visibility(self, parser: ASTParser) -> None:
+        fi = _make_file_info("kotlin_pkg/Calculator.kt", "kotlin")
+        result = parser.parse_file(fi, KOTLIN_SOURCE)
+        helper = next((s for s in result.symbols if s.name == "helper"), None)
+        assert helper is not None
+        assert helper.visibility == "private"
+
+
+# ---------------------------------------------------------------------------
+# Ruby
+# ---------------------------------------------------------------------------
+
+RUBY_SOURCE = b"""\
+# Calculator module
+require_relative './models'
+
+class Calculator < BaseCalculator
+  def add(x, y)
+    result = x + y
+    record(x, y, result)
+    result
+  end
+
+  def subtract(x, y)
+    x - y
+  end
+
+  def self.create
+    Calculator.new
+  end
+end
+
+module Operations
+  def multiply(x, y)
+    x * y
+  end
+end
+"""
+
+
+class TestRubyParser:
+    def test_finds_class(self, parser: ASTParser) -> None:
+        fi = _make_file_info("ruby_pkg/calculator.rb", "ruby")
+        result = parser.parse_file(fi, RUBY_SOURCE)
+        classes = [s for s in result.symbols if s.kind == "class"]
+        assert any(s.name == "Calculator" for s in classes)
+
+    def test_finds_module(self, parser: ASTParser) -> None:
+        fi = _make_file_info("ruby_pkg/calculator.rb", "ruby")
+        result = parser.parse_file(fi, RUBY_SOURCE)
+        modules = [s for s in result.symbols if s.kind == "module"]
+        assert any(s.name == "Operations" for s in modules)
+
+    def test_finds_methods(self, parser: ASTParser) -> None:
+        fi = _make_file_info("ruby_pkg/calculator.rb", "ruby")
+        result = parser.parse_file(fi, RUBY_SOURCE)
+        # add/subtract are inside Calculator so they become methods
+        fns = [s for s in result.symbols if s.kind in ("function", "method")]
+        names = {s.name for s in fns}
+        assert "add" in names
+        assert "subtract" in names
+
+    def test_parses_imports(self, parser: ASTParser) -> None:
+        fi = _make_file_info("ruby_pkg/calculator.rb", "ruby")
+        result = parser.parse_file(fi, RUBY_SOURCE)
+        assert len(result.imports) >= 1
+
+    def test_no_parse_errors(self, parser: ASTParser) -> None:
+        fi = _make_file_info("ruby_pkg/calculator.rb", "ruby")
+        result = parser.parse_file(fi, RUBY_SOURCE)
+        assert result.parse_errors == []
+
+
+# ---------------------------------------------------------------------------
 # Unsupported language (graceful fallback)
 # ---------------------------------------------------------------------------
 
@@ -586,9 +710,314 @@ class TestUnsupportedLanguage:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# C#
+# ---------------------------------------------------------------------------
+
+CSHARP_SOURCE = b"""\
+using System;
+using Sample.Models;
+
+namespace Sample
+{
+    /// <summary>Calculator for basic arithmetic.</summary>
+    public class Calculator
+    {
+        public double Add(double x, double y)
+        {
+            return x + y;
+        }
+
+        private void Helper() { }
+    }
+
+    public interface IComputable
+    {
+        double Compute();
+    }
+
+    public enum Operation { Add, Subtract }
+
+    public struct Point
+    {
+        public double X;
+        public double Y;
+    }
+}
+"""
+
+
+class TestCSharpParser:
+    def test_finds_class(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Calculator.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_SOURCE)
+        classes = [s for s in result.symbols if s.kind == "class"]
+        assert any(s.name == "Calculator" for s in classes)
+
+    def test_finds_interface(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Calculator.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_SOURCE)
+        interfaces = [s for s in result.symbols if s.kind == "interface"]
+        assert any(s.name == "IComputable" for s in interfaces)
+
+    def test_finds_enum(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Calculator.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_SOURCE)
+        enums = [s for s in result.symbols if s.kind == "enum"]
+        assert any(s.name == "Operation" for s in enums)
+
+    def test_finds_struct(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Calculator.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_SOURCE)
+        structs = [s for s in result.symbols if s.kind == "struct"]
+        assert any(s.name == "Point" for s in structs)
+
+    def test_finds_methods(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Calculator.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_SOURCE)
+        methods = [s for s in result.symbols if s.kind == "method"]
+        assert any(s.name == "Add" for s in methods)
+
+    def test_parses_imports(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Calculator.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_SOURCE)
+        assert len(result.imports) >= 2
+        modules = {imp.module_path for imp in result.imports}
+        assert "System" in modules
+
+    def test_private_visibility(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Calculator.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_SOURCE)
+        helper = next((s for s in result.symbols if s.name == "Helper"), None)
+        assert helper is not None
+        assert helper.visibility == "private"
+
+    def test_no_parse_errors(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Calculator.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_SOURCE)
+        assert result.parse_errors == []
+
+
+# ---------------------------------------------------------------------------
+# Swift
+# ---------------------------------------------------------------------------
+
+SWIFT_SOURCE = b"""\
+import Foundation
+
+/// Calculator for basic arithmetic.
+class Calculator: Computable {
+    func add(x: Double, y: Double) -> Double {
+        return x + y
+    }
+
+    private func helper() {}
+}
+
+protocol Computable {
+    func compute() -> Double
+}
+
+enum Operation {
+    case add
+    case subtract
+}
+
+struct Point {
+    var x: Double
+    var y: Double
+}
+"""
+
+
+class TestSwiftParser:
+    def test_finds_class(self, parser: ASTParser) -> None:
+        fi = _make_file_info("swift_pkg/Calculator.swift", "swift")
+        result = parser.parse_file(fi, SWIFT_SOURCE)
+        classes = [s for s in result.symbols if s.kind == "class"]
+        assert any(s.name == "Calculator" for s in classes)
+
+    def test_finds_protocol(self, parser: ASTParser) -> None:
+        fi = _make_file_info("swift_pkg/Calculator.swift", "swift")
+        result = parser.parse_file(fi, SWIFT_SOURCE)
+        interfaces = [s for s in result.symbols if s.kind == "interface"]
+        assert any(s.name == "Computable" for s in interfaces)
+
+    def test_finds_functions(self, parser: ASTParser) -> None:
+        fi = _make_file_info("swift_pkg/Calculator.swift", "swift")
+        result = parser.parse_file(fi, SWIFT_SOURCE)
+        # Functions inside a class are upgraded to "method"
+        fns = [s for s in result.symbols if s.kind in ("function", "method")]
+        assert any(s.name == "add" for s in fns)
+
+    def test_parses_imports(self, parser: ASTParser) -> None:
+        fi = _make_file_info("swift_pkg/Calculator.swift", "swift")
+        result = parser.parse_file(fi, SWIFT_SOURCE)
+        assert len(result.imports) >= 1
+        modules = {imp.module_path for imp in result.imports}
+        assert any("Foundation" in m for m in modules)
+
+    def test_private_visibility(self, parser: ASTParser) -> None:
+        fi = _make_file_info("swift_pkg/Calculator.swift", "swift")
+        result = parser.parse_file(fi, SWIFT_SOURCE)
+        helper = next((s for s in result.symbols if s.name == "helper"), None)
+        assert helper is not None
+        assert helper.visibility == "private"
+
+    def test_no_parse_errors(self, parser: ASTParser) -> None:
+        fi = _make_file_info("swift_pkg/Calculator.swift", "swift")
+        result = parser.parse_file(fi, SWIFT_SOURCE)
+        assert result.parse_errors == []
+
+
+# ---------------------------------------------------------------------------
+# Scala
+# ---------------------------------------------------------------------------
+
+SCALA_SOURCE = b"""\
+package sample
+
+import sample.models.{Operation, CalculationRecord}
+
+/** Calculator for basic arithmetic. */
+class Calculator extends BaseCalc with Computable {
+  def add(x: Double, y: Double): Double = x + y
+
+  private def helper(): Unit = {}
+}
+
+trait Computable {
+  def compute(): Double
+}
+
+object Singleton {
+  val name = "calc"
+}
+"""
+
+
+class TestScalaParser:
+    def test_finds_class(self, parser: ASTParser) -> None:
+        fi = _make_file_info("scala_pkg/Calculator.scala", "scala")
+        result = parser.parse_file(fi, SCALA_SOURCE)
+        classes = [s for s in result.symbols if s.kind == "class"]
+        assert any(s.name == "Calculator" for s in classes)
+
+    def test_finds_trait(self, parser: ASTParser) -> None:
+        fi = _make_file_info("scala_pkg/Calculator.scala", "scala")
+        result = parser.parse_file(fi, SCALA_SOURCE)
+        traits = [s for s in result.symbols if s.kind == "trait"]
+        assert any(s.name == "Computable" for s in traits)
+
+    def test_finds_object(self, parser: ASTParser) -> None:
+        fi = _make_file_info("scala_pkg/Calculator.scala", "scala")
+        result = parser.parse_file(fi, SCALA_SOURCE)
+        objs = [s for s in result.symbols if s.name == "Singleton"]
+        assert len(objs) >= 1
+
+    def test_finds_functions(self, parser: ASTParser) -> None:
+        fi = _make_file_info("scala_pkg/Calculator.scala", "scala")
+        result = parser.parse_file(fi, SCALA_SOURCE)
+        # def inside a class is promoted to "method"; top-level def stays "function"
+        fns = [s for s in result.symbols if s.kind in ("function", "method")]
+        assert any(s.name == "add" for s in fns)
+
+    def test_parses_imports(self, parser: ASTParser) -> None:
+        fi = _make_file_info("scala_pkg/Calculator.scala", "scala")
+        result = parser.parse_file(fi, SCALA_SOURCE)
+        assert len(result.imports) >= 1
+
+    def test_no_parse_errors(self, parser: ASTParser) -> None:
+        fi = _make_file_info("scala_pkg/Calculator.scala", "scala")
+        result = parser.parse_file(fi, SCALA_SOURCE)
+        assert result.parse_errors == []
+
+
+# ---------------------------------------------------------------------------
+# PHP
+# ---------------------------------------------------------------------------
+
+PHP_SOURCE = b"""\
+<?php
+namespace Sample;
+
+use Sample\\Models\\Operation;
+use Sample\\Models\\CalculationRecord;
+
+/** Calculator for basic arithmetic. */
+class Calculator extends BaseCalc implements Computable
+{
+    public function add(float $x, float $y): float
+    {
+        return $x + $y;
+    }
+
+    private function helper(): void {}
+}
+
+interface Computable
+{
+    public function compute(): float;
+}
+
+enum Operation
+{
+    case Add;
+    case Subtract;
+}
+"""
+
+
+class TestPhpParser:
+    def test_finds_class(self, parser: ASTParser) -> None:
+        fi = _make_file_info("php_pkg/Calculator.php", "php")
+        result = parser.parse_file(fi, PHP_SOURCE)
+        classes = [s for s in result.symbols if s.kind == "class"]
+        assert any(s.name == "Calculator" for s in classes)
+
+    def test_finds_interface(self, parser: ASTParser) -> None:
+        fi = _make_file_info("php_pkg/Calculator.php", "php")
+        result = parser.parse_file(fi, PHP_SOURCE)
+        interfaces = [s for s in result.symbols if s.kind == "interface"]
+        assert any(s.name == "Computable" for s in interfaces)
+
+    def test_finds_enum(self, parser: ASTParser) -> None:
+        fi = _make_file_info("php_pkg/Calculator.php", "php")
+        result = parser.parse_file(fi, PHP_SOURCE)
+        enums = [s for s in result.symbols if s.kind == "enum"]
+        assert any(s.name == "Operation" for s in enums)
+
+    def test_finds_methods(self, parser: ASTParser) -> None:
+        fi = _make_file_info("php_pkg/Calculator.php", "php")
+        result = parser.parse_file(fi, PHP_SOURCE)
+        methods = [s for s in result.symbols if s.kind == "method"]
+        assert any(s.name == "add" for s in methods)
+
+    def test_parses_imports(self, parser: ASTParser) -> None:
+        fi = _make_file_info("php_pkg/Calculator.php", "php")
+        result = parser.parse_file(fi, PHP_SOURCE)
+        assert len(result.imports) >= 1
+
+    def test_private_visibility(self, parser: ASTParser) -> None:
+        fi = _make_file_info("php_pkg/Calculator.php", "php")
+        result = parser.parse_file(fi, PHP_SOURCE)
+        helper = next((s for s in result.symbols if s.name == "helper"), None)
+        assert helper is not None
+        assert helper.visibility == "private"
+
+    def test_no_parse_errors(self, parser: ASTParser) -> None:
+        fi = _make_file_info("php_pkg/Calculator.php", "php")
+        result = parser.parse_file(fi, PHP_SOURCE)
+        assert result.parse_errors == []
+
+
 class TestLanguageConfigs:
     def test_all_supported_languages_have_config(self) -> None:
-        expected = {"python", "typescript", "javascript", "go", "rust", "java", "cpp", "c"}
+        expected = {
+            "python", "typescript", "javascript", "go", "rust",
+            "java", "cpp", "c", "kotlin", "ruby", "csharp", "swift",
+            "scala", "php",
+        }
         for lang in expected:
             assert lang in LANGUAGE_CONFIGS, f"Missing config for {lang}"
 

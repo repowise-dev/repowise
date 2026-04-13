@@ -64,3 +64,22 @@
 (preproc_include
   path: (string_literal) @import.module
 ) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple function call: foo(args)
+(call_expression
+  function: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Field call: ptr->func(args) or obj.func(args)
+(call_expression
+  function: (field_expression
+    argument: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site

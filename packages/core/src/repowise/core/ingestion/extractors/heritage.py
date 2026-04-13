@@ -380,6 +380,28 @@ def _extract_ruby_heritage(
             )
 
 
+def _extract_swift_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Swift: ``class Foo: Bar, Protocol1`` — inheritance via ``:`` separator."""
+    for child in def_node.children:
+        if child.type == "inheritance_specifier":
+            for type_child in child.children:
+                if type_child.type == "user_type":
+                    for id_node in type_child.children:
+                        if id_node.type == "type_identifier":
+                            parent = node_text(id_node, src).strip()
+                            if parent and parent != name:
+                                out.append(
+                                    HeritageRelation(
+                                        child_name=name,
+                                        parent_name=parent,
+                                        kind="extends",
+                                        line=line,
+                                    )
+                                )
+
+
 def _extract_csharp_heritage(
     def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
 ) -> None:
@@ -407,6 +429,66 @@ def _extract_csharp_heritage(
                     )
 
 
+def _extract_scala_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """Scala: ``class Foo extends Bar with Trait1 with Trait2``."""
+    for child in def_node.children:
+        if child.type == "extends_clause":
+            saw_with = False
+            for sub in child.children:
+                if sub.type == "extends":
+                    continue
+                if sub.type == "with":
+                    saw_with = True
+                    continue
+                if sub.type == "type_identifier":
+                    parent = node_text(sub, src).strip()
+                    if parent and parent != name:
+                        kind = "implements" if saw_with else "extends"
+                        out.append(
+                            HeritageRelation(
+                                child_name=name,
+                                parent_name=parent,
+                                kind=kind,
+                                line=line,
+                            )
+                        )
+
+
+def _extract_php_heritage(
+    def_node: Node, name: str, line: int, src: str, out: list[HeritageRelation]
+) -> None:
+    """PHP: ``class Foo extends Bar implements IFoo, IBar``."""
+    for child in def_node.children:
+        if child.type == "base_clause":
+            for sub in child.children:
+                if sub.type == "name":
+                    parent = node_text(sub, src).strip()
+                    if parent and parent != name:
+                        out.append(
+                            HeritageRelation(
+                                child_name=name,
+                                parent_name=parent,
+                                kind="extends",
+                                line=line,
+                            )
+                        )
+        elif child.type == "class_interface_clause":
+            for sub in child.children:
+                if sub.type == "name":
+                    parent = node_text(sub, src).strip()
+                    if parent and parent != name:
+                        out.append(
+                            HeritageRelation(
+                                child_name=name,
+                                parent_name=parent,
+                                kind="implements",
+                                line=line,
+                            )
+                        )
+
+
 HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "python": _extract_python_heritage,
     "typescript": _extract_ts_js_heritage,
@@ -419,4 +501,7 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "kotlin": _extract_kotlin_heritage,
     "ruby": _extract_ruby_heritage,
     "csharp": _extract_csharp_heritage,
+    "swift": _extract_swift_heritage,
+    "scala": _extract_scala_heritage,
+    "php": _extract_php_heritage,
 }

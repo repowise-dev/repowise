@@ -32,9 +32,7 @@ from .models import CallSite, NamedBinding, ParsedFile
 log = structlog.get_logger(__name__)
 
 
-def _file_language(
-    parsed_files: dict[str, ParsedFile], symbol_id: str
-) -> str | None:
+def _file_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
     """Extract language from a symbol ID's file via the parsed files map."""
     file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
     parsed = parsed_files.get(file_path)

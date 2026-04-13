@@ -43,6 +43,61 @@ def public_by_default(_name: str, _mods: list[str]) -> str:
     return "public"
 
 
+def kotlin_visibility(_name: str, modifier_texts: list[str]) -> str:
+    combined = " ".join(modifier_texts).lower()
+    if "private" in combined:
+        return "private"
+    if "protected" in combined:
+        return "protected"
+    if "internal" in combined:
+        return "internal"
+    return "public"
+
+
+def csharp_visibility(_name: str, modifier_texts: list[str]) -> str:
+    """C# visibility — public/private/protected/internal, default internal."""
+    combined = " ".join(modifier_texts).lower()
+    if "private" in combined:
+        return "private"
+    if "protected" in combined:
+        return "protected"
+    if "internal" in combined:
+        return "internal"
+    if "public" in combined:
+        return "public"
+    return "internal"  # C# default is internal
+
+
+def swift_visibility(_name: str, modifier_texts: list[str]) -> str:
+    """Swift visibility — public/private/fileprivate/internal/open."""
+    combined = " ".join(modifier_texts).lower()
+    if "private" in combined or "fileprivate" in combined:
+        return "private"
+    if "public" in combined or "open" in combined:
+        return "public"
+    return "internal"  # Swift default is internal
+
+
+def scala_visibility(_name: str, modifier_texts: list[str]) -> str:
+    """Scala visibility — public/private/protected, default public."""
+    combined = " ".join(modifier_texts).lower()
+    if "private" in combined:
+        return "private"
+    if "protected" in combined:
+        return "protected"
+    return "public"
+
+
+def php_visibility(_name: str, modifier_texts: list[str]) -> str:
+    """PHP visibility — public/private/protected, default public."""
+    combined = " ".join(modifier_texts).lower()
+    if "private" in combined:
+        return "private"
+    if "protected" in combined:
+        return "protected"
+    return "public"
+
+
 VISIBILITY_FNS: dict[str, Callable[[str, list[str]], str]] = {
     "python": py_visibility,
     "typescript": ts_visibility,
@@ -52,4 +107,10 @@ VISIBILITY_FNS: dict[str, Callable[[str, list[str]], str]] = {
     "java": java_visibility,
     "cpp": public_by_default,
     "c": public_by_default,
+    "kotlin": kotlin_visibility,
+    "ruby": public_by_default,
+    "csharp": csharp_visibility,
+    "swift": swift_visibility,
+    "scala": scala_visibility,
+    "php": php_visibility,
 }

@@ -31,18 +31,25 @@ from .models import HeritageRelation, ParsedFile
 log = structlog.get_logger(__name__)
 
 
-def _file_language(
-    parsed_files: dict[str, ParsedFile], symbol_id: str
-) -> str | None:
+def _file_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
     """Extract language from a symbol ID's file via the parsed files map."""
     file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
     parsed = parsed_files.get(file_path)
     return parsed.file_info.language if parsed else None
 
+
 # Symbol kinds that can be parents in heritage relationships
-_PARENT_KINDS = frozenset({
-    "class", "interface", "trait", "struct", "enum", "type_alias", "impl",
-})
+_PARENT_KINDS = frozenset(
+    {
+        "class",
+        "interface",
+        "trait",
+        "struct",
+        "enum",
+        "type_alias",
+        "impl",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,9 +131,7 @@ class HeritageResolver:
 
         return results
 
-    def _resolve_one(
-        self, file_path: str, rel: HeritageRelation
-    ) -> ResolvedHeritage | None:
+    def _resolve_one(self, file_path: str, rel: HeritageRelation) -> ResolvedHeritage | None:
         """Resolve a single HeritageRelation through three-tier fallback."""
         child_id = f"{file_path}::{rel.child_name}"
         parent_name = rel.parent_name

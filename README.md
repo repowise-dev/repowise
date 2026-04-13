@@ -65,7 +65,7 @@ There's a small genre of "token efficiency" benchmarks going around. It would be
 repowise runs once, builds everything, then keeps it in sync on every commit.
 
 ### ◈ Graph Intelligence
-tree-sitter parses every file into symbols. NetworkX builds a two-tier dependency graph — file nodes for module-level relationships and symbol nodes (functions, classes, methods) for fine-grained call resolution. A 3-tier resolver links call sites to their targets with confidence scoring. Import aliases, barrel re-exports, and namespace imports all resolve correctly. Inheritance hierarchies are extracted across 11 languages (extends, implements, trait impls, mixins) and resolved to concrete symbol edges. Leiden community detection identifies logical modules at both file and symbol level — with cohesion scoring and heuristic labeling — even when your directory structure doesn't reflect them. Execution flow tracing discovers call paths from entry points through your codebase, classifying them as intra- or cross-community. PageRank, betweenness centrality, and SCC analysis identify your most central and most coupled code.
+tree-sitter parses every file into symbols. NetworkX builds a two-tier dependency graph — file nodes for module-level relationships and symbol nodes (functions, classes, methods) for fine-grained call resolution. A 3-tier resolver links call sites to their targets with confidence scoring. Import aliases, barrel re-exports, and namespace imports all resolve correctly. Inheritance hierarchies are extracted across 13 languages (extends, implements, trait impls, mixins) and resolved to concrete symbol edges. Leiden community detection identifies logical modules at both file and symbol level — with cohesion scoring and heuristic labeling — even when your directory structure doesn't reflect them. Execution flow tracing discovers call paths from entry points through your codebase, classifying them as intra- or cross-community. PageRank, betweenness centrality, and SCC analysis identify your most central and most coupled code.
 
 ### ◈ Git Intelligence
 500 commits of history turned into signals: hotspot files (high churn × high complexity), ownership percentages per engineer, co-change pairs (files that change together without an import link — hidden coupling), and significant commit messages that explain *why* code evolved.
@@ -543,14 +543,11 @@ repowise reindex                  # rebuild vector store (no LLM calls)
 
 | Tier | Languages | What works |
 |------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java · Go · Rust | AST parsing, import resolution, named bindings, dependency graph edges, call resolution, heritage extraction |
-| **Partial** | C++ | AST parsing, symbol extraction, heritage extraction, `compile_commands.json` import resolution |
-| **Partial** | C | AST parsing (structs, functions, macros), `#include` resolution with `compile_commands.json` |
-| **Scaffolded** | Kotlin · Ruby | Tree-sitter queries and heritage extractors exist but grammars not yet wired — install `tree-sitter-kotlin` / `tree-sitter-ruby` separately |
-| **Traversal** | C# · Swift · Scala · PHP | Files indexed and searchable, but no AST symbol extraction yet |
+| **Full** | Python · TypeScript · JavaScript · Java · Go · Rust · C++ | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings |
+| **Good** | C · Kotlin · Ruby · C# · Swift · Scala · PHP | AST parsing, import resolution, named bindings, call resolution, heritage, docstrings, dedicated resolvers |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · SQL · Terraform | Included in the file tree; special handlers extract endpoints/targets where applicable |
 
-Kotlin, Ruby, C#, Swift, Scala, PHP, Dart, and Elixir are on the [language support roadmap](docs/LANGUAGE_SUPPORT_PLAN.md). Adding a new language requires one `.scm` tree-sitter query file and one config entry. No changes to the parser core. PRs welcome. See [Adding a new language](docs/CONTRIBUTING.md#adding-a-new-language).
+14 languages with full AST support. Adding a new language requires one `.scm` tree-sitter query file and one config entry. No changes to the parser core. See [Language Support](docs/LANGUAGE_SUPPORT.md) for details.
 
 ---
 

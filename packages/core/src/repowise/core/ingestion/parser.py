@@ -42,11 +42,16 @@ from .extractors import (
     refine_go_type_kind,
 )
 from .extractors.visibility import (
+    csharp_visibility,
     go_visibility,
     java_visibility,
+    kotlin_visibility,
+    php_visibility,
     public_by_default,
     py_visibility,
     rust_visibility,
+    scala_visibility,
+    swift_visibility,
     ts_visibility,
 )
 from .languages.registry import REGISTRY as _LANG_REGISTRY
@@ -312,6 +317,101 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(),
         entry_point_patterns=["main.c"],
     ),
+    "kotlin": LanguageConfig(
+        symbol_node_types={
+            "function_declaration": "function",
+            "class_declaration": "class",
+            "object_declaration": "class",
+        },
+        import_node_types=["import"],
+        export_node_types=[],
+        visibility_fn=kotlin_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class_declaration", "object_declaration"}),
+        entry_point_patterns=["Main.kt", "Application.kt"],
+    ),
+    "ruby": LanguageConfig(
+        symbol_node_types={
+            "method": "function",
+            "singleton_method": "function",
+            "class": "class",
+            "module": "module",
+        },
+        import_node_types=["call"],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class", "module"}),
+        entry_point_patterns=["main.rb", "app.rb", "config.ru"],
+    ),
+    "csharp": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "struct_declaration": "struct",
+            "enum_declaration": "enum",
+            "method_declaration": "method",
+            "constructor_declaration": "function",
+            "property_declaration": "variable",
+        },
+        import_node_types=["using_directive"],
+        export_node_types=[],
+        visibility_fn=csharp_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {"class_declaration", "interface_declaration", "struct_declaration", "enum_declaration"}
+        ),
+        entry_point_patterns=["Program.cs", "Startup.cs"],
+    ),
+    "swift": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "protocol_declaration": "interface",
+            "function_declaration": "function",
+            "protocol_function_declaration": "function",
+            "property_declaration": "variable",
+        },
+        import_node_types=["import_declaration"],
+        export_node_types=[],
+        visibility_fn=swift_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class_declaration", "protocol_declaration"}),
+        entry_point_patterns=["main.swift", "App.swift"],
+    ),
+    "scala": LanguageConfig(
+        symbol_node_types={
+            "class_definition": "class",
+            "trait_definition": "trait",
+            "object_definition": "class",
+            "function_definition": "function",
+            "function_declaration": "function",
+            "val_definition": "variable",
+        },
+        import_node_types=["import_declaration"],
+        export_node_types=[],
+        visibility_fn=scala_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class_definition", "trait_definition", "object_definition"}),
+        entry_point_patterns=["Main.scala", "App.scala"],
+    ),
+    "php": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "trait_declaration": "trait",
+            "enum_declaration": "enum",
+            "method_declaration": "method",
+            "function_definition": "function",
+        },
+        import_node_types=["namespace_use_declaration"],
+        export_node_types=[],
+        visibility_fn=php_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {"class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"}
+        ),
+        entry_point_patterns=["index.php", "public/index.php"],
+    ),
 }
 
 
@@ -401,8 +501,7 @@ class ASTParser:
         if lang in self._query_cache:
             return self._query_cache[lang]
 
-        # C files reuse the cpp query
-        scm_lang = "cpp" if lang == "c" else lang
+        scm_lang = lang
         scm_path = QUERIES_DIR / f"{scm_lang}.scm"
 
         if not scm_path.exists():

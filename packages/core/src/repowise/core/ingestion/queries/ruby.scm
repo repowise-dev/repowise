@@ -28,3 +28,25 @@
   )
   (#match? @_require_method "^require")
 ) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple call: foo(args)
+(call
+  method: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Class/module method call: ClassName.method(args)
+(call
+  receiver: (constant) @call.receiver
+  method: (identifier) @call.target
+) @call.site
+
+; Method call on variable: obj.method(args)
+(call
+  receiver: (identifier) @call.receiver
+  method: (identifier) @call.target
+) @call.site

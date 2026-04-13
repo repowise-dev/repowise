@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 from tree_sitter import Node
 
 from ..models import NamedBinding
@@ -26,6 +28,20 @@ def extract_import_bindings(
         return extract_rust_bindings(stmt_node, src)
     if lang == "java":
         return extract_java_bindings(stmt_node, src)
+    if lang in ("cpp", "c"):
+        return extract_cpp_bindings(stmt_node, src)
+    if lang == "kotlin":
+        return extract_kotlin_bindings(stmt_node, src)
+    if lang == "ruby":
+        return extract_ruby_bindings(stmt_node, src)
+    if lang == "csharp":
+        return extract_csharp_bindings(stmt_node, src)
+    if lang == "swift":
+        return extract_swift_bindings(stmt_node, src)
+    if lang == "scala":
+        return extract_scala_bindings(stmt_node, src)
+    if lang == "php":
+        return extract_php_bindings(stmt_node, src)
     return [], []
 
 
@@ -272,4 +288,180 @@ def extract_java_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Na
             return [local], [NamedBinding(local_name=local, exported_name=local, source_file=None)]
         if child.type == "asterisk":
             return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
+    return [], []
+
+
+def extract_kotlin_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from Kotlin import declarations."""
+    for child in stmt_node.children:
+        if child.type == "qualified_identifier":
+            full = node_text(child, src)
+            parts = full.split(".")
+            local = parts[-1]
+            if local == "*":
+                return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
+            return [local], [NamedBinding(local_name=local, exported_name=local, source_file=None)]
+    return [], []
+
+
+def extract_ruby_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from Ruby require/require_relative calls."""
+    method_node = None
+    for child in stmt_node.children:
+        if child.type == "identifier":
+            method_node = child
+            break
+    method_name = node_text(method_node, src) if method_node else ""
+    if method_name not in ("require", "require_relative"):
+        return [], []
+
+    for child in stmt_node.children:
+        if child.type == "argument_list":
+            for arg in child.children:
+                if arg.type == "string":
+                    for sub in arg.children:
+                        if sub.type == "string_content":
+                            path = node_text(sub, src)
+                            stem = PurePosixPath(path).stem
+                            return [stem], [
+                                NamedBinding(
+                                    local_name=stem,
+                                    exported_name=None,
+                                    source_file=path,
+                                    is_module_alias=True,
+                                )
+                            ]
+    return [], []
+
+
+def extract_csharp_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from C# using directives."""
+    alias = None
+    namespace = ""
+    for child in stmt_node.children:
+        if child.type == "name_equals":
+            # using Alias = Full.Namespace;
+            for sub in child.children:
+                if sub.type == "identifier":
+                    alias = node_text(sub, src)
+        elif child.type in ("qualified_name", "identifier"):
+            namespace = node_text(child, src)
+    if not namespace:
+        return [], []
+    local = alias if alias else namespace.rsplit(".", 1)[-1]
+    return [local], [NamedBinding(local_name=local, exported_name=namespace, source_file=None)]
+
+
+def extract_swift_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from Swift import declarations."""
+    for child in stmt_node.children:
+        if child.type == "identifier":
+            full = node_text(child, src)
+            local = full.split(".")[-1]
+            return [local], [
+                NamedBinding(
+                    local_name=local,
+                    exported_name=None,
+                    source_file=None,
+                    is_module_alias=True,
+                )
+            ]
+    return [], []
+
+
+def extract_scala_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from Scala import declarations."""
+    names: list[str] = []
+    bindings: list[NamedBinding] = []
+
+    # Get full import text, strip "import " prefix
+    full_text = node_text(stmt_node, src).strip()
+    if full_text.startswith("import "):
+        full_text = full_text[7:].strip()
+
+    # Check for selectors: import pkg.{A, B => C}
+    has_selectors = False
+    for child in stmt_node.children:
+        if child.type == "namespace_selectors":
+            has_selectors = True
+            for sel_child in child.children:
+                if sel_child.type == "arrow_renamed_identifier":
+                    # B => C
+                    parts = node_text(sel_child, src).split("=>")
+                    if len(parts) == 2:
+                        exported = parts[0].strip()
+                        local = parts[1].strip()
+                        names.append(local)
+                        bindings.append(
+                            NamedBinding(local_name=local, exported_name=exported, source_file=None)
+                        )
+                elif sel_child.type == "identifier":
+                    local = node_text(sel_child, src)
+                    names.append(local)
+                    bindings.append(
+                        NamedBinding(local_name=local, exported_name=local, source_file=None)
+                    )
+        elif child.type == "namespace_wildcard":
+            has_selectors = True
+            names.append("*")
+            bindings.append(NamedBinding(local_name="*", exported_name=None, source_file=None))
+
+    if not has_selectors:
+        # Simple import: import pkg.ClassName — extract last segment
+        parts = full_text.split(".")
+        local = parts[-1].strip()
+        if local and local != "_":
+            names.append(local)
+            bindings.append(NamedBinding(local_name=local, exported_name=local, source_file=None))
+
+    return names, bindings
+
+
+def extract_php_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from PHP use declarations."""
+    names: list[str] = []
+    bindings: list[NamedBinding] = []
+
+    for child in stmt_node.children:
+        if child.type == "namespace_use_clause":
+            qualified = ""
+            alias = None
+            saw_as = False
+            for sub in child.children:
+                if sub.type == "qualified_name":
+                    qualified = node_text(sub, src)
+                elif sub.type == "as":
+                    saw_as = True
+                elif sub.type == "name" and saw_as:
+                    alias = node_text(sub, src)
+
+            if not qualified:
+                continue
+
+            # Get the last segment of the namespace path
+            local = qualified.rsplit("\\", 1)[-1] if "\\" in qualified else qualified
+            effective_local = alias if alias else local
+            names.append(effective_local)
+            bindings.append(
+                NamedBinding(local_name=effective_local, exported_name=qualified, source_file=None)
+            )
+
+    return names, bindings
+
+
+def extract_cpp_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
+    """Extract bindings from C/C++ ``#include`` directives."""
+    for child in stmt_node.children:
+        if child.type in ("system_lib_string", "string_literal"):
+            raw = node_text(child, src).strip().strip('<>"')
+            if raw:
+                stem = PurePosixPath(raw).stem
+                return [stem], [
+                    NamedBinding(
+                        local_name=stem,
+                        exported_name=None,
+                        source_file=raw,
+                        is_module_alias=True,
+                    )
+                ]
     return [], []

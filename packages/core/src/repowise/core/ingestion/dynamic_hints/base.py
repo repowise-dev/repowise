@@ -7,9 +7,9 @@ from pathlib import Path
 
 @dataclass
 class DynamicEdge:
-    source: str       # repo-relative path
-    target: str       # repo-relative path
-    edge_type: str    # "dynamic_uses" | "dynamic_imports" | "url_route"
+    source: str  # repo-relative path
+    target: str  # repo-relative path
+    edge_type: str  # "dynamic_uses" | "dynamic_imports" | "url_route"
     hint_source: str  # extractor name
     weight: float = 1.0
 

@@ -31,7 +31,7 @@ pipeline stages produce meaningful output.
 ### Full
 
 Languages with complete pipeline coverage: AST parsing, import resolution,
-call resolution, named bindings, and heritage extraction.
+call resolution, named bindings, heritage extraction, and docstrings.
 
 | Language | Extensions | Entry Points | Import Style |
 |----------|-----------|-------------|-------------|
@@ -41,53 +41,31 @@ call resolution, named bindings, and heritage extraction.
 | **Java** | `.java` | `Main.java` `Application.java` | `import pkg.Class` |
 | **Go** | `.go` | `main.go` `cmd/main.go` | `import "path"` with `go.mod` resolution |
 | **Rust** | `.rs` | `main.rs` `lib.rs` | `use crate::` / `use super::` / `use self::` with `Cargo.toml` |
+| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | `main.cpp` `main.cc` | `#include` with `compile_commands.json` resolution |
 
-All six languages support:
+All seven languages support:
 - Tree-sitter AST parsing with dedicated `.scm` query files
 - Three-tier call resolution (same-file, cross-file, global stem match)
 - Named binding extraction (mapping imported names to source symbols)
 - Heritage extraction (class/interface/trait inheritance chains)
+- Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen)
 - Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS)
 
-### Partial
+### Good
 
-AST parsing and symbol extraction work. Import resolution is available.
-Call resolution or heritage extraction may have gaps.
+AST parsing, symbol extraction, import resolution, call resolution, named
+bindings, heritage extraction, and docstrings. Dedicated resolvers for each
+language.
 
-| Language | Extensions | What Works | Gaps |
-|----------|-----------|-----------|------|
-| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | Symbols, `#include` resolution via `compile_commands.json`, heritage, call captures | No named binding extractor |
-| **C** | `.c` | Symbols (structs, functions, macros), `#include` resolution via `compile_commands.json` | No call captures in `.scm`, no heritage |
-
-C and C++ share the same tree-sitter grammar (`tree-sitter-cpp`). C files
-use a narrower `.scm` query.
-
-### Scaffolded
-
-Tree-sitter query files (`.scm`) and heritage extractors exist, but the
-grammar packages are not yet wired as dependencies. These languages are
-tracked in the file tree and included in wiki generation, but without AST
-detail.
-
-| Language | Extensions | What Exists | What is Missing |
-|----------|-----------|------------|----------------|
-| **Kotlin** | `.kt` `.kts` | `kotlin.scm` (symbols + imports), heritage extractor, builtin data | Grammar not in dependencies, no call captures, no binding extractor |
-| **Ruby** | `.rb` | `ruby.scm` (symbols + require imports), heritage extractor, builtin data | Grammar not in dependencies, no call captures, no binding extractor |
-
-To activate Kotlin or Ruby, install the grammar and add a `LanguageConfig`
-entry --- see [Adding a New Language](#adding-a-new-language) below.
-
-### Traversal
-
-Files are discovered, indexed in git history, and included in wiki
-generation and semantic search. No AST parsing.
-
-| Language | Extensions |
-|----------|-----------|
-| **C#** | `.cs` |
-| **PHP** | `.php` |
-| **Swift** | `.swift` |
-| **Scala** | `.scala` |
+| Language | Extensions | Entry Points | Import Style |
+|----------|-----------|-------------|-------------|
+| **C** | `.c` | `main.c` | `#include` with `compile_commands.json` (shares C++ grammar) |
+| **Kotlin** | `.kt` `.kts` | `Main.kt` `Application.kt` | `import com.example.Foo` |
+| **Ruby** | `.rb` | `main.rb` `app.rb` `config.ru` | `require 'mod'` / `require_relative './mod'` |
+| **C#** | `.cs` | `Program.cs` `Startup.cs` | `using System.Collections.Generic` |
+| **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` |
+| **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.{A, B => C}` |
+| **PHP** | `.php` | `index.php` `public/index.php` | `use Foo\Bar\Baz` |
 
 ### Config / Data
 
@@ -319,21 +297,9 @@ Adding a new language requires zero changes to `parser.py`, `graph.py`,
 
 ## Roadmap
 
-Languages planned for future support, in rough priority order:
-
 | Language | Target Tier | Status |
 |----------|------------|--------|
-| C++ | Full | AST + imports + heritage work; needs binding extractor + docstrings |
-| C | Partial+ | Shares cpp grammar; needs `@call.*` captures in `.scm` + binding extractor |
-| Kotlin | Good | `.scm` and heritage extractor exist, grammar wiring + binding extractor needed |
-| Ruby | Good | `.scm` and heritage extractor exist, grammar wiring + binding extractor needed |
-| C# | Good | Heritage extractor exists, `.scm` + grammar + binding extractor needed |
-| Swift | Good | Spec exists, all extractors needed |
-| Scala | Good | Spec exists, all extractors needed |
-| PHP | Good | Spec exists, all extractors needed |
-| Dart | Good | Stretch goal |
-| Elixir | Good | Stretch goal |
+| Dart | Good | Stretch goal — `tree-sitter-dart` available |
+| Elixir | Good | Stretch goal — `tree-sitter-elixir` available |
 
-See `docs/LANGUAGE_SUPPORT_PLAN.md` for the detailed implementation plan
-and `docs/internals/LANGUAGE_PHASE3_HANDOFF.md` for the next-session
-handoff.
+See `docs/LANGUAGE_SUPPORT_PLAN.md` for the original 3-phase plan.
