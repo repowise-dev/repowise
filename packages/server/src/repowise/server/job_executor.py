@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -127,6 +128,25 @@ class JobProgressCallback:
             logger.debug("progress_update_failed", job_id=self._job_id, exc_info=True)
 
 
+def _git_pull(repo_path: str, branch: str, job_id: str) -> None:
+    """Fetch and reset the repo to the latest remote state before indexing."""
+    try:
+        fetch = subprocess.run(
+            ["git", "-C", repo_path, "fetch", "origin", branch],
+            capture_output=True, text=True, timeout=120,
+        )
+        if fetch.returncode == 0:
+            subprocess.run(
+                ["git", "-C", repo_path, "reset", "--hard", f"origin/{branch}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            logger.info("git_pull_completed", job_id=job_id, branch=branch)
+        else:
+            logger.warning("git_fetch_failed", job_id=job_id, stderr=fetch.stderr[:200])
+    except Exception as exc:
+        logger.warning("git_pull_error", job_id=job_id, error=str(exc)[:200])
+
+
 async def execute_job(job_id: str, app_state: Any) -> None:
     """Execute a pending pipeline job in the background.
 
@@ -161,6 +181,7 @@ async def execute_job(job_id: str, app_state: Any) -> None:
 
             repo_path = repo.local_path
             repo_id = repo.id
+            default_branch = repo.default_branch or "master"
             config = json.loads(job.config_json) if job.config_json else {}
             is_full_resync = config.get("mode") == "full_resync"
 
@@ -173,6 +194,9 @@ async def execute_job(job_id: str, app_state: Any) -> None:
             repo_path=repo_path,
             mode="full_resync" if is_full_resync else "sync",
         )
+
+        # ---- Pull latest code ------------------------------------------------
+        _git_pull(repo_path, default_branch, job_id)
 
         # ---- Resolve LLM provider -----------------------------------------
         llm_client = None

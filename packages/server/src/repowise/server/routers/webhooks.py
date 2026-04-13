@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from repowise.core.persistence import crud
+from repowise.core.persistence.models import GenerationJob
 from repowise.server.deps import get_db_session
+from repowise.server.job_executor import execute_job
 from repowise.server.schemas import WebhookResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
@@ -45,6 +51,20 @@ def _verify_gitlab_token(token_header: str) -> None:
 
     if not hmac.compare_digest(token_header, _GITLAB_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def _launch_job_task(request: Request, job_id: str) -> None:
+    """Launch a background job task from a webhook handler."""
+    task = asyncio.create_task(execute_job(job_id, request.app.state), name=f"job-{job_id}")
+    bg_tasks: set[asyncio.Task] = request.app.state.background_tasks
+    bg_tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        bg_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("background_job_failed", exc_info=t.exception())
+
+    task.add_done_callback(_on_done)
 
 
 @router.post("/github", response_model=WebhookResponse)
@@ -81,12 +101,12 @@ async def github_webhook(
         delivery_id=delivery_id,
     )
 
-    # For push events: create a sync job
+    # For push events: create a sync job and launch it
     if event_type == "push":
         ref = payload.get("ref", "")
         # Only sync pushes to the default branch
         if ref.startswith("refs/heads/"):
-            branch = ref[len("refs/heads/") :]
+            branch = ref[len("refs/heads/"):]
             # Find matching repo by URL
             from sqlalchemy import select
 
@@ -97,18 +117,30 @@ async def github_webhook(
             )
             repo = result.scalar_one_or_none()
             if repo and branch == repo.default_branch:
-                job = await crud.upsert_generation_job(
-                    session,
-                    repository_id=repo.id,
-                    status="pending",
-                    config={
-                        "mode": "incremental",
-                        "trigger": "webhook",
-                        "before": payload.get("before", ""),
-                        "after": payload.get("after", ""),
-                    },
+                # Prevent concurrent pipeline runs on the same repo
+                active = await session.execute(
+                    select(GenerationJob.id)
+                    .where(GenerationJob.repository_id == repo.id)
+                    .where(GenerationJob.status.in_(["pending", "running"]))
+                    .limit(1)
                 )
-                await crud.mark_webhook_processed(session, event.id, job_id=job.id)
+                if active.scalar_one_or_none() is not None:
+                    logger.info("webhook_skip_sync_already_running", extra={"repo": repo.name})
+                else:
+                    job = await crud.upsert_generation_job(
+                        session,
+                        repository_id=repo.id,
+                        status="pending",
+                        config={
+                            "mode": "incremental",
+                            "trigger": "webhook",
+                            "before": payload.get("before", ""),
+                            "after": payload.get("after", ""),
+                        },
+                    )
+                    await crud.mark_webhook_processed(session, event.id, job_id=job.id)
+                    await session.commit()
+                    _launch_job_task(request, job.id)
 
     return WebhookResponse(event_id=event.id)
 
@@ -137,11 +169,11 @@ async def gitlab_webhook(
         payload=payload,
     )
 
-    # For push events: create a sync job
+    # For push events: create a sync job and launch it
     if event_type == "Push Hook":
         ref = payload.get("ref", "")
         if ref.startswith("refs/heads/"):
-            branch = ref[len("refs/heads/") :]
+            branch = ref[len("refs/heads/"):]
             project_url = payload.get("project", {}).get("web_url", "")
 
             from sqlalchemy import select
@@ -153,17 +185,28 @@ async def gitlab_webhook(
             )
             repo = result.scalar_one_or_none()
             if repo and branch == repo.default_branch:
-                job = await crud.upsert_generation_job(
-                    session,
-                    repository_id=repo.id,
-                    status="pending",
-                    config={
-                        "mode": "incremental",
-                        "trigger": "webhook",
-                        "before": payload.get("before", ""),
-                        "after": payload.get("after", ""),
-                    },
+                active = await session.execute(
+                    select(GenerationJob.id)
+                    .where(GenerationJob.repository_id == repo.id)
+                    .where(GenerationJob.status.in_(["pending", "running"]))
+                    .limit(1)
                 )
-                await crud.mark_webhook_processed(session, event.id, job_id=job.id)
+                if active.scalar_one_or_none() is not None:
+                    logger.info("webhook_skip_sync_already_running", extra={"repo": repo.name})
+                else:
+                    job = await crud.upsert_generation_job(
+                        session,
+                        repository_id=repo.id,
+                        status="pending",
+                        config={
+                            "mode": "incremental",
+                            "trigger": "webhook",
+                            "before": payload.get("before", ""),
+                            "after": payload.get("after", ""),
+                        },
+                    )
+                    await crud.mark_webhook_processed(session, event.id, job_id=job.id)
+                    await session.commit()
+                    _launch_job_task(request, job.id)
 
     return WebhookResponse(event_id=event.id)

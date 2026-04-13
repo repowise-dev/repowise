@@ -20,7 +20,7 @@ RUN npm install --production=false
 # Copy source and build
 COPY packages/web/ ./
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NEXT_PUBLIC_REPOWISE_API_URL=http://localhost:7337
+ENV NEXT_PUBLIC_REPOWISE_API_URL=
 RUN npm run build
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ COPY pyproject.toml README.md LICENSE MANIFEST.in ./
 COPY packages/core/ packages/core/
 COPY packages/cli/ packages/cli/
 COPY packages/server/ packages/server/
-RUN pip install --no-cache-dir ".[all]"
+RUN pip install --no-cache-dir ".[all,postgres]"
 
 # Copy built Next.js standalone output
 COPY --from=frontend-builder /app/.next/standalone /app/web

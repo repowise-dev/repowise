@@ -141,9 +141,62 @@ The init container clones repos to `/data/repos/<name>` and writes a manifest to
 kubectl logs <pod-name> -c clone-repos -n <namespace>
 ```
 
+## MCP Server
+
+Repowise exposes an [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server over streamable HTTP at `/api/mcp`. This lets AI tools (Claude Code, Cursor, Copilot, etc.) query your indexed codebase directly.
+
+### Connecting via port-forward
+
+```bash
+kubectl port-forward svc/repowise 7337:7337 -n <namespace>
+```
+
+Then configure your MCP client to connect to:
+
+```
+http://localhost:7337/api/mcp
+```
+
+### Connecting via Ingress
+
+If ingress is enabled, the MCP endpoint is available at:
+
+```
+https://repowise.example.com/api/mcp
+```
+
+### Claude Code configuration
+
+Add to your `.mcp.json` or MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "repowise": {
+      "type": "streamable-http",
+      "url": "http://localhost:7337/api/mcp"
+    }
+  }
+}
+```
+
+### Webhooks (GitHub / GitLab)
+
+Repowise supports webhook-triggered re-indexing. When you push to the default branch, the webhook handler creates a sync job, pulls the latest code, and re-indexes automatically.
+
+Configure your webhook URL as:
+- **GitHub:** `https://<your-host>/api/webhooks/github`
+- **GitLab:** `https://<your-host>/api/webhooks/gitlab`
+
+Set the webhook secret via environment variables:
+```bash
+--set env.REPOWISE_GITHUB_WEBHOOK_SECRET=your-secret
+--set env.REPOWISE_GITLAB_WEBHOOK_TOKEN=your-token
+```
+
 ## Persistence
 
-Repowise stores its SQLite database and indexed repository data under `/data`. The chart creates a PVC by default. To disable (data lost on pod restart):
+Repowise stores its database and indexed repository data under `/data`. The chart creates a PVC by default. To disable (data lost on pod restart):
 
 ```bash
 helm install repowise ./charts/repowise --set persistence.enabled=false

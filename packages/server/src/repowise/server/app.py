@@ -7,6 +7,7 @@ scheduler) and shutdown (cleanup).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -136,7 +137,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     logger.info("repowise_server_started", extra={"version": __version__})
-    yield
+
+    # Start MCP session manager for streamable HTTP transport
+    async with contextlib.AsyncExitStack() as stack:
+        await stack.enter_async_context(app.state.mcp_server.session_manager.run())
+        yield
 
     # Shutdown
     scheduler.shutdown(wait=False)
@@ -187,5 +192,16 @@ def create_app() -> FastAPI:
     app.include_router(decisions.router)
     app.include_router(chat.router)
     app.include_router(providers.router)
+
+    # Mount MCP server (streamable HTTP) — session_manager started in lifespan
+    from repowise.server.mcp_server._server import create_mcp_server
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    mcp_server = create_mcp_server()
+    mcp_server.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    )
+    app.state.mcp_server = mcp_server
+    app.mount("/api", mcp_server.streamable_http_app())
 
     return app
