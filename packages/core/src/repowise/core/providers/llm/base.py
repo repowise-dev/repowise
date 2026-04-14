@@ -15,7 +15,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Protocol, TYPE_CHECKING, runtime_checkable
+
+if TYPE_CHECKING:
+    from repowise.core.rate_limiter import RateLimitConfig, RateLimiter
 
 
 @dataclass
@@ -59,7 +62,59 @@ class BaseProvider(ABC):
     - Return GeneratedResponse with correct token counts
     - Raise ProviderError on non-recoverable API errors
     - Raise RateLimitError on 429 responses after retries are exhausted
+
+    Class Attributes:
+        RATE_LIMIT_TIERS: Optional mapping of tier name to RateLimitConfig.
+            Providers with subscription tiers (e.g., Z.AI's lite/pro/max,
+            MiniMax's starter/plus/max) define this to support tier-aware
+            rate limiting. When set, users can pass ``tier="pro"`` to the
+            constructor and the appropriate rate limiter is created automatically.
     """
+
+    RATE_LIMIT_TIERS: dict[str, Any] = {}  # Override in subclasses
+
+    @staticmethod
+    def resolve_rate_limiter(
+        tier: str | None = None,
+        tiers: dict[str, Any] | None = None,
+        rate_limiter: Any | None = None,
+    ) -> Any | None:
+        """Resolve rate limiter using tier precedence.
+
+        Precedence: tier > explicit rate_limiter > None.
+
+        When tier is set, it takes precedence -- it represents a specific
+        provider signal that overrides the generic registry default.
+
+        Args:
+            tier: Tier name (e.g., 'lite', 'pro', 'max'). Case-insensitive.
+            tiers: Mapping of tier name to RateLimitConfig.
+            rate_limiter: Explicitly provided RateLimiter instance.
+
+        Returns:
+            A RateLimiter instance, or None if neither tier nor
+            rate_limiter is provided.
+
+        Raises:
+            ValueError: If tier is not found in the tiers mapping.
+        """
+        # Late import to avoid circular dependency at module level
+        from repowise.core.rate_limiter import RateLimiter
+
+        if tier is not None:
+            if not tiers:
+                msg = f"Tier {tier!r} specified but provider defines no tiers"
+                raise ValueError(msg)
+            tier_key = tier.lower()
+            tier_config = tiers.get(tier_key)
+            if tier_config is None:
+                valid = ", ".join(sorted(tiers))
+                msg = f"Unknown tier {tier!r}. Valid tiers: {valid}"
+                raise ValueError(msg)
+            return RateLimiter(tier_config)
+        if rate_limiter is not None:
+            return rate_limiter
+        return None
 
     @abstractmethod
     async def generate(

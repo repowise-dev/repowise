@@ -268,11 +268,14 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "litellm": "groq/llama-3.1-70b-versatile",
 }
 
+# For most providers, a single env var indicates configuration.
+# litellm is special: can use LITELLM_API_KEY (cloud) OR LITELLM_BASE_URL (local proxy).
 _PROVIDER_ENV: dict[str, str] = {
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "OLLAMA_BASE_URL",
+    "litellm": "LITELLM_API_KEY",  # Also checks LITELLM_BASE_URL in _detect_provider_status
 }
 
 _PROVIDER_SIGNUP: dict[str, str] = {
@@ -280,6 +283,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
     "ollama": "https://ollama.com/download",
+    "litellm": "https://docs.litellm.ai/docs/proxy/proxy",
 }
 
 
@@ -410,6 +414,10 @@ def _detect_provider_status() -> dict[str, str]:
         if prov == "gemini":
             if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
                 status[prov] = env_var
+        elif prov == "litellm":
+            # litellm can be configured via API key (cloud) OR base URL (local proxy)
+            if os.environ.get("LITELLM_API_KEY") or os.environ.get("LITELLM_BASE_URL"):
+                status[prov] = env_var
         elif os.environ.get(env_var):
             status[prov] = env_var
     return status
@@ -476,14 +484,22 @@ def interactive_provider_select(
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")
         console.print()
-        console.print(f"  [bold]{chosen}[/bold] requires [cyan]{env_var}[/cyan].")
-        if signup_url:
-            console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
-        console.print()
-        key = _prompt_api_key(console, chosen, env_var, repo_path=repo_path)
-        if not key:
-            console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
-            return interactive_provider_select(console, model_flag, repo_path=repo_path)
+        # Special case: litellm local proxy doesn't need an API key
+        if chosen == "litellm" and os.environ.get("LITELLM_BASE_URL"):
+            console.print(
+                f"  [{OK}]✓ Using LiteLLM proxy at[/] [{BRAND}]{os.environ['LITELLM_BASE_URL']}[/]"
+            )
+            console.print("  [dim]No API key required for local proxy.[/dim]")
+            console.print()
+        else:
+            console.print(f"  [bold]{chosen}[/bold] requires [cyan]{env_var}[/cyan].")
+            if signup_url:
+                console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
+            console.print()
+            key = _prompt_api_key(console, chosen, env_var, repo_path=repo_path)
+            if not key:
+                console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
+                return interactive_provider_select(console, model_flag, repo_path=repo_path)
 
     # --- model ---
     default_model = _PROVIDER_DEFAULTS.get(chosen, "")

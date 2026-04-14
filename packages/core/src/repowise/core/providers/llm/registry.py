@@ -7,8 +7,11 @@ enabling community-contributed providers without forking repowise.
 Built-in providers:
     - anthropic  → AnthropicProvider
     - openai     → OpenAIProvider
+    - gemini     → GeminiProvider
     - ollama     → OllamaProvider
     - litellm    → LiteLLMProvider
+    - zai        → ZAIProvider
+    - minimax    → MiniMaxProvider
     - mock       → MockProvider (testing only)
 
 Custom provider registration:
@@ -24,7 +27,8 @@ Custom provider registration:
 from __future__ import annotations
 
 import importlib
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from repowise.core.providers.llm.base import BaseProvider
 from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateLimiter
@@ -39,6 +43,8 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "gemini": ("repowise.core.providers.llm.gemini", "GeminiProvider"),
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
+    "zai": ("repowise.core.providers.llm.zai", "ZAIProvider"),
+    "minimax": ("repowise.core.providers.llm.minimax", "MiniMaxProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
 }
 
@@ -135,6 +141,8 @@ def get_provider(
             "gemini": "google-genai",
             "ollama": "openai",  # ollama uses the openai package
             "litellm": "litellm",
+            "zai": "openai",  # zai uses the openai package (OpenAI-compatible API)
+            "minimax": "openai",  # minimax uses the openai package (OpenAI-compatible API)
         }
         package = _missing.get(name, name)
         raise ImportError(
