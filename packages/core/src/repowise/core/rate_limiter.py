@@ -49,6 +49,16 @@ PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     # Ollama runs locally — effectively unlimited, but we cap to avoid OOM
     "ollama": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
     "litellm": RateLimitConfig(requests_per_minute=60, tokens_per_minute=150_000),
+    # Z.AI: conservative default (Lite tier). Set ZAI_TIER for plan-specific limits.
+    "zai": RateLimitConfig(requests_per_minute=10, tokens_per_minute=50_000),
+}
+
+# Z.AI per-tier rate limits derived from support correspondence (April 2026).
+# Limits are dynamic and load-dependent; these are conservative estimates.
+ZAI_TIER_DEFAULTS: dict[str, RateLimitConfig] = {
+    "lite": RateLimitConfig(requests_per_minute=10, tokens_per_minute=50_000),
+    "pro": RateLimitConfig(requests_per_minute=30, tokens_per_minute=150_000),
+    "max": RateLimitConfig(requests_per_minute=60, tokens_per_minute=300_000),
 }
 
 
