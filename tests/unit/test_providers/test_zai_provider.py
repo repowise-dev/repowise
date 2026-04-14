@@ -189,6 +189,108 @@ async def test_generate_disables_thinking_by_default():
     assert kw["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+# ---------------------------------------------------------------------------
+# Tier-based rate limiting (via generic framework)
+# ---------------------------------------------------------------------------
+
+
+def test_tier_creates_rate_limiter():
+    """Setting tier should create a tier-appropriate rate limiter."""
+    p = ZAIProvider(api_key="test-key", tier="pro")
+    assert p._rate_limiter is not None
+    assert p._rate_limiter.config.requests_per_minute == ZAIProvider.RATE_LIMIT_TIERS["pro"].requests_per_minute
+    assert p._rate_limiter.config.tokens_per_minute == ZAIProvider.RATE_LIMIT_TIERS["pro"].tokens_per_minute
+
+
+def test_tier_lite():
+    """Lite tier should have conservative RPM/TPM limits."""
+    p = ZAIProvider(api_key="test-key", tier="lite")
+    assert p._rate_limiter is not None
+    assert p._rate_limiter.config.requests_per_minute == 10
+    assert p._rate_limiter.config.tokens_per_minute == 50_000
+
+
+def test_tier_pro():
+    """Pro tier should have moderate RPM/TPM limits."""
+    p = ZAIProvider(api_key="test-key", tier="pro")
+    assert p._rate_limiter is not None
+    assert p._rate_limiter.config.requests_per_minute == 30
+    assert p._rate_limiter.config.tokens_per_minute == 150_000
+
+
+def test_tier_max():
+    """Max tier should have the highest RPM/TPM limits."""
+    p = ZAIProvider(api_key="test-key", tier="max")
+    assert p._rate_limiter is not None
+    assert p._rate_limiter.config.requests_per_minute == 60
+    assert p._rate_limiter.config.tokens_per_minute == 300_000
+
+
+def test_tier_case_insensitive():
+    """Tier should be case-insensitive."""
+    p = ZAIProvider(api_key="test-key", tier="PRO")
+    assert p._rate_limiter is not None
+    assert p._rate_limiter.config.requests_per_minute == 30
+
+
+def test_tier_overrides_explicit_rate_limiter():
+    """Tier takes precedence over an explicitly passed rate_limiter."""
+    from repowise.core.rate_limiter import RateLimitConfig, RateLimiter
+
+    explicit_limiter = RateLimiter(RateLimitConfig(requests_per_minute=999, tokens_per_minute=999_999))
+    p = ZAIProvider(api_key="test-key", tier="lite", rate_limiter=explicit_limiter)
+    # Tier wins -- the explicit limiter should be discarded
+    assert p._rate_limiter.config.requests_per_minute == 10
+    assert p._rate_limiter is not explicit_limiter
+
+
+def test_no_tier_no_rate_limiter():
+    """Without tier or rate_limiter, _rate_limiter should be None."""
+    p = ZAIProvider(api_key="test-key")
+    assert p._rate_limiter is None
+
+
+def test_explicit_rate_limiter_without_tier():
+    """Without tier, an explicit rate_limiter should be used."""
+    from repowise.core.rate_limiter import RateLimitConfig, RateLimiter
+
+    limiter = RateLimiter(RateLimitConfig(requests_per_minute=42, tokens_per_minute=420_000))
+    p = ZAIProvider(api_key="test-key", rate_limiter=limiter)
+    assert p._rate_limiter is limiter
+
+
+def test_invalid_tier_raises():
+    """An unrecognized tier should raise ValueError with valid options."""
+    with pytest.raises(ValueError, match="Unknown tier"):
+        ZAIProvider(api_key="test-key", tier="enterprise")
+
+
+def test_tier_stored():
+    """Tier value should be stored on the provider."""
+    p = ZAIProvider(api_key="test-key", tier="pro")
+    assert p._tier == "pro"
+
+
+def test_no_tier_stored_as_none():
+    """Without tier, _tier should be None."""
+    p = ZAIProvider(api_key="test-key")
+    assert p._tier is None
+
+
+def test_provider_has_rate_limit_tiers_attribute():
+    """ZAIProvider should have RATE_LIMIT_TIERS class attribute."""
+    assert hasattr(ZAIProvider, "RATE_LIMIT_TIERS")
+    assert "lite" in ZAIProvider.RATE_LIMIT_TIERS
+    assert "pro" in ZAIProvider.RATE_LIMIT_TIERS
+    assert "max" in ZAIProvider.RATE_LIMIT_TIERS
+
+
+def test_anthropic_no_tiers():
+    """Providers without tier support should have empty RATE_LIMIT_TIERS."""
+    from repowise.core.providers.llm.anthropic import AnthropicProvider
+
+    assert AnthropicProvider.RATE_LIMIT_TIERS == {}
+
 @pytest.mark.asyncio
 async def test_generate_with_thinking_enabled():
     """When thinking is enabled, extra_body should not contain disabled."""

@@ -278,6 +278,8 @@ def resolve_provider(
                 kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
             if os.environ.get("ZAI_THINKING"):
                 kwargs["thinking"] = os.environ["ZAI_THINKING"]
+            if os.environ.get("ZAI_TIER"):
+                kwargs["tier"] = os.environ["ZAI_TIER"]
 
         return get_provider(provider_name, **kwargs)
 
@@ -335,6 +337,8 @@ def resolve_provider(
             kwargs["base_url"] = os.environ["ZAI_BASE_URL"]
         if os.environ.get("ZAI_THINKING"):
             kwargs["thinking"] = os.environ["ZAI_THINKING"]
+        if os.environ.get("ZAI_TIER"):
+            kwargs["tier"] = os.environ["ZAI_TIER"]
         return get_provider("zai", **kwargs)
 
     raise click.ClickException(
