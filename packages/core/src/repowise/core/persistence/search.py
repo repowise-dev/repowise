@@ -222,11 +222,16 @@ class FullTextSearch:
         if not page_ids:
             return
         if self._dialect == "sqlite":
+            # Chunk to stay under SQLite's default 999-parameter limit per statement.
+            chunk_size = 500
             async with self._engine.begin() as conn:
-                for pid in page_ids:
+                for start in range(0, len(page_ids), chunk_size):
+                    chunk = page_ids[start : start + chunk_size]
+                    placeholders = ", ".join(f":p{i}" for i in range(len(chunk)))
+                    params = {f"p{i}": pid for i, pid in enumerate(chunk)}
                     await conn.execute(
-                        text("DELETE FROM page_fts WHERE page_id = :pid"),
-                        {"pid": pid},
+                        text(f"DELETE FROM page_fts WHERE page_id IN ({placeholders})"),
+                        params,
                     )
         # PostgreSQL: rows deleted via CASCADE automatically remove from GIN index.
 
