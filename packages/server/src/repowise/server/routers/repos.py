@@ -21,7 +21,7 @@ from repowise.core.persistence.models import (
     Page,
     Repository,
 )
-from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.deps import get_db_session, get_fts, verify_api_key
 from repowise.server.job_executor import execute_job
 from repowise.server.schemas import RepoCreate, RepoResponse, RepoStatsResponse, RepoUpdate
 
@@ -122,6 +122,32 @@ async def update_repo(
         repo.settings_json = json.dumps(body.settings)
     await session.flush()
     return RepoResponse.from_orm(repo)
+
+
+@router.delete("/{repo_id}")
+async def delete_repo(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    fts=Depends(get_fts),  # noqa: B008
+) -> dict:
+    """Delete a repository and all its data."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    # Collect page IDs before CASCADE deletes the Page rows
+    page_ids = await crud.list_page_ids(session, repo_id)
+
+    # Clean up FTS index (FTS5 virtual table has no FK cascade).
+    # fts is always initialized in the lifespan before the server accepts
+    # requests, so this guard is purely defensive.
+    if fts is not None:
+        await fts.delete_many(page_ids)
+
+    # Delete repository — CASCADE handles all child ORM tables
+    await crud.delete_repository(session, repo_id)
+
+    return {"ok": True, "deleted_pages": len(page_ids)}
 
 
 @router.get("/{repo_id}/stats", response_model=RepoStatsResponse)
