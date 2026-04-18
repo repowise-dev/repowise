@@ -148,8 +148,6 @@ class ZAIProvider(BaseProvider):
 
         # Normalize base URL for OpenAI SDK
         effective_base_url = effective_base_url.rstrip("/")
-        if not effective_base_url.endswith("/v1"):
-            effective_base_url += "/v1"
 
         # Store normalized base_url
         self._base_url = effective_base_url
