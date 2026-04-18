@@ -18,9 +18,15 @@ interface DeleteRepoButtonProps {
   repoId: string;
   repoName: string;
   variant?: "icon" | "button";
+  redirectTo?: string;
 }
 
-export function DeleteRepoButton({ repoId, repoName, variant = "icon" }: DeleteRepoButtonProps) {
+export function DeleteRepoButton({
+  repoId,
+  repoName,
+  variant = "icon",
+  redirectTo,
+}: DeleteRepoButtonProps) {
   const [open, setOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const router = useRouter();
@@ -31,7 +37,11 @@ export function DeleteRepoButton({ repoId, repoName, variant = "icon" }: DeleteR
       const result = await deleteRepo(repoId);
       toast.success(`Deleted ${repoName} — ${result.deleted_pages} pages removed`);
       setOpen(false);
-      router.refresh();
+      if (redirectTo) {
+        router.push(redirectTo);
+      } else {
+        router.refresh();
+      }
     } catch (err) {
       toast.error(`Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
