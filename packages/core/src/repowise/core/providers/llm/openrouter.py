@@ -36,8 +36,11 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
 )
 
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+
+if TYPE_CHECKING:
+    from repowise.core.generation.cost_tracker import CostTracker
 
 log = structlog.get_logger(__name__)
 
@@ -58,11 +61,9 @@ class OpenRouterProvider(BaseProvider):
         rate_limiter: Optional RateLimiter instance.
         http_referer: Optional site URL for OpenRouter rankings/leaderboards.
         app_title:    App name shown on OpenRouter dashboard. Defaults to "repowise".
-
-    Note:
-        Cost tracking is not supported for OpenRouter. It proxies 200+ models
-        with varying prices, and repowise's fallback pricing would show inflated
-        numbers. Check the OpenRouter dashboard for actual costs.
+        cost_tracker: Accepted for registry compatibility but not used — OpenRouter
+                      proxies 200+ models with varying prices, so repowise's fallback
+                      pricing would be misleading. Check the OpenRouter dashboard.
     """
 
     def __init__(
@@ -73,7 +74,7 @@ class OpenRouterProvider(BaseProvider):
         rate_limiter: RateLimiter | None = None,
         http_referer: str | None = None,
         app_title: str = "repowise",
-        **_kwargs: Any,
+        cost_tracker: "CostTracker | None" = None,
     ) -> None:
         resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         if not resolved_key:
@@ -153,7 +154,7 @@ class OpenRouterProvider(BaseProvider):
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
-                max_completion_tokens=max_tokens,
+                max_tokens=max_tokens,
                 temperature=temperature,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -205,7 +206,7 @@ class OpenRouterProvider(BaseProvider):
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_completion_tokens": max_tokens,
+            "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": full_messages,
             "stream": True,

@@ -69,6 +69,21 @@ def test_no_headers_when_empty():
     assert not headers.get("X-Title")
 
 
+def test_accepts_cost_tracker_kwarg():
+    """cost_tracker is accepted for registry parity but ignored (OpenRouter proxies
+    200+ models with varying prices; repowise's fallback pricing would be misleading)."""
+    sentinel = object()
+    p = OpenRouterProvider(api_key="sk-or-test", cost_tracker=sentinel)
+    assert p.provider_name == "openrouter"
+
+
+def test_rejects_unknown_kwargs():
+    """Unknown kwargs must fail loud — silently swallowing them would hide future
+    registry changes (e.g. new tier=, budget= params passed through)."""
+    with pytest.raises(TypeError):
+        OpenRouterProvider(api_key="sk-or-test", future_param="oops")
+
+
 # ---------------------------------------------------------------------------
 # Successful generation
 # ---------------------------------------------------------------------------
@@ -132,7 +147,7 @@ async def test_generate_sends_correct_messages():
 
     kw = captured_kwargs[0]
     assert kw["model"] == "google/gemini-3.1-flash-lite-preview"
-    assert kw["max_completion_tokens"] == 2048
+    assert kw["max_tokens"] == 2048
     assert kw["temperature"] == 0.5
     messages = kw["messages"]
     assert messages[0] == {"role": "system", "content": "system msg"}

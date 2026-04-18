@@ -51,9 +51,10 @@ def test_dimensions_openai_large():
     assert emb.dimensions == 3072
 
 
-def test_dimensions_unknown_model_defaults_to_768():
-    emb = OpenRouterEmbedder(api_key="k", model="some/future-model")
-    assert emb.dimensions == 768
+def test_unknown_model_raises_at_construction():
+    """Unknown models must fail fast — a silent dim fallback would corrupt the vector store."""
+    with pytest.raises(ValueError, match="Unknown embedding model"):
+        OpenRouterEmbedder(api_key="k", model="some/future-model")
 
 
 # ---------------------------------------------------------------------------

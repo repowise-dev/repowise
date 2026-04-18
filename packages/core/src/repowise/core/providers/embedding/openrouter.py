@@ -46,13 +46,21 @@ class OpenRouterEmbedder:
             raise ValueError(
                 "OpenRouter API key required. Pass api_key= or set OPENROUTER_API_KEY env var."
             )
+        if model not in self._DIMS:
+            known = ", ".join(sorted(self._DIMS))
+            raise ValueError(
+                f"Unknown embedding model {model!r}. Stored vectors would be mis-sized "
+                f"against the model's real output, silently corrupting the vector store. "
+                f"Add {model!r} to OpenRouterEmbedder._DIMS with its correct dimension count, "
+                f"or pick a known model: {known}."
+            )
         self._model = model
         self._timeout = timeout
         self._client: object | None = None
 
     @property
     def dimensions(self) -> int:
-        return self._DIMS.get(self._model, 768)
+        return self._DIMS[self._model]
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts using OpenRouter.
