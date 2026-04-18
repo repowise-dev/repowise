@@ -5,11 +5,12 @@ Supports built-in providers and runtime registration of custom providers,
 enabling community-contributed providers without forking repowise.
 
 Built-in providers:
-    - anthropic  → AnthropicProvider
-    - openai     → OpenAIProvider
-    - ollama     → OllamaProvider
-    - litellm    → LiteLLMProvider
-    - mock       → MockProvider (testing only)
+    - anthropic   → AnthropicProvider
+    - openai      → OpenAIProvider
+    - openrouter  → OpenRouterProvider
+    - ollama      → OllamaProvider
+    - litellm     → LiteLLMProvider
+    - mock        → MockProvider (testing only)
 
 Custom provider registration:
     from repowise.core.providers import register_provider
@@ -36,6 +37,7 @@ from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateL
 _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "anthropic": ("repowise.core.providers.llm.anthropic", "AnthropicProvider"),
     "openai": ("repowise.core.providers.llm.openai", "OpenAIProvider"),
+    "openrouter": ("repowise.core.providers.llm.openrouter", "OpenRouterProvider"),
     "gemini": ("repowise.core.providers.llm.gemini", "GeminiProvider"),
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
@@ -134,6 +136,7 @@ def get_provider(
             "openai": "openai",
             "gemini": "google-genai",
             "ollama": "openai",  # ollama uses the openai package
+            "openrouter": "openai",  # openrouter uses the openai package
             "litellm": "litellm",
         }
         package = _missing.get(name, name)

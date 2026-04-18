@@ -57,9 +57,10 @@ def _build_embedder():
     """Build an embedder from REPOWISE_EMBEDDER env var (default: mock).
 
     Supported values:
-        mock    — deterministic 8-dim SHA-256 embedder (default, no API key needed)
-        gemini  — GeminiEmbedder via GEMINI_API_KEY / GOOGLE_API_KEY env var
-        openai  — OpenAIEmbedder via OPENAI_API_KEY env var
+        mock       — deterministic 8-dim SHA-256 embedder (default, no API key needed)
+        gemini     — GeminiEmbedder via GEMINI_API_KEY / GOOGLE_API_KEY env var
+        openai     — OpenAIEmbedder via OPENAI_API_KEY env var
+        openrouter — OpenRouterEmbedder via OPENROUTER_API_KEY env var
     """
     name = os.environ.get("REPOWISE_EMBEDDER", "mock").lower()
     if name == "gemini":
@@ -72,7 +73,12 @@ def _build_embedder():
 
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "text-embedding-3-small")
         return OpenAIEmbedder(model=model)
-    logger.warning("embedder.mock_active — set REPOWISE_EMBEDDER=gemini or openai for real RAG")
+    if name == "openrouter":
+        from repowise.core.providers.embedding.openrouter import OpenRouterEmbedder
+
+        model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "google/gemini-embedding-001")
+        return OpenRouterEmbedder(model=model)
+    logger.warning("embedder.mock_active — set REPOWISE_EMBEDDER=gemini, openai, or openrouter for real RAG")
     return MockEmbedder()
 
 

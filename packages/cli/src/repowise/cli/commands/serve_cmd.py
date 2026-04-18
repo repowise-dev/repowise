@@ -41,6 +41,7 @@ def _setup_embedder() -> None:
     # Detect which providers already have keys in the environment.
     has_gemini = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
+    has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
 
     console.print(
         "\n[bold]Chat & search require an embedder.[/bold] "
@@ -51,18 +52,24 @@ def _setup_embedder() -> None:
     labels = []
     if has_gemini:
         options.append("gemini")
-        labels.append("[1] gemini  [green]✓ key set[/green]")
+        labels.append("[1] gemini      [green]✓ key set[/green]")
     else:
         options.append("gemini")
-        labels.append("[1] gemini  [dim]needs GEMINI_API_KEY / GOOGLE_API_KEY[/dim]")
+        labels.append("[1] gemini      [dim]needs GEMINI_API_KEY / GOOGLE_API_KEY[/dim]")
     if has_openai:
         options.append("openai")
-        labels.append("[2] openai  [green]✓ key set[/green]")
+        labels.append("[2] openai      [green]✓ key set[/green]")
     else:
         options.append("openai")
-        labels.append("[2] openai  [dim]needs OPENAI_API_KEY[/dim]")
+        labels.append("[2] openai      [dim]needs OPENAI_API_KEY[/dim]")
+    if has_openrouter:
+        options.append("openrouter")
+        labels.append("[3] openrouter  [green]✓ key set[/green]")
+    else:
+        options.append("openrouter")
+        labels.append("[3] openrouter  [dim]needs OPENROUTER_API_KEY[/dim]")
     options.append("skip")
-    labels.append("[3] skip    [dim]no chat/search[/dim]")
+    labels.append(f"[{len(options)}] skip        [dim]no chat/search[/dim]")
 
     for label in labels:
         console.print(f"  {label}")
@@ -106,6 +113,11 @@ def _get_or_prompt_api_key(embedder: str) -> str:
         if key:
             return key
         return click.prompt("  OPENAI_API_KEY", default="", show_default=False).strip()
+    if embedder == "openrouter":
+        key = os.environ.get("OPENROUTER_API_KEY", "")
+        if key:
+            return key
+        return click.prompt("  OPENROUTER_API_KEY", default="", show_default=False).strip()
     return ""
 
 
@@ -116,6 +128,8 @@ def _set_api_key_env(embedder: str, key: str) -> None:
         os.environ.setdefault("GEMINI_API_KEY", key)
     elif embedder == "openai":
         os.environ.setdefault("OPENAI_API_KEY", key)
+    elif embedder == "openrouter":
+        os.environ.setdefault("OPENROUTER_API_KEY", key)
 
 
 def _save_global_embedder(embedder: str, api_key: str) -> None:
