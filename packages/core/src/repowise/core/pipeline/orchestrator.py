@@ -321,6 +321,7 @@ async def run_pipeline(
             concurrency=concurrency,
             progress=progress,
             resume=resume,
+            generation_config=config,
         )
 
     # ---- Execution flow tracing -----------------------------------------------
@@ -722,6 +723,7 @@ async def run_generation(
     concurrency: int,
     progress: ProgressCallback | None,
     resume: bool = False,
+    generation_config: Any,                # moved before cost_tracker
     cost_tracker: Any | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
@@ -741,7 +743,9 @@ async def run_generation(
     if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
         llm_client._cost_tracker = cost_tracker
 
-    config = GenerationConfig(max_concurrency=concurrency)
+    # Create a new config based on the passed generation_config, but with desired max_concurrency
+    from dataclasses import replace
+    config = replace(generation_config, max_concurrency=concurrency)
     assembler = ContextAssembler(config)
 
     # Resolve embedder and vector store
@@ -749,8 +753,6 @@ async def run_generation(
 
     if vector_store is None:
         vector_store = InMemoryVectorStore(embedder_impl)
-
-    generator = PageGenerator(llm_client, assembler, config, vector_store=vector_store)
 
     # Job system — use a temp-like dir under repo_path for checkpoints
     jobs_dir = repo_path / ".repowise" / "jobs"
@@ -777,6 +779,14 @@ async def run_generation(
     def on_total_known(total: int) -> None:
         if progress:
             progress.on_phase_start("generation", total)
+
+    generator = PageGenerator(
+        llm_client,
+        assembler,
+        config,
+        vector_store=vector_store,
+        language=config.language,
+    )
 
     generated_pages = await generator.generate_all(
         parsed_files,

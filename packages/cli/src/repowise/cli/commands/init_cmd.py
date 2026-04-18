@@ -408,6 +408,7 @@ def _run_workspace_generation(
                 progress=gen_callback,
                 resume=resume,
                 cost_tracker=cost_tracker,
+                generation_config=gen_config,
             )
         )
 
@@ -977,6 +978,7 @@ def init_command(
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
+    language = config.get("language", "en")
     exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
 
     # Resolve commit limit: CLI flag → config.yaml → default (500)
@@ -1038,6 +1040,8 @@ def init_command(
             f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]"
         )
         console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]")
+        if language != "en":
+            console.print(f"  Language: [cyan]{language}[/cyan]")
 
         # Validate provider connection
         from repowise.core.providers.llm.base import ProviderError
@@ -1149,8 +1153,7 @@ def init_command(
 
         # Cost estimation
         from repowise.core.generation import GenerationConfig
-
-        gen_config = GenerationConfig(max_concurrency=concurrency)
+        gen_config = GenerationConfig(max_concurrency=concurrency, language=language)
         plans = build_generation_plan(
             result.parsed_files, result.graph_builder, gen_config, skip_tests, skip_infra
         )
@@ -1291,6 +1294,7 @@ def init_command(
                     progress=gen_callback,
                     resume=resume,
                     cost_tracker=cost_tracker,
+                    generation_config=gen_config,
                 )
             )
 
