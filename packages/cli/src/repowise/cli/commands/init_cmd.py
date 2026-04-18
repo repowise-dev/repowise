@@ -410,6 +410,7 @@ def _run_workspace_generation(
                 progress=gen_callback,
                 resume=resume,
                 cost_tracker=cost_tracker,
+                generation_config=gen_config,
             )
         )
 
@@ -1154,9 +1155,6 @@ def init_command(
 
         # Cost estimation
         from repowise.core.generation import GenerationConfig
-
-        cfg = load_config(repo_path)
-        language = cfg.get("language", "en")
         gen_config = GenerationConfig(max_concurrency=concurrency, language=language)
         plans = build_generation_plan(
             result.parsed_files, result.graph_builder, gen_config, skip_tests, skip_infra

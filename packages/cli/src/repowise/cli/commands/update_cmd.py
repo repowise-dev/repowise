@@ -88,7 +88,7 @@ def _workspace_update(
             )
 
     from repowise.core.workspace import RepoUpdateResult
-
+    
     results = run_async(
         update_workspace(
             ws_root,
@@ -121,6 +121,7 @@ def _workspace_update(
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--since", default=None, help="Base git ref to diff from (overrides state).")
+@click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
 @click.option(
     "--cascade-budget",
     type=int,
@@ -152,6 +153,7 @@ def update_command(
     dry_run: bool,
     workspace: bool,
     repo_alias: str | None,
+    concurrency: int = 5,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync."""
     start = time.monotonic()
@@ -211,7 +213,7 @@ def update_command(
 
     cfg = load_config(repo_path)
     language = cfg.get("language", "en")
-    config = GenerationConfig(max_concurrency=concurrency, language=language)()
+    config = GenerationConfig(max_concurrency=concurrency, language=language)
 
     # Read exclude patterns from config (set during init or via web UI)
     repo_config = load_config(repo_path)
@@ -331,7 +333,7 @@ def update_command(
 
     # Generate affected pages
     assembler = ContextAssembler(config)
-    generator = PageGenerator(provider, assembler, config)
+    generator = PageGenerator(provider, assembler, config, language=config.language)
     repo_name = repo_path.name
 
     generated_pages = run_async(

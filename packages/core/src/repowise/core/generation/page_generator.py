@@ -959,8 +959,8 @@ class PageGenerator:
         return response
    
     def _compute_cache_key(self, page_type: str, user_prompt: str) -> str:
-        """Return SHA256(model + page_type + user_prompt) as cache key."""
-        raw = f"{self._provider.model_name}:{page_type}:{user_prompt}"
+        """Return SHA256(model + language + page_type + user_prompt) as cache key."""
+        raw = f"{self._provider.model_name}:{self._language}:{page_type}:{user_prompt}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _build_generated_page(
