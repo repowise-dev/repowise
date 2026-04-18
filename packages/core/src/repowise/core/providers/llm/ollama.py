@@ -146,13 +146,7 @@ class OllamaProvider(BaseProvider):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                extra_body={
-                    "options": {
-                        "num_ctx": 32768,   # или 65536, но для qwen3.5:latest 32768 достаточно
-                    }
-                },
             )
-            
         except _OpenAIAPIStatusError as exc:
             raise ProviderError(
                 "ollama", str(exc), status_code=exc.status_code
