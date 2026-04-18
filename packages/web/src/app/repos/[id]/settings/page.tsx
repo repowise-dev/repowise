@@ -109,7 +109,7 @@ export default async function RepoSettingsPage({ params }: Props) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <DeleteRepoButton repoId={id} repoName={repo.name} variant="button" />
+          <DeleteRepoButton repoId={id} repoName={repo.name} variant="button" redirectTo="/" />
         </CardContent>
       </Card>
     </div>
