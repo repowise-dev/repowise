@@ -48,6 +48,7 @@ dependencies = [
     "tree-sitter-swift>=0.0.1",
     "tree-sitter-scala>=0.23,<1",
     "tree-sitter-php>=0.23,<1",
+    "tree-sitter-luau>=1.2,<2",
     # Dependency graph
     "networkx>=3.3,<4",
     "scipy>=1.11,<2",

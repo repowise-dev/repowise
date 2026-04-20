@@ -1011,12 +1011,49 @@ class TestPhpParser:
         assert result.parse_errors == []
 
 
+# ---------------------------------------------------------------------------
+# Luau (issue #52 — Roblox/Rojo support)
+# ---------------------------------------------------------------------------
+
+LUAU_SOURCE = b"""-- Module docstring placeholder.
+
+local Signal = require(script.Parent.Signal)
+local Shared = require(game.ReplicatedStorage.Shared.Util)
+
+type Callback = (value: number) -> ()
+
+function greet(name: string): string
+    return "hello " .. name
+end
+
+function Calculator:add(x: number, y: number): number
+    return x + y
+end
+"""
+
+
+class TestLuauParser:
+    def test_finds_top_level_function(self, parser: ASTParser) -> None:
+        fi = _make_file_info("luau_pkg/init.luau", "luau")
+        result = parser.parse_file(fi, LUAU_SOURCE)
+        names = [s.name for s in result.symbols]
+        assert "greet" in names
+
+    def test_parses_require_imports(self, parser: ASTParser) -> None:
+        fi = _make_file_info("luau_pkg/init.luau", "luau")
+        result = parser.parse_file(fi, LUAU_SOURCE)
+        raw = [i.module_path for i in result.imports]
+        # The .scm emits the raw argument text; the resolver interprets it.
+        assert any("Signal" in m for m in raw)
+        assert any("ReplicatedStorage" in m for m in raw)
+
+
 class TestLanguageConfigs:
     def test_all_supported_languages_have_config(self) -> None:
         expected = {
             "python", "typescript", "javascript", "go", "rust",
             "java", "cpp", "c", "kotlin", "ruby", "csharp", "swift",
-            "scala", "php",
+            "scala", "php", "luau",
         }
         for lang in expected:
             assert lang in LANGUAGE_CONFIGS, f"Missing config for {lang}"
