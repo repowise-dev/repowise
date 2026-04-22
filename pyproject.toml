@@ -108,6 +108,19 @@ dev = [
     "build>=1.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.23,<1",
+    "pytest-snapshot>=0.9,<1",
+    "respx>=0.21,<1",
+    "time-machine>=2.14,<3",
+    "ruff>=0.6,<1",
+    "mypy>=1.11,<2",
+    "types-networkx>=3.3,<4",
+    "httpx>=0.27,<1",
+]
+
 [project.scripts]
 repowise = "repowise.cli.main:cli"
 
@@ -133,8 +146,10 @@ packages = [
     "repowise.core.generation",
     "repowise.core.generation.editor_files",
     "repowise.core.ingestion",
-    "repowise.core.ingestion.parsers",
     "repowise.core.ingestion.dynamic_hints",
+    "repowise.core.ingestion.extractors",
+    "repowise.core.ingestion.languages",
+    "repowise.core.ingestion.resolvers",
     "repowise.core.pipeline",
     "repowise.core.persistence",
     "repowise.core.providers",
@@ -164,19 +179,6 @@ members = [
     "packages/core",
     "packages/cli",
     "packages/server",
-]
-
-[tool.uv]
-dev-dependencies = [
-    "pytest>=8,<9",
-    "pytest-asyncio>=0.23,<1",
-    "pytest-snapshot>=0.9,<1",
-    "respx>=0.21,<1",
-    "time-machine>=2.14,<3",
-    "ruff>=0.6,<1",
-    "mypy>=1.11,<2",
-    "types-networkx>=3.3,<4",
-    "httpx>=0.27,<1",
 ]
 
 # ---------------------------------------------------------------------------
