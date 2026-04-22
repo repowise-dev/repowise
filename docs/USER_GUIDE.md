@@ -71,6 +71,17 @@ repowise --version
 repowise --help
 ```
 
+### From Source with uv
+
+For local development, use the workspace lockfile from the repository root:
+
+```bash
+git clone https://github.com/repowise-dev/repowise.git
+cd repowise
+uv sync --all-packages
+uv run repowise --version
+```
+
 ---
 
 ## Getting Started

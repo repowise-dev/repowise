@@ -92,6 +92,12 @@ These become structured decision records, queryable by Claude Code via `get_why(
 pip install repowise
 ```
 
+Or install the CLI into an isolated uv-managed environment:
+
+```bash
+uv tool install repowise
+```
+
 ### Single repo
 
 ```bash
@@ -594,8 +600,22 @@ Full configuration reference: [docs/CONFIG.md](docs/CONFIG.md)
 ```bash
 git clone https://github.com/repowise-dev/repowise
 cd repowise
-pip install -e "packages/core[dev]"
-pytest tests/unit/
+uv sync --all-packages
+uv run repowise --version
+uv run pytest tests/unit/
+```
+
+Run commands through uv without activating the environment:
+
+```bash
+uv run repowise --help
+```
+
+Or activate the local environment created by `uv sync`:
+
+```bash
+source .venv/bin/activate
+repowise --help
 ```
 
 Full guide including how to add languages and LLM providers: [CONTRIBUTING.md](CONTRIBUTING.md)
