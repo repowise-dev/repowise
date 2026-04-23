@@ -37,6 +37,24 @@ from .models import (
     compute_page_id,
     compute_source_hash,
 )
+# Language name mapping for prompt clarity
+_LANGUAGE_NAMES = {
+    "en": "English",
+    "ru": "Russian",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "tr": "Turkish",
+    "ar": "Arabic",
+    "hi": "Hindi",
+}
 
 log = structlog.get_logger(__name__)
 
@@ -935,9 +953,19 @@ class PageGenerator:
             return self._cache[key]
 
         base_system = SYSTEM_PROMPTS[page_type]
-        if self._language != "en":
+    
+        # Validate and sanitize language
+        lang_code = self._language.lower().strip() if self._language else "en"
+        # Remove any newlines or control characters (prevent prompt injection)
+        lang_code = ''.join(ch for ch in lang_code if ch.isalnum() or ch == '_')
+        if lang_code not in _LANGUAGE_NAMES:
+            log.warning(f"Unknown language code '{lang_code}', falling back to English")
+            lang_code = "en"
+        lang_name = _LANGUAGE_NAMES.get(lang_code, "English")
+    
+        if lang_code != "en":
             language_instruction = (
-                f"Generate all documentation content in {self._language}. "
+                f"Generate all documentation content in {lang_name}. "
                 "Keep all code, file paths, and symbol names in their original form. "
                 "Do not translate them.\n\n"
             )
