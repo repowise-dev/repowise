@@ -722,8 +722,8 @@ async def run_generation(
     vector_store: Any | None,
     concurrency: int,
     progress: ProgressCallback | None,
+    generation_config: Any,
     resume: bool = False,
-    generation_config: Any,                # moved before cost_tracker
     cost_tracker: Any | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.

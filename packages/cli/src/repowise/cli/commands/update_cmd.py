@@ -216,8 +216,7 @@ def update_command(
     config = GenerationConfig(max_concurrency=concurrency, language=language)
 
     # Read exclude patterns from config (set during init or via web UI)
-    repo_config = load_config(repo_path)
-    exclude_patterns: list[str] = list(repo_config.get("exclude_patterns") or [])
+    exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
 
     # Full re-ingest for graph (needed for cascade analysis)
     traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
@@ -256,8 +255,8 @@ def update_command(
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
 
-        _commit_limit = repo_config.get("commit_limit")
-        _follow_renames = repo_config.get("follow_renames", False)
+        _commit_limit = cfg.get("commit_limit")
+        _follow_renames = cfg.get("follow_renames", False)
         git_indexer = GitIndexer(
             repo_path,
             commit_limit=_commit_limit,
