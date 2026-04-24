@@ -68,6 +68,48 @@ class TestScriptRelative:
         assert got == "src/shared/util/init.lua"
 
 
+class TestScriptRelativeWithInstanceMethods:
+    # Rojo-safe idioms — on OSRPS these account for ~93% of `require(...)`.
+    # They must resolve identically to the dot-chain forms in TestScriptRelative.
+
+    def test_wait_for_child_child_module(self) -> None:
+        ctx = _ctx({"src/shared/util/init.luau", "src/shared/util/Signal.luau"})
+        got = resolve_luau_import('script:WaitForChild("Signal")', "src/shared/util/init.luau", ctx)
+        assert got == "src/shared/util/Signal.luau"
+
+    def test_wait_for_child_mixed_with_parent(self) -> None:
+        ctx = _ctx({"src/shared/Signal.luau", "src/client/main.luau"})
+        got = resolve_luau_import(
+            'script.Parent.Parent:WaitForChild("shared"):WaitForChild("Signal")',
+            "src/client/main.luau",
+            ctx,
+        )
+        assert got == "src/shared/Signal.luau"
+
+    def test_find_first_child_sibling(self) -> None:
+        ctx = _ctx({"src/shared/util/init.luau", "src/shared/util/Signal.luau"})
+        got = resolve_luau_import(
+            'script:FindFirstChild("Signal")', "src/shared/util/init.luau", ctx
+        )
+        assert got == "src/shared/util/Signal.luau"
+
+    def test_wait_for_child_with_timeout_arg(self) -> None:
+        # Roblox `WaitForChild(name, timeoutSeconds)` — timeout is discarded.
+        ctx = _ctx({"src/shared/util/init.luau", "src/shared/util/Signal.luau"})
+        got = resolve_luau_import(
+            'script:WaitForChild("Signal", 5)', "src/shared/util/init.luau", ctx
+        )
+        assert got == "src/shared/util/Signal.luau"
+
+    def test_unresolved_wait_for_child_preserves_original_text(self) -> None:
+        # The graph's external-node label should match what the user wrote,
+        # not the post-normalization form — readers shouldn't see a rewritten
+        # `.Foo` when their code says `:WaitForChild("Foo")`.
+        ctx = _ctx(set())
+        got = resolve_luau_import('script.Parent:WaitForChild("Missing")', "src/a.luau", ctx)
+        assert got == 'external:script.Parent:WaitForChild("Missing")'
+
+
 class TestStringLiteral:
     # The parser strips quotes at parser.py:705 before the resolver runs,
     # so every input below is unquoted — matching production.  An earlier

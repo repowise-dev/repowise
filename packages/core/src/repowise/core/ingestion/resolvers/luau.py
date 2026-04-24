@@ -47,7 +47,31 @@ _SCRIPT_RELATIVE = re.compile(r"^\s*script\s*((?:\.\s*\w+\s*)+)\s*$")
 # `game.<Service>.<Path>...` — capture the service and the remainder.
 _GAME_ABSOLUTE = re.compile(r"^\s*game\s*\.\s*(\w+)\s*((?:\.\s*\w+\s*)*)$")
 
+# Roblox name-lookup method calls: `:WaitForChild("Foo")` / `:FindFirstChild("Foo")`.
+# These are the race-safe idioms actual Rojo code uses in place of the bare
+# `.Foo` field access — on OSRPS they account for ~93% of all `require(...)`
+# arguments.  The name-resolution semantics are identical (look up a child of
+# the preceding instance by string name), so we normalize both forms to the
+# dot-chain shape before the `_SCRIPT_RELATIVE` regex runs.  Optional second
+# argument (timeout) is swallowed.
+_INSTANCE_METHOD_CALL = re.compile(
+    r":\s*(?:WaitForChild|FindFirstChild)\s*\(\s*[\"']([A-Za-z_]\w*)[\"']\s*(?:,\s*[^)]+)?\)"
+)
+
 _LUAU_SUFFIXES: tuple[str, ...] = (".luau", ".lua")
+
+
+def _normalize_instance_methods(arg: str) -> str:
+    """Rewrite `:WaitForChild("Foo")` / `:FindFirstChild("Foo")` as `.Foo`.
+
+    Roblox relative-require idioms: ``script.Parent:WaitForChild("Foo")``
+    is semantically equivalent to ``script.Parent.Foo`` for module lookup
+    purposes (both resolve to the child instance named ``Foo``), but only
+    the dot form was matched by ``_SCRIPT_RELATIVE``.  Normalizing up
+    front keeps a single regex for both shapes and avoids duplicating the
+    path-walking logic in ``_resolve_script_relative``.
+    """
+    return _INSTANCE_METHOD_CALL.sub(lambda m: f".{m.group(1)}", arg)
 
 
 def resolve_luau_import(
@@ -60,38 +84,44 @@ def resolve_luau_import(
     ``module_path`` is the argument text captured by ``luau.scm`` after the
     parser's quote-strip pass (see module docstring).  It may be a bare
     filesystem path (from a string-literal require), an instance-path
-    expression such as ``script.Parent.Foo``, or an ``@alias`` reference.
+    expression such as ``script.Parent.Foo`` or
+    ``script.Parent:WaitForChild("Foo")``, or an ``@alias`` reference.
     """
-    arg = module_path.strip()
+    raw = module_path.strip()
+    arg = _normalize_instance_methods(raw)
 
     # Relative instance path: script[.Parent]*.Name[.Name]*
+    # Matched against the normalized form so `:WaitForChild("Foo")` chains
+    # resolve the same as `.Foo` chains.  Unresolved paths fall through with
+    # the *original* text so external-node labels reflect what was actually
+    # written at the call site.
     m = _SCRIPT_RELATIVE.match(arg)
     if m:
         parts = [p.strip() for p in m.group(1).split(".") if p.strip()]
         resolved = _resolve_script_relative(parts, importer_path, ctx)
         if resolved is not None:
             return resolved
-        return ctx.add_external_node(arg)
+        return ctx.add_external_node(raw)
 
     # Absolute instance path: game.<Service>.Path...
     # Full Rojo-tree resolution is deferred to the Rojo follow-up; fall through
     # to an external node so the graph still records the reference.
     if _GAME_ABSOLUTE.match(arg):
-        return ctx.add_external_node(arg)
+        return ctx.add_external_node(raw)
 
     # `.luaurc` alias: require("@dep").  Needs a luaurc reader; deferred.
-    if arg.startswith("@"):
-        return ctx.add_external_node(arg)
+    if raw.startswith("@"):
+        return ctx.add_external_node(raw)
 
     # Everything else is a string-literal path.  The parser has already
-    # stripped surrounding quotes, so `arg` is e.g. `./helper` or
+    # stripped surrounding quotes, so `raw` is e.g. `./helper` or
     # `some/path`.  `_resolve_literal` handles both relative and stem-match
     # resolution; unresolved literals fall through to an external node
     # without any silent filename guess.
-    resolved = _resolve_literal(arg, importer_path, ctx)
+    resolved = _resolve_literal(raw, importer_path, ctx)
     if resolved is not None:
         return resolved
-    return ctx.add_external_node(arg)
+    return ctx.add_external_node(raw)
 
 
 def _resolve_literal(literal: str, importer_path: str, ctx: ResolverContext) -> str | None:
