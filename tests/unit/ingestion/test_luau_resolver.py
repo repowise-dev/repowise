@@ -159,3 +159,26 @@ class TestAbsoluteInstancePath:
         ctx = _ctx({"src/shared/Util.luau"})
         got = resolve_luau_import("game.ReplicatedStorage.Shared.Util", "src/client/main.luau", ctx)
         assert got == "src/shared/Util.luau"
+
+
+class TestLuaurcAlias:
+    @pytest.mark.xfail(
+        reason=".luaurc alias-aware resolution — second Luau follow-up, parallel to Rojo.",
+        strict=True,
+    )
+    def test_alias_resolves_via_luaurc_follow_up(self) -> None:
+        """Expected end state: given a ``.luaurc`` alongside the importer
+        declaring ``{"aliases": {"dep": "./dependency"}}``, a require of
+        ``@dep`` resolves to ``src/dependency.luau``.
+
+        Counts from running `repowise init` against the upstream
+        luau-lang/luau repo: 24 `@alias` requires — every one of them
+        currently lands on the external-node fallback.  Implementing this
+        needs a ``.luaurc`` reader layered in via
+        ``core/ingestion/dynamic_hints/luaurc.py`` (analogous to the Rojo
+        reader), with lookup walking parent directories and child
+        ``.luaurc`` files overriding parent aliases.
+        """
+        ctx = _ctx({"src/dependency.luau"})
+        got = resolve_luau_import("@dep", "src/main.luau", ctx)
+        assert got == "src/dependency.luau"
