@@ -1,23 +1,36 @@
 """Luau import resolution.
 
-Luau's ``require(...)`` accepts three kinds of argument:
+Luau's ``require(...)`` accepts four kinds of argument:
 
-1. String literals — e.g. ``require("some/path")`` (Lemur / plain Lua style).
-2. Relative instance paths — ``require(script.Parent.Foo)`` or
-   ``require(script.Foo)``.
+1. String literals — ``require("./helper")`` or ``require("some/path")``
+   (plain Lua style + Luau's new require-by-string).
+2. Relative instance paths — ``require(script.Parent.Foo)``,
+   ``require(script.Foo)``, or the Rojo-safe variant
+   ``require(script.Parent:WaitForChild("Foo"))``.
 3. Absolute Roblox instance paths — ``require(game.ReplicatedStorage.Foo)``,
    where the leading service is resolved against a Rojo project's ``tree``
    mapping in ``default.project.json``.
+4. ``.luaurc``-aliased requires — ``require("@dep")``, resolved by reading
+   ``.luaurc`` files along the directory hierarchy for an ``aliases`` map.
 
-This resolver handles (1) and (2) directly.  (3) requires reading the Rojo
-project JSON to map a service subtree (e.g. ``ReplicatedStorage.Shared``) back
-to a filesystem directory; that will be layered in via
-``core/ingestion/dynamic_hints/rojo.py`` in a follow-up (issue #52).
+This resolver handles (1) and (2).  (3) requires a Rojo ``default.project.json``
+reader layered in via ``core/ingestion/dynamic_hints/rojo.py``; (4) requires a
+``.luaurc`` reader analogous to the tsconfig resolver.  Both are deferred to
+follow-ups — see the xfail tests in ``test_luau_resolver.py``.
 
 Unresolved paths are intentionally *not* silently matched by filename — a
 wrong edge is worse than no edge when the downstream graph feeds docs and
 dead-code detection.  They fall through to ``add_external_node`` so they
 still appear in the graph as external references.
+
+Parser contract note
+--------------------
+The tree-sitter query in ``queries/luau.scm`` captures the raw argument node;
+``parser.py`` then normalizes the captured text with ``.strip("\"'` ")``
+before calling this function.  String-literal requires therefore arrive here
+*without* their surrounding quotes — e.g. ``require("./helper")`` reaches this
+function as ``./helper``, not ``"./helper"``.  We identify the literal branch
+by process of elimination (doesn't parse as ``script.X`` or ``game.X``).
 """
 
 from __future__ import annotations
@@ -44,21 +57,14 @@ def resolve_luau_import(
 ) -> str | None:
     """Resolve a Luau ``require(...)`` argument to a repo-relative file path.
 
-    ``module_path`` is the raw argument text captured by ``luau.scm`` — it may
-    be a string literal (with surrounding quotes) or a Luau expression such as
-    ``script.Parent.Foo``.
+    ``module_path`` is the argument text captured by ``luau.scm`` after the
+    parser's quote-strip pass (see module docstring).  It may be a bare
+    filesystem path (from a string-literal require), an instance-path
+    expression such as ``script.Parent.Foo``, or an ``@alias`` reference.
     """
     arg = module_path.strip()
 
-    # String literal: require("some/path")
-    if (arg.startswith('"') and arg.endswith('"')) or (arg.startswith("'") and arg.endswith("'")):
-        literal = arg[1:-1]
-        resolved = _resolve_literal(literal, importer_path, ctx)
-        if resolved is not None:
-            return resolved
-        return ctx.add_external_node(literal)
-
-    # Relative: script[.Parent]*.Name[.Name]*
+    # Relative instance path: script[.Parent]*.Name[.Name]*
     m = _SCRIPT_RELATIVE.match(arg)
     if m:
         parts = [p.strip() for p in m.group(1).split(".") if p.strip()]
@@ -67,14 +73,24 @@ def resolve_luau_import(
             return resolved
         return ctx.add_external_node(arg)
 
-    # Absolute: game.<Service>.Path...
-    # Full Rojo-tree resolution is out of scope for this skeleton PR — fall
-    # through to an external node so the graph still records the reference.
-    m = _GAME_ABSOLUTE.match(arg)
-    if m:
+    # Absolute instance path: game.<Service>.Path...
+    # Full Rojo-tree resolution is deferred to the Rojo follow-up; fall through
+    # to an external node so the graph still records the reference.
+    if _GAME_ABSOLUTE.match(arg):
         return ctx.add_external_node(arg)
 
-    # Unknown expression shape — record as external, don't guess.
+    # `.luaurc` alias: require("@dep").  Needs a luaurc reader; deferred.
+    if arg.startswith("@"):
+        return ctx.add_external_node(arg)
+
+    # Everything else is a string-literal path.  The parser has already
+    # stripped surrounding quotes, so `arg` is e.g. `./helper` or
+    # `some/path`.  `_resolve_literal` handles both relative and stem-match
+    # resolution; unresolved literals fall through to an external node
+    # without any silent filename guess.
+    resolved = _resolve_literal(arg, importer_path, ctx)
+    if resolved is not None:
+        return resolved
     return ctx.add_external_node(arg)
 
 

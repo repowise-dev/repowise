@@ -7,6 +7,15 @@ Covers the two resolution modes implemented in this PR:
 
 The ``game.<Service>.Path`` absolute form requires Rojo project JSON and is
 explicitly deferred to a follow-up (issue #52); see the xfail case.
+
+Parser contract
+---------------
+The arguments passed to ``resolve_luau_import`` mirror what the production
+parser emits: ``parser.py`` strips surrounding quotes from the captured
+``@import.module`` text (``.strip("\"'` ")``) before calling the resolver.
+String-literal tests therefore pass *unquoted* paths (``"./helper"`` becomes
+``./helper``) — passing a quoted string here would not reflect the real
+production handoff.
 """
 
 from __future__ import annotations
@@ -60,15 +69,38 @@ class TestScriptRelative:
 
 
 class TestStringLiteral:
+    # The parser strips quotes at parser.py:705 before the resolver runs,
+    # so every input below is unquoted — matching production.  An earlier
+    # version of this test class passed *quoted* strings, which masked a
+    # real bug: the resolver's string-literal branch was unreachable in
+    # production and every `require("…")` landed on the external fallback.
+
     def test_relative_string(self) -> None:
         ctx = _ctx({"src/shared/helper.luau", "src/shared/main.luau"})
-        got = resolve_luau_import('"./helper"', "src/shared/main.luau", ctx)
+        got = resolve_luau_import("./helper", "src/shared/main.luau", ctx)
+        assert got == "src/shared/helper.luau"
+
+    def test_parent_relative_string(self) -> None:
+        ctx = _ctx({"bench/bench_support.lua", "bench/gc/test_foo.lua"})
+        got = resolve_luau_import("../bench_support", "bench/gc/test_foo.lua", ctx)
+        assert got == "bench/bench_support.lua"
+
+    def test_stem_match_bare_path(self) -> None:
+        ctx = _ctx({"src/shared/helper.luau", "src/main.luau"})
+        got = resolve_luau_import("helper", "src/main.luau", ctx)
         assert got == "src/shared/helper.luau"
 
     def test_unresolved_string_goes_external(self) -> None:
         ctx = _ctx(set())
-        got = resolve_luau_import('"nowhere"', "src/a.luau", ctx)
+        got = resolve_luau_import("nowhere", "src/a.luau", ctx)
         assert got == "external:nowhere"
+
+    def test_luaurc_alias_is_external_until_follow_up(self) -> None:
+        # `.luaurc` `@alias` resolution is deferred — see
+        # TestLuaurcAlias.test_alias_resolves_via_luaurc_follow_up.
+        ctx = _ctx({"src/dependency.luau"})
+        got = resolve_luau_import("@dep", "src/main.luau", ctx)
+        assert got == "external:@dep"
 
 
 class TestAbsoluteInstancePath:
