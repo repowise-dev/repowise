@@ -1158,6 +1158,13 @@ end
 """
 
 
+# tree-sitter-luau is a real dep in pyproject.toml, but it is sometimes
+# absent from a partially-synced developer venv (e.g. when an old `uv pip
+# install -e .` ran before the dep was added). Skip explicitly so the
+# failure mode is "go run uv sync" rather than two confusing AssertionErrors.
+pytest.importorskip("tree_sitter_luau", reason="run `uv sync --all-packages`")
+
+
 class TestLuauParser:
     def test_finds_top_level_function(self, parser: ASTParser) -> None:
         fi = _make_file_info("luau_pkg/init.luau", "luau")
