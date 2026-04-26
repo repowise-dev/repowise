@@ -47,6 +47,11 @@
   (simple_identifier) @symbol.name
 ) @symbol.def
 
+; Swift subscript (Q6) — capture the `subscript` keyword as the name
+(subscript_declaration
+  "subscript" @symbol.name
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports
 ; ---------------------------------------------------------------------------

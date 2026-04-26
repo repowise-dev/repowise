@@ -175,6 +175,35 @@ def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
             ):
                 break
 
+    elif lang == "java":
+        for child in root.children:
+            if child.type in ("comment", "block_comment", "line_comment"):
+                text = node_text(child, src).strip()
+                if text.startswith("/**"):
+                    return clean_jsdoc(text)
+            elif child.type not in ("comment", "package_declaration", "import_declaration"):
+                break
+
+    elif lang == "luau":
+        # --[[ block comment ]] or run of leading --- comments
+        triple_dash_lines: list[str] = []
+        for child in root.children:
+            if child.type == "comment":
+                text = node_text(child, src).strip()
+                if text.startswith("--[["):
+                    inner = text[4:]
+                    if inner.endswith("]]"):
+                        inner = inner[:-2]
+                    return inner.strip()
+                if text.startswith("---"):
+                    triple_dash_lines.append(text.lstrip("- ").strip())
+                    continue
+                continue
+            else:
+                break
+        if triple_dash_lines:
+            return "\n".join(triple_dash_lines)
+
     return None
 
 
@@ -276,6 +305,31 @@ def extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
     elif lang == "php":
         # PHPDoc: /** ... */
         return find_preceding_block_comment(def_node, src, "/**")
+
+    elif lang == "luau":
+        # Luau: --[[ block ]] or --- triple-dash lines preceding the symbol
+        parent = def_node.parent
+        if parent is None:
+            return None
+        siblings = list(parent.children)
+        idx = next((i for i, s in enumerate(siblings) if s.id == def_node.id), -1)
+        if idx <= 0:
+            return None
+        lines: list[str] = []
+        i = idx - 1
+        while i >= 0 and siblings[i].type == "comment":
+            text = node_text(siblings[i], src).strip()
+            if text.startswith("--[["):
+                inner = text[4:]
+                if inner.endswith("]]"):
+                    inner = inner[:-2]
+                return inner.strip()
+            if text.startswith("---"):
+                lines.insert(0, text.lstrip("- ").strip())
+                i -= 1
+            else:
+                break
+        return "\n".join(lines) if lines else None
 
     return None
 

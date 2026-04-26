@@ -17,7 +17,12 @@ def _extract_go_heritage(
         return
 
     if type_node.type == "struct_type":
-        body = type_node.child_by_field_name("body") or type_node
+        body = type_node.child_by_field_name("body")
+        if body is None:
+            for child in type_node.children:
+                if child.type == "field_declaration_list":
+                    body = child
+                    break
         if body is None:
             return
         for field_decl in body.children:

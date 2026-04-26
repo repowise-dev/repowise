@@ -5,10 +5,18 @@ from pathlib import Path
 import structlog
 
 from .base import DynamicEdge, DynamicHintExtractor
+from .c import CDynamicHints
 from .django import DjangoDynamicHints
 from .dotnet import DotNetDynamicHints
-from .pytest_hints import PytestDynamicHints
+from .go import GoDynamicHints
+from .luau import LuauDynamicHints
 from .node import NodeDynamicHints
+from .php import PhpDynamicHints
+from .pytest_hints import PytestDynamicHints
+from .ruby import RubyDynamicHints
+from .scala import ScalaDynamicHints
+from .spring import SpringDynamicHints
+from .swift import SwiftDynamicHints
 
 log = structlog.get_logger(__name__)
 
@@ -20,6 +28,14 @@ class HintRegistry:
             PytestDynamicHints(),
             NodeDynamicHints(),
             DotNetDynamicHints(),
+            SpringDynamicHints(),
+            RubyDynamicHints(),
+            PhpDynamicHints(),
+            ScalaDynamicHints(),
+            SwiftDynamicHints(),
+            CDynamicHints(),
+            LuauDynamicHints(),
+            GoDynamicHints(),
         ]
 
     def extract_all(self, repo_root: Path) -> list[DynamicEdge]:

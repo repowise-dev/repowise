@@ -27,6 +27,12 @@ def _extract_java_heritage(
             )
 
     interfaces = def_node.child_by_field_name("interfaces")
+    # Java interface declarations use `extends_interfaces` for the parent list.
+    if interfaces is None:
+        for child in def_node.children:
+            if child.type == "extends_interfaces":
+                interfaces = child
+                break
     if interfaces:
         for child in interfaces.children:
             if child.type in ("implements", "extends", ",", "type_list"):
