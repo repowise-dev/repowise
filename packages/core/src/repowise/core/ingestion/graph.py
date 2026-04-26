@@ -34,7 +34,7 @@ import structlog
 
 from .models import ParsedFile
 from .resolvers import ResolverContext, resolve_import
-from .resolvers.go import read_go_module_path
+from .resolvers.go import read_go_module_path, read_go_modules
 
 log = structlog.get_logger(__name__)
 
@@ -202,13 +202,18 @@ class GraphBuilder:
         stem_map = self._build_stem_map(path_set)
 
         # Construct resolver context
+        go_modules = read_go_modules(self._repo_path)
         ctx = ResolverContext(
             path_set=path_set,
             stem_map=stem_map,
             graph=self._graph,
             repo_path=self._repo_path,
             tsconfig_resolver=self._tsconfig_resolver,
-            go_module_path=read_go_module_path(self._repo_path),
+            go_module_path=(go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)),
+            go_modules=go_modules,
+            has_sfc_files=any(
+                p.endswith((".vue", ".svelte", ".astro")) for p in path_set
+            ),
             parsed_files=self._parsed_files,
         )
 
@@ -615,13 +620,18 @@ class GraphBuilder:
         path_set = set(self._parsed_files.keys())
         stem_map = self._build_stem_map(path_set)
 
+        go_modules = read_go_modules(self._repo_path)
         ctx = ResolverContext(
             path_set=path_set,
             stem_map=stem_map,
             graph=self._graph,
             repo_path=self._repo_path,
             tsconfig_resolver=self._tsconfig_resolver,
-            go_module_path=read_go_module_path(self._repo_path),
+            go_module_path=(go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)),
+            go_modules=go_modules,
+            has_sfc_files=any(
+                p.endswith((".vue", ".svelte", ".astro")) for p in path_set
+            ),
             parsed_files=self._parsed_files,
         )
 

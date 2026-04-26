@@ -36,10 +36,10 @@ call resolution, named bindings, heritage extraction, and docstrings.
 | Language | Extensions | Entry Points | Import Style |
 |----------|-----------|-------------|-------------|
 | **Python** | `.py` `.pyi` | `main.py` `app.py` `__main__.py` `manage.py` `wsgi.py` `asgi.py` | `import x` / `from x import y` |
-| **TypeScript** | `.ts` `.tsx` | `index.ts` `main.ts` `app.ts` `server.ts` | `import { x } from 'y'` / `require()` |
+| **TypeScript** | `.ts` `.tsx` | `index.ts` `main.ts` `app.ts` `server.ts` | `import { x } from 'y'` / `require()` with tsconfig path aliases, npm/yarn/pnpm `workspaces`, and optional `.vue`/`.svelte`/`.astro` SFC probing |
 | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `index.js` `main.js` `app.js` `server.js` | `import` / `require()` |
 | **Java** | `.java` | `Main.java` `Application.java` | `import pkg.Class` |
-| **Go** | `.go` | `main.go` `cmd/main.go` | `import "path"` with `go.mod` resolution |
+| **Go** | `.go` | `main.go` `cmd/main.go` | `import "path"` with multi-module `go.mod` discovery (longest-prefix match) |
 | **Rust** | `.rs` | `main.rs` `lib.rs` | `use crate::` / `use super::` / `use self::` with `Cargo.toml` |
 | **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | `main.cpp` `main.cc` | `#include` with `compile_commands.json` resolution |
 | **C#** | `.cs` | `Program.cs` `Startup.cs` | `using Acme.Domain` / `global using` / `using static` / `using Alias = X.Y.Z` with `.csproj` / `.sln` / `Directory.Build.props` resolution |
@@ -63,11 +63,11 @@ resolvers for each language.
 | Language | Extensions | Entry Points | Import Style |
 |----------|-----------|-------------|-------------|
 | **C** | `.c` | `main.c` | `#include` with `compile_commands.json` (shares C++ grammar) |
-| **Kotlin** | `.kt` `.kts` | `Main.kt` `Application.kt` | `import com.example.Foo` |
-| **Ruby** | `.rb` | `main.rb` `app.rb` `config.ru` | `require 'mod'` / `require_relative './mod'` |
-| **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` |
-| **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.{A, B => C}` |
-| **PHP** | `.php` | `index.php` `public/index.php` | `use Foo\Bar\Baz` |
+| **Kotlin** | `.kt` `.kts` | `Main.kt` `Application.kt` | `import com.example.Foo` with Gradle `settings.gradle(.kts)` subprojects + `sourceSets` overrides |
+| **Ruby** | `.rb` | `main.rb` `app.rb` `config.ru` | `require 'mod'` / `require_relative './mod'` plus Rails / Zeitwerk autoloading (gated on `config/application.rb`) |
+| **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` with SPM `Package.swift` `targets:` → directory mapping |
+| **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.{A, B => C}` with SBT `build.sbt` / Mill `build.sc` multi-project parsing |
+| **PHP** | `.php` | `index.php` `public/index.php` | `use Foo\Bar\Baz` with composer.json `autoload.psr-4` longest-prefix resolution |
 
 ### Config / Data
 

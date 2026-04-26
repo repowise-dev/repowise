@@ -30,13 +30,30 @@ class ResolverContext:
     # Language-specific state
     tsconfig_resolver: Any | None = None
     go_module_path: str | None = None
+    go_modules: tuple[tuple[str, str], ...] = ()  # (module_dir_posix, module_path), longest-first
+    has_sfc_files: bool = False  # any .vue/.svelte/.astro present in path_set
     parsed_files: dict | None = None  # for Rust crate root detection
     compile_commands_cache: dict[str, dict] | None = field(default=None, repr=False)
+    # Lazy per-language indexes are stashed via getattr/setattr (e.g.
+    # ``_php_psr4_map``, ``_ts_workspace_map``, ``_kotlin_index``,
+    # ``_ruby_rails_index``, ``_swift_targets``, ``_scala_index``). This
+    # mirrors the dotnet/index.py pattern and keeps language-specific bloat
+    # off the dataclass.
 
     def stem_lookup(self, stem: str) -> str | None:
         """Return the highest-priority path for *stem*, or None."""
         candidates = self.stem_map.get(stem)
         return candidates[0] if candidates else None
+
+    def rails_lookup(self, name: str) -> str | None:
+        """Resolve a Rails constant (snake_cased) to a repo-relative file via
+        the lazy Zeitwerk autoload index. Returns None if not a Rails repo."""
+        from .ruby_rails import get_or_build_rails_index
+
+        index = get_or_build_rails_index(self)
+        if index is None:
+            return None
+        return index.lookup(name)
 
     def add_external_node(self, module_path: str) -> str:
         """Register an external dependency node and return its key."""
