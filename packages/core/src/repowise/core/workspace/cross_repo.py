@@ -500,6 +500,96 @@ def _scan_go_mod(
     return results
 
 
+def _scan_csproj(
+    repo_path: Path,
+    repo_paths: dict[str, Path],
+    alias: str,
+) -> list[CrossRepoPackageDep]:
+    """Scan every .csproj for cross-repo references.
+
+    Two patterns are recognised:
+
+    1. ``<ProjectReference Include="..\\..\\OtherRepo\\Foo.csproj"/>`` — a
+       relative path that resolves into a sibling indexed repo. Emits
+       ``kind="dotnet_project_ref"``.
+
+    2. ``<PackageReference Include="MyOrg.SharedLib"/>`` whose package id
+       matches a sibling repo's ``<AssemblyName>`` or ``.csproj`` filename.
+       Emits ``kind="dotnet_nuget_internal"`` — the "internal NuGet
+       feed" pattern enterprise teams use when their shared libs live
+       in a separate repo.
+
+    Skips ``bin``/``obj``/``packages``/``.vs``/``TestResults`` build outputs.
+    """
+    from xml.etree import ElementTree as ET
+
+    results: list[CrossRepoPackageDep] = []
+    skip = {"bin", "obj", ".vs", "packages", "node_modules", ".git", "TestResults"}
+
+    # Pre-compute the assembly-name → repo-alias map so we can resolve
+    # internal-NuGet references in a second pass.
+    assembly_to_repo: dict[str, str] = {}
+    for sib_alias, sib_path in repo_paths.items():
+        for csproj in sib_path.rglob("*.csproj"):
+            if any(part in skip for part in csproj.parts):
+                continue
+            try:
+                tree = ET.parse(csproj)
+            except (ET.ParseError, OSError):
+                continue
+            assembly_name = csproj.stem  # default: filename minus extension
+            for elem in tree.getroot().iter():
+                tag = elem.tag.split("}", 1)[1] if elem.tag.startswith("{") else elem.tag
+                if tag == "AssemblyName" and elem.text:
+                    assembly_name = elem.text.strip()
+                    break
+            assembly_to_repo[assembly_name] = sib_alias
+
+    for csproj in repo_path.rglob("*.csproj"):
+        if any(part in skip for part in csproj.parts):
+            continue
+        try:
+            tree = ET.parse(csproj)
+        except (ET.ParseError, OSError):
+            continue
+        try:
+            rel_manifest = csproj.relative_to(repo_path).as_posix()
+        except ValueError:
+            rel_manifest = csproj.name
+
+        for elem in tree.getroot().iter():
+            tag = elem.tag.split("}", 1)[1] if elem.tag.startswith("{") else elem.tag
+            include = elem.get("Include") if elem.attrib else None
+            if not include:
+                continue
+            if tag == "ProjectReference":
+                rel = include.replace("\\", "/")
+                target = _resolve_target_repo(rel, csproj.parent, repo_paths)
+                if target and target != alias:
+                    results.append(
+                        CrossRepoPackageDep(
+                            source_repo=alias,
+                            target_repo=target,
+                            source_manifest=rel_manifest,
+                            kind="dotnet_project_ref",
+                        )
+                    )
+            elif tag == "PackageReference":
+                pkg = include.strip()
+                target = assembly_to_repo.get(pkg)
+                if target and target != alias:
+                    results.append(
+                        CrossRepoPackageDep(
+                            source_repo=alias,
+                            target_repo=target,
+                            source_manifest=rel_manifest,
+                            kind="dotnet_nuget_internal",
+                        )
+                    )
+
+    return results
+
+
 def detect_package_dependencies(
     repo_paths: dict[str, Path],
 ) -> list[CrossRepoPackageDep]:
@@ -508,7 +598,13 @@ def detect_package_dependencies(
     seen: set[tuple[str, str, str]] = set()  # (source, target, kind)
 
     for alias, path in repo_paths.items():
-        for scanner in (_scan_package_json, _scan_pyproject_toml, _scan_cargo_toml, _scan_go_mod):
+        for scanner in (
+            _scan_package_json,
+            _scan_pyproject_toml,
+            _scan_cargo_toml,
+            _scan_go_mod,
+            _scan_csproj,
+        ):
             for dep in scanner(path, repo_paths, alias):
                 key = (dep.source_repo, dep.target_repo, dep.kind)
                 if key not in seen:
