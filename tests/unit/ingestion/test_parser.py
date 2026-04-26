@@ -799,6 +799,132 @@ class TestCSharpParser:
 
 
 # ---------------------------------------------------------------------------
+# C# — modern features (records, delegates, events, namespaces, global using)
+# ---------------------------------------------------------------------------
+
+CSHARP_MODERN_SOURCE = b"""\
+global using System;
+global using static System.Math;
+using Foo = Sample.Very.Long.Namespace.Type;
+using static System.Convert;
+
+namespace Sample.Modern;
+
+public delegate int BinaryOp(int x, int y);
+
+public record User(string Name, int Age);
+
+public record struct Coordinate(double X, double Y);
+
+public class EventBus
+{
+    public event EventHandler<string>? MessageReceived;
+    public string Topic = "default";
+    private const int MaxListeners = 100;
+}
+
+public enum Status { Active, Inactive, Pending }
+"""
+
+
+class TestCSharpModernParser:
+    def test_finds_record(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        names = {s.name for s in result.symbols}
+        assert "User" in names
+
+    def test_finds_record_struct(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        names = {s.name for s in result.symbols}
+        assert "Coordinate" in names
+
+    def test_finds_delegate(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        names = {s.name for s in result.symbols}
+        assert "BinaryOp" in names
+
+    def test_finds_event(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        names = {s.name for s in result.symbols}
+        assert "MessageReceived" in names
+
+    def test_finds_field(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        names = {s.name for s in result.symbols}
+        assert "Topic" in names
+        assert "MaxListeners" in names
+
+    def test_finds_enum_member(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        names = {s.name for s in result.symbols}
+        assert "Active" in names
+        assert "Inactive" in names
+
+    def test_finds_file_scoped_namespace(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        modules = [s for s in result.symbols if s.kind == "module"]
+        assert any("Sample.Modern" in s.name or s.name == "Sample.Modern" for s in modules)
+
+    def test_imports_capture_global_and_static(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        modules = {imp.module_path for imp in result.imports}
+        # global using and using static still surface as imports — full flag
+        # propagation (is_global / is_static) lives in the binding extractor.
+        assert "System" in modules
+        assert any("Math" in m for m in modules)
+        assert any("Convert" in m for m in modules)
+        # The alias form `using Foo = Long.Namespace.Type` is captured as the
+        # right-hand qualified name; alias propagation is wired in Batch 3.
+        assert len(result.imports) >= 3
+
+    def test_no_parse_errors(self, parser: ASTParser) -> None:
+        fi = _make_file_info("csharp_pkg/Modern.cs", "csharp")
+        result = parser.parse_file(fi, CSHARP_MODERN_SOURCE)
+        assert result.parse_errors == []
+
+
+class TestCSharpRegistryMetadata:
+    def test_csharp_spec_has_manifest_files(self) -> None:
+        from repowise.core.ingestion.languages.registry import REGISTRY
+
+        spec = REGISTRY.get("csharp")
+        assert spec is not None
+        assert "global.json" in spec.manifest_files
+        assert "Directory.Build.props" in spec.manifest_files
+
+    def test_csharp_spec_has_blocked_dirs(self) -> None:
+        from repowise.core.ingestion.languages.registry import REGISTRY
+
+        spec = REGISTRY.get("csharp")
+        assert spec is not None
+        assert "bin" in spec.blocked_dirs
+        assert "obj" in spec.blocked_dirs
+
+    def test_csharp_spec_has_generated_suffixes(self) -> None:
+        from repowise.core.ingestion.languages.registry import REGISTRY
+
+        spec = REGISTRY.get("csharp")
+        assert spec is not None
+        assert ".g.cs" in spec.generated_suffixes
+        assert ".Designer.cs" in spec.generated_suffixes
+
+    def test_csharp_record_in_heritage_node_types(self) -> None:
+        from repowise.core.ingestion.languages.registry import REGISTRY
+
+        spec = REGISTRY.get("csharp")
+        assert spec is not None
+        assert "record_declaration" in spec.heritage_node_types
+
+
+# ---------------------------------------------------------------------------
 # Swift
 # ---------------------------------------------------------------------------
 
