@@ -6,6 +6,7 @@ import structlog
 
 from .base import DynamicEdge, DynamicHintExtractor
 from .django import DjangoDynamicHints
+from .dotnet import DotNetDynamicHints
 from .pytest_hints import PytestDynamicHints
 from .node import NodeDynamicHints
 
@@ -18,6 +19,7 @@ class HintRegistry:
             DjangoDynamicHints(),
             PytestDynamicHints(),
             NodeDynamicHints(),
+            DotNetDynamicHints(),
         ]
 
     def extract_all(self, repo_root: Path) -> list[DynamicEdge]:

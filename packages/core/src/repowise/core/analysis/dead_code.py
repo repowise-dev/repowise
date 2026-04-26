@@ -194,6 +194,29 @@ class DeadCodeAnalyzer:
         ".rb": ("autoload ", "const_get(", "send(:require"),
         ".php": ("class_exists(", "interface_exists("),
         ".go": ("plugin.Open(", "reflect.New("),
+        ".cs": (
+            # Reflection-driven type loading
+            "Type.GetType(",
+            "Activator.CreateInstance(",
+            "Assembly.Load(",
+            "Assembly.LoadFrom(",
+            "Assembly.LoadFile(",
+            "GetExecutingAssembly().GetTypes(",
+            # Cross-assembly visibility — types named in the friend assembly
+            # may be used externally even with no static call site.
+            "[assembly: InternalsVisibleTo",
+            # Trim-safe reflection annotation
+            "[DynamicDependency",
+            # MEF / VS extensibility composition
+            "[Export",
+            "[ImportMany",
+            # DI registration: types registered here have no static caller
+            # but the framework instantiates them at runtime. Three forms.
+            "AddScoped<",
+            "AddSingleton<",
+            "AddTransient<",
+            "AddHostedService<",
+        ),
     }
 
     def __init__(

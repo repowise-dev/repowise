@@ -677,8 +677,31 @@ _SPECS: tuple[LanguageSpec, ...] = (
         grammar_package="tree_sitter_c_sharp",
         scm_file="csharp.scm",
         heritage_node_types=frozenset(
-            {"class_declaration", "interface_declaration", "struct_declaration"}
+            {
+                "class_declaration",
+                "interface_declaration",
+                "struct_declaration",
+                "record_declaration",
+            }
         ),
+        entry_point_patterns=("Program.cs", "Startup.cs"),
+        manifest_files=(
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Directory.Packages.props",
+            "global.json",
+            "nuget.config",
+            "NuGet.Config",
+        ),
+        lock_files=("packages.lock.json",),
+        generated_suffixes=(
+            ".g.cs",
+            ".Designer.cs",
+            ".AssemblyInfo.cs",
+            ".AssemblyAttributes.cs",
+            ".g.i.cs",
+        ),
+        blocked_dirs=("bin", "obj", ".vs", "TestResults", "packages"),
         builtin_calls=frozenset(
             {
                 "Console",

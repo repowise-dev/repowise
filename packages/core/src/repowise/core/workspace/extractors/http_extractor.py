@@ -49,10 +49,12 @@ _BLOCKED_DIRS = frozenset(
 _MAX_FILE_SIZE = 512 * 1024  # 512 KB
 
 _PROVIDER_EXTENSIONS = _LANG_REGISTRY.extensions_for(
-    ["python", "typescript", "javascript", "java", "php", "go"]
+    ["python", "typescript", "javascript", "java", "php", "go", "csharp"]
 )
 
-_CONSUMER_EXTENSIONS = _LANG_REGISTRY.extensions_for(["python", "typescript", "javascript"])
+_CONSUMER_EXTENSIONS = _LANG_REGISTRY.extensions_for(
+    ["python", "typescript", "javascript", "csharp"]
+)
 
 _ALL_EXTENSIONS = _PROVIDER_EXTENSIONS | _CONSUMER_EXTENSIONS
 
@@ -75,7 +77,14 @@ def normalize_http_path(path: str) -> str:
     s = path.strip().split("?")[0].lower()
     if s != "/":
         s = s.rstrip("/")
-    # Unify Express :param
+    # ASP.NET routes commonly omit the leading slash; add one so all
+    # frameworks compare on equal footing.
+    if s and not s.startswith("/") and not s.startswith("http"):
+        s = "/" + s
+    # ASP.NET route constraints: `{id:int}` / `{slug:regex(\d+)}` — strip the
+    # ``:type`` portion so the next normalisation step doesn't double-wrap it.
+    s = re.sub(r"(\{[a-z_][\w]*):[^}]+(\})", r"\1\2", s)
+    # Unify Express :param (must run before {…} so it doesn't eat braces).
     s = re.sub(r":(\w+)", "{param}", s)
     # Unify Spring/FastAPI {name} → {param}
     s = re.sub(r"\{[^}]+\}", "{param}", s)
@@ -132,12 +141,39 @@ _GO_ROUTE_RE = re.compile(
     rf"""\.({_METHODS_UPPER}|Handle|HandleFunc)\s*\(\s*['"]([^'"]+)['"]""",
 )
 
+# ASP.NET attribute routing: [HttpGet("path")], [HttpPost("path")], etc.
+# The leading bracket may be on its own line, so we anchor on the attribute name.
+_ASPNET_METHOD_RE = re.compile(
+    r"""\[\s*Http(Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
+
+# Parameterless attribute: [HttpPost] / [HttpGet] — the route is the class
+# prefix only. We capture an empty path that the prefix-stitcher will fill in.
+_ASPNET_BARE_METHOD_RE = re.compile(
+    r"""\[\s*Http(Get|Post|Put|Delete|Patch)\s*\]""",
+    re.IGNORECASE,
+)
+
+# ASP.NET class-level prefix: [Route("api/users")] above an [ApiController] class.
+_ASPNET_CLASS_ROUTE_RE = re.compile(
+    r"""\[\s*Route\s*\(\s*['"]([^'"]+)['"]""",
+)
+
+# ASP.NET minimal API: app.MapGet("/users", ...) — same shape, different method names.
+_ASPNET_MINIMAL_RE = re.compile(
+    rf"""\.\s*Map({_METHODS})\s*\(\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
+
 _PROVIDER_PATTERNS = [
     (_EXPRESS_RE, "express"),
     (_FASTAPI_RE, "fastapi"),
     (_SPRING_METHOD_RE, "spring"),
     (_LARAVEL_RE, "laravel"),
     (_GO_ROUTE_RE, "go"),
+    (_ASPNET_METHOD_RE, "aspnet"),
+    (_ASPNET_MINIMAL_RE, "aspnet-minimal"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -162,6 +198,12 @@ _AXIOS_RE = re.compile(
 # requests.get('http://host/api/users') or httpx.post(...)
 _REQUESTS_RE = re.compile(
     rf"""(?:requests|httpx)\.({_METHODS})\s*\(\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
+
+# C# HttpClient: client.GetAsync("/api/users") / PostAsync / PutAsync / DeleteAsync
+_HTTPCLIENT_RE = re.compile(
+    rf"""\.\s*({_METHODS})Async\s*\(\s*['"]([^'"]+)['"]""",
     re.IGNORECASE,
 )
 
@@ -223,6 +265,13 @@ class HttpExtractor:
                         for cm in _SPRING_CLASS_RE.finditer(content):
                             spring_class_mappings.append((cm.start(), cm.group(1).rstrip("/")))
 
+                    # ASP.NET: same prefix-stitching logic as Spring — [Route("api/users")]
+                    # above an [ApiController] class anchors the per-method prefixes.
+                    aspnet_class_mappings: list[tuple[int, str]] = []
+                    if suffix == ".cs":
+                        for cm in _ASPNET_CLASS_ROUTE_RE.finditer(content):
+                            aspnet_class_mappings.append((cm.start(), cm.group(1).rstrip("/")))
+
                     for pattern, framework in _PROVIDER_PATTERNS:
                         for match in pattern.finditer(content):
                             method_raw = match.group(1)
@@ -248,6 +297,20 @@ class HttpExtractor:
                                 if spring_prefix:
                                     path_raw = spring_prefix + "/" + path_raw.lstrip("/")
 
+                            # Apply ASP.NET class-level prefix using the same nearest-
+                            # preceding rule. Skipped for the minimal-API pattern since
+                            # those are not inside controller classes.
+                            if framework == "aspnet" and aspnet_class_mappings:
+                                match_pos = match.start()
+                                cls_prefix = ""
+                                for pos, prefix in aspnet_class_mappings:
+                                    if pos < match_pos:
+                                        cls_prefix = prefix
+                                    else:
+                                        break
+                                if cls_prefix:
+                                    path_raw = cls_prefix + "/" + path_raw.lstrip("/")
+
                             norm_path = normalize_http_path(path_raw)
 
                             # Skip paths that look like template variables or empty
@@ -271,6 +334,42 @@ class HttpExtractor:
                                         "method": method,
                                         "path": norm_path,
                                         "framework": framework,
+                                    },
+                                )
+                            )
+
+                    # Bare ASP.NET attributes — `[HttpPost]` with no route arg.
+                    # The path is whichever class-level [Route("...")] precedes
+                    # the attribute. If no class route exists, we skip the
+                    # match — there's no useful path to record.
+                    if suffix == ".cs" and aspnet_class_mappings:
+                        for match in _ASPNET_BARE_METHOD_RE.finditer(content):
+                            method = match.group(1).upper()
+                            match_pos = match.start()
+                            cls_prefix = ""
+                            for pos, prefix in aspnet_class_mappings:
+                                if pos < match_pos:
+                                    cls_prefix = prefix
+                                else:
+                                    break
+                            if not cls_prefix:
+                                continue
+                            norm_path = normalize_http_path(cls_prefix)
+                            contract_id = f"http::{method}::{norm_path}"
+                            contracts.append(
+                                Contract(
+                                    repo=repo_alias,
+                                    contract_id=contract_id,
+                                    contract_type="http",
+                                    role="provider",
+                                    file_path=rel_path,
+                                    symbol_name=f"aspnet:{method} {cls_prefix}",
+                                    confidence=0.85,
+                                    service=None,
+                                    meta={
+                                        "method": method,
+                                        "path": norm_path,
+                                        "framework": "aspnet",
                                     },
                                 )
                             )
@@ -341,6 +440,35 @@ class HttpExtractor:
                                 meta={"method": method, "path": norm_path, "client": "axios"},
                             )
                         )
+
+                    # C# HttpClient (only run on .cs files to avoid false matches
+                    # against non-HTTP `*Async` methods like `WriteAsync`).
+                    if suffix == ".cs":
+                        for match in _HTTPCLIENT_RE.finditer(content):
+                            method = match.group(1).upper()
+                            url = match.group(2)
+                            if "/" not in url:
+                                continue  # Avoid matching non-URL strings.
+                            path = _extract_path_from_url(url)
+                            norm_path = normalize_http_path(path)
+                            contract_id = f"http::{method}::{norm_path}"
+                            contracts.append(
+                                Contract(
+                                    repo=repo_alias,
+                                    contract_id=contract_id,
+                                    contract_type="http",
+                                    role="consumer",
+                                    file_path=rel_path,
+                                    symbol_name=f"httpclient:{method} {url}",
+                                    confidence=0.70,
+                                    service=None,
+                                    meta={
+                                        "method": method,
+                                        "path": norm_path,
+                                        "client": "httpclient",
+                                    },
+                                )
+                            )
 
                     # requests / httpx
                     for match in _REQUESTS_RE.finditer(content):

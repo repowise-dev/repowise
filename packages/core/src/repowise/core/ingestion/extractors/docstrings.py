@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from tree_sitter import Node
 
 from .helpers import (
@@ -11,6 +13,32 @@ from .helpers import (
     find_preceding_jsdoc,
     node_text,
 )
+
+
+# C# XML doc comments use a small set of tags. We extract <summary> as the
+# primary docstring text and drop the structural markup. The fragments are
+# rarely strict XML (e.g. unclosed <see cref="..."/> in legacy code), so a
+# real parser would refuse to load them — regex extraction is correct here.
+_CSHARP_SUMMARY_RE = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL | re.IGNORECASE)
+_CSHARP_TAG_RE = re.compile(r"<[^>]+>")
+_CSHARP_INHERITDOC_RE = re.compile(r"<inheritdoc\s*/?>", re.IGNORECASE)
+
+
+def _csharp_clean_xml_doc(text: str) -> str:
+    """Strip XML scaffolding from a C# /// XML doc string.
+
+    If a <summary> block is present, return its inner text (with tags
+    removed). Otherwise return the input with all tags stripped. This
+    mirrors the convention dotnet's documentation tooling applies when
+    rendering Markdown.
+    """
+    if _CSHARP_INHERITDOC_RE.search(text):
+        # Mark the doc so a future post-pass can resolve it from the parent.
+        return "{inheritdoc}"
+    summary_match = _CSHARP_SUMMARY_RE.search(text)
+    body = summary_match.group(1) if summary_match else text
+    body = _CSHARP_TAG_RE.sub("", body)
+    return " ".join(body.split())
 
 
 def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
@@ -89,13 +117,29 @@ def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
         return "\n".join(lines) if lines else None
 
     elif lang == "csharp":
+        # Module-level XML doc: a run of `///` lines, optionally preceded by
+        # a /** block. Either form may appear before any using directives or
+        # the (file-scoped) namespace declaration.
+        triple_slash_lines: list[str] = []
         for child in root.children:
             if child.type == "comment":
                 text = node_text(child, src).strip()
                 if text.startswith("/**"):
                     return clean_jsdoc(text)
-            elif child.type not in ("comment", "using_directive"):
+                if text.startswith("///"):
+                    triple_slash_lines.append(text.lstrip("/ ").strip())
+                    continue
+                # Plain // comment — ignore but keep scanning for /// runs.
+                continue
+            elif child.type not in (
+                "comment",
+                "using_directive",
+                "global_using_directive",
+                "extern_alias_directive",
+            ):
                 break
+        if triple_slash_lines:
+            return _csharp_clean_xml_doc("\n".join(triple_slash_lines))
 
     elif lang == "swift":
         for child in root.children:
@@ -209,11 +253,14 @@ def extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
         return _find_preceding_line_doc_comments(def_node, src, "#")
 
     elif lang == "csharp":
-        # XML doc comments: /// lines or /** block
+        # XML doc comments: /// lines or /** block. After collecting the raw
+        # text, strip XML tags so callers see the human-readable summary.
         result = find_preceding_block_comment(def_node, src, "/**")
+        if not result:
+            result = _find_preceding_line_doc_comments(def_node, src, "///")
         if result:
-            return result
-        return _find_preceding_line_doc_comments(def_node, src, "///")
+            return _csharp_clean_xml_doc(result)
+        return None
 
     elif lang == "swift":
         # Swift doc: /** block or /// lines
