@@ -10,6 +10,7 @@ from .csharp import resolve_csharp_import
 from .generic import resolve_generic_import
 from .go import resolve_go_import
 from .kotlin import resolve_kotlin_import
+from .luau import resolve_luau_import
 from .php import resolve_php_import
 from .python import resolve_python_import
 from .ruby import resolve_ruby_import
@@ -29,6 +30,7 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "cpp": resolve_cpp_import,
     "c": resolve_cpp_import,
     "kotlin": resolve_kotlin_import,
+    "luau": resolve_luau_import,
     "ruby": resolve_ruby_import,
     "csharp": resolve_csharp_import,
     "swift": resolve_swift_import,

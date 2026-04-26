@@ -413,6 +413,18 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         ),
         entry_point_patterns=["index.php", "public/index.php"],
     ),
+    "luau": LanguageConfig(
+        symbol_node_types={
+            "function_declaration": "function",
+            "type_definition": "type_alias",
+        },
+        import_node_types=["function_call"],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+        entry_point_patterns=["init.luau", "init.lua"],
+    ),
 }
 
 
