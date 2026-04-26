@@ -21,6 +21,28 @@
   (identifier) @symbol.name
 ) @symbol.def
 
+; typealias Foo = Bar (Q2)
+(type_alias
+  (identifier) @symbol.name
+) @symbol.def
+
+; Top-level / class-level val/var properties (Q3) — excludes locals inside functions
+(source_file
+  (property_declaration
+    (variable_declaration
+      (identifier) @symbol.name
+    )
+  ) @symbol.def
+)
+
+(class_body
+  (property_declaration
+    (variable_declaration
+      (identifier) @symbol.name
+    )
+  ) @symbol.def
+)
+
 ; ---------------------------------------------------------------------------
 ; Imports
 ; ---------------------------------------------------------------------------

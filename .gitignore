@@ -120,4 +120,8 @@ ehthumbs.db
 # Internal docs (not for distribution)
 docs/COMPETITIVE_ANALYSIS.md
 docs/GRAPH_INTELLIGENCE_UPGRADE.md
+docs/LOCAL_DEV.md
 docs/multi-repo/
+
+# Local-only language work tracker (not for git)
+docs/LANGUAGE_REMAINING_WORK.md

@@ -37,6 +37,24 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
     if resolved is not None:
         return resolved
 
+    # Cargo workspace sibling crate: `use sibling_crate::...`
+    from .rust_workspace import get_or_build_cargo_workspace_index
+
+    ws_index = get_or_build_cargo_workspace_index(ctx)
+    if ws_index is not None:
+        sibling_src = ws_index.lookup(prefix)
+        if sibling_src is not None and sibling_src != crate_root:
+            resolved = _probe_rust_path(sibling_src, parts[1:], ctx.path_set)
+            if resolved is None:
+                # Probe the crate root itself (lib.rs / main.rs) when the
+                # import has no further path segments.
+                for root_file in ("lib.rs", "main.rs"):
+                    candidate = f"{sibling_src}/{root_file}"
+                    if candidate in ctx.path_set:
+                        return candidate
+            if resolved is not None:
+                return resolved
+
     # External crate
     return ctx.add_external_node(module_path)
 

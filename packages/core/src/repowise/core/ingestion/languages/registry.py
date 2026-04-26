@@ -677,8 +677,31 @@ _SPECS: tuple[LanguageSpec, ...] = (
         grammar_package="tree_sitter_c_sharp",
         scm_file="csharp.scm",
         heritage_node_types=frozenset(
-            {"class_declaration", "interface_declaration", "struct_declaration"}
+            {
+                "class_declaration",
+                "interface_declaration",
+                "struct_declaration",
+                "record_declaration",
+            }
         ),
+        entry_point_patterns=("Program.cs", "Startup.cs"),
+        manifest_files=(
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Directory.Packages.props",
+            "global.json",
+            "nuget.config",
+            "NuGet.Config",
+        ),
+        lock_files=("packages.lock.json",),
+        generated_suffixes=(
+            ".g.cs",
+            ".Designer.cs",
+            ".AssemblyInfo.cs",
+            ".AssemblyAttributes.cs",
+            ".g.i.cs",
+        ),
+        blocked_dirs=("bin", "obj", ".vs", "TestResults", "packages"),
         builtin_calls=frozenset(
             {
                 "Console",
@@ -773,7 +796,9 @@ _SPECS: tuple[LanguageSpec, ...] = (
         extensions=frozenset({".swift"}),
         grammar_package="tree_sitter_swift",
         scm_file="swift.scm",
-        heritage_node_types=frozenset({"class_declaration", "protocol_declaration"}),
+        heritage_node_types=frozenset(
+            {"class_declaration", "protocol_declaration", "extension_declaration"}
+        ),
         manifest_files=("Package.swift",),
         builtin_calls=frozenset(
             {

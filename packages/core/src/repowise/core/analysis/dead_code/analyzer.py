@@ -1,200 +1,40 @@
-"""Dead code detection for repowise.
+"""DeadCodeAnalyzer — pure graph + git-metadata dead-code detection.
 
-Pure graph traversal + SQL — no LLM calls. Must complete in < 10 seconds.
+All analysis is graph traversal + SQL. No LLM calls. Must complete in
+< 10 seconds.
 
-Detects unreachable files, unused exports, unused internals, and
-zombie packages using the dependency graph and git metadata.
+The four detection passes (unreachable files, unused exports, unused
+internals, zombie packages) live as methods on this class. Constants,
+data models, and dynamic-import markers live in sibling modules under
+this package.
 """
 
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from .constants import (
+    _DEFAULT_DYNAMIC_PATTERNS,
+    _FRAMEWORK_DECORATORS,
+    _NEVER_FLAG_PATTERNS,
+    _NON_CODE_LANGUAGES,
+    _is_fixture_path,
+)
+from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
+from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 
 logger = structlog.get_logger(__name__)
-
-
-class DeadCodeKind(StrEnum):
-    UNREACHABLE_FILE = "unreachable_file"
-    UNUSED_EXPORT = "unused_export"
-    UNUSED_INTERNAL = "unused_internal"
-    ZOMBIE_PACKAGE = "zombie_package"
-
-
-@dataclass
-class DeadCodeFindingData:
-    kind: DeadCodeKind
-    file_path: str
-    symbol_name: str | None
-    symbol_kind: str | None
-    confidence: float
-    reason: str
-    last_commit_at: datetime | None
-    commit_count_90d: int
-    lines: int
-    package: str | None
-    evidence: list[str]
-    safe_to_delete: bool
-    primary_owner: str | None
-    age_days: int | None
-
-
-@dataclass
-class DeadCodeReport:
-    repo_id: str
-    analyzed_at: datetime
-    total_findings: int
-    findings: list[DeadCodeFindingData]
-    deletable_lines: int
-    confidence_summary: dict  # {"high": N, "medium": N, "low": N}
-
-
-# Non-code languages that should never be flagged as dead code.
-# Derived from the centralised LanguageRegistry — passthrough config/infra
-# languages plus "unknown".
-_NON_CODE_LANGUAGES: frozenset[str] = frozenset(
-    spec.tag
-    for spec in _LANG_REGISTRY.all_specs()
-    if spec.is_passthrough and (not spec.is_code or spec.is_infra) and spec.tag != "openapi"
-) | {"unknown"}
-
-# Patterns that should never be flagged as dead
-_NEVER_FLAG_PATTERNS = (
-    "*__init__.py",
-    "*__main__.py",
-    "*conftest.py",
-    "*alembic/env.py",
-    "*manage.py",
-    "*wsgi.py",
-    "*asgi.py",
-    "*migrations*",
-    "*schema*",
-    "*seed*",
-    "*.d.ts",
-    "*setup.py",
-    "*setup.cfg",
-    "*next.config.*",
-    "*vite.config.*",
-    "*tailwind.config.*",
-    "*postcss.config.*",
-    "*jest.config.*",
-    "*vitest.config.*",
-    # Next.js / Remix / SvelteKit framework route files — loaded by the
-    # framework at runtime, never imported via module imports.
-    "*/page.tsx",
-    "*/page.ts",
-    "*/page.jsx",
-    "*/page.js",
-    "*/layout.tsx",
-    "*/layout.ts",
-    "*/route.tsx",
-    "*/route.ts",
-    "*/loading.tsx",
-    "*/error.tsx",
-    "*/not-found.tsx",
-    "*/template.tsx",
-    "*/default.tsx",
-    # Nuxt route pages
-    "*/pages/*.vue",
-)
-
-# Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
-_FRAMEWORK_DECORATORS = (
-    "pytest.fixture",
-    "pytest.mark",
-    # Flask
-    "app.route",
-    "blueprint.route",
-    "bp.route",
-    # FastAPI
-    "router.get",
-    "router.post",
-    "router.put",
-    "router.delete",
-    "router.patch",
-    "app.get",
-    "app.post",
-    # Django
-    "admin.register",
-    "receiver",
-)
-
-# Default dynamic patterns (plugins, handlers, etc.)
-_DEFAULT_DYNAMIC_PATTERNS = (
-    "*Plugin",
-    "*Handler",
-    "*Adapter",
-    "*Middleware",
-    "*Mixin",
-    "*Command",
-    "register_*",
-    "on_*",
-    # Common route/view patterns
-    "*_view",
-    "*_endpoint",
-    "*_route",
-    "*_callback",
-    "*_signal",
-    "*_task",
-)
-
-# Path segments that indicate test fixture / sample data directories.
-# Files under these directories are test data, not real code — they should
-# never be flagged as dead even if nothing imports them.
-_FIXTURE_PATH_SEGMENTS = (
-    "fixture",
-    "fixtures",
-    "testdata",
-    "test_data",
-    "sample_repo",
-    "mock_data",
-    "test_assets",
-)
-
-
-def _is_fixture_path(path: str) -> bool:
-    """Return True if path is under a test fixture / sample data directory."""
-    path_lower = path.lower().replace("\\", "/")
-    for seg in _FIXTURE_PATH_SEGMENTS:
-        if f"/{seg}/" in path_lower or path_lower.startswith(f"{seg}/"):
-            return True
-    return False
 
 
 class DeadCodeAnalyzer:
     """Detects unreachable files, unused exports, unused internals, and
     zombie packages using the dependency graph and git metadata.
-
-    All analysis is graph traversal + SQL. No LLM calls.
     """
-
-    # Patterns in source that indicate dynamic/runtime imports, keyed by suffix.
-    _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
-        ".py": (
-            "importlib.import_module",
-            "__import__(",
-            "importlib.reload",
-            "pkgutil.iter_modules",
-        ),
-        ".js": ("import(", "require(", "require.resolve("),
-        ".mjs": ("import(", "require("),
-        ".cjs": ("require(", "require.resolve("),
-        ".ts": ("import(", "require("),
-        ".tsx": ("import(", "require("),
-        ".java": ("Class.forName(", "ServiceLoader.load("),
-        ".kt": ("Class.forName(", "ServiceLoader.load("),
-        ".rb": ("autoload ", "const_get(", "send(:require"),
-        ".php": ("class_exists(", "interface_exists("),
-        ".go": ("plugin.Open(", "reflect.New("),
-    }
 
     def __init__(
         self,
@@ -204,33 +44,9 @@ class DeadCodeAnalyzer:
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
-        self._dynamic_import_files = self._find_dynamic_import_files(parsed_files or {})
-
-    @classmethod
-    def _find_dynamic_import_files(cls, parsed_files: dict) -> set[str]:
-        """Return set of file paths that contain dynamic import calls.
-
-        When a repo uses ``importlib.import_module``, ``import()``,
-        ``Class.forName()``, etc., unreachable modules in the same package
-        may be loaded at runtime.  We use this to lower confidence on those
-        findings.
-        """
-        result: set[str] = set()
-        for path, pf in parsed_files.items():
-            try:
-                abs_path = getattr(pf, "file_info", None)
-                if abs_path is None:
-                    continue
-                src_path = Path(abs_path.abs_path)
-                markers = cls._DYNAMIC_IMPORT_MARKERS.get(src_path.suffix)
-                if not markers:
-                    continue
-                source = src_path.read_text(errors="ignore")
-                if any(marker in source for marker in markers):
-                    result.add(path)
-            except Exception:
-                continue
-        return result
+        self._dynamic_import_files = find_dynamic_import_files(
+            parsed_files or {}
+        ) | find_dynamic_edge_files(graph)
 
     def analyze(self, config: dict | None = None) -> DeadCodeReport:
         """Full analysis. Returns report with all findings."""
@@ -246,13 +62,12 @@ class DeadCodeAnalyzer:
         if cfg.get("detect_unused_exports", True):
             findings.extend(self._detect_unused_exports(dynamic_patterns, whitelist))
 
-        if cfg.get("detect_unused_internals", False):
+        if cfg.get("detect_unused_internals", True):
             findings.extend(self._detect_unused_internals(dynamic_patterns, whitelist))
 
         if cfg.get("detect_zombie_packages", True):
             findings.extend(self._detect_zombie_packages(whitelist))
 
-        # Apply min_confidence filter
         min_conf = cfg.get("min_confidence", 0.4)
         findings = [f for f in findings if f.confidence >= min_conf]
 
@@ -276,7 +91,6 @@ class DeadCodeAnalyzer:
         self, affected_files: list[str], config: dict | None = None
     ) -> DeadCodeReport:
         """Partial analysis for incremental updates."""
-        # For partial analysis, only check affected files and their neighbors
         cfg = config or {}
         findings: list[DeadCodeFindingData] = []
         dynamic_patterns = cfg.get("dynamic_patterns", _DEFAULT_DYNAMIC_PATTERNS)
@@ -292,7 +106,6 @@ class DeadCodeAnalyzer:
             if self._should_never_flag(node, whitelist):
                 continue
 
-            # Check if file became unreachable
             in_deg = self.graph.in_degree(node)
             node_data = self.graph.nodes.get(node, {})
             if (
@@ -375,23 +188,21 @@ class DeadCodeAnalyzer:
         age_days = git_meta.get("age_days")
         primary_owner = git_meta.get("primary_owner_name")
 
-        # Confidence rules — differentiate by age and activity.
         # _is_old uses strict >, so pass days-1 to get >= semantics.
         if commit_90d == 0 and last_commit and self._is_old(last_commit, days=364):
             confidence = 1.0  # Untouched for a year+ — very likely dead
         elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=179):
-            confidence = 0.9  # Untouched for 6+ months
+            confidence = 0.9
         elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=89):
-            confidence = 0.8  # Untouched for 3+ months
+            confidence = 0.8
         elif commit_90d == 0 and age_days is not None and age_days < 30:
-            confidence = 0.55  # Recently created but no imports — may be WIP
+            confidence = 0.55  # Recently created — may be WIP
         elif commit_90d == 0:
-            confidence = 0.7  # No recent activity, unknown age
+            confidence = 0.7
         else:
             confidence = 0.4
 
-        # Reduce confidence when dynamic imports exist in the same package —
-        # importlib.import_module / __import__ may load this file at runtime.
+        # Reduce confidence when dynamic imports exist in the same package.
         if self._dynamic_import_files:
             node_pkg = str(Path(node).parent)
             for dif in self._dynamic_import_files:
@@ -399,7 +210,6 @@ class DeadCodeAnalyzer:
                     confidence = min(confidence, 0.4)
                     break
 
-        # safe_to_delete only if confidence >= 0.7 AND not matching dynamic patterns
         safe = confidence >= 0.7
         if safe and self._matches_dynamic_patterns(node, dynamic_patterns):
             safe = False
@@ -408,7 +218,7 @@ class DeadCodeAnalyzer:
         if commit_90d == 0:
             evidence.append("No commits in last 90 days")
         if self._dynamic_import_files and confidence <= 0.4:
-            evidence.append("Package uses dynamic imports (importlib/__import__)")
+            evidence.append("Package uses dynamic imports or runtime-resolved edges")
 
         return DeadCodeFindingData(
             kind=DeadCodeKind.UNREACHABLE_FILE,
@@ -449,7 +259,6 @@ class DeadCodeAnalyzer:
             if self._should_never_flag(str(node), whitelist):
                 continue
 
-            # Get symbols defined in this file via DEFINES edges to symbol nodes
             symbols = [
                 self.graph.nodes[succ]
                 for succ in self.graph.successors(node)
@@ -466,23 +275,19 @@ class DeadCodeAnalyzer:
                     continue
                 sym_name = sym.get("name", "")
 
-                # Skip framework decorators (if stored on symbol node)
                 decorators = sym.get("decorators", [])
                 if any(
                     d.startswith(prefix) for d in decorators for prefix in _FRAMEWORK_DECORATORS
                 ):
                     continue
 
-                # Skip dynamic patterns
                 if self._name_matches_dynamic(sym_name, dynamic_patterns):
                     continue
 
-                # Skip deprecated-named symbols (lower confidence)
                 is_deprecated = any(
                     sym_name.endswith(suffix) for suffix in ("_DEPRECATED", "_LEGACY", "_COMPAT")
                 )
 
-                # Check for importers of this specific symbol
                 has_importers = False
                 for pred in self.graph.predecessors(node):
                     edge_data = self.graph[pred][node]
@@ -494,7 +299,6 @@ class DeadCodeAnalyzer:
                 if has_importers:
                     continue
 
-                # Confidence scoring
                 if is_deprecated:
                     confidence = 0.3
                 elif file_has_importers:
@@ -536,7 +340,7 @@ class DeadCodeAnalyzer:
     ) -> list[DeadCodeFindingData]:
         """Detect private/internal symbols with zero incoming call edges.
 
-        Off by default (higher false-positive rate).  Enable with
+        Off by default (higher false-positive rate). Enable with
         ``detect_unused_internals=True`` in the config dict.
         """
         findings: list[DeadCodeFindingData] = []
@@ -546,7 +350,6 @@ class DeadCodeAnalyzer:
                 continue
             if node_data.get("visibility") not in ("private", "internal"):
                 continue
-            # Skip test files and fixtures
             file_path = node_data.get("file_path", "")
             if not file_path:
                 continue
@@ -559,13 +362,11 @@ class DeadCodeAnalyzer:
                 continue
 
             sym_name = node_data.get("name", "")
-            # Skip dunder methods and common patterns
             if sym_name.startswith("__") and sym_name.endswith("__"):
                 continue
             if self._name_matches_dynamic(sym_name, dynamic_patterns):
                 continue
 
-            # Check for incoming CALL edges
             has_callers = any(
                 self.graph.get_edge_data(pred, node, {}).get("edge_type") == "calls"
                 for pred in self.graph.predecessors(node)
@@ -601,7 +402,6 @@ class DeadCodeAnalyzer:
         """Detect monorepo packages with no incoming inter_package edges."""
         findings = []
 
-        # Find package nodes (directories with multiple files)
         packages: dict[str, list[str]] = {}
         for node in self.graph.nodes():
             if str(node).startswith("external:"):
@@ -612,13 +412,12 @@ class DeadCodeAnalyzer:
                 packages.setdefault(pkg, []).append(str(node))
 
         if len(packages) < 2:
-            return findings  # Not a monorepo
+            return findings
 
         for pkg, files in packages.items():
             if pkg in whitelist:
                 continue
 
-            # Check if any file in this package is imported from outside the package
             has_external_importers = False
             for f in files:
                 for pred in self.graph.predecessors(f):
@@ -638,7 +437,6 @@ class DeadCodeAnalyzer:
                     for f in files
                     if f in self.graph
                 )
-                # Aggregate git metadata across package files for enrichment
                 pkg_last_commit: datetime | None = None
                 pkg_total_commits_90d = 0
                 pkg_owner: str | None = None
@@ -692,7 +490,7 @@ class DeadCodeAnalyzer:
         for pattern in _NEVER_FLAG_PATTERNS:
             if fnmatch.fnmatch(path, pattern):
                 return True
-        # Check if it's an __init__.py (re-export barrel)
+        # __init__.py is a re-export barrel
         return Path(path).name == "__init__.py"
 
     def _is_api_contract(self, node_data: dict) -> bool:

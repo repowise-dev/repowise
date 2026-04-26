@@ -11,6 +11,18 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; Annotated class (Q11): @deprecated class Foo
+(class_definition
+  (annotation) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; Annotated function (Q11): @tailrec def bar
+(function_definition
+  (annotation) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
 (trait_definition
   name: (identifier) @symbol.name
 ) @symbol.def
@@ -30,6 +42,21 @@
 ) @symbol.def
 
 (val_definition
+  pattern: (identifier) @symbol.name
+) @symbol.def
+
+; Scala 3 enum (Q4)
+(enum_definition
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; Scala 3 given (Q4) — named givens have an identifier child
+(given_definition
+  (identifier) @symbol.name
+) @symbol.def
+
+; Scala var definitions (Q5)
+(var_definition
   pattern: (identifier) @symbol.name
 ) @symbol.def
 

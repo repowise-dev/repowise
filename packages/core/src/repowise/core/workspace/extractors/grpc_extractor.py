@@ -51,7 +51,7 @@ _MAX_FILE_SIZE = 512 * 1024
 _PROTO_EXTENSIONS = _LANG_REGISTRY.extensions_for(["proto"])
 
 _SOURCE_EXTENSIONS = _LANG_REGISTRY.extensions_for(
-    ["go", "java", "python", "typescript", "javascript"]
+    ["go", "java", "python", "typescript", "javascript", "csharp"]
 )
 
 _ALL_EXTENSIONS = _PROTO_EXTENSIONS | _SOURCE_EXTENSIONS
@@ -150,6 +150,19 @@ _PY_CONSUMER_RE = re.compile(r"(\w+)Stub\s*\(")
 
 # TypeScript providers: @GrpcMethod('AuthService', 'Login')
 _TS_PROVIDER_RE = re.compile(r"@GrpcMethod\s*\(\s*'(\w+)'\s*,\s*'(\w+)'\s*\)")
+
+# C# / gRPC-dotnet providers: app.MapGrpcService<GreeterService>() — explicit
+# service registration. The generated server-base class follows the
+# convention `class Impl : ServiceName.ServiceNameBase` where ServiceName
+# matches the .proto service name (e.g. `Greeter.GreeterBase`,
+# `AuthService.AuthServiceBase`). We capture the prefix as the service id.
+_CSHARP_GRPC_MAP_RE = re.compile(r"\.\s*MapGrpcService\s*<\s*(\w+)\s*>")
+_CSHARP_GRPC_BASE_RE = re.compile(
+    r"class\s+\w+\s*:\s*(?:[\w.]+\.)?(\w+?)\s*\.\s*\1Base\b"
+)
+# C# consumers: new AuthServiceClient(channel) / new GreeterClient(channel).
+# The generated stub class always ends in "Client" and follows a `new` keyword.
+_CSHARP_GRPC_CLIENT_RE = re.compile(r"\bnew\s+(\w+)Client\s*\(")
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +357,61 @@ class GrpcExtractor:
                                     "method": method,
                                     "source": "ts_decorator",
                                 },
+                            )
+                        )
+
+                # --- C# (gRPC-dotnet) ---
+                elif suffix == ".cs":
+                    for m in _CSHARP_GRPC_MAP_RE.finditer(content):
+                        svc = m.group(1)
+                        contract_id = f"grpc::{svc}/*"
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="provider",
+                                file_path=rel_path,
+                                symbol_name=f"cs:MapGrpcService<{svc}>",
+                                confidence=0.8,
+                                service=None,
+                                meta={"service": svc, "source": "csharp_mapgrpc"},
+                            )
+                        )
+
+                    for m in _CSHARP_GRPC_BASE_RE.finditer(content):
+                        svc = m.group(1)
+                        contract_id = f"grpc::{svc}/*"
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="provider",
+                                file_path=rel_path,
+                                symbol_name=f"cs:extends {svc}.{svc}ServiceBase",
+                                confidence=0.8,
+                                service=None,
+                                meta={"service": svc, "source": "csharp_base"},
+                            )
+                        )
+
+                    for m in _CSHARP_GRPC_CLIENT_RE.finditer(content):
+                        svc = m.group(1)
+                        if svc.lower().startswith(("mock", "test", "fake", "http")):
+                            continue
+                        contract_id = f"grpc::{svc}/*"
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="consumer",
+                                file_path=rel_path,
+                                symbol_name=f"cs:new {svc}Client",
+                                confidence=0.65,
+                                service=None,
+                                meta={"service": svc, "source": "csharp_client"},
                             )
                         )
 

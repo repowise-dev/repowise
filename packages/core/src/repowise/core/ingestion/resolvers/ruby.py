@@ -31,4 +31,25 @@ def resolve_ruby_import(module_path: str, importer_path: str, ctx: ResolverConte
         if p.endswith(rb_name) or PurePosixPath(p).name == PurePosixPath(rb_name).name:
             return p
 
+    # Rails / Zeitwerk autoloading: ``require 'app/services/foo'`` style
+    # paths can also be resolved by walking the rails index's
+    # ``namespace_to_file`` map. Most Rails constant references are
+    # require-less and surface through ``ctx.rails_lookup`` from the call
+    # resolver / heritage extractor, not this function.
+    from .ruby_rails import get_or_build_rails_index
+
+    rails_index = get_or_build_rails_index(ctx)
+    if rails_index is not None and not module_path.startswith("."):
+        # Strip leading autoload-root prefixes (``app/services/foo`` →
+        # ``foo`` lookup against namespace_to_file).
+        normalised = module_path
+        for root in rails_index.autoload_roots:
+            prefix = f"{root}/"
+            if normalised.startswith(prefix):
+                normalised = normalised[len(prefix) :]
+                break
+        hit = rails_index.namespace_to_file.get(normalised)
+        if hit:
+            return hit
+
     return ctx.add_external_node(module_path)

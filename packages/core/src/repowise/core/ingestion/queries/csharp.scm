@@ -44,6 +44,36 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+(record_declaration
+  (modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+(delegate_declaration
+  (modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+  parameters: (parameter_list) @symbol.params
+) @symbol.def
+
+(event_declaration
+  (modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+(event_field_declaration
+  (modifier) @symbol.modifiers
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name))
+) @symbol.def
+
+(field_declaration
+  (modifier) @symbol.modifiers
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name))
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Symbols — fallback without modifiers
 ; ---------------------------------------------------------------------------
@@ -75,6 +105,59 @@
 ) @symbol.def
 
 (property_declaration
+  name: (identifier) @symbol.name
+) @symbol.def
+
+(record_declaration
+  name: (identifier) @symbol.name
+) @symbol.def
+
+(delegate_declaration
+  name: (identifier) @symbol.name
+  parameters: (parameter_list) @symbol.params
+) @symbol.def
+
+(event_declaration
+  name: (identifier) @symbol.name
+) @symbol.def
+
+(event_field_declaration
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name))
+) @symbol.def
+
+(field_declaration
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name))
+) @symbol.def
+
+; ---------------------------------------------------------------------------
+; Namespaces (block + file-scoped C# 10+)
+; ---------------------------------------------------------------------------
+
+(namespace_declaration
+  name: (qualified_name) @symbol.name
+) @symbol.def
+
+(namespace_declaration
+  name: (identifier) @symbol.name
+) @symbol.def
+
+(file_scoped_namespace_declaration
+  name: (qualified_name) @symbol.name
+) @symbol.def
+
+(file_scoped_namespace_declaration
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; ---------------------------------------------------------------------------
+; Enum members
+; ---------------------------------------------------------------------------
+
+(enum_member_declaration
   name: (identifier) @symbol.name
 ) @symbol.def
 

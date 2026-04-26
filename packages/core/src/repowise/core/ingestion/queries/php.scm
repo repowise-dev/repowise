@@ -40,6 +40,22 @@
   parameters: (formal_parameters) @symbol.params
 ) @symbol.def
 
+; PHP top-level / class-level constant declarations (Q9)
+(const_declaration
+  (const_element
+    (name) @symbol.name
+  )
+) @symbol.def
+
+; PHP class properties (Q9): public $x, private $y, fallback no-modifier
+(property_declaration
+  (property_element
+    (variable_name
+      (name) @symbol.name
+    )
+  )
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports (use declarations + require/include)
 ; ---------------------------------------------------------------------------

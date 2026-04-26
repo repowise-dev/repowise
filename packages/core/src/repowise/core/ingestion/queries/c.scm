@@ -34,6 +34,19 @@
   declarator: (type_identifier) @symbol.name
 ) @symbol.def
 
+; typedef int MyInt; / typedef struct Foo Bar; (Q10 — primitive/named alias)
+(type_definition
+  type: (primitive_type)
+  declarator: (type_identifier) @symbol.name
+) @symbol.def
+
+(type_definition
+  type: (struct_specifier
+    name: (type_identifier)
+  )
+  declarator: (type_identifier) @symbol.name
+) @symbol.def
+
 ; #define MACRO_NAME ...
 (preproc_def
   name: (identifier) @symbol.name

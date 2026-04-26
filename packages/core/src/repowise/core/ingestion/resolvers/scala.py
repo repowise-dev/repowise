@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .context import ResolverContext
+from .scala_build import resolve_via_scala_index
 
 
 def resolve_scala_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
@@ -12,6 +13,13 @@ def resolve_scala_import(module_path: str, importer_path: str, ctx: ResolverCont
 
     if local in ("*", "_"):
         return None
+
+    # SBT/Mill multi-project index: package → file map built from declared
+    # subprojects' source roots. Consult before stem matching so cross-project
+    # imports resolve correctly in monorepos.
+    build_match = resolve_via_scala_index(module_path, ctx)
+    if build_match is not None:
+        return build_match
 
     # Try stem lookup on the last name component
     result = ctx.stem_lookup(local.lower())
