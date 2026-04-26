@@ -26,7 +26,7 @@ repowise generates and maintains a structured wiki for any codebase. It tracks c
 | **Decision intelligence** | Captures *why* code is structured the way it is |
 | **MCP server** | 10 tools for AI assistants (Claude Code, Cursor, Windsurf, Cline) |
 | **Web dashboard** | Browse wiki, search, and explore architecture diagrams |
-| **Multi-language** | Python, TypeScript, JavaScript, Go, Rust, Java, C/C++, Kotlin, Ruby |
+| **Multi-language** | Python, TypeScript, JavaScript, Go, Rust, Java, C/C++, Kotlin, Ruby, C#, Swift, Scala, PHP |
 
 ---
 

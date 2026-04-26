@@ -12,33 +12,65 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_SERVICE_MARKERS = frozenset({
-    "package.json",
-    "go.mod",
-    "Dockerfile",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "Cargo.toml",
-    "pyproject.toml",
-    "requirements.txt",
-    "mix.exs",
-})
+_SERVICE_MARKERS = frozenset(
+    {
+        "package.json",
+        "go.mod",
+        "Dockerfile",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "Cargo.toml",
+        "pyproject.toml",
+        "requirements.txt",
+        "mix.exs",
+    }
+)
 
-_BLOCKED_DIRS = frozenset({
-    ".git", "node_modules", "__pycache__", ".venv", "venv",
-    "dist", "build", "target", "vendor", ".next", ".nuxt",
-    ".tox", ".mypy_cache", ".gradle", ".mvn", "out", "bin",
-})
+_BLOCKED_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "target",
+        "vendor",
+        ".next",
+        ".nuxt",
+        ".tox",
+        ".mypy_cache",
+        ".gradle",
+        ".mvn",
+        "out",
+        "bin",
+    }
+)
 
-_SOURCE_EXTENSIONS = frozenset({
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go",
-    ".rs", ".rb", ".php", ".cs", ".kt", ".scala", ".ex", ".exs",
-})
+_SOURCE_EXTENSIONS = _LANG_REGISTRY.extensions_for(
+    [
+        "python",
+        "typescript",
+        "javascript",
+        "java",
+        "go",
+        "rust",
+        "ruby",
+        "php",
+        "csharp",
+        "kotlin",
+        "scala",
+        "elixir",
+    ]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -86,10 +118,7 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
 
     for dirpath, dirnames, filenames in os.walk(repo_root):
         # Prune blocked dirs in-place
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in _BLOCKED_DIRS and not d.startswith(".")
-        ]
+        dirnames[:] = [d for d in dirnames if d not in _BLOCKED_DIRS and not d.startswith(".")]
 
         current = Path(dirpath)
         if current == repo_root:
@@ -101,19 +130,20 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
             continue
 
         # Require at least one source file in this dir (not recursively)
-        has_source = any(
-            Path(f).suffix.lower() in _SOURCE_EXTENSIONS
-            for f in filenames
-        )
+        has_source = any(Path(f).suffix.lower() in _SOURCE_EXTENSIONS for f in filenames)
         if not has_source:
             # Check immediate subdirs for source files
             try:
-                has_source = any(
-                    Path(dirpath, d, f).suffix.lower() in _SOURCE_EXTENSIONS
-                    for d in dirnames
-                    for f in os.listdir(Path(dirpath, d))
-                    if os.path.isfile(Path(dirpath, d, f))
-                ) if dirnames else False
+                has_source = (
+                    any(
+                        Path(dirpath, d, f).suffix.lower() in _SOURCE_EXTENSIONS
+                        for d in dirnames
+                        for f in os.listdir(Path(dirpath, d))
+                        if os.path.isfile(Path(dirpath, d, f))
+                    )
+                    if dirnames
+                    else False
+                )
             except (PermissionError, OSError):
                 has_source = False
 
@@ -130,12 +160,14 @@ def detect_service_boundaries(repo_path: Path) -> list[ServiceBoundary]:
         else:
             confidence = 0.75
 
-        boundaries.append(ServiceBoundary(
-            service_path=rel_path,
-            service_name=current.name,
-            markers=sorted(found_markers),
-            confidence=confidence,
-        ))
+        boundaries.append(
+            ServiceBoundary(
+                service_path=rel_path,
+                service_name=current.name,
+                markers=sorted(found_markers),
+                confidence=confidence,
+            )
+        )
 
     return boundaries
 

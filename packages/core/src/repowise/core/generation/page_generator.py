@@ -25,6 +25,7 @@ from typing import Any
 import jinja2
 import structlog
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
 
@@ -107,29 +108,9 @@ SYSTEM_PROMPTS: dict[str, str] = {
     ),
 }
 
-# Infra file languages
-_INFRA_LANGUAGES = frozenset({"dockerfile", "makefile", "terraform", "shell"})
+_INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
-
-# Languages worth generating file pages for — data/config/doc files excluded
-_CODE_LANGUAGES = frozenset(
-    {
-        "python",
-        "typescript",
-        "javascript",
-        "go",
-        "rust",
-        "java",
-        "cpp",
-        "c",
-        "csharp",
-        "ruby",
-        "kotlin",
-        "scala",
-        "swift",
-        "php",
-    }
-)
+_CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 
 
 def _now_iso() -> str:
@@ -235,7 +216,10 @@ class PageGenerator:
         page_summaries: dict[str, str] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
-            module_path, language, file_contexts, graph,
+            module_path,
+            language,
+            file_contexts,
+            graph,
             page_summaries=page_summaries,
         )
         module_git_summary = None
@@ -295,7 +279,10 @@ class PageGenerator:
         graph_builder: Any | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
-            repo_structure, pagerank, sccs, community,
+            repo_structure,
+            pagerank,
+            sccs,
+            community,
             graph_builder=graph_builder,
         )
         repo_git_summary = None
@@ -463,7 +450,11 @@ class PageGenerator:
         completed_ids: set[str] = set()
         job_id: str | None = None
         if job_system is not None:
-            repo_path_str = str(Path(repo_path).resolve()) if repo_path else str(getattr(repo_structure, "root_path", "."))
+            repo_path_str = (
+                str(Path(repo_path).resolve())
+                if repo_path
+                else str(getattr(repo_structure, "root_path", "."))
+            )
             # On resume, query the vector store directly — it is the ground truth
             if resume and self._vector_store is not None:
                 completed_ids = await self._vector_store.list_page_ids()
@@ -709,9 +700,7 @@ class PageGenerator:
                 scc_members: dict[int, list[str]] = {
                     n: list(condensation.nodes[n]["members"]) for n in condensation.nodes
                 }
-                topo_order = [
-                    node for scc_id in topo_order_scc for node in scc_members[scc_id]
-                ]
+                topo_order = [node for scc_id in topo_order_scc for node in scc_members[scc_id]]
 
             # Preserve priority ordering within the topo-sort by mapping paths to
             # their original priority index.
@@ -843,7 +832,10 @@ class PageGenerator:
                 (
                     compute_page_id("repo_overview", repo_name),
                     self.generate_repo_overview(
-                        repo_structure, pagerank, sccs, community,
+                        repo_structure,
+                        pagerank,
+                        sccs,
+                        community,
                         git_meta_map=git_meta_map,
                         graph_builder=graph_builder,
                     ),
@@ -1101,29 +1093,134 @@ def _is_significant_file(
 _BACKTICK_SKIP = frozenset(
     {
         # Python builtins & keywords
-        "True", "False", "None", "self", "cls", "super",
-        "str", "int", "float", "bool", "list", "dict", "set", "tuple",
-        "bytes", "object", "type", "Any", "Optional", "Union",
-        "async", "await", "return", "yield", "import", "from",
-        "class", "def", "if", "else", "for", "while", "try", "except",
-        "raise", "with", "pass", "break", "continue", "lambda",
-        "in", "not", "and", "or", "is", "del", "assert", "finally",
-        "elif", "as", "global", "nonlocal",
+        "True",
+        "False",
+        "None",
+        "self",
+        "cls",
+        "super",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "bytes",
+        "object",
+        "type",
+        "Any",
+        "Optional",
+        "Union",
+        "async",
+        "await",
+        "return",
+        "yield",
+        "import",
+        "from",
+        "class",
+        "def",
+        "if",
+        "else",
+        "for",
+        "while",
+        "try",
+        "except",
+        "raise",
+        "with",
+        "pass",
+        "break",
+        "continue",
+        "lambda",
+        "in",
+        "not",
+        "and",
+        "or",
+        "is",
+        "del",
+        "assert",
+        "finally",
+        "elif",
+        "as",
+        "global",
+        "nonlocal",
         # JS/TS keywords
-        "null", "undefined", "this", "const", "let", "var", "function",
-        "export", "default", "extends", "implements", "interface",
-        "enum", "new", "typeof", "instanceof", "void", "never",
-        "string", "number", "boolean", "symbol", "bigint", "unknown",
-        "readonly", "abstract", "static", "private", "protected", "public",
-        "require", "module", "exports", "Promise", "Map", "Set", "Array",
-        "Object", "Error", "Date", "RegExp", "JSON", "Math", "console",
+        "null",
+        "undefined",
+        "this",
+        "const",
+        "let",
+        "var",
+        "function",
+        "export",
+        "default",
+        "extends",
+        "implements",
+        "interface",
+        "enum",
+        "new",
+        "typeof",
+        "instanceof",
+        "void",
+        "never",
+        "string",
+        "number",
+        "boolean",
+        "symbol",
+        "bigint",
+        "unknown",
+        "readonly",
+        "abstract",
+        "static",
+        "private",
+        "protected",
+        "public",
+        "require",
+        "module",
+        "exports",
+        "Promise",
+        "Map",
+        "Set",
+        "Array",
+        "Object",
+        "Error",
+        "Date",
+        "RegExp",
+        "JSON",
+        "Math",
+        "console",
         # Common tool/ecosystem names
-        "pip", "npm", "npx", "yarn", "pnpm", "go", "rust", "python",
-        "node", "cargo", "uv", "git", "docker", "make",
+        "pip",
+        "npm",
+        "npx",
+        "yarn",
+        "pnpm",
+        "go",
+        "rust",
+        "python",
+        "node",
+        "cargo",
+        "uv",
+        "git",
+        "docker",
+        "make",
         # Common framework/lib names the LLM mentions in prose
-        "FastAPI", "React", "Next", "Express", "Django", "Flask",
-        "SQLAlchemy", "Pydantic", "Click", "Typer", "pytest",
-        "asyncio", "pathlib", "dataclass", "dataclasses",
+        "FastAPI",
+        "React",
+        "Next",
+        "Express",
+        "Django",
+        "Flask",
+        "SQLAlchemy",
+        "Pydantic",
+        "Click",
+        "Typer",
+        "pytest",
+        "asyncio",
+        "pathlib",
+        "dataclass",
+        "dataclasses",
     }
 )
 
@@ -1133,9 +1230,9 @@ _BACKTICK_REF_RE = re.compile(r"(?<!`)` *([A-Za-z_]\w*(?:\.\w+)*) *`(?!`)")
 # Patterns that indicate the backtick content is a path, command, or
 # value rather than a symbol reference — these should never be flagged.
 _PATH_OR_CMD_RE = re.compile(
-    r"[/\\]"             # contains path separator
+    r"[/\\]"  # contains path separator
     r"|\.(?:py|ts|js|json|yaml|yml|toml|md|sh|sql|css|html)$"  # file extension
-    r"|^[a-z][\w-]*$"   # all-lowercase with hyphens = CLI command/flag
+    r"|^[a-z][\w-]*$"  # all-lowercase with hyphens = CLI command/flag
 )
 
 

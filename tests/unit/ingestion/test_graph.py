@@ -116,7 +116,8 @@ class TestAddFile:
         b.add_file(_parsed("a.py"))
         b.add_file(_parsed("b.py"))
         g = b.graph()
-        assert g.number_of_nodes() == 2
+        # 2 file nodes + 2 synthetic __module__ symbol nodes
+        assert g.number_of_nodes() == 4
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +151,16 @@ class TestPythonImports:
         assert b.graph().has_edge("main.py", "src/calculator.py")
 
     def test_unresolvable_import_no_edge(self) -> None:
-        """Unresolvable import produces no edge (no crash)."""
+        """Unresolvable import produces no import edge (no crash)."""
         b = GraphBuilder()
         b.add_file(_parsed("main.py", imports=[_imp("nonexistent_external_lib")]))
         b.build()
-        assert b.graph().number_of_edges() == 0
+        # Only the defines edge for the synthetic __module__ symbol
+        import_edges = [
+            (u, v) for u, v, d in b.graph().edges(data=True)
+            if d.get("edge_type") == "imports"
+        ]
+        assert len(import_edges) == 0
 
     def test_imported_names_on_edge(self) -> None:
         """Imported names are stored on the edge."""
@@ -233,7 +239,10 @@ class TestStemDisambiguation:
                 b.add_file(_parsed(f))
             b.add_file(_parsed("main.py", imports=[_imp("widget")]))
             b.build()
-            edges = list(b.graph().out_edges("main.py"))
+            edges = [
+                (u, v) for u, v, d in b.graph().out_edges("main.py", data=True)
+                if d.get("edge_type") == "imports"
+            ]
             return edges[0][1] if edges else None
 
         target_a = build_with_order(files)
@@ -271,8 +280,12 @@ class TestStemDisambiguation:
         b.add_file(_parsed("__init__.py"))
         b.add_file(_parsed("main.py", imports=[_imp("anything")]))
         b.build()  # must not raise
-        # No edge expected — stem "anything" is unresolvable
-        assert b.graph().number_of_edges() == 0
+        # No import edge — stem "anything" is unresolvable
+        import_edges = [
+            (u, v) for u, v, d in b.graph().edges(data=True)
+            if d.get("edge_type") == "imports"
+        ]
+        assert len(import_edges) == 0
 
     def test_go_stem_collision_prefers_parent_match(self) -> None:
         """Go: `import .../calculator` prefers calculator/calculator.go
@@ -579,10 +592,12 @@ class TestPersist:
             async with aiosqlite.connect(db_path) as db:
                 async with db.execute("SELECT * FROM graph_nodes") as cur:
                     rows = await cur.fetchall()
-                assert len(rows) == 2
+                # 2 file nodes + 2 synthetic __module__ symbol nodes
+                assert len(rows) == 4
                 async with db.execute("SELECT * FROM graph_edges") as cur:
                     edges = await cur.fetchall()
-                assert len(edges) == 1
+                # 1 import edge + 2 defines edges for __module__ symbols
+                assert len(edges) == 3
 
         asyncio.run(run())
 
@@ -693,8 +708,12 @@ class TestCppCompileCommandsResolution:
         b = GraphBuilder(repo_path=tmp_path)
         b.add_file(_cpp("src/main.cpp", imports=[_cinclude("nonexistent.hpp")]))
         b.build()
-        # No edge, no exception
-        assert b.graph().number_of_edges() == 0
+        # No import edge, no exception
+        import_edges = [
+            (u, v) for u, v, d in b.graph().edges(data=True)
+            if d.get("edge_type") == "imports"
+        ]
+        assert len(import_edges) == 0
 
     def test_compile_commands_in_build_subdir(self, tmp_path: Path) -> None:
         """compile_commands.json under build/ subdirectory is also found."""

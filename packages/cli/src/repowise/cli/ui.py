@@ -17,6 +17,8 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+
 # ---------------------------------------------------------------------------
 # Brand / theme
 # ---------------------------------------------------------------------------
@@ -71,30 +73,23 @@ class RepoScanInfo:
 
 _TEST_PATTERNS = {"test_", "_test.", ".test.", "tests/", "test/", "__tests__/", "spec/"}
 _INFRA_NAMES = {"dockerfile", "makefile", "jenkinsfile", "terraform", ".tf", ".sh", ".bash"}
+# Derived from the centralised LanguageRegistry, supplemented with
+# display-only languages (HTML, CSS) not tracked by the pipeline.
 _LANG_MAP: dict[str, list[str]] = {
-    "Python": [".py"],
-    "TypeScript": [".ts", ".tsx"],
-    "JavaScript": [".js", ".jsx", ".mjs", ".cjs"],
-    "Go": [".go"],
-    "Rust": [".rs"],
-    "Java": [".java"],
-    "C#": [".cs"],
-    "Ruby": [".rb"],
-    "PHP": [".php"],
-    "Swift": [".swift"],
-    "Kotlin": [".kt", ".kts"],
-    "C/C++": [".c", ".cpp", ".cc", ".h", ".hpp"],
-    "Scala": [".scala"],
-    "Dart": [".dart"],
-    "Lua": [".lua"],
-    "Shell": [".sh", ".bash", ".zsh"],
-    "HTML": [".html", ".htm"],
-    "CSS": [".css", ".scss", ".sass", ".less"],
-    "YAML": [".yaml", ".yml"],
-    "JSON": [".json"],
-    "Markdown": [".md", ".mdx"],
-    "SQL": [".sql"],
+    spec.display_name: sorted(spec.extensions)
+    for spec in _LANG_REGISTRY.all_specs()
+    if spec.extensions and spec.tag != "unknown"
 }
+# C and C++ are shown together in the CLI scan
+_LANG_MAP["C/C++"] = sorted(
+    (_LANG_REGISTRY.get("c") or _LANG_REGISTRY.get("cpp")).extensions  # type: ignore[union-attr]
+    | (_LANG_REGISTRY.get("cpp") or _LANG_REGISTRY.get("c")).extensions  # type: ignore[union-attr]
+)
+_LANG_MAP.pop("C", None)
+_LANG_MAP.pop("C++", None)
+# Display-only languages not in the pipeline
+_LANG_MAP["HTML"] = [".html", ".htm"]
+_LANG_MAP["CSS"] = [".css", ".scss", ".sass", ".less"]
 _EXT_TO_LANG: dict[str, str] = {}
 for _lang, _exts in _LANG_MAP.items():
     for _ext in _exts:

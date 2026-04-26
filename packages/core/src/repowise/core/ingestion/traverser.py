@@ -25,6 +25,7 @@ from pathlib import Path
 import pathspec
 import structlog
 
+from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
     EXTENSION_TO_LANGUAGE,
     SPECIAL_FILENAMES,
@@ -33,7 +34,6 @@ from .models import (
     PackageInfo,
     RepoStructure,
 )
-
 
 # ---------------------------------------------------------------------------
 # Traversal statistics
@@ -141,13 +141,7 @@ _GENERATED_MARKERS: tuple[str, ...] = (
     "@generated",
 )
 
-_GENERATED_SUFFIXES: tuple[str, ...] = (
-    "_pb2.py",
-    "_pb2_grpc.py",
-    "_pb.ts",
-    "_pb.js",
-    "_grpc.pb.go",
-)
+_GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
 # Manifest files that indicate a package root (for monorepo detection)
 _MANIFEST_FILES: frozenset[str] = frozenset(
@@ -159,25 +153,8 @@ _ENTRY_POINT_STEMS: frozenset[str] = frozenset(
     {"main", "index", "app", "run", "server", "start", "wsgi", "asgi"}
 )
 
-_ENTRY_POINT_NAMES: frozenset[str] = frozenset(
-    {
-        "main.py",
-        "app.py",
-        "run.py",
-        "server.py",
-        "wsgi.py",
-        "asgi.py",
-        "index.ts",
-        "index.js",
-        "main.ts",
-        "main.js",
-        "app.ts",
-        "main.go",
-        "main.rs",
-        "lib.rs",
-        "Main.java",
-        "Application.java",
-    }
+_ENTRY_POINT_NAMES: frozenset[str] = _LANG_REGISTRY.entry_point_names() | frozenset(
+    {"run.py", "server.py"}  # extra traverser-specific patterns not in language specs
 )
 
 # Default file-size limit
@@ -186,20 +163,14 @@ _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
 # Languages for which generated-file detection is skipped.  These files have
 # no AST parsing anyway, so reading 512 bytes to check for generated markers
 # adds no value.
+# Languages for which generated-file detection is skipped — same as parser's
+# passthrough set (no AST parsing, so reading 512 bytes for markers is pointless).
 _SKIP_GENERATED_CHECK: frozenset[str] = frozenset(
-    {
-        "json",
-        "yaml",
-        "toml",
-        "markdown",
-        "sql",
-        "shell",
-        "terraform",
-        "proto",
-        "graphql",
-        "dockerfile",
-        "makefile",
-    }
+    spec.tag
+    for spec in _LANG_REGISTRY.all_specs()
+    if spec.is_passthrough
+    and (not spec.is_code or spec.is_infra)
+    and spec.tag not in ("openapi", "unknown")
 )
 
 
@@ -517,14 +488,10 @@ def _detect_by_shebang(abs_path: Path) -> LanguageTag:
             first_line = f.readline(200)
         if not first_line.startswith("#!"):
             return "unknown"
-        if "python" in first_line:
-            return "python"
-        if "node" in first_line:
-            return "javascript"
-        if "bash" in first_line or " sh" in first_line:
-            return "shell"
-        if "ruby" in first_line:
-            return "ruby"
+        for spec in _LANG_REGISTRY.all_specs():
+            for token in spec.shebang_tokens:
+                if token in first_line:
+                    return spec.tag  # type: ignore[return-value]
     except OSError:
         pass
     return "unknown"

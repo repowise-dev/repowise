@@ -17,6 +17,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+
 logger = structlog.get_logger(__name__)
 
 
@@ -56,24 +58,13 @@ class DeadCodeReport:
 
 
 # Non-code languages that should never be flagged as dead code.
-# These files have no import/export semantics — in_degree=0 is expected and
-# meaningless for them.  Matches the skip lists in git_indexer and page_generator.
+# Derived from the centralised LanguageRegistry — passthrough config/infra
+# languages plus "unknown".
 _NON_CODE_LANGUAGES: frozenset[str] = frozenset(
-    {
-        "json",
-        "yaml",
-        "toml",
-        "markdown",
-        "sql",
-        "shell",
-        "terraform",
-        "proto",
-        "graphql",
-        "dockerfile",
-        "makefile",
-        "unknown",
-    }
-)
+    spec.tag
+    for spec in _LANG_REGISTRY.all_specs()
+    if spec.is_passthrough and (not spec.is_code or spec.is_infra) and spec.tag != "openapi"
+) | {"unknown"}
 
 # Patterns that should never be flagged as dead
 _NEVER_FLAG_PATTERNS = (
@@ -185,13 +176,25 @@ class DeadCodeAnalyzer:
     All analysis is graph traversal + SQL. No LLM calls.
     """
 
-    # Patterns in source that indicate dynamic/runtime imports.
-    _DYNAMIC_IMPORT_MARKERS = (
-        "importlib.import_module",
-        "__import__(",
-        "importlib.reload",
-        "pkgutil.iter_modules",
-    )
+    # Patterns in source that indicate dynamic/runtime imports, keyed by suffix.
+    _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
+        ".py": (
+            "importlib.import_module",
+            "__import__(",
+            "importlib.reload",
+            "pkgutil.iter_modules",
+        ),
+        ".js": ("import(", "require(", "require.resolve("),
+        ".mjs": ("import(", "require("),
+        ".cjs": ("require(", "require.resolve("),
+        ".ts": ("import(", "require("),
+        ".tsx": ("import(", "require("),
+        ".java": ("Class.forName(", "ServiceLoader.load("),
+        ".kt": ("Class.forName(", "ServiceLoader.load("),
+        ".rb": ("autoload ", "const_get(", "send(:require"),
+        ".php": ("class_exists(", "interface_exists("),
+        ".go": ("plugin.Open(", "reflect.New("),
+    }
 
     def __init__(
         self,
@@ -207,9 +210,10 @@ class DeadCodeAnalyzer:
     def _find_dynamic_import_files(cls, parsed_files: dict) -> set[str]:
         """Return set of file paths that contain dynamic import calls.
 
-        When a repo uses ``importlib.import_module`` or ``__import__``,
-        unreachable modules in the same package may be loaded at runtime.
-        We use this to lower confidence on those findings.
+        When a repo uses ``importlib.import_module``, ``import()``,
+        ``Class.forName()``, etc., unreachable modules in the same package
+        may be loaded at runtime.  We use this to lower confidence on those
+        findings.
         """
         result: set[str] = set()
         for path, pf in parsed_files.items():
@@ -218,10 +222,11 @@ class DeadCodeAnalyzer:
                 if abs_path is None:
                     continue
                 src_path = Path(abs_path.abs_path)
-                if src_path.suffix != ".py":
+                markers = cls._DYNAMIC_IMPORT_MARKERS.get(src_path.suffix)
+                if not markers:
                     continue
                 source = src_path.read_text(errors="ignore")
-                if any(marker in source for marker in cls._DYNAMIC_IMPORT_MARKERS):
+                if any(marker in source for marker in markers):
                     result.add(path)
             except Exception:
                 continue
@@ -444,21 +449,24 @@ class DeadCodeAnalyzer:
             if self._should_never_flag(str(node), whitelist):
                 continue
 
-            # Get symbols for this file from graph node data
-            symbols = node_data.get("symbols", [])
+            # Get symbols defined in this file via DEFINES edges to symbol nodes
+            symbols = [
+                self.graph.nodes[succ]
+                for succ in self.graph.successors(node)
+                if self.graph.nodes[succ].get("node_type") == "symbol"
+                and self.graph.get_edge_data(node, succ, {}).get("edge_type") == "defines"
+            ]
             if not symbols:
                 continue
 
             file_has_importers = self.graph.in_degree(node) > 0
 
             for sym in symbols:
-                if not isinstance(sym, dict):
-                    continue
                 if sym.get("visibility") != "public":
                     continue
                 sym_name = sym.get("name", "")
 
-                # Skip framework decorators
+                # Skip framework decorators (if stored on symbol node)
                 decorators = sym.get("decorators", [])
                 if any(
                     d.startswith(prefix) for d in decorators for prefix in _FRAMEWORK_DECORATORS
@@ -494,8 +502,7 @@ class DeadCodeAnalyzer:
                 else:
                     confidence = 0.7
 
-                complexity = sym.get("complexity_estimate", 0)
-                safe = confidence >= 0.7 and complexity < 5
+                safe = confidence >= 0.7
 
                 git_meta = self.git_meta_map.get(str(node), {})
 
@@ -527,9 +534,68 @@ class DeadCodeAnalyzer:
         dynamic_patterns: tuple[str, ...],
         whitelist: set[str],
     ) -> list[DeadCodeFindingData]:
-        """Detect private symbols with no calls edges from same file."""
-        # Higher false positive rate — off by default
-        return []
+        """Detect private/internal symbols with zero incoming call edges.
+
+        Off by default (higher false-positive rate).  Enable with
+        ``detect_unused_internals=True`` in the config dict.
+        """
+        findings: list[DeadCodeFindingData] = []
+
+        for node, node_data in self.graph.nodes(data=True):
+            if node_data.get("node_type") != "symbol":
+                continue
+            if node_data.get("visibility") not in ("private", "internal"):
+                continue
+            # Skip test files and fixtures
+            file_path = node_data.get("file_path", "")
+            if not file_path:
+                continue
+            file_data = self.graph.nodes.get(file_path, {})
+            if file_data.get("is_test", False):
+                continue
+            if _is_fixture_path(file_path):
+                continue
+            if self._should_never_flag(file_path, whitelist):
+                continue
+
+            sym_name = node_data.get("name", "")
+            # Skip dunder methods and common patterns
+            if sym_name.startswith("__") and sym_name.endswith("__"):
+                continue
+            if self._name_matches_dynamic(sym_name, dynamic_patterns):
+                continue
+
+            # Check for incoming CALL edges
+            has_callers = any(
+                self.graph.get_edge_data(pred, node, {}).get("edge_type") == "calls"
+                for pred in self.graph.predecessors(node)
+            )
+            if has_callers:
+                continue
+
+            git_meta = self.git_meta_map.get(file_path, {})
+            findings.append(
+                DeadCodeFindingData(
+                    kind=DeadCodeKind.UNUSED_INTERNAL,
+                    file_path=file_path,
+                    symbol_name=sym_name,
+                    symbol_kind=node_data.get("kind"),
+                    confidence=0.65,
+                    reason=f"Private symbol '{sym_name}' has no callers",
+                    last_commit_at=git_meta.get("last_commit_at")
+                    if isinstance(git_meta.get("last_commit_at"), datetime)
+                    else None,
+                    commit_count_90d=git_meta.get("commit_count_90d", 0),
+                    lines=node_data.get("end_line", 0) - node_data.get("start_line", 0),
+                    package=self._get_package(file_path),
+                    evidence=[f"No CALL edges to '{sym_name}'"],
+                    safe_to_delete=False,
+                    primary_owner=git_meta.get("primary_owner_name"),
+                    age_days=git_meta.get("age_days"),
+                )
+            )
+
+        return findings
 
     def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
         """Detect monorepo packages with no incoming inter_package edges."""

@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Literal, get_args
+
+from .languages.registry import REGISTRY as _REGISTRY
 
 # ---------------------------------------------------------------------------
 # Language tags
@@ -48,55 +50,24 @@ LanguageTag = Literal[
 
 # ---------------------------------------------------------------------------
 # Extension → language map (used by FileTraverser and ASTParser)
+#
+# Derived from the centralised LanguageRegistry.  Only the extensions
+# known to the original LanguageTag set are included here — the registry
+# also covers extra git-blame-only languages.
 # ---------------------------------------------------------------------------
 
+_LANGUAGE_TAG_VALUES: frozenset[str] = frozenset(get_args(LanguageTag))
+
 EXTENSION_TO_LANGUAGE: dict[str, LanguageTag] = {
-    ".py": "python",
-    ".pyi": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-    ".go": "go",
-    ".rs": "rust",
-    ".java": "java",
-    ".cpp": "cpp",
-    ".cc": "cpp",
-    ".cxx": "cpp",
-    ".c": "c",
-    ".h": "cpp",
-    ".hpp": "cpp",
-    ".cs": "csharp",
-    ".rb": "ruby",
-    ".php": "php",
-    ".swift": "swift",
-    ".kt": "kotlin",
-    ".scala": "scala",
-    ".sh": "shell",
-    ".bash": "shell",
-    ".zsh": "shell",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".json": "json",
-    ".toml": "toml",
-    ".proto": "proto",
-    ".graphql": "graphql",
-    ".gql": "graphql",
-    ".tf": "terraform",
-    ".hcl": "terraform",
-    ".md": "markdown",
-    ".mdx": "markdown",
-    ".sql": "sql",
+    ext: tag  # type: ignore[misc]
+    for ext, tag in _REGISTRY.all_extensions().items()
+    if tag in _LANGUAGE_TAG_VALUES
 }
 
 SPECIAL_FILENAMES: dict[str, LanguageTag] = {
-    "Dockerfile": "dockerfile",
-    "dockerfile": "dockerfile",
-    "Makefile": "makefile",
-    "makefile": "makefile",
-    "GNUmakefile": "makefile",
+    fn: tag  # type: ignore[misc]
+    for fn, tag in _REGISTRY.all_special_filenames().items()
+    if tag in _LANGUAGE_TAG_VALUES
 }
 
 # ---------------------------------------------------------------------------

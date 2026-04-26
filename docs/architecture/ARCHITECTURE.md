@@ -163,7 +163,11 @@ repowise/
 │   │       ├── cpp.scm
 │   │       ├── c.scm
 │   │       ├── ruby.scm
-│   │       └── kotlin.scm
+│   │       ├── kotlin.scm
+│   │       ├── csharp.scm
+│   │       ├── swift.scm
+│   │       ├── scala.scm
+│   │       └── php.scm
 │   │
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/repowise/server/
@@ -506,8 +510,8 @@ which runs after the static import graph is built. It operates in three tiers:
    from the file's import list
 3. **Global unique match** (confidence 0.50) — target is unique across the whole repo
 
-Call sites are extracted by tree-sitter for all 7 supported languages (Python, TypeScript,
-JavaScript, Go, Rust, Java, C++) using per-language `.scm` query files. Results are stored
+Call sites are extracted by tree-sitter for all 14 supported languages (Python, TypeScript,
+JavaScript, Go, Rust, Java, C++, C, Kotlin, Ruby, C#, Swift, Scala, PHP) using per-language `.scm` query files. Results are stored
 as `CallSite` dataclasses and become `CALLS` edges in the graph.
 
 **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) ensures
@@ -1547,19 +1551,27 @@ Key files:
    ),
    ```
 
-3. **Verify `tree-sitter-languages` includes your language**
+3. **Add a `LanguageSpec` to `LanguageRegistry`** in `ingestion/languages/registry.py`
 
-   Run `python -c "from tree_sitter_languages import get_parser; get_parser('mylang')"`.
-   If it raises, the grammar is not bundled. You can add it manually as a tree-sitter
-   grammar and register it with the Language API.
+   This registers the language's identity data (extensions, entry points, manifest files,
+   builtin calls, heritage node types, etc.) centrally.
 
-4. **Add test files to `tests/fixtures/sample_repo/`**
+4. **Add the grammar dependency to `pyproject.toml`**
+
+   ```toml
+   "tree-sitter-mylang>=0.23,<1",
+   ```
+
+5. **Add test files to `tests/fixtures/sample_repo/`**
 
    At minimum: one file with a function, one with a class, one with imports.
 
-5. **Run `pytest tests/unit/test_parser.py -k mylang`** to verify extraction.
+6. **(Optional) Add per-language extractors** for bindings, heritage, visibility, docstrings,
+   and a dedicated import resolver in `resolvers/mylang.py`.
 
-6. **Open a PR.** That's it — no other changes needed.
+7. **Run `pytest tests/unit/test_parser.py -k mylang`** to verify extraction.
+
+8. **Open a PR.** That's it — no other changes needed.
 
 ---
 

@@ -13,6 +13,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
 
@@ -22,21 +24,35 @@ _log = logging.getLogger("repowise.workspace.extractors.http")
 # Constants
 # ---------------------------------------------------------------------------
 
-_BLOCKED_DIRS = frozenset({
-    ".git", "node_modules", "__pycache__", ".venv", "venv",
-    "dist", "build", "target", "vendor", ".next", ".nuxt",
-    ".tox", ".mypy_cache", ".gradle", ".mvn", "out", "bin",
-})
+_BLOCKED_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "target",
+        "vendor",
+        ".next",
+        ".nuxt",
+        ".tox",
+        ".mypy_cache",
+        ".gradle",
+        ".mvn",
+        "out",
+        "bin",
+    }
+)
 
 _MAX_FILE_SIZE = 512 * 1024  # 512 KB
 
-_PROVIDER_EXTENSIONS = frozenset({
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".php", ".go",
-})
+_PROVIDER_EXTENSIONS = _LANG_REGISTRY.extensions_for(
+    ["python", "typescript", "javascript", "java", "php", "go"]
+)
 
-_CONSUMER_EXTENSIONS = frozenset({
-    ".py", ".ts", ".tsx", ".js", ".jsx",
-})
+_CONSUMER_EXTENSIONS = _LANG_REGISTRY.extensions_for(["python", "typescript", "javascript"])
 
 _ALL_EXTENSIONS = _PROVIDER_EXTENSIONS | _CONSUMER_EXTENSIONS
 
@@ -178,10 +194,7 @@ class HttpExtractor:
         repo_root = repo_path.resolve()
 
         for dirpath, dirnames, filenames in os.walk(repo_root):
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in _BLOCKED_DIRS and not d.startswith(".")
-            ]
+            dirnames[:] = [d for d in dirnames if d not in _BLOCKED_DIRS and not d.startswith(".")]
             for fname in filenames:
                 fpath = Path(dirpath) / fname
                 suffix = fpath.suffix.lower()
@@ -244,21 +257,23 @@ class HttpExtractor:
 
                             contract_id = f"http::{method}::{norm_path}"
 
-                            contracts.append(Contract(
-                                repo=repo_alias,
-                                contract_id=contract_id,
-                                contract_type="http",
-                                role="provider",
-                                file_path=rel_path,
-                                symbol_name=f"{framework}:{method} {path_raw}",
-                                confidence=0.85,
-                                service=None,
-                                meta={
-                                    "method": method,
-                                    "path": norm_path,
-                                    "framework": framework,
-                                },
-                            ))
+                            contracts.append(
+                                Contract(
+                                    repo=repo_alias,
+                                    contract_id=contract_id,
+                                    contract_type="http",
+                                    role="provider",
+                                    file_path=rel_path,
+                                    symbol_name=f"{framework}:{method} {path_raw}",
+                                    confidence=0.85,
+                                    service=None,
+                                    meta={
+                                        "method": method,
+                                        "path": norm_path,
+                                        "framework": framework,
+                                    },
+                                )
+                            )
 
                 # --- Consumers ---
                 if suffix in _CONSUMER_EXTENSIONS:
@@ -269,17 +284,19 @@ class HttpExtractor:
                         path = _extract_path_from_url(url)
                         norm_path = normalize_http_path(path)
                         contract_id = f"http::{method}::{norm_path}"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="http",
-                            role="consumer",
-                            file_path=rel_path,
-                            symbol_name=f"fetch:{method} {url}",
-                            confidence=0.75,
-                            service=None,
-                            meta={"method": method, "path": norm_path, "client": "fetch"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="http",
+                                role="consumer",
+                                file_path=rel_path,
+                                symbol_name=f"fetch:{method} {url}",
+                                confidence=0.75,
+                                service=None,
+                                meta={"method": method, "path": norm_path, "client": "fetch"},
+                            )
+                        )
 
                     # fetch() without explicit method → GET (but skip if already matched with method)
                     fetch_method_urls = {m.group(1) for m in _FETCH_METHOD_RE.finditer(content)}
@@ -290,17 +307,19 @@ class HttpExtractor:
                         path = _extract_path_from_url(url)
                         norm_path = normalize_http_path(path)
                         contract_id = f"http::GET::{norm_path}"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="http",
-                            role="consumer",
-                            file_path=rel_path,
-                            symbol_name=f"fetch:GET {url}",
-                            confidence=0.75,
-                            service=None,
-                            meta={"method": "GET", "path": norm_path, "client": "fetch"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="http",
+                                role="consumer",
+                                file_path=rel_path,
+                                symbol_name=f"fetch:GET {url}",
+                                confidence=0.75,
+                                service=None,
+                                meta={"method": "GET", "path": norm_path, "client": "fetch"},
+                            )
+                        )
 
                     # axios
                     for match in _AXIOS_RE.finditer(content):
@@ -309,17 +328,19 @@ class HttpExtractor:
                         path = _extract_path_from_url(url)
                         norm_path = normalize_http_path(path)
                         contract_id = f"http::{method}::{norm_path}"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="http",
-                            role="consumer",
-                            file_path=rel_path,
-                            symbol_name=f"axios:{method} {url}",
-                            confidence=0.75,
-                            service=None,
-                            meta={"method": method, "path": norm_path, "client": "axios"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="http",
+                                role="consumer",
+                                file_path=rel_path,
+                                symbol_name=f"axios:{method} {url}",
+                                confidence=0.75,
+                                service=None,
+                                meta={"method": method, "path": norm_path, "client": "axios"},
+                            )
+                        )
 
                     # requests / httpx
                     for match in _REQUESTS_RE.finditer(content):
@@ -328,16 +349,18 @@ class HttpExtractor:
                         path = _extract_path_from_url(url)
                         norm_path = normalize_http_path(path)
                         contract_id = f"http::{method}::{norm_path}"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="http",
-                            role="consumer",
-                            file_path=rel_path,
-                            symbol_name=f"requests:{method} {url}",
-                            confidence=0.75,
-                            service=None,
-                            meta={"method": method, "path": norm_path, "client": "requests"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="http",
+                                role="consumer",
+                                file_path=rel_path,
+                                symbol_name=f"requests:{method} {url}",
+                                confidence=0.75,
+                                service=None,
+                                meta={"method": method, "path": norm_path, "client": "requests"},
+                            )
+                        )
 
         return contracts

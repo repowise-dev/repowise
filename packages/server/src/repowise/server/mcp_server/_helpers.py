@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.persistence.models import (
     Repository,
 )
@@ -20,26 +21,7 @@ from repowise.server.mcp_server import _state
 # Constants
 # ---------------------------------------------------------------------------
 
-_CODE_EXTS = frozenset(
-    {
-        ".py",
-        ".ts",
-        ".js",
-        ".go",
-        ".rs",
-        ".java",
-        ".tsx",
-        ".jsx",
-        ".rb",
-        ".kt",
-        ".cpp",
-        ".c",
-        ".h",
-        ".cs",
-        ".swift",
-        ".scala",
-    }
-)
+_CODE_EXTS = _LANG_REGISTRY.all_code_extensions()
 
 
 # ---------------------------------------------------------------------------

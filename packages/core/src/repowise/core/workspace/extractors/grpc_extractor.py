@@ -13,6 +13,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
 
@@ -22,19 +24,35 @@ _log = logging.getLogger("repowise.workspace.extractors.grpc")
 # Constants
 # ---------------------------------------------------------------------------
 
-_BLOCKED_DIRS = frozenset({
-    ".git", "node_modules", "__pycache__", ".venv", "venv",
-    "dist", "build", "target", "vendor", ".next", ".nuxt",
-    ".tox", ".mypy_cache", ".gradle", ".mvn", "out", "bin",
-})
+_BLOCKED_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "target",
+        "vendor",
+        ".next",
+        ".nuxt",
+        ".tox",
+        ".mypy_cache",
+        ".gradle",
+        ".mvn",
+        "out",
+        "bin",
+    }
+)
 
 _MAX_FILE_SIZE = 512 * 1024
 
-_PROTO_EXTENSIONS = frozenset({".proto"})
+_PROTO_EXTENSIONS = _LANG_REGISTRY.extensions_for(["proto"])
 
-_SOURCE_EXTENSIONS = frozenset({
-    ".go", ".java", ".py", ".ts", ".tsx", ".js", ".jsx",
-})
+_SOURCE_EXTENSIONS = _LANG_REGISTRY.extensions_for(
+    ["go", "java", "python", "typescript", "javascript"]
+)
 
 _ALL_EXTENSIONS = _PROTO_EXTENSIONS | _SOURCE_EXTENSIONS
 
@@ -149,10 +167,7 @@ class GrpcExtractor:
         repo_root = repo_path.resolve()
 
         for dirpath, dirnames, filenames in os.walk(repo_root):
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in _BLOCKED_DIRS and not d.startswith(".")
-            ]
+            dirnames[:] = [d for d in dirnames if d not in _BLOCKED_DIRS and not d.startswith(".")]
             for fname in filenames:
                 fpath = Path(dirpath) / fname
                 suffix = fpath.suffix.lower()
@@ -177,103 +192,115 @@ class GrpcExtractor:
                     for _svc_name, full_path, methods in services:
                         for method in methods:
                             contract_id = f"grpc::{full_path}/{method}"
-                            contracts.append(Contract(
-                                repo=repo_alias,
-                                contract_id=contract_id,
-                                contract_type="grpc",
-                                role="provider",
-                                file_path=rel_path,
-                                symbol_name=f"{full_path}/{method}",
-                                confidence=0.85,
-                                service=None,
-                                meta={
-                                    "package": _package,
-                                    "service": _svc_name,
-                                    "method": method,
-                                    "source": "proto",
-                                },
-                            ))
+                            contracts.append(
+                                Contract(
+                                    repo=repo_alias,
+                                    contract_id=contract_id,
+                                    contract_type="grpc",
+                                    role="provider",
+                                    file_path=rel_path,
+                                    symbol_name=f"{full_path}/{method}",
+                                    confidence=0.85,
+                                    service=None,
+                                    meta={
+                                        "package": _package,
+                                        "service": _svc_name,
+                                        "method": method,
+                                        "source": "proto",
+                                    },
+                                )
+                            )
 
                 # --- Go ---
                 elif suffix == ".go":
                     for m in _GO_PROVIDER_RE.finditer(content):
                         svc = m.group(1)
                         contract_id = f"grpc::{svc}/*"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="grpc",
-                            role="provider",
-                            file_path=rel_path,
-                            symbol_name=f"go:Register{svc}Server",
-                            confidence=0.8,
-                            service=None,
-                            meta={"service": svc, "source": "go_register"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="provider",
+                                file_path=rel_path,
+                                symbol_name=f"go:Register{svc}Server",
+                                confidence=0.8,
+                                service=None,
+                                meta={"service": svc, "source": "go_register"},
+                            )
+                        )
 
                     for m in _GO_CONSUMER_RE.finditer(content):
                         svc = m.group(1)
                         contract_id = f"grpc::{svc}/*"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="grpc",
-                            role="consumer",
-                            file_path=rel_path,
-                            symbol_name=f"go:New{svc}Client",
-                            confidence=0.7,
-                            service=None,
-                            meta={"service": svc, "source": "go_client"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="consumer",
+                                file_path=rel_path,
+                                symbol_name=f"go:New{svc}Client",
+                                confidence=0.7,
+                                service=None,
+                                meta={"service": svc, "source": "go_client"},
+                            )
+                        )
 
                 # --- Java ---
                 elif suffix == ".java":
                     for m in _JAVA_PROVIDER_RE.finditer(content):
                         svc = m.group(1)
                         contract_id = f"grpc::{svc}/*"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="grpc",
-                            role="provider",
-                            file_path=rel_path,
-                            symbol_name=f"java:extends {svc}Grpc.ImplBase",
-                            confidence=0.8,
-                            service=None,
-                            meta={"service": svc, "source": "java_extends"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="provider",
+                                file_path=rel_path,
+                                symbol_name=f"java:extends {svc}Grpc.ImplBase",
+                                confidence=0.8,
+                                service=None,
+                                meta={"service": svc, "source": "java_extends"},
+                            )
+                        )
 
                     for m in _JAVA_CONSUMER_RE.finditer(content):
                         svc = m.group(1)
                         contract_id = f"grpc::{svc}/*"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="grpc",
-                            role="consumer",
-                            file_path=rel_path,
-                            symbol_name=f"java:{svc}Grpc.newStub",
-                            confidence=0.7,
-                            service=None,
-                            meta={"service": svc, "source": "java_stub"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="consumer",
+                                file_path=rel_path,
+                                symbol_name=f"java:{svc}Grpc.newStub",
+                                confidence=0.7,
+                                service=None,
+                                meta={"service": svc, "source": "java_stub"},
+                            )
+                        )
 
                 # --- Python ---
                 elif suffix == ".py":
                     for m in _PY_PROVIDER_RE.finditer(content):
                         svc = m.group(1)
                         contract_id = f"grpc::{svc}/*"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="grpc",
-                            role="provider",
-                            file_path=rel_path,
-                            symbol_name=f"py:add_{svc}Servicer_to_server",
-                            confidence=0.8,
-                            service=None,
-                            meta={"service": svc, "source": "py_servicer"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="provider",
+                                file_path=rel_path,
+                                symbol_name=f"py:add_{svc}Servicer_to_server",
+                                confidence=0.8,
+                                service=None,
+                                meta={"service": svc, "source": "py_servicer"},
+                            )
+                        )
 
                     for m in _PY_CONSUMER_RE.finditer(content):
                         svc = m.group(1)
@@ -282,17 +309,19 @@ class GrpcExtractor:
                         if any(svc_lower.startswith(p) for p in ("mock", "test", "fake")):
                             continue
                         contract_id = f"grpc::{svc}/*"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="grpc",
-                            role="consumer",
-                            file_path=rel_path,
-                            symbol_name=f"py:{svc}Stub",
-                            confidence=0.7,
-                            service=None,
-                            meta={"service": svc, "source": "py_stub"},
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="consumer",
+                                file_path=rel_path,
+                                symbol_name=f"py:{svc}Stub",
+                                confidence=0.7,
+                                service=None,
+                                meta={"service": svc, "source": "py_stub"},
+                            )
+                        )
 
                 # --- TypeScript ---
                 elif suffix in (".ts", ".tsx", ".js", ".jsx"):
@@ -300,20 +329,22 @@ class GrpcExtractor:
                         svc = m.group(1)
                         method = m.group(2)
                         contract_id = f"grpc::{svc}/{method}"
-                        contracts.append(Contract(
-                            repo=repo_alias,
-                            contract_id=contract_id,
-                            contract_type="grpc",
-                            role="provider",
-                            file_path=rel_path,
-                            symbol_name=f"ts:@GrpcMethod('{svc}', '{method}')",
-                            confidence=0.8,
-                            service=None,
-                            meta={
-                                "service": svc,
-                                "method": method,
-                                "source": "ts_decorator",
-                            },
-                        ))
+                        contracts.append(
+                            Contract(
+                                repo=repo_alias,
+                                contract_id=contract_id,
+                                contract_type="grpc",
+                                role="provider",
+                                file_path=rel_path,
+                                symbol_name=f"ts:@GrpcMethod('{svc}', '{method}')",
+                                confidence=0.8,
+                                service=None,
+                                meta={
+                                    "service": svc,
+                                    "method": method,
+                                    "source": "ts_decorator",
+                                },
+                            )
+                        )
 
         return contracts

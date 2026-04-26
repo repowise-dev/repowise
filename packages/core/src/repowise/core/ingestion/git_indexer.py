@@ -24,6 +24,8 @@ from typing import Any
 
 import structlog
 
+from .languages.registry import REGISTRY as _LANG_REGISTRY
+
 logger = structlog.get_logger(__name__)
 
 # Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
@@ -112,85 +114,8 @@ _PR_NUMBER_RE = re.compile(r"(?:pull request |)\#(\d+)|\(#(\d+)\)|!(\d+)")
 # this set is skipped — data, config, markup, dotfiles, and binaries add no
 # documentation value, and git blame on large JSON/YAML files is very slow.
 # Co-change detection still runs across ALL tracked files regardless.
-_CODE_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        # Python
-        ".py",
-        ".pyi",
-        # JavaScript / TypeScript
-        ".ts",
-        ".tsx",
-        ".js",
-        ".jsx",
-        ".mjs",
-        ".cjs",
-        # Go
-        ".go",
-        # Rust
-        ".rs",
-        # JVM
-        ".java",
-        ".kt",
-        ".kts",
-        ".scala",
-        # C / C++
-        ".c",
-        ".h",
-        ".cpp",
-        ".cc",
-        ".cxx",
-        ".hpp",
-        ".hxx",
-        # C#
-        ".cs",
-        # Ruby
-        ".rb",
-        # PHP
-        ".php",
-        # Swift
-        ".swift",
-        # Objective-C
-        ".m",
-        ".mm",
-        # Elixir / Erlang
-        ".ex",
-        ".exs",
-        ".erl",
-        ".hrl",
-        # Lua
-        ".lua",
-        # R
-        ".r",
-        # Dart
-        ".dart",
-        # Zig
-        ".zig",
-        # Julia
-        ".jl",
-        # Clojure
-        ".clj",
-        ".cljs",
-        ".cljc",
-        # Elm
-        ".elm",
-        # Haskell
-        ".hs",
-        ".lhs",
-        # OCaml
-        ".ml",
-        ".mli",
-        # F#
-        ".fs",
-        ".fsi",
-        ".fsx",
-        # Crystal
-        ".cr",
-        # Nim
-        ".nim",
-        # D
-        ".d",
-    }
-)
+# Derived from the centralised LanguageRegistry — all code language extensions.
+_CODE_EXTENSIONS: frozenset[str] = _LANG_REGISTRY.all_code_extensions()
 
 # Files larger than this skip git blame.  blame is O(lines) and blocks the
 # executor thread — for large files the commit-based ownership estimate is
@@ -603,7 +528,14 @@ class GitIndexer:
             if line.startswith("\x00"):
                 parts = line.lstrip("\x00").split("\x1f")
                 if len(parts) >= 6:
-                    sha, an, ae, ct, parents, subj = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+                    sha, an, ae, ct, parents, subj = (
+                        parts[0],
+                        parts[1],
+                        parts[2],
+                        parts[3],
+                        parts[4],
+                        parts[5],
+                    )
                     try:
                         ts = int(ct)
                     except ValueError:
@@ -634,7 +566,9 @@ class GitIndexer:
                     if match_path in known_paths or match_path == file_path:
                         try:
                             current.added += int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
-                            current.deleted += int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
+                            current.deleted += (
+                                int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
+                            )
                         except ValueError:
                             pass
 
