@@ -88,7 +88,7 @@ def _workspace_update(
             )
 
     from repowise.core.workspace import RepoUpdateResult
-    
+
     results = run_async(
         update_workspace(
             ws_root,

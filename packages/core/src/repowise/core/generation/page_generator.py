@@ -37,7 +37,9 @@ from .models import (
     compute_page_id,
     compute_source_hash,
 )
-# Language name mapping for prompt clarity
+
+log = structlog.get_logger(__name__)
+
 _LANGUAGE_NAMES = {
     "en": "English",
     "ru": "Russian",
@@ -55,8 +57,6 @@ _LANGUAGE_NAMES = {
     "ar": "Arabic",
     "hi": "Hindi",
 }
-
-log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # System prompts — one per page type (constant strings for prefix caching)
@@ -172,6 +172,7 @@ class PageGenerator:
                 autoescape=False,
             )
         self._jinja_env = jinja_env
+
     # ------------------------------------------------------------------
     # Per-type generation methods
     # ------------------------------------------------------------------
@@ -940,38 +941,20 @@ class PageGenerator:
             )
             page.metadata["hallucination_warnings"] = hal_warnings
         return page
-    
+
     async def _call_provider(
         self,
         page_type: str,
         user_prompt: str,
         request_id: str,
     ) -> GeneratedResponse:
+        """Call the provider with caching, optionally prefixing a language instruction."""
         key = self._compute_cache_key(page_type, user_prompt)
         if self._config.cache_enabled and key in self._cache:
             log.debug("Cache hit", page_type=page_type, key=key[:8])
             return self._cache[key]
 
-        base_system = SYSTEM_PROMPTS[page_type]
-    
-        # Validate and sanitize language
-        lang_code = self._language.lower().strip() if self._language else "en"
-        # Remove any newlines or control characters (prevent prompt injection)
-        lang_code = ''.join(ch for ch in lang_code if ch.isalnum() or ch == '_')
-        if lang_code not in _LANGUAGE_NAMES:
-            log.warning(f"Unknown language code '{lang_code}', falling back to English")
-            lang_code = "en"
-        lang_name = _LANGUAGE_NAMES.get(lang_code, "English")
-    
-        if lang_code != "en":
-            language_instruction = (
-                f"Generate all documentation content in {lang_name}. "
-                "Keep all code, file paths, and symbol names in their original form. "
-                "Do not translate them.\n\n"
-            )
-            system_prompt = language_instruction + base_system
-        else:
-            system_prompt = base_system
+        system_prompt = self._build_system_prompt(page_type)
 
         response = await self._provider.generate(
             system_prompt,
@@ -985,7 +968,28 @@ class PageGenerator:
             self._cache[key] = response
 
         return response
-   
+
+    def _build_system_prompt(self, page_type: str) -> str:
+        base_system = SYSTEM_PROMPTS[page_type]
+        # Sanitize the configured language code: lower, strip, drop anything that isn't
+        # alphanumeric or underscore. Prevents user-supplied config from injecting
+        # newlines or extra instructions into the system prompt.
+        raw = (self._language or "en").lower().strip()
+        lang_code = "".join(ch for ch in raw if ch.isalnum() or ch == "_")
+        if lang_code not in _LANGUAGE_NAMES:
+            if lang_code != "en":
+                log.warning("unknown_language_code", code=lang_code, fallback="en")
+            lang_code = "en"
+        if lang_code == "en":
+            return base_system
+        lang_name = _LANGUAGE_NAMES[lang_code]
+        instruction = (
+            f"Generate all documentation content in {lang_name}. "
+            "Keep all code, file paths, and symbol names in their original form. "
+            "Do not translate them.\n\n"
+        )
+        return instruction + base_system
+
     def _compute_cache_key(self, page_type: str, user_prompt: str) -> str:
         """Return SHA256(model + language + page_type + user_prompt) as cache key."""
         raw = f"{self._provider.model_name}:{self._language}:{page_type}:{user_prompt}"
@@ -1338,7 +1342,6 @@ def _validate_symbol_references(
             continue
         # Check against known names
         base = ref.split(".")[-1]
-
         if ref in known or base in known:
             continue
         # Skip if the ref is a substring of any known symbol (covers partial

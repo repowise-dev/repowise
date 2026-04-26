@@ -18,7 +18,7 @@ import asyncio
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -321,7 +321,6 @@ async def run_pipeline(
             concurrency=concurrency,
             progress=progress,
             resume=resume,
-            generation_config=config,
         )
 
     # ---- Execution flow tracing -----------------------------------------------
@@ -722,9 +721,9 @@ async def run_generation(
     vector_store: Any | None,
     concurrency: int,
     progress: ProgressCallback | None,
-    generation_config: Any,
     resume: bool = False,
     cost_tracker: Any | None = None,
+    generation_config: Any | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -732,7 +731,6 @@ async def run_generation(
     """
     from repowise.core.generation import (
         ContextAssembler,
-        GenerationConfig,
         JobSystem,
         PageGenerator,
     )
@@ -743,9 +741,13 @@ async def run_generation(
     if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
         llm_client._cost_tracker = cost_tracker
 
-    # Create a new config based on the passed generation_config, but with desired max_concurrency
-    from dataclasses import replace
-    config = replace(generation_config, max_concurrency=concurrency)
+    from repowise.core.generation import GenerationConfig
+
+    # Preserve all caller-supplied GenerationConfig fields (output language, cache flags,
+    # token budgets, etc.) and only override max_concurrency to match the resolved value.
+    # Falls back to defaults when the pipeline entry point did not thread one through.
+    base_config = generation_config if generation_config is not None else GenerationConfig()
+    config = replace(base_config, max_concurrency=concurrency)
     assembler = ContextAssembler(config)
 
     # Resolve embedder and vector store
