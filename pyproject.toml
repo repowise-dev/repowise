@@ -169,8 +169,8 @@ members = [
     "packages/server",
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
