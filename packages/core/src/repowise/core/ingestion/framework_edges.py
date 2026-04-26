@@ -53,6 +53,36 @@ def add_framework_edges(
     if aspnet_in_stack or _has_aspnet_imports(parsed_files):
         count += _add_aspnet_edges(graph, parsed_files, path_set)
 
+    if "rails" in stack_lower or "config/application.rb" in path_set:
+        count += _add_rails_edges(graph, parsed_files, ctx, path_set)
+
+    if (
+        "laravel" in stack_lower
+        or "routes/web.php" in path_set
+        or "routes/api.php" in path_set
+    ):
+        count += _add_laravel_edges(graph, parsed_files, ctx, path_set)
+
+    spring_in_stack = any(
+        token in stack_lower for token in ("spring", "springboot", "spring-boot", "spring boot")
+    )
+    if spring_in_stack or _has_spring_imports(parsed_files):
+        count += _add_spring_edges(graph, parsed_files, path_set)
+
+    express_in_stack = any(
+        token in stack_lower for token in ("express", "nestjs", "nest", "nest.js")
+    )
+    if express_in_stack or _has_express_imports(parsed_files):
+        count += _add_express_edges(graph, parsed_files, ctx, path_set)
+
+    go_router_in_stack = any(token in stack_lower for token in ("gin", "echo", "chi"))
+    if go_router_in_stack or _has_go_router_imports(parsed_files):
+        count += _add_go_router_edges(graph, parsed_files, path_set)
+
+    rust_router_in_stack = any(token in stack_lower for token in ("axum", "actix", "actix-web"))
+    if rust_router_in_stack or _has_rust_router_imports(parsed_files):
+        count += _add_rust_router_edges(graph, parsed_files, path_set)
+
     return count
 
 
@@ -336,5 +366,601 @@ def _add_aspnet_edges(
             target = type_decl_to_file.get(entity)
             if target and target in path_set and _add_edge_if_new(graph, db_path, target):
                 count += 1
+
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared across the F1–F6 slices
+# ---------------------------------------------------------------------------
+
+
+def _read_text(parsed: Any) -> str:
+    try:
+        return Path(parsed.file_info.abs_path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _build_class_to_file(parsed_files: dict[str, Any], languages: tuple[str, ...]) -> dict[str, str]:
+    """Map declared class/interface/struct/enum/record names → file path."""
+    result: dict[str, str] = {}
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language not in languages:
+            continue
+        for sym in parsed.symbols:
+            if sym.kind in ("class", "interface", "struct", "record", "enum", "trait"):
+                result.setdefault(sym.name, path)
+    return result
+
+
+def _build_function_to_file(
+    parsed_files: dict[str, Any], languages: tuple[str, ...]
+) -> dict[str, list[str]]:
+    """Map declared function/method names → list of file paths declaring them."""
+    result: dict[str, list[str]] = {}
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language not in languages:
+            continue
+        for sym in parsed.symbols:
+            if sym.kind in ("function", "method"):
+                result.setdefault(sym.name, []).append(path)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# F2 — Rails framework edges
+# ---------------------------------------------------------------------------
+
+
+_RAILS_RESOURCES_RE = re.compile(r"\bresources?\s+:(\w+)")
+_RAILS_GET_TO_RE = re.compile(
+    r"\b(?:get|post|put|patch|delete|match)\s+[^\n]+?(?:to:\s*|=>\s*)['\"]([\w/]+)#\w+['\"]"
+)
+_RAILS_NAMESPACE_RE = re.compile(r"\bnamespace\s+:(\w+)\b")
+_RAILS_AR_RELATION_RE = re.compile(r"\b(?:belongs_to|has_many|has_one|has_and_belongs_to_many)\s+:(\w+)")
+
+
+def _singularize(word: str) -> str:
+    """Very rough Rails inflector — sufficient for routes/AR lookups."""
+    if word.endswith("ies") and len(word) > 3:
+        return word[:-3] + "y"
+    if word.endswith("ses") or word.endswith("xes") or word.endswith("zes"):
+        return word[:-2]
+    if word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _camelize(word: str) -> str:
+    return "".join(part.capitalize() for part in word.split("_"))
+
+
+def _add_rails_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    ctx: ResolverContext,
+    path_set: set[str],
+) -> int:
+    count = 0
+
+    # ---- routes.rb → controller files ----
+    routes_path = "config/routes.rb"
+    if routes_path in path_set:
+        try:
+            text = Path(parsed_files[routes_path].file_info.abs_path).read_text(
+                encoding="utf-8", errors="ignore"
+            )
+        except (OSError, KeyError):
+            text = ""
+        if text:
+            # Parse line-by-line to track namespace nesting (indent-agnostic; we
+            # use the order of opening keywords vs `end`).
+            namespace_stack: list[str] = []
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                ns_match = _RAILS_NAMESPACE_RE.search(line)
+                if ns_match and ("do" in line or line.endswith("do")):
+                    namespace_stack.append(ns_match.group(1))
+                    continue
+                if line == "end" and namespace_stack:
+                    namespace_stack.pop()
+                    continue
+                # resources :users → users_controller
+                for m in _RAILS_RESOURCES_RE.finditer(line):
+                    resource = m.group(1)
+                    target = _resolve_rails_controller(ctx, namespace_stack, resource, path_set)
+                    if target and _add_edge_if_new(graph, routes_path, target):
+                        count += 1
+                # get "/foo", to: "users#index"
+                for m in _RAILS_GET_TO_RE.finditer(line):
+                    ctrl_path = m.group(1)
+                    target = _resolve_rails_controller_path(ctx, namespace_stack, ctrl_path, path_set)
+                    if target and _add_edge_if_new(graph, routes_path, target):
+                        count += 1
+
+    # ---- ActiveRecord relationships: model → model ----
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language != "ruby":
+            continue
+        if "/models/" not in path and not path.startswith("app/models/"):
+            continue
+        text = _read_text(parsed)
+        if not text:
+            continue
+        for m in _RAILS_AR_RELATION_RE.finditer(text):
+            assoc_name = m.group(1)
+            target = _resolve_rails_relation(ctx, assoc_name, path_set)
+            if target and _add_edge_if_new(graph, path, target):
+                count += 1
+
+    return count
+
+
+def _resolve_rails_controller(
+    ctx: ResolverContext, namespace_stack: list[str], resource: str, path_set: set[str]
+) -> str | None:
+    """`resources :users` (with optional `namespace :admin do`) → controller path."""
+    namespace_segs = [seg for seg in namespace_stack]
+    candidate_path = "/".join([*namespace_segs, f"{resource}_controller"])
+    expected = f"app/controllers/{candidate_path}.rb"
+    if expected in path_set:
+        return expected
+    # Try via Rails autoload index (heritage)
+    constant = "::".join(_camelize(seg) for seg in [*namespace_segs, f"{resource}_controller"])
+    return ctx.rails_lookup(constant)
+
+
+def _resolve_rails_controller_path(
+    ctx: ResolverContext, namespace_stack: list[str], controller_token: str, path_set: set[str]
+) -> str | None:
+    """`to: "users#index"` or `to: "admin/users#index"` → controller path."""
+    expected = f"app/controllers/{controller_token}_controller.rb"
+    if expected in path_set:
+        return expected
+    parts = controller_token.split("/")
+    constant = "::".join(_camelize(p) for p in [*parts[:-1], f"{parts[-1]}_controller"])
+    return ctx.rails_lookup(constant)
+
+
+def _resolve_rails_relation(
+    ctx: ResolverContext, assoc_name: str, path_set: set[str]
+) -> str | None:
+    """`belongs_to :user` / `has_many :orders` → model file."""
+    singular = _singularize(assoc_name)
+    expected = f"app/models/{singular}.rb"
+    if expected in path_set:
+        return expected
+    return ctx.rails_lookup(_camelize(singular))
+
+
+# ---------------------------------------------------------------------------
+# F3 — Laravel framework edges
+# ---------------------------------------------------------------------------
+
+
+_LARAVEL_ROUTE_ARRAY_RE = re.compile(
+    r"Route::(?:get|post|put|patch|delete|any|match|resource|apiResource)\s*\([^,]*,\s*\[\s*([\w\\]+)::class"
+)
+_LARAVEL_ROUTE_LEGACY_RE = re.compile(
+    r"Route::(?:get|post|put|patch|delete|any|match)\s*\([^,]*,\s*['\"]([\w\\]+)@\w+['\"]"
+)
+_LARAVEL_ROUTE_RESOURCE_RE = re.compile(
+    r"Route::(?:resource|apiResource)\s*\(\s*['\"][^'\"]+['\"]\s*,\s*([\w\\]+)::class"
+)
+_LARAVEL_BIND_RE = re.compile(
+    r"->\s*(?:bind|singleton|instance)\s*\(\s*([\w\\]+)::class\s*,\s*([\w\\]+)::class"
+)
+_LARAVEL_ELOQUENT_RE = re.compile(
+    r"\$this->\s*(?:hasMany|hasOne|belongsTo|belongsToMany|morphMany|morphOne|morphTo)\s*\(\s*([\w\\]+)::class"
+)
+
+
+def _resolve_laravel_class(
+    ctx: ResolverContext, fqn: str, class_to_file: dict[str, str], path_set: set[str]
+) -> str | None:
+    """Resolve `Foo\\Bar\\Baz` (or short `Bar`) to repo-relative .php path."""
+    from .resolvers.php_composer import resolve_via_psr4
+
+    if "\\" in fqn:
+        result = resolve_via_psr4(fqn, ctx)
+        if result and result in path_set:
+            return result
+    short = fqn.rsplit("\\", 1)[-1]
+    return class_to_file.get(short)
+
+
+def _add_laravel_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    ctx: ResolverContext,
+    path_set: set[str],
+) -> int:
+    count = 0
+    class_to_file = _build_class_to_file(parsed_files, ("php",))
+
+    # ---- routes/web.php / routes/api.php → controllers ----
+    for routes_path in ("routes/web.php", "routes/api.php"):
+        if routes_path not in path_set:
+            continue
+        try:
+            text = Path(parsed_files[routes_path].file_info.abs_path).read_text(
+                encoding="utf-8", errors="ignore"
+            )
+        except (OSError, KeyError):
+            continue
+        seen_targets: set[str] = set()
+        for regex in (
+            _LARAVEL_ROUTE_ARRAY_RE,
+            _LARAVEL_ROUTE_LEGACY_RE,
+            _LARAVEL_ROUTE_RESOURCE_RE,
+        ):
+            for m in regex.finditer(text):
+                target = _resolve_laravel_class(ctx, m.group(1), class_to_file, path_set)
+                if target and target in path_set and target not in seen_targets:
+                    seen_targets.add(target)
+                    if _add_edge_if_new(graph, routes_path, target):
+                        count += 1
+
+    # ---- Service providers → bound classes ----
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language != "php":
+            continue
+        if not path.endswith("ServiceProvider.php"):
+            continue
+        text = _read_text(parsed)
+        if not text:
+            continue
+        for m in _LARAVEL_BIND_RE.finditer(text):
+            for fqn in (m.group(1), m.group(2)):
+                target = _resolve_laravel_class(ctx, fqn, class_to_file, path_set)
+                if target and target in path_set and _add_edge_if_new(graph, path, target):
+                    count += 1
+
+    # ---- Eloquent relationships: model → related model ----
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language != "php":
+            continue
+        text = _read_text(parsed)
+        if not text:
+            continue
+        for m in _LARAVEL_ELOQUENT_RE.finditer(text):
+            target = _resolve_laravel_class(ctx, m.group(1), class_to_file, path_set)
+            if target and target in path_set and _add_edge_if_new(graph, path, target):
+                count += 1
+
+    return count
+
+
+# ---------------------------------------------------------------------------
+# F1 — Spring Boot framework edges
+# ---------------------------------------------------------------------------
+
+
+_SPRING_BEAN_ANNOT = ("@Component", "@Service", "@Repository", "@Controller", "@RestController", "@Configuration")
+_SPRING_AUTOWIRED_FIELD_RE = re.compile(
+    r"@Autowired\s+(?:private|protected|public|final|\s)*\s*([A-Z]\w*)\s+\w+"
+)
+_SPRING_CTOR_PARAM_RE = re.compile(r"\b([A-Z]\w*)\s+\w+\s*[,)]")
+_SPRING_BEAN_METHOD_RE = re.compile(
+    r"@Bean\b[^\n]*\n\s*(?:public|protected|private|static|final|\s)+\s*([A-Z]\w*)\s+\w+\s*\("
+)
+_SPRING_BEAN_METHOD_KOTLIN_RE = re.compile(
+    r"@Bean\b[^\n]*\n\s*(?:public|protected|private|internal|fun|open|\s)+\s*\w+\s*\([^)]*\)\s*:\s*([A-Z]\w*)"
+)
+
+
+def _has_spring_imports(parsed_files: dict[str, Any]) -> bool:
+    for parsed in parsed_files.values():
+        if parsed.file_info.language not in ("java", "kotlin"):
+            continue
+        for imp in parsed.imports:
+            if imp.module_path.startswith("org.springframework"):
+                return True
+    return False
+
+
+def _add_spring_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    path_set: set[str],
+) -> int:
+    count = 0
+    class_to_file = _build_class_to_file(parsed_files, ("java", "kotlin"))
+
+    # Build interface → list of impl files map from heritage
+    impl_map: dict[str, list[str]] = {}
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language not in ("java", "kotlin"):
+            continue
+        for rel in parsed.heritage:
+            if rel.kind in ("implements", "extends"):
+                impl_map.setdefault(rel.parent_name, []).append(path)
+
+    def _resolve_type(type_name: str) -> list[str]:
+        results: list[str] = []
+        own = class_to_file.get(type_name)
+        if own:
+            results.append(own)
+        for impl in impl_map.get(type_name, []):
+            if impl not in results:
+                results.append(impl)
+        return results
+
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language not in ("java", "kotlin"):
+            continue
+        text = _read_text(parsed)
+        if not text:
+            continue
+        is_bean = any(annot in text for annot in _SPRING_BEAN_ANNOT)
+        if not is_bean:
+            continue
+
+        # @Autowired field injection
+        for m in _SPRING_AUTOWIRED_FIELD_RE.finditer(text):
+            type_name = m.group(1)
+            for target in _resolve_type(type_name):
+                if target in path_set and _add_edge_if_new(graph, path, target):
+                    count += 1
+
+        # Constructor parameter injection: collect param types from any @Autowired
+        # constructor or any single public constructor in a bean (Spring 4.3+ omits
+        # the annotation when the class has only one constructor).
+        for ctor_match in re.finditer(
+            r"(?:@Autowired\s*\n\s*)?(?:public|protected|private|\s)*"
+            + re.escape(Path(path).stem)
+            + r"\s*\(([^)]*)\)",
+            text,
+        ):
+            params = ctor_match.group(1)
+            if not params.strip():
+                continue
+            for pm in _SPRING_CTOR_PARAM_RE.finditer(params + ","):
+                type_name = pm.group(1)
+                if type_name in ("String", "Integer", "Long", "Boolean", "Double", "Float"):
+                    continue
+                for target in _resolve_type(type_name):
+                    if target in path_set and _add_edge_if_new(graph, path, target):
+                        count += 1
+
+        # @Bean factory methods → return-type file
+        if "@Configuration" in text:
+            for m in _SPRING_BEAN_METHOD_RE.finditer(text):
+                for target in _resolve_type(m.group(1)):
+                    if target in path_set and _add_edge_if_new(graph, path, target):
+                        count += 1
+            for m in _SPRING_BEAN_METHOD_KOTLIN_RE.finditer(text):
+                for target in _resolve_type(m.group(1)):
+                    if target in path_set and _add_edge_if_new(graph, path, target):
+                        count += 1
+
+    return count
+
+
+# ---------------------------------------------------------------------------
+# F4 — Express / NestJS framework edges
+# ---------------------------------------------------------------------------
+
+
+_EXPRESS_USE_RE = re.compile(r"\.\s*use\s*\(\s*(?:['\"][^'\"]+['\"]\s*,\s*)?(\w+)\s*[,)]")
+_NEST_MODULE_RE = re.compile(r"@Module\s*\(\s*\{([^}]*)\}\s*\)", re.DOTALL)
+_NEST_ARRAY_FIELD_RE = re.compile(
+    r"\b(?:controllers|providers|imports|exports)\s*:\s*\[([^\]]*)\]"
+)
+_IDENT_RE = re.compile(r"\b([A-Z]\w*)\b")
+
+
+def _has_express_imports(parsed_files: dict[str, Any]) -> bool:
+    for parsed in parsed_files.values():
+        if parsed.file_info.language not in ("typescript", "javascript"):
+            continue
+        for imp in parsed.imports:
+            mp = imp.module_path
+            if mp == "express" or mp.startswith("@nestjs/"):
+                return True
+    return False
+
+
+def _add_express_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    ctx: ResolverContext,
+    path_set: set[str],
+) -> int:
+    count = 0
+    class_to_file = _build_class_to_file(parsed_files, ("typescript", "javascript"))
+
+    # ---- Express: app.use(routerVar) ----
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language not in ("typescript", "javascript"):
+            continue
+        text = _read_text(parsed)
+        if not text:
+            continue
+
+        # Build local var → source file map for this file
+        var_to_file: dict[str, str] = {}
+        for imp in parsed.imports:
+            for name in imp.imported_names:
+                resolved = resolve_import(
+                    imp.module_path,
+                    path,
+                    parsed.file_info.language,
+                    ctx,
+                )
+                if resolved and resolved in path_set:
+                    var_to_file[name] = resolved
+
+        if "express" in text or any(
+            imp.module_path == "express" for imp in parsed.imports
+        ):
+            for m in _EXPRESS_USE_RE.finditer(text):
+                var_name = m.group(1)
+                target = var_to_file.get(var_name)
+                if target and target in path_set and _add_edge_if_new(graph, path, target):
+                    count += 1
+
+        # ---- NestJS: @Module({ controllers: [...], providers: [...], imports: [...] }) ----
+        for mod_match in _NEST_MODULE_RE.finditer(text):
+            body = mod_match.group(1)
+            for arr_match in _NEST_ARRAY_FIELD_RE.finditer(body):
+                for ident_match in _IDENT_RE.finditer(arr_match.group(1)):
+                    cls = ident_match.group(1)
+                    target = var_to_file.get(cls) or class_to_file.get(cls)
+                    if target and target in path_set and _add_edge_if_new(graph, path, target):
+                        count += 1
+
+    return count
+
+
+# ---------------------------------------------------------------------------
+# F5 — Gin / Echo / Chi framework edges (Go)
+# ---------------------------------------------------------------------------
+
+
+_GO_ROUTER_PKG_PATTERNS = (
+    "github.com/gin-gonic/gin",
+    "github.com/labstack/echo",
+    "github.com/go-chi/chi",
+)
+_GO_ROUTE_CALL_RE = re.compile(
+    r"\.\s*(?:GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|HandleFunc|Handle|Any)"
+    r"\s*\(\s*[\"'][^\"']*[\"']\s*,\s*([\w.]+)"
+)
+
+
+def _has_go_router_imports(parsed_files: dict[str, Any]) -> bool:
+    for parsed in parsed_files.values():
+        if parsed.file_info.language != "go":
+            continue
+        for imp in parsed.imports:
+            mp = imp.module_path
+            if any(mp.startswith(pkg) for pkg in _GO_ROUTER_PKG_PATTERNS):
+                return True
+    return False
+
+
+def _add_go_router_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    path_set: set[str],
+) -> int:
+    count = 0
+    func_to_files = _build_function_to_file(parsed_files, ("go",))
+    class_to_file = _build_class_to_file(parsed_files, ("go",))
+
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language != "go":
+            continue
+        text = _read_text(parsed)
+        if not text:
+            continue
+        if not any(
+            imp.module_path.startswith(pkg)
+            for pkg in _GO_ROUTER_PKG_PATTERNS
+            for imp in parsed.imports
+        ):
+            # Allow if some other go file in the repo imports a router (router
+            # setup may be split across files); be conservative and only emit
+            # edges for files that themselves reference router calls.
+            pass
+
+        for m in _GO_ROUTE_CALL_RE.finditer(text):
+            handler = m.group(1)
+            targets = _resolve_go_handler(handler, parsed, func_to_files, class_to_file)
+            for target in targets:
+                if target != path and target in path_set and _add_edge_if_new(graph, path, target):
+                    count += 1
+
+    return count
+
+
+def _resolve_go_handler(
+    handler: str,
+    parsed: Any,
+    func_to_files: dict[str, list[str]],
+    class_to_file: dict[str, str],
+) -> list[str]:
+    """Resolve `pkg.Func` / `recv.Method` / `Func` to candidate file paths."""
+    if "." in handler:
+        prefix, name = handler.rsplit(".", 1)
+        # First: was prefix imported as a package?
+        for imp in parsed.imports:
+            short = imp.module_path.rsplit("/", 1)[-1]
+            if short == prefix and imp.resolved_file:
+                # Find file declaring `name` whose path starts with the resolved package dir
+                pkg_dir = "/".join(imp.resolved_file.split("/")[:-1])
+                results = [
+                    p
+                    for p in func_to_files.get(name, [])
+                    if p.startswith(pkg_dir + "/") or p == imp.resolved_file
+                ]
+                if results:
+                    return results
+        # Second: receiver-method — try the receiver's type file
+        type_file = class_to_file.get(prefix.title())
+        if type_file:
+            return [type_file]
+        # Third: fall back to any file declaring the bare name
+        return list(func_to_files.get(name, []))
+    return list(func_to_files.get(handler, []))
+
+
+# ---------------------------------------------------------------------------
+# F6 — Axum / Actix framework edges (Rust)
+# ---------------------------------------------------------------------------
+
+
+_RUST_AXUM_ROUTE_RE = re.compile(
+    r"\.\s*route\s*\(\s*[\"'][^\"']*[\"']\s*,\s*"
+    r"(?:get|post|put|delete|patch|head|options|on)\s*\(\s*([\w:]+)\s*\)"
+)
+_RUST_ACTIX_TO_RE = re.compile(r"web::\s*(?:get|post|put|delete|patch|head)\(\)\s*\.\s*to\s*\(\s*([\w:]+)\s*\)")
+_RUST_ACTIX_SERVICE_RE = re.compile(r"\.\s*service\s*\(\s*([\w:]+)\s*\)")
+_RUST_SCOPE_CONFIGURE_RE = re.compile(r"\.\s*configure\s*\(\s*([\w:]+)\s*\)")
+
+
+def _has_rust_router_imports(parsed_files: dict[str, Any]) -> bool:
+    for parsed in parsed_files.values():
+        if parsed.file_info.language != "rust":
+            continue
+        for imp in parsed.imports:
+            mp = imp.module_path
+            if mp.startswith("axum") or mp.startswith("actix_web") or mp.startswith("actix-web"):
+                return True
+    return False
+
+
+def _add_rust_router_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    path_set: set[str],
+) -> int:
+    count = 0
+    func_to_files = _build_function_to_file(parsed_files, ("rust",))
+
+    def _resolve(handler: str) -> list[str]:
+        name = handler.rsplit("::", 1)[-1]
+        return list(func_to_files.get(name, []))
+
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language != "rust":
+            continue
+        text = _read_text(parsed)
+        if not text:
+            continue
+        for regex in (
+            _RUST_AXUM_ROUTE_RE,
+            _RUST_ACTIX_TO_RE,
+            _RUST_ACTIX_SERVICE_RE,
+            _RUST_SCOPE_CONFIGURE_RE,
+        ):
+            for m in regex.finditer(text):
+                for target in _resolve(m.group(1)):
+                    if target != path and target in path_set and _add_edge_if_new(graph, path, target):
+                        count += 1
 
     return count

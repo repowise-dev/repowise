@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 from .context import ResolverContext
+from .kotlin_gradle import resolve_via_kotlin_index
 
 
 def resolve_kotlin_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
@@ -14,6 +15,13 @@ def resolve_kotlin_import(module_path: str, importer_path: str, ctx: ResolverCon
 
     if local == "*":
         return None
+
+    # Gradle-aware resolution: settings.gradle subprojects + per-module
+    # sourceSets parsing yields a {package → files} index. Consult it first
+    # so multi-module Android/JVM layouts resolve correctly.
+    gradle_match = resolve_via_kotlin_index(module_path, ctx)
+    if gradle_match is not None:
+        return gradle_match
 
     # Try stem lookup on the class/function name
     result = ctx.stem_lookup(local.lower())

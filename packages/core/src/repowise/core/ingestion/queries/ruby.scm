@@ -20,6 +20,11 @@
   name: (constant) @symbol.name
 ) @symbol.def
 
+; Top-level / class-level constant assignment (Q8): MAX = 3
+(assignment
+  left: (constant) @symbol.name
+) @symbol.def
+
 ; require 'module' / require_relative './sibling'
 (call
   method: (identifier) @_require_method

@@ -796,7 +796,9 @@ _SPECS: tuple[LanguageSpec, ...] = (
         extensions=frozenset({".swift"}),
         grammar_package="tree_sitter_swift",
         scm_file="swift.scm",
-        heritage_node_types=frozenset({"class_declaration", "protocol_declaration"}),
+        heritage_node_types=frozenset(
+            {"class_declaration", "protocol_declaration", "extension_declaration"}
+        ),
         manifest_files=("Package.swift",),
         builtin_calls=frozenset(
             {
