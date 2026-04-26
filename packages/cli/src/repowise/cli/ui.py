@@ -553,7 +553,11 @@ def interactive_advanced_config(
     Returns a dict with keys matching init_command kwargs:
     ``commit_limit``, ``follow_renames``, ``skip_tests``, ``skip_infra``,
     ``concurrency``, ``exclude``, ``test_run``, ``embedder``,
-    ``include_submodules``, ``no_claude_md``.
+    ``include_submodules``.
+
+    The CLAUDE.md prompt is intentionally not asked here so that full and
+    advanced modes stay aligned: the caller asks once via
+    :func:`interactive_claude_md_prompt` after mode selection.
     """
     console.print()
     console.print(
@@ -681,16 +685,6 @@ def interactive_advanced_config(
         default=False,
     )
 
-    # ── Editor Integration ────────────────────────────────────────────────
-    console.print()
-    console.print(f"  [{BRAND}]Editor Integration[/]")
-    console.print()
-
-    result["no_claude_md"] = not click.confirm(
-        "  Generate .claude/CLAUDE.md?",
-        default=True,
-    )
-
     # ── Summary ───────────────────────────────────────────────────────────
     console.print()
     summary = Table(box=None, padding=(0, 2), show_header=False)
@@ -707,7 +701,6 @@ def interactive_advanced_config(
     if patterns:
         summary.add_row("Exclude", ", ".join(patterns))
     summary.add_row("Test run", "yes" if result["test_run"] else "no")
-    summary.add_row("CLAUDE.md", "no" if result["no_claude_md"] else "yes")
 
     console.print(
         Panel(
@@ -719,6 +712,23 @@ def interactive_advanced_config(
     )
     console.print()
     return result
+
+
+def interactive_claude_md_prompt(console: Console) -> bool:
+    """Ask the user whether to generate ``.claude/CLAUDE.md``.
+
+    Returns ``True`` when the user opts out (i.e. the value to assign to
+    ``no_claude_md``). Asked once after mode selection so that full mode and
+    advanced mode behave the same way and a user who answers ``n`` always has
+    that answer honoured (issue #81).
+    """
+    console.print()
+    console.print(f"  [{BRAND}]Editor Integration[/]")
+    console.print()
+    return not click.confirm(
+        "  Generate .claude/CLAUDE.md?",
+        default=True,
+    )
 
 
 def _resolve_embedder_from_env() -> str:
