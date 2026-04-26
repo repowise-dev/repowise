@@ -120,4 +120,5 @@ ehthumbs.db
 # Internal docs (not for distribution)
 docs/COMPETITIVE_ANALYSIS.md
 docs/GRAPH_INTELLIGENCE_UPGRADE.md
+docs/LOCAL_DEV.md
 docs/multi-repo/
