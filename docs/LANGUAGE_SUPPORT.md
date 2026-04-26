@@ -282,7 +282,9 @@ they all derive their language sets from the registry automatically.
 
 ## Architecture
 
-The language pipeline is fully modular:
+The language pipeline is fully modular. Per-language code lives in
+dedicated subpackages — adding a new language means dropping a file
+into each subpackage rather than editing monoliths.
 
 ```
 ingestion/
@@ -291,8 +293,14 @@ ingestion/
     visibility.py      #   symbol visibility (public/private/protected)
     signatures.py      #   human-readable signature building
     docstrings.py      #   module + symbol docstring extraction
-    bindings.py        #   import name + alias binding extraction
-    heritage.py        #   inheritance/interface/trait extraction
+    bindings/          #   import name + alias binding extraction (per-lang)
+      __init__.py      #     extract_import_bindings dispatcher
+      python.py  ts_js.py  go.py  rust.py  java.py  kotlin.py
+      ruby.py    csharp.py swift.py scala.py php.py cpp.py
+    heritage/          #   inheritance/interface/trait extraction (per-lang)
+      __init__.py      #     extract_heritage + HERITAGE_EXTRACTORS dispatcher
+      python.py  ts_js.py  java.py  go.py    rust.py  cpp.py
+      kotlin.py  ruby.py   swift.py csharp.py scala.py php.py
   resolvers/           # Per-language import resolution
     python.py          #   dotted imports, __init__.py, src/ layout
     typescript.py      #   multi-ext probe, tsconfig aliases
@@ -301,18 +309,32 @@ ingestion/
     cpp.py             #   compile_commands.json include paths
     kotlin.py          #   package-to-directory mapping
     ruby.py            #   require/require_relative resolution
-    csharp.py          #   namespace-based resolution
+    csharp.py / dotnet/ #  namespace-based + MSBuild project graph
     swift.py           #   module import resolution
     scala.py           #   package-to-directory mapping
     php.py             #   namespace/PSR-4 resolution
     generic.py         #   stem-matching fallback
-  framework_edges.py   # Django, FastAPI, Flask, pytest detection
+  framework_edges.py   # Django, FastAPI, Flask, pytest, ASP.NET detection
+  dynamic_hints/       # Per-language dynamic-edge extractors
+    base.py            #   DynamicHintExtractor + DynamicEdge
+    registry.py        #   HintRegistry
+    django.py  pytest_hints.py  node.py  dotnet.py
   parser.py            # ASTParser (language-agnostic orchestration)
   graph.py             # GraphBuilder (import/call/heritage resolution)
+
+analysis/
+  dead_code/           # Dead code detection (Phase 1 split)
+    __init__.py        #   re-exports DeadCodeAnalyzer + dataclasses
+    analyzer.py        #   DeadCodeAnalyzer class + four detection passes
+    models.py          #   DeadCodeKind, DeadCodeFindingData, DeadCodeReport
+    constants.py       #   never-flag globs, framework decorators, fixtures
+    dynamic_markers.py #   per-language source-text dynamic markers
 ```
 
 Adding a new language requires zero changes to `parser.py`, `graph.py`,
-`traverser.py`, `dead_code.py`, or any other core file.
+`traverser.py`, or any analysis core file. New language work consists of
+adding one file to each per-language subpackage and registering it in the
+relevant `__init__.py` dispatcher / dict.
 
 ---
 
