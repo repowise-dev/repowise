@@ -40,6 +40,24 @@ from .models import (
 
 log = structlog.get_logger(__name__)
 
+_LANGUAGE_NAMES = {
+    "en": "English",
+    "ru": "Russian",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "tr": "Turkish",
+    "ar": "Arabic",
+    "hi": "Hindi",
+}
+
 # ---------------------------------------------------------------------------
 # System prompts — one per page type (constant strings for prefix caching)
 # ---------------------------------------------------------------------------
@@ -135,12 +153,14 @@ class PageGenerator:
         assembler: ContextAssembler,
         config: GenerationConfig,
         jinja_env: jinja2.Environment | None = None,
-        vector_store: Any | None = None,  # VectorStore | None
+        vector_store: Any | None = None,
+        language: str = "en",
     ) -> None:
         self._provider = provider
         self._assembler = assembler
         self._config = config
         self._vector_store = vector_store
+        self._language = language
         self._cache: dict[str, GeneratedResponse] = {}
 
         if jinja_env is None:
@@ -928,14 +948,16 @@ class PageGenerator:
         user_prompt: str,
         request_id: str,
     ) -> GeneratedResponse:
-        """Call the provider with caching."""
+        """Call the provider with caching, optionally prefixing a language instruction."""
         key = self._compute_cache_key(page_type, user_prompt)
         if self._config.cache_enabled and key in self._cache:
             log.debug("Cache hit", page_type=page_type, key=key[:8])
             return self._cache[key]
 
+        system_prompt = self._build_system_prompt(page_type)
+
         response = await self._provider.generate(
-            SYSTEM_PROMPTS[page_type],
+            system_prompt,
             user_prompt,
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
@@ -947,9 +969,30 @@ class PageGenerator:
 
         return response
 
+    def _build_system_prompt(self, page_type: str) -> str:
+        base_system = SYSTEM_PROMPTS[page_type]
+        # Sanitize the configured language code: lower, strip, drop anything that isn't
+        # alphanumeric or underscore. Prevents user-supplied config from injecting
+        # newlines or extra instructions into the system prompt.
+        raw = (self._language or "en").lower().strip()
+        lang_code = "".join(ch for ch in raw if ch.isalnum() or ch == "_")
+        if lang_code not in _LANGUAGE_NAMES:
+            if lang_code != "en":
+                log.warning("unknown_language_code", code=lang_code, fallback="en")
+            lang_code = "en"
+        if lang_code == "en":
+            return base_system
+        lang_name = _LANGUAGE_NAMES[lang_code]
+        instruction = (
+            f"Generate all documentation content in {lang_name}. "
+            "Keep all code, file paths, and symbol names in their original form. "
+            "Do not translate them.\n\n"
+        )
+        return instruction + base_system
+
     def _compute_cache_key(self, page_type: str, user_prompt: str) -> str:
-        """Return SHA256(model + page_type + user_prompt) as cache key."""
-        raw = f"{self._provider.model_name}:{page_type}:{user_prompt}"
+        """Return SHA256(model + language + page_type + user_prompt) as cache key."""
+        raw = f"{self._provider.model_name}:{self._language}:{page_type}:{user_prompt}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _build_generated_page(

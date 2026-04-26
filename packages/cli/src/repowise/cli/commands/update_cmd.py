@@ -121,6 +121,7 @@ def _workspace_update(
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--since", default=None, help="Base git ref to diff from (overrides state).")
+@click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
 @click.option(
     "--cascade-budget",
     type=int,
@@ -152,6 +153,7 @@ def update_command(
     dry_run: bool,
     workspace: bool,
     repo_alias: str | None,
+    concurrency: int = 5,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync."""
     start = time.monotonic()
@@ -209,11 +211,12 @@ def update_command(
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
-    config = GenerationConfig()
+    cfg = load_config(repo_path)
+    language = cfg.get("language", "en")
+    config = GenerationConfig(max_concurrency=concurrency, language=language)
 
     # Read exclude patterns from config (set during init or via web UI)
-    repo_config = load_config(repo_path)
-    exclude_patterns: list[str] = list(repo_config.get("exclude_patterns") or [])
+    exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
 
     # Full re-ingest for graph (needed for cascade analysis)
     traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
@@ -252,8 +255,8 @@ def update_command(
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
 
-        _commit_limit = repo_config.get("commit_limit")
-        _follow_renames = repo_config.get("follow_renames", False)
+        _commit_limit = cfg.get("commit_limit")
+        _follow_renames = cfg.get("follow_renames", False)
         git_indexer = GitIndexer(
             repo_path,
             commit_limit=_commit_limit,
@@ -329,7 +332,7 @@ def update_command(
 
     # Generate affected pages
     assembler = ContextAssembler(config)
-    generator = PageGenerator(provider, assembler, config)
+    generator = PageGenerator(provider, assembler, config, language=config.language)
     repo_name = repo_path.name
 
     generated_pages = run_async(
