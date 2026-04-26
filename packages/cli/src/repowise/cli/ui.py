@@ -265,6 +265,7 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "openai": "gpt-4.1",
     "anthropic": "claude-sonnet-4-6",
     "ollama": "llama3.2",
+    "openrouter": "anthropic/claude-sonnet-4.6",
     "litellm": "groq/llama-3.1-70b-versatile",
 }
 
@@ -273,6 +274,7 @@ _PROVIDER_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "OLLAMA_BASE_URL",
+    "openrouter": "OPENROUTER_API_KEY",
 }
 
 _PROVIDER_SIGNUP: dict[str, str] = {
@@ -280,6 +282,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
     "ollama": "https://ollama.com/download",
+    "openrouter": "https://openrouter.ai/keys",
 }
 
 
