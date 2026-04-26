@@ -156,7 +156,7 @@ docker run -p 7337:7337 -p 3000:3000 \
 ### From source (for development)
 
 ```bash
-git clone https://github.com/RaghavChamadiya/repowise.git
+git clone https://github.com/repowise-dev/repowise.git
 cd repowise && npm install
 
 # Terminal 1: API
