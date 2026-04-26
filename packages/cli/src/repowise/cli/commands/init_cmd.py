@@ -877,6 +877,7 @@ def init_command(
         build_contextual_next_steps,
         format_elapsed,
         interactive_advanced_config,
+        interactive_claude_md_prompt,
         interactive_mode_select,
         interactive_provider_select,
         load_dotenv,
@@ -974,9 +975,15 @@ def init_command(
             test_run = adv["test_run"]
             embedder_name = adv.get("embedder") or embedder_name
             include_submodules = adv.get("include_submodules", include_submodules)
-            no_claude_md = adv.get("no_claude_md", no_claude_md)
         else:
             provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
+
+        # Ask about CLAUDE.md once, after mode selection, so full and advanced
+        # modes both honour the user's choice (issue #81). Skip when --no-claude-md
+        # was already passed on the CLI (the user has already opted out) and when
+        # the user picked index-only mode (no LLM generation runs anyway).
+        if not no_claude_md and not index_only:
+            no_claude_md = interactive_claude_md_prompt(console)
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
