@@ -16,6 +16,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -26,6 +27,40 @@ from sqlalchemy.pool import NullPool, StaticPool
 from sqlalchemy.sql import text
 
 from .models import Base
+
+# SQLite tuning. WAL allows concurrent readers while a writer is active and
+# turns the "database is locked" failure mode into a polite block, while the
+# busy_timeout gives that block a bounded retry window before giving up.
+# Foreign keys are off by default in SQLite for legacy reasons; we want them on
+# everywhere so our FK-driven cascades behave the same in tests and production.
+_SQLITE_BUSY_TIMEOUT_MS = 5000
+
+_SQLITE_PRAGMAS: tuple[tuple[str, str], ...] = (
+    ("journal_mode", "WAL"),
+    ("synchronous", "NORMAL"),
+    ("busy_timeout", str(_SQLITE_BUSY_TIMEOUT_MS)),
+    ("foreign_keys", "ON"),
+)
+
+
+def _apply_sqlite_pragmas(dbapi_connection: object, _connection_record: object) -> None:
+    """Apply WAL, busy_timeout, and FK pragmas on every new SQLite connection.
+
+    Registered as a ``connect`` event listener so it runs once per physical
+    connection, including the first one opened after the engine is created and
+    every reconnect afterward. WAL is a database-level setting that persists in
+    the file, but we re-issue it defensively in case the file was created by an
+    older repowise version, by ``alembic``, or by a third-party tool that left
+    journal_mode at the default ``delete``.
+    """
+    cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+    try:
+        for name, value in _SQLITE_PRAGMAS:
+            # journal_mode returns the new mode and must be queried, not assigned,
+            # because in :memory: databases it silently downgrades to MEMORY.
+            cursor.execute(f"PRAGMA {name}={value}")
+    finally:
+        cursor.close()
 
 __all__ = [
     "AsyncEngine",
@@ -144,7 +179,12 @@ def create_engine(
         # PostgreSQL — asyncpg handles its own connection pool
         kwargs["pool_pre_ping"] = True
 
-    return create_async_engine(db_url, **kwargs)
+    engine = create_async_engine(db_url, **kwargs)
+    if is_sqlite:
+        # The ``connect`` event fires for the underlying DBAPI connection, so we
+        # listen on the sync engine that backs the AsyncEngine.
+        event.listen(engine.sync_engine, "connect", _apply_sqlite_pragmas)
+    return engine
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
