@@ -15,7 +15,7 @@ Thanks for your interest in contributing to Repowise! This guide will help you g
 
 ```bash
 # Clone the repo
-git clone https://github.com/RaghavChamadiya/repowise.git
+git clone https://github.com/repowise-dev/repowise.git
 cd repowise
 
 # Install Python dependencies
@@ -94,7 +94,7 @@ repowise/
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/RaghavChamadiya/repowise/issues) for bugs and feature requests
+- Use [GitHub Issues](https://github.com/repowise-dev/repowise/issues) for bugs and feature requests
 - For security vulnerabilities, see [SECURITY.md](SECURITY.md)
 
 ## License

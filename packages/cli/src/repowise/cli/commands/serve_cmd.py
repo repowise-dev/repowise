@@ -155,7 +155,7 @@ def _save_global_embedder(embedder: str, api_key: str) -> None:
         pass  # Non-fatal — user just gets prompted again next time.
 
 
-_GITHUB_REPO = "RaghavChamadiya/repowise"
+_GITHUB_REPO = "repowise-dev/repowise"
 _WEB_CACHE_DIR = Path.home() / ".repowise" / "web"
 _MARKER_FILE = _WEB_CACHE_DIR / ".version"
 

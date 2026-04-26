@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.3.0"
+version = "0.3.1"
 description = "Codebase intelligence for developers and AI — generates and maintains a structured wiki for any codebase"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -113,10 +113,10 @@ dev = [
 repowise = "repowise.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/RaghavChamadiya/repowise"
-Repository = "https://github.com/RaghavChamadiya/repowise"
-Issues = "https://github.com/RaghavChamadiya/repowise/issues"
-Documentation = "https://github.com/RaghavChamadiya/repowise/blob/main/docs/USER_GUIDE.md"
+Homepage = "https://github.com/repowise-dev/repowise"
+Repository = "https://github.com/repowise-dev/repowise"
+Issues = "https://github.com/repowise-dev/repowise/issues"
+Documentation = "https://github.com/repowise-dev/repowise/blob/main/docs/USER_GUIDE.md"
 
 # ---------------------------------------------------------------------------
 # setuptools — explicit package-dir mapping across three src/ directories
