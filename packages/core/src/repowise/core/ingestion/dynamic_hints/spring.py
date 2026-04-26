@@ -41,18 +41,20 @@ class SpringDynamicHints(DynamicHintExtractor):
 
         type_to_file: dict[str, str] = {}
         sources: list[tuple[Path, str, str]] = []  # (path, text, lang)
+        repo_root_resolved = repo_root.resolve()
         for ext, lang in ((".java", "java"), (".kt", "kotlin")):
             for src in repo_root.rglob(f"*{ext}"):
-                if any(part in _SKIP_DIRS for part in src.parts):
+                try:
+                    rel_path = src.resolve().relative_to(repo_root_resolved)
+                except ValueError:
+                    continue
+                if any(part in _SKIP_DIRS for part in rel_path.parts):
                     continue
                 try:
                     text = src.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
-                try:
-                    rel = src.resolve().relative_to(repo_root.resolve()).as_posix()
-                except ValueError:
-                    continue
+                rel = rel_path.as_posix()
                 sources.append((src, text, lang))
                 pattern = _KOTLIN_TYPE_DECL_RE if lang == "kotlin" else _TYPE_DECL_RE
                 for match in pattern.finditer(text):

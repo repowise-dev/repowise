@@ -29,18 +29,19 @@ class LuauDynamicHints(DynamicHintExtractor):
         edges: list[DynamicEdge] = []
 
         sources: list[tuple[Path, str]] = []
+        repo_root_resolved = repo_root.resolve()
         # luau plus lua extensions
         for ext in (".luau", ".lua"):
             for src in repo_root.rglob(f"*{ext}"):
-                if any(part in _SKIP_DIRS for part in src.parts):
+                try:
+                    rel_path = src.resolve().relative_to(repo_root_resolved)
+                except ValueError:
+                    continue
+                if any(part in _SKIP_DIRS for part in rel_path.parts):
                     continue
                 try:
                     text = src.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
-                    continue
-                try:
-                    rel = src.resolve().relative_to(repo_root.resolve()).as_posix()
-                except ValueError:
                     continue
                 sources.append((src, text))
 

@@ -34,17 +34,19 @@ class RubyDynamicHints(DynamicHintExtractor):
         const_to_file: dict[str, str] = {}
         method_to_files: dict[str, list[str]] = {}
         rb_files: list[tuple[Path, str]] = []
+        repo_root_resolved = repo_root.resolve()
         for src in repo_root.rglob("*.rb"):
-            if any(part in _SKIP_DIRS for part in src.parts):
+            try:
+                rel_path = src.resolve().relative_to(repo_root_resolved)
+            except ValueError:
+                continue
+            if any(part in _SKIP_DIRS for part in rel_path.parts):
                 continue
             try:
                 text = src.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            try:
-                rel = src.resolve().relative_to(repo_root.resolve()).as_posix()
-            except ValueError:
-                continue
+            rel = rel_path.as_posix()
             rb_files.append((src, text))
             for match in _CLASS_DECL_RE.finditer(text):
                 const_to_file.setdefault(match.group(1), rel)

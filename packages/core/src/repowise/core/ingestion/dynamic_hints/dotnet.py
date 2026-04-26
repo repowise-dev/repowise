@@ -57,17 +57,19 @@ class DotNetDynamicHints(DynamicHintExtractor):
         # parsing and operates on raw file text.
         type_to_file: dict[str, str] = {}
         cs_files: list[tuple[Path, str]] = []  # (path, text)
+        repo_root_resolved = repo_root.resolve()
         for cs in repo_root.rglob("*.cs"):
-            if any(part in _SKIP_DIRS for part in cs.parts):
+            try:
+                rel_path = cs.resolve().relative_to(repo_root_resolved)
+            except ValueError:
+                continue
+            if any(part in _SKIP_DIRS for part in rel_path.parts):
                 continue
             try:
                 text = cs.read_text(encoding="utf-8-sig", errors="ignore")
             except OSError:
                 continue
-            try:
-                rel = cs.resolve().relative_to(repo_root.resolve()).as_posix()
-            except ValueError:
-                continue
+            rel = rel_path.as_posix()
             cs_files.append((cs, text))
             # Only index publicly-declared top-level types — generic regex; a
             # collision falls back to the first match seen.
