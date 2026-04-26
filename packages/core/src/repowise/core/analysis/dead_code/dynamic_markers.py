@@ -34,10 +34,45 @@ _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
     ".ts": ("import(", "require("),
     ".tsx": ("import(", "require("),
     ".java": ("Class.forName(", "ServiceLoader.load("),
-    ".kt": ("Class.forName(", "ServiceLoader.load("),
-    ".rb": ("autoload ", "const_get(", "send(:require"),
-    ".php": ("class_exists(", "interface_exists("),
-    ".go": ("plugin.Open(", "reflect.New("),
+    ".kt": (
+        "Class.forName(",
+        "ServiceLoader.load(",
+        "KClass.createInstance(",
+        "::class.java",
+    ),
+    ".rb": (
+        "autoload ",
+        "const_get(",
+        "send(:require",
+        "Object.send(",
+        "Kernel.const_get(",
+        ".public_send(",
+    ),
+    ".php": (
+        "class_exists(",
+        "interface_exists(",
+        "call_user_func(",
+        "call_user_func_array(",
+        "new $",
+        "ReflectionClass(",
+    ),
+    ".go": (
+        "plugin.Open(",
+        "reflect.New(",
+        "reflect.TypeOf(",
+        "reflect.ValueOf(",
+    ),
+    ".swift": (
+        "NSClassFromString(",
+        "Selector(",
+        "#selector(",
+        "NSStringFromClass(",
+    ),
+    ".scala": (
+        "Class.forName(",
+        "runtimeMirror(",
+        "reflect.runtime",
+    ),
     ".cs": (
         # Reflection-driven type loading
         "Type.GetType(",
@@ -81,4 +116,38 @@ def find_dynamic_import_files(parsed_files: dict) -> set[str]:
                 result.add(path)
         except Exception:
             continue
+    return result
+
+
+def find_dynamic_edge_files(graph) -> set[str]:
+    """Return the set of file paths involved in dynamic graph edges.
+
+    An edge counts as dynamic when its ``edge_type`` is ``"dynamic"`` or
+    starts with ``"dynamic_"`` (semantic sub-types like ``"dynamic_uses"``,
+    ``"dynamic_imports"``, ``"url_route"`` after the graph-builder prefix).
+    Both endpoints contribute: the source's file and the target's file
+    (or the node id itself when nodes are file paths).
+    """
+    if graph is None:
+        return set()
+    result: set[str] = set()
+    try:
+        for u, v, data in graph.edges(data=True):
+            etype = data.get("edge_type", "")
+            if etype != "dynamic" and not etype.startswith("dynamic_"):
+                continue
+            for endpoint in (u, v):
+                if endpoint is None:
+                    continue
+                endpoint_str = str(endpoint)
+                if endpoint_str.startswith("external:"):
+                    continue
+                node_data = graph.nodes.get(endpoint, {})
+                file_path = node_data.get("file_path")
+                if file_path:
+                    result.add(str(file_path))
+                else:
+                    result.add(endpoint_str)
+    except Exception:
+        return result
     return result

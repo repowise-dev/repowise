@@ -589,10 +589,14 @@ class GraphBuilder:
                 continue
             if e.target not in self._graph:
                 self._graph.add_node(e.target)
+            sub_type = e.edge_type or "dynamic"
+            graph_edge_type = (
+                sub_type if sub_type.startswith("dynamic") else f"dynamic_{sub_type}"
+            )
             self._graph.add_edge(
                 e.source,
                 e.target,
-                edge_type="dynamic",
+                edge_type=graph_edge_type,
                 hint_source=e.hint_source,
                 weight=e.weight,
             )

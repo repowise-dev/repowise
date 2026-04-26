@@ -593,3 +593,219 @@ def test_report_deletable_lines_sum():
     assert "pkg/alive.py" not in safe_paths
     # Verify the actual sum
     assert report.deletable_lines == 100 + 200
+
+
+# ---------------------------------------------------------------------------
+# 13. test_dynamic_edge_clamps_unreachable_confidence
+# ---------------------------------------------------------------------------
+
+
+def test_dynamic_edge_clamps_unreachable_confidence():
+    """A file in a package that has dynamic graph edges should have confidence clamped to 0.4."""
+    g = _build_graph(
+        nodes={
+            "pkg/orphan.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 5,
+                "symbols": [],
+            },
+            "pkg/dispatcher.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 3,
+                "symbols": [],
+            },
+            "pkg/handler.py": {
+                "is_entry_point": True,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 3,
+                "symbols": [],
+            },
+        },
+        edges=[
+            ("pkg/dispatcher.py", "pkg/handler.py", {"edge_type": "dynamic"}),
+        ],
+    )
+
+    git_meta = {
+        "pkg/orphan.py": {
+            "commit_count_90d": 0,
+            "last_commit_at": _old_date(days=400),
+            "age_days": 500,
+        },
+    }
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map=git_meta)
+    report = analyzer.analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+
+    findings = [f for f in report.findings if f.file_path == "pkg/orphan.py"]
+    assert len(findings) == 1
+    assert findings[0].confidence == pytest.approx(0.4)
+    assert any("dynamic" in e.lower() for e in findings[0].evidence)
+
+
+# ---------------------------------------------------------------------------
+# 14. test_find_dynamic_edge_files_handles_subtypes
+# ---------------------------------------------------------------------------
+
+
+def test_find_dynamic_edge_files_handles_subtypes():
+    """find_dynamic_edge_files picks up edges with dynamic_* sub-type prefixes."""
+    from repowise.core.analysis.dead_code.dynamic_markers import find_dynamic_edge_files
+
+    g = nx.DiGraph()
+    g.add_node("a.py")
+    g.add_node("b.py")
+    g.add_node("c.py")
+    g.add_node("d.py")
+    g.add_node("external:something")
+    g.add_edge("a.py", "b.py", edge_type="dynamic_uses")
+    g.add_edge("c.py", "d.py", edge_type="dynamic_imports")
+    g.add_edge("a.py", "external:something", edge_type="dynamic")
+    # Non-dynamic edges should not contribute
+    g.add_edge("b.py", "c.py", edge_type="calls")
+
+    files = find_dynamic_edge_files(g)
+    assert {"a.py", "b.py", "c.py", "d.py"} <= files
+    assert "external:something" not in files
+
+
+# ---------------------------------------------------------------------------
+# 15. test_dynamic_markers_per_language_coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "suffix,expected_markers",
+    [
+        (".go", ("plugin.Open(", "reflect.New(", "reflect.TypeOf(", "reflect.ValueOf(")),
+        (
+            ".rb",
+            ("autoload ", "const_get(", "Object.send(", "Kernel.const_get(", ".public_send("),
+        ),
+        (
+            ".php",
+            (
+                "class_exists(",
+                "call_user_func(",
+                "call_user_func_array(",
+                "new $",
+                "ReflectionClass(",
+            ),
+        ),
+        (
+            ".kt",
+            ("Class.forName(", "ServiceLoader.load(", "KClass.createInstance(", "::class.java"),
+        ),
+        (
+            ".swift",
+            ("NSClassFromString(", "Selector(", "#selector(", "NSStringFromClass("),
+        ),
+        (".scala", ("Class.forName(", "runtimeMirror(", "reflect.runtime")),
+    ],
+)
+def test_dynamic_markers_per_language_coverage(suffix, expected_markers):
+    """Each language's marker tuple must contain the documented Phase 2 entries."""
+    from repowise.core.analysis.dead_code.dynamic_markers import _DYNAMIC_IMPORT_MARKERS
+
+    markers = _DYNAMIC_IMPORT_MARKERS.get(suffix, ())
+    for expected in expected_markers:
+        assert expected in markers, f"missing marker {expected!r} for {suffix}"
+
+
+# ---------------------------------------------------------------------------
+# 16. test_unused_internal_default_on
+# ---------------------------------------------------------------------------
+
+
+def test_unused_internal_default_on():
+    """detect_unused_internals defaults to True; private symbols with no callers are flagged."""
+    g = _build_graph(
+        nodes={
+            "pkg/utils.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "_helper",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 12,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+    )
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+
+    internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
+    assert any(f.symbol_name == "_helper" for f in internals)
+    assert all(f.safe_to_delete is False for f in internals)
+
+
+# ---------------------------------------------------------------------------
+# 17. test_unused_internal_explicit_opt_out
+# ---------------------------------------------------------------------------
+
+
+def test_unused_internal_explicit_opt_out():
+    """Setting detect_unused_internals=False disables the detector."""
+    g = _build_graph(
+        nodes={
+            "pkg/utils.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "_helper",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 12,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+    )
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "detect_unused_internals": False,
+            "min_confidence": 0.0,
+        }
+    )
+
+    internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
+    assert internals == []

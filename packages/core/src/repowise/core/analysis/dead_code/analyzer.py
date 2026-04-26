@@ -25,7 +25,7 @@ from .constants import (
     _NON_CODE_LANGUAGES,
     _is_fixture_path,
 )
-from .dynamic_markers import find_dynamic_import_files
+from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 
 logger = structlog.get_logger(__name__)
@@ -44,7 +44,9 @@ class DeadCodeAnalyzer:
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
-        self._dynamic_import_files = find_dynamic_import_files(parsed_files or {})
+        self._dynamic_import_files = find_dynamic_import_files(
+            parsed_files or {}
+        ) | find_dynamic_edge_files(graph)
 
     def analyze(self, config: dict | None = None) -> DeadCodeReport:
         """Full analysis. Returns report with all findings."""
@@ -60,7 +62,7 @@ class DeadCodeAnalyzer:
         if cfg.get("detect_unused_exports", True):
             findings.extend(self._detect_unused_exports(dynamic_patterns, whitelist))
 
-        if cfg.get("detect_unused_internals", False):
+        if cfg.get("detect_unused_internals", True):
             findings.extend(self._detect_unused_internals(dynamic_patterns, whitelist))
 
         if cfg.get("detect_zombie_packages", True):
@@ -216,7 +218,7 @@ class DeadCodeAnalyzer:
         if commit_90d == 0:
             evidence.append("No commits in last 90 days")
         if self._dynamic_import_files and confidence <= 0.4:
-            evidence.append("Package uses dynamic imports (importlib/__import__)")
+            evidence.append("Package uses dynamic imports or runtime-resolved edges")
 
         return DeadCodeFindingData(
             kind=DeadCodeKind.UNREACHABLE_FILE,

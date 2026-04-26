@@ -290,7 +290,7 @@ class DeadCodeConfig:
     enabled: bool = True
     detect_unreachable_files: bool = True
     detect_unused_exports: bool = True
-    detect_unused_internals: bool = False
+    detect_unused_internals: bool = True
     detect_zombie_packages: bool = True
     min_confidence: float = 0.4
     safe_to_delete_threshold: float = 0.7
