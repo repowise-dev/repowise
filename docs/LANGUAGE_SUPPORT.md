@@ -42,14 +42,16 @@ call resolution, named bindings, heritage extraction, and docstrings.
 | **Go** | `.go` | `main.go` `cmd/main.go` | `import "path"` with `go.mod` resolution |
 | **Rust** | `.rs` | `main.rs` `lib.rs` | `use crate::` / `use super::` / `use self::` with `Cargo.toml` |
 | **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | `main.cpp` `main.cc` | `#include` with `compile_commands.json` resolution |
+| **C#** | `.cs` | `Program.cs` `Startup.cs` | `using Acme.Domain` / `global using` / `using static` / `using Alias = X.Y.Z` with `.csproj` / `.sln` / `Directory.Build.props` resolution |
 
-All seven languages support:
+All eight languages support:
 - Tree-sitter AST parsing with dedicated `.scm` query files
 - Three-tier call resolution (same-file, cross-file, global stem match)
 - Named binding extraction (mapping imported names to source symbols)
-- Heritage extraction (class/interface/trait inheritance chains)
-- Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen)
-- Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection)
+- Heritage extraction (class/interface/trait/record inheritance chains)
+- Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen, XML doc)
+- Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection; ASP.NET controllers / minimal API / EF Core DbContext for C#)
+- For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace → file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection
 
 ### Good
 
@@ -63,7 +65,6 @@ resolvers for each language.
 | **C** | `.c` | `main.c` | `#include` with `compile_commands.json` (shares C++ grammar) |
 | **Kotlin** | `.kt` `.kts` | `Main.kt` `Application.kt` | `import com.example.Foo` |
 | **Ruby** | `.rb` | `main.rb` `app.rb` `config.ru` | `require 'mod'` / `require_relative './mod'` |
-| **C#** | `.cs` | `Program.cs` `Startup.cs` | `using System.Collections.Generic` |
 | **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` |
 | **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.{A, B => C}` |
 | **PHP** | `.php` | `index.php` `public/index.php` | `use Foo\Bar\Baz` |
