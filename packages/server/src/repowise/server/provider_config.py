@@ -48,6 +48,19 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "openrouter",
+        "name": "OpenRouter",
+        "default_model": "anthropic/claude-sonnet-4.6",
+        "models": [
+            "anthropic/claude-sonnet-4.6",
+            "google/gemini-3.1-flash-lite-preview",
+            "meta-llama/llama-4-maverick",
+            "openai/gpt-4o",
+        ],
+        "env_keys": ["OPENROUTER_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "ollama",
         "name": "Ollama (Local)",
         "default_model": "llama3.2",
@@ -117,6 +130,22 @@ def _get_key_for_provider(provider_id: str) -> str | None:
     config = _load_config()
     keys = config.get("keys", {})
     return keys.get(provider_id)
+
+
+def _get_base_url_for_provider(provider_id: str) -> str | None:
+    """Resolve a provider base_url from environment variables."""
+    env_map = {
+        "anthropic": ["ANTHROPIC_BASE_URL"],
+        "openai": ["OPENAI_BASE_URL"],
+        "gemini": ["GEMINI_BASE_URL"],
+        "ollama": ["OLLAMA_BASE_URL"],
+        "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
+    }
+    for env_var in env_map.get(provider_id, []):
+        val = os.environ.get(env_var)
+        if val:
+            return val
+    return None
 
 
 def list_provider_status() -> dict[str, Any]:
@@ -199,10 +228,13 @@ def get_chat_provider_instance():
         raise ValueError("No active provider configured. Set an API key first.")
 
     api_key = _get_key_for_provider(provider_id)
+    base_url = _get_base_url_for_provider(provider_id)
     catalog = _CATALOG_BY_ID[provider_id]
 
     kwargs: dict[str, Any] = {"model": model or catalog["default_model"]}
     if api_key:
         kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
 
     return get_provider(provider_id, with_rate_limiter=False, **kwargs)

@@ -18,7 +18,7 @@ import asyncio
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -723,6 +723,7 @@ async def run_generation(
     progress: ProgressCallback | None,
     resume: bool = False,
     cost_tracker: Any | None = None,
+    generation_config: Any | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -730,7 +731,6 @@ async def run_generation(
     """
     from repowise.core.generation import (
         ContextAssembler,
-        GenerationConfig,
         JobSystem,
         PageGenerator,
     )
@@ -741,7 +741,13 @@ async def run_generation(
     if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
         llm_client._cost_tracker = cost_tracker
 
-    config = GenerationConfig(max_concurrency=concurrency)
+    from repowise.core.generation import GenerationConfig
+
+    # Preserve all caller-supplied GenerationConfig fields (output language, cache flags,
+    # token budgets, etc.) and only override max_concurrency to match the resolved value.
+    # Falls back to defaults when the pipeline entry point did not thread one through.
+    base_config = generation_config if generation_config is not None else GenerationConfig()
+    config = replace(base_config, max_concurrency=concurrency)
     assembler = ContextAssembler(config)
 
     # Resolve embedder and vector store
@@ -749,8 +755,6 @@ async def run_generation(
 
     if vector_store is None:
         vector_store = InMemoryVectorStore(embedder_impl)
-
-    generator = PageGenerator(llm_client, assembler, config, vector_store=vector_store)
 
     # Job system — use a temp-like dir under repo_path for checkpoints
     jobs_dir = repo_path / ".repowise" / "jobs"
@@ -777,6 +781,14 @@ async def run_generation(
     def on_total_known(total: int) -> None:
         if progress:
             progress.on_phase_start("generation", total)
+
+    generator = PageGenerator(
+        llm_client,
+        assembler,
+        config,
+        vector_store=vector_store,
+        language=config.language,
+    )
 
     generated_pages = await generator.generate_all(
         parsed_files,

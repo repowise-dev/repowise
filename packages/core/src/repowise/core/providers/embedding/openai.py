@@ -35,6 +35,7 @@ class OpenAIEmbedder:
     Args:
         api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
         model:   Embedding model name. Default: "text-embedding-3-small".
+        base_url: Optional custom base URL for OpenAI-compatible endpoints.
     """
 
     _DIMS: dict[str, int] = {
@@ -51,12 +52,14 @@ class OpenAIEmbedder:
         api_key: str | None = None,
         model: str = "text-embedding-3-small",
         timeout: float = _DEFAULT_TIMEOUT,
+        base_url: str | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self._api_key:
             raise ValueError(
                 "OpenAI API key required. Pass api_key= or set OPENAI_API_KEY env var."
             )
+        self._base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._model = model
         self._timeout = timeout
         self._client: object | None = None  # cached; created once on first embed()
@@ -91,6 +94,7 @@ class OpenAIEmbedder:
                 self._client = openai.OpenAI(
                     api_key=self._api_key,
                     timeout=timeout,
+                    base_url=self._base_url,
                 )
             response = self._client.embeddings.create(model=model, input=texts)  # type: ignore[union-attr]
             raw_vectors = [list(item.embedding) for item in response.data]

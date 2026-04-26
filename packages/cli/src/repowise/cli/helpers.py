@@ -228,15 +228,37 @@ def resolve_provider(
     """
     from repowise.core.providers import get_provider
 
+    cfg: dict[str, Any] = {}
+    if repo_path is not None:
+        cfg = load_config(repo_path)
+
     if provider_name is None:
         provider_name = os.environ.get("REPOWISE_PROVIDER")
 
-    if provider_name is None and repo_path is not None:
-        cfg = load_config(repo_path)
-        if cfg.get("provider"):
-            provider_name = cfg["provider"]
-            if model is None and cfg.get("model"):
-                model = cfg["model"]
+    if provider_name is None and cfg.get("provider"):
+        provider_name = cfg["provider"]
+        if model is None and cfg.get("model"):
+            model = cfg["model"]
+
+    def _resolve_base_url(name: str) -> str | None:
+        """Return base_url from env or repo config for the provider."""
+        env_vars = {
+            "anthropic": ["ANTHROPIC_BASE_URL"],
+            "openai": ["OPENAI_BASE_URL"],
+            "gemini": ["GEMINI_BASE_URL"],
+            "ollama": ["OLLAMA_BASE_URL"],
+            "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
+        }
+        for var in env_vars.get(name, []):
+            val = os.environ.get(var)
+            if val:
+                return val
+        section = cfg.get(name)
+        if isinstance(section, dict):
+            base_url = section.get("base_url")
+            if base_url:
+                return base_url
+        return None
 
     if provider_name is not None:
         # Validate configuration before attempting to create provider
@@ -250,6 +272,9 @@ def resolve_provider(
         kwargs: dict[str, Any] = {}
         if model:
             kwargs["model"] = model
+        base_url = _resolve_base_url(provider_name)
+        if base_url:
+            kwargs["base_url"] = base_url
 
         # Pass API key from environment if available
         if provider_name == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
@@ -260,6 +285,8 @@ def resolve_provider(
             os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         ):
             kwargs["api_key"] = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        elif provider_name == "openrouter" and os.environ.get("OPENROUTER_API_KEY"):
+            kwargs["api_key"] = os.environ["OPENROUTER_API_KEY"]
         elif provider_name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
             kwargs["base_url"] = os.environ["OLLAMA_BASE_URL"]
 
@@ -272,6 +299,9 @@ def resolve_provider(
             if model
             else {"api_key": os.environ["ANTHROPIC_API_KEY"]}
         )
+        base_url = _resolve_base_url("anthropic")
+        if base_url:
+            kwargs["base_url"] = base_url
         return get_provider("anthropic", **kwargs)
     if os.environ.get("OPENAI_API_KEY") and os.environ["OPENAI_API_KEY"].strip():
         kwargs = (
@@ -279,7 +309,17 @@ def resolve_provider(
             if model
             else {"api_key": os.environ["OPENAI_API_KEY"]}
         )
+        base_url = _resolve_base_url("openai")
+        if base_url:
+            kwargs["base_url"] = base_url
         return get_provider("openai", **kwargs)
+    if os.environ.get("OPENROUTER_API_KEY") and os.environ["OPENROUTER_API_KEY"].strip():
+        kwargs = (
+            {"model": model, "api_key": os.environ["OPENROUTER_API_KEY"]}
+            if model
+            else {"api_key": os.environ["OPENROUTER_API_KEY"]}
+        )
+        return get_provider("openrouter", **kwargs)
     if os.environ.get("OLLAMA_BASE_URL") and os.environ["OLLAMA_BASE_URL"].strip():
         kwargs = (
             {"model": model, "base_url": os.environ["OLLAMA_BASE_URL"]}
@@ -292,11 +332,14 @@ def resolve_provider(
     ):
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         kwargs = {"model": model, "api_key": api_key} if model else {"api_key": api_key}
+        base_url = _resolve_base_url("gemini")
+        if base_url:
+            kwargs["base_url"] = base_url
         return get_provider("gemini", **kwargs)
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
-        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY."
+        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY."
     )
 
 
@@ -330,6 +373,7 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
     provider_env_vars = {
         "anthropic": ["ANTHROPIC_API_KEY"],
         "openai": ["OPENAI_API_KEY"],
+        "openrouter": ["OPENROUTER_API_KEY"],
         "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],  # Either one
         "ollama": ["OLLAMA_BASE_URL"],
         "litellm": ["LITELLM_API_KEY"],  # May need others depending on backend

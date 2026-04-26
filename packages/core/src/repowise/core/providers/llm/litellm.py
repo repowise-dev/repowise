@@ -19,6 +19,7 @@ Reference: https://docs.litellm.ai/docs/providers
 
 from __future__ import annotations
 
+import os
 import structlog
 from tenacity import (
     retry,
@@ -58,6 +59,7 @@ class LiteLLMProvider(BaseProvider):
         api_key:      API key for the target provider. Some providers read from
                       environment variables (e.g., GROQ_API_KEY, TOGETHER_API_KEY).
         api_base:     Optional custom API base URL (e.g., for self-hosted deployments).
+        base_url:     Alias for api_base for OpenAI-compatible proxies.
         rate_limiter: Optional RateLimiter instance.
     """
 
@@ -66,12 +68,18 @@ class LiteLLMProvider(BaseProvider):
         model: str,
         api_key: str | None = None,
         api_base: str | None = None,
+        base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: "CostTracker | None" = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
-        self._api_base = api_base
+        self._api_base = (
+            api_base
+            or base_url
+            or os.environ.get("LITELLM_API_BASE")
+            or os.environ.get("LITELLM_BASE_URL")
+        )
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker
 

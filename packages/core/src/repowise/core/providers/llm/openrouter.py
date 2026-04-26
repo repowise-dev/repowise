@@ -1,28 +1,23 @@
-"""Ollama provider for repowise.
+"""OpenRouter provider for repowise.
 
-Ollama enables fully offline, local LLM inference. It exposes an OpenAI-compatible
-API endpoint, so this provider uses the OpenAI client internally.
+Routes requests to 200+ models (Claude, GPT, Gemini, Llama, Mistral, etc.)
+through a single API key via an OpenAI-compatible endpoint.
 
-No API key required for local deployments. This makes repowise usable in:
-    - Air-gapped environments
-    - High-security codebases that cannot send code to cloud APIs
-    - Cost-sensitive projects
+No additional pip install required — uses the ``openai`` package.
 
-Popular models (pull with `ollama pull <model>`):
-    - llama3.2          — good general-purpose, 3B/11B variants
-    - codellama         — code-focused, good for doc generation
-    - deepseek-coder-v2 — strong on code understanding
-    - qwen2.5-coder     — excellent multilingual code model
-
-Usage:
-    provider = OllamaProvider(model="codellama", base_url="http://localhost:11434")
+Popular models:
+    - anthropic/claude-sonnet-4.6  — Anthropic Claude Sonnet
+    - google/gemini-3.1-flash-lite-preview      — Google Gemini Flash
+    - meta-llama/llama-4-maverick  — Meta Llama open model
 """
 
 from __future__ import annotations
 
 import os
+
 import structlog
 from openai import AsyncOpenAI
+from openai import RateLimitError as _OpenAIRateLimitError
 from openai import APIStatusError as _OpenAIAPIStatusError
 from tenacity import (
     retry,
@@ -38,56 +33,73 @@ from repowise.core.providers.llm.base import (
     ChatToolCall,
     GeneratedResponse,
     ProviderError,
+    RateLimitError,
 )
 
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+
+if TYPE_CHECKING:
+    from repowise.core.generation.cost_tracker import CostTracker
 
 log = structlog.get_logger(__name__)
 
 _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
-_MAX_WAIT = 8.0  # Ollama can be slow on first load, allow more wait time
-
-_DEFAULT_BASE_URL = "http://localhost:11434"
+_MAX_WAIT = 4.0
 
 
-def _normalize_base_url(url: str) -> str:
-    """Ensure base_url ends with /v1 for OpenAI SDK compatibility."""
-    url = url.rstrip("/")
-    if not url.endswith("/v1"):
-        url += "/v1"
-    return url
+class OpenRouterProvider(BaseProvider):
+    """OpenRouter provider — access 200+ models via a single API key.
 
-
-class OllamaProvider(BaseProvider):
-    """Ollama provider for local, offline LLM inference.
-
-    Uses Ollama's OpenAI-compatible endpoint. No API key required.
+    Uses the OpenAI-compatible endpoint at ``https://openrouter.ai/api/v1``.
 
     Args:
-        model:        Ollama model name (e.g., 'llama3.2', 'codellama').
-                      Must be pulled first: `ollama pull <model>`
-        base_url:     Ollama server URL. Defaults to http://localhost:11434.
-                      The /v1 suffix is appended automatically if missing.
-        rate_limiter: Optional RateLimiter (useful when running multiple
-                      concurrent requests against a resource-constrained machine).
+        api_key:      OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.
+        model:        Model identifier (vendor/model format). Defaults to anthropic/claude-sonnet-4.6.
+        base_url:     Override the OpenRouter API URL (rarely needed).
+        rate_limiter: Optional RateLimiter instance.
+        http_referer: Optional site URL for OpenRouter rankings/leaderboards.
+        app_title:    App name shown on OpenRouter dashboard. Defaults to "repowise".
+        cost_tracker: Accepted for registry compatibility but not used — OpenRouter
+                      proxies 200+ models with varying prices, so repowise's fallback
+                      pricing would be misleading. Check the OpenRouter dashboard.
     """
 
     def __init__(
         self,
-        model: str = "llama3.2",
-        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str = "anthropic/claude-sonnet-4.6",
+        base_url: str = "https://openrouter.ai/api/v1",
         rate_limiter: RateLimiter | None = None,
+        http_referer: str | None = None,
+        app_title: str = "repowise",
+        cost_tracker: "CostTracker | None" = None,
     ) -> None:
-        resolved_base_url = base_url or os.environ.get("OLLAMA_BASE_URL") or _DEFAULT_BASE_URL
-        self._client = AsyncOpenAI(api_key="ollama", base_url=_normalize_base_url(resolved_base_url))
+        resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        if not resolved_key:
+            raise ProviderError(
+                "openrouter",
+                "No API key provided. Pass api_key= or set OPENROUTER_API_KEY.",
+            )
+
+        headers: dict[str, str] = {}
+        if http_referer:
+            headers["HTTP-Referer"] = http_referer
+        if app_title:
+            headers["X-Title"] = app_title
+
+        self._client = AsyncOpenAI(
+            api_key=resolved_key,
+            base_url=base_url,
+            default_headers=headers or None,
+        )
         self._model = model
         self._rate_limiter = rate_limiter
 
     @property
     def provider_name(self) -> str:
-        return "ollama"
+        return "openrouter"
 
     @property
     def model_name(self) -> str:
@@ -105,7 +117,7 @@ class OllamaProvider(BaseProvider):
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
         log.debug(
-            "ollama.generate.start",
+            "openrouter.generate.start",
             model=self._model,
             max_tokens=max_tokens,
             request_id=request_id,
@@ -121,7 +133,7 @@ class OllamaProvider(BaseProvider):
             )
         except RetryError as exc:
             raise ProviderError(
-                "ollama",
+                "openrouter",
                 f"All {_MAX_RETRIES} retries exhausted: {exc}",
             ) from exc
 
@@ -149,9 +161,11 @@ class OllamaProvider(BaseProvider):
                     {"role": "user", "content": user_prompt},
                 ],
             )
+        except _OpenAIRateLimitError as exc:
+            raise RateLimitError("openrouter", str(exc), status_code=429) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError(
-                "ollama", str(exc), status_code=exc.status_code
+                "openrouter", str(exc), status_code=exc.status_code
             ) from exc
 
         usage = response.usage
@@ -163,14 +177,16 @@ class OllamaProvider(BaseProvider):
             usage={
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
+                "total_tokens": usage.total_tokens if usage else 0,
             },
         )
         log.debug(
-            "ollama.generate.done",
+            "openrouter.generate.done",
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             request_id=request_id,
         )
+
         return result
 
     # --- ChatProvider protocol implementation ---
@@ -185,7 +201,6 @@ class OllamaProvider(BaseProvider):
         request_id: str | None = None,
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        """Stream chat via Ollama's OpenAI-compatible endpoint."""
         import json as _json
 
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
@@ -201,28 +216,43 @@ class OllamaProvider(BaseProvider):
 
         try:
             stream = await self._client.chat.completions.create(**kwargs)
+        except _OpenAIRateLimitError as exc:
+            raise RateLimitError("openrouter", str(exc), status_code=429) from exc
         except _OpenAIAPIStatusError as exc:
-            raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
+            raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
 
+        # Track in-progress tool calls (OpenAI-compatible streaming)
         tool_calls_acc: dict[int, dict[str, Any]] = {}
 
         try:
             async for chunk in stream:
                 choice = chunk.choices[0] if chunk.choices else None
                 if not choice:
+                    if chunk.usage:
+                        yield ChatStreamEvent(
+                            type="usage",
+                            input_tokens=chunk.usage.prompt_tokens or 0,
+                            output_tokens=chunk.usage.completion_tokens or 0,
+                        )
                     continue
 
                 delta = choice.delta
                 finish = choice.finish_reason
 
+                # Text content
                 if delta and delta.content:
                     yield ChatStreamEvent(type="text_delta", text=delta.content)
 
+                # Tool call fragments
                 if delta and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
                         idx = tc_delta.index
                         if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {"id": tc_delta.id or "", "name": "", "arguments": ""}
+                            tool_calls_acc[idx] = {
+                                "id": tc_delta.id or "",
+                                "name": "",
+                                "arguments": "",
+                            }
                         acc = tool_calls_acc[idx]
                         if tc_delta.id:
                             acc["id"] = tc_delta.id
@@ -233,6 +263,7 @@ class OllamaProvider(BaseProvider):
                                 acc["arguments"] += tc_delta.function.arguments
 
                 if finish:
+                    # Emit accumulated tool calls
                     for idx in sorted(tool_calls_acc.keys()):
                         acc = tool_calls_acc[idx]
                         try:
@@ -241,10 +272,17 @@ class OllamaProvider(BaseProvider):
                             args = {}
                         yield ChatStreamEvent(
                             type="tool_start",
-                            tool_call=ChatToolCall(id=acc["id"], name=acc["name"], arguments=args),
+                            tool_call=ChatToolCall(
+                                id=acc["id"],
+                                name=acc["name"],
+                                arguments=args,
+                            ),
                         )
                     tool_calls_acc.clear()
+
                     stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
                     yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
+        except _OpenAIRateLimitError as exc:
+            raise RateLimitError("openrouter", str(exc), status_code=429) from exc
         except _OpenAIAPIStatusError as exc:
-            raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
+            raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc

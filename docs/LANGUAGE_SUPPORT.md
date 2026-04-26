@@ -88,13 +88,26 @@ endpoints or targets where applicable.
 | **SQL** | `.sql` | -- |
 | **Shell** | `.sh` `.bash` `.zsh` | -- |
 
+### Partial (Luau — Roblox)
+
+| Language | Extensions | Entry Points | Import Style |
+|----------|-----------|-------------|-------------|
+| **Luau** | `.luau` `.lua` | `init.luau` `init.lua` | `require(script.Parent.X)` / `require(script.X)` / `require(game.Service.Path)` / `require("rel/path")` |
+
+AST parsing, symbol extraction (functions, Luau type aliases), and
+`require(...)` call capture are wired. Import resolution handles string
+literals and `script`/`script.Parent` relative instance paths. Absolute
+Roblox instance paths (`game.<Service>...`) currently register as external
+nodes and are the target of a follow-up that reads Rojo's
+`default.project.json` tree mapping — see issue #52.
+
 ### Git-Blame-Only
 
 These languages are tracked in git history (blame, hotspot analysis,
 co-change detection) but have no AST parsing or dedicated support. Files
 appear in the wiki as traversal-level entries.
 
-Objective-C, Elixir, Erlang, Lua, R, Dart, Zig, Julia, Clojure, Elm,
+Objective-C, Elixir, Erlang, R, Dart, Zig, Julia, Clojure, Elm,
 Haskell, OCaml, F#, Crystal, Nim, D
 
 ---

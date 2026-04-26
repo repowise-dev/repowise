@@ -33,6 +33,7 @@ LanguageTag = Literal[
     "swift",
     "kotlin",
     "scala",
+    "luau",
     "shell",
     "yaml",
     "json",

@@ -169,6 +169,20 @@ def _resolve_provider_for_answer():
             _log.debug("get_provider(%s) failed", provider_name, exc_info=True)
             return None
 
+    def _resolve_base_url(provider_name: str) -> str | None:
+        mapping = {
+            "openai": ["OPENAI_BASE_URL"],
+            "anthropic": ["ANTHROPIC_BASE_URL"],
+            "gemini": ["GEMINI_BASE_URL"],
+            "ollama": ["OLLAMA_BASE_URL"],
+            "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
+        }
+        for env_var in mapping.get(provider_name, []):
+            val = os.environ.get(env_var)
+            if val:
+                return val
+        return None
+
     # Explicit selection wins.
     if name:
         kw: dict[str, Any] = {}
@@ -184,8 +198,9 @@ def _resolve_provider_for_answer():
             kw["api_key"] = os.environ.get("GEMINI_API_KEY") or os.environ.get(
                 "GOOGLE_API_KEY"
             )
-        elif name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
-            kw["base_url"] = os.environ["OLLAMA_BASE_URL"]
+        base_url = _resolve_base_url(name)
+        if base_url:
+            kw["base_url"] = base_url
         return _try(name, **kw)
 
     # Auto-detect from API keys.
@@ -193,11 +208,17 @@ def _resolve_provider_for_answer():
         kw = {"api_key": os.environ["ANTHROPIC_API_KEY"]}
         if model:
             kw["model"] = model
+        base_url = _resolve_base_url("anthropic")
+        if base_url:
+            kw["base_url"] = base_url
         return _try("anthropic", **kw)
     if os.environ.get("OPENAI_API_KEY"):
         kw = {"api_key": os.environ["OPENAI_API_KEY"]}
         if model:
             kw["model"] = model
+        base_url = _resolve_base_url("openai")
+        if base_url:
+            kw["base_url"] = base_url
         return _try("openai", **kw)
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         kw = {
@@ -206,6 +227,9 @@ def _resolve_provider_for_answer():
         }
         if model:
             kw["model"] = model
+        base_url = _resolve_base_url("gemini")
+        if base_url:
+            kw["base_url"] = base_url
         return _try("gemini", **kw)
     if os.environ.get("OLLAMA_BASE_URL"):
         kw = {"base_url": os.environ["OLLAMA_BASE_URL"]}

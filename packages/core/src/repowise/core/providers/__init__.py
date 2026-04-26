@@ -1,7 +1,7 @@
 """repowise provider package.
 
 Sub-packages:
-    llm/       — LLM providers (Anthropic, OpenAI, Gemini, Ollama, LiteLLM)
+    llm/       — LLM providers (Anthropic, OpenAI, OpenRouter, Gemini, Ollama, LiteLLM)
     embedding/ — Embedding providers (OpenAI, Gemini, Mock)
 
 Preferred entry points:
