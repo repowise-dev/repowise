@@ -55,6 +55,7 @@ class GeminiProvider(BaseProvider):
     Args:
         model:        Gemini model name. Defaults to gemini-3.1-flash-lite-preview.
         api_key:      Google API key. Falls back to GEMINI_API_KEY or GOOGLE_API_KEY env var.
+        base_url:     Optional custom base URL (e.g., for proxy/self-hosted endpoints).
         rate_limiter: Optional RateLimiter instance.
         cost_tracker: Optional CostTracker for recording token usage and cost.
     """
@@ -63,6 +64,7 @@ class GeminiProvider(BaseProvider):
         self,
         model: str = "gemini-3.1-flash-lite-preview",
         api_key: str | None = None,
+        base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: "CostTracker | None" = None,
     ) -> None:
@@ -77,6 +79,7 @@ class GeminiProvider(BaseProvider):
                 "gemini",
                 "No API key found. Pass api_key= or set GEMINI_API_KEY / GOOGLE_API_KEY env var.",
             )
+        self._base_url = base_url or os.environ.get("GEMINI_BASE_URL")
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker
         self._client: object | None = None  # cached; created once on first call
@@ -138,13 +141,36 @@ class GeminiProvider(BaseProvider):
         # Capture self attrs for thread safety (avoids closing over self)
         model = self._model
         api_key = self._api_key
+        base_url = self._base_url
 
         def _call_sync() -> GeneratedResponse:
             from google import genai  # type: ignore[import-untyped]
             from google.genai import types as genai_types  # type: ignore[import-untyped]
 
             if self._client is None:
-                self._client = genai.Client(api_key=api_key)
+                client_kwargs: dict[str, Any] = {"api_key": api_key}
+                http_opts = None
+
+                if base_url:
+                    try:
+                        http_opts = genai_types.HttpOptions(base_url=base_url)
+                    except TypeError:
+                        log.warning(
+                            "gemini.http_options.base_url_unsupported",
+                            base_url=base_url,
+                        )
+
+                if http_opts is not None:
+                    try:
+                        self._client = genai.Client(**client_kwargs, http_options=http_opts)
+                    except TypeError:
+                        log.warning(
+                            "gemini.client.http_options_unsupported",
+                            base_url=base_url,
+                        )
+                        self._client = genai.Client(**client_kwargs)
+                else:
+                    self._client = genai.Client(**client_kwargs)
             client = self._client
             try:
                 response = client.models.generate_content(
@@ -235,13 +261,16 @@ class GeminiProvider(BaseProvider):
 
         model_name = self._model
         api_key = self._api_key
+        base_url = self._base_url
 
         def _call_sync(contents, config):
             """Single Gemini generate_content call in thread."""
             from google import genai  # type: ignore[import-untyped]
+            from google.genai import types as genai_types  # type: ignore[import-untyped]
 
             if self._client is None:
-                self._client = genai.Client(api_key=api_key)
+                http_opts = genai_types.HttpOptions(base_url=base_url) if base_url else None
+                self._client = genai.Client(api_key=api_key, http_options=http_opts)
             client = self._client
             try:
                 response = client.models.generate_content(

@@ -72,7 +72,8 @@ class OpenAIProvider(BaseProvider):
                 "openai",
                 "No API key provided. Pass api_key= or set OPENAI_API_KEY.",
             )
-        self._client = AsyncOpenAI(api_key=resolved_key, base_url=base_url)
+        resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
+        self._client = AsyncOpenAI(api_key=resolved_key, base_url=resolved_base_url)
         self._model = model
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker

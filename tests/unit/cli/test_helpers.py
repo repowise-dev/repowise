@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from repowise.cli.helpers import (
     ensure_repowise_dir,
+    CONFIG_FILENAME,
     get_db_url_for_repo,
     get_head_commit,
     get_repowise_dir,
     load_state,
+    resolve_provider,
     resolve_repo_path,
     run_async,
     save_state,
@@ -231,3 +234,70 @@ class TestValidateProviderConfig:
         assert len(warnings) == 1
         assert "anthropic" in warnings[0]
         assert "ANTHROPIC_API_KEY" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Provider base_url resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProviderBaseUrl:
+    @staticmethod
+    def test_env_base_url_forwarded(monkeypatch, tmp_path):
+        captured: dict[str, Any] = {}
+
+        def fake_get_provider(name: str, **kwargs: Any):
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            return "provider"
+
+        monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
+        monkeypatch.setattr("repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: [])
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://proxy.local")
+
+        result = resolve_provider(None, None, repo_path=tmp_path)
+
+        assert result == "provider"
+        assert captured["name"] == "openai"
+        assert captured["kwargs"].get("base_url") == "http://proxy.local"
+
+    @staticmethod
+    def test_config_base_url_used_when_env_missing(monkeypatch, tmp_path):
+        captured: dict[str, Any] = {}
+
+        def fake_get_provider(name: str, **kwargs: Any):
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            return "provider"
+
+        monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
+        monkeypatch.setattr("repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: [])
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        cfg = {
+            "provider": "ollama",
+            "model": "llama3",
+            "ollama": {"base_url": "http://ollama.local:11434"},
+        }
+        repowise_dir = ensure_repowise_dir(tmp_path)
+        config_path = repowise_dir / CONFIG_FILENAME
+
+        try:
+            import yaml  # type: ignore[import-untyped]
+        except ImportError:
+            yaml = None
+
+        if "yaml" in locals() and yaml is not None:
+            config_path.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False), encoding="utf-8")
+        else:
+            config_path.write_text(
+                "provider: ollama\nmodel: llama3\nollama:\n  base_url: http://ollama.local:11434\n",
+                encoding="utf-8",
+            )
+
+        result = resolve_provider(None, None, repo_path=tmp_path)
+
+        assert result == "provider"
+        assert captured["name"] == "ollama"
+        assert captured["kwargs"].get("base_url") == "http://ollama.local:11434"

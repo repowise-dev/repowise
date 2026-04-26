@@ -903,8 +903,14 @@ repowise watch --workspace           # all workspace repos
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | If using Anthropic | Anthropic API key |
+| `ANTHROPIC_BASE_URL` | No | Base URL override for Anthropic-compatible APIs |
 | `OPENAI_API_KEY` | If using OpenAI | OpenAI API key |
+| `OPENAI_BASE_URL` | No | Base URL override for OpenAI-compatible APIs |
 | `GEMINI_API_KEY` | If using Gemini | Google Gemini API key |
+| `GEMINI_BASE_URL` | No | Base URL override for Gemini-compatible APIs |
+| `OLLAMA_BASE_URL` | If using Ollama | Ollama server URL (default: `http://localhost:11434`) |
+| `LITELLM_BASE_URL` | No | Base URL override for LiteLLM proxy |
+| `LITELLM_API_BASE` | No | LiteLLM base URL alias (same as `LITELLM_BASE_URL`) |
 | `REPOWISE_DB_URL` | No | Database URL override (default: `.repowise/wiki.db`) |
 | `REPOWISE_EMBEDDER` | No | Embedder for semantic search: `gemini`, `openai`, `mock` |
 | `REPOWISE_API_URL` | Frontend only | Backend URL for the web UI (default: `http://localhost:7337`) |

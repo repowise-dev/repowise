@@ -55,6 +55,7 @@ class AnthropicProvider(BaseProvider):
     Args:
         api_key:      Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
         model:        Model identifier. Defaults to claude-sonnet-4-6.
+        base_url:     Optional custom API base URL (for proxies/self-hosted endpoints).
         rate_limiter: Optional pre-configured RateLimiter. If None, no rate limiting
                       is applied (useful when the caller manages concurrency via semaphore).
     """
@@ -63,6 +64,7 @@ class AnthropicProvider(BaseProvider):
         self,
         api_key: str | None = None,
         model: str = "claude-sonnet-4-6",
+        base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
     ) -> None:
@@ -72,7 +74,8 @@ class AnthropicProvider(BaseProvider):
                 "anthropic",
                 "No API key provided. Pass api_key= or set ANTHROPIC_API_KEY.",
             )
-        self._client = AsyncAnthropic(api_key=resolved_key)
+        resolved_base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL")
+        self._client = AsyncAnthropic(api_key=resolved_key, base_url=resolved_base_url)
         self._model = model
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker

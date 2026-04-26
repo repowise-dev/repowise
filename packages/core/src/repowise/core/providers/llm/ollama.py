@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import structlog
 from openai import AsyncOpenAI
 from openai import APIStatusError as _OpenAIAPIStatusError
@@ -76,10 +77,11 @@ class OllamaProvider(BaseProvider):
     def __init__(
         self,
         model: str = "llama3.2",
-        base_url: str = _DEFAULT_BASE_URL,
+        base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
     ) -> None:
-        self._client = AsyncOpenAI(api_key="ollama", base_url=_normalize_base_url(base_url))
+        resolved_base_url = base_url or os.environ.get("OLLAMA_BASE_URL") or _DEFAULT_BASE_URL
+        self._client = AsyncOpenAI(api_key="ollama", base_url=_normalize_base_url(resolved_base_url))
         self._model = model
         self._rate_limiter = rate_limiter
 
