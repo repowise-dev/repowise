@@ -168,6 +168,8 @@ class NamedBinding:
     exported_name: str | None  # original name in source (None for module aliases)
     source_file: str | None  # resolved file path (populated during graph build)
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
+    is_global: bool = False  # C# `global using` — applies to every file in the project
+    is_static_import: bool = False  # C# `using static` / Java static import — pulls members
 
 
 @dataclass
