@@ -116,6 +116,8 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
         return "gemini"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "openrouter"
     return "mock"
 
 

@@ -48,6 +48,19 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "openrouter",
+        "name": "OpenRouter",
+        "default_model": "anthropic/claude-sonnet-4.6",
+        "models": [
+            "anthropic/claude-sonnet-4.6",
+            "google/gemini-3.1-flash-lite-preview",
+            "meta-llama/llama-4-maverick",
+            "openai/gpt-4o",
+        ],
+        "env_keys": ["OPENROUTER_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "ollama",
         "name": "Ollama (Local)",
         "default_model": "llama3.2",

@@ -24,8 +24,9 @@ from repowise.core.providers.embedding.base import Embedder
 
 _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "openai": ("repowise.core.providers.embedding.openai", "OpenAIEmbedder"),
-    "gemini": ("repowise.core.providers.embedding.gemini", "GeminiEmbedder"),
-    "mock":   ("repowise.core.providers.embedding.base",   "MockEmbedder"),
+    "gemini":     ("repowise.core.providers.embedding.gemini",     "GeminiEmbedder"),
+    "openrouter": ("repowise.core.providers.embedding.openrouter", "OpenRouterEmbedder"),
+    "mock":       ("repowise.core.providers.embedding.base",       "MockEmbedder"),
 }
 
 _custom_embedders: dict[str, Callable[..., Embedder]] = {}
@@ -80,6 +81,7 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
     _missing = {
         "openai": "openai",
         "gemini": "google-genai",
+        "openrouter": "openai",  # openrouter uses the openai package
     }
     try:
         module = importlib.import_module(module_path)

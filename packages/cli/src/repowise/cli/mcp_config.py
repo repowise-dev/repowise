@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import click
+
 
 def _claude_desktop_config_path() -> Path | None:
     """Return the Claude Desktop config path for this OS, or None if unsupported."""
@@ -66,10 +68,7 @@ def save_root_mcp_config(repo_path: Path) -> Path:
     new_entry = generate_mcp_config(repo_path)["mcpServers"]
 
     if config_path.exists():
-        try:
-            existing = json.loads(config_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            existing = {}
+        existing = _load_existing_config(config_path)
         servers = dict(existing.get("mcpServers", {}))
         servers.update(new_entry)
         existing["mcpServers"] = servers
@@ -88,10 +87,7 @@ def _merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
     """
     try:
         if config_path.exists():
-            try:
-                existing = json.loads(config_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                existing = {}
+            existing = _load_existing_config(config_path)
         else:
             config_path.parent.mkdir(parents=True, exist_ok=True)
             existing = {}
@@ -103,6 +99,28 @@ def _merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
         return True
     except OSError:
         return False
+
+
+def _load_existing_config(config_path: Path) -> dict:
+    """Load an existing JSON config without silently replacing bad content."""
+    try:
+        existing = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(
+            f"Cannot update {config_path}: existing file is not valid JSON. "
+            "Fix or remove it and retry; no changes were written."
+        ) from exc
+    except OSError as exc:
+        raise click.ClickException(
+            f"Cannot update {config_path}: existing file could not be read. "
+            "Fix the file permissions and retry; no changes were written."
+        ) from exc
+    if not isinstance(existing, dict):
+        raise click.ClickException(
+            f"Cannot update {config_path}: existing file must contain a JSON object. "
+            "Fix or remove it and retry; no changes were written."
+        )
+    return existing
 
 
 def register_with_claude_desktop(repo_path: Path) -> Path | None:
@@ -171,10 +189,7 @@ def install_claude_code_hooks() -> Path | None:
 
     try:
         if settings_path.exists():
-            try:
-                existing = json.loads(settings_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                existing = {}
+            existing = _load_existing_config(settings_path)
         else:
             settings_path.parent.mkdir(parents=True, exist_ok=True)
             existing = {}
@@ -191,9 +206,7 @@ def install_claude_code_hooks() -> Path | None:
         if not _has_repowise_hook(post_hooks):
             post_hooks.append(post_hook_entry)
 
-        settings_path.write_text(
-            json.dumps(existing, indent=2) + "\n", encoding="utf-8"
-        )
+        settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
     except OSError:
         return None
