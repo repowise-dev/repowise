@@ -28,13 +28,15 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
 
-# Install git (required by gitpython) and Node.js (required for Next.js server)
+# Install git (required by gitpython)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    curl \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy Node.js from the official image instead of piping curl|bash
+COPY --from=frontend-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend-builder /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 
 WORKDIR /app
 
@@ -66,5 +68,10 @@ EXPOSE 7337 3000
 # Startup script
 COPY docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
+
+# Run as non-root user (mitigates container escape → root escalation)
+RUN groupadd -r repowise && useradd -r -g repowise -d /app -s /sbin/nologin repowise \
+    && chown -R repowise:repowise /app /data
+USER repowise
 
 ENTRYPOINT ["/app/entrypoint.sh"]

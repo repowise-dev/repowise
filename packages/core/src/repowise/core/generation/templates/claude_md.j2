@@ -1,11 +1,11 @@
 ## IMPORTANT: Codebase Intelligence Instructions for {{ data.repo_name }}
 
-> **CRITICAL**: This repository is indexed by [Repowise](https://repowise.dev).
-> You MUST use the repowise MCP tools below instead of reading raw source files.
-> They deliver richer context — documentation, ownership, history, decisions —
-> in a single call. Raw `read_file` calls are a last resort only.
+> This repository is indexed by [Repowise](https://repowise.dev).
+> Use the MCP tools below for orientation, discovery, and enriched context
+> (documentation, ownership, history, decisions). **Always verify against
+> actual source files before making changes** — the index may be stale.
 
-Last indexed: {{ data.indexed_at }}{% if data.avg_confidence %}. Confidence: {{ (data.avg_confidence * 100) | int }}%.{% endif %}
+Last indexed: {{ data.indexed_at }}{% if data.indexed_commit %} (commit {{ data.indexed_commit }}){% endif %}{% if data.avg_confidence %}. Confidence: {{ (data.avg_confidence * 100) | int }}%.{% endif %}
 
 {% if data.architecture_summary %}
 ### Architecture
@@ -50,48 +50,38 @@ Last indexed: {{ data.indexed_at }}{% if data.avg_confidence %}. Confidence: {{ 
 
 ### Repowise MCP Tools
 
-This project has a Repowise MCP server configured. **ALWAYS use these tools before reading source files** — they provide documentation, ownership, architectural decisions, and risk signals in a single call.
+This project has a Repowise MCP server configured. These tools provide documentation, ownership, architectural decisions, and risk signals. Use them for orientation and discovery — then read actual source to verify before editing.
 
-**MANDATORY workflow:**
+**Recommended workflow:**
 
-1. **ALWAYS start with `get_overview()`** on any new task to orient yourself.
-2. **MUST call `get_context(targets=["path/to/file.py"])`** before reading or editing any file — faster and richer than reading source directly.
-3. **MUST call `get_risk(targets=["path/to/file.py"])`** before making changes — especially for hotspot files.
-4. Don't know where something lives? Call `search_codebase(query="authentication flow")` — prefer over grep/find.
-5. Need to understand why code is structured a certain way? **MUST call `get_why(query="why JWT over sessions")`** before any architectural change.
-6. **After completing any code changes**, **MUST call `update_decision_records(action="list")`** to review existing decisions, then:
-   - Call `update_decision_records(action="create", title="...", decision="...", rationale="...", affected_files=[...])` to record any new architectural decisions you made.
-   - Call `update_decision_records(action="update", decision_id="...", ...)` to update existing decisions affected by your changes.
-   - Call `update_decision_records(action="update_status", decision_id="...", status="deprecated")` if your changes invalidate an existing decision.
-   **This is not optional** — keeping decision records current is a required part of every coding task.
+1. Start with `get_overview()` on a new task to orient yourself.
+2. Call `get_context(targets=["path/to/file.py"])` for enriched context on unfamiliar files — but always read the source before editing.
+3. Call `get_risk(targets=["path/to/file.py"])` before changing hotspot files.
+4. Don't know where something lives? Call `search_codebase(query="authentication flow")`.
+5. Need to understand why code is structured a certain way? Call `get_why(query="why JWT over sessions")` before architectural changes.
+6. After **architectural changes**, consider calling `update_decision_records(action="create", ...)` to record the rationale.
 7. Need to understand how two modules connect? Call `get_dependency_path(source="src/auth", target="src/db")`.
 8. Before cleanup tasks, call `get_dead_code()` to find confirmed unused code.
 9. For documentation or diagrams, call `get_architecture_diagram(scope="src/auth")`.
 
-| Tool | WHEN you MUST use it |
-|------|----------------------|
-| `get_overview()` | **FIRST call on every new task** |
-| `get_context(targets=[...])` | **Before reading or modifying any file** |
-| `get_risk(targets=[...])` | Before changing files — REQUIRED for hotspots |
-| `get_why(query="...")` | Before architectural changes — REQUIRED |
-| `update_decision_records(action=...)` | **After every coding task** — record and update decisions |
-| `search_codebase(query="...")` | When locating code — prefer over grep/find |
+**Note:** MCP tool responses reflect the last index run. If the index is stale, verify against source files.
+
+| Tool | When to use |
+|------|-------------|
+| `get_overview()` | Orient yourself on a new task |
+| `get_context(targets=[...])` | Enriched context on unfamiliar files |
+| `get_risk(targets=[...])` | Before changing hotspot files |
+| `get_why(query="...")` | Before architectural changes |
+| `update_decision_records(action=...)` | After architectural changes — record decisions |
+| `search_codebase(query="...")` | When locating code |
 | `get_dependency_path(source=..., target=...)` | When tracing module connections |
 | `get_dead_code()` | Before any cleanup or removal |
 | `get_architecture_diagram(scope=...)` | For visual structure or documentation |
-{% if data.decisions or data.build_commands %}
+{% if data.build_commands %}
 
 ### Codebase Conventions
-{% if data.decisions %}
-**Architectural Decisions:**
-{% for d in data.decisions %}
-- **{{ d.title }}**: {{ d.rationale }}{% if d.rationale %}.{% endif %}
-{% endfor %}
-{% endif %}
-{% if data.build_commands %}
 **Commands:**
 {% for label, cmd in data.build_commands.items() %}
 - {{ label | capitalize }}: `{{ cmd }}`
 {% endfor %}
-{% endif %}
 {% endif %}

@@ -93,11 +93,13 @@ class PytestDynamicHints(DynamicHintExtractor):
                     test_params = _get_test_function_params(test_tree)
                     if test_params & fixture_names:
                         seen_targets.add(rel_test)
-                        edges.append(DynamicEdge(
-                            source=rel_conftest,
-                            target=rel_test,
-                            edge_type="dynamic_uses",
-                            hint_source=self.name,
-                        ))
+                        edges.append(
+                            DynamicEdge(
+                                source=rel_conftest,
+                                target=rel_test,
+                                edge_type="dynamic_uses",
+                                hint_source=self.name,
+                            )
+                        )
 
         return edges

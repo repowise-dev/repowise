@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getRepo } from "@/lib/api/repos";
 import { getPageById, getPageVersions } from "@/lib/api/pages";
 import { getGitMetadata } from "@/lib/api/git";
+import { getGraphMetrics } from "@/lib/api/graph";
 import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
 import { WikiRenderer } from "@/components/wiki/wiki-renderer";
 import { TableOfContents } from "@/components/wiki/table-of-contents";
@@ -13,7 +15,8 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
 import { CoChangeList } from "@/components/git/co-change-list";
-import { Hash, Cpu } from "lucide-react";
+import { Hash, Cpu, StickyNote, Network } from "lucide-react";
+import type { GraphMetricsResponse } from "@/lib/api/types";
 
 interface Props {
   params: Promise<{ id: string; slug: string[] }>;
@@ -41,15 +44,18 @@ export default async function WikiPageRoute({ params }: Props) {
     notFound();
   }
 
-  const [repo, versions, gitMeta] = await Promise.allSettled([
+  const [repo, versions, gitMeta, graphMetricsResult] = await Promise.allSettled([
     getRepo(id),
     getPageVersions(pageId),
     page.target_path ? getGitMetadata(id, page.target_path) : Promise.reject(),
+    page.target_path ? getGraphMetrics(id, page.target_path) : Promise.reject(),
   ]);
 
   const repoData = repo.status === "fulfilled" ? repo.value : null;
   const versionList = versions.status === "fulfilled" ? versions.value : [];
   const git = gitMeta.status === "fulfilled" ? gitMeta.value : null;
+  const graphMetrics: GraphMetricsResponse | null =
+    graphMetricsResult.status === "fulfilled" ? graphMetricsResult.value : null;
 
   return (
     <div className="flex h-full min-h-0">
@@ -101,9 +107,39 @@ export default async function WikiPageRoute({ params }: Props) {
             {page.title}
           </h1>
 
+          {page.human_notes && (
+            <div className="mb-5 rounded-lg border border-[var(--color-border-accent)] bg-[var(--color-accent-blue)]/5 px-4 py-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <StickyNote className="h-3.5 w-3.5 text-[var(--color-accent-blue)]" />
+                <span className="text-xs font-medium text-[var(--color-accent-blue)] uppercase tracking-wider">
+                  Human Notes
+                </span>
+              </div>
+              <p className="text-sm text-[var(--color-text-secondary)] whitespace-pre-wrap leading-relaxed">
+                {page.human_notes}
+              </p>
+            </div>
+          )}
+
           <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
             <WikiRenderer content={page.content} />
           </article>
+
+          {/* Hallucination warnings */}
+          {Array.isArray(page.metadata?.hallucination_warnings) && (page.metadata.hallucination_warnings as string[]).length > 0 && (
+            <div className="mt-6 rounded-lg border border-amber-400/30 bg-amber-50/5 px-4 py-3">
+              <p className="text-xs font-medium text-amber-400 mb-1.5">
+                Possible inaccuracies detected
+              </p>
+              <ul className="space-y-0.5">
+                {(page.metadata.hallucination_warnings as string[]).map((w, i) => (
+                  <li key={i} className="text-xs text-amber-300/80 font-mono">
+                    {String(w)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         {/* Bottom bar */}
@@ -158,7 +194,48 @@ export default async function WikiPageRoute({ params }: Props) {
             </div>
           )}
 
-          {/* Co-change partners — now uses the visual bar component */}
+          {/* Graph Intelligence */}
+          {graphMetrics && (
+            <div>
+              <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                Graph Intelligence
+              </p>
+              <div className="space-y-1.5">
+                {graphMetrics.community_label && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-[var(--color-text-tertiary)]">Community</span>
+                    <Link
+                      href={`/repos/${id}/graph?colorMode=community`}
+                      className="text-[var(--color-accent)] hover:underline font-mono text-[11px]"
+                    >
+                      {graphMetrics.community_label}
+                    </Link>
+                  </div>
+                )}
+                <div className="flex justify-between text-xs">
+                  <span className="text-[var(--color-text-tertiary)]">PageRank</span>
+                  <span className={`tabular-nums font-mono text-[11px] ${graphMetrics.pagerank_percentile >= 75 ? "text-green-400" : graphMetrics.pagerank_percentile >= 50 ? "text-yellow-400" : "text-[var(--color-text-secondary)]"}`}>
+                    Top {100 - graphMetrics.pagerank_percentile}%
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-[var(--color-text-tertiary)]">Betweenness</span>
+                  <span className={`tabular-nums font-mono text-[11px] ${graphMetrics.betweenness_percentile >= 75 ? "text-green-400" : graphMetrics.betweenness_percentile >= 50 ? "text-yellow-400" : "text-[var(--color-text-secondary)]"}`}>
+                    Top {100 - graphMetrics.betweenness_percentile}%
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-[var(--color-text-tertiary)]">Degree</span>
+                  <span className="text-[var(--color-text-secondary)] tabular-nums font-mono text-[11px]">
+                    {graphMetrics.in_degree} in &middot; {graphMetrics.out_degree} out
+                  </span>
+                </div>
+                {graphMetrics.is_entry_point && (
+                  <Badge variant="accent" className="text-xs">Entry Point</Badge>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Security findings panel */}
           {page.target_path && (
@@ -188,6 +265,14 @@ export default async function WikiPageRoute({ params }: Props) {
                 <span className="text-[var(--color-text-tertiary)] shrink-0">Level</span>
                 <span className="text-[var(--color-text-secondary)] tabular-nums">{page.generation_level}</span>
               </div>
+              {Array.isArray(page.metadata?.hallucination_warnings) && (page.metadata.hallucination_warnings as string[]).length > 0 && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-[var(--color-text-tertiary)] shrink-0">Warnings</span>
+                  <Badge variant="stale" className="text-[10px]">
+                    {(page.metadata.hallucination_warnings as string[]).length}
+                  </Badge>
+                </div>
+              )}
             </div>
           </div>
         </div>

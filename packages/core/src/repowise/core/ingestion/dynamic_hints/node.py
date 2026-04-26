@@ -76,12 +76,14 @@ class NodeDynamicHints(DynamicHintExtractor):
                 except ValueError:
                     continue
                 if resolved.exists():
-                    edges.append(DynamicEdge(
-                        source=rel_pkg,
-                        target=rel_resolved,
-                        edge_type="dynamic_imports",
-                        hint_source=self.name,
-                    ))
+                    edges.append(
+                        DynamicEdge(
+                            source=rel_pkg,
+                            target=rel_resolved,
+                            edge_type="dynamic_imports",
+                            hint_source=self.name,
+                        )
+                    )
 
         return edges
 
@@ -126,11 +128,13 @@ class NodeDynamicHints(DynamicHintExtractor):
                     except ValueError:
                         continue
                     if resolved.exists():
-                        edges.append(DynamicEdge(
-                            source=rel_tsconfig,
-                            target=rel_resolved,
-                            edge_type="dynamic_imports",
-                            hint_source=self.name,
-                        ))
+                        edges.append(
+                            DynamicEdge(
+                                source=rel_tsconfig,
+                                target=rel_resolved,
+                                edge_type="dynamic_imports",
+                                hint_source=self.name,
+                            )
+                        )
 
         return edges

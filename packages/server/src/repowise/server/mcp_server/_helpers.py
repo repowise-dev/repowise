@@ -5,39 +5,23 @@ from __future__ import annotations
 import json
 import os
 import os.path
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.persistence.models import (
     Repository,
 )
+from repowise.server.mcp_server import _state
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_CODE_EXTS = frozenset(
-    {
-        ".py",
-        ".ts",
-        ".js",
-        ".go",
-        ".rs",
-        ".java",
-        ".tsx",
-        ".jsx",
-        ".rb",
-        ".kt",
-        ".cpp",
-        ".c",
-        ".h",
-        ".cs",
-        ".swift",
-        ".scala",
-    }
-)
+_CODE_EXTS = _LANG_REGISTRY.all_code_extensions()
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +67,91 @@ def _is_path(query: str) -> bool:
         return True
     _, ext = os.path.splitext(query)
     return ext in _CODE_EXTS
+
+
+# ---------------------------------------------------------------------------
+# Workspace-aware repo context resolution
+# ---------------------------------------------------------------------------
+
+
+def _is_workspace_mode() -> bool:
+    """Return True if the MCP server is running in workspace mode."""
+    return _state._registry is not None
+
+
+async def _resolve_repo_context(repo: str | None = None) -> Any:
+    """Resolve the per-repo resource context for the given ``repo`` parameter.
+
+    In **single-repo mode** (no registry): returns a lightweight wrapper
+    around the existing ``_state`` globals — zero overhead, full backward
+    compatibility.
+
+    In **workspace mode**: resolves the alias via the registry and returns
+    the matching ``RepoContext``.
+
+    Raises ``ValueError`` for ``repo="all"`` — callers must handle that
+    case explicitly before calling this helper.
+    """
+    from repowise.core.workspace.registry import RepoContext
+
+    registry = _state._registry
+    if registry is None:
+        # Single-repo mode — validate the repo param against the DB if given
+        if repo is not None:
+            from repowise.core.persistence.database import get_session as _get_session
+
+            async with _get_session(_state._session_factory) as session:
+                await _get_repo(session, repo)  # raises LookupError if invalid
+
+        return RepoContext(
+            alias="default",
+            path=Path(_state._repo_path) if _state._repo_path else Path.cwd(),
+            session_factory=_state._session_factory,
+            fts=_state._fts,
+            vector_store=_state._vector_store,
+            decision_store=_state._decision_store,
+            vector_store_ready=_state._vector_store_ready or __import__("asyncio").Event(),
+            _engine=None,
+        )
+
+    # Workspace mode — resolve via registry
+    resolved = registry.resolve_repo_param(repo)
+    if isinstance(resolved, list):
+        raise ValueError(
+            "repo='all' must be handled explicitly by each tool. "
+            "Use _resolve_all_contexts() instead."
+        )
+    return await registry.get(resolved)
+
+
+async def _resolve_all_contexts() -> list[Any]:
+    """Return ``RepoContext`` objects for all repos in the workspace.
+
+    In single-repo mode, returns a single-element list wrapping ``_state``.
+    """
+    registry = _state._registry
+    if registry is None:
+        ctx = await _resolve_repo_context(None)
+        return [ctx]
+    contexts = []
+    for alias in registry.get_all_aliases():
+        contexts.append(await registry.get(alias))
+    return contexts
+
+
+def _unsupported_repo_all(tool_name: str) -> dict:
+    """Return an error dict for tools that don't support ``repo='all'``."""
+    registry = _state._registry
+    if registry is not None:
+        available = registry.get_all_aliases()
+    else:
+        available = []
+    return {
+        "error": (
+            f"repo='all' is not supported for {tool_name}. "
+            f"Specify a repo alias instead. Available: {available}"
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

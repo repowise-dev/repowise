@@ -41,6 +41,11 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; macro_rules! my_macro { ... }
+(macro_definition
+  name: (identifier) @symbol.name
+) @symbol.def
+
 ; pub visibility modifier
 (function_item
   (visibility_modifier) @symbol.modifiers
@@ -54,3 +59,44 @@
 (use_declaration
   argument: (_) @import.module
 ) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple function call: foo(arg1, arg2)
+(call_expression
+  function: (identifier) @call.target
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Method call: obj.method(args)
+(call_expression
+  function: (field_expression
+    value: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Scoped function call: module::function(args)
+(call_expression
+  function: (scoped_identifier
+    name: (identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Chained call: obj.method1().method2(args)
+(call_expression
+  function: (field_expression
+    value: (call_expression)
+    field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Macro invocation: println!(...), vec![...]
+(macro_invocation
+  macro: (identifier) @call.target
+) @call.site

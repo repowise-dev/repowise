@@ -22,11 +22,15 @@ Everything you need to know to install, use, and get the most out of repowise.
    - [reindex](#repowise-reindex)
    - [status](#repowise-status)
    - [doctor](#repowise-doctor)
+   - [workspace](#repowise-workspace)
+   - [hook](#repowise-hook)
 4. [Web UI](#web-ui)
 5. [MCP Integration with AI Editors](#mcp-integration-with-ai-editors)
-6. [Environment Variables](#environment-variables)
-7. [Common Workflows](#common-workflows)
-8. [Troubleshooting](#troubleshooting)
+6. [Proactive Context Enrichment (Hooks)](#proactive-context-enrichment-hooks)
+7. [Auto-Sync](#auto-sync)
+8. [Environment Variables](#environment-variables)
+9. [Common Workflows](#common-workflows)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -315,20 +319,21 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `--transport` | Protocol: `stdio` (default, for editors) or `sse` (for web clients) |
 | `--port` | Port for SSE transport (default: 7338) |
 
-**MCP tools exposed (8 tools):**
+**MCP tools exposed (7 tools):**
 
 | Tool | What it does |
 |------|-------------|
-| `get_overview` | Repository architecture summary, key modules, entry points, git health |
-| `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness |
-| `get_risk` | Modification risk assessment — hotspot score, dependents, bus factor, trend |
-| `get_why` | Why code is structured the way it is — architectural decisions, git archaeology |
-| `search_codebase` | Semantic search over wiki with git freshness boosting |
-| `get_dependency_path` | Find how two modules connect through the dependency graph |
-| `get_dead_code` | Tiered dead code report grouped by confidence |
-| `get_architecture_diagram` | Mermaid diagram with optional churn heat map |
+| `get_overview` | Repository architecture summary, key modules, entry points, git health, community summary |
+| `get_answer` | One-call RAG: confidence-gated synthesis over the wiki, with cited 2–5 sentence answers and a per-repository question cache |
+| `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness, community membership. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. In workspace mode, accepts `repo` parameter. |
+| `search_codebase` | Semantic search over wiki with git freshness boosting. In workspace mode, searches across all repos. |
+| `get_risk` | Modification risk assessment — hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
+| `get_why` | Why code is structured the way it is — architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
+| `get_dead_code` | Tiered dead code report grouped by confidence with cleanup impact estimates |
 
-See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions.
+In workspace mode, tools are workspace-aware — pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
+
+See [MCP Integration](#mcp-integration-with-ai-editors) for setup instructions. Full tool reference: [MCP_TOOLS.md](MCP_TOOLS.md)
 
 ---
 
@@ -483,6 +488,7 @@ repowise export [PATH]
 |------|-------------|
 | `--format` | `markdown` (default), `html`, `json` |
 | `--output / -o` | Output directory (default: `.repowise/export`) |
+| `--full` | Include decisions, dead code findings, hotspots, and provenance metadata (JSON format only) |
 
 **Examples:**
 
@@ -543,6 +549,56 @@ Checks:
 - `state.json` valid
 - Providers installed and importable
 - Stale page count
+
+---
+
+### `repowise workspace`
+
+Manage multi-repo workspaces. See [Workspaces](WORKSPACES.md) for the full guide.
+
+**Subcommands:**
+
+```bash
+repowise workspace list                         # Show all repos with index status
+repowise workspace add <path> [--alias NAME]    # Add a repo to the workspace
+repowise workspace remove <alias>               # Remove a repo (doesn't delete files)
+repowise workspace scan                         # Re-scan for new repos
+repowise workspace set-default <alias>          # Change the default repo for MCP queries
+```
+
+**Examples:**
+
+```bash
+# Initialize a workspace
+cd my-workspace/
+repowise init .
+
+# Add a repo that lives outside the workspace directory
+repowise workspace add /path/to/external-repo --alias api-gateway
+
+# Update all workspace repos
+repowise update --workspace
+
+# Update just one repo
+repowise update --repo backend
+```
+
+---
+
+### `repowise hook`
+
+Manage post-commit git hooks that auto-sync the wiki after every commit.
+
+```bash
+repowise hook install              # Install hook for current repo
+repowise hook install --workspace  # Install for all workspace repos
+repowise hook status               # Check if hooks are installed
+repowise hook status --workspace   # Check all workspace repos
+repowise hook uninstall            # Remove the hook
+repowise hook uninstall --workspace
+```
+
+The hook is marker-delimited, so it coexists safely with other tools' hooks (linters, formatters, etc.) in the same `post-commit` file. The hook runs `repowise update` in the background — your terminal is never blocked.
 
 ---
 
@@ -631,7 +687,7 @@ A single-page dashboard for each repository that aggregates key health signals. 
 - **Quick actions** — one-click buttons for sync, full re-index, CLAUDE.md generation, and export
 - **Active job banner** — shows progress of running pipeline jobs with live polling
 
-The overview page degrades gracefully — each data section loads independently, so partial data (e.g., missing git metadata) still renders a useful dashboard.
+The overview page degrades gracefully — each data section loads independently, so partial data (e.g., missing git metadata) still renders a useful dashboard. A "Graph Intelligence" section at the bottom of the overview shows an expandable list of architectural communities (with labels, cohesion scores, and member counts) and an execution flows panel listing the top entry points with their call-path traces.
 
 **Wiki Browser** (`/repos/[id]/wiki/...`)
 The heart of repowise. Browse AI-generated documentation for every file and module. Each page includes:
@@ -640,6 +696,7 @@ The heart of repowise. Browse AI-generated documentation for every file and modu
 - Freshness badge (fresh / stale / outdated)
 - Git history sidebar — commits, churn percentile, top authors, co-change partners, hotspot indicator
 - Regenerate button for stale pages
+- "Graph Intelligence" section in the right sidebar showing PageRank and betweenness percentile bars, community label, and in/out degree counts
 
 **Dependency Graph** (`/repos/[id]/graph`)
 Interactive force-directed graph rendered on HTML Canvas with D3.js. Handles 2000+ nodes. Six view modes:
@@ -650,13 +707,13 @@ Interactive force-directed graph rendered on HTML Canvas with D3.js. Handles 200
 - **Hot files view** — commit activity heatmap
 - **Full graph** — everything
 
-Supports pan, zoom, click-to-inspect, path finding between nodes, filtering by language, and PNG export.
+Supports pan, zoom, click-to-inspect, path finding between nodes, filtering by language, and PNG export. Community color mode uses real community labels (derived from Leiden detection) in the legend rather than generic placeholders. Clicking a node in community color mode opens a community detail panel showing members, cohesion score, and neighboring communities. The active color mode is preserved as a URL parameter so links can be shared.
 
 **Search** (`/repos/[id]/search`)
 Full-text and semantic search with result cards showing snippets, confidence scores, and links. A global command palette (`Ctrl+K` / `Cmd+K`) is accessible from any page for quick navigation.
 
 **Symbol Index** (`/repos/[id]/symbols`)
-Searchable, sortable table of every extracted symbol (functions, classes, methods, interfaces). Click any row for the full signature, docstring, and source location.
+Searchable, sortable table of every extracted symbol (functions, classes, methods, interfaces). Click any row to open the symbol drawer, which now includes a right panel showing graph metrics (PageRank and betweenness percentile bars), callers and callees with confidence scores, and heritage relationships (extends/implements) for classes.
 
 **Documentation Coverage** (`/repos/[id]/coverage`)
 Donut chart and table showing freshness breakdown. Regenerate stale pages directly from the UI.
@@ -678,6 +735,15 @@ Ask questions about your codebase in natural language. Streaming responses power
 
 **Settings** (`/settings`)
 Configure API connection, default provider/model, embedder, and view webhook/MCP setup instructions.
+
+**Workspace Dashboard** (`/workspace`) *(workspace mode only)*
+Aggregate stats across all repos, repo cards with file/symbol/coverage counts, and cross-repo intelligence summary.
+
+**Workspace Contracts** (`/workspace/contracts`) *(workspace mode only)*
+All detected API contracts (HTTP, gRPC, message topics) with provider/consumer matching, filterable by type and repo.
+
+**Workspace Co-Changes** (`/workspace/co-changes`) *(workspace mode only)*
+Cross-repo file pairs ranked by co-change strength.
 
 ---
 
@@ -726,6 +792,112 @@ Once connected, your AI editor can:
 
 ---
 
+## Proactive Context Enrichment (Hooks)
+
+Repowise automatically enriches AI agent tool calls with codebase graph context via Claude Code hooks. This is installed automatically during `repowise init` — no manual configuration required.
+
+Unlike MCP tools (which agents must explicitly call), hooks fire on every search automatically. Every `Grep` or `Glob` an agent runs gets graph context injected alongside the results, without the agent having to think about it.
+
+### How it works
+
+#### PreToolUse Hook — Grep/Glob enrichment
+
+Whenever an AI agent runs `Grep` or `Glob`, repowise intercepts the call and queries the local `wiki.db` for each matching file. The enrichment is appended to the tool result before the agent sees it:
+
+| Field | What it tells the agent |
+|-------|------------------------|
+| **Symbols** | Functions, classes, and methods defined in the file |
+| **Imported by** | Which files depend on this file (reverse dependency) |
+| **Depends on** | What this file imports (forward dependency) |
+| **Git signals** | Hotspot status, bus factor, and owner |
+
+Average latency is ~24ms — well under the 500ms target. No LLM calls, no network requests — pure local SQLite queries against `wiki.db`.
+
+#### PostToolUse Hook — Git commit detection
+
+After a successful `git commit`, `git merge`, `git rebase`, `git cherry-pick`, or `git pull`, repowise checks whether the wiki is stale by comparing `HEAD` against the last indexed commit in `.repowise/state.json`. If the wiki is out of date, the agent is notified:
+
+```
+Wiki is stale — run `repowise update` to refresh
+```
+
+This ensures agents are never silently working from outdated documentation.
+
+### Configuration
+
+Hooks are written to `~/.claude/settings.json` automatically during `repowise init`. The installed configuration:
+
+| Hook type | Matcher | Action |
+|-----------|---------|--------|
+| `PreToolUse` | `Grep\|Glob` | Query `wiki.db` and prepend graph context to the result |
+| `PostToolUse` | `Bash` | Check for git operations and notify if wiki is stale |
+
+Both hooks call the `repowise augment` CLI command internally. Hooks are designed for graceful failure — any error results in a silent exit so a repowise issue never breaks the agent.
+
+### CLI command
+
+```bash
+repowise augment    # Not meant to be called manually — invoked by Claude Code hooks
+```
+
+### Sample enrichment output
+
+When an agent runs `Grep` or `Glob`, it sees its normal results followed by context like this:
+
+```
+[repowise] 2 related file(s) found:
+
+  packages/core/.../page_generator.py
+    Symbols: function:_now_iso, class:PageGenerator, method:__init__
+    Imported by: init_cmd.py, update_cmd.py, generation/__init__.py
+    Depends on: context_assembler.py, base.py, models.py
+    Git: HOTSPOT, bus-factor=1, owner=RaghavChamadiya
+
+  packages/cli/.../init_cmd.py
+    Symbols: function:_resolve_embedder, function:_register_mcp_with_claude
+    Imported by: reindex_cmd.py, search_cmd.py, main.py
+    Depends on: update_cmd.py, cost_estimator.py
+```
+
+This means an agent that searches for `"PageGenerator"` immediately knows which files depend on it, what it depends on, and that it is a hotspot — without making a separate MCP tool call.
+
+### Relationship to MCP tools
+
+Hooks and MCP tools are complementary:
+
+- **Hooks** — passive, automatic, zero agent effort. Fire on every search regardless of whether the agent is thinking about graph context.
+- **MCP tools** — active, on-demand, richer output. Used when the agent needs full documentation, risk assessment, architectural decisions, or dependency tracing.
+
+For most day-to-day coding tasks, hooks provide sufficient context automatically. MCP tools remain the right choice for deeper investigation.
+
+---
+
+## Auto-Sync
+
+repowise supports five methods to keep your wiki in sync with code changes. See [Auto-Sync](AUTO_SYNC.md) for the full guide.
+
+| Method | Command | Best for |
+|--------|---------|----------|
+| **Post-commit hook** | `repowise hook install` | Set-and-forget local dev |
+| **File watcher** | `repowise watch` | Active development |
+| **GitHub webhook** | Server endpoint | Teams, CI/CD |
+| **GitLab webhook** | Server endpoint | Teams, CI/CD |
+| **Polling fallback** | Automatic with `repowise serve` | Safety net |
+
+### Quick setup
+
+```bash
+# Post-commit hook (recommended)
+repowise hook install
+repowise hook install --workspace    # all workspace repos
+
+# File watcher
+repowise watch
+repowise watch --workspace           # all workspace repos
+```
+
+---
+
 ## Environment Variables
 
 | Variable | Required | Description |
@@ -742,13 +914,24 @@ Once connected, your AI editor can:
 
 ## Common Workflows
 
-### First-time setup for a new project
+### First-time setup for a single repo
 
 ```bash
 pip install "repowise[anthropic]"
 export ANTHROPIC_API_KEY="sk-ant-..."
 cd /path/to/your-project
 repowise init
+repowise hook install    # auto-sync after every commit
+```
+
+### First-time setup for a multi-repo workspace
+
+```bash
+pip install "repowise[anthropic]"
+export ANTHROPIC_API_KEY="sk-ant-..."
+cd /path/to/workspace/   # parent dir with backend/, frontend/, etc.
+repowise init .
+repowise hook install --workspace
 ```
 
 ### Daily development workflow
@@ -760,6 +943,9 @@ repowise update
 
 # Option B: Continuous sync while coding
 repowise watch
+
+# Option C: Set-and-forget (if hook installed)
+# Just code and commit — the hook handles it
 ```
 
 ### Before a code review

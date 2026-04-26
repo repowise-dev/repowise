@@ -306,5 +306,6 @@ def test_base_includes_all_models():
         "chat_messages",
         "llm_costs",
         "security_findings",
+        "answer_cache",
     }
     assert expected == table_names

@@ -22,10 +22,28 @@ You are documenting the module at `{{ ctx.module_path }}` (language: {{ ctx.lang
 - `{{ dep }}`
 {% endfor %}
 
+{% if ctx.community_label %}
+## Architectural Community
+This module belongs to the **{{ ctx.community_label }}** cluster{% if ctx.community_cohesion > 0 %} (cohesion: {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}.
+{% endif %}
+
 ## Files in Module
 {% for f in ctx.files %}
+{% set summary = ctx.file_summaries.get(f, '') %}
+{% if summary %}
+- `{{ f }}` — {{ summary }}
+{% else %}
 - `{{ f }}`
+{% endif %}
 {% endfor %}
+
+{% if ctx.key_classes %}
+## Class Hierarchy
+{% for h in ctx.key_classes %}
+- `{{ h.child }}` {{ h.kind }} `{{ h.parent }}`{% if h.parent_file is defined and h.parent_file %} (in `{{ h.parent_file }}`){% endif %}
+
+{% endfor %}
+{% endif %}
 
 {% if module_git_summary is defined and module_git_summary %}
 ## Team ownership

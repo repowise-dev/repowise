@@ -4,14 +4,22 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
-      - "7337:7337"   # API
-      - "3000:3000"   # Web UI
+      - "127.0.0.1:7337:7337"   # API — loopback only by default
+      - "127.0.0.1:3000:3000"   # Web UI — loopback only by default
     volumes:
       # Mount the .repowise directory from your indexed repo
       - ${REPOWISE_DATA:-./data}:/data
+      # Mount repo directory as read-only to prevent write-based attacks
+      - type: bind
+        source: ${REPO_PATH:?Set REPO_PATH to your repository directory}
+        target: /repos
+        read_only: true
     environment:
       - REPOWISE_DB_URL=sqlite+aiosqlite:////data/wiki.db
       - REPOWISE_EMBEDDER=${REPOWISE_EMBEDDER:-mock}
+      - REPOWISE_HOST=0.0.0.0
+      # SECURITY: Set this to enable API authentication (required for non-loopback)
+      - REPOWISE_API_KEY=${REPOWISE_API_KEY:?Set REPOWISE_API_KEY for Docker deployments}
       # Set your LLM provider API key
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

@@ -47,7 +47,7 @@ What goes into the generated content:
 | Entry points | Detected `main.py`, `__main__`, CLI entry files |
 | Tech stack | Languages, frameworks, databases, infra |
 | Hotspots | Top 5 high-churn files with percentile rank |
-| MCP tool instructions | Mandatory usage table for all 8 tools |
+| MCP tool instructions | Mandatory usage table for all 10 tools |
 | Codebase conventions | Active architectural decisions + build commands |
 
 ---

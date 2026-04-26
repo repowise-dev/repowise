@@ -31,30 +31,54 @@ from pathlib import Path
 import structlog
 from tree_sitter import Language, Node, Parser
 
-from .models import FileInfo, Import, ParsedFile, Symbol
+from .extractors import (
+    build_signature,
+    extract_go_receiver_type,
+    extract_heritage,
+    extract_import_bindings,
+    extract_module_docstring,
+    extract_symbol_docstring,
+    node_text,
+    refine_go_type_kind,
+    refine_kotlin_class_kind,
+)
+from .extractors.visibility import (
+    csharp_visibility,
+    go_visibility,
+    java_visibility,
+    kotlin_visibility,
+    php_visibility,
+    public_by_default,
+    py_visibility,
+    rust_visibility,
+    scala_visibility,
+    swift_visibility,
+    ts_visibility,
+)
+from .languages.registry import REGISTRY as _LANG_REGISTRY
+from .models import (
+    CallSite,
+    FileInfo,
+    Import,
+    ParsedFile,
+    Symbol,
+)
 
 log = structlog.get_logger(__name__)
 
 QUERIES_DIR = Path(__file__).parent / "queries"
 
-# Languages that intentionally have no AST parser.  These are data, config,
-# markup, or query files — there are no code symbols to extract, and that is
-# expected.  parse_file() returns an empty ParsedFile for them silently.
-# Keep this list in sync with EXTENSION_TO_LANGUAGE in models.py.
+# Languages that intentionally have no AST parser.  Derived from the
+# centralised LanguageRegistry — only non-code passthrough languages are
+# included (not the extra git-blame-only languages).
+
+# Excludes "openapi" (handled by special_handlers) and "unknown".
 _PASSTHROUGH_LANGUAGES: frozenset[str] = frozenset(
-    {
-        "json",
-        "yaml",
-        "toml",
-        "markdown",
-        "sql",
-        "shell",
-        "terraform",
-        "proto",
-        "graphql",
-        "dockerfile",
-        "makefile",
-    }
+    spec.tag
+    for spec in _LANG_REGISTRY.all_specs()
+    if spec.is_passthrough
+    and (not spec.is_code or spec.is_infra)
+    and spec.tag not in ("openapi", "unknown")
 )
 
 # ---------------------------------------------------------------------------
@@ -63,44 +87,44 @@ _PASSTHROUGH_LANGUAGES: frozenset[str] = frozenset(
 
 
 def _build_language_registry() -> dict[str, Language]:
-    """Lazily load installed tree-sitter language packages."""
+    """Lazily load installed tree-sitter language packages.
+
+    Driven by ``LanguageSpec.grammar_package`` / ``grammar_loader`` /
+    ``shares_grammar_with`` from the centralised registry.
+    """
     registry: dict[str, Language] = {}
 
-    def _try_load(tag: str, loader: Callable[[], Language]) -> None:
+    for spec in _LANG_REGISTRY.all_specs():
+        # Languages that share another's grammar (e.g. C → cpp)
+        if spec.shares_grammar_with:
+            shared = registry.get(spec.shares_grammar_with)
+            if shared:
+                registry[spec.tag] = shared
+            continue
+
+        if not spec.grammar_package:
+            continue
+
         try:
-            registry[tag] = loader()
-        except Exception as exc:  # ImportError, AttributeError, …
-            log.debug("tree-sitter language unavailable", language=tag, reason=str(exc))
+            mod = __import__(spec.grammar_package)
+            loader_fn = getattr(mod, spec.grammar_loader)
+            lang_obj = Language(loader_fn())
+            registry[spec.tag] = lang_obj
+        except Exception as exc:
+            log.debug(
+                "tree-sitter language unavailable",
+                language=spec.tag,
+                reason=str(exc),
+            )
 
-    _try_load("python", lambda: Language(__import__("tree_sitter_python").language()))
+    # TypeScript's tsx variant — special case: same package, different loader
+    if "typescript" in registry and "tsx" not in registry:
+        try:
+            import tree_sitter_typescript as _ts_mod
 
-    def _ts() -> None:
-        import tree_sitter_typescript as ts
-
-        registry["typescript"] = Language(ts.language_typescript())
-        registry["tsx"] = Language(ts.language_tsx())
-
-    try:
-        _ts()
-    except Exception as exc:
-        log.debug("tree-sitter language unavailable", language="typescript", reason=str(exc))
-
-    _try_load("javascript", lambda: Language(__import__("tree_sitter_javascript").language()))
-    _try_load("go", lambda: Language(__import__("tree_sitter_go").language()))
-    _try_load("rust", lambda: Language(__import__("tree_sitter_rust").language()))
-    _try_load("java", lambda: Language(__import__("tree_sitter_java").language()))
-
-    def _cpp() -> None:
-        import tree_sitter_cpp as ts_cpp
-
-        lang = Language(ts_cpp.language())
-        registry["cpp"] = lang
-        registry["c"] = lang  # C is a subset of C++ for our purposes
-
-    try:
-        _cpp()
-    except Exception as exc:
-        log.debug("tree-sitter language unavailable", language="cpp", reason=str(exc))
+            registry["tsx"] = Language(_ts_mod.language_tsx())
+        except Exception as exc:
+            log.debug("tree-sitter language unavailable", language="tsx", reason=str(exc))
 
     return registry
 
@@ -118,6 +142,9 @@ def _get_language(tag: str) -> Language | None:
 # ---------------------------------------------------------------------------
 # LanguageConfig
 # ---------------------------------------------------------------------------
+
+# Private alias for internal use (kept for compatibility with _find_parent)
+_node_text = node_text
 
 
 @dataclass
@@ -154,44 +181,6 @@ class LanguageConfig:
     entry_point_patterns: list[str] = field(default_factory=list)
 
 
-def _py_visibility(name: str, _mods: list[str]) -> str:
-    if name.startswith("__") and name.endswith("__"):
-        return "public"  # dunder
-    if name.startswith("_"):
-        return "private"
-    return "public"
-
-
-def _ts_visibility(_name: str, mods: list[str]) -> str:
-    mods_lower = [m.lower() for m in mods]
-    if "private" in mods_lower:
-        return "private"
-    if "protected" in mods_lower:
-        return "protected"
-    return "public"
-
-
-def _go_visibility(name: str, _mods: list[str]) -> str:
-    return "public" if name and name[0].isupper() else "private"
-
-
-def _rust_visibility(_name: str, mods: list[str]) -> str:
-    return "public" if any("pub" in m for m in mods) else "private"
-
-
-def _java_visibility(_name: str, mods: list[str]) -> str:
-    combined = " ".join(mods).lower()
-    if "private" in combined:
-        return "private"
-    if "protected" in combined:
-        return "protected"
-    return "public"
-
-
-def _public_by_default(_name: str, _mods: list[str]) -> str:
-    return "public"
-
-
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
         symbol_node_types={
@@ -200,7 +189,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         },
         import_node_types=["import_statement", "import_from_statement"],
         export_node_types=[],
-        visibility_fn=_py_visibility,
+        visibility_fn=py_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_definition"}),
         entry_point_patterns=["main.py", "app.py", "__main__.py", "manage.py", "wsgi.py"],
@@ -220,7 +209,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
-        visibility_fn=_ts_visibility,
+        visibility_fn=ts_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "abstract_class_declaration"}),
         entry_point_patterns=["index.ts", "main.ts", "app.ts", "server.ts"],
@@ -236,7 +225,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
-        visibility_fn=_public_by_default,
+        visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration"}),
         entry_point_patterns=["index.js", "main.js", "app.js", "server.js"],
@@ -246,10 +235,12 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "function_declaration": "function",
             "method_declaration": "method",
             "type_spec": "struct",  # refined in post-processing
+            "const_spec": "variable",  # const MaxRetries = 3
+            "var_spec": "variable",  # var ErrNotFound = errors.New(...)
         },
         import_node_types=["import_declaration"],
         export_node_types=[],
-        visibility_fn=_go_visibility,
+        visibility_fn=go_visibility,
         parent_extraction="receiver",
         parent_class_types=frozenset(),
         entry_point_patterns=["main.go", "cmd/main.go"],
@@ -264,10 +255,11 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "const_item": "constant",
             "type_item": "type_alias",
             "mod_item": "module",
+            "macro_definition": "function",  # macro_rules! my_macro { ... }
         },
         import_node_types=["use_declaration"],
         export_node_types=[],
-        visibility_fn=_rust_visibility,
+        visibility_fn=rust_visibility,
         parent_extraction="impl",
         parent_class_types=frozenset({"impl_item"}),
         entry_point_patterns=["main.rs", "lib.rs"],
@@ -282,7 +274,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         },
         import_node_types=["import_declaration"],
         export_node_types=[],
-        visibility_fn=_java_visibility,
+        visibility_fn=java_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset(
             {"class_declaration", "interface_declaration", "enum_declaration"}
@@ -296,10 +288,15 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "struct_specifier": "struct",
             "enum_specifier": "enum",
             "namespace_definition": "module",
+            "template_declaration": "class",  # template<> class/struct/function
+            "type_definition": "struct",  # typedef struct { ... } Name;
+            "preproc_def": "variable",  # #define MACRO value
+            "preproc_function_def": "function",  # #define MACRO(x) ...
+            "declaration": "function",  # forward declarations
         },
         import_node_types=["preproc_include"],
         export_node_types=[],
-        visibility_fn=_public_by_default,
+        visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_specifier", "struct_specifier"}),
         entry_point_patterns=["main.cpp", "main.cc"],
@@ -309,13 +306,112 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "function_definition": "function",
             "struct_specifier": "struct",
             "enum_specifier": "enum",
+            "type_definition": "struct",  # typedef struct { ... } Name;
+            "preproc_def": "variable",  # #define MACRO value
+            "preproc_function_def": "function",  # #define MACRO(x) ...
+            "declaration": "function",  # forward declarations
         },
         import_node_types=["preproc_include"],
         export_node_types=[],
-        visibility_fn=_public_by_default,
+        visibility_fn=public_by_default,
         parent_extraction="none",
         parent_class_types=frozenset(),
         entry_point_patterns=["main.c"],
+    ),
+    "kotlin": LanguageConfig(
+        symbol_node_types={
+            "function_declaration": "function",
+            "class_declaration": "class",
+            "object_declaration": "class",
+        },
+        import_node_types=["import"],
+        export_node_types=[],
+        visibility_fn=kotlin_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class_declaration", "object_declaration"}),
+        entry_point_patterns=["Main.kt", "Application.kt"],
+    ),
+    "ruby": LanguageConfig(
+        symbol_node_types={
+            "method": "function",
+            "singleton_method": "function",
+            "class": "class",
+            "module": "module",
+        },
+        import_node_types=["call"],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class", "module"}),
+        entry_point_patterns=["main.rb", "app.rb", "config.ru"],
+    ),
+    "csharp": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "struct_declaration": "struct",
+            "enum_declaration": "enum",
+            "method_declaration": "method",
+            "constructor_declaration": "function",
+            "property_declaration": "variable",
+        },
+        import_node_types=["using_directive"],
+        export_node_types=[],
+        visibility_fn=csharp_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {"class_declaration", "interface_declaration", "struct_declaration", "enum_declaration"}
+        ),
+        entry_point_patterns=["Program.cs", "Startup.cs"],
+    ),
+    "swift": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "protocol_declaration": "interface",
+            "function_declaration": "function",
+            "protocol_function_declaration": "function",
+            "property_declaration": "variable",
+        },
+        import_node_types=["import_declaration"],
+        export_node_types=[],
+        visibility_fn=swift_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class_declaration", "protocol_declaration"}),
+        entry_point_patterns=["main.swift", "App.swift"],
+    ),
+    "scala": LanguageConfig(
+        symbol_node_types={
+            "class_definition": "class",
+            "trait_definition": "trait",
+            "object_definition": "class",
+            "function_definition": "function",
+            "function_declaration": "function",
+            "val_definition": "variable",
+        },
+        import_node_types=["import_declaration"],
+        export_node_types=[],
+        visibility_fn=scala_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset({"class_definition", "trait_definition", "object_definition"}),
+        entry_point_patterns=["Main.scala", "App.scala"],
+    ),
+    "php": LanguageConfig(
+        symbol_node_types={
+            "class_declaration": "class",
+            "interface_declaration": "interface",
+            "trait_declaration": "trait",
+            "enum_declaration": "enum",
+            "method_declaration": "method",
+            "function_definition": "function",
+        },
+        import_node_types=["namespace_use_declaration"],
+        export_node_types=[],
+        visibility_fn=php_visibility,
+        parent_extraction="nesting",
+        parent_class_types=frozenset(
+            {"class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"}
+        ),
+        entry_point_patterns=["index.php", "public/index.php"],
     ),
 }
 
@@ -350,11 +446,6 @@ class ASTParser:
         language = _get_language(lang)
 
         if config is None or language is None:
-            # If the language has a LANGUAGE_CONFIGS entry but its tree-sitter
-            # grammar failed to load, that is unexpected — log it once per file
-            # so developers can investigate.  For all other cases (data files,
-            # markup, config, languages not yet supported) this is intentional
-            # and we return silently without spamming the log.
             if config is not None and language is None:
                 log.debug(
                     "tree-sitter grammar unavailable",
@@ -386,14 +477,18 @@ class ASTParser:
 
         symbols = self._extract_symbols(tree, query, config, file_info, src)
         imports = self._extract_imports(tree, query, config, file_info, src)
+        calls = self._extract_calls(tree, query, config, file_info, src, symbols)
+        heritage = extract_heritage(tree, query, config, file_info, src, run_query=_run_query)
         exports = self._derive_exports(symbols, config, src)
-        docstring = _extract_module_docstring(root, src, lang)
+        docstring = extract_module_docstring(root, src, lang)
 
         return ParsedFile(
             file_info=file_info,
             symbols=symbols,
             imports=imports,
             exports=exports,
+            calls=calls,
+            heritage=heritage,
             docstring=docstring,
             parse_errors=parse_errors,
         )
@@ -407,8 +502,7 @@ class ASTParser:
         if lang in self._query_cache:
             return self._query_cache[lang]
 
-        # C files reuse the cpp query
-        scm_lang = "cpp" if lang == "c" else lang
+        scm_lang = lang
         scm_path = QUERIES_DIR / f"{scm_lang}.scm"
 
         if not scm_path.exists():
@@ -476,14 +570,17 @@ class ASTParser:
 
             # Refine "struct" kind for Go type_spec (check if struct or interface body)
             if kind == "struct" and config.parent_extraction == "receiver":
-                kind = _refine_go_type_kind(def_node, src)
+                kind = refine_go_type_kind(def_node, src)
+
+            # Refine "class" kind for Kotlin (interface / enum class share class_declaration)
+            if kind == "class" and file_info.language == "kotlin" and def_node.type == "class_declaration":
+                kind = refine_kotlin_class_kind(def_node)
 
             # Params signature text
             params_text = _node_text(params_nodes[0], src) if params_nodes else ""
 
             # Visibility
             modifier_texts = [_node_text(m, src) for m in modifier_nodes]
-            # Also check if parent in decorated_definition has decorators
             if def_node.parent and def_node.parent.type == "decorated_definition":
                 for sibling in def_node.parent.children:
                     if sibling.type == "decorator":
@@ -498,10 +595,10 @@ class ASTParser:
                 kind = "method"
 
             # Build signature
-            signature = _build_signature(node_type, name, params_text, def_node, src)
+            signature = build_signature(node_type, name, params_text, def_node, src)
 
-            # Docstring — walk the body of the def_node
-            docstring = _extract_symbol_docstring(def_node, src, file_info.language)
+            # Docstring
+            docstring = extract_symbol_docstring(def_node, src, file_info.language)
 
             # Async detection
             is_async = _is_async_node(def_node, src)
@@ -544,7 +641,7 @@ class ASTParser:
         if config.parent_extraction == "receiver":
             # Go: extract type name from receiver parameter list
             if receiver_nodes:
-                return _extract_go_receiver_type(_node_text(receiver_nodes[0], src))
+                return extract_go_receiver_type(_node_text(receiver_nodes[0], src))
             return None
 
         if config.parent_extraction in ("nesting", "impl"):
@@ -597,8 +694,8 @@ class ASTParser:
             if not module_text:
                 continue
 
-            # Language-specific import name extraction
-            imported_names = _extract_import_names(stmt_node, src, file_info.language)
+            # Language-specific import name + binding extraction
+            imported_names, bindings = extract_import_bindings(stmt_node, src, file_info.language)
             is_relative = module_text.startswith(".") or module_text.startswith("./")
 
             imports.append(
@@ -608,10 +705,84 @@ class ASTParser:
                     imported_names=imported_names,
                     is_relative=is_relative,
                     resolved_file=None,
+                    bindings=bindings,
                 )
             )
 
         return imports
+
+    # ------------------------------------------------------------------
+    # Call extraction
+    # ------------------------------------------------------------------
+
+    def _extract_calls(
+        self,
+        tree: object,
+        query: object,
+        config: LanguageConfig,
+        file_info: FileInfo,
+        src: str,
+        symbols: list[Symbol],
+    ) -> list[CallSite]:
+        """Extract function/method call sites from the AST."""
+        if query is None:
+            return []
+
+        from .language_data import get_builtin_calls
+
+        _call_builtins = get_builtin_calls(file_info.language)
+
+        symbol_ranges = sorted(
+            [(s.start_line, s.end_line, s.id) for s in symbols],
+            key=lambda t: (t[0], -t[1]),
+        )
+
+        calls: list[CallSite] = []
+        seen: set[tuple[int, str, str | None]] = set()
+
+        for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+            site_nodes = capture_dict.get("call.site", [])
+            target_nodes = capture_dict.get("call.target", [])
+            arg_nodes = capture_dict.get("call.arguments", [])
+            receiver_nodes = capture_dict.get("call.receiver", [])
+
+            if not site_nodes or not target_nodes:
+                continue
+
+            site_node = site_nodes[0]
+            target_name = _node_text(target_nodes[0], src).strip()
+            if not target_name:
+                continue
+
+            if target_name in _call_builtins:
+                continue
+
+            line = site_node.start_point[0] + 1
+            receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
+
+            dedup_key = (line, target_name, receiver_name)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            arg_count: int | None = None
+            if arg_nodes:
+                arg_node = arg_nodes[0]
+                arg_count = _count_arguments(arg_node)
+
+            caller_id = _find_enclosing_symbol(line, symbol_ranges)
+
+            calls.append(
+                CallSite(
+                    target_name=target_name,
+                    receiver_name=receiver_name,
+                    caller_symbol_id=caller_id,
+                    line=line,
+                    argument_count=arg_count,
+                )
+            )
+
+        return calls
 
     # ------------------------------------------------------------------
     # Export derivation
@@ -625,9 +796,7 @@ class ASTParser:
     ) -> list[str]:
         """Derive the list of exported names from parsed symbols."""
         if config.export_node_types:
-            # Languages with explicit exports (TS, JS) — public top-level symbols
             return [s.name for s in symbols if s.visibility == "public" and s.parent_name is None]
-        # Languages where all top-level public symbols are exported (Python, Go, …)
         return [s.name for s in symbols if s.visibility == "public" and s.parent_name is None]
 
 
@@ -652,11 +821,7 @@ def parse_file(file_info: FileInfo, source: bytes) -> ParsedFile:
 
 
 def _run_query(query: object, root_node: Node) -> list[dict[str, list[Node]]]:
-    """Execute a tree-sitter query and return a list of capture dicts.
-
-    Handles both the legacy tuple API and the newer QueryMatch API across
-    tree-sitter versions >= 0.22.
-    """
+    """Execute a tree-sitter query and return a list of capture dicts."""
     results: list[dict[str, list[Node]]] = []
     try:
         from tree_sitter import QueryCursor  # type: ignore[attr-defined]
@@ -664,13 +829,11 @@ def _run_query(query: object, root_node: Node) -> list[dict[str, list[Node]]]:
         cursor = QueryCursor(query)  # type: ignore[call-arg]
         for match in cursor.matches(root_node):
             if hasattr(match, "captures"):
-                # tree-sitter >= 0.23: QueryMatch object
                 results.append(match.captures)
             elif isinstance(match, tuple) and len(match) == 2:
                 _, caps = match
                 results.append(caps)
     except Exception:
-        # Fallback: query.matches() returning list of (index, dict) tuples
         try:
             for item in query.matches(root_node):  # type: ignore[attr-defined]
                 if isinstance(item, tuple) and len(item) == 2:
@@ -679,14 +842,6 @@ def _run_query(query: object, root_node: Node) -> list[dict[str, list[Node]]]:
         except Exception as exc:
             log.warning("query.matches() failed", error=str(exc))
     return results
-
-
-def _node_text(node: Node | None, src: str) -> str:
-    if node is None:
-        return ""
-    if node.text is not None:
-        return node.text.decode("utf-8", errors="replace")
-    return src[node.start_byte : node.end_byte]
 
 
 def _collect_error_nodes(root: Node) -> list[str]:
@@ -703,279 +858,8 @@ def _collect_error_nodes(root: Node) -> list[str]:
     return errors
 
 
-def _extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
-    """Extract a module/file-level docstring or leading comment."""
-    if lang == "python":
-        for child in root.children:
-            if child.type == "expression_statement":
-                for sub in child.children:
-                    if sub.type == "string":
-                        return _clean_string_literal(_node_text(sub, src))
-                break
-            elif child.type not in (
-                "comment",
-                "newline",
-                "import_statement",
-                "import_from_statement",
-                "future_import_statement",
-            ):
-                break
-    elif lang in ("typescript", "javascript"):
-        # Look for leading /** ... */ comment
-        for child in root.children:
-            if child.type == "comment":
-                text = _node_text(child, src).strip()
-                if text.startswith("/**"):
-                    return _clean_jsdoc(text)
-            elif child.type not in ("comment",):
-                break
-    elif lang == "go":
-        # Package comment is a series of // lines before package_clause
-        lines: list[str] = []
-        for child in root.children:
-            if child.type == "comment":
-                lines.append(_node_text(child, src).lstrip("/ ").strip())
-            elif child.type == "package_clause":
-                break
-        return "\n".join(lines) if lines else None
-    elif lang == "rust":
-        # //! inner doc comments or /// outer doc comments at top
-        for child in root.children:
-            if child.type in ("line_comment", "block_comment"):
-                text = _node_text(child, src).strip()
-                if text.startswith("//!") or text.startswith("/*!"):
-                    return text.lstrip("/!* ").strip()
-            else:
-                break
-    return None
-
-
-def _extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
-    """Extract the docstring from a symbol's body node."""
-    if lang == "python":
-        body = def_node.child_by_field_name("body")
-        if body is None:
-            return None
-        for child in body.children:
-            if child.type == "expression_statement":
-                for sub in child.children:
-                    if sub.type == "string":
-                        return _clean_string_literal(_node_text(sub, src))
-                return None
-            elif child.type not in ("comment", "newline"):
-                return None
-        return None
-
-    elif lang in ("typescript", "javascript"):
-        return _find_preceding_jsdoc(def_node, src)
-
-    elif lang == "go":
-        # Leading // comment lines before the function
-        parent = def_node.parent
-        if parent is None:
-            return None
-        siblings = list(parent.children)
-        idx = next((i for i, s in enumerate(siblings) if s.id == def_node.id), -1)
-        if idx <= 0:
-            return None
-        lines: list[str] = []
-        i = idx - 1
-        while i >= 0 and siblings[i].type == "comment":
-            lines.insert(0, _node_text(siblings[i], src).lstrip("/ ").strip())
-            i -= 1
-        return "\n".join(lines) if lines else None
-
-    elif lang == "rust":
-        # /// doc comments before the item
-        parent = def_node.parent
-        if parent is None:
-            return None
-        siblings = list(parent.children)
-        idx = next((i for i, s in enumerate(siblings) if s.id == def_node.id), -1)
-        if idx <= 0:
-            return None
-        lines: list[str] = []
-        i = idx - 1
-        while i >= 0 and siblings[i].type in ("line_comment", "block_comment"):
-            text = _node_text(siblings[i], src).strip()
-            if text.startswith("///"):
-                lines.insert(0, text.lstrip("/ ").strip())
-                i -= 1
-            else:
-                break
-        return "\n".join(lines) if lines else None
-
-    elif lang == "java":
-        # /** Javadoc */ comment before the method/class
-        return _find_preceding_block_comment(def_node, src, "/**")
-
-    return None
-
-
-def _build_signature(node_type: str, name: str, params_text: str, def_node: Node, src: str) -> str:
-    """Build a human-readable signature string."""
-    if node_type == "function_definition":
-        # Detect async via child "async" keyword (tree-sitter-python >= 0.23)
-        prefix = "async " if any(c.type == "async" for c in def_node.children) else ""
-        # Get return type annotation for Python
-        ret_node = def_node.child_by_field_name("return_type")
-        ret_text = f" -> {_node_text(ret_node, src)}" if ret_node else ""
-        return f"{prefix}def {name}{params_text}{ret_text}"
-    if node_type in ("function_declaration", "generator_function_declaration", "function_item"):
-        return f"function {name}{params_text}"
-    if node_type in ("class_definition", "class_declaration", "abstract_class_declaration"):
-        base = f"class {name}"
-        if params_text:
-            base += params_text
-        return base
-    if node_type == "interface_declaration":
-        return f"interface {name}"
-    if node_type == "type_alias_declaration":
-        return f"type {name}"
-    if node_type == "enum_declaration":
-        return f"enum {name}"
-    if node_type == "method_definition":
-        return f"{name}{params_text}"
-    if node_type == "method_declaration":
-        return f"func ({name}) method{params_text}"
-    if node_type in ("struct_item", "struct_specifier"):
-        return f"struct {name}"
-    if node_type in ("enum_item", "enum_specifier"):
-        return f"enum {name}"
-    if node_type == "trait_item":
-        return f"trait {name}"
-    if node_type == "impl_item":
-        return f"impl {name}"
-    if node_type in ("class_specifier",):
-        return f"class {name}"
-    # Fallback
-    return f"{name}{params_text}"
-
-
-def _extract_import_names(stmt_node: Node, src: str, lang: str) -> list[str]:
-    """Extract specific imported names from an import statement node."""
-    names: list[str] = []
-
-    if lang == "python":
-        for child in stmt_node.children:
-            if child.type == "wildcard_import":
-                return ["*"]
-            if child.type == "dotted_name":
-                text = _node_text(child, src)
-                # Skip the module name itself (it's the first dotted_name in import_from)
-                if names or stmt_node.type == "import_statement":
-                    names.append(text.split(".")[-1])
-                else:
-                    names.append(text.split(".")[-1])
-            elif child.type == "aliased_import":
-                name_child = child.child_by_field_name("name") or (
-                    child.children[0] if child.children else None
-                )
-                if name_child:
-                    names.append(_node_text(name_child, src))
-        return names
-
-    if lang in ("typescript", "javascript"):
-        # Find import_clause → named_imports → import_specifier
-        for child in stmt_node.children:
-            if child.type == "import_clause":
-                for sub in child.children:
-                    if sub.type == "identifier":
-                        names.append(_node_text(sub, src))  # default import
-                    elif sub.type == "named_imports":
-                        for spec in sub.children:
-                            if spec.type == "import_specifier":
-                                name_node = spec.child_by_field_name("name") or (
-                                    spec.children[0] if spec.children else None
-                                )
-                                if name_node:
-                                    names.append(_node_text(name_node, src))
-                    elif sub.type == "namespace_import":
-                        names = ["*"]
-        return names
-
-    return []
-
-
-def _extract_go_receiver_type(receiver_text: str) -> str | None:
-    """Extract 'Calculator' from '(c *Calculator)' or '(c Calculator)'."""
-    text = receiver_text.strip("() ")
-    parts = text.split()
-    for part in reversed(parts):
-        clean = part.lstrip("*")
-        if clean and clean[0].isupper():
-            return clean
-    return None
-
-
-def _refine_go_type_kind(type_spec_node: Node, src: str) -> str:
-    """Refine the generic 'struct' kind for Go type_spec nodes."""
-    type_node = type_spec_node.child_by_field_name("type")
-    if type_node is None:
-        return "struct"
-    type_text = _node_text(type_node, src).strip()
-    if type_text.startswith("struct"):
-        return "struct"
-    if type_text.startswith("interface"):
-        return "interface"
-    return "type_alias"
-
-
 def _is_async_node(node: Node, src: str) -> bool:
     return node.type == "async_function_definition" or any(c.type == "async" for c in node.children)
-
-
-def _clean_string_literal(text: str) -> str:
-    text = text.strip()
-    for triple in ('"""', "'''"):
-        if text.startswith(triple) and text.endswith(triple) and len(text) >= 6:
-            return text[3:-3].strip()
-    for q in ('"', "'"):
-        if text.startswith(q) and text.endswith(q) and len(text) >= 2:
-            return text[1:-1].strip()
-    return text
-
-
-def _find_preceding_jsdoc(node: Node, src: str) -> str | None:
-    parent = node.parent
-    if parent is None:
-        return None
-    siblings = list(parent.children)
-    idx = next((i for i, s in enumerate(siblings) if s.id == node.id), -1)
-    if idx <= 0:
-        return None
-    prev = siblings[idx - 1]
-    if prev.type == "comment":
-        text = _node_text(prev, src).strip()
-        if text.startswith("/**"):
-            return _clean_jsdoc(text)
-    return None
-
-
-def _find_preceding_block_comment(node: Node, src: str, prefix: str) -> str | None:
-    parent = node.parent
-    if parent is None:
-        return None
-    siblings = list(parent.children)
-    idx = next((i for i, s in enumerate(siblings) if s.id == node.id), -1)
-    if idx <= 0:
-        return None
-    prev = siblings[idx - 1]
-    if prev.type in ("block_comment", "comment"):
-        text = _node_text(prev, src).strip()
-        if text.startswith(prefix):
-            return _clean_jsdoc(text)
-    return None
-
-
-def _clean_jsdoc(text: str) -> str:
-    lines = text.splitlines()
-    cleaned: list[str] = []
-    for line in lines:
-        line = line.strip().lstrip("/*").lstrip()
-        if line:
-            cleaned.append(line)
-    return "\n".join(cleaned).strip()
 
 
 def _build_qualified_name(file_path: str, parent_name: str | None, name: str) -> str:
@@ -983,3 +867,34 @@ def _build_qualified_name(file_path: str, parent_name: str | None, name: str) ->
     if parent_name:
         return f"{module}.{parent_name}.{name}"
     return f"{module}.{name}"
+
+
+# ---------------------------------------------------------------------------
+# Call extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _count_arguments(arg_node: Node) -> int:
+    """Count the number of arguments in an argument/argument_list node."""
+    skip_types = frozenset({"(", ")", ",", "[", "]"})
+    return sum(1 for child in arg_node.children if child.type not in skip_types)
+
+
+def _find_enclosing_symbol(
+    line: int,
+    symbol_ranges: list[tuple[int, int, str]],
+) -> str | None:
+    """Find the innermost symbol whose line range contains *line*."""
+    best_id: str | None = None
+    best_span = float("inf")
+
+    for start, end, sym_id in symbol_ranges:
+        if start > line:
+            break
+        if start <= line <= end:
+            span = end - start
+            if span < best_span:
+                best_span = span
+                best_id = sym_id
+
+    return best_id

@@ -33,10 +33,18 @@ from repowise.cli.helpers import (
     default=None,
     help="Output directory (default: .repowise/export).",
 )
+@click.option(
+    "--full",
+    "full_export",
+    is_flag=True,
+    default=False,
+    help="Include decisions, dead code, git metadata, and provenance in JSON export.",
+)
 def export_command(
     path: str | None,
     fmt: str,
     output_dir: str | None,
+    full_export: bool = False,
 ) -> None:
     """Export wiki pages to files."""
     repo_path = resolve_repo_path(path)
@@ -45,7 +53,9 @@ def export_command(
     out = repo_path / ".repowise" / "export" if output_dir is None else Path(output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    # Load pages from DB
+    # Load pages (and optionally decisions/dead-code/git) from DB
+    extra_data: dict = {}
+
     async def _load_pages():
         from repowise.core.persistence import (
             create_engine,
@@ -65,6 +75,73 @@ def export_command(
                 await engine.dispose()
                 return []
             pages = await list_pages(session, repo.id, limit=10000)
+
+            if full_export and fmt == "json":
+                from sqlalchemy import select
+
+                from repowise.core.persistence.models import (
+                    DeadCodeFinding,
+                    DecisionRecord,
+                    GitMetadata,
+                )
+
+                # Decisions
+                dr = await session.execute(
+                    select(DecisionRecord).where(
+                        DecisionRecord.repository_id == repo.id
+                    )
+                )
+                extra_data["decisions"] = [
+                    {
+                        "title": d.title,
+                        "status": d.status,
+                        "decision": d.decision,
+                        "rationale": d.rationale,
+                        "confidence": d.confidence,
+                        "staleness_score": d.staleness_score,
+                        "source": d.source,
+                        "affected_files": json.loads(d.affected_files_json),
+                        "created_at": d.created_at.isoformat() if d.created_at else None,
+                    }
+                    for d in dr.scalars().all()
+                ]
+
+                # Dead code findings
+                dc = await session.execute(
+                    select(DeadCodeFinding).where(
+                        DeadCodeFinding.repository_id == repo.id
+                    )
+                )
+                extra_data["dead_code"] = [
+                    {
+                        "file_path": f.file_path,
+                        "symbol_name": f.symbol_name,
+                        "finding_type": f.finding_type,
+                        "confidence": f.confidence,
+                        "safe_to_delete": f.safe_to_delete,
+                    }
+                    for f in dc.scalars().all()
+                ]
+
+                # Git metadata (hotspots)
+                gm = await session.execute(
+                    select(GitMetadata)
+                    .where(
+                        GitMetadata.repository_id == repo.id,
+                        GitMetadata.is_hotspot == True,  # noqa: E712
+                    )
+                    .limit(50)
+                )
+                extra_data["hotspots"] = [
+                    {
+                        "file_path": g.file_path,
+                        "churn_percentile": g.churn_percentile,
+                        "commit_count_90d": g.commit_count_90d,
+                        "primary_owner": g.primary_owner_name,
+                        "bus_factor": g.bus_factor,
+                    }
+                    for g in gm.scalars().all()
+                ]
 
         await engine.dispose()
         return pages
@@ -143,17 +220,27 @@ def export_command(
         elif fmt == "json":
             data = []
             for page in pages:
-                data.append(
-                    {
-                        "page_id": page.id,
-                        "page_type": page.page_type,
-                        "title": page.title,
-                        "content": page.content,
-                        "target_path": page.target_path,
-                    }
-                )
+                entry: dict = {
+                    "page_id": page.id,
+                    "page_type": page.page_type,
+                    "title": page.title,
+                    "content": page.content,
+                    "target_path": page.target_path,
+                }
+                if full_export:
+                    entry["confidence"] = page.confidence
+                    entry["freshness_status"] = page.freshness_status
+                    entry["version"] = page.version
+                    entry["model_name"] = getattr(page, "model_name", None)
+                    entry["provider_name"] = getattr(page, "provider_name", None)
+                data.append(entry)
                 progress.advance(task)
+
+            export_obj: dict = {"pages": data}
+            if full_export and extra_data:
+                export_obj.update(extra_data)
+
             filepath = out / "wiki_pages.json"
-            filepath.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            filepath.write_text(json.dumps(export_obj, indent=2), encoding="utf-8")
 
     console.print(f"[bold green]Exported {len(pages)} pages to {out}[/bold green]")

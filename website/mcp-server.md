@@ -22,7 +22,7 @@ Connect repowise to Claude Code, Cursor, Cline, or any MCP-compatible editor.
 
 ## Overview
 
-The MCP (Model Context Protocol) server is how repowise talks to AI coding assistants. Once connected, your editor's AI can call 8 tools to query your codebase wiki — getting docs, ownership, risk signals, dependency paths, and architectural decisions in a single call.
+The MCP (Model Context Protocol) server is how repowise talks to AI coding assistants. Once connected, your editor's AI can call 10 tools to query your codebase wiki — synthesizing answers, looking up symbols, fetching docs, ownership, risk signals, dependency paths, and architectural decisions.
 
 Start the server with:
 
@@ -139,7 +139,55 @@ Clients connect to `http://localhost:7338/sse` and receive server-sent events. C
 
 ---
 
-## The 8 tools
+## The 10 tools
+
+### `get_answer(question, scope?)`
+
+One-call RAG over the wiki layer. Runs retrieval, gates on confidence, and synthesizes a 2–5 sentence answer with concrete file/symbol citations. Responses are cached per repository by question hash, so repeated questions cost nothing on the second call.
+
+**Parameters:**
+- `question` (string) — natural-language developer question
+- `scope` (optional, string) — path prefix to restrict retrieval (e.g. `"src/auth/"`)
+
+**Returns:**
+- `answer` (string) — synthesized 2–5 sentence answer
+- `citations` (list of strings) — file paths backing the answer
+- `confidence` (string) — `"high"`, `"medium"`, or `"low"`. High-confidence answers can be cited directly without verification reads; lower confidence indicates the agent should fall back to `search_codebase` or `Read`.
+- `fallback_targets` (list of strings) — top retrieval hits the agent should `Read` if it does not trust the synthesized answer
+- `retrieval` (list) — raw top-N hits with snippets
+
+**When to use:** First call on any code question. Collapses the typical "search → read → reason" loop into a single round-trip.
+
+**Example:**
+```
+get_answer(question="how does the request context get pushed and popped per request")
+
+→ answer: "Flask pushes a RequestContext onto _request_ctx_stack at the start
+  of every request via Flask.wsgi_app, and pops it in the corresponding
+  finally clause. The push happens in src/flask/app.py::Flask.wsgi_app."
+  citations: ["src/flask/app.py", "src/flask/ctx.py"]
+  confidence: "high"
+```
+
+---
+
+### `get_symbol(symbol_id)`
+
+Resolves a fully-qualified symbol identifier to its definition. Returns the source body, signature, file location, line range, and any associated docstring without the agent having to grep then read.
+
+**Parameters:**
+- `symbol_id` (string) — qualified id of the form `path/to/file.py::ClassName::method_name`. Both `::` and `.` are accepted as the symbol separator (`Class::method` and `Class.method` resolve identically).
+
+**Returns:**
+- `symbol_id`, `name`, `kind` (`class`, `function`, `method`, …)
+- `file_path`, `start_line`, `end_line`
+- `signature` (recovered from source so base classes, decorators, and full type annotations are preserved)
+- `body` (the symbol's source code)
+- `docstring`
+
+**When to use:** When the question names a specific class, function, or method and you want its source without a separate `Read` call.
+
+---
 
 ### `get_overview()`
 
@@ -159,13 +207,14 @@ Bus factor risk: git_indexer.py (1 author)
 
 ---
 
-### `get_context(targets, include?)`
+### `get_context(targets, include?, compact?)`
 
 Returns rich context for one or more files, modules, or symbols: documentation, ownership, last change, governing decisions, and freshness status.
 
 **Parameters:**
 - `targets` (list of strings) — file paths, module names, or symbol names
 - `include` (optional) — subset of `["docs", "ownership", "last_change", "decisions", "freshness"]`
+- `compact` (optional, default `True`) — when `True`, drops the `structure` block, the `imported_by` list, and per-symbol docstrings/end-line fields to keep the response under ~10K characters. Pass `compact=False` to receive the full payload, e.g. when you specifically need the import-graph dependents or every symbol docstring on a dense file.
 
 **When to use:** Before reading or editing any file. Faster and richer than reading the raw source.
 

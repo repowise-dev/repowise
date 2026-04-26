@@ -1,0 +1,84 @@
+## Workspace: {{ data.workspace_name }} ({{ data.repos|length }} repo{{ "s" if data.repos|length != 1 else "" }})
+
+> Indexed by [Repowise](https://repowise.dev). Use `repo="all"` for workspace-wide queries, or `repo="alias"` for a specific repo.
+
+### Repositories
+| Repo | Files | Symbols | Hotspots | Role |
+|------|-------|---------|----------|------|
+{% for r in data.repos %}
+| `{{ r.alias }}` | {{ r.file_count }} | {{ r.symbol_count }} | {{ r.hotspot_count }} | {{ "default" if r.alias == data.default_repo else ("primary" if r.is_primary else "") }} |
+{% endfor %}
+
+{% if data.contract_links %}
+### Cross-Repo API Contracts
+{% if data.contracts_by_type %}
+**By type:** {% for ctype, count in data.contracts_by_type.items() %}{{ ctype }}: {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
+
+{% endif %}
+| Provider | Consumer | Type | Contract |
+|----------|----------|------|----------|
+{% for link in data.contract_links %}
+| `{{ link.provider_repo }}:{{ link.provider_file }}` | `{{ link.consumer_repo }}:{{ link.consumer_file }}` | {{ link.contract_type }} | `{{ link.contract_id }}` |
+{% endfor %}
+{% endif %}
+
+{% if data.co_changes %}
+### Cross-Repo Co-Changes
+Files that frequently change together across repos — consider reviewing both when editing either.
+
+| Source | Target | Co-changes |
+|--------|--------|------------|
+{% for cc in data.co_changes[:10] %}
+| `{{ cc.source_repo }}:{{ cc.source_file }}` | `{{ cc.target_repo }}:{{ cc.target_file }}` | {{ cc.frequency }} |
+{% endfor %}
+{% endif %}
+
+{% if data.package_deps %}
+### Package Dependencies
+{% for dep in data.package_deps %}
+- `{{ dep.source_repo }}` → `{{ dep.target_repo }}` ({{ dep.kind }})
+{% endfor %}
+{% endif %}
+
+### Per-Repo Entry Points
+{% for r in data.repos %}
+#### `{{ r.alias }}`{% if r.alias == data.default_repo %} (default){% elif r.is_primary %} (primary){% endif %}
+
+{% if r.entry_points %}
+{% for ep in r.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% else %}
+_No entry points indexed._
+{% endif %}
+{% endfor %}
+
+### Repowise MCP Tools
+
+These tools work across all repos in this workspace. Pass `repo="alias"` to scope queries, or omit for the default repo.
+
+**Recommended workflow:**
+
+1. Start with `get_overview()` on a new task to orient yourself.
+2. Call `get_context(targets=["path/to/file.py"])` for enriched context on unfamiliar files — but always read the source before editing.
+3. Call `get_risk(targets=["path/to/file.py"])` before changing hotspot files.
+4. Don't know where something lives? Call `search_codebase(query="authentication flow")`.
+5. Need to understand why code is structured a certain way? Call `get_why(query="why JWT over sessions")` before architectural changes.
+6. After **architectural changes**, consider calling `update_decision_records(action="create", ...)` to record the rationale.
+7. Need to understand how two modules connect? Call `get_dependency_path(source="src/auth", target="src/db")`.
+8. Before cleanup tasks, call `get_dead_code()` to find confirmed unused code.
+9. For documentation or diagrams, call `get_architecture_diagram(scope="src/auth")`.
+
+**Note:** MCP tool responses reflect the last index run. If the index is stale, verify against source files.
+
+| Tool | When to use |
+|------|-------------|
+| `get_overview()` | Orient yourself on a new task |
+| `get_context(targets=[...])` | Enriched context on unfamiliar files |
+| `get_risk(targets=[...])` | Before changing hotspot files |
+| `get_why(query="...")` | Before architectural changes |
+| `update_decision_records(action=...)` | After architectural changes — record decisions |
+| `search_codebase(query="...")` | When locating code |
+| `get_dependency_path(source=..., target=...)` | When tracing module connections |
+| `get_dead_code()` | Before any cleanup or removal |
+| `get_architecture_diagram(scope=...)` | For visual structure or documentation |

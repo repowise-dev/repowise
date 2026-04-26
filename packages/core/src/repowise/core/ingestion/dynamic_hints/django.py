@@ -95,35 +95,41 @@ class DjangoDynamicHints(DynamicHintExtractor):
                         for app in _extract_string_list(node.value):
                             resolved = _app_to_path(app, repo_root)
                             if resolved:
-                                edges.append(DynamicEdge(
-                                    source=rel_settings,
-                                    target=resolved,
-                                    edge_type="dynamic_imports",
-                                    hint_source=self.name,
-                                ))
+                                edges.append(
+                                    DynamicEdge(
+                                        source=rel_settings,
+                                        target=resolved,
+                                        edge_type="dynamic_imports",
+                                        hint_source=self.name,
+                                    )
+                                )
 
                     elif name == "ROOT_URLCONF":
                         module = _extract_string_value(node.value)
                         if module:
                             resolved = _module_to_path(module, repo_root)
                             if resolved:
-                                edges.append(DynamicEdge(
-                                    source=rel_settings,
-                                    target=resolved,
-                                    edge_type="dynamic_imports",
-                                    hint_source=self.name,
-                                ))
+                                edges.append(
+                                    DynamicEdge(
+                                        source=rel_settings,
+                                        target=resolved,
+                                        edge_type="dynamic_imports",
+                                        hint_source=self.name,
+                                    )
+                                )
 
                     elif name == "MIDDLEWARE":
                         for middleware in _extract_string_list(node.value):
                             resolved = _module_to_path(middleware, repo_root)
                             if resolved:
-                                edges.append(DynamicEdge(
-                                    source=rel_settings,
-                                    target=resolved,
-                                    edge_type="dynamic_imports",
-                                    hint_source=self.name,
-                                ))
+                                edges.append(
+                                    DynamicEdge(
+                                        source=rel_settings,
+                                        target=resolved,
+                                        edge_type="dynamic_imports",
+                                        hint_source=self.name,
+                                    )
+                                )
 
         return edges
 
@@ -142,11 +148,13 @@ class DjangoDynamicHints(DynamicHintExtractor):
                 module = match.group(1)
                 resolved = _module_to_path(module, repo_root)
                 if resolved:
-                    edges.append(DynamicEdge(
-                        source=rel_urls,
-                        target=resolved,
-                        edge_type="url_route",
-                        hint_source=self.name,
-                    ))
+                    edges.append(
+                        DynamicEdge(
+                            source=rel_urls,
+                            target=resolved,
+                            edge_type="url_route",
+                            hint_source=self.name,
+                        )
+                    )
 
         return edges

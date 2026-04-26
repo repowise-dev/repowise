@@ -24,6 +24,9 @@ import {
   ChevronRight,
   Circle,
   SlidersHorizontal,
+  Layers,
+  Link2,
+  GitMerge,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -31,7 +34,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { cn } from "@/lib/utils/cn";
-import type { RepoResponse } from "@/lib/api/types";
+import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 const GLOBAL_NAV = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -56,11 +59,19 @@ function repoNavItems(repoId: string) {
   ];
 }
 
+const WORKSPACE_NAV = [
+  { label: "Overview", href: "/workspace", icon: Layers },
+  { label: "Contracts", href: "/workspace/contracts", icon: Link2 },
+  { label: "Co-Changes", href: "/workspace/co-changes", icon: GitMerge },
+];
+
 interface MobileNavProps {
   repos?: RepoResponse[];
+  workspace?: WorkspaceResponse | null;
 }
 
-export function MobileNav({ repos = [] }: MobileNavProps) {
+export function MobileNav({ repos = [], workspace }: MobileNavProps) {
+  const isWorkspace = workspace?.is_workspace ?? false;
   const [open, setOpen] = React.useState(false);
   const pathname = usePathname();
   const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(new Set());
@@ -139,6 +150,39 @@ export function MobileNav({ repos = [] }: MobileNavProps) {
                   );
                 })}
               </nav>
+
+              {isWorkspace && (
+                <>
+                  <Separator className="my-4" />
+                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                    Workspace
+                  </p>
+                  <nav className="space-y-1">
+                    {WORKSPACE_NAV.map((item) => {
+                      const Icon = item.icon;
+                      const isActive =
+                        item.href === "/workspace"
+                          ? pathname === "/workspace"
+                          : pathname.startsWith(`${item.href}`);
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          className={cn(
+                            "flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors",
+                            isActive
+                              ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                              : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                          )}
+                        >
+                          <Icon className="h-[18px] w-[18px] shrink-0" />
+                          {item.label}
+                        </Link>
+                      );
+                    })}
+                  </nav>
+                </>
+              )}
 
               {repos.length > 0 && (
                 <>

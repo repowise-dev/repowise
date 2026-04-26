@@ -12,8 +12,12 @@ import {
   Skull,
   Flame,
   LayoutGrid,
+  Workflow,
+  Search,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export type ColorMode = "language" | "community" | "risk";
 export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles";
@@ -28,6 +32,10 @@ interface GraphToolbarProps {
   onFitView: () => void;
   showPathFinder: boolean;
   onTogglePathFinder: () => void;
+  showFlows: boolean;
+  onToggleFlows: () => void;
+  searchQuery: string;
+  onSearchChange: (q: string) => void;
 }
 
 const VIEW_MODES: { id: ViewMode; icon: typeof Boxes; label: string }[] = [
@@ -54,6 +62,10 @@ export function GraphToolbar({
   onFitView,
   showPathFinder,
   onTogglePathFinder,
+  showFlows,
+  onToggleFlows,
+  searchQuery,
+  onSearchChange,
 }: GraphToolbarProps) {
   return (
     <div className="flex flex-col gap-1.5 items-end">
@@ -118,6 +130,15 @@ export function GraphToolbar({
           <Button
             size="sm"
             variant="ghost"
+            onClick={onToggleFlows}
+            className={`h-7 w-7 p-0 ${showFlows ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            title="Execution flows"
+          >
+            <Workflow className="w-3.5 h-3.5" />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
             onClick={() => onHideTestsChange(!hideTests)}
             className={`h-7 w-7 p-0 ${hideTests ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
             title={hideTests ? "Show test files" : "Hide test files"}
@@ -133,6 +154,25 @@ export function GraphToolbar({
           >
             <Maximize className="w-3.5 h-3.5" />
           </Button>
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="relative">
+        <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1 shadow-lg shadow-black/20">
+          <Search className="w-3 h-3 text-[var(--color-text-tertiary)] shrink-0" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search nodes…"
+            className="bg-transparent text-[11px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none w-28 lg:w-40"
+          />
+          {searchQuery && (
+            <button onClick={() => onSearchChange("")} className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]">
+              <X className="w-3 h-3" />
+            </button>
+          )}
         </div>
       </div>
     </div>

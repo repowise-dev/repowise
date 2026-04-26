@@ -65,7 +65,7 @@ From this, repowise builds a **dependency graph** using NetworkX. Nodes are file
 
 **Why it matters for you:** The dependency graph powers risk analysis, cascade detection, and architecture diagrams. When you ask "what does this module affect?", the answer comes from this layer.
 
-**Supported languages:** Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Kotlin, Ruby. More are added regularly.
+**Supported languages:** Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Kotlin, Ruby, C#, Swift, Scala, PHP. 14 languages with full AST support.
 
 ---
 
@@ -161,7 +161,7 @@ The dependency graph is loaded into memory at server startup for fast traversal.
 
 ## The MCP server
 
-The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants via 8 tools. It's the primary interface between repowise and Claude Code, Cursor, Cline, or any other MCP-compatible editor.
+The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants via 10 tools. It's the primary interface between repowise and Claude Code, Cursor, Cline, or any other MCP-compatible editor.
 
 When you run `repowise mcp`, the server starts in stdio mode and your editor can begin calling tools. The tools are designed to answer the questions an AI needs to make good decisions about your code — not just "what is this file" but "should I edit it", "why is it structured this way", and "what will break if I change it".
 

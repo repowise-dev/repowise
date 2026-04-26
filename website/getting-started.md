@@ -78,16 +78,20 @@ When it finishes, the MCP server is registered and Claude can query your codebas
  Indexing your codebase...
 
  Phase 1 of 4 — Ingestion
+  Scanning & filtering files...      [████████████████████]
+  Scanned 1,247 files, 247 included
+    Excluded: 820 by .gitignore, 45 by extension, 12 binary, 123 unknown type
+    Languages: python 892, typescript 245, go 80, yaml 18, json 12
   Parsing files...                   [████████████████████] 247/247
   Building dependency graph...       done
-  Running git analysis...            done
 
  Phase 2 of 4 — Analysis
-  Computing churn scores...          done
+  Indexing file history...           done
   Detecting dead code...             done
-  Mining decisions...                done
+  Extracting decisions...            done
 
  Phase 3 of 4 — Generation
+  Languages: python 58%, typescript 28%, go 10%, yaml 2%, json 1%
   Generating wiki pages...           [████████████████░░░░] 82%
   Estimated tokens: ~180k
 

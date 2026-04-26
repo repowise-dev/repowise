@@ -35,4 +35,20 @@ You are generating a high-level overview for the repository `{{ ctx.repo_name }}
 - **Oldest file:** `{{ repo_git_summary.oldest_file }}` ({{ repo_git_summary.oldest_file_age_days }} days)
 {% endif %}
 
+{% if ctx.communities %}
+## Architectural Communities
+The codebase organizes into these architectural clusters (detected via dependency analysis):
+{% for c in ctx.communities %}
+- **{{ c.label or "Community " ~ c.id }}** — {{ c.size }} files (cohesion: {{ c.cohesion }})
+{% endfor %}
+{% endif %}
+
+{% if ctx.execution_flows %}
+## Primary Execution Flows
+Key entry points and their execution paths:
+{% for f in ctx.execution_flows %}
+- `{{ f.entry_point }}` (score: {{ f.score }}{% if f.trace_length %}, {{ f.trace_length }} steps{% endif %})
+{% endfor %}
+{% endif %}
+
 Generate a complete wiki page following the sections above.

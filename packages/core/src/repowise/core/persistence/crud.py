@@ -18,7 +18,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
@@ -209,6 +209,7 @@ async def upsert_page(
     page_type: str,
     title: str,
     content: str,
+    summary: str = "",
     target_path: str,
     source_hash: str,
     model_name: str,
@@ -261,6 +262,7 @@ async def upsert_page(
         existing.page_type = page_type
         existing.title = title
         existing.content = content
+        existing.summary = summary
         existing.target_path = target_path
         existing.source_hash = source_hash
         existing.model_name = model_name
@@ -284,6 +286,7 @@ async def upsert_page(
             page_type=page_type,
             title=title,
             content=content,
+            summary=summary,
             target_path=target_path,
             source_hash=source_hash,
             model_name=model_name,
@@ -323,6 +326,7 @@ async def upsert_page_from_generated(
         page_type=gp.page_type,  # type: ignore[attr-defined]
         title=gp.title,  # type: ignore[attr-defined]
         content=gp.content,  # type: ignore[attr-defined]
+        summary=getattr(gp, "summary", "") or "",
         target_path=gp.target_path,  # type: ignore[attr-defined]
         source_hash=gp.source_hash,  # type: ignore[attr-defined]
         model_name=gp.model_name,  # type: ignore[attr-defined]
@@ -451,16 +455,21 @@ async def batch_upsert_graph_edges(
     """Upsert graph edges for a repository.
 
     Each element of *edges* should have ``source_node_id``, ``target_node_id``,
-    and optionally ``imported_names_json``.
+    ``edge_type``, and optionally ``imported_names_json`` and ``confidence``.
+
+    The unique constraint is (repository_id, source, target, edge_type),
+    allowing multiple edge types between the same pair of nodes.
     """
     for edge_data in edges:
         source = edge_data.get("source_node_id", "")
         target = edge_data.get("target_node_id", "")
+        edge_type = edge_data.get("edge_type", "imports")
         result = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repository_id,
                 GraphEdge.source_node_id == source,
                 GraphEdge.target_node_id == target,
+                GraphEdge.edge_type == edge_type,
             )
         )
         existing = result.scalar_one_or_none()
@@ -469,9 +478,9 @@ async def batch_upsert_graph_edges(
             imported = edge_data.get("imported_names_json")
             if imported is not None:
                 existing.imported_names_json = imported
-            edge_type = edge_data.get("edge_type")
-            if edge_type is not None:
-                existing.edge_type = edge_type
+            confidence = edge_data.get("confidence")
+            if confidence is not None:
+                existing.confidence = confidence
         else:
             session.add(
                 GraphEdge(
@@ -480,7 +489,8 @@ async def batch_upsert_graph_edges(
                     source_node_id=source,
                     target_node_id=target,
                     imported_names_json=edge_data.get("imported_names_json", "[]"),
-                    edge_type=edge_data.get("edge_type", "imports"),
+                    edge_type=edge_type,
+                    confidence=edge_data.get("confidence", 1.0),
                 )
             )
 
@@ -1009,9 +1019,12 @@ async def list_decisions(
     if source is not None:
         q = q.where(DecisionRecord.source == source)
     if tag is not None:
-        q = q.where(DecisionRecord.tags_json.contains(tag))
+        # Match exact tag value in JSON array, not substring.
+        # JSON arrays store as '["tag1", "tag2"]', so we match '"tag"'
+        q = q.where(DecisionRecord.tags_json.contains(f'"{tag}"'))
     if module is not None:
-        q = q.where(DecisionRecord.affected_modules_json.contains(module))
+        # Match exact module path in JSON array
+        q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
     q = q.order_by(DecisionRecord.created_at.desc()).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
@@ -1102,14 +1115,54 @@ async def delete_decision(session: AsyncSession, decision_id: str) -> bool:
     return True
 
 
+def _normalize_title(title: str) -> str:
+    """Normalize a decision title for cross-source dedup comparison."""
+    import re as _re
+    t = title.lower().strip()
+    t = _re.sub(r"[^a-z0-9\s]", "", t)
+    t = _re.sub(r"\s+", " ", t)
+    return t
+
+
 async def bulk_upsert_decisions(
     session: AsyncSession,
     repository_id: str,
     decisions: list[dict],
 ) -> None:
-    """Bulk upsert decision records from a list of dicts."""
-    for i in range(0, len(decisions), _BATCH_SIZE):
-        batch = decisions[i : i + _BATCH_SIZE]
+    """Bulk upsert decision records from a list of dicts.
+
+    Performs cross-source deduplication: if two decisions from different
+    sources have near-identical normalized titles, the one with higher
+    confidence wins and the other is skipped.
+    """
+    # Cross-source dedup: group by normalized title, keep highest confidence
+    seen: dict[str, dict] = {}  # normalized_title → best decision dict
+    for d in decisions:
+        title = d.get("title", "")
+        norm = _normalize_title(title)
+        if not norm:
+            continue
+        existing = seen.get(norm)
+        if existing is None:
+            seen[norm] = d
+        else:
+            # Keep the one with higher confidence; on tie, prefer more specific source
+            new_conf = d.get("confidence", 0.0)
+            old_conf = existing.get("confidence", 0.0)
+            if new_conf > old_conf:
+                seen[norm] = d
+            elif new_conf == old_conf:
+                # Prefer inline_marker > readme_mining > git_archaeology
+                source_priority = {"inline_marker": 3, "readme_mining": 2, "git_archaeology": 1}
+                if source_priority.get(d.get("source", ""), 0) > source_priority.get(
+                    existing.get("source", ""), 0
+                ):
+                    seen[norm] = d
+
+    deduped = list(seen.values())
+
+    for i in range(0, len(deduped), _BATCH_SIZE):
+        batch = deduped[i : i + _BATCH_SIZE]
         for d in batch:
             await upsert_decision(
                 session,
@@ -1330,11 +1383,247 @@ async def list_chat_messages(session: AsyncSession, conversation_id: str) -> lis
 
 
 async def count_chat_messages(session: AsyncSession, conversation_id: str) -> int:
-    from sqlalchemy import func
-
     result = await session.execute(
         select(func.count())
         .select_from(ChatMessage)
         .where(ChatMessage.conversation_id == conversation_id)
     )
     return result.scalar() or 0
+
+
+# ---------------------------------------------------------------------------
+# Graph read-side queries (Phase 5 — MCP graph tools)
+# ---------------------------------------------------------------------------
+
+
+async def get_graph_node(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+) -> GraphNode | None:
+    """Look up a single GraphNode by its ``node_id`` (file path or symbol ID)."""
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_id == node_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_graph_edges_for_node(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+    *,
+    direction: str = "both",
+    edge_types: list[str] | None = None,
+    limit: int = 50,
+) -> list[GraphEdge]:
+    """Return edges adjacent to *node_id*.
+
+    Parameters
+    ----------
+    direction:
+        ``"callers"`` → inbound edges (target == node_id),
+        ``"callees"`` → outbound edges (source == node_id),
+        ``"both"`` → union of both.
+    edge_types:
+        Optional filter, e.g. ``["calls"]`` or ``["extends", "implements"]``.
+    limit:
+        Max edges per direction.
+    """
+    results: list[GraphEdge] = []
+
+    if direction in ("callers", "both"):
+        q = select(GraphEdge).where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.target_node_id == node_id,
+        )
+        if edge_types:
+            q = q.where(GraphEdge.edge_type.in_(edge_types))
+        q = q.limit(limit)
+        res = await session.execute(q)
+        results.extend(res.scalars().all())
+
+    if direction in ("callees", "both"):
+        q = select(GraphEdge).where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.source_node_id == node_id,
+        )
+        if edge_types:
+            q = q.where(GraphEdge.edge_type.in_(edge_types))
+        q = q.limit(limit)
+        res = await session.execute(q)
+        results.extend(res.scalars().all())
+
+    return results
+
+
+async def get_graph_nodes_by_ids(
+    session: AsyncSession,
+    repository_id: str,
+    node_ids: list[str],
+) -> dict[str, GraphNode]:
+    """Batch-lookup GraphNodes by node_id. Returns ``{node_id: GraphNode}``."""
+    if not node_ids:
+        return {}
+    # Process in batches to stay under SQLite parameter limits
+    out: dict[str, GraphNode] = {}
+    for i in range(0, len(node_ids), _BATCH_SIZE):
+        batch = node_ids[i : i + _BATCH_SIZE]
+        result = await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_id.in_(batch),
+            )
+        )
+        for node in result.scalars().all():
+            out[node.node_id] = node
+    return out
+
+
+async def get_community_members(
+    session: AsyncSession,
+    repository_id: str,
+    community_id: int,
+    *,
+    node_type: str = "file",
+    limit: int = 50,
+) -> list[GraphNode]:
+    """Return all nodes in a community, ordered by PageRank descending."""
+    result = await session.execute(
+        select(GraphNode)
+        .where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == node_type,
+            GraphNode.community_id == community_id,
+        )
+        .order_by(GraphNode.pagerank.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def get_all_file_metrics(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[GraphNode]:
+    """Return all file-type GraphNodes (for percentile computation)."""
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def get_cross_community_edges(
+    session: AsyncSession,
+    repository_id: str,
+    community_id: int,
+) -> list[dict]:
+    """Count edges crossing from *community_id* to other communities.
+
+    Returns a list of ``{"target_community_id": int, "edge_count": int}``.
+    Uses a join through ``graph_nodes`` to resolve target community.
+    """
+    # Alias for the target node lookup
+    target_node = GraphNode.__table__.alias("tn")
+    source_node = GraphNode.__table__.alias("sn")
+
+    q = (
+        select(
+            target_node.c.community_id.label("target_community_id"),
+            func.count().label("edge_count"),
+        )
+        .select_from(GraphEdge.__table__)
+        .join(
+            source_node,
+            (GraphEdge.__table__.c.source_node_id == source_node.c.node_id)
+            & (GraphEdge.__table__.c.repository_id == source_node.c.repository_id),
+        )
+        .join(
+            target_node,
+            (GraphEdge.__table__.c.target_node_id == target_node.c.node_id)
+            & (GraphEdge.__table__.c.repository_id == target_node.c.repository_id),
+        )
+        .where(
+            GraphEdge.__table__.c.repository_id == repository_id,
+            source_node.c.community_id == community_id,
+            target_node.c.community_id != community_id,
+            # Only count file-level edges for meaningful community crossing
+            source_node.c.node_type == "file",
+            target_node.c.node_type == "file",
+        )
+        .group_by(target_node.c.community_id)
+        .order_by(func.count().desc())
+    )
+    result = await session.execute(q)
+    return [
+        {"target_community_id": row.target_community_id, "edge_count": row.edge_count}
+        for row in result.all()
+    ]
+
+
+async def get_top_entry_points(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    min_score: float = 0.3,
+    limit: int = 20,
+) -> list[GraphNode]:
+    """Return symbol nodes with stored entry_point_score >= *min_score*.
+
+    Scores are stored inside ``community_meta_json``. Since the count of
+    symbol nodes is typically < 5000, an in-memory filter is acceptable.
+    """
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "symbol",
+        )
+    )
+    all_symbols = result.scalars().all()
+
+    scored: list[tuple[float, GraphNode]] = []
+    for node in all_symbols:
+        try:
+            meta = json.loads(node.community_meta_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        score = meta.get("entry_point_score")
+        if score is not None and score >= min_score:
+            scored.append((score, node))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [node for _, node in scored[:limit]]
+
+
+async def get_node_degree_counts(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+) -> dict[str, int]:
+    """Return in-degree and out-degree for a node from edge counts."""
+    in_result = await session.execute(
+        select(func.count())
+        .select_from(GraphEdge)
+        .where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.target_node_id == node_id,
+        )
+    )
+    out_result = await session.execute(
+        select(func.count())
+        .select_from(GraphEdge)
+        .where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.source_node_id == node_id,
+        )
+    )
+    return {
+        "in_degree": in_result.scalar() or 0,
+        "out_degree": out_result.scalar() or 0,
+    }

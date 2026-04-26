@@ -7,18 +7,38 @@ import { MermaidDiagram } from "./mermaid-diagram";
 // Custom MDX components
 // ---------------------------------------------------------------------------
 
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-");
+}
+
+function extractText(node: unknown): string {
+  if (typeof node === "string") return node;
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (node && typeof node === "object" && "props" in node) {
+    const props = (node as { props?: { children?: unknown } }).props;
+    return extractText(props?.children);
+  }
+  return "";
+}
+
 const mdxComponents = {
   // Code blocks — pass Shiki-highlighted HTML via a server action wrapper
   // The actual Shiki call happens in the pre/code override below.
-  h1: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h1 className="mt-8 mb-4 text-xl font-semibold text-[var(--color-text-primary)] first:mt-0" {...props} />
-  ),
-  h2: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h2 className="mt-6 mb-3 text-lg font-semibold text-[var(--color-text-primary)]" {...props} />
-  ),
-  h3: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h3 className="mt-5 mb-2 text-base font-semibold text-[var(--color-text-primary)]" {...props} />
-  ),
+  h1: (props: React.HTMLAttributes<HTMLHeadingElement>) => {
+    const id = slugify(extractText(props.children));
+    return <h1 id={id} className="mt-8 mb-4 text-xl font-semibold text-[var(--color-text-primary)] first:mt-0 scroll-mt-16" {...props} />;
+  },
+  h2: (props: React.HTMLAttributes<HTMLHeadingElement>) => {
+    const id = slugify(extractText(props.children));
+    return <h2 id={id} className="mt-6 mb-3 text-lg font-semibold text-[var(--color-text-primary)] scroll-mt-16" {...props} />;
+  },
+  h3: (props: React.HTMLAttributes<HTMLHeadingElement>) => {
+    const id = slugify(extractText(props.children));
+    return <h3 id={id} className="mt-5 mb-2 text-base font-semibold text-[var(--color-text-primary)] scroll-mt-16" {...props} />;
+  },
   p: (props: React.HTMLAttributes<HTMLParagraphElement>) => (
     <p className="mb-4 text-sm leading-7 text-[var(--color-text-secondary)]" {...props} />
   ),

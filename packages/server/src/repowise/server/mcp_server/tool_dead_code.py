@@ -13,7 +13,12 @@ from repowise.core.persistence.models import (
     GitMetadata,
 )
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_repo
+from repowise.server.mcp_server._helpers import (
+    _get_repo,
+    _is_workspace_mode,
+    _resolve_all_contexts,
+    _resolve_repo_context,
+)
 from repowise.server.mcp_server._server import mcp
 
 
@@ -77,8 +82,137 @@ async def get_dead_code(
         no_unreachable: Suppress unreachable-file findings (default false).
         no_unused_exports: Suppress unused-export findings (default false).
     """
-    async with get_session(_state._session_factory) as session:
-        repository = await _get_repo(session, repo)
+    # --- repo="all": aggregate dead code across all repos ---
+    if repo == "all":
+        contexts = await _resolve_all_contexts()
+        merged_findings: list[dict] = []
+        total_all = 0
+        total_deletable = 0
+        total_safe = 0
+        merged_by_kind: dict[str, int] = {}
+
+        for ctx in contexts:
+            async with get_session(ctx.session_factory) as session:
+                repository = await _get_repo(session)
+
+                all_query = select(DeadCodeFinding).where(
+                    DeadCodeFinding.repository_id == repository.id,
+                    DeadCodeFinding.status == "open",
+                )
+                all_result = await session.execute(all_query)
+                repo_findings = list(all_result.scalars().all())
+
+                finding_paths = list({f.file_path for f in repo_findings})
+                git_meta_map: dict[str, Any] = {}
+                if finding_paths:
+                    git_res = await session.execute(
+                        select(GitMetadata).where(
+                            GitMetadata.repository_id == repository.id,
+                            GitMetadata.file_path.in_(finding_paths),
+                        )
+                    )
+                    git_meta_map = {g.file_path: g for g in git_res.scalars().all()}
+
+            # Apply scope-based exclusions
+            _excluded_kinds: set[str] = set()
+            if no_unreachable:
+                _excluded_kinds.add("unreachable_file")
+            if no_unused_exports:
+                _excluded_kinds.add("unused_export")
+            if not include_internals:
+                _excluded_kinds.add("unused_internal")
+            if not include_zombie_packages:
+                _excluded_kinds.add("zombie_package")
+
+            repo_filtered = repo_findings
+            if kind:
+                repo_filtered = [f for f in repo_filtered if f.kind == kind]
+            elif _excluded_kinds:
+                repo_filtered = [f for f in repo_filtered if f.kind not in _excluded_kinds]
+            if safe_only:
+                repo_filtered = [f for f in repo_filtered if f.safe_to_delete]
+            if min_confidence > 0:
+                repo_filtered = [f for f in repo_filtered if f.confidence >= min_confidence]
+            if directory:
+                prefix = directory.rstrip("/") + "/"
+                repo_filtered = [f for f in repo_filtered if f.file_path.startswith(prefix)]
+            if owner:
+                owner_lower = owner.lower()
+                repo_filtered = [
+                    f
+                    for f in repo_filtered
+                    if f.primary_owner and f.primary_owner.lower() == owner_lower
+                ]
+
+            for f in repo_filtered:
+                serialized = _serialize_finding(f, git_meta_map)
+                serialized["repo"] = ctx.alias
+                merged_findings.append(serialized)
+
+            # Accumulate summary stats from unfiltered findings
+            total_all += len(repo_findings)
+            total_deletable += sum(f.lines for f in repo_findings if f.safe_to_delete)
+            total_safe += sum(1 for f in repo_findings if f.safe_to_delete)
+            for f in repo_findings:
+                merged_by_kind[f.kind] = merged_by_kind.get(f.kind, 0) + 1
+
+        # Sort merged findings by confidence descending
+        merged_findings.sort(key=lambda d: (-d["confidence"], -d["lines"]))
+
+        summary = {
+            "total_findings": total_all,
+            "filtered_findings": len(merged_findings),
+            "deletable_lines": total_deletable,
+            "safe_to_delete_count": total_safe,
+            "by_kind": merged_by_kind,
+        }
+
+        # Build pseudo-tiered structure from serialized dicts
+        high = [f for f in merged_findings if f["confidence"] >= 0.8]
+        medium = [f for f in merged_findings if 0.5 <= f["confidence"] < 0.8]
+        low = [f for f in merged_findings if f["confidence"] < 0.5]
+
+        def _tier_from_dicts(items: list[dict], desc: str) -> dict:
+            return {
+                "description": desc,
+                "count": len(items),
+                "lines": sum(f["lines"] for f in items),
+                "safe_count": sum(1 for f in items if f["safe_to_delete"]),
+                "findings": items[:limit],
+                "truncated": len(items) > limit,
+            }
+
+        tiers: dict[str, Any] = {}
+        if tier is None or tier == "high":
+            tiers["high"] = _tier_from_dicts(
+                high,
+                "High confidence (>=0.8): Zero references in the codebase. Safe to delete.",
+            )
+        if tier is None or tier == "medium":
+            tiers["medium"] = _tier_from_dicts(
+                medium,
+                "Medium confidence (0.5-0.8): Likely unused but may have indirect references. Review before deleting.",
+            )
+        if tier is None or tier == "low":
+            tiers["low"] = _tier_from_dicts(
+                low,
+                "Low confidence (<0.5): Potentially used via dynamic imports or reflection. Investigate first.",
+            )
+
+        # Cross-repo confidence adjustment for workspace-wide findings
+        _adjust_dead_code_cross_repo(tiers, None)
+
+        return {
+            "workspace": True,
+            "summary": summary,
+            "tiers": tiers,
+            "impact": _compute_impact(tiers),
+        }
+
+    # --- Single repo path ---
+    ctx = await _resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
 
         # Fetch all open findings for summary computation
         all_query = select(DeadCodeFinding).where(
@@ -146,6 +280,9 @@ async def get_dead_code(
         "by_kind": by_kind,
     }
 
+    # Cross-repo confidence adjustment (Phase 3)
+    _adjust_dead_code_cross_repo(tiers, ctx.alias)
+
     result: dict[str, Any] = {"summary": summary, "tiers": tiers}
 
     # --- Grouping views ---
@@ -158,6 +295,42 @@ async def get_dead_code(
     result["impact"] = _compute_impact(tiers)
 
     return result
+
+
+def _adjust_dead_code_cross_repo(tiers: dict, repo_alias: str | None) -> None:
+    """Reduce confidence for dead code findings that have cross-repo consumers.
+
+    Mutates findings in-place within the tier dicts.
+    """
+    enricher = _state._cross_repo_enricher
+    if enricher is None or not enricher.has_data or not _is_workspace_mode():
+        return
+
+    for tier_data in tiers.values():
+        for finding in tier_data.get("findings", []):
+            alias = finding.get("repo", repo_alias)
+            if not alias:
+                continue
+            file_path = finding.get("file_path", "")
+            consumers = enricher.has_cross_repo_consumers(alias, file_path)
+            if consumers:
+                original = finding["confidence"]
+                finding["confidence"] = round(original * 0.5, 2)
+                consumer_repos = sorted(set(c["repo"] for c in consumers))
+                finding["cross_repo_note"] = (
+                    f"Confidence reduced: {len(consumers)} cross-repo consumer(s) "
+                    f"in {', '.join(consumer_repos)}."
+                )
+            # Also check if other repos depend on this repo via package deps
+            if alias and finding.get("kind") == "unused_export":
+                depending = enricher.get_repos_depending_on(alias)
+                if depending and not consumers:
+                    original = finding["confidence"]
+                    finding["confidence"] = round(original * 0.3, 2)
+                    finding["cross_repo_note"] = (
+                        f"This export may be consumed by: {', '.join(depending)}. "
+                        "Verify before deletion."
+                    )
 
 
 def _find_last_meaningful_change(gm: Any) -> str | None:

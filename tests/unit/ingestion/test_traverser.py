@@ -301,3 +301,125 @@ class TestMonorepoDetection:
             structure.root_language_distribution["python"]
             > structure.root_language_distribution["typescript"]
         )
+
+
+# ---------------------------------------------------------------------------
+# TraversalStats
+# ---------------------------------------------------------------------------
+
+
+class TestTraversalStats:
+    def test_stats_counts_included_files(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("pass")
+        (tmp_path / "b.py").write_text("pass")
+        (tmp_path / "c.ts").write_text("const x = 1;")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+        assert traverser.stats.included == 3
+        assert traverser.stats.total_paths_walked >= 3
+
+    def test_stats_counts_gitignore_skips(self, tmp_path: Path) -> None:
+        (tmp_path / ".gitignore").write_text("*.log\n")
+        (tmp_path / "app.py").write_text("pass")
+        (tmp_path / "debug.log").write_text("log data")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+        assert traverser.stats.skipped_gitignore >= 1
+        assert traverser.stats.included >= 1
+
+    def test_stats_counts_oversized_skips(self, tmp_path: Path) -> None:
+        big = tmp_path / "big.py"
+        big.write_bytes(b"x = 1\n" * 200_000)
+        (tmp_path / "small.py").write_text("pass")
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        list(traverser.traverse())
+        assert traverser.stats.skipped_oversized == 1
+        assert traverser.stats.included == 1
+
+    def test_stats_counts_blocked_extension(self, tmp_path: Path) -> None:
+        (tmp_path / "lib.so").write_bytes(b"\x00" * 100)
+        (tmp_path / "app.py").write_text("pass")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+        assert traverser.stats.skipped_blocked_extension >= 1
+
+    def test_stats_lang_counts(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("pass")
+        (tmp_path / "b.py").write_text("pass")
+        (tmp_path / "c.ts").write_text("const x = 1;")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+        assert traverser.stats.lang_counts.get("python") == 2
+        assert traverser.stats.lang_counts.get("typescript") == 1
+
+    def test_stats_extra_exclude(self, tmp_path: Path) -> None:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("pass")
+        (tmp_path / "vendor").mkdir()
+        (tmp_path / "vendor" / "lib.py").write_text("pass")
+        traverser = FileTraverser(tmp_path, extra_exclude_patterns=["vendor/"])
+        list(traverser.traverse())
+        # vendor/ is pruned at directory level, not file level
+        assert traverser.stats.included == 1
+
+
+# ---------------------------------------------------------------------------
+# Submodule handling
+# ---------------------------------------------------------------------------
+
+
+class TestSubmoduleHandling:
+    def test_skips_submodule_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / ".gitmodules").write_text(
+            '[submodule "libs/foo"]\n'
+            "    path = libs/foo\n"
+            "    url = https://github.com/example/foo.git\n"
+        )
+        (tmp_path / "libs" / "foo").mkdir(parents=True)
+        (tmp_path / "libs" / "foo" / "main.py").write_text("pass")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("pass")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("app.py" in p for p in paths)
+        assert not any("libs/foo" in p for p in paths)
+        assert traverser.stats.skipped_submodule >= 1
+
+    def test_include_submodules_flag(self, tmp_path: Path) -> None:
+        (tmp_path / ".gitmodules").write_text(
+            '[submodule "libs/foo"]\n'
+            "    path = libs/foo\n"
+            "    url = https://github.com/example/foo.git\n"
+        )
+        (tmp_path / "libs" / "foo").mkdir(parents=True)
+        (tmp_path / "libs" / "foo" / "main.py").write_text("pass")
+        traverser = FileTraverser(tmp_path, include_submodules=True)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("libs/foo" in p for p in paths)
+
+    def test_no_gitmodules_file(self, tmp_path: Path) -> None:
+        (tmp_path / "app.py").write_text("pass")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("app.py" in p for p in paths)
+
+    def test_multiple_submodules(self, tmp_path: Path) -> None:
+        (tmp_path / ".gitmodules").write_text(
+            '[submodule "libs/foo"]\n'
+            "    path = libs/foo\n"
+            "    url = https://github.com/example/foo.git\n"
+            '[submodule "libs/bar"]\n'
+            "    path = libs/bar\n"
+            "    url = https://github.com/example/bar.git\n"
+        )
+        (tmp_path / "libs" / "foo").mkdir(parents=True)
+        (tmp_path / "libs" / "foo" / "main.py").write_text("pass")
+        (tmp_path / "libs" / "bar").mkdir(parents=True)
+        (tmp_path / "libs" / "bar" / "index.ts").write_text("export const x = 1;")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("pass")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("app.py" in p for p in paths)
+        assert not any("libs/foo" in p for p in paths)
+        assert not any("libs/bar" in p for p in paths)

@@ -1,27 +1,31 @@
 """Dependency graph builder for the repowise ingestion pipeline.
 
-GraphBuilder constructs a directed multigraph from ParsedFile objects.
+GraphBuilder constructs a directed graph from ParsedFile objects with two
+tiers of nodes:
 
-Node types:
-    "file"     — every source file
-    "external" — third-party / unresolvable imports (prefix "external:")
+    File-level nodes:
+        "file"     — every source file
+        "external" — third-party / unresolvable imports (prefix "external:")
 
-Edge attributes:
-    imported_names: list[str] — specific names imported across this edge
+    Symbol-level nodes:
+        "symbol"   — functions, classes, methods, interfaces, etc.
+                     keyed by Symbol.id (e.g. "src/app.py::main")
+
+Edge types:
+    "imports"     — file-to-file import relationship
+    "defines"     — file-to-symbol containment
+    "has_method"  — class-to-method ownership
+    "calls"       — symbol-to-symbol call relationship (with confidence)
 
 After calling build(), graph metrics are available:
     pagerank()                  — dict[path, float]
     strongly_connected_components() — list[frozenset[str]]
     betweenness_centrality()    — dict[path, float]
-
-Graph persistence uses a lightweight SQLite schema (two tables: graph_nodes,
-graph_edges).  Phase 4 will replace this with the full SQLAlchemy schema.
 """
 
 from __future__ import annotations
 
 import json
-import shlex
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +33,52 @@ import networkx as nx
 import structlog
 
 from .models import ParsedFile
+from .resolvers import ResolverContext, resolve_import
+from .resolvers.go import read_go_module_path
 
 log = structlog.get_logger(__name__)
 
 _LARGE_REPO_THRESHOLD = 30_000  # nodes — above this, algorithms are expensive
+
+# Path segments that mark a file as low-value for stem-based import resolution.
+_LOW_VALUE_PATH_SEGMENTS = frozenset(
+    {
+        "tests",
+        "test",
+        "_tests",
+        "__tests__",
+        "testing",
+        "test_apps",
+        "testdata",
+        "test_data",
+        "fixtures",
+        "examples",
+        "example",
+        "samples",
+        "sample",
+        "scripts",
+        "benchmarks",
+        "bench",
+        "docs",
+        "doc",
+    }
+)
+
+
+def _stem_priority(path: str, stem: str) -> tuple[int, int, int, str]:
+    """Sort key for choosing among files that share an import stem.
+
+    Lower tuples sort first; callers take ``candidates[0]`` as the resolution.
+    """
+    path_obj = Path(path)
+    parts = path_obj.parts
+    if path_obj.name == "__init__.py":
+        parent_match = 0
+    else:
+        parent_dir = parts[-2].lower() if len(parts) >= 2 else ""
+        parent_match = 0 if parent_dir == stem else 1
+    low_value = 1 if any(seg.lower() in _LOW_VALUE_PATH_SEGMENTS for seg in parts) else 0
+    return (parent_match, low_value, len(parts), path)
 
 
 class GraphBuilder:
@@ -52,19 +98,32 @@ class GraphBuilder:
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
         self._built = False
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
-        self._compile_commands_cache: dict[str, dict] | None = None
+        self._tsconfig_resolver: Any | None = None  # TsconfigResolver (lazy import)
+
+        # Community / flow caches (invalidated on build)
+        self._community_cache: dict[str, int] | None = None
+        self._symbol_community_cache: dict[str, int] | None = None
+        self._community_info_cache: dict[int, Any] | None = None
+        self._community_algo: str = ""
+
+    def set_tsconfig_resolver(self, resolver: Any) -> None:
+        """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
+        self._tsconfig_resolver = resolver
 
     # ------------------------------------------------------------------
     # Building
     # ------------------------------------------------------------------
 
     def add_file(self, parsed: ParsedFile) -> None:
-        """Register one parsed file in the graph."""
+        """Register one parsed file and its symbols in the graph."""
         path = parsed.file_info.path
         self._parsed_files[path] = parsed
         self._built = False  # invalidate cached metrics
+
+        # --- File node ---
         self._graph.add_node(
             path,
+            node_type="file",
             language=parsed.file_info.language,
             symbol_count=len(parsed.symbols),
             has_error=bool(parsed.parse_errors),
@@ -72,28 +131,97 @@ class GraphBuilder:
             is_entry_point=parsed.file_info.is_entry_point,
         )
 
-    def build(self) -> nx.DiGraph:
-        """Resolve imports and add edges. Returns the finalized graph.
+        # --- Symbol nodes ---
+        for sym in parsed.symbols:
+            self._graph.add_node(
+                sym.id,
+                node_type="symbol",
+                kind=sym.kind,
+                name=sym.name,
+                qualified_name=sym.qualified_name,
+                file_path=path,
+                start_line=sym.start_line,
+                end_line=sym.end_line,
+                visibility=sym.visibility,
+                is_async=sym.is_async,
+                language=sym.language,
+                parent_name=sym.parent_name,
+                signature=sym.signature,
+            )
 
-        Idempotent: can be called multiple times; re-resolves edges each time.
-        """
-        # Clear old edges, keep nodes
-        self._graph.remove_edges_from(list(self._graph.edges()))
+            # DEFINES edge: file → symbol
+            self._graph.add_edge(
+                path,
+                sym.id,
+                edge_type="defines",
+            )
+
+            # HAS_METHOD edge: class/struct → method
+            if sym.parent_name and sym.kind == "method":
+                parent_id = f"{path}::{sym.parent_name}"
+                if parent_id in self._graph:
+                    self._graph.add_edge(
+                        parent_id,
+                        sym.id,
+                        edge_type="has_method",
+                    )
+
+        # --- Synthetic module-level symbol for top-level calls ---
+        module_sym_id = f"{path}::__module__"
+        self._graph.add_node(
+            module_sym_id,
+            node_type="symbol",
+            kind="module",
+            name="__module__",
+            file_path=path,
+            start_line=0,
+            end_line=0,
+            visibility="private",
+            language=parsed.file_info.language,
+        )
+        self._graph.add_edge(path, module_sym_id, edge_type="defines")
+
+    def build(self) -> nx.DiGraph:
+        """Resolve imports and calls, add edges. Returns the finalized graph."""
+        # Invalidate cached metrics
+        self._community_cache = None
+        self._symbol_community_cache = None
+        self._community_info_cache = None
+        self._community_algo = ""
+
+        # Clear import/call edges but keep structural edges (defines, has_method)
+        edges_to_remove = [
+            (u, v)
+            for u, v, d in self._graph.edges(data=True)
+            if d.get("edge_type") not in ("defines", "has_method")
+        ]
+        self._graph.remove_edges_from(edges_to_remove)
 
         # Build lookup tables for import resolution
         path_set = set(self._parsed_files.keys())
-        # stem_map: "calculator" → "python_pkg/calculator.py"
-        stem_map: dict[str, str] = {}
-        for p in path_set:
-            stem = Path(p).stem.lower()
-            stem_map[stem] = p
+        stem_map = self._build_stem_map(path_set)
+
+        # Construct resolver context
+        ctx = ResolverContext(
+            path_set=path_set,
+            stem_map=stem_map,
+            graph=self._graph,
+            repo_path=self._repo_path,
+            tsconfig_resolver=self._tsconfig_resolver,
+            go_module_path=read_go_module_path(self._repo_path),
+            parsed_files=self._parsed_files,
+        )
+
+        # --- Phase 1: Resolve file-level imports ---
+        import_targets: dict[str, set[str]] = {}  # file → set of imported files
 
         for path, parsed in self._parsed_files.items():
+            file_imports: set[str] = set()
             for imp in parsed.imports:
-                target = self._resolve_import(
-                    imp.module_path, path, path_set, stem_map, parsed.file_info.language
-                )
+                target = resolve_import(imp.module_path, path, parsed.file_info.language, ctx)
                 if target:
+                    imp.resolved_file = target
+                    file_imports.add(target)
                     # Aggregate imported_names on parallel edges
                     if self._graph.has_edge(path, target):
                         existing = self._graph[path][target].get("imported_names", [])
@@ -103,16 +231,98 @@ class GraphBuilder:
                         self._graph.add_edge(
                             path,
                             target,
+                            edge_type="imports",
                             imported_names=list(imp.imported_names),
                         )
+            import_targets[path] = file_imports
+
+        # --- Phase 2: Resolve heritage (extends/implements) ---
+        self._resolve_heritage(import_targets)
+
+        # --- Phase 3: Resolve symbol-level calls ---
+        self._resolve_calls(import_targets)
 
         self._built = True
+
+        # Count edge types for logging
+        edge_counts: dict[str, int] = {}
+        for _, _, d in self._graph.edges(data=True):
+            et = d.get("edge_type", "imports")
+            edge_counts[et] = edge_counts.get(et, 0) + 1
+
+        file_nodes = sum(
+            1 for _, d in self._graph.nodes(data=True) if d.get("node_type", "file") == "file"
+        )
+        symbol_nodes = sum(
+            1 for _, d in self._graph.nodes(data=True) if d.get("node_type") == "symbol"
+        )
+
         log.info(
             "Graph built",
-            nodes=self._graph.number_of_nodes(),
+            file_nodes=file_nodes,
+            symbol_nodes=symbol_nodes,
             edges=self._graph.number_of_edges(),
+            edge_types=edge_counts,
         )
         return self._graph
+
+    def _resolve_heritage(self, import_targets: dict[str, set[str]]) -> None:
+        """Resolve heritage relations and add EXTENDS/IMPLEMENTS edges."""
+        from .heritage_resolver import HeritageResolver
+
+        resolver = HeritageResolver(self._parsed_files, import_targets)
+        total_resolved = 0
+
+        for path, parsed in self._parsed_files.items():
+            if not parsed.heritage:
+                continue
+
+            resolved = resolver.resolve_file(path, parsed.heritage)
+            for rh in resolved:
+                if rh.child_id in self._graph and rh.parent_id in self._graph:
+                    if not self._graph.has_edge(rh.child_id, rh.parent_id):
+                        self._graph.add_edge(
+                            rh.child_id,
+                            rh.parent_id,
+                            edge_type=rh.edge_type,
+                            confidence=rh.confidence,
+                        )
+                        total_resolved += 1
+                    else:
+                        existing = self._graph[rh.child_id][rh.parent_id]
+                        if rh.confidence > existing.get("confidence", 0):
+                            existing["confidence"] = rh.confidence
+
+        log.info("Heritage edges resolved", total=total_resolved)
+
+    def _resolve_calls(self, import_targets: dict[str, set[str]]) -> None:
+        """Run three-tier call resolution and add CALLS edges to the graph."""
+        from .call_resolver import CallResolver
+
+        resolver = CallResolver(self._parsed_files, import_targets)
+        total_resolved = 0
+
+        for path, parsed in self._parsed_files.items():
+            if not parsed.calls:
+                continue
+
+            resolved = resolver.resolve_file(path, parsed.calls)
+            for rc in resolved:
+                if rc.caller_id in self._graph and rc.callee_id in self._graph:
+                    if not self._graph.has_edge(rc.caller_id, rc.callee_id):
+                        self._graph.add_edge(
+                            rc.caller_id,
+                            rc.callee_id,
+                            edge_type="calls",
+                            confidence=rc.confidence,
+                        )
+                        total_resolved += 1
+                    else:
+                        existing = self._graph[rc.caller_id][rc.callee_id]
+                        if rc.confidence > existing.get("confidence", 0):
+                            existing["confidence"] = rc.confidence
+
+        log.info("Call edges resolved", total=total_resolved)
 
     def graph(self) -> nx.DiGraph:
         """Return the graph (building it first if necessary)."""
@@ -125,15 +335,12 @@ class GraphBuilder:
     # ------------------------------------------------------------------
 
     def strongly_connected_components(self) -> list[frozenset[str]]:
-        """Return SCCs as a list of frozensets. SCCs of size > 1 are circular deps."""
-        return [frozenset(scc) for scc in nx.strongly_connected_components(self.graph())]
+        """Return SCCs as a list of frozensets."""
+        return [frozenset(scc) for scc in nx.strongly_connected_components(self.file_subgraph())]
 
     def betweenness_centrality(self) -> dict[str, float]:
-        """Return betweenness centrality. High value → bridge file.
-
-        Approximated with k=min(500, n) samples for large graphs.
-        """
-        g = self.graph()
+        """Return betweenness centrality for file nodes."""
+        g = self.file_subgraph()
         n = g.number_of_nodes()
         if n == 0:
             return {}
@@ -143,23 +350,75 @@ class GraphBuilder:
         return nx.betweenness_centrality(g, normalized=True)
 
     def community_detection(self) -> dict[str, int]:
-        """Assign a community ID to each node using the Louvain algorithm.
+        """Assign a community ID to each file node."""
+        if self._community_cache is not None:
+            return self._community_cache
 
-        Returns dict[path, community_id].
-        """
-        g = self.graph()
-        if g.number_of_nodes() == 0:
-            return {}
+        from repowise.core.analysis.communities import detect_file_communities
+
         try:
-            communities = nx.community.louvain_communities(g.to_undirected(), seed=42)
-            result: dict[str, int] = {}
-            for community_id, members in enumerate(communities):
-                for node in members:
-                    result[node] = community_id
-            return result
+            assignment, info, algo = detect_file_communities(self._graph)
+            self._community_cache = assignment
+            self._community_info_cache = info
+            self._community_algo = algo
         except Exception as exc:
-            log.warning("Community detection failed", error=str(exc))
-            return {node: 0 for node in g.nodes()}
+            log.warning("community_detection_failed", error=str(exc))
+            file_nodes = [
+                n for n, d in self._graph.nodes(data=True) if d.get("node_type", "file") == "file"
+            ]
+            self._community_cache = {n: 0 for n in file_nodes}
+            self._community_info_cache = {}
+            self._community_algo = "failed"
+        return self._community_cache
+
+    def symbol_communities(self) -> dict[str, int]:
+        """Assign a community ID to each symbol node using call/heritage edges."""
+        if self._symbol_community_cache is not None:
+            return self._symbol_community_cache
+
+        from repowise.core.analysis.communities import detect_symbol_communities
+
+        try:
+            self._symbol_community_cache = detect_symbol_communities(self._graph)
+        except Exception as exc:
+            log.warning("symbol_community_detection_failed", error=str(exc))
+            self._symbol_community_cache = {}
+        return self._symbol_community_cache
+
+    def community_info(self) -> dict[int, Any]:
+        """Return metadata for each file-level community."""
+        if self._community_info_cache is None:
+            self.community_detection()
+        return self._community_info_cache or {}
+
+    def execution_flows(self, config: Any | None = None) -> Any:
+        """Trace execution flows from entry-point symbols."""
+        from repowise.core.analysis.execution_flows import (
+            ExecutionFlowReport,
+            trace_execution_flows,
+        )
+
+        file_cd = self.community_detection()
+        merged_cd: dict[str, int] = dict(file_cd)
+
+        sym_cd = self.symbol_communities()
+        merged_cd.update(sym_cd)
+
+        for node_id in self._graph.nodes():
+            if node_id not in merged_cd and "::" in node_id:
+                file_path = node_id.split("::")[0]
+                if file_path in file_cd:
+                    merged_cd[node_id] = file_cd[file_path]
+
+        try:
+            return trace_execution_flows(self._graph, merged_cd, config)
+        except Exception as exc:
+            log.warning("execution_flow_tracing_failed", error=str(exc))
+            return ExecutionFlowReport(
+                total_entry_points_scored=0,
+                total_flows=0,
+                flows=[],
+            )
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -170,10 +429,7 @@ class GraphBuilder:
         return nx.node_link_data(self.graph())
 
     async def persist(self, db_path: Path, repo_id: str) -> None:
-        """Persist the graph to an SQLite database (lightweight Phase-2 schema).
-
-        Phase 4 will replace this with the full SQLAlchemy/Alembic schema.
-        """
+        """Persist the graph to an SQLite database."""
         import aiosqlite
 
         pr = self.pagerank()
@@ -203,7 +459,6 @@ class GraphBuilder:
                 );
             """)
 
-            # Nodes
             node_rows = [
                 (
                     repo_id,
@@ -222,7 +477,6 @@ class GraphBuilder:
                 node_rows,
             )
 
-            # Edges
             edge_rows = [
                 (
                     repo_id,
@@ -250,202 +504,30 @@ class GraphBuilder:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _load_compile_commands(self) -> dict[str, dict] | None:
-        """Load and cache compile_commands.json if present in the repo.
-
-        Returns dict[source_file_relpath] → command entry, or None if not found.
-        """
-        if self._compile_commands_cache is not None:
-            return self._compile_commands_cache
-        if not self._repo_path:
-            return None
-        for candidate in [
-            self._repo_path / "compile_commands.json",
-            self._repo_path / "build" / "compile_commands.json",
-        ]:
-            if candidate.exists():
-                try:
-                    with open(candidate) as f:
-                        commands = json.load(f)
-                    result: dict[str, dict] = {}
-                    for entry in commands:
-                        file_path = Path(entry.get("file", ""))
-                        if file_path.is_absolute():
-                            try:
-                                file_rel = file_path.relative_to(self._repo_path)
-                            except ValueError:
-                                continue
-                        else:
-                            file_rel = file_path
-                        result[file_rel.as_posix()] = entry
-                    if result:
-                        self._compile_commands_cache = result
-                        log.info(
-                            "Loaded compile_commands.json",
-                            path=str(candidate),
-                            entries=len(self._compile_commands_cache),
-                        )
-                        return self._compile_commands_cache
-                    # No valid entries — try next candidate
-                    log.debug("compile_commands.json had no resolvable entries", path=str(candidate))
-                except Exception as exc:
-                    log.debug("Failed to load compile_commands.json", error=str(exc))
-        return None
-
-    def _extract_include_dirs(self, source_file: str) -> list[str]:
-        """Return absolute include directories for source_file from compile_commands.json."""
-        commands = self._load_compile_commands()
-        if not commands or source_file not in commands:
-            return []
-        entry = commands[source_file]
-        cmd_dir = Path(entry.get("directory", str(self._repo_path or "")))
-        # compile_commands.json entries use either "arguments" (pre-split array)
-        # or "command" (shell-quoted string) — check arguments first
-        if "arguments" in entry:
-            tokens = list(entry["arguments"])
-        else:
-            command = entry.get("command", "")
-            try:
-                tokens = shlex.split(command)
-            except ValueError:
-                return []
-        include_dirs: list[str] = []
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if tok in ("-I", "-isystem", "-iquote"):
-                if i + 1 < len(tokens):
-                    include_dirs.append(tokens[i + 1])
-                    i += 2
-                else:
-                    i += 1
-            elif tok.startswith("-I") and len(tok) > 2:
-                include_dirs.append(tok[2:])
-                i += 1
-            elif tok.startswith("-isystem") and len(tok) > 8:
-                include_dirs.append(tok[8:])
-                i += 1
+    def _build_stem_map(self, path_set: set[str]) -> dict[str, list[str]]:
+        """Map import-stems to candidate file paths, sorted best-first."""
+        buckets: dict[str, list[str]] = {}
+        for p in path_set:
+            path_obj = Path(p)
+            if path_obj.name == "__init__.py":
+                parent = path_obj.parent.name
+                if not parent:
+                    continue
+                stem = parent.lower()
             else:
-                i += 1
-        result: list[str] = []
-        for d in include_dirs:
-            p = Path(d)
-            if not p.is_absolute():
-                p = cmd_dir / p
-            result.append(str(p.resolve()))
-        return result
+                stem = path_obj.stem.lower()
+            buckets.setdefault(stem, []).append(p)
 
-    def _resolve_import(
-        self,
-        module_path: str,
-        importer_path: str,
-        path_set: set[str],
-        stem_map: dict[str, str],
-        language: str,
-    ) -> str | None:
-        """Best-effort resolve of an import to a known file path."""
-        if not module_path:
-            return None
-
-        importer_dir = Path(importer_path).parent
-
-        # --- Python ---
-        if language == "python":
-            # Relative import: ".sibling" or "..parent.module"
-            if module_path.startswith("."):
-                dots = len(module_path) - len(module_path.lstrip("."))
-                rest = module_path[dots:].replace(".", "/")
-                base = importer_dir
-                for _ in range(dots - 1):
-                    base = base.parent
-                candidates = [
-                    (base / rest).with_suffix(".py").as_posix() if rest else None,
-                    (base / rest / "__init__.py").as_posix() if rest else None,
-                ]
-                for c in candidates:
-                    if c and c in path_set:
-                        return c
-                return None
-            # Absolute import: "python_pkg.calculator" → "python_pkg/calculator.py"
-            dotted = module_path.replace(".", "/")
-            candidates = [
-                f"{dotted}.py",
-                f"{dotted}/__init__.py",
-            ]
-            for c in candidates:
-                if c in path_set:
-                    return c
-            # Stem-only fallback
-            stem = module_path.split(".")[-1].lower()
-            return stem_map.get(stem)
-
-        # --- TypeScript / JavaScript ---
-        if language in ("typescript", "javascript"):
-            if module_path.startswith("."):
-                base = importer_dir / module_path
-                for ext in (".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"):
-                    candidate = Path(str(base) + ext).as_posix()
-                    if candidate in path_set:
-                        return candidate
-                    candidate = (
-                        base.with_suffix(ext).as_posix()
-                        if not ext.startswith("/")
-                        else (base / "index.ts").as_posix()
-                    )
-                    if candidate in path_set:
-                        return candidate
-            # External npm package
-            external_key = f"external:{module_path}"
-            if external_key not in self._graph.nodes:
-                self._graph.add_node(
-                    external_key, language="external", symbol_count=0, has_error=False
-                )
-            return external_key
-
-        # --- Go ---
-        if language == "go":
-            # Last segment of the import path is the package name
-            stem = module_path.rsplit("/", 1)[-1].lower()
-            return stem_map.get(stem)
-
-        # --- C / C++ ---
-        if language in ("cpp", "c"):
-            repo_root = self._repo_path.resolve() if self._repo_path else None
-            # 1. Try compile_commands.json include paths
-            for inc_dir in self._extract_include_dirs(importer_path):
-                candidate = (Path(inc_dir) / module_path).resolve()
-                if repo_root:
-                    try:
-                        rel = candidate.relative_to(repo_root).as_posix()
-                        if rel in path_set:
-                            return rel
-                    except ValueError:
-                        pass
-            # 2. Try relative to the importer's directory
-            if repo_root:
-                try:
-                    rel = (importer_dir / module_path).resolve().relative_to(repo_root).as_posix()
-                    if rel in path_set:
-                        return rel
-                except ValueError:
-                    pass
-            # 3. Stem-matching fallback
-            stem = Path(module_path).stem.lower()
-            return stem_map.get(stem)
-
-        # --- Generic fallback: stem matching ---
-        stem = Path(module_path).stem.lower()
-        return stem_map.get(stem)
+        for stem, paths in buckets.items():
+            paths.sort(key=lambda candidate: _stem_priority(candidate, stem))
+        return buckets
 
     # ------------------------------------------------------------------
-    # Co-change edges (Phase 5.5)
+    # Co-change edges
     # ------------------------------------------------------------------
 
     def add_co_change_edges(self, git_meta_map: dict, min_count: int = 3) -> int:
-        """Add co_changes edges from git metadata. Returns count of edges added.
-
-        These DO NOT affect PageRank — filter them out before computing.
-        """
+        """Add co_changes edges from git metadata. Returns count of edges added."""
         count = 0
         seen: set[tuple[str, str]] = set()
 
@@ -472,7 +554,6 @@ class GraphBuilder:
                     continue
                 seen.add(pair)
 
-                # Don't add if an import edge already exists
                 if not self._graph.has_edge(file_path, partner_path) and not self._graph.has_edge(
                     partner_path, file_path
                 ):
@@ -490,14 +571,11 @@ class GraphBuilder:
 
     def update_co_change_edges(self, updated_meta: dict, min_count: int = 3) -> None:
         """Remove old co_changes edges for updated files, add new ones."""
-        # Remove existing co_changes edges involving updated files
         edges_to_remove = []
         for u, v, data in self._graph.edges(data=True):
             if data.get("edge_type") == "co_changes" and (u in updated_meta or v in updated_meta):
                 edges_to_remove.append((u, v))
         self._graph.remove_edges_from(edges_to_remove)
-
-        # Re-add co_changes edges
         self.add_co_change_edges(updated_meta, min_count)
 
     # ------------------------------------------------------------------
@@ -510,7 +588,6 @@ class GraphBuilder:
             if e.source not in self._graph:
                 continue
             if e.target not in self._graph:
-                # add a stub node so dead-code analysis sees it as reachable
                 self._graph.add_node(e.target)
             self._graph.add_edge(
                 e.source,
@@ -527,191 +604,46 @@ class GraphBuilder:
     def add_framework_edges(self, tech_stack: list[str] | None = None) -> int:
         """Add synthetic edges for framework-mediated relationships.
 
-        Detects common patterns (conftest fixtures, Django settings/admin/urls,
-        FastAPI include_router, Flask register_blueprint) and creates directed
-        edges with ``edge_type="framework"``.  These edges participate in
-        PageRank (they represent real runtime dependencies).
-
         Returns the number of edges added.
         """
-        count = 0
+        from .framework_edges import add_framework_edges
+
         path_set = set(self._parsed_files.keys())
+        stem_map = self._build_stem_map(path_set)
 
-        # Always run: pytest conftest detection
-        count += self._add_conftest_edges(path_set)
+        ctx = ResolverContext(
+            path_set=path_set,
+            stem_map=stem_map,
+            graph=self._graph,
+            repo_path=self._repo_path,
+            tsconfig_resolver=self._tsconfig_resolver,
+            go_module_path=read_go_module_path(self._repo_path),
+            parsed_files=self._parsed_files,
+        )
 
-        stack_lower = {s.lower() for s in (tech_stack or [])}
-
-        if "django" in stack_lower:
-            count += self._add_django_edges(path_set)
-        if "fastapi" in stack_lower or "starlette" in stack_lower:
-            count += self._add_fastapi_edges(path_set)
-        if "flask" in stack_lower:
-            count += self._add_flask_edges(path_set)
-
+        count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)
         if count:
             log.info("Framework edges added", count=count)
         return count
 
-    def _add_edge_if_new(self, source: str, target: str) -> bool:
-        """Add a framework edge if no edge already exists. Returns True if added."""
-        if source == target:
-            return False
-        if self._graph.has_edge(source, target):
-            return False
-        self._graph.add_edge(source, target, edge_type="framework", imported_names=[])
-        return True
-
-    def _add_conftest_edges(self, path_set: set[str]) -> int:
-        """conftest.py → test files in the same or child directories."""
-        count = 0
-        conftest_paths = [p for p in path_set if Path(p).name == "conftest.py"]
-
-        for conf in conftest_paths:
-            conf_dir = Path(conf).parent.as_posix()
-            prefix = f"{conf_dir}/" if conf_dir != "." else ""
-            for p in path_set:
-                if p == conf:
-                    continue
-                node = self._graph.nodes.get(p, {})
-                if not node.get("is_test", False):
-                    continue
-                # Test file must be in the same or a child directory
-                if (
-                    p.startswith(prefix) or (prefix == "" and "/" not in p)
-                ) and self._add_edge_if_new(p, conf):
-                    count += 1
-        return count
-
-    def _add_django_edges(self, path_set: set[str]) -> int:
-        """Django conventions: admin→models, urls→views in the same directory."""
-        count = 0
-        by_dir: dict[str, dict[str, str]] = {}  # dir → {stem: path}
-        for p in path_set:
-            pp = Path(p)
-            d = pp.parent.as_posix()
-            by_dir.setdefault(d, {})[pp.stem] = p
-
-        for _d, stems in by_dir.items():
-            # admin.py → models.py
-            if (
-                "admin" in stems
-                and "models" in stems
-                and self._add_edge_if_new(stems["admin"], stems["models"])
-            ):
-                count += 1
-            # urls.py → views.py
-            if (
-                "urls" in stems
-                and "views" in stems
-                and self._add_edge_if_new(stems["urls"], stems["views"])
-            ):
-                count += 1
-            # forms.py → models.py
-            if (
-                "forms" in stems
-                and "models" in stems
-                and self._add_edge_if_new(stems["forms"], stems["models"])
-            ):
-                count += 1
-            # serializers.py → models.py
-            if (
-                "serializers" in stems
-                and "models" in stems
-                and self._add_edge_if_new(stems["serializers"], stems["models"])
-            ):
-                count += 1
-        return count
-
-    def _add_fastapi_edges(self, path_set: set[str]) -> int:
-        """Detect include_router() calls and link app files to router modules."""
-        import re
-
-        count = 0
-        # Build a map from imported variable names to source file paths
-        var_to_file: dict[str, str] = {}
-        stem_map = {Path(p).stem.lower(): p for p in path_set}
-        for path, parsed in self._parsed_files.items():
-            for imp in parsed.imports:
-                for name in imp.imported_names:
-                    if name.lower().endswith("router") or name.lower().endswith("app"):
-                        resolved = self._resolve_import(
-                            imp.module_path,
-                            path,
-                            path_set,
-                            stem_map,
-                            parsed.file_info.language,
-                        )
-                        if resolved and resolved in path_set:
-                            var_to_file[name] = resolved
-
-        router_re = re.compile(r"(?:include_router|add_api_route)\s*\(\s*(\w+)")
-        for path, parsed in self._parsed_files.items():
-            if parsed.file_info.language != "python":
-                continue
-            try:
-                source = Path(parsed.file_info.abs_path).read_text(errors="ignore")
-            except Exception:
-                continue
-            for match in router_re.finditer(source):
-                var_name = match.group(1)
-                target = var_to_file.get(var_name)
-                if target and target in path_set and self._add_edge_if_new(path, target):
-                    count += 1
-        return count
-
-    def _add_flask_edges(self, path_set: set[str]) -> int:
-        """Detect register_blueprint() calls and link app files to blueprint modules."""
-        import re
-
-        count = 0
-        var_to_file: dict[str, str] = {}
-        stem_map = {Path(p).stem.lower(): p for p in path_set}
-        for path, parsed in self._parsed_files.items():
-            for imp in parsed.imports:
-                for name in imp.imported_names:
-                    if "blueprint" in name.lower() or name.lower().endswith("bp"):
-                        resolved = self._resolve_import(
-                            imp.module_path,
-                            path,
-                            path_set,
-                            stem_map,
-                            parsed.file_info.language,
-                        )
-                        if resolved and resolved in path_set:
-                            var_to_file[name] = resolved
-
-        bp_re = re.compile(r"register_blueprint\s*\(\s*(\w+)")
-        for path, parsed in self._parsed_files.items():
-            if parsed.file_info.language != "python":
-                continue
-            try:
-                source = Path(parsed.file_info.abs_path).read_text(errors="ignore")
-            except Exception:
-                continue
-            for match in bp_re.finditer(source):
-                var_name = match.group(1)
-                target = var_to_file.get(var_name)
-                if target and target in path_set and self._add_edge_if_new(path, target):
-                    count += 1
-        return count
+    def file_subgraph(self) -> nx.DiGraph:
+        """Return a subgraph containing only file-level nodes and import edges."""
+        g = self.graph()
+        file_nodes = [
+            n for n, d in g.nodes(data=True) if d.get("node_type", "file") in ("file", "external")
+        ]
+        sub = g.subgraph(file_nodes).copy()
+        edges_to_remove = [
+            (u, v) for u, v, d in sub.edges(data=True) if d.get("edge_type") in ("co_changes",)
+        ]
+        sub.remove_edges_from(edges_to_remove)
+        return sub
 
     def pagerank(self, alpha: float = 0.85) -> dict[str, float]:
-        """Return PageRank scores for each node.
-
-        High PageRank → file is imported by many others → high documentation priority.
-        Co-change edges are filtered out before computing PageRank.
-        """
-        g = self.graph()
-        if g.number_of_nodes() == 0:
+        """Return PageRank scores for file nodes only."""
+        filtered = self.file_subgraph()
+        if filtered.number_of_nodes() == 0:
             return {}
-
-        # Create a filtered view excluding co_changes edges
-        filtered = nx.DiGraph()
-        filtered.add_nodes_from(g.nodes(data=True))
-        for u, v, data in g.edges(data=True):
-            if data.get("edge_type") != "co_changes":
-                filtered.add_edge(u, v, **data)
 
         try:
             return nx.pagerank(filtered, alpha=alpha)

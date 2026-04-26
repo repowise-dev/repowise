@@ -14,8 +14,12 @@ from .change_detector import AffectedPages, ChangeDetector, FileDiff, SymbolDiff
 from .graph import GraphBuilder
 from .models import (
     EXTENSION_TO_LANGUAGE,
+    CallSite,
+    EdgeType,
     FileInfo,
+    HeritageRelation,
     Import,
+    NamedBinding,
     PackageInfo,
     ParsedFile,
     RepoStructure,
@@ -24,11 +28,16 @@ from .models import (
     compute_content_hash,
 )
 from .parser import LANGUAGE_CONFIGS, ASTParser, LanguageConfig, parse_file
-from .traverser import FileTraverser
+from .traverser import FileTraverser, TraversalStats
+from .tsconfig_resolver import TsconfigResolver
 
 __all__ = [
     # Models
+    "CallSite",
+    "EdgeType",
     "EXTENSION_TO_LANGUAGE",
+    "HeritageRelation",
+    "NamedBinding",
     "LANGUAGE_CONFIGS",
     # Parsing
     "ASTParser",
@@ -39,8 +48,10 @@ __all__ = [
     "FileInfo",
     # Traversal
     "FileTraverser",
+    "TraversalStats",
     # Graph
     "GraphBuilder",
+    "TsconfigResolver",
     "Import",
     "LanguageConfig",
     "PackageInfo",

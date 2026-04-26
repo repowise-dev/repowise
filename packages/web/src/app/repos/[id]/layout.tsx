@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getRepo } from "@/lib/api/repos";
 import { ActiveJobBanner } from "@/components/dashboard/active-job-banner";
+import { PageTransition } from "@/components/layout/page-transition";
 
 interface RepoLayoutProps {
   children: React.ReactNode;
@@ -19,7 +20,7 @@ export default async function RepoLayout({ children, params }: RepoLayoutProps) 
   return (
     <>
       <ActiveJobBanner repoId={id} />
-      {children}
+      <PageTransition>{children}</PageTransition>
     </>
   );
 }

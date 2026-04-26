@@ -47,6 +47,61 @@
   name: (namespace_identifier) @symbol.name
 ) @symbol.def
 
+; Template class: template<typename T> class Foo { ... }
+(template_declaration
+  (class_specifier
+    name: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; Template struct: template<typename T> struct Bar { ... }
+(template_declaration
+  (struct_specifier
+    name: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; Template function: template<typename T> T func(T x) { ... }
+(template_declaration
+  (function_definition
+    declarator: (function_declarator
+      declarator: (identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    )
+  )
+) @symbol.def
+
+; typedef struct { ... } MyType;
+(type_definition
+  type: (struct_specifier)
+  declarator: (type_identifier) @symbol.name
+) @symbol.def
+
+; typedef enum { ... } MyEnum;
+(type_definition
+  type: (enum_specifier)
+  declarator: (type_identifier) @symbol.name
+) @symbol.def
+
+; #define MACRO_NAME ...
+(preproc_def
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; #define FUNC_MACRO(x) ...
+(preproc_function_def
+  name: (identifier) @symbol.name
+  parameters: (preproc_params) @symbol.params
+) @symbol.def
+
+; Forward declarations: void func(int x);
+(declaration
+  declarator: (function_declarator
+    declarator: (identifier) @symbol.name
+    parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports (#include directives)
 ; ---------------------------------------------------------------------------
@@ -60,3 +115,39 @@
 (preproc_include
   path: (string_literal) @import.module
 ) @import.statement
+
+; ---------------------------------------------------------------------------
+; Calls
+; ---------------------------------------------------------------------------
+
+; Simple function call: foo(args)
+(call_expression
+  function: (identifier) @call.target
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Method call: obj.method(args) or obj->method(args)
+(call_expression
+  function: (field_expression
+    argument: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Scoped call: ClassName::method(args) or namespace::function(args)
+(call_expression
+  function: (qualified_identifier
+    name: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; Chained call: obj.method1().method2(args)
+(call_expression
+  function: (field_expression
+    argument: (call_expression)
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site

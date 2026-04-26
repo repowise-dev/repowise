@@ -1,6 +1,6 @@
 """Chat tool registry — single source of truth for tool schemas and execution.
 
-Imports the 8 MCP tool functions directly and exposes them as a callable registry
+Imports the 7 MCP tool functions directly and exposes them as a callable registry
 for the agentic chat loop. Also provides OpenAI-format tool definitions for the LLM.
 """
 
@@ -60,9 +60,13 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": ["docs", "ownership", "last_change", "decisions", "freshness"],
+                        "enum": [
+                            "docs", "full_doc", "ownership", "last_change",
+                            "decisions", "freshness", "source", "callers",
+                            "callees", "metrics", "community",
+                        ],
                     },
-                    "description": "Subset of fields to include. Default: all.",
+                    "description": "Data blocks to include. Default: docs + freshness.",
                 },
                 "repo": {"type": "string", "description": "Repository identifier."},
             },
@@ -131,20 +135,6 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         "artifact_type": "search_results",
     },
     {
-        "name": "get_dependency_path",
-        "description": "Find the shortest dependency path between two files or modules. When no direct path exists, returns visual context: nearest common ancestors, shared neighbors, community analysis, and bridge suggestions.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "source": {"type": "string", "description": "Source file or module path."},
-                "target": {"type": "string", "description": "Target file or module path."},
-                "repo": {"type": "string", "description": "Repository identifier."},
-            },
-            "required": ["source", "target"],
-        },
-        "artifact_type": "graph",
-    },
-    {
         "name": "get_dead_code",
         "description": "Get a tiered refactor plan for dead code. Returns findings in high/medium/low confidence tiers with per-directory rollups, ownership hotspots, and impact estimates. Use group_by for rollup views, tier to focus on one band.",
         "parameters": {
@@ -188,39 +178,14 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "artifact_type": "dead_code",
     },
-    {
-        "name": "get_architecture_diagram",
-        "description": "Generate a Mermaid architecture diagram for the repo, a module, or a file.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "scope": {
-                    "type": "string",
-                    "description": "Scope: repo, module, or file.",
-                    "default": "repo",
-                },
-                "path": {"type": "string", "description": "Required for module/file scope."},
-                "diagram_type": {
-                    "type": "string",
-                    "description": "Diagram type: auto, flowchart, class, sequence.",
-                    "default": "auto",
-                },
-                "repo": {"type": "string", "description": "Repository identifier."},
-            },
-            "required": [],
-        },
-        "artifact_type": "diagram",
-    },
 ]
 
 
 def _build_registry() -> dict[str, ToolDef]:
     """Build the tool registry by importing MCP tool functions."""
     from repowise.server.mcp_server import (
-        get_architecture_diagram,
         get_context,
         get_dead_code,
-        get_dependency_path,
         get_overview,
         get_risk,
         get_why,
@@ -233,9 +198,7 @@ def _build_registry() -> dict[str, ToolDef]:
         "get_risk": get_risk,
         "get_why": get_why,
         "search_codebase": search_codebase,
-        "get_dependency_path": get_dependency_path,
         "get_dead_code": get_dead_code,
-        "get_architecture_diagram": get_architecture_diagram,
     }
 
     registry: dict[str, ToolDef] = {}

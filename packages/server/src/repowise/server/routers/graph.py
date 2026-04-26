@@ -17,20 +17,39 @@ from repowise.core.persistence.models import (
     Page,
 )
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.mcp_server._graph_utils import (
+    bfs_trace,
+    community_cohesion,
+    community_label,
+    entry_point_score as _ep_score,
+    parse_community_meta,
+    percentile_rank,
+    resolve_trace_communities,
+)
 from repowise.server.schemas import (
+    CallerCalleeEntry,
+    CallersCalleesResponse,
+    CommunityDetailResponse,
+    CommunityMember,
+    CommunitySummaryItem,
     DeadCodeGraphNodeResponse,
     DeadCodeGraphResponse,
     EgoGraphResponse,
+    ExecutionFlowEntry,
+    ExecutionFlowsResponse,
     GitMetadataResponse,
     GraphEdgeResponse,
     GraphExportResponse,
+    GraphMetricsResponse,
     GraphNodeResponse,
     HotFilesGraphResponse,
     HotFilesNodeResponse,
     ModuleEdgeResponse,
     ModuleGraphResponse,
     ModuleNodeResponse,
+    NeighboringCommunity,
     NodeSearchResult,
+    SymbolNodeSummary,
 )
 
 router = APIRouter(
@@ -706,3 +725,339 @@ async def dependency_path(
         "distance": len(path) - 1,
         "explanation": f"Shortest path from {source} to {target} has {len(path) - 1} hops",
     }
+
+
+# ---------------------------------------------------------------------------
+# Communities
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{repo_id}/communities", response_model=list[CommunitySummaryItem])
+async def list_communities(
+    repo_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> list[CommunitySummaryItem]:
+    """Return top communities by member count with labels and cohesion scores."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    all_nodes = await crud.get_all_file_metrics(session, repo_id)
+
+    # Group by community_id
+    buckets: dict[int, list[GraphNode]] = {}
+    for n in all_nodes:
+        cid = n.community_id if n.community_id is not None else 0
+        buckets.setdefault(cid, []).append(n)
+
+    items: list[CommunitySummaryItem] = []
+    for cid, members in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
+        # Pick top-pagerank member for label/cohesion extraction
+        top = max(members, key=lambda m: m.pagerank or 0.0)
+        items.append(
+            CommunitySummaryItem(
+                community_id=cid,
+                label=community_label(top),
+                cohesion=community_cohesion(top),
+                member_count=len(members),
+                top_file=top.node_id,
+            )
+        )
+        if len(items) >= limit:
+            break
+
+    return items
+
+
+@router.get(
+    "/{repo_id}/communities/{community_id}",
+    response_model=CommunityDetailResponse,
+)
+async def get_community_detail(
+    repo_id: str,
+    community_id: int,
+    include_members: bool = Query(True),
+    member_limit: int = Query(30, ge=1, le=200),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> CommunityDetailResponse:
+    """Return detailed info for a single community."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    all_members = await crud.get_community_members(
+        session, repo_id, community_id, node_type="file", limit=200
+    )
+    if not all_members:
+        raise HTTPException(status_code=404, detail="Community not found or empty")
+
+    top = max(all_members, key=lambda m: m.pagerank or 0.0)
+    label = community_label(top)
+    cohesion = community_cohesion(top)
+
+    members_out: list[CommunityMember] = []
+    if include_members:
+        for m in all_members[:member_limit]:
+            members_out.append(
+                CommunityMember(
+                    path=m.node_id,
+                    pagerank=round(m.pagerank or 0.0, 6),
+                    is_entry_point=m.is_entry_point,
+                )
+            )
+
+    # Neighboring communities
+    cross_edges = await crud.get_cross_community_edges(session, repo_id, community_id)
+    # Resolve labels for neighbors
+    neighbor_cids = [ce["target_community_id"] for ce in cross_edges]
+    neighbor_labels: dict[int, str] = {}
+    for ncid in neighbor_cids:
+        nbr_members = await crud.get_community_members(
+            session, repo_id, ncid, node_type="file", limit=1
+        )
+        if nbr_members:
+            neighbor_labels[ncid] = community_label(nbr_members[0])
+        else:
+            neighbor_labels[ncid] = f"cluster_{ncid}"
+
+    neighbors = [
+        NeighboringCommunity(
+            community_id=ce["target_community_id"],
+            label=neighbor_labels.get(ce["target_community_id"], ""),
+            cross_edge_count=ce["edge_count"],
+        )
+        for ce in cross_edges[:10]
+    ]
+
+    return CommunityDetailResponse(
+        community_id=community_id,
+        label=label,
+        cohesion=cohesion,
+        member_count=len(all_members),
+        members=members_out,
+        truncated=len(all_members) > member_limit,
+        neighboring_communities=neighbors,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Graph Metrics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{repo_id}/metrics", response_model=GraphMetricsResponse)
+async def get_graph_metrics(
+    repo_id: str,
+    node_id: str = Query(..., description="File path or symbol_id"),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> GraphMetricsResponse:
+    """Return importance metrics for a file or symbol with percentile ranks."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    node = await crud.get_graph_node(session, repo_id, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node not found: {node_id}")
+
+    # Percentiles computed against all file-type nodes
+    all_files = await crud.get_all_file_metrics(session, repo_id)
+    all_pr = [n.pagerank or 0.0 for n in all_files]
+    all_bw = [n.betweenness or 0.0 for n in all_files]
+
+    degrees = await crud.get_node_degree_counts(session, repo_id, node_id)
+    meta = parse_community_meta(node)
+
+    return GraphMetricsResponse(
+        target=node_id,
+        node_type=node.node_type or "file",
+        pagerank=round(node.pagerank or 0.0, 6),
+        pagerank_percentile=percentile_rank(node.pagerank or 0.0, all_pr),
+        betweenness=round(node.betweenness or 0.0, 6),
+        betweenness_percentile=percentile_rank(node.betweenness or 0.0, all_bw),
+        community_id=node.community_id or 0,
+        community_label=meta.get("label") or None,
+        is_entry_point=node.is_entry_point,
+        in_degree=degrees["in_degree"],
+        out_degree=degrees["out_degree"],
+        entry_point_score=meta.get("entry_point_score"),
+        kind=node.kind if node.node_type == "symbol" else None,
+        file=node.file_path if node.node_type == "symbol" else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Callers / Callees
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{repo_id}/callers-callees", response_model=CallersCalleesResponse)
+async def get_callers_callees(
+    repo_id: str,
+    symbol_id: str = Query(..., description="Symbol node ID (path::Name)"),
+    direction: str = Query("both", description="callers, callees, or both"),
+    edge_types: str = Query("calls", description="Comma-separated edge types"),
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> CallersCalleesResponse:
+    """Find who calls a symbol and what it calls. Also works for class hierarchy."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    if direction not in ("callers", "callees", "both"):
+        direction = "both"
+
+    et_list = [t.strip() for t in edge_types.split(",") if t.strip()]
+    if not et_list:
+        et_list = ["calls"]
+
+    # Resolve symbol: exact then fuzzy
+    node = await crud.get_graph_node(session, repo_id, symbol_id)
+    if node is None or node.node_type != "symbol":
+        # Fuzzy: try bare name
+        bare = symbol_id.split("::")[-1] if "::" in symbol_id else symbol_id
+        result = await session.execute(
+            select(GraphNode).where(
+                GraphNode.repository_id == repo_id,
+                GraphNode.node_type == "symbol",
+                GraphNode.name == bare,
+            )
+        )
+        rows = list(result.scalars().all())
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"Symbol not found: {symbol_id}")
+        if "::" in symbol_id:
+            file_hint = symbol_id.split("::")[0]
+            for r in rows:
+                if r.file_path == file_hint:
+                    node = r
+                    break
+        if node is None or node.node_type != "symbol":
+            rows.sort(key=lambda r: r.node_id)
+            node = rows[0]
+
+    edges = await crud.get_graph_edges_for_node(
+        session, repo_id, node.node_id,
+        direction=direction, edge_types=et_list, limit=limit,
+    )
+
+    # Hydrate connected nodes
+    other_ids: set[str] = set()
+    for e in edges:
+        if e.source_node_id != node.node_id:
+            other_ids.add(e.source_node_id)
+        if e.target_node_id != node.node_id:
+            other_ids.add(e.target_node_id)
+
+    node_map = await crud.get_graph_nodes_by_ids(session, repo_id, list(other_ids))
+
+    callers: list[CallerCalleeEntry] = []
+    callees: list[CallerCalleeEntry] = []
+
+    for e in edges:
+        is_caller = e.target_node_id == node.node_id
+        other_id = e.source_node_id if is_caller else e.target_node_id
+        other = node_map.get(other_id)
+
+        entry = CallerCalleeEntry(
+            symbol_id=other_id,
+            name=other.name if other else (other_id.split("::")[-1] if "::" in other_id else other_id),
+            kind=other.kind if other else "unknown",
+            file=other.file_path if other else (other_id.split("::")[0] if "::" in other_id else other_id),
+            start_line=other.start_line if other else None,
+            edge_type=e.edge_type or "calls",
+            confidence=round(e.confidence or 0.0, 3),
+        )
+
+        if is_caller:
+            callers.append(entry)
+        else:
+            callees.append(entry)
+
+    callers.sort(key=lambda x: (-x.confidence, x.name))
+    callees.sort(key=lambda x: (-x.confidence, x.name))
+
+    return CallersCalleesResponse(
+        symbol_id=node.node_id,
+        symbol=SymbolNodeSummary(
+            symbol_id=node.node_id,
+            name=node.name or node.node_id,
+            kind=node.kind or "unknown",
+            file=node.file_path or node.node_id,
+            start_line=node.start_line,
+            signature=node.signature,
+        ),
+        callers=callers if direction in ("callers", "both") else [],
+        callees=callees if direction in ("callees", "both") else [],
+        caller_count=len(callers),
+        callee_count=len(callees),
+        truncated=(len(callers) >= limit or len(callees) >= limit),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Execution Flows
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{repo_id}/execution-flows", response_model=ExecutionFlowsResponse)
+async def get_execution_flows(
+    repo_id: str,
+    top_n: int = Query(5, ge=1, le=20),
+    max_depth: int = Query(5, ge=1, le=12),
+    entry_point: str | None = Query(None, description="Specific symbol to trace from"),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> ExecutionFlowsResponse:
+    """Return top entry points with BFS call-path traces."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    entry_nodes: list[tuple[GraphNode, float]] = []
+
+    if entry_point:
+        node = await crud.get_graph_node(session, repo_id, entry_point)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"Entry point not found: {entry_point}")
+        entry_nodes = [(node, _ep_score(node))]
+    else:
+        top_nodes = await crud.get_top_entry_points(
+            session, repo_id, min_score=0.0, limit=top_n
+        )
+        for n in top_nodes:
+            entry_nodes.append((n, _ep_score(n)))
+
+    if not entry_nodes:
+        return ExecutionFlowsResponse(total_entry_points=0, flows=[])
+
+    node_cache: dict[str, GraphNode] = {}
+    flows: list[ExecutionFlowEntry] = []
+
+    for ep_node, ep_score in entry_nodes:
+        trace = await bfs_trace(
+            session, repo_id, ep_node.node_id, max_depth, node_cache
+        )
+        communities_visited, crosses = await resolve_trace_communities(
+            session, repo_id, trace, node_cache
+        )
+
+        flows.append(
+            ExecutionFlowEntry(
+                entry_point=ep_node.node_id,
+                entry_point_name=ep_node.name or ep_node.node_id.split("::")[-1],
+                entry_point_score=round(ep_score, 3),
+                trace=trace,
+                depth=len(trace) - 1,
+                crosses_community=crosses,
+                communities_visited=communities_visited,
+            )
+        )
+
+    flows.sort(key=lambda f: -f.entry_point_score)
+
+    return ExecutionFlowsResponse(
+        total_entry_points=len(flows),
+        flows=flows,
+    )

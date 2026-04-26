@@ -25,6 +25,7 @@ from typing import Any
 import jinja2
 import structlog
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
 
@@ -107,29 +108,9 @@ SYSTEM_PROMPTS: dict[str, str] = {
     ),
 }
 
-# Infra file languages
-_INFRA_LANGUAGES = frozenset({"dockerfile", "makefile", "terraform", "shell"})
+_INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
-
-# Languages worth generating file pages for — data/config/doc files excluded
-_CODE_LANGUAGES = frozenset(
-    {
-        "python",
-        "typescript",
-        "javascript",
-        "go",
-        "rust",
-        "java",
-        "cpp",
-        "c",
-        "csharp",
-        "ruby",
-        "kotlin",
-        "scala",
-        "swift",
-        "php",
-    }
-)
+_CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 
 
 def _now_iso() -> str:
@@ -232,8 +213,15 @@ class PageGenerator:
         file_contexts: list[FilePageContext],
         graph: Any,
         git_meta_map: dict[str, dict] | None = None,
+        page_summaries: dict[str, str] | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_module_page(module_path, language, file_contexts, graph)
+        ctx = self._assembler.assemble_module_page(
+            module_path,
+            language,
+            file_contexts,
+            graph,
+            page_summaries=page_summaries,
+        )
         module_git_summary = None
         if git_meta_map:
             from collections import Counter
@@ -288,8 +276,15 @@ class PageGenerator:
         sccs: list[Any],
         community: dict[str, int],
         git_meta_map: dict[str, dict] | None = None,
+        graph_builder: Any | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_repo_overview(repo_structure, pagerank, sccs, community)
+        ctx = self._assembler.assemble_repo_overview(
+            repo_structure,
+            pagerank,
+            sccs,
+            community,
+            graph_builder=graph_builder,
+        )
         repo_git_summary = None
         if git_meta_map:
             metas = list(git_meta_map.values())
@@ -455,7 +450,11 @@ class PageGenerator:
         completed_ids: set[str] = set()
         job_id: str | None = None
         if job_system is not None:
-            repo_path_str = str(Path(repo_path).resolve()) if repo_path else str(getattr(repo_structure, "root_path", "."))
+            repo_path_str = (
+                str(Path(repo_path).resolve())
+                if repo_path
+                else str(getattr(repo_structure, "root_path", "."))
+            )
             # On resume, query the vector store directly — it is the ground truth
             if resume and self._vector_store is not None:
                 completed_ids = await self._vector_store.list_page_ids()
@@ -701,9 +700,7 @@ class PageGenerator:
                 scc_members: dict[int, list[str]] = {
                     n: list(condensation.nodes[n]["members"]) for n in condensation.nodes
                 }
-                topo_order = [
-                    node for scc_id in topo_order_scc for node in scc_members[scc_id]
-                ]
+                topo_order = [node for scc_id in topo_order_scc for node in scc_members[scc_id]]
 
             # Preserve priority ordering within the topo-sort by mapping paths to
             # their original priority index.
@@ -741,6 +738,7 @@ class PageGenerator:
                 betweenness,
                 community,
                 source_map.get(p.file_info.path, b""),
+                git_meta=git_meta_map.get(p.file_info.path) if git_meta_map else None,
                 page_summaries=completed_page_summaries,
             )
             file_page_contexts[p.file_info.path] = ctx
@@ -788,6 +786,7 @@ class PageGenerator:
                     fcs,
                     graph,
                     git_meta_map=git_meta_map,
+                    page_summaries=completed_page_summaries,
                 ),
             )
             for module, fcs in module_groups.items()
@@ -833,7 +832,12 @@ class PageGenerator:
                 (
                     compute_page_id("repo_overview", repo_name),
                     self.generate_repo_overview(
-                        repo_structure, pagerank, sccs, community, git_meta_map=git_meta_map
+                        repo_structure,
+                        pagerank,
+                        sccs,
+                        community,
+                        git_meta_map=git_meta_map,
+                        graph_builder=graph_builder,
                     ),
                 )
             )
@@ -964,6 +968,7 @@ class PageGenerator:
             page_type=page_type,
             title=title,
             content=response.content,
+            summary=_extract_summary(response.content),
             source_hash=source_hash,
             model_name=self._provider.model_name,
             provider_name=self._provider.provider_name,
@@ -985,6 +990,40 @@ class PageGenerator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _extract_summary(content: str, max_chars: int = 320) -> str:
+    """Extract a 1–3 sentence purpose blurb from rendered wiki markdown.
+
+    Strategy: walk lines top-to-bottom, skip blanks/headings/list-markers/HTML
+    comments, and take the first prose paragraph. Truncate at sentence boundary
+    near max_chars. Fully deterministic — no extra LLM call.
+    """
+    if not content:
+        return ""
+    para_lines: list[str] = []
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line:
+            if para_lines:
+                break
+            continue
+        if line.startswith(("#", ">", "```", "---", "<!--", "|", "- ", "* ", "1.")):
+            if para_lines:
+                break
+            continue
+        para_lines.append(line)
+    if not para_lines:
+        return ""
+    text = " ".join(para_lines)
+    if len(text) <= max_chars:
+        return text
+    # Truncate at the last sentence boundary before max_chars
+    cut = text[:max_chars]
+    last_period = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+    if last_period > max_chars // 2:
+        return cut[: last_period + 1]
+    return cut.rstrip() + "…"
 
 
 def _is_infra_file(parsed: ParsedFile) -> bool:
@@ -1020,17 +1059,26 @@ def _is_significant_file(
     bet = betweenness.get(path, 0.0)
     is_entry = parsed.file_info.is_entry_point
 
-    # F3: package __init__.py files are module interfaces — always include
+    # Package __init__.py files are module interfaces — always include them
     # if they have any symbols (re-exports, __getattr__, etc.)
     if path.endswith("__init__.py") and len(parsed.symbols) > 0:
+        return True
+
+    # Test files are always significant when present. They have near-zero
+    # PageRank because nothing imports them back, but they answer "what
+    # tests exercise X" / "where is Y verified" questions that the doc layer
+    # is the right place to surface. Users who want to exclude tests
+    # entirely can do so via skip_tests in the orchestrator upstream.
+    if parsed.file_info.is_test and len(parsed.symbols) > 0:
         return True
 
     # Must appear significant in the graph
     if not (is_entry or pr >= pr_threshold or bet > 0.0):
         return False
 
-    # F2: waive symbol requirement for connected files with no original
-    # definitions (e.g. state/config modules imported by many files)
+    # Waive the symbol-count requirement for graph-connected files that have
+    # no original definitions of their own (e.g. state/config modules that
+    # are imported by many files but mostly re-export or assemble values).
     if len(parsed.symbols) < config.file_page_min_symbols:
         return is_entry or pr >= pr_threshold
 
@@ -1044,14 +1092,13 @@ def _is_significant_file(
 # Common words that appear in backticks but are not code symbols.
 _BACKTICK_SKIP = frozenset(
     {
+        # Python builtins & keywords
         "True",
         "False",
         "None",
-        "null",
-        "undefined",
         "self",
         "cls",
-        "this",
+        "super",
         "str",
         "int",
         "float",
@@ -1096,17 +1143,97 @@ _BACKTICK_SKIP = frozenset(
         "finally",
         "elif",
         "as",
+        "global",
+        "nonlocal",
+        # JS/TS keywords
+        "null",
+        "undefined",
+        "this",
+        "const",
+        "let",
+        "var",
+        "function",
+        "export",
+        "default",
+        "extends",
+        "implements",
+        "interface",
+        "enum",
+        "new",
+        "typeof",
+        "instanceof",
+        "void",
+        "never",
+        "string",
+        "number",
+        "boolean",
+        "symbol",
+        "bigint",
+        "unknown",
+        "readonly",
+        "abstract",
+        "static",
+        "private",
+        "protected",
+        "public",
+        "require",
+        "module",
+        "exports",
+        "Promise",
+        "Map",
+        "Set",
+        "Array",
+        "Object",
+        "Error",
+        "Date",
+        "RegExp",
+        "JSON",
+        "Math",
+        "console",
+        # Common tool/ecosystem names
         "pip",
         "npm",
+        "npx",
+        "yarn",
+        "pnpm",
         "go",
         "rust",
         "python",
         "node",
+        "cargo",
+        "uv",
+        "git",
+        "docker",
+        "make",
+        # Common framework/lib names the LLM mentions in prose
+        "FastAPI",
+        "React",
+        "Next",
+        "Express",
+        "Django",
+        "Flask",
+        "SQLAlchemy",
+        "Pydantic",
+        "Click",
+        "Typer",
+        "pytest",
+        "asyncio",
+        "pathlib",
+        "dataclass",
+        "dataclasses",
     }
 )
 
 # Regex: single-backtick references that look like identifiers.
 _BACKTICK_REF_RE = re.compile(r"(?<!`)` *([A-Za-z_]\w*(?:\.\w+)*) *`(?!`)")
+
+# Patterns that indicate the backtick content is a path, command, or
+# value rather than a symbol reference — these should never be flagged.
+_PATH_OR_CMD_RE = re.compile(
+    r"[/\\]"  # contains path separator
+    r"|\.(?:py|ts|js|json|yaml|yml|toml|md|sh|sql|css|html)$"  # file extension
+    r"|^[a-z][\w-]*$"  # all-lowercase with hyphens = CLI command/flag
+)
 
 
 def _validate_symbol_references(
@@ -1116,27 +1243,67 @@ def _validate_symbol_references(
     """Cross-check backtick-quoted names in LLM output against actual symbols.
 
     Returns a list of warning strings for references that don't match any
-    known symbol, export, or import in the ParsedFile.
+    known symbol, export, or import in the ParsedFile. Designed to have low
+    false-positive rates — only flags references that look like symbol names
+    but can't be found anywhere in the file's AST, imports, or source text.
     """
     refs = set(_BACKTICK_REF_RE.findall(content))
     if not refs:
         return []
 
+    # Build the known-names set from AST data
     known: set[str] = set()
     for s in parsed.symbols:
         known.add(s.name)
         known.add(s.qualified_name)
+        # Decorator names are valid references (e.g. @app.command("init"))
+        for dec in s.decorators:
+            # Extract the decorator function name: "@app.command" → "command"
+            dec_name = dec.lstrip("@").split("(")[0]
+            known.add(dec_name)
+            known.add(dec_name.split(".")[-1])
     known.update(parsed.exports)
     for imp in parsed.imports:
         if imp.module_path:
-            known.add(imp.module_path.split(".")[-1])
+            # Add both the final component and intermediate segments
+            parts = imp.module_path.split(".")
+            known.update(parts)
         known.update(imp.imported_names)
+        # Named bindings from import resolution
+        for binding in getattr(imp, "bindings", []):
+            known.add(binding.local_name)
+            if binding.exported_name:
+                known.add(binding.exported_name)
+
+    # Also add all string literals from the source that look like identifiers
+    # (catches Click command names, decorator arguments, dict keys, etc.)
+    source_text = ""
+    if hasattr(parsed, "file_info") and hasattr(parsed.file_info, "path"):
+        # The source is in the context, but we only have the parsed file here.
+        # Use docstring and symbol names as a cheap approximation.
+        if parsed.docstring:
+            known.update(w for w in parsed.docstring.split() if w.isidentifier())
 
     warnings: list[str] = []
     for ref in refs:
-        if ref in _BACKTICK_SKIP or len(ref) < 2:
+        if ref in _BACKTICK_SKIP:
             continue
+        # Skip short refs (1-2 chars are usually variables like `x`, `i`, `db`)
+        if len(ref) <= 2:
+            continue
+        # Skip anything that looks like a path, file, or CLI command
+        if _PATH_OR_CMD_RE.search(ref):
+            continue
+        # Skip all-uppercase (likely constants from other files: `MAX_RETRIES`)
+        if ref.isupper():
+            continue
+        # Check against known names
         base = ref.split(".")[-1]
-        if ref not in known and base not in known:
-            warnings.append(ref)
+        if ref in known or base in known:
+            continue
+        # Skip if the ref is a substring of any known symbol (covers partial
+        # references like `parse` when `parse_file` exists)
+        if any(ref in k for k in known if len(k) > len(ref)):
+            continue
+        warnings.append(ref)
     return warnings

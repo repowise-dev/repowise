@@ -130,6 +130,10 @@ class GeneratedPage:
     confidence: float = 1.0
     freshness_status: str = "fresh"  # FreshnessStatus literal
     metadata: dict[str, object] = field(default_factory=dict)
+    # 1–3 sentence purpose blurb extracted from the rendered content. Used by
+    # MCP get_context as the default narrative payload (content is gated behind
+    # include=["full_doc"]).
+    summary: str = ""
 
     @property
     def total_tokens(self) -> int:

@@ -6,30 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Infra / significance helpers (mirrored from page_generator.py)
-# ---------------------------------------------------------------------------
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
-_INFRA_LANGUAGES = frozenset({"dockerfile", "makefile", "terraform", "shell"})
+_INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
 _INFRA_FILENAMES = frozenset({"Dockerfile", "Makefile", "GNUmakefile"})
-_CODE_LANGUAGES = frozenset(
-    {
-        "python",
-        "typescript",
-        "javascript",
-        "go",
-        "rust",
-        "java",
-        "cpp",
-        "c",
-        "csharp",
-        "ruby",
-        "kotlin",
-        "scala",
-        "swift",
-        "php",
-    }
-)
+_CODE_LANGUAGES = _LANG_REGISTRY.code_languages()
 
 
 def _is_infra_file(parsed: Any) -> bool:

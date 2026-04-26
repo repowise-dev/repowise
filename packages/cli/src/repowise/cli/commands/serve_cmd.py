@@ -274,20 +274,10 @@ def _start_frontend(node: str, backend_port: int, frontend_port: int) -> subproc
         "PORT": str(frontend_port),
     }
 
-    # Option 1: Cached download
-    cached_server = _WEB_CACHE_DIR / "server.js"
-    if cached_server.exists():
-        return subprocess.Popen(
-            [node, str(cached_server)],
-            cwd=str(_WEB_CACHE_DIR),
-            env=env,
-        )
-
-    # Option 2: Local repo build
+    # Option 1: Local repo build (preferred — uses latest source)
     local_web = _find_local_web()
     if local_web:
         standalone_dir = local_web / ".next" / "standalone"
-        # Next.js standalone in monorepos nests server under the package path
         server_js = standalone_dir / "packages" / "web" / "server.js"
         if server_js.exists():
             # Copy static files into standalone (Next.js requirement)
@@ -305,6 +295,15 @@ def _start_frontend(node: str, backend_port: int, frontend_port: int) -> subproc
                 cwd=str(standalone_dir / "packages" / "web"),
                 env=env,
             )
+
+    # Option 2: Cached download (fallback for pip-installed users)
+    cached_server = _WEB_CACHE_DIR / "server.js"
+    if cached_server.exists():
+        return subprocess.Popen(
+            [node, str(cached_server)],
+            cwd=str(_WEB_CACHE_DIR),
+            env=env,
+        )
 
     return None
 

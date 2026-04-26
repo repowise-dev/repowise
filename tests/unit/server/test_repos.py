@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,18 +14,21 @@ from tests.unit.server.conftest import create_test_repo
 
 @pytest.mark.asyncio
 async def test_create_repo(client: AsyncClient) -> None:
+    repo_dir = Path(tempfile.mkdtemp()) / "my-repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
     resp = await client.post(
         "/api/repos",
         json={
             "name": "my-repo",
-            "local_path": "/tmp/my-repo",
+            "local_path": str(repo_dir),
             "url": "https://github.com/example/my-repo",
         },
     )
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "my-repo"
-    assert data["local_path"] == "/tmp/my-repo"
     assert data["url"] == "https://github.com/example/my-repo"
     assert data["default_branch"] == "main"
     assert "id" in data
@@ -125,3 +130,33 @@ async def test_full_resync_duplicate_returns_409(client: AsyncClient) -> None:
 
         resp2 = await client.post(f"/api/repos/{repo['id']}/full-resync")
         assert resp2.status_code == 409
+
+
+
+@pytest.mark.asyncio
+async def test_export_wiki_not_found(client: AsyncClient) -> None:
+    resp = await client.get("/api/repos/nonexistent/export")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_export_wiki_returns_zip(client: AsyncClient, session) -> None:
+    import zipfile
+    from io import BytesIO
+
+    from repowise.core.persistence.crud import upsert_page, upsert_repository
+    from tests.unit.persistence.helpers import make_page_kwargs
+
+    repo = await upsert_repository(session, name="export-test", local_path="/tmp/export-test")
+    await upsert_page(session, **make_page_kwargs(repo.id))
+    await session.commit()
+
+    resp = await client.get(f"/api/repos/{repo.id}/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+
+    zf = zipfile.ZipFile(BytesIO(resp.content))
+    names = zf.namelist()
+    assert len(names) == 1
+    assert names[0].startswith("wiki/")
+    assert names[0].endswith(".md")

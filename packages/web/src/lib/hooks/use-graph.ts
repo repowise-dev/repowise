@@ -3,16 +3,26 @@
 import useSWR from "swr";
 import {
   getArchitectureGraph,
+  getCallersCallees,
+  getCommunities,
+  getCommunityDetail,
   getDeadCodeGraph,
   getEgoGraph,
+  getExecutionFlows,
   getGraph,
+  getGraphMetrics,
   getHotFilesGraph,
   getModuleGraph,
 } from "@/lib/api/graph";
 import type {
+  CallersCalleesResponse,
+  CommunityDetailResponse,
+  CommunitySummaryItem,
   DeadCodeGraphResponse,
   EgoGraphResponse,
+  ExecutionFlowsResponse,
   GraphExportResponse,
+  GraphMetricsResponse,
   HotFilesGraphResponse,
   ModuleGraphResponse,
 } from "@/lib/api/types";
@@ -71,4 +81,63 @@ export function useHotFilesGraph(repoId: string | null, days = 30, limit = 25) {
     SWR_OPTS,
   );
   return { graph: data, error, isLoading };
+}
+
+// ---------------------------------------------------------------------------
+// Graph Intelligence
+// ---------------------------------------------------------------------------
+
+export function useCommunities(repoId: string | null) {
+  const { data, error, isLoading } = useSWR<CommunitySummaryItem[]>(
+    repoId ? `communities:${repoId}` : null,
+    () => getCommunities(repoId!),
+    SWR_OPTS,
+  );
+  return { communities: data, error, isLoading };
+}
+
+export function useCommunityDetail(repoId: string | null, communityId: number | null) {
+  const { data, error, isLoading } = useSWR<CommunityDetailResponse>(
+    repoId && communityId !== null ? `community:${repoId}:${communityId}` : null,
+    () => getCommunityDetail(repoId!, communityId!),
+    SWR_OPTS,
+  );
+  return { community: data, error, isLoading };
+}
+
+export function useGraphMetrics(repoId: string | null, nodeId: string | null) {
+  const { data, error, isLoading } = useSWR<GraphMetricsResponse>(
+    repoId && nodeId ? `metrics:${repoId}:${nodeId}` : null,
+    () => getGraphMetrics(repoId!, nodeId!),
+    SWR_OPTS,
+  );
+  return { metrics: data, error, isLoading };
+}
+
+export function useCallersCallees(
+  repoId: string | null,
+  symbolId: string | null,
+  params?: { direction?: string; edge_types?: string; limit?: number },
+) {
+  const key = repoId && symbolId
+    ? `callers:${repoId}:${symbolId}:${params?.edge_types ?? "calls"}`
+    : null;
+  const { data, error, isLoading } = useSWR<CallersCalleesResponse>(
+    key,
+    () => getCallersCallees(repoId!, symbolId!, params),
+    SWR_OPTS,
+  );
+  return { data, error, isLoading };
+}
+
+export function useExecutionFlows(
+  repoId: string | null,
+  params?: { top_n?: number; max_depth?: number },
+) {
+  const { data, error, isLoading } = useSWR<ExecutionFlowsResponse>(
+    repoId ? `flows:${repoId}:${params?.top_n ?? 5}` : null,
+    () => getExecutionFlows(repoId!, params),
+    SWR_OPTS,
+  );
+  return { flows: data, error, isLoading };
 }

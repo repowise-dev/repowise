@@ -29,6 +29,7 @@ interface GraphLegendProps {
   edgeCount: number;
   colorMode: ColorMode;
   viewMode: ViewMode;
+  communityLabels?: Map<number, string>;
 }
 
 export function GraphLegend({
@@ -36,6 +37,7 @@ export function GraphLegend({
   edgeCount,
   colorMode,
   viewMode,
+  communityLabels,
 }: GraphLegendProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -75,15 +77,27 @@ export function GraphLegend({
             ))}
 
           {colorMode === "community" &&
-            COMMUNITY_SAMPLE.map((c, i) => (
-              <div key={i} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ background: c.color }}
-                />
-                <span>{c.label}</span>
-              </div>
-            ))}
+            (communityLabels && communityLabels.size > 0
+              ? Array.from(communityLabels.entries())
+                  .slice(0, 8)
+                  .map(([cid, label], i) => (
+                    <div key={cid} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ background: COMMUNITY_SAMPLE[i % COMMUNITY_SAMPLE.length]?.color ?? "#888" }}
+                      />
+                      <span className="truncate">{label}</span>
+                    </div>
+                  ))
+              : COMMUNITY_SAMPLE.map((c, i) => (
+                  <div key={i} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ background: c.color }}
+                    />
+                    <span>{c.label}</span>
+                  </div>
+                )))}
 
           {colorMode === "risk" && (
             <>

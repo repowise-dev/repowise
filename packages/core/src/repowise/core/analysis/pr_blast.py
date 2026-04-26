@@ -231,21 +231,35 @@ class PRBlastRadiusAnalyzer:
         """Return files that lack a corresponding test file.
 
         Checks graph_nodes for paths matching test_<name>, <name>_test, or
-        <name>.spec.* patterns.
+        <name>.spec.* patterns. Test files themselves are excluded — they
+        don't need their own tests.
         """
         if not affected_files:
             return []
 
         node_res = await self._session.execute(
+            select(GraphNode.node_id, GraphNode.is_test).where(
+                GraphNode.repository_id == self._repo_id,
+                GraphNode.node_id.in_(affected_files),
+            )
+        )
+        # Build a set of affected files that are themselves test files
+        test_file_set = {row[0] for row in node_res.all() if row[1]}
+
+        # Fetch all test paths for matching
+        all_test_res = await self._session.execute(
             select(GraphNode.node_id).where(
                 GraphNode.repository_id == self._repo_id,
                 GraphNode.is_test == True,  # noqa: E712
             )
         )
-        test_paths = {row[0] for row in node_res.all()}
+        test_paths = {row[0] for row in all_test_res.all()}
 
         gaps = []
         for path in affected_files:
+            # Skip test files — they don't need their own tests
+            if path in test_file_set:
+                continue
             base = os.path.splitext(os.path.basename(path))[0]
             ext = os.path.splitext(path)[1].lstrip(".")
             has_test = any(

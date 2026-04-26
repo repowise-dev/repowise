@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import zipfile
+from pathlib import PurePosixPath
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -49,11 +53,37 @@ async def create_repo(
 
 @router.get("", response_model=list[RepoResponse])
 async def list_repos(
+    request: Request,
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[RepoResponse]:
-    """List all registered repositories."""
+    """List all registered repositories.
+
+    In workspace mode, aggregates repos from the primary DB and all
+    workspace repo DBs so every indexed repo appears in the sidebar.
+    """
     result = await session.execute(select(Repository).order_by(Repository.updated_at.desc()))
-    repos = result.scalars().all()
+    repos = list(result.scalars().all())
+    seen_ids = {r.id for r in repos}
+
+    # In workspace mode, also fetch repos from other workspace DBs
+    ws_sessions: dict = getattr(request.app.state, "workspace_sessions", {})
+    for repo_id, ws_factory in ws_sessions.items():
+        if repo_id in seen_ids:
+            continue
+        try:
+            async with ws_factory() as ws_session:
+                ws_result = await ws_session.execute(
+                    select(Repository).where(Repository.id == repo_id)
+                )
+                ws_repo = ws_result.scalar_one_or_none()
+                if ws_repo:
+                    repos.append(ws_repo)
+                    seen_ids.add(ws_repo.id)
+        except Exception:
+            pass
+
+    # Sort by updated_at descending
+    repos.sort(key=lambda r: r.updated_at or r.created_at, reverse=True)
     return [RepoResponse.from_orm(r) for r in repos]
 
 
@@ -137,12 +167,28 @@ async def get_repo_stats(
     )
     dead_export_count = dead_result.scalar_one() or 0
 
+    # Compute true freshness score from actual page freshness statuses
+    total_pages_result = await session.execute(
+        select(func.count(Page.id)).where(Page.repository_id == repo_id)
+    )
+    total_pages = total_pages_result.scalar_one() or 0
+
+    fresh_pages_result = await session.execute(
+        select(func.count(Page.id)).where(
+            Page.repository_id == repo_id,
+            Page.freshness_status == "fresh",
+        )
+    )
+    fresh_pages = fresh_pages_result.scalar_one() or 0
+
+    freshness_score = (fresh_pages / total_pages * 100) if total_pages > 0 else doc_coverage_pct
+
     return RepoStatsResponse(
         file_count=file_count,
         symbol_count=symbol_count,
         entry_point_count=entry_point_count,
         doc_coverage_pct=doc_coverage_pct,
-        freshness_score=doc_coverage_pct,
+        freshness_score=freshness_score,
         dead_export_count=dead_export_count,
     )
 
@@ -240,3 +286,42 @@ def _launch_job_task(request: Request, job_id: str) -> None:
             logger.error("background_job_failed", exc_info=t.exception())
 
     task.add_done_callback(_on_done)
+
+
+@router.get("/{repo_id}/export")
+async def export_wiki(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> StreamingResponse:
+    """Export all wiki pages as a ZIP of markdown files with folder structure."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    pages = (await session.execute(select(Page).where(Page.repository_id == repo_id))).scalars().all()
+    if not pages:
+        raise HTTPException(status_code=404, detail="No pages to export")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for page in pages:
+            target = page.target_path or page.id
+            safe = (
+                target.replace("::", "/")
+                .replace("->", "--")
+                .replace("\\", "/")
+            )
+            path = PurePosixPath("wiki") / page.page_type / safe
+            if path.suffix != ".md":
+                path = path.with_suffix(path.suffix + ".md")
+
+            content = f"# {page.title}\n\n{page.content}"
+            zf.writestr(str(path), content)
+
+    buf.seek(0)
+    filename = f"{repo.name}-wiki.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

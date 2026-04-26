@@ -46,7 +46,7 @@ repowise-plugin/                    # Standalone repo root
 
 **`.claude-plugin/marketplace.json`** — Makes the repo a self-hosted marketplace. The `plugins[].source: "."` tells Claude Code the plugin root is the repo root itself. Without this file, users can't `/plugin install` from this repo.
 
-**`.mcp.json`** — When the plugin is enabled, Claude Code auto-starts `repowise mcp` as an MCP server. This is what gives Claude access to the 8 tools. Uses `mcpServers` wrapper key. The `repowise` binary must be on PATH (the init command handles installation).
+**`.mcp.json`** — When the plugin is enabled, Claude Code auto-starts `repowise mcp` as an MCP server. This is what gives Claude access to the 10 tools. Uses `mcpServers` wrapper key. The `repowise` binary must be on PATH (the init command handles installation).
 
 **`commands/*.md`** — Markdown files that become `/repowise:<filename>` slash commands. Frontmatter defines `description`, `allowed-tools`, etc. The `$ARGUMENTS` placeholder captures user input after the command name.
 

@@ -62,6 +62,11 @@ class FilePageContext:
     dead_code_findings: list[dict] = field(default_factory=list)
     depth: str = "standard"
     dependency_summaries: dict[str, str] = field(default_factory=dict)
+    # Graph intelligence (Phase 5 enrichment)
+    call_graph: list[dict] = field(default_factory=list)
+    heritage: list[dict] = field(default_factory=list)
+    community_label: str = ""
+    community_cohesion: float = 0.0
 
 
 @dataclass
@@ -90,6 +95,11 @@ class ModulePageContext:
     dependents: list[str]
     pagerank_mean: float
     files: list[str]
+    # Graph intelligence enrichment
+    file_summaries: dict[str, str] = field(default_factory=dict)
+    community_label: str = ""
+    community_cohesion: float = 0.0
+    key_classes: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -123,6 +133,9 @@ class RepoOverviewContext:
     entry_points: list[str]
     top_files_by_pagerank: list[_TopFile]
     circular_dependency_count: int
+    # Graph intelligence enrichment
+    communities: list[dict] = field(default_factory=list)
+    execution_flows: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -305,6 +318,11 @@ class ContextAssembler:
         # Generation depth
         depth = self._select_generation_depth(path, git_meta, pagerank.get(path, 0.0))
 
+        # Graph intelligence: call graph, heritage, community metadata
+        call_graph_entries = self._extract_call_graph(path, graph)
+        heritage_entries = self._extract_heritage(path, graph)
+        community_label, community_cohesion = self._extract_community_meta(path, graph)
+
         return FilePageContext(
             file_path=path,
             language=parsed.file_info.language,
@@ -327,6 +345,10 @@ class ContextAssembler:
             dead_code_findings=dead_code_findings or [],
             depth=depth,
             dependency_summaries=dep_summaries,
+            call_graph=call_graph_entries,
+            heritage=heritage_entries,
+            community_label=community_label,
+            community_cohesion=community_cohesion,
         )
 
     # ------------------------------------------------------------------
@@ -383,6 +405,7 @@ class ContextAssembler:
         language: str,
         file_contexts: list[FilePageContext],
         graph: Any,  # nx.DiGraph
+        page_summaries: dict[str, str] | None = None,
     ) -> ModulePageContext:
         """Assemble context for the module_page template."""
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
@@ -406,6 +429,31 @@ class ContextAssembler:
         if file_contexts:
             pagerank_mean = sum(fc.pagerank_score for fc in file_contexts) / len(file_contexts)
 
+        # File summaries from completed pages (enriches module docs with what each file does)
+        file_summaries: dict[str, str] = {}
+        if page_summaries:
+            for fp in files:
+                if fp in page_summaries:
+                    file_summaries[fp] = page_summaries[fp][:200]
+
+        # Community info: pick the dominant community label across files
+        community_label = ""
+        community_cohesion = 0.0
+        labels = [fc.community_label for fc in file_contexts if fc.community_label]
+        if labels:
+            from collections import Counter
+            community_label = Counter(labels).most_common(1)[0][0]
+        cohesions = [fc.community_cohesion for fc in file_contexts if fc.community_cohesion > 0]
+        if cohesions:
+            community_cohesion = sum(cohesions) / len(cohesions)
+
+        # Key classes: collect classes with heritage info from file contexts
+        key_classes: list[dict] = []
+        for fc in file_contexts:
+            for h in fc.heritage[:5]:  # cap per file
+                key_classes.append(h)
+        key_classes = key_classes[:10]  # cap total
+
         return ModulePageContext(
             module_path=module_path,
             language=language,
@@ -416,6 +464,10 @@ class ContextAssembler:
             dependents=sorted(all_dependents),
             pagerank_mean=pagerank_mean,
             files=files,
+            file_summaries=file_summaries,
+            community_label=community_label,
+            community_cohesion=community_cohesion,
+            key_classes=key_classes,
         )
 
     # ------------------------------------------------------------------
@@ -465,6 +517,7 @@ class ContextAssembler:
         pagerank: dict[str, float],
         sccs: list[Any],  # list[frozenset[str]]
         community: dict[str, int],
+        graph_builder: Any | None = None,
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
         # Top files sorted by PageRank descending
@@ -478,6 +531,35 @@ class ContextAssembler:
         # SCCs with len > 1 are true circular deps
         circular_count = sum(1 for scc in sccs if len(scc) > 1)
 
+        # Community metadata from graph builder
+        communities_list: list[dict] = []
+        execution_flows_list: list[dict] = []
+        if graph_builder is not None:
+            try:
+                for ci in graph_builder.community_info():
+                    communities_list.append({
+                        "id": ci.id,
+                        "label": ci.label,
+                        "size": ci.size,
+                        "cohesion": round(ci.cohesion, 2),
+                    })
+                communities_list.sort(key=lambda c: c["size"], reverse=True)
+                communities_list = communities_list[:10]
+            except Exception:
+                pass
+
+            try:
+                flow_report = graph_builder.execution_flows()
+                if flow_report and hasattr(flow_report, "flows"):
+                    for flow in flow_report.flows[:5]:
+                        execution_flows_list.append({
+                            "entry_point": flow.entry_point,
+                            "score": round(flow.score, 3),
+                            "trace_length": len(flow.trace) if hasattr(flow, "trace") else 0,
+                        })
+            except Exception:
+                pass
+
         return RepoOverviewContext(
             repo_name=getattr(repo_structure, "name", "repo"),
             is_monorepo=repo_structure.is_monorepo,
@@ -488,6 +570,8 @@ class ContextAssembler:
             entry_points=repo_structure.entry_points,
             top_files_by_pagerank=top_files,
             circular_dependency_count=circular_count,
+            communities=communities_list,
+            execution_flows=execution_flows_list,
         )
 
     # ------------------------------------------------------------------
@@ -705,6 +789,99 @@ class ContextAssembler:
                 break
 
         return self._trim_to_budget("\n".join(parts), budget)
+
+    # ------------------------------------------------------------------
+    # Graph intelligence extraction helpers
+    # ------------------------------------------------------------------
+
+    def _extract_call_graph(self, file_path: str, graph: Any) -> list[dict]:
+        """Extract symbol-level call edges for symbols defined in this file."""
+        entries: list[dict] = []
+        try:
+            for node, data in graph.nodes(data=True):
+                if data.get("node_type") != "symbol":
+                    continue
+                if data.get("file_path") != file_path:
+                    continue
+                # Outgoing calls from this symbol
+                for _, target, edata in graph.out_edges(node, data=True):
+                    if edata.get("edge_type") == "calls":
+                        tdata = graph.nodes.get(target, {})
+                        entries.append({
+                            "caller": data.get("name", node),
+                            "callee": tdata.get("name", target),
+                            "callee_file": tdata.get("file_path", ""),
+                            "confidence": edata.get("confidence", 0.0),
+                        })
+                # Incoming calls to this symbol
+                for source, _, edata in graph.in_edges(node, data=True):
+                    if edata.get("edge_type") == "calls":
+                        sdata = graph.nodes.get(source, {})
+                        entries.append({
+                            "caller": sdata.get("name", source),
+                            "callee": data.get("name", node),
+                            "callee_file": file_path,
+                            "caller_file": sdata.get("file_path", ""),
+                            "confidence": edata.get("confidence", 0.0),
+                        })
+        except Exception:
+            pass
+        # Deduplicate and cap
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for e in entries:
+            key = f"{e.get('caller')}→{e.get('callee')}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(e)
+        return unique[:15]
+
+    def _extract_heritage(self, file_path: str, graph: Any) -> list[dict]:
+        """Extract extends/implements edges for symbols in this file."""
+        entries: list[dict] = []
+        try:
+            for node, data in graph.nodes(data=True):
+                if data.get("node_type") != "symbol":
+                    continue
+                if data.get("file_path") != file_path:
+                    continue
+                for _, target, edata in graph.out_edges(node, data=True):
+                    etype = edata.get("edge_type", "")
+                    if etype in ("extends", "implements"):
+                        tdata = graph.nodes.get(target, {})
+                        entries.append({
+                            "child": data.get("name", node),
+                            "parent": tdata.get("name", target),
+                            "kind": etype,
+                            "parent_file": tdata.get("file_path", ""),
+                        })
+                for source, _, edata in graph.in_edges(node, data=True):
+                    etype = edata.get("edge_type", "")
+                    if etype in ("extends", "implements"):
+                        sdata = graph.nodes.get(source, {})
+                        entries.append({
+                            "child": sdata.get("name", source),
+                            "parent": data.get("name", node),
+                            "kind": etype,
+                            "child_file": sdata.get("file_path", ""),
+                        })
+        except Exception:
+            pass
+        return entries[:10]
+
+    def _extract_community_meta(self, file_path: str, graph: Any) -> tuple[str, float]:
+        """Extract community label and cohesion for a file node."""
+        try:
+            node_data = graph.nodes.get(file_path, {})
+            meta = node_data.get("community_meta_json")
+            if meta:
+                import json as _json
+                if isinstance(meta, str):
+                    meta = _json.loads(meta)
+                return meta.get("label", ""), meta.get("cohesion", 0.0)
+        except Exception:
+            pass
+        return "", 0.0
 
     # ------------------------------------------------------------------
     # Generation depth selection (Phase 5.5)

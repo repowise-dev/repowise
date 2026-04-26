@@ -248,20 +248,38 @@ repowise also writes a `.mcp.json` at the repository root for Claude Code auto-d
 
 ## Exclude patterns
 
-Control which files are indexed using gitignore-style patterns:
+repowise respects your `.gitignore` automatically. All patterns in your root `.gitignore` are honored during file traversal using the same `gitwildmatch` format that git uses.
+
+On top of `.gitignore`, you can add extra patterns via `--exclude` / `-x`:
 
 ```bash
 repowise init -x vendor/ -x "*.generated.ts" -x proto/ -x "**/*.pb.go"
 ```
 
-Patterns are saved to `config.yaml` and applied on subsequent `update` runs.
+Patterns are saved to `config.yaml` and applied on subsequent `update` runs. In interactive advanced mode, you can enter exclude patterns one per line instead of comma-separated.
+
+You can also create a `.repowiseIgnore` file (same gitignore syntax) at the repo root or in any subdirectory for more granular control.
 
 Built-in exclusions (always applied):
 - `.git/`, `.repowise/`, `node_modules/`
 - `__pycache__/`, `*.pyc`, `.venv/`
-- Binary files and media assets
+- Binary files, lockfiles, and minified assets
 
 Use `--skip-tests` to exclude test files and `--skip-infra` to exclude Dockerfiles, Makefiles, and shell scripts.
+
+After traversal, repowise prints a filtering summary showing how many files were included and excluded by each rule (`.gitignore`, extensions, binary, oversized, etc.), along with a language breakdown.
+
+---
+
+## Submodules
+
+Git submodule directories are excluded by default. If your repo uses submodules and you want to include them in the index, pass `--include-submodules`:
+
+```bash
+repowise init --include-submodules
+```
+
+repowise reads `.gitmodules` to detect submodule paths. When excluded, submodule directories are skipped entirely during traversal.
 
 ---
 

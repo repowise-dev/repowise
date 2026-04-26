@@ -131,6 +131,84 @@ def register_with_claude_code(repo_path: Path) -> Path | None:
     return settings_path if _merge_mcp_entry(settings_path, entry) else None
 
 
+def install_claude_code_hooks() -> Path | None:
+    """Register PreToolUse and PostToolUse hooks in ~/.claude/settings.json.
+
+    PreToolUse: enriches Grep/Glob searches with graph context (importers,
+    symbols) from the local wiki.db.
+
+    PostToolUse: detects git commits and notifies the agent when the wiki
+    is stale.
+
+    Merges into existing hooks without clobbering user-defined entries.
+    Returns the settings path on success, None on failure.
+    """
+    settings_path = _claude_code_settings_path()
+
+    pre_hook_entry = {
+        "matcher": "Grep|Glob",
+        "hooks": [
+            {
+                "type": "command",
+                "command": "repowise augment",
+                "timeout": 10,
+                "statusMessage": "Enriching with codebase context...",
+            }
+        ],
+    }
+
+    post_hook_entry = {
+        "matcher": "Bash",
+        "hooks": [
+            {
+                "type": "command",
+                "command": "repowise augment",
+                "timeout": 10,
+                "statusMessage": "Checking wiki freshness...",
+            }
+        ],
+    }
+
+    try:
+        if settings_path.exists():
+            try:
+                existing = json.loads(settings_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+        else:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+
+        hooks = existing.setdefault("hooks", {})
+
+        # Merge PreToolUse — avoid duplicates
+        pre_hooks = hooks.setdefault("PreToolUse", [])
+        if not _has_repowise_hook(pre_hooks):
+            pre_hooks.append(pre_hook_entry)
+
+        # Merge PostToolUse — avoid duplicates
+        post_hooks = hooks.setdefault("PostToolUse", [])
+        if not _has_repowise_hook(post_hooks):
+            post_hooks.append(post_hook_entry)
+
+        settings_path.write_text(
+            json.dumps(existing, indent=2) + "\n", encoding="utf-8"
+        )
+        return settings_path
+    except OSError:
+        return None
+
+
+def _has_repowise_hook(hook_list: list) -> bool:
+    """Check if a repowise augment hook is already registered."""
+    for entry in hook_list:
+        for hook in entry.get("hooks", []):
+            cmd = hook.get("command", "")
+            if "repowise augment" in cmd:
+                return True
+    return False
+
+
 def format_setup_instructions(repo_path: Path) -> str:
     """Return human-readable setup instructions for MCP clients."""
     config = generate_mcp_config(repo_path)

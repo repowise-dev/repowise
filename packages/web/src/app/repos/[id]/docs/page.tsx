@@ -1,7 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
-import { Download, Loader2 } from "lucide-react";
+import { Download, FolderArchive, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DocsExplorer } from "@/components/docs/docs-explorer";
 import { listAllPages } from "@/lib/api/pages";
@@ -41,20 +41,27 @@ export default function DocsPage({
             Browse AI-generated documentation for every file, module, and symbol.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleExportAll}
-          disabled={isExporting}
-          className="shrink-0"
-        >
-          {isExporting ? (
-            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-          ) : (
-            <Download className="h-3.5 w-3.5 mr-1.5" />
-          )}
-          Export All
-        </Button>
+        <div className="flex gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportAll}
+            disabled={isExporting}
+          >
+            {isExporting ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            Export All
+          </Button>
+          <Button variant="outline" size="sm" asChild>
+            <a href={`/api/repos/${repoId}/export`} download>
+              <FolderArchive className="h-3.5 w-3.5 mr-1.5" />
+              Download ZIP
+            </a>
+          </Button>
+        </div>
       </div>
 
       {/* Explorer */}

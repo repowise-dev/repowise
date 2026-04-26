@@ -7,6 +7,7 @@ Uses the existing CRUD layer where possible; raw selects for aggregate queries.
 from __future__ import annotations
 
 import re
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -52,6 +53,7 @@ class EditorFileDataFetcher:
         return EditorFileData(
             repo_name=repo_name,
             indexed_at=datetime.now(UTC).strftime("%Y-%m-%d"),
+            indexed_commit=_get_head_short_sha(self._repo_path),
             architecture_summary=await self._get_architecture_summary(),
             key_modules=await self._get_key_modules(),
             entry_points=await self._get_entry_points(),
@@ -177,13 +179,16 @@ class EditorFileDataFetcher:
         records = list(result.scalars().all())
         summaries: list[DecisionSummary] = []
         for rec in records:
-            rationale = (rec.rationale or rec.decision or "").strip()
+            rationale = (rec.rationale or "").strip()
             rationale = rationale[:100].rstrip(".,;") if rationale else ""
+            decision_text = (rec.decision or "").strip()
+            decision_text = decision_text[:120].rstrip(".,;") if decision_text else ""
             summaries.append(
                 DecisionSummary(
                     title=rec.title,
                     status=rec.status,
                     rationale=rationale,
+                    decision=decision_text,
                 )
             )
         return summaries
@@ -215,6 +220,21 @@ class EditorFileDataFetcher:
 # ------------------------------------------------------------------
 # Utility
 # ------------------------------------------------------------------
+
+
+def _get_head_short_sha(repo_path: Path) -> str:
+    """Return the short SHA of HEAD, or empty string if not a git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 def _extract_sentences(text: str, max_sentences: int) -> str:

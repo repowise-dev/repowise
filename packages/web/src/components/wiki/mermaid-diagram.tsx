@@ -20,7 +20,7 @@ export function MermaidDiagram({ chart }: Props) {
         startOnLoad: false,
         theme: "dark",
         themeVariables: {
-          background: "var(--color-bg-surface)",
+          background: "#1a1a2e",
           primaryColor: "#5B9CF6",
           primaryTextColor: "#e2e8f0",
           lineColor: "#334155",

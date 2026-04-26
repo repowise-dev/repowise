@@ -116,7 +116,8 @@ class TestAddFile:
         b.add_file(_parsed("a.py"))
         b.add_file(_parsed("b.py"))
         g = b.graph()
-        assert g.number_of_nodes() == 2
+        # 2 file nodes + 2 synthetic __module__ symbol nodes
+        assert g.number_of_nodes() == 4
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +151,16 @@ class TestPythonImports:
         assert b.graph().has_edge("main.py", "src/calculator.py")
 
     def test_unresolvable_import_no_edge(self) -> None:
-        """Unresolvable import produces no edge (no crash)."""
+        """Unresolvable import produces no import edge (no crash)."""
         b = GraphBuilder()
         b.add_file(_parsed("main.py", imports=[_imp("nonexistent_external_lib")]))
         b.build()
-        assert b.graph().number_of_edges() == 0
+        # Only the defines edge for the synthetic __module__ symbol
+        import_edges = [
+            (u, v) for u, v, d in b.graph().edges(data=True)
+            if d.get("edge_type") == "imports"
+        ]
+        assert len(import_edges) == 0
 
     def test_imported_names_on_edge(self) -> None:
         """Imported names are stored on the edge."""
@@ -183,6 +189,119 @@ class TestPythonImports:
         names = set(b.graph()["main.py"]["utils.py"]["imported_names"])
         assert "foo" in names
         assert "bar" in names
+
+
+# ---------------------------------------------------------------------------
+# Stem disambiguation — protects against the historical PageRank inflation
+# bug where a test fixture named like the package (e.g. tests/.../flask.py)
+# was the only file with stem "flask" in the stem map (because the real
+# src/flask/__init__.py registered under stem "__init__"), so every internal
+# `from flask import X` resolved to the test fixture, giving it massive
+# in-degree and dominating PageRank.
+# ---------------------------------------------------------------------------
+
+
+class TestStemDisambiguation:
+    def test_init_py_registers_under_parent_dir(self) -> None:
+        """`from flask import X` resolves to src/flask/__init__.py, not a
+        test fixture named flask.py."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/flask/__init__.py"))
+        b.add_file(_parsed("tests/test_apps/cliapp/inner1/inner2/flask.py"))
+        b.add_file(_parsed("src/flask/app.py", imports=[_imp("flask")]))
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/flask/app.py", "src/flask/__init__.py")
+        assert not g.has_edge("src/flask/app.py", "tests/test_apps/cliapp/inner1/inner2/flask.py")
+
+    def test_test_fixture_loses_to_source_file(self) -> None:
+        """When two files share a stem and one is under tests/, the
+        non-test file wins regardless of insertion order."""
+        # Insert test file FIRST so dict iteration would have favored it
+        # under the old last-write-wins logic.
+        b = GraphBuilder()
+        b.add_file(_parsed("tests/fixtures/widget.py"))
+        b.add_file(_parsed("src/widget.py"))
+        b.add_file(_parsed("main.py", imports=[_imp("widget")]))
+        b.build()
+        g = b.graph()
+        assert g.has_edge("main.py", "src/widget.py")
+        assert not g.has_edge("main.py", "tests/fixtures/widget.py")
+
+    def test_resolution_is_deterministic_across_orderings(self) -> None:
+        """Two builders with files added in opposite orders must produce
+        the same edge — resolution cannot depend on dict iteration."""
+        files = ["src/widget.py", "tests/fixtures/widget.py", "examples/widget.py"]
+
+        def build_with_order(order: list[str]) -> str | None:
+            b = GraphBuilder()
+            for f in order:
+                b.add_file(_parsed(f))
+            b.add_file(_parsed("main.py", imports=[_imp("widget")]))
+            b.build()
+            edges = [
+                (u, v) for u, v, d in b.graph().out_edges("main.py", data=True)
+                if d.get("edge_type") == "imports"
+            ]
+            return edges[0][1] if edges else None
+
+        target_a = build_with_order(files)
+        target_b = build_with_order(list(reversed(files)))
+        assert target_a == target_b == "src/widget.py"
+
+    def test_parent_dir_match_beats_shorter_path(self) -> None:
+        """A nested file whose parent directory matches the stem beats a
+        shallower file whose parent doesn't — canonical package layout
+        is the strongest signal."""
+        b = GraphBuilder()
+        # Shallower path, parent dir doesn't match stem
+        b.add_file(_parsed("vendor/util.py"))
+        # Deeper path, but parent dir == stem (canonical layout)
+        b.add_file(_parsed("src/util/util.py"))
+        b.add_file(_parsed("main.py", imports=[_imp("util")]))
+        b.build()
+        assert b.graph().has_edge("main.py", "src/util/util.py")
+
+    def test_src_layout_direct_match(self) -> None:
+        """`from flask.app import X` finds src/flask/app.py via the new
+        src/ candidate, not via stem fallback."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/flask/app.py"))
+        # Decoy: another app.py with the same stem in a deep test tree.
+        b.add_file(_parsed("tests/test_apps/cliapp/app.py"))
+        b.add_file(_parsed("main.py", imports=[_imp("flask.app")]))
+        b.build()
+        assert b.graph().has_edge("main.py", "src/flask/app.py")
+
+    def test_repo_root_init_does_not_crash(self) -> None:
+        """A repo-root __init__.py has no parent directory name; it must
+        be skipped from the stem map without crashing the build."""
+        b = GraphBuilder()
+        b.add_file(_parsed("__init__.py"))
+        b.add_file(_parsed("main.py", imports=[_imp("anything")]))
+        b.build()  # must not raise
+        # No import edge — stem "anything" is unresolvable
+        import_edges = [
+            (u, v) for u, v, d in b.graph().edges(data=True)
+            if d.get("edge_type") == "imports"
+        ]
+        assert len(import_edges) == 0
+
+    def test_go_stem_collision_prefers_parent_match(self) -> None:
+        """Go: `import .../calculator` prefers calculator/calculator.go
+        over a test fixture with the same filename."""
+        b = GraphBuilder()
+        b.add_file(_parsed("internal/testdata/calculator.go", language="go"))
+        b.add_file(_parsed("calculator/calculator.go", language="go"))
+        b.add_file(
+            _parsed(
+                "main.go",
+                language="go",
+                imports=[_imp("github.com/example/app/calculator")],
+            )
+        )
+        b.build()
+        assert b.graph().has_edge("main.go", "calculator/calculator.go")
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +337,93 @@ class TestTypeScriptImports:
         assert any("external:" in n for n in g.nodes)
         external_node = next(n for n in g.nodes if n.startswith("external:"))
         assert g.has_edge("src/app.ts", external_node)
+
+    def test_tsconfig_alias_resolves_to_file(self, tmp_path: Path) -> None:
+        """Non-relative import resolved via TsconfigResolver instead of external:."""
+        import json
+
+        from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
+
+        # Write a tsconfig with @/* -> ./src/*
+        tsconfig = tmp_path / "tsconfig.json"
+        tsconfig.write_text(
+            json.dumps(
+                {
+                    "compilerOptions": {
+                        "baseUrl": ".",
+                        "paths": {"@/*": ["./src/*"]},
+                    }
+                }
+            )
+        )
+
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_parsed("src/utils.ts", language="typescript"))
+        b.add_file(
+            _parsed(
+                "src/app.ts",
+                language="typescript",
+                imports=[_imp("@/utils")],
+            )
+        )
+        # Attach resolver before build.
+        path_set = set(b._parsed_files.keys())
+        resolver = TsconfigResolver(repo_path=tmp_path, path_set=path_set)
+        b.set_tsconfig_resolver(resolver)
+        b.build()
+
+        g = b.graph()
+        assert g.has_edge("src/app.ts", "src/utils.ts")
+        assert not any(n.startswith("external:@/") for n in g.nodes)
+
+    def test_tsconfig_alias_fallback_to_external(self, tmp_path: Path) -> None:
+        """Unmatched alias still creates external: node."""
+        import json
+
+        from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
+
+        tsconfig = tmp_path / "tsconfig.json"
+        tsconfig.write_text(
+            json.dumps(
+                {
+                    "compilerOptions": {
+                        "baseUrl": ".",
+                        "paths": {"@/*": ["./src/*"]},
+                    }
+                }
+            )
+        )
+
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(
+            _parsed(
+                "src/app.ts",
+                language="typescript",
+                imports=[_imp("react")],
+            )
+        )
+        path_set = set(b._parsed_files.keys())
+        resolver = TsconfigResolver(repo_path=tmp_path, path_set=path_set)
+        b.set_tsconfig_resolver(resolver)
+        b.build()
+
+        g = b.graph()
+        assert g.has_edge("src/app.ts", "external:react")
+
+    def test_no_resolver_backwards_compatible(self) -> None:
+        """GraphBuilder without resolver behaves identically to before."""
+        b = GraphBuilder()
+        b.add_file(
+            _parsed(
+                "src/app.ts",
+                language="typescript",
+                imports=[_imp("@/utils")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        # Without resolver, @/utils becomes external:@/utils.
+        assert g.has_edge("src/app.ts", "external:@/utils")
 
 
 # ---------------------------------------------------------------------------
@@ -386,10 +592,12 @@ class TestPersist:
             async with aiosqlite.connect(db_path) as db:
                 async with db.execute("SELECT * FROM graph_nodes") as cur:
                     rows = await cur.fetchall()
-                assert len(rows) == 2
+                # 2 file nodes + 2 synthetic __module__ symbol nodes
+                assert len(rows) == 4
                 async with db.execute("SELECT * FROM graph_edges") as cur:
                     edges = await cur.fetchall()
-                assert len(edges) == 1
+                # 1 import edge + 2 defines edges for __module__ symbols
+                assert len(edges) == 3
 
         asyncio.run(run())
 
@@ -444,6 +652,7 @@ class TestCppCompileCommandsResolution:
             }
         ]
         import json
+
         (tmp_path / "compile_commands.json").write_text(json.dumps(compile_commands))
         (tmp_path / "src").mkdir()
 
@@ -466,6 +675,7 @@ class TestCppCompileCommandsResolution:
             }
         ]
         import json
+
         (tmp_path / "compile_commands.json").write_text(json.dumps(compile_commands))
         (tmp_path / "src").mkdir()
 
@@ -498,8 +708,12 @@ class TestCppCompileCommandsResolution:
         b = GraphBuilder(repo_path=tmp_path)
         b.add_file(_cpp("src/main.cpp", imports=[_cinclude("nonexistent.hpp")]))
         b.build()
-        # No edge, no exception
-        assert b.graph().number_of_edges() == 0
+        # No import edge, no exception
+        import_edges = [
+            (u, v) for u, v, d in b.graph().edges(data=True)
+            if d.get("edge_type") == "imports"
+        ]
+        assert len(import_edges) == 0
 
     def test_compile_commands_in_build_subdir(self, tmp_path: Path) -> None:
         """compile_commands.json under build/ subdirectory is also found."""
@@ -516,6 +730,7 @@ class TestCppCompileCommandsResolution:
             }
         ]
         import json
+
         (build_dir / "compile_commands.json").write_text(json.dumps(compile_commands))
         (tmp_path / "src").mkdir()
 
@@ -524,3 +739,158 @@ class TestCppCompileCommandsResolution:
         b.add_file(_cpp("src/main.cpp", imports=[_cinclude("bar.hpp")]))
         b.build()
         assert b.graph().has_edge("src/main.cpp", "include/bar.hpp")
+
+
+# ---------------------------------------------------------------------------
+# Rust import resolution
+# ---------------------------------------------------------------------------
+
+
+class TestRustImports:
+    def test_crate_import_resolves_to_file(self) -> None:
+        """use crate::models::Calculator -> src/models.rs"""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/models.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/main.rs",
+                language="rust",
+                imports=[_imp("crate::models::Calculator")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/main.rs", "src/models.rs")
+
+    def test_crate_import_resolves_to_mod_rs(self) -> None:
+        """use crate::utils -> src/utils/mod.rs when src/utils.rs doesn't exist."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/utils/mod.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/main.rs",
+                language="rust",
+                imports=[_imp("crate::utils")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/main.rs", "src/utils/mod.rs")
+
+    def test_super_import(self) -> None:
+        """use super::sibling -> resolves to parent dir's sibling.rs."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/sibling.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/sub/child.rs",
+                language="rust",
+                imports=[_imp("super::sibling")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/sub/child.rs", "src/sibling.rs")
+
+    def test_self_import(self) -> None:
+        """use self::helper -> resolves to current dir's helper.rs."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/utils/helper.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/utils/mod.rs",
+                language="rust",
+                imports=[_imp("self::helper")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/utils/mod.rs", "src/utils/helper.rs")
+
+    def test_external_crate(self) -> None:
+        """use serde::Deserialize -> external:serde::Deserialize."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/main.rs",
+                language="rust",
+                imports=[_imp("serde::Deserialize")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert any(n.startswith("external:") for n in g.nodes)
+
+    def test_nested_crate_import(self) -> None:
+        """use crate::api::handlers::auth -> src/api/handlers/auth.rs."""
+        b = GraphBuilder()
+        b.add_file(_parsed("src/lib.rs", language="rust"))
+        b.add_file(_parsed("src/api/handlers/auth.rs", language="rust"))
+        b.add_file(
+            _parsed(
+                "src/main.rs",
+                language="rust",
+                imports=[_imp("crate::api::handlers::auth")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("src/main.rs", "src/api/handlers/auth.rs")
+
+
+# ---------------------------------------------------------------------------
+# Go import resolution with go.mod
+# ---------------------------------------------------------------------------
+
+
+class TestGoImports:
+    def test_go_mod_resolves_local_import(self, tmp_path: Path) -> None:
+        """go.mod module path enables resolving internal package imports."""
+        (tmp_path / "go.mod").write_text("module github.com/org/myapp\n\ngo 1.21\n")
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(_parsed("pkg/util/util.go", language="go"))
+        b.add_file(
+            _parsed(
+                "cmd/main.go",
+                language="go",
+                imports=[_imp("github.com/org/myapp/pkg/util")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("cmd/main.go", "pkg/util/util.go")
+
+    def test_go_external_package(self, tmp_path: Path) -> None:
+        """Imports not matching go.mod module path become external: nodes."""
+        (tmp_path / "go.mod").write_text("module github.com/org/myapp\n\ngo 1.21\n")
+        b = GraphBuilder(repo_path=tmp_path)
+        b.add_file(
+            _parsed(
+                "main.go",
+                language="go",
+                imports=[_imp("github.com/gin-gonic/gin")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert any(n.startswith("external:") for n in g.nodes)
+
+    def test_go_no_go_mod_falls_back_to_stem(self) -> None:
+        """Without go.mod, Go resolution falls back to stem matching."""
+        b = GraphBuilder()
+        b.add_file(_parsed("calculator/calculator.go", language="go"))
+        b.add_file(
+            _parsed(
+                "main.go",
+                language="go",
+                imports=[_imp("github.com/example/app/calculator")],
+            )
+        )
+        b.build()
+        g = b.graph()
+        assert g.has_edge("main.go", "calculator/calculator.go")

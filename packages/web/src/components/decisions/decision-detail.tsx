@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Badge } from "@/components/ui/badge";
 import { patchDecision } from "@/lib/api/decisions";
 import type { DecisionRecordResponse } from "@/lib/api/types";
@@ -166,7 +168,9 @@ function Section({ title, text }: { title: string; text: string }) {
   return (
     <div>
       <h3 className="mb-1 text-sm font-medium text-[var(--color-text-secondary)]">{title}</h3>
-      <p className="text-sm text-[var(--color-text-primary)] leading-relaxed">{text}</p>
+      <div className="text-sm text-[var(--color-text-primary)] leading-relaxed prose prose-sm prose-invert max-w-none [&>p]:mb-2 [&>p:last-child]:mb-0">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      </div>
     </div>
   );
 }

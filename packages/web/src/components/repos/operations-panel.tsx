@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw, Zap, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
+import { RefreshCw, Zap, ChevronDown, ChevronUp, AlertTriangle, Download } from "lucide-react";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -124,6 +124,16 @@ export function OperationsPanel({ repoId, repoName }: Props) {
               >
                 <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
                 {loading === "resync" ? "Starting…" : "Full Resync"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                asChild
+              >
+                <a href={`/api/repos/${repoId}/export`} download>
+                  <Download className="h-3.5 w-3.5 mr-1.5" />
+                  Export
+                </a>
               </Button>
             </div>
           )}

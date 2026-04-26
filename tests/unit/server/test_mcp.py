@@ -563,12 +563,14 @@ async def setup_mcp(factory, fts, vector_store, populated_db):
 
     yield populated_db
 
-    # Reset globals
+    # Reset globals (including workspace state)
     mcp_mod._session_factory = None
     mcp_mod._fts = None
     mcp_mod._vector_store = None
     mcp_mod._decision_store = None
     mcp_mod._repo_path = None
+    mcp_mod._registry = None
+    mcp_mod._workspace_root = None
 
 
 # ---- Tool 1: get_overview ----
@@ -581,8 +583,7 @@ async def test_get_overview(setup_mcp):
     result = await get_overview()
     assert result["title"] == "Test Repo Overview"
     assert "comprehensive test" in result["content_md"]
-    assert result["architecture_diagram_mermaid"] is not None
-    assert "graph TD" in result["architecture_diagram_mermaid"]
+    assert "architecture_diagram_mermaid" not in result  # removed: not useful for agents
     assert len(result["key_modules"]) == 2
     assert any(m["name"] == "Auth Module" for m in result["key_modules"])
     assert "src/auth/service.py" in result["entry_points"]
@@ -611,7 +612,11 @@ async def test_get_overview_repo_not_found(setup_mcp):
 async def test_get_context_single_file(setup_mcp):
     from repowise.server.mcp_server import get_context
 
-    result = await get_context(["src/auth/service.py"])
+    result = await get_context(
+        ["src/auth/service.py"],
+        include=["docs", "full_doc", "ownership", "last_change", "decisions", "freshness"],
+        compact=False,
+    )
     targets = result["targets"]
     assert "src/auth/service.py" in targets
     t = targets["src/auth/service.py"]
@@ -642,7 +647,11 @@ async def test_get_context_single_file(setup_mcp):
 async def test_get_context_single_module(setup_mcp):
     from repowise.server.mcp_server import get_context
 
-    result = await get_context(["src/auth"])
+    result = await get_context(
+        ["src/auth"],
+        include=["docs", "full_doc", "ownership", "last_change", "decisions", "freshness"],
+        compact=False,
+    )
     targets = result["targets"]
     assert "src/auth" in targets
     t = targets["src/auth"]
@@ -658,7 +667,11 @@ async def test_get_context_single_module(setup_mcp):
 async def test_get_context_single_symbol(setup_mcp):
     from repowise.server.mcp_server import get_context
 
-    result = await get_context(["AuthService"])
+    result = await get_context(
+        ["AuthService"],
+        include=["docs", "full_doc"],
+        compact=False,
+    )
     targets = result["targets"]
     assert "AuthService" in targets
     t = targets["AuthService"]
@@ -702,6 +715,95 @@ async def test_get_context_not_found(setup_mcp):
     result = await get_context(["nonexistent_thing_xyz"])
     t = result["targets"]["nonexistent_thing_xyz"]
     assert "error" in t
+
+
+# ---- get_context: truncation ----
+
+
+def _make_big_response(n_targets: int = 5, n_symbols: int = 80, body_chars: int = 4000) -> dict:
+    """Build a synthetic get_context response well over the 32 KB budget."""
+    targets = {}
+    for i in range(n_targets):
+        name = f"pkg/mod_{i}/file_{i}.ext"
+        targets[name] = {
+            "target": name,
+            "type": "file",
+            "docs": {
+                "title": f"File {i}",
+                "summary": "s" * 200,
+                "content_md": "x" * body_chars,
+                "symbols": [
+                    {
+                        "name": f"Sym{i}_{j}",
+                        "kind": "class" if j % 5 == 0 else "function",
+                        "signature": f"sig_{j}(...)",
+                        "start_line": j * 10,
+                        "end_line": j * 10 + 8,
+                        "docstring": "d" * 300,
+                    }
+                    for j in range(n_symbols)
+                ],
+            },
+        }
+    return {"targets": targets, "_meta": {"timing_ms": 1.0}}
+
+
+def test_truncate_to_budget_enforces_cap():
+    from repowise.server.mcp_server.tool_context import (
+        _CHAR_BUDGET,
+        _truncate_to_budget,
+    )
+
+    big = _make_big_response()
+    raw_size = len(json.dumps(big, separators=(",", ":"), default=str))
+    assert raw_size > _CHAR_BUDGET, "fixture must exceed budget to be meaningful"
+
+    out = _truncate_to_budget(big)
+    final_size = len(json.dumps(out, separators=(",", ":"), default=str))
+    assert final_size <= _CHAR_BUDGET
+    assert out["truncated"] is True
+    # At least one target must survive.
+    assert len(out["targets"]) >= 1
+
+
+def test_truncate_flags_and_dropped_fields_populate():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    big = _make_big_response(n_targets=6, n_symbols=60, body_chars=5000)
+    out = _truncate_to_budget(big)
+
+    assert out["truncated"] is True
+    # Either whole targets were dropped, or individual symbols were dropped —
+    # both are acceptable outcomes; at least one must be populated.
+    dropped_any = bool(out["dropped_targets"]) or bool(out["dropped_symbols"])
+    assert dropped_any
+    # Heavy optional fields should have been stripped from surviving targets.
+    for tgt in out["targets"].values():
+        assert "content_md" not in tgt.get("docs", {})
+    # Dropped symbol lists (if any) must reference actual symbol names.
+    for tgt_name, names in out["dropped_symbols"].items():
+        assert tgt_name in big["targets"] or tgt_name not in out["targets"]
+        assert all(isinstance(n, str) for n in names)
+
+
+def test_truncate_noop_when_under_budget():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    small = {
+        "targets": {
+            "a.py": {
+                "target": "a.py",
+                "type": "file",
+                "docs": {"title": "A", "symbols": [{"name": "f", "kind": "function"}]},
+            }
+        },
+        "_meta": {},
+    }
+    out = _truncate_to_budget(small)
+    assert out["truncated"] is False
+    assert out["dropped_targets"] == []
+    assert out["dropped_symbols"] == {}
+    assert "content_md" not in out["targets"]["a.py"]["docs"]  # wasn't there anyway
 
 
 # ---- Tool 3: get_risk ----
@@ -1000,89 +1102,7 @@ async def test_search_codebase(setup_mcp):
     assert len(result["results"]) >= 1
 
 
-# ---- Tool 6: get_architecture_diagram ----
-
-
-@pytest.mark.asyncio
-async def test_get_architecture_diagram_repo(setup_mcp):
-    from repowise.server.mcp_server import get_architecture_diagram
-
-    result = await get_architecture_diagram(scope="repo")
-    assert result["diagram_type"] in ("flowchart", "auto")
-    assert "mermaid_syntax" in result
-    assert "graph TD" in result["mermaid_syntax"]
-
-
-@pytest.mark.asyncio
-async def test_get_architecture_diagram_module(setup_mcp):
-    from repowise.server.mcp_server import get_architecture_diagram
-
-    result = await get_architecture_diagram(scope="module", path="src/auth")
-    assert "mermaid_syntax" in result
-    assert result["description"]
-
-
-# ---- Tool 7: get_dependency_path ----
-
-
-@pytest.mark.asyncio
-async def test_get_dependency_path(setup_mcp):
-    from repowise.server.mcp_server import get_dependency_path
-
-    result = await get_dependency_path("src/auth/service.py", "src/db/models.py")
-    assert result["distance"] == 1
-    assert len(result["path"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_get_dependency_path_multi_hop(setup_mcp):
-    from repowise.server.mcp_server import get_dependency_path
-
-    result = await get_dependency_path("src/auth/middleware.py", "src/db/models.py")
-    assert result["distance"] == 2
-    assert len(result["path"]) == 3
-
-
-@pytest.mark.asyncio
-async def test_get_dependency_path_no_path(setup_mcp):
-    from repowise.server.mcp_server import get_dependency_path
-
-    # Reverse direction — no path from models to middleware
-    result = await get_dependency_path("src/db/models.py", "src/auth/middleware.py")
-    assert result["distance"] == -1
-    assert result["path"] == []
-
-    # Visual context should be present
-    ctx = result["visual_context"]
-    assert ctx is not None
-
-    # Reverse path exists (middleware -> service -> models)
-    assert ctx["reverse_path"]["exists"] is True
-
-    # Nearest common ancestor should be service.py (connects both via undirected)
-    ancestors = ctx["nearest_common_ancestors"]
-    assert len(ancestors) >= 1
-    assert ancestors[0]["node"] == "src/auth/service.py"
-
-    # Community analysis — models is community 2, middleware is community 1
-    assert ctx["community"]["same_community"] is False
-
-    # Not disconnected — they are reachable in undirected graph
-    assert ctx["disconnected"] is False
-    assert "suggestion" in ctx
-
-
-@pytest.mark.asyncio
-async def test_get_dependency_path_node_not_found(setup_mcp):
-    from repowise.server.mcp_server import get_dependency_path
-
-    result = await get_dependency_path("nonexistent.py", "src/auth/service.py")
-    assert result["distance"] == -1
-    assert result["path"] == []
-    assert "not found" in result["explanation"]
-
-
-# ---- Tool 8: get_dead_code ----
+# ---- Tool 6: get_dead_code ----
 
 
 @pytest.mark.asyncio
@@ -1175,157 +1195,6 @@ async def test_get_dead_code_group_by_owner(setup_mcp):
 
 
 # ---- MCP config generation ----
-
-
-# ---- Tool 9: update_decision_records ----
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_create(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(
-        action="create",
-        title="Use Redis for caching",
-        context="Need distributed caching",
-        decision="Use Redis as the caching layer",
-        rationale="Mature, fast, supports pub/sub",
-        alternatives=["Memcached", "In-memory only"],
-        consequences=["Requires Redis infrastructure"],
-        affected_files=["src/cache/client.py"],
-        affected_modules=["src/cache"],
-        tags=["performance", "infra"],
-    )
-    assert result["action"] == "created"
-    dec = result["decision"]
-    assert dec["title"] == "Use Redis for caching"
-    assert dec["source"] == "mcp_tool"
-    assert dec["confidence"] == 1.0
-    assert dec["status"] == "proposed"
-    assert "Memcached" in dec["alternatives"]
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_create_missing_title(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(action="create")
-    assert "error" in result
-    assert "title" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_get(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(action="get", decision_id="dec1")
-    assert result["action"] == "get"
-    assert result["decision"]["title"] == "Use JWT for authentication"
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_get_not_found(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(action="get", decision_id="nonexistent")
-    assert "error" in result
-    assert "not found" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_list(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(action="list")
-    assert result["action"] == "list"
-    assert result["count"] >= 2
-    titles = {d["title"] for d in result["decisions"]}
-    assert "Use JWT for authentication" in titles
-    assert "SQLAlchemy as ORM" in titles
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_list_with_filter(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(action="list", filter_source="readme_mining")
-    assert result["action"] == "list"
-    assert all(d["source"] == "readme_mining" for d in result["decisions"])
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_update(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(
-        action="update",
-        decision_id="dec1",
-        rationale="Updated: stateless and JWT is industry standard",
-        tags=["auth", "security", "api"],
-    )
-    assert result["action"] == "updated"
-    dec = result["decision"]
-    assert "industry standard" in dec["rationale"]
-    assert "api" in dec["tags"]
-    # Other fields should remain unchanged
-    assert dec["title"] == "Use JWT for authentication"
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_update_no_fields(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(action="update", decision_id="dec1")
-    assert "error" in result
-    assert "at least one field" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_update_status(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(
-        action="update_status", decision_id="dec1", status="active"
-    )
-    assert result["action"] == "status_updated"
-    assert result["decision"]["status"] == "active"
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_update_status_deprecate(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(
-        action="update_status",
-        decision_id="dec1",
-        status="superseded",
-        superseded_by="dec2",
-    )
-    assert result["action"] == "status_updated"
-    assert result["decision"]["status"] == "superseded"
-    assert result["decision"]["superseded_by"] == "dec2"
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_delete(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(action="delete", decision_id="dec2")
-    assert result["action"] == "deleted"
-    assert result["decision_id"] == "dec2"
-
-    # Verify it's gone
-    get_result = await update_decision_records(action="get", decision_id="dec2")
-    assert "error" in get_result
-
-
-@pytest.mark.asyncio
-async def test_update_decision_records_invalid_action(setup_mcp):
-    from repowise.server.mcp_server import update_decision_records
-
-    result = await update_decision_records(action="foo")
-    assert "error" in result
-    assert "Unknown action" in result["error"]
 
 
 def test_generate_mcp_config():

@@ -53,6 +53,7 @@ repowise init [PATH] [OPTIONS]
 | `--skip-tests` | flag | false | Exclude test files |
 | `--skip-infra` | flag | false | Exclude Dockerfiles, Makefiles, Terraform, shell scripts |
 | `--exclude` / `-x` | string | — | Gitignore-style exclude pattern (repeatable: `-x vendor/ -x "*.gen.*"`) |
+| `--include-submodules` | flag | false | Include git submodule directories (excluded by default) |
 | `--concurrency` | int | 5 | Max concurrent LLM calls |
 | `--resume` | flag | false | Resume from last checkpoint after an interruption |
 | `--force` | flag | false | Regenerate all pages even if up to date |
@@ -78,6 +79,9 @@ repowise init --skip-tests --skip-infra --concurrency 3
 
 # Exclude generated files and vendor directories
 repowise init -x "*.generated.ts" -x vendor/ -x proto/
+
+# Repo with git submodules — include them in indexing
+repowise init --include-submodules
 
 # Dry run to estimate cost before committing
 repowise init --dry-run

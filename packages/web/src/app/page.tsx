@@ -13,6 +13,7 @@ import {
 import { listRepos, getRepoStats } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { getGitSummary } from "@/lib/api/git";
+import { getWorkspace } from "@/lib/api/workspace";
 import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
 import { StatCard } from "@/components/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,15 +28,22 @@ export const metadata: Metadata = { title: "Dashboard" };
 export const revalidate = 30;
 
 export default async function DashboardPage() {
-  const [repos, jobs] = await Promise.allSettled([
+  const [repos, jobs, ws] = await Promise.allSettled([
     listRepos(),
     listJobs({ limit: 10 }),
+    getWorkspace(),
   ]);
 
   const repoList = repos.status === "fulfilled" ? repos.value : [];
   const jobList = jobs.status === "fulfilled" ? jobs.value : [];
+  const workspace = ws.status === "fulfilled" ? ws.value : null;
 
-  // If there's exactly one repo, go straight to it — no need for a dashboard.
+  // Workspace mode → workspace dashboard
+  if (workspace?.is_workspace) {
+    redirect("/workspace");
+  }
+
+  // Single repo → go straight to its overview
   if (repoList.length === 1) {
     redirect(`/repos/${repoList[0].id}/overview`);
   }
