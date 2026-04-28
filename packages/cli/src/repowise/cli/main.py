@@ -47,3 +47,4 @@ cli.add_command(serve_command)
 cli.add_command(mcp_command)
 cli.add_command(reindex_command)
 cli.add_command(workspace_group)
+

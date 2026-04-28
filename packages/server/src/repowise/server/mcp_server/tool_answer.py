@@ -48,9 +48,18 @@ from repowise.server.mcp_server._server import mcp
 # bounded payload.
 _ENRICH_TOP_N_HITS = 2
 # How many symbols per enriched file. Bounded to keep the context block from
-# growing unboundedly on dense files; the limit is sufficient to surface both
-# foundational types and a representative function/method.
+# growing unboundedly on dense files. We allocate more slots to the top hit
+# (where the answer usually lives) and fewer to secondary hits.
+_MAX_SYMBOLS_TOP_HIT = 10
 _MAX_SYMBOLS_PER_HIT = 4
+
+# When a retrieved file contains symbols whose name matches an identifier
+# from the question, we promote those to the top of the symbol list for that
+# file, pass a longer docstring, and attach a source excerpt so the LLM
+# actually sees the method body — not just a stub docstring. Without this,
+# specific-method questions get hedged answers even on dominant retrievals.
+_MATCHED_SYMBOL_DOC_CHARS = 400
+_MATCHED_SYMBOL_SOURCE_LINES = 40
 
 # Sort priority by symbol kind. Classes first because "what does X do" /
 # "which class inherits from Y" questions resolve at the class level. Then
@@ -71,6 +80,124 @@ _MAX_SYMBOL_DOC_CHARS = 120
 #   (b) synthesis hallucination on tangential top hits.
 _DOMINANCE_RATIO = 1.2
 _COVERAGE_THRESHOLD = 0.66
+
+# Hedge-phrase markers that indicate the LLM refused to synthesize even though
+# retrieval was dominant. When the answer contains any of these, we downgrade
+# confidence to "low" and drop the retrieval payload — the hits aren't useful
+# to a consumer that has already been told to go read the source, and letting
+# them ride through the conversation cache inflates multi-turn cost.
+_HEDGE_MARKERS = (
+    "do not contain",
+    "does not contain",
+    "is not contained",
+    "are not contained",
+    "not contain sufficient",
+    "not contain enough",
+    "is not covered",
+    "not covered in the",
+    "not covered by the",
+    "you should inspect",
+    "you should consult",
+    "consult the source",
+    "inspect the source",
+    "cannot be determined",
+    "cannot determine",
+    "is not clear",
+    "insufficient information",
+    "not enough information",
+    "without more context",
+    "without additional context",
+    "didn't surface",
+    "did not surface",
+    "was not surfaced",
+    "was not found in",
+)
+
+
+def _extract_question_identifiers(question: str) -> set[str]:
+    """Pull out Python-looking identifiers the question names explicitly.
+
+    Targets: snake_case (``_local_reachability_density``), CamelCase
+    (``NearestCentroid``), dotted paths (``BaseLabelPropagation.fit``).
+    Filtered to ≥3 chars, non-stopwords, non-pure-lowercase-English (unless
+    they contain an underscore or a digit — otherwise every common word
+    matches). The result drives question-aware symbol promotion in
+    ``_hydrate_symbols_for_hits``.
+    """
+    import re
+
+    ids: set[str] = set()
+    # Match bare identifiers and dotted paths: first char letter/underscore,
+    # rest alnum/underscore, optionally with dotted continuations.
+    for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", question):
+        # Split dotted paths into both the full thing and the leaf.
+        parts = tok.split(".")
+        candidates = [tok] + parts
+        for c in candidates:
+            if len(c) < 3:
+                continue
+            if c.lower() in _STOPWORDS:
+                continue
+            # Heuristic: keep if it contains an uppercase letter anywhere
+            # (covers CamelCase and sentence-initial capitalised nouns like
+            # ``Version`` that are typically class names in Python), a
+            # digit, or an underscore. Pure-lowercase English words like
+            # ``method`` / ``class`` / ``dtype`` are dropped — they are
+            # poor promotion signals and match too broadly.
+            has_upper = any(ch.isupper() for ch in c)
+            has_under = "_" in c
+            has_digit = any(ch.isdigit() for ch in c)
+            if has_upper or has_under or has_digit:
+                ids.add(c)
+    return ids
+
+
+def _read_symbol_source(
+    repo_root: Path | None,
+    file_path: str,
+    start_line: int,
+    end_line: int,
+    max_lines: int = _MATCHED_SYMBOL_SOURCE_LINES,
+) -> str | None:
+    """Return the literal source body for a symbol, bounded to max_lines.
+
+    The bounded source is the key ingredient for question-matched symbols.
+    The LLM was already getting the file-level summary and a truncated
+    docstring; what it was missing was the actual code. With 40 lines of
+    the method body in front of it, the synthesis step can answer "how
+    does X work" without hedging back to "you should inspect the source".
+    """
+    if repo_root is None or start_line < 1:
+        return None
+    try:
+        abs_path = (repo_root / file_path).resolve()
+        try:
+            abs_path.relative_to(repo_root.resolve())
+        except ValueError:
+            return None
+        text = abs_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    if start_line > len(lines):
+        return None
+    hi = end_line if end_line and end_line >= start_line else start_line + max_lines
+    hi = min(hi, start_line + max_lines, len(lines))
+    body = "\n".join(lines[start_line - 1:hi])
+    return body
+
+
+def _answer_is_hedged(answer_text: str) -> bool:
+    """True when the synthesized answer confesses it can't answer.
+
+    Retrieval dominance alone doesn't tell you whether the LLM produced a
+    usable answer — the underlying model happily admits insufficiency even
+    on a top-scoring hit. Treat an admitted non-answer as low confidence,
+    regardless of how dominant retrieval was.
+    """
+    low = (answer_text or "").lower()
+    return any(marker in low for marker in _HEDGE_MARKERS)
+
 # The dominance ratio threshold (top_score / second_score >= 1.2x) separates
 # reliable retrievals from ambiguous ones. This is a property of BM25-style
 # retrieval with a coverage re-ranker on top, not of any particular repository;
@@ -128,11 +255,20 @@ def _hash_question(question: str) -> str:
 _log = __import__("logging").getLogger("repowise.mcp.answer")
 
 _SYSTEM_PROMPT = (
-    "You are a code-aware retrieval assistant. Given a developer question and "
-    "excerpts from a project wiki, answer in 2–5 sentences. Cite the source "
-    "files by relative path inline like (path/to/file.py). If the excerpts do "
-    "not contain enough information, say so explicitly and suggest which files "
-    "the developer should inspect. Never invent file paths."
+    "You are a code-aware retrieval assistant. You are given a developer "
+    "question plus excerpts from a project wiki — file summaries, symbol "
+    "signatures with docstrings, and (for symbols whose name matches the "
+    "question) the actual source body. Answer thoroughly and concretely, "
+    "citing source files by relative path inline like (path/to/file.py) "
+    "and line numbers when you have them. Prefer a structured answer "
+    "(headings / bullets / short code block citing the symbol) over a "
+    "paragraph when the question asks about mechanism or architecture. "
+    "Aim for 150–400 words — enough to cover the asked aspects without "
+    "padding. If a [question-match] symbol's source body is provided, "
+    "you have enough material to answer — ground in that body. Only "
+    "hedge (say 'inspect the source' / 'the excerpts do not contain…') "
+    "when there is genuinely no relevant signature, docstring, or source "
+    "body in the excerpts. Never invent file paths."
 )
 
 _USER_TEMPLATE = """\
@@ -142,8 +278,11 @@ Project wiki excerpts (top {n} retrieval hits):
 
 {context}
 
-Answer in 2–5 sentences. Cite file paths inline. If the excerpts are not
-sufficient, say so and list the most likely files to inspect.
+Answer thoroughly (150–400 words). Cite file paths inline and line
+numbers when the excerpt provides them. Prefer a structured layout
+(headings, bullets, short code block from the source body) on
+mechanism / architecture questions. Only hedge if no signature,
+docstring, or source body in the excerpts is relevant.
 """
 
 
@@ -245,9 +384,11 @@ def _build_context_block(hits: list[dict], max_chars_per_hit: int = 800) -> str:
     Each hit includes:
       * file path + title + retrieval score
       * file-level summary (Page.summary, capped at max_chars_per_hit)
-      * up to _MAX_SYMBOLS_PER_HIT WikiSymbol entries (signature + truncated
-        docstring) — the critical addition that turns get_answer from a
-        navigator into a real synthesizer for symbol-level questions.
+      * per-symbol signature + docstring; for question-matched symbols
+        (flagged ``_matched`` by ``_hydrate_symbols_for_hits``) the
+        docstring runs to 400 chars and we append up to 40 lines of the
+        actual source body as a fenced code block. The source body is
+        what lets the LLM answer "how does X work" instead of hedging.
     """
     parts = []
     for i, h in enumerate(hits, start=1):
@@ -261,16 +402,22 @@ def _build_context_block(hits: list[dict], max_chars_per_hit: int = 800) -> str:
         symbols = h.get("symbols") or []
         if symbols:
             block.append("    symbols:")
-            for s in symbols[:_MAX_SYMBOLS_PER_HIT]:
+            for s in symbols:
                 sig = s.get("signature") or s.get("name") or ""
                 kind = s.get("kind") or "?"
+                matched = bool(s.get("_matched"))
                 doc = (s.get("docstring") or "").strip()
+                doc_cap = _MATCHED_SYMBOL_DOC_CHARS if matched else _MAX_SYMBOL_DOC_CHARS
+                tag = " [question-match]" if matched else ""
+                block.append(f"      - [{kind}]{tag} {sig}")
                 if doc:
-                    doc_one_line = " ".join(doc.split())[:_MAX_SYMBOL_DOC_CHARS]
-                    block.append(f"      - [{kind}] {sig}")
-                    block.append(f"          {doc_one_line}")
-                else:
-                    block.append(f"      - [{kind}] {sig}")
+                    trimmed = " ".join(doc.split())[:doc_cap]
+                    block.append(f"          docstring: {trimmed}")
+                src = s.get("source_excerpt")
+                if src:
+                    block.append("          source:")
+                    for line in src.splitlines():
+                        block.append(f"              {line}")
         parts.append("\n".join(block))
     return "\n\n".join(parts)
 
@@ -319,19 +466,30 @@ def _read_signature_from_source(
 
 
 async def _hydrate_symbols_for_hits(
-    session, repo_id: str, hits: list[dict], ctx: Any = None,
+    session,
+    repo_id: str,
+    hits: list[dict],
+    ctx: Any = None,
+    question_ids: set[str] | None = None,
 ) -> None:
     """Mutate `hits` in place: attach `symbols` list to top-N file_page hits.
 
-    Only the top _ENRICH_TOP_N_HITS hits get enriched — others would just bloat
-    the cached prompt prefix on follow-up turns without changing the answer.
+    Question-aware promotion: if ``question_ids`` contains identifiers that
+    match symbols in the retrieved files, those symbols move to the top of
+    their file's symbol list, carry a longer docstring, and get a source
+    excerpt (``source_excerpt``). This is the difference between the LLM
+    seeing ``class LocalOutlierFactor`` at the file top (and hedging on a
+    question about ``_local_reachability_density``) vs. seeing the actual
+    method body and answering it.
 
-    For each enriched symbol we ALSO try to recover the real source-line
-    signature from disk (`_read_signature_from_source`) so base classes,
-    decorators, and full type annotations reach the LLM. WikiSymbol.signature
-    strips these at parse time, so the on-disk read is what gives the LLM a
-    faithful view of the symbol's interface.
+    Top hit gets ``_MAX_SYMBOLS_TOP_HIT`` slots; secondaries get the smaller
+    ``_MAX_SYMBOLS_PER_HIT``. Symbols not matching a question id carry the
+    short 120-char docstring; matched symbols carry 400 chars + source body.
     """
+    question_ids = question_ids or set()
+    # Case-folded copy for matching.
+    qids_lower = {q.lower() for q in question_ids}
+
     # Identify the top file_page hits in retrieval-rank order. `hits` is
     # already sorted by descending score upstream.
     enrich_paths: list[str] = []
@@ -359,28 +517,60 @@ async def _hydrate_symbols_for_hits(
         rich_sig = _read_signature_from_source(
             repo_root, row.file_path, row.start_line
         )
-        by_file.setdefault(row.file_path, []).append(
-            {
-                "name": row.name,
-                "kind": row.kind,
-                # Prefer the real source line (has bases / decorators / types)
-                # falling back to the stripped WikiSymbol.signature on failure.
-                "signature": rich_sig or row.signature,
-                "docstring": row.docstring or "",
-                "start_line": row.start_line,
-            }
+        # Does the symbol name match any identifier from the question?
+        name_lower = (row.name or "").lower()
+        qname_lower = (row.qualified_name or "").lower()
+        matched = bool(
+            qids_lower
+            and (
+                name_lower in qids_lower
+                or qname_lower in qids_lower
+                or any(
+                    q in name_lower or q in qname_lower
+                    for q in qids_lower
+                    if len(q) >= 5  # avoid spurious substring matches on short tokens
+                )
+            )
         )
-    # Cap each list to _MAX_SYMBOLS_PER_HIT. Sort by start_line ASC —
-    # natural document order is the most general default. Kind-priority
-    # sorting (classes before functions before methods) is available via
-    # _KIND_PRIORITY but is not applied here, since reordering symbols away
-    # from source order can mislead the LLM about file structure.
-    for path, syms in by_file.items():
-        syms.sort(key=lambda s: s["start_line"])
-        by_file[path] = syms[:_MAX_SYMBOLS_PER_HIT]
-    for h in hits:
-        if h.get("target_path") in by_file:
-            h["symbols"] = by_file[h["target_path"]]
+        entry: dict[str, Any] = {
+            "name": row.name,
+            "kind": row.kind,
+            "signature": rich_sig or row.signature,
+            "docstring": row.docstring or "",
+            "start_line": row.start_line,
+            "end_line": row.end_line,
+            "_matched": matched,
+        }
+        if matched:
+            src = _read_symbol_source(
+                repo_root, row.file_path, row.start_line, row.end_line
+            )
+            if src:
+                entry["source_excerpt"] = src
+        by_file.setdefault(row.file_path, []).append(entry)
+
+    # Sort: matched symbols first (document order within the match group),
+    # then unmatched in start_line order. Cap per file — top hit gets more
+    # slots than secondary hits.
+    for i, h in enumerate(hits):
+        path = h.get("target_path")
+        if path not in by_file:
+            continue
+        syms = by_file[path]
+        syms.sort(key=lambda s: (not s["_matched"], s["start_line"]))
+        cap = _MAX_SYMBOLS_TOP_HIT if i == 0 else _MAX_SYMBOLS_PER_HIT
+        # Guarantee at least one matched symbol survives the cap, even if
+        # the file has more than `cap` symbols before it.
+        kept: list[dict] = [s for s in syms if s["_matched"]][: cap]
+        for s in syms:
+            if s in kept:
+                continue
+            if len(kept) >= cap:
+                break
+            kept.append(s)
+        # Sort final slice by start_line for natural reading order.
+        kept.sort(key=lambda s: s["start_line"])
+        h["symbols"] = kept
 
 
 def _split_relational(question: str) -> list[str] | None:
@@ -566,12 +756,22 @@ async def get_answer(
     if cached is not None:
         with contextlib.suppress(Exception):
             payload = _json.loads(cached.payload_json)
-            payload["_meta"] = _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000,
-                cached=True,
-                hint=_answer_hint(payload.get("confidence", "low"), len(payload.get("retrieval", []))),
-            )
-            return payload
+            # Bypass-on-hedged: if the cached answer hedged, the retrieval +
+            # symbol pipeline has since been upgraded (question-aware symbol
+            # promotion, source-body excerpts). Give synthesis another shot
+            # with the new context rather than pinning the bad answer.
+            if _answer_is_hedged(payload.get("answer", "")):
+                _log.info("Bypassing hedged cache entry for re-synthesis")
+            else:
+                payload["_meta"] = _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    cached=True,
+                    hint=_answer_hint(
+                        payload.get("confidence", "low"),
+                        len(payload.get("retrieval", [])),
+                    ),
+                )
+                return payload
 
     # --- Retrieval (FTS) ---------------------------------------------------
     raw_hits: list[Any] = []
@@ -630,14 +830,17 @@ async def get_answer(
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 
-    # Enrich each file_page hit with its top-N WikiSymbol rows. This is the
-    # critical fix for symbol-level questions — without it the LLM only sees
-    # file-level summaries and consistently refuses to identify specific
-    # classes/functions named in the question.
+    # Enrich each file_page hit with its top-N WikiSymbol rows. Question-
+    # aware: identifiers extracted from the question promote matching
+    # symbols and attach a source-body excerpt — the difference between a
+    # hedged answer on a specific-method question and a grounded one.
+    question_ids = _extract_question_identifiers(question)
     if hits:
         with contextlib.suppress(Exception):
             async with get_session(ctx.session_factory) as session:
-                await _hydrate_symbols_for_hits(session, repo_id, hits, ctx)
+                await _hydrate_symbols_for_hits(
+                    session, repo_id, hits, ctx, question_ids=question_ids
+                )
 
     fallback_targets = [
         h["target_path"] for h in hits if h.get("target_path")
@@ -750,7 +953,7 @@ async def get_answer(
             provider.generate(
                 system_prompt=_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                max_tokens=512,
+                max_tokens=1024,
                 temperature=0.2,
             ),
             timeout=30.0,
@@ -792,20 +995,62 @@ async def get_answer(
     else:
         confidence = "medium"
 
-    payload = {
-        "answer": answer_text,
-        "citations": citations,
-        "confidence": confidence,
-        "fallback_targets": fallback_targets,
-        "retrieval": hits,
-    }
-    # When confidence is high, document the signal strength for the consumer.
-    if confidence == "high":
-        payload["note"] = (
-            "High confidence: top retrieval result clearly dominates "
-            f"(dominance ratio {_ratio:.2f}x). This answer is likely accurate, "
-            "but verify cited file paths exist before acting on them."
+    # Second gate: downgrade when the LLM's own answer admits insufficiency.
+    # Retrieval dominance only tells us we indexed the right file; it does
+    # not mean the synthesized text is usable. Shipping a hedged answer with
+    # confidence="high" misleads the consumer AND drags the full retrieval
+    # payload (~10k chars) through the conversation cache for no benefit.
+    hedged = _answer_is_hedged(answer_text)
+    if hedged:
+        confidence = "low"
+
+    # Third gate — identifier-citation gate: when the question explicitly
+    # names identifiers (classes / methods / snake_case / CamelCase) and
+    # NONE of the top retrieval hits contain any of those identifiers as a
+    # hydrated symbol, retrieval may be pointing at plausible-but-wrong
+    # files (same module family, similar vocabulary). Downgrade high→medium
+    # so the consumer Reads the `fallback_targets`. Only applies when the
+    # question actually names identifiers — mechanism-descriptive questions
+    # (no symbol names) are unaffected.
+    if confidence == "high" and question_ids:
+        top_n = [h for h in hits[:_ENRICH_TOP_N_HITS] if h.get("symbols")]
+        has_match = any(
+            s.get("_matched") for h in top_n for s in (h.get("symbols") or [])
         )
+        if not has_match:
+            confidence = "medium"
+
+    if hedged:
+        # Hedged answers: drop the retrieval payload. The consumer has been
+        # told to read the source — the symbol-docstring blob that helped
+        # synthesis doesn't help them, and keeping it in the response bloats
+        # every follow-up turn's prompt cache.
+        payload = {
+            "answer": answer_text,
+            "citations": citations,
+            "confidence": "low",
+            "fallback_targets": fallback_targets[:3],
+            "retrieval": [],
+            "note": (
+                "Synthesis hedged: the LLM could not ground the question in "
+                "the indexed wiki. Read one of fallback_targets to answer."
+            ),
+        }
+    else:
+        payload = {
+            "answer": answer_text,
+            "citations": citations,
+            "confidence": confidence,
+            "fallback_targets": fallback_targets,
+            "retrieval": hits,
+        }
+        if confidence == "high":
+            payload["note"] = (
+                "High confidence: top retrieval result clearly dominates "
+                f"(dominance ratio {_ratio:.2f}x) AND the synthesized answer "
+                "is direct (no hedging). Cite this answer; do not re-read the "
+                "source unless a specific detail is missing."
+            )
 
     # Persist to cache. Best-effort: cache failures must NEVER block the
     # response (we already have the answer in hand).
