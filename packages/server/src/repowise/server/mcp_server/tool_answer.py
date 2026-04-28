@@ -197,6 +197,7 @@ def _answer_is_hedged(answer_text: str) -> bool:
     """
     low = (answer_text or "").lower()
     return any(marker in low for marker in _HEDGE_MARKERS)
+
 # The dominance ratio threshold (top_score / second_score >= 1.2x) separates
 # reliable retrievals from ambiguous ones. This is a property of BM25-style
 # retrieval with a coverage re-ranker on top, not of any particular repository;
