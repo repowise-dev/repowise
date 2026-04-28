@@ -52,37 +52,37 @@ def test_default_plan_is_coding():
 def test_coding_plan_base_url():
     """Coding plan should use coding endpoint."""
     p = ZAIProvider(api_key="test-key", plan="coding")
-    assert p._base_url == "https://api.z.ai/api/coding/paas/v4/v1"
+    assert p._base_url == "https://api.z.ai/api/coding/paas/v4"
 
 
 def test_general_plan_base_url():
     """General plan should use general endpoint."""
     p = ZAIProvider(api_key="test-key", plan="general")
-    assert p._base_url == "https://api.z.ai/api/paas/v4/v1"
+    assert p._base_url == "https://api.z.ai/api/paas/v4"
 
 
 def test_base_url_overrides_plan():
     """Explicit base_url should take precedence over plan."""
     p = ZAIProvider(api_key="test-key", plan="coding", base_url="https://custom.api.com")
-    assert p._base_url == "https://custom.api.com/v1"
+    assert p._base_url == "https://custom.api.com"
 
 
 def test_custom_base_url():
-    """Custom base URL should be used and normalized."""
+    """Custom base URL should be used and normalized (trailing slash stripped)."""
     p = ZAIProvider(api_key="test-key", base_url="https://api.z.ai/api/paas/v4")
-    assert p._base_url == "https://api.z.ai/api/paas/v4/v1"
+    assert p._base_url == "https://api.z.ai/api/paas/v4"
 
 
 def test_base_url_normalization():
-    """Base URL should be normalized to end with /v1."""
+    """Base URL should be normalized (trailing slash stripped)."""
     p = ZAIProvider(api_key="test-key", base_url="https://custom.api.com")
-    assert p._base_url == "https://custom.api.com/v1"
+    assert p._base_url == "https://custom.api.com"
 
 
-def test_base_url_already_has_v1():
-    """Base URL already ending with /v1 should not get another suffix."""
-    p = ZAIProvider(api_key="test-key", base_url="https://custom.api.com/v1")
-    assert p._base_url == "https://custom.api.com/v1"
+def test_base_url_already_has_trailing_slash():
+    """Base URL with trailing slash should be stripped."""
+    p = ZAIProvider(api_key="test-key", base_url="https://api.z.ai/api/paas/v4/")
+    assert p._base_url == "https://api.z.ai/api/paas/v4"
 
 
 # ---------------------------------------------------------------------------
