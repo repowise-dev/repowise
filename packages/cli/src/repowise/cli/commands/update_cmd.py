@@ -287,6 +287,36 @@ def update_command(
 
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
 
+    # Attach a DB-backed CostTracker so every LLM call made during this update
+    # (decision rescan + page regeneration) is persisted to the `llm_costs`
+    # table — matching what `repowise init` already does. Without this,
+    # `repowise costs` only ever reflects the initial index and shows $0 for
+    # all subsequent updates.
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.generation.cost_tracker import CostTracker
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+
+    async def _make_cost_tracker() -> CostTracker:
+        url = get_db_url_for_repo(repo_path)
+        engine = create_engine(url)
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            return CostTracker(session_factory=sf, repo_id=repo.id)
+
+    try:
+        cost_tracker = run_async(_make_cost_tracker())
+    except Exception:
+        cost_tracker = CostTracker()
+    provider._cost_tracker = cost_tracker
+
     # Run partial dead code analysis on affected files
     dead_code_report = None
     try:
