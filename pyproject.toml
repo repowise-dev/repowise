@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.4.0"
+version = "0.4.1"
 description = "Codebase intelligence for developers and AI — generates and maintains a structured wiki for any codebase"
 readme = "README.md"
 requires-python = ">=3.11"
