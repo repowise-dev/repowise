@@ -90,6 +90,17 @@ def dead_code_command(
             pass
     graph_builder.build()
 
+    # Framework-aware synthetic edges (Django, Laravel, TYPO3, ...). Without
+    # this, convention-loaded files appear as in_degree=0 unreachable — false
+    # positives in the dead-code report.
+    try:
+        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+
+        tech_items = detect_tech_stack(repo_path)
+        graph_builder.add_framework_edges([item.name for item in tech_items])
+    except Exception:
+        pass
+
     # Git metadata (best effort)
     git_meta_map: dict = {}
     try:

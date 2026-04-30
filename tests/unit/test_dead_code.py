@@ -419,6 +419,58 @@ def test_zombie_package_detected():
     assert "pkgB" in pkgs
 
 
+def test_framework_anchor_counts_as_cross_package_importer():
+    """``framework:`` synthetic predecessors should rescue a package from zombie status.
+
+    ``external:`` predecessors don't count (third-party imports), but
+    ``framework:`` anchors model real framework-mediated loading
+    (e.g. TYPO3 core loading every ``Configuration/*.php``) and should.
+    """
+    g = _build_graph(
+        nodes={
+            "Configuration/foo.php": {"is_entry_point": False, "symbol_count": 1, "symbols": []},
+            "src/main.php": {"is_entry_point": False, "symbol_count": 1, "symbols": []},
+        },
+    )
+    g.add_node("framework:typo3-core", language="external")
+    g.add_edge("framework:typo3-core", "Configuration/foo.php", edge_type="framework")
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "min_confidence": 0.0,
+        }
+    )
+
+    zombie_pkgs = [
+        f.package for f in report.findings if f.kind == DeadCodeKind.ZOMBIE_PACKAGE
+    ]
+    assert "Configuration" not in zombie_pkgs, (
+        "framework: predecessors should count as cross-package importers"
+    )
+
+
+def test_framework_anchor_node_not_flagged_as_unreachable():
+    """A ``framework:`` synthetic node must not itself be flagged as dead."""
+    g = _build_graph(
+        nodes={
+            "ext_localconf.php": {"is_entry_point": False, "symbol_count": 1, "symbols": []},
+        },
+    )
+    g.add_node("framework:typo3-core", language="external")
+    g.add_edge("framework:typo3-core", "ext_localconf.php", edge_type="framework")
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze({"min_confidence": 0.0})
+
+    paths = [f.file_path for f in report.findings]
+    assert "framework:typo3-core" not in paths
+    # ext_localconf.php should also not be flagged: it has a framework: predecessor.
+    assert "ext_localconf.php" not in paths
+
+
 # ---------------------------------------------------------------------------
 # 10. test_whitelist_respected
 # ---------------------------------------------------------------------------

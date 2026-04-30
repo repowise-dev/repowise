@@ -118,6 +118,83 @@ def test_detects_pytest_from_pyproject(tmp_path):
     assert "pytest" in cmds["test"]
 
 
+def test_detects_typo3_from_composer_type(tmp_path):
+    composer = {
+        "name": "vendor/my-ext",
+        "type": "typo3-cms-extension",
+        "require": {"typo3/cms-core": "^13.4"},
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "PHP" in names
+    assert "TYPO3" in names
+
+
+def test_detects_typo3_from_cms_core_require(tmp_path):
+    # Project-mode install: composer.json without `type` but requires typo3/cms-core.
+    composer = {
+        "name": "vendor/my-site",
+        "type": "project",
+        "require": {"typo3/cms-core": "^13.4", "typo3/cms-backend": "^13.4"},
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "TYPO3" in names
+
+
+def test_detects_symfony_from_framework_bundle(tmp_path):
+    composer = {
+        "name": "vendor/app",
+        "require": {"symfony/framework-bundle": "^7.0"},
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "PHP" in names
+    assert "Symfony" in names
+
+
+def test_detects_laravel_from_framework_require(tmp_path):
+    composer = {
+        "name": "vendor/app",
+        "require": {"laravel/framework": "^11.0"},
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "Laravel" in names
+
+
+def test_typo3_takes_precedence_over_symfony_when_both_match(tmp_path):
+    # TYPO3 ships Symfony — extension should still be classified as TYPO3.
+    composer = {
+        "name": "vendor/my-ext",
+        "type": "typo3-cms-extension",
+        "require": {
+            "typo3/cms-core": "^13.4",
+            "symfony/framework-bundle": "*",
+        },
+    }
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "TYPO3" in names
+    assert "Symfony" not in names
+
+
+def test_plain_php_library_does_not_match_any_framework(tmp_path):
+    composer = {"name": "vendor/lib", "type": "library", "require": {"psr/log": "^3.0"}}
+    (tmp_path / "composer.json").write_text(json.dumps(composer), encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "PHP" in names
+    for fw in ("TYPO3", "Symfony", "Laravel"):
+        assert fw not in names
+
+
+def test_malformed_composer_does_not_crash(tmp_path):
+    (tmp_path / "composer.json").write_text("{ not valid json", encoding="utf-8")
+    names = [i.name for i in detect_tech_stack(tmp_path)]
+    assert "PHP" in names  # PHP language still added (file existed)
+
+
 def test_detects_ruff_from_pyproject(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n", encoding="utf-8")
     cmds = detect_build_commands(tmp_path)
