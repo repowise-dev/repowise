@@ -2,12 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { CheckCircle, XCircle, Loader2, RefreshCw } from "lucide-react";
+import { CheckCircle, XCircle, Loader2, AlertTriangle, X } from "lucide-react";
 import { useJob } from "@/lib/hooks/use-job";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { JobLog } from "./job-log";
 import { formatTokens, formatNumber } from "@/lib/utils/format";
+import { cancelJob } from "@/lib/api/jobs";
 import type { JobProgressEvent } from "@/lib/api/types";
 
 interface Props {
@@ -17,11 +19,16 @@ interface Props {
   onDone?: () => void;
 }
 
+// Anything past this without transitioning out of "pending" is almost
+// certainly stuck — the background task crashed before recording running.
+const PENDING_STUCK_THRESHOLD_MS = 30_000;
+
 export function GenerationProgress({ jobId, repoName, onDone }: Props) {
   const { job, sse } = useJob(jobId);
   const [log, setLog] = useState<Array<{ text: string }>>([]);
   const [elapsed, setElapsed] = useState(0);
   const [actualCost, setActualCost] = useState<number | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const startRef = useRef(Date.now());
   const notifiedRef = useRef(false);
 
@@ -71,19 +78,45 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
     : 0;
 
   const elapsedStr = `${Math.floor(elapsed / 60000)}m ${Math.floor((elapsed % 60000) / 1000)}s`;
-  const isRunning = job?.status === "running" || job?.status === "pending";
+  const isPending = job?.status === "pending";
+  const isRunning = job?.status === "running";
+  const isInflight = isPending || isRunning;
   const isDone = job?.status === "completed";
   const isFailed = job?.status === "failed";
+
+  // Detect a stuck pending job: we've been observing it for >30s and the
+  // server still reports `pending` without `started_at` ever flipping.
+  const stuckPending =
+    isPending &&
+    job?.started_at == null &&
+    elapsed > PENDING_STUCK_THRESHOLD_MS;
+
+  async function handleCancel() {
+    if (!job) return;
+    setCancelling(true);
+    try {
+      await cancelJob(job.id);
+      toast.success("Job cancelled");
+      onDone?.();
+    } catch (e) {
+      toast.error("Couldn't cancel job", {
+        description: e instanceof Error ? e.message : "Unknown error",
+      });
+    } finally {
+      setCancelling(false);
+    }
+  }
 
   return (
     <div className="space-y-3">
       {/* Header */}
       <div className="flex items-center gap-2">
-        {isRunning && <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)] shrink-0" />}
+        {isInflight && <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)] shrink-0" />}
         {isDone && <CheckCircle className="h-4 w-4 text-[var(--color-fresh)] shrink-0" />}
         {isFailed && <XCircle className="h-4 w-4 text-[var(--color-outdated)] shrink-0" />}
 
         <span className="text-sm font-medium text-[var(--color-text-primary)]">
+          {isPending && "Queued — waiting for worker…"}
           {isRunning && `Generating level ${job?.current_level ?? "?"}…`}
           {isDone && "Generation complete"}
           {isFailed && "Generation failed"}
@@ -92,7 +125,34 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
         <span className="ml-auto text-xs text-[var(--color-text-tertiary)] tabular-nums">
           {elapsedStr}
         </span>
+
+        {isInflight && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={handleCancel}
+            disabled={cancelling}
+            className="h-7 px-2 text-xs"
+            aria-label="Cancel job"
+          >
+            <X className="h-3.5 w-3.5 mr-1" />
+            {cancelling ? "Cancelling…" : "Cancel"}
+          </Button>
+        )}
       </div>
+
+      {stuckPending && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="font-medium">Job hasn&apos;t started after {Math.round(elapsed / 1000)}s.</p>
+            <p className="mt-0.5 opacity-80">
+              The server may have crashed before the worker could pick it up. Cancel
+              this job and try again — if it keeps happening, check the server logs.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Progress bar */}
       <div className="space-y-1">

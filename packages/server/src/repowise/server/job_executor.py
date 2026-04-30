@@ -139,13 +139,19 @@ async def execute_job(job_id: str, app_state: Any) -> None:
     4. Persists all results via ``persist_pipeline_result()``
     5. Marks the job as ``completed`` (or ``failed`` on error)
     """
-    session_factory = app_state.session_factory
-    fts = app_state.fts
-    vector_store = app_state.vector_store
     start = time.monotonic()
     progress: JobProgressCallback | None = None
+    session_factory = None
 
     try:
+        # Resolve required app_state attributes inside the try block so a
+        # missing attribute (e.g., partially-initialised app_state during
+        # development hot-reload) gets recorded as a job failure instead of
+        # leaving the row stuck in 'pending' forever.
+        session_factory = app_state.session_factory
+        fts = app_state.fts
+        vector_store = app_state.vector_store
+
         # ---- Fetch job + repo metadata ------------------------------------
         async with get_session(session_factory) as session:
             job = await get_generation_job(session, job_id)
@@ -306,16 +312,22 @@ async def execute_job(job_id: str, app_state: Any) -> None:
                 await progress.drain_and_stop()
             except Exception:
                 logger.debug("drain_failed_on_error_path", job_id=job_id, exc_info=True)
-        try:
-            async with get_session(session_factory) as session:
-                await update_job_status(
-                    session,
-                    job_id,
-                    "failed",
-                    error_message=str(exc)[:500],
-                )
-        except Exception:
-            logger.exception("job_status_update_failed", job_id=job_id)
+        # If we failed before resolving session_factory, fall back to the one
+        # on app_state (best-effort) so the row never stays stuck in pending.
+        recovery_factory = session_factory or getattr(app_state, "session_factory", None)
+        if recovery_factory is not None:
+            try:
+                async with get_session(recovery_factory) as session:
+                    await update_job_status(
+                        session,
+                        job_id,
+                        "failed",
+                        error_message=str(exc)[:500],
+                    )
+            except Exception:
+                logger.exception("job_status_update_failed", job_id=job_id)
+        else:
+            logger.error("job_status_update_skipped_no_session", job_id=job_id)
 
 
 # ---------------------------------------------------------------------------

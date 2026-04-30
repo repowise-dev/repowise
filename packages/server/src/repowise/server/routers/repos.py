@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from repowise.core.persistence import crud
+from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GenerationJob,
@@ -275,15 +276,51 @@ def _launch_job_task(request: Request, job_id: str) -> None:
     Stores a strong reference in ``app.state.background_tasks`` to prevent
     garbage collection, and removes it when the task finishes.  Exceptions
     are logged instead of silently swallowed.
+
+    If task creation itself fails (or the task ends with an unhandled
+    exception that ``execute_job`` couldn't record), we mark the job as
+    failed via a fallback path so the active-job guard never gets stuck.
     """
-    task = asyncio.create_task(execute_job(job_id, request.app.state), name=f"job-{job_id}")
-    bg_tasks: set[asyncio.Task] = request.app.state.background_tasks  # type: ignore[assignment]
+    app_state = request.app.state
+
+    async def _mark_failed(reason: str) -> None:
+        try:
+            from repowise.core.persistence.crud import update_job_status
+
+            async with get_session(app_state.session_factory) as session:
+                await update_job_status(
+                    session,
+                    job_id,
+                    "failed",
+                    error_message=reason[:500],
+                )
+        except Exception:
+            logger.exception("fallback_job_failure_record_failed", extra={"job_id": job_id})
+
+    try:
+        task = asyncio.create_task(execute_job(job_id, app_state), name=f"job-{job_id}")
+    except Exception as exc:
+        logger.exception("create_task_failed", extra={"job_id": job_id})
+        # Schedule the failure-marking on the running loop; we're already in
+        # an async request handler so a fresh task is fine.
+        asyncio.create_task(_mark_failed(f"Failed to launch background task: {exc}"))
+        return
+
+    bg_tasks: set[asyncio.Task] = app_state.background_tasks  # type: ignore[assignment]
     bg_tasks.add(task)
 
     def _on_done(t: asyncio.Task) -> None:
         bg_tasks.discard(t)
-        if not t.cancelled() and t.exception() is not None:
-            logger.error("background_job_failed", exc_info=t.exception())
+        if t.cancelled():
+            asyncio.create_task(_mark_failed("Job task was cancelled"))
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.error("background_job_failed", exc_info=exc)
+            # execute_job already tries to mark failed in its except block,
+            # but if that itself raised we must still ensure the row is
+            # not left in pending/running.
+            asyncio.create_task(_mark_failed(f"Background task crashed: {exc}"))
 
     task.add_done_callback(_on_done)
 

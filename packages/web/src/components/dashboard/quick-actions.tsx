@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw, FileText, Trash2, AlertTriangle, Zap } from "lucide-react";
+import { RefreshCw, Trash2, AlertTriangle, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,6 +13,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
+import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
 import { GenerationProgress } from "@/components/jobs/generation-progress";
 import { formatNumber, formatCost, formatRelativeTime } from "@/lib/utils/format";
@@ -131,6 +132,30 @@ export function QuickActions({ repoId, repoName, pageCount = 0, modelName = "", 
   const [pendingAction, setPendingAction] = useState<ActionDef | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
+  // On mount, hydrate from any in-flight job so a page refresh shows live
+  // progress instead of pretending nothing is happening. Without this, a
+  // job stuck in 'pending' is invisible from the UI even though the
+  // sync-blocked guard is still firing on the server.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [running, pending] = await Promise.all([
+          listJobs({ repo_id: repoId, status: "running", limit: 1 }),
+          listJobs({ repo_id: repoId, status: "pending", limit: 1 }),
+        ]);
+        if (cancelled) return;
+        const inflight = running[0] ?? pending[0];
+        if (inflight) setActiveJobId(inflight.id);
+      } catch {
+        // best-effort hydration — don't block the UI
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId]);
+
   // Sync regenerates ~10-15% of pages (only affected by changes).
   // Full resync regenerates all pages.
   const estimate = pageCount > 0 && pendingAction?.key !== "dead-code"
@@ -157,9 +182,26 @@ export function QuickActions({ repoId, repoName, pageCount = 0, modelName = "", 
         toast.info("Dead code analysis started");
       }
     } catch (e) {
-      toast.error(`${action.label} failed`, {
-        description: e instanceof Error ? e.message : "Unknown error",
-      });
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      // If the server already has an in-flight job, surface that one's
+      // progress instead of just showing an opaque 409.
+      if (/already in progress/i.test(msg)) {
+        try {
+          const [running, pending] = await Promise.all([
+            listJobs({ repo_id: repoId, status: "running", limit: 1 }),
+            listJobs({ repo_id: repoId, status: "pending", limit: 1 }),
+          ]);
+          const inflight = running[0] ?? pending[0];
+          if (inflight) {
+            setActiveJobId(inflight.id);
+            toast.info("Showing progress for the in-flight job. Cancel it from the panel to start a new one.");
+            return;
+          }
+        } catch {
+          // fall through to error toast
+        }
+      }
+      toast.error(`${action.label} failed`, { description: msg });
     } finally {
       setLoading(null);
     }

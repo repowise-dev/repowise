@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, UTC
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +54,39 @@ async def get_job(
     job = await crud.get_generation_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    return JobResponse.from_orm(job)
+
+
+@router.post("/{job_id}/cancel", response_model=JobResponse)
+async def cancel_job(
+    job_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> JobResponse:
+    """Cancel a pending or running generation job.
+
+    Marks the job as ``failed`` with a cancellation message. The background
+    task itself is not interrupted — but in practice this unblocks the
+    active-job guard in /repos/{id}/sync so the user can start a new sync
+    immediately. Useful when a job is stuck in ``pending`` because the
+    background task crashed before it could record a failure.
+    """
+    job = await crud.get_generation_job(session, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in ("pending", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel a job in '{job.status}' state",
+        )
+    await crud.update_job_status(
+        session,
+        job_id,
+        "failed",
+        error_message="Cancelled by user",
+    )
+    job = await crud.get_generation_job(session, job_id)
+    assert job is not None  # we just updated it
+    # Pydantic v1 from_orm; matches the rest of this file.
     return JobResponse.from_orm(job)
 
 
