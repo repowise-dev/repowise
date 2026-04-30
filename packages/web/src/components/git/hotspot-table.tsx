@@ -19,10 +19,15 @@ type SortKey = "trend" | "churn" | "commits";
 type SortDir = "asc" | "desc";
 
 function SortIcon({ column, sortKey, sortDir }: { column: SortKey; sortKey: SortKey; sortDir: SortDir }) {
-  if (column !== sortKey) return <ArrowUpDown className="inline h-3 w-3 ml-1 opacity-40" />;
+  if (column !== sortKey) return <ArrowUpDown className="inline h-3 w-3 ml-1 opacity-60" />;
   return sortDir === "desc"
     ? <ArrowDown className="inline h-3 w-3 ml-1" />
     : <ArrowUp className="inline h-3 w-3 ml-1" />;
+}
+
+function ariaSortFor(column: SortKey, sortKey: SortKey, sortDir: SortDir): "none" | "ascending" | "descending" {
+  if (column !== sortKey) return "none";
+  return sortDir === "asc" ? "ascending" : "descending";
 }
 
 export function HotspotTable({ hotspots }: HotspotTableProps) {
@@ -143,19 +148,25 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                   File
                 </th>
                 <th
-                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  scope="col"
+                  aria-sort={ariaSortFor("commits", sortKey, sortDir)}
+                  className="px-3 py-2.5 text-right text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
                   onClick={() => handleSort("commits")}
                 >
                   Commits 90d<SortIcon column="commits" sortKey={sortKey} sortDir={sortDir} />
                 </th>
                 <th
+                  scope="col"
+                  aria-sort={ariaSortFor("churn", sortKey, sortDir)}
                   className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-32 cursor-pointer select-none hover:text-[var(--color-text-secondary)] hidden lg:table-cell"
                   onClick={() => handleSort("churn")}
                 >
                   Churn<SortIcon column="churn" sortKey={sortKey} sortDir={sortDir} />
                 </th>
                 <th
-                  className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
+                  scope="col"
+                  aria-sort={ariaSortFor("trend", sortKey, sortDir)}
+                  className="px-3 py-2.5 text-right text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 cursor-pointer select-none hover:text-[var(--color-text-secondary)]"
                   onClick={() => handleSort("trend")}
                   title="Exponential decay score weighting recent commits more heavily (180-day half-life)"
                 >
@@ -188,8 +199,8 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                     <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[220px] max-w-[520px]">
                       <span className="block truncate" title={h.file_path}>{h.file_path}</span>
                     </td>
-                    <td className="px-3 py-2.5 tabular-nums text-xs">
-                      <span className="flex items-center gap-1">
+                    <td className="px-3 py-2.5 tabular-nums text-xs text-right">
+                      <span className="inline-flex items-center justify-end gap-1">
                         <span className="text-[var(--color-text-secondary)]">
                           {h.commit_count_90d}
                         </span>
@@ -208,8 +219,8 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                         </span>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 tabular-nums text-xs">
-                      <span className="flex items-center gap-1">
+                    <td className="px-3 py-2.5 tabular-nums text-xs text-right">
+                      <span className="inline-flex items-center justify-end gap-1">
                         {trendScore != null ? (
                           <>
                             <Flame className={cn("h-3 w-3 shrink-0", trendScore >= 5 ? "text-red-500" : trendScore >= 2 ? "text-orange-400" : "text-[var(--color-text-tertiary)]")} />

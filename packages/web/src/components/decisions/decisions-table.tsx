@@ -30,7 +30,7 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
   const [statusFilter, setStatusFilter] = React.useState<string>("all");
   const [sourceFilter, setSourceFilter] = React.useState<string>("all");
 
-  const { data: decisions } = useSWR(
+  const { data: decisions, error, mutate, isLoading } = useSWR(
     [`/api/repos/${repoId}/decisions`, statusFilter, sourceFilter],
     () =>
       listDecisions(repoId, {
@@ -143,7 +143,20 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
                 </td>
               </tr>
             ))}
-            {!decisions?.length && (
+            {!decisions?.length && error && !isLoading && (
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-[var(--color-outdated)]">
+                  Couldn&apos;t load decisions.{" "}
+                  <button
+                    onClick={() => mutate()}
+                    className="underline text-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)]"
+                  >
+                    Retry
+                  </button>
+                </td>
+              </tr>
+            )}
+            {!decisions?.length && !error && (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-[var(--color-text-tertiary)]">
                   No decisions found

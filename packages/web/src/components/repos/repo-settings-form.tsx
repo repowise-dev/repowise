@@ -167,6 +167,8 @@ export function RepoSettingsForm({ repo }: RepoSettingsFormProps) {
         {/* Add input */}
         <div className="flex gap-2 max-w-sm">
           <Input
+            id="exclude-pattern"
+            aria-label="New excluded pattern"
             value={newPattern}
             onChange={(e) => setNewPattern(e.target.value)}
             onKeyDown={(e) => {

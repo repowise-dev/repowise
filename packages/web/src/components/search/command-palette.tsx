@@ -71,7 +71,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
           </kbd>
         </div>
 
-        <Command.List className="max-h-80 overflow-y-auto py-2">
+        <Command.List className="max-h-[60dvh] overflow-y-auto py-2">
           <Command.Empty className="px-4 py-8 text-center text-sm text-[var(--color-text-tertiary)]">
             {isLoading ? "Searching…" : "No results found."}
           </Command.Empty>

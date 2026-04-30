@@ -2,9 +2,11 @@
 
 import { useState, useEffect } from "react";
 import useSWR from "swr";
+import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { FindingRow } from "./finding-row";
 import { listDeadCode, patchDeadCodeFinding } from "@/lib/api/dead-code";
@@ -33,6 +35,7 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
     zombie_package: [],
   });
   const [bulkPending, setBulkPending] = useState(false);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
 
   const { data, isLoading } = useSWR(
     `dead-code:${repoId}:${activeTab}:${minConfidence}:${safeOnly}`,
@@ -79,13 +82,28 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
   };
 
   const resolveSelected = async () => {
+    const ids = Array.from(selected);
     setBulkPending(true);
+    let succeeded = 0;
     try {
-      for (const id of selected) {
-        const updated = await patchDeadCodeFinding(id, { status: "resolved" });
-        handleUpdate(updated);
+      for (const id of ids) {
+        try {
+          const updated = await patchDeadCodeFinding(id, { status: "resolved" });
+          handleUpdate(updated);
+          succeeded += 1;
+        } catch {
+          // continue; we'll report partial below
+        }
       }
       setSelected(new Set());
+      setBulkConfirmOpen(false);
+      if (succeeded === ids.length) {
+        toast.success(`Resolved ${succeeded} finding${succeeded === 1 ? "" : "s"}`);
+      } else if (succeeded > 0) {
+        toast.warning(`Resolved ${succeeded} of ${ids.length}; some failed`);
+      } else {
+        toast.error("Couldn't resolve findings");
+      }
     } finally {
       setBulkPending(false);
     }
@@ -98,16 +116,18 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-2">
-          <label className="text-xs text-[var(--color-text-secondary)]">
+          <label htmlFor="min-confidence" className="text-xs text-[var(--color-text-secondary)]">
             Min confidence: {Math.round(minConfidence * 100)}%
           </label>
           <input
+            id="min-confidence"
             type="range"
             min="0.4"
             max="1"
             step="0.05"
             value={minConfidence}
             onChange={(e) => setMinConfidence(Number(e.target.value))}
+            aria-valuetext={`${Math.round(minConfidence * 100)} percent`}
             className="w-28 accent-[var(--color-accent-primary)]"
           />
         </div>
@@ -126,13 +146,22 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
             size="sm"
             variant="outline"
             disabled={bulkPending}
-            onClick={resolveSelected}
+            onClick={() => setBulkConfirmOpen(true)}
             className="text-green-500 border-green-500/30 hover:bg-green-500/10"
           >
             {bulkPending ? "Resolving…" : `Resolve ${selected.size} selected`}
           </Button>
         )}
       </div>
+      <ConfirmDialog
+        open={bulkConfirmOpen}
+        onOpenChange={setBulkConfirmOpen}
+        title={`Resolve ${selected.size} finding${selected.size === 1 ? "" : "s"}?`}
+        description="This will mark each selected finding as resolved."
+        confirmLabel="Resolve all"
+        loading={bulkPending}
+        onConfirm={resolveSelected}
+      />
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as Kind)}>
         <TabsList>

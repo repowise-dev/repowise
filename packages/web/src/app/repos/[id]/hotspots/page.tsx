@@ -22,13 +22,15 @@ export default async function HotspotsPage({
   let hotspots: Awaited<ReturnType<typeof getHotspots>> = [];
   let summary: Awaited<ReturnType<typeof getGitSummary>> | null = null;
 
+  let loadError: Error | null = null;
   try {
     [hotspots, summary] = await Promise.all([
       getHotspots(id, 100),
       getGitSummary(id),
     ]);
-  } catch {
-    // API unavailable
+  } catch (err) {
+    loadError = err instanceof Error ? err : new Error("Couldn't load hotspots");
+    console.error("[hotspots] load failed:", err);
   }
 
   // Aggregate commit categories across all hotspot files
@@ -52,6 +54,12 @@ export default async function HotspotsPage({
           High-churn files — where the most risky code lives.
         </p>
       </div>
+
+      {loadError && hotspots.length === 0 && (
+        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)]">
+          Couldn&apos;t load hotspots. The data may not be ready yet — try running a sync first.
+        </div>
+      )}
 
       {/* Summary cards */}
       {summary && (

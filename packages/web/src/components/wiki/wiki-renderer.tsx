@@ -28,8 +28,9 @@ const mdxComponents = {
   // Code blocks — pass Shiki-highlighted HTML via a server action wrapper
   // The actual Shiki call happens in the pre/code override below.
   h1: (props: React.HTMLAttributes<HTMLHeadingElement>) => {
+    // Downgrade article-body H1 to H2 to keep the page header as the sole H1.
     const id = slugify(extractText(props.children));
-    return <h1 id={id} className="mt-8 mb-4 text-xl font-semibold text-[var(--color-text-primary)] first:mt-0 scroll-mt-16" {...props} />;
+    return <h2 id={id} className="mt-8 mb-4 text-xl font-semibold text-[var(--color-text-primary)] first:mt-0 scroll-mt-16" {...props} />;
   },
   h2: (props: React.HTMLAttributes<HTMLHeadingElement>) => {
     const id = slugify(extractText(props.children));

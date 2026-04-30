@@ -166,7 +166,7 @@ export function PathFinderPanel({
   }, [onClear]);
 
   return (
-    <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/90 backdrop-blur-md shadow-xl shadow-black/30 p-3 w-[280px] space-y-2">
+    <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/90 backdrop-blur-md shadow-xl shadow-black/30 p-3 w-[min(280px,calc(100vw-1.5rem))] space-y-2">
       {/* Header */}
       <div className="flex items-center gap-2">
         <Route className="w-3.5 h-3.5 text-[var(--color-accent-graph)]" />

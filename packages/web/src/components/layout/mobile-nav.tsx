@@ -74,7 +74,23 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
   const isWorkspace = workspace?.is_workspace ?? false;
   const [open, setOpen] = React.useState(false);
   const pathname = usePathname();
-  const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(new Set());
+  const activeRepoId = React.useMemo(() => {
+    const m = pathname?.match(/^\/repos\/([^/]+)/);
+    return m ? m[1] : undefined;
+  }, [pathname]);
+  const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(
+    activeRepoId ? new Set([activeRepoId]) : new Set(),
+  );
+  React.useEffect(() => {
+    if (activeRepoId) {
+      setExpandedRepos((prev) => {
+        if (prev.has(activeRepoId)) return prev;
+        const next = new Set(prev);
+        next.add(activeRepoId);
+        return next;
+      });
+    }
+  }, [activeRepoId]);
 
   const toggleRepo = (id: string) => {
     setExpandedRepos((prev) => {
@@ -209,6 +225,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                         <div key={repo.id}>
                           <button
                             onClick={() => toggleRepo(repo.id)}
+                            aria-expanded={isExpanded}
                             className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
                           >
                             <Circle className="h-2 w-2 shrink-0 fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]" />

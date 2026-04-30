@@ -198,10 +198,11 @@ export default async function DashboardPage() {
             ) : (
               <ul className="divide-y divide-[var(--color-border-default)]">
                 {jobList.map((job) => (
-                  <li
-                    key={job.id}
-                    className="flex items-center gap-3 px-6 py-3"
-                  >
+                  <li key={job.id}>
+                    <Link
+                      href={`/repos/${job.repository_id}/overview`}
+                      className="flex items-center gap-3 px-6 py-3 hover:bg-[var(--color-bg-elevated)] transition-colors"
+                    >
                     <JobStatusIcon status={job.status} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
@@ -232,6 +233,7 @@ export default async function DashboardPage() {
                         {job.model_name} · {formatRelativeTime(job.updated_at)}
                       </p>
                     </div>
+                    </Link>
                   </li>
                 ))}
               </ul>

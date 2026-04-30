@@ -51,9 +51,9 @@ export function RunConfigForm({ value, onChange }: Props) {
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <Label>Provider</Label>
+          <Label htmlFor="run-provider">Provider</Label>
           <Select value={value.provider} onValueChange={(v) => set("provider", v)}>
-            <SelectTrigger>
+            <SelectTrigger id="run-provider" aria-label="Provider">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -108,12 +108,15 @@ export function RunConfigForm({ value, onChange }: Props) {
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <Label>Concurrency</Label>
+          <Label htmlFor="run-concurrency">Concurrency</Label>
           <span className="text-sm tabular-nums text-[var(--color-text-secondary)]">
             {value.concurrency}
           </span>
         </div>
         <Slider
+          id="run-concurrency"
+          aria-label="Concurrency"
+          aria-valuetext={`${value.concurrency} parallel`}
           min={1}
           max={10}
           step={1}

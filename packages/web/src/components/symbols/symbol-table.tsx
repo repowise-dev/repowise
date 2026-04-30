@@ -236,8 +236,17 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                 {sorted.map((sym) => (
                   <tr
                     key={sym.id}
-                    className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer"
+                    className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0 cursor-pointer focus:outline-none focus:bg-[var(--color-bg-elevated)]"
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`View ${sym.qualified_name || sym.name}`}
                     onClick={() => setSelected(sym)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelected(sym);
+                      }
+                    }}
                   >
                     <td className="px-4 py-2.5">
                       <ImportanceBar score={importanceScores.get(sym.id) ?? 0} />
@@ -259,7 +268,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                         {truncatePath(sym.file_path)}:{sym.start_line}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums hidden sm:table-cell">
+                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums hidden sm:table-cell text-right">
                       <span
                         className={cn(
                           sym.complexity_estimate > 15

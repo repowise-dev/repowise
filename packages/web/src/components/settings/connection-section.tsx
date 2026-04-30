@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { config } from "@/lib/config";
 import { getHealth } from "@/lib/api/health";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -22,9 +23,24 @@ export function ConnectionSection() {
     setApiKey(config.getApiKey());
   }, []);
 
+  const initialUrlRef = useRef("");
+  const initialKeyRef = useRef("");
+
+  useEffect(() => {
+    initialUrlRef.current = config.getApiUrl();
+    initialKeyRef.current = config.getApiKey();
+  }, []);
+
   function save() {
+    const changed =
+      apiUrl !== initialUrlRef.current || apiKey !== initialKeyRef.current;
     config.setApiUrl(apiUrl);
     config.setApiKey(apiKey);
+    if (changed) {
+      initialUrlRef.current = apiUrl;
+      initialKeyRef.current = apiKey;
+      toast.success("Connection settings saved");
+    }
   }
 
   async function testConnection() {

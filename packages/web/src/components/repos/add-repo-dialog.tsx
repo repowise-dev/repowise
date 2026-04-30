@@ -80,7 +80,7 @@ export function AddRepoDialog({ variant = "default" }: Props) {
       )}
 
       <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset(); }}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md w-[calc(100vw-2rem)]">
           <DialogHeader>
             <DialogTitle>Add Repository</DialogTitle>
           </DialogHeader>

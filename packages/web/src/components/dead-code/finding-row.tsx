@@ -4,10 +4,32 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { truncatePath, formatConfidence } from "@/lib/utils/format";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { formatConfidence } from "@/lib/utils/format";
 import { patchDeadCodeFinding } from "@/lib/api/dead-code";
 import { cn } from "@/lib/utils/cn";
 import type { DeadCodeFindingResponse } from "@/lib/api/types";
+
+const STATUS_LABELS: Record<string, { title: string; description: string; confirmLabel: string; destructive: boolean }> = {
+  resolved: {
+    title: "Resolve finding?",
+    description: "Mark this finding as resolved. You can undo from the toast.",
+    confirmLabel: "Resolve",
+    destructive: false,
+  },
+  acknowledged: {
+    title: "Acknowledge finding?",
+    description: "Mark this finding as acknowledged.",
+    confirmLabel: "Acknowledge",
+    destructive: false,
+  },
+  false_positive: {
+    title: "Mark as false positive?",
+    description: "This finding will be excluded from future analyses. You can undo from the toast.",
+    confirmLabel: "Mark FP",
+    destructive: true,
+  },
+};
 
 interface FindingRowProps {
   finding: DeadCodeFindingResponse;
@@ -25,12 +47,32 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRowProps) {
   const [pending, setPending] = useState(false);
+  const [confirmStatus, setConfirmStatus] = useState<string | null>(null);
 
-  const patch = async (status: string) => {
+  const previousStatus = finding.status;
+
+  const applyPatch = async (status: string) => {
     setPending(true);
     try {
       const updated = await patchDeadCodeFinding(finding.id, { status });
       onUpdate(updated);
+      setConfirmStatus(null);
+      toast.success(`Finding ${status.replace(/_/g, " ")}`, {
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            try {
+              const reverted = await patchDeadCodeFinding(finding.id, { status: previousStatus });
+              onUpdate(reverted);
+            } catch (err) {
+              toast.error(
+                err instanceof Error ? `Couldn't undo: ${err.message}` : "Couldn't undo",
+              );
+            }
+          },
+        },
+        duration: 6000,
+      });
     } catch (err) {
       toast.error(
         err instanceof Error ? `Couldn't update finding: ${err.message}` : "Couldn't update finding",
@@ -39,6 +81,10 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
       setPending(false);
     }
   };
+
+  const requestPatch = (status: string) => setConfirmStatus(status);
+
+  const confirmConfig = confirmStatus ? STATUS_LABELS[confirmStatus] : null;
 
   return (
     <tr
@@ -106,7 +152,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
               size="sm"
               variant="ghost"
               disabled={pending}
-              onClick={() => patch("resolved")}
+              onClick={() => requestPatch("resolved")}
               className="h-6 px-2 text-xs text-green-500 hover:text-green-400"
               aria-label={`Resolve ${finding.file_path}`}
             >
@@ -116,7 +162,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
               size="sm"
               variant="ghost"
               disabled={pending}
-              onClick={() => patch("acknowledged")}
+              onClick={() => requestPatch("acknowledged")}
               className="h-6 px-2 text-xs"
               aria-label={`Acknowledge ${finding.file_path}`}
             >
@@ -126,7 +172,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
               size="sm"
               variant="ghost"
               disabled={pending}
-              onClick={() => patch("false_positive")}
+              onClick={() => requestPatch("false_positive")}
               className="h-6 px-2 text-xs text-[var(--color-text-tertiary)]"
               aria-label={`Mark ${finding.file_path} as false positive`}
             >
@@ -135,6 +181,18 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
           </div>
         )}
       </td>
+      {confirmConfig && (
+        <ConfirmDialog
+          open={confirmStatus !== null}
+          onOpenChange={(o) => !o && setConfirmStatus(null)}
+          title={confirmConfig.title}
+          description={confirmConfig.description}
+          confirmLabel={confirmConfig.confirmLabel}
+          destructive={confirmConfig.destructive}
+          loading={pending}
+          onConfirm={() => applyPatch(confirmStatus!)}
+        />
+      )}
     </tr>
   );
 }

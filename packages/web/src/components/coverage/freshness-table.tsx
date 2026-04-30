@@ -39,12 +39,14 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
   return (
     <div className="space-y-4">
       {/* Filter tabs */}
-      <div className="flex items-center gap-1">
+      <div role="tablist" aria-label="Freshness filter" className="flex items-center gap-1">
         {(["all", "fresh", "stale", "outdated"] as Filter[]).map((f) => {
           const count = f === "all" ? pages.length : pages.filter((p) => p.freshness_status === f).length;
           return (
             <button
               key={f}
+              role="tab"
+              aria-selected={filter === f}
               onClick={() => setFilter(f)}
               className={cn(
                 "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",

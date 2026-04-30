@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { Radar, Plus, Flame } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils/cn";
 import {
   analyzeBlastRadius,
@@ -244,7 +245,7 @@ export default function BlastRadiusPage() {
 
   // Suggestions: top 8 hotspots so users can prefill with one click instead
   // of remembering paths. Falls back gracefully if the call fails.
-  const { data: hotspotSuggestions } = useSWR(
+  const { data: hotspotSuggestions, isLoading: hotspotSuggestionsLoading } = useSWR(
     repoId ? ["blast-radius-suggestions", repoId] : null,
     () => getHotspots(repoId, 8),
   );
@@ -325,6 +326,14 @@ export default function BlastRadiusPage() {
             </button>
             .
           </p>
+
+          {hotspotSuggestionsLoading && !hotspotSuggestions && (
+            <div className="flex flex-wrap gap-2">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <Skeleton key={i} className="h-7 w-32 rounded-full" />
+              ))}
+            </div>
+          )}
 
           {hotspotSuggestions && hotspotSuggestions.length > 0 && (
             <div className="flex flex-wrap gap-2">

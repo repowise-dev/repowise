@@ -17,7 +17,7 @@ export default function SearchPage() {
   const [query, setQuery] = useState("");
   const [searchType, setSearchType] = useState<SearchType>("semantic");
 
-  const { results, isLoading, isTyping } = useSearch(query, {
+  const { results, isLoading, isTyping, error } = useSearch(query, {
     search_type: searchType,
     limit: 20,
   });
@@ -43,6 +43,12 @@ export default function SearchPage() {
         searchType={searchType}
         onSearchTypeChange={setSearchType}
       />
+
+      {showResults && error && (
+        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-outdated)]">
+          Couldn&apos;t run search: {error instanceof Error ? error.message : "unknown error"}
+        </div>
+      )}
 
       {!showResults ? (
         <EmptyState

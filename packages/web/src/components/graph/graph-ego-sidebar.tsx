@@ -16,7 +16,7 @@ export function GraphEgoSidebar({ graph, onClose, onNavigateToNode }: GraphEgoSi
   const centerNode = graph.nodes.find((n) => n.node_id === graph.center_node_id);
 
   return (
-    <div className="absolute top-3 right-3 z-20 w-72 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/95 backdrop-blur-sm shadow-xl text-xs">
+    <div className="absolute top-3 right-3 z-20 w-[min(18rem,calc(100vw-1.5rem))] rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/95 backdrop-blur-sm shadow-xl text-xs">
       {/* Header */}
       <div className="flex items-start justify-between p-3 border-b border-[var(--color-border-default)]">
         <div className="flex-1 min-w-0">
