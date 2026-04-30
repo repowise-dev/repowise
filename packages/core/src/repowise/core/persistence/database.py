@@ -33,7 +33,11 @@ from .models import Base
 # busy_timeout gives that block a bounded retry window before giving up.
 # Foreign keys are off by default in SQLite for legacy reasons; we want them on
 # everywhere so our FK-driven cascades behave the same in tests and production.
-_SQLITE_BUSY_TIMEOUT_MS = 5000
+# 30s gives heavy bulk writes (e.g. persisting tens of thousands of graph
+# edges in one transaction) enough headroom to finish before a concurrent
+# progress-callback write raises "database is locked". 5s was too tight
+# for large repos. SQLite blocks (doesn't busy-loop) so this is cheap.
+_SQLITE_BUSY_TIMEOUT_MS = 30000
 
 _SQLITE_PRAGMAS: tuple[tuple[str, str], ...] = (
     ("journal_mode", "WAL"),
