@@ -191,8 +191,8 @@ class CrossRepoEnricher:
 
     @property
     def has_contract_data(self) -> bool:
-        """True if contract links are available."""
-        return bool(self._contract_links)
+        """True if contracts or contract links are available."""
+        return bool(self._contracts or self._contract_links)
 
     def get_cross_repo_partners(
         self, repo_alias: str, file_path: str
