@@ -113,8 +113,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db(engine)
     session_factory = create_session_factory(engine)
 
-    # Reset any jobs left in "running" state from a previous server instance
-    # (crash or restart) — they can never complete now.
+    # Reset any jobs left in "running" or "pending" state from a previous
+    # server instance (crash, restart, or cancellation between row-insert and
+    # background-task launch) — they can never complete now and would block
+    # new syncs via the active-job guard in the repos router.
     # Note: with multi-worker deployments this is a best-effort race; the
     # try/except prevents a SQLite lock error from crashing startup.
     try:
@@ -125,7 +127,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async with get_session(session_factory) as session:
             stale_result = await session.execute(
                 sa_update(GenerationJob)
-                .where(GenerationJob.status == "running")
+                .where(GenerationJob.status.in_(["running", "pending"]))
                 .values(
                     status="failed",
                     error_message="Server restarted — job interrupted",
