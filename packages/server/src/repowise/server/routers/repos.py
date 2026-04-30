@@ -228,7 +228,7 @@ async def sync_repo(
     # see the job row.  SQLite WAL isolation hides uncommitted rows from
     # other connections, so flush() alone is not sufficient.
     await session.commit()
-    _launch_job_task(request, job.id)
+    _launch_job_task(request, job.id, repo_id)
     return {"job_id": job.id, "status": "accepted"}
 
 
@@ -266,11 +266,24 @@ async def full_resync(
     # Commit (not just flush) so the background task's separate session can
     # see the job row.  See sync_repo comment for rationale.
     await session.commit()
-    _launch_job_task(request, job.id)
+    _launch_job_task(request, job.id, repo_id)
     return {"job_id": job.id, "status": "accepted"}
 
 
-def _launch_job_task(request: Request, job_id: str) -> None:
+def _resolve_repo_session_factory(app_state, repo_id: str):
+    """Return the session_factory whose database contains this repo's row.
+
+    In workspace mode each repo has its own ``wiki.db`` registered under
+    ``app_state.workspace_sessions[repo_id]``. The primary session_factory
+    (``app_state.session_factory``) does NOT see those rows.
+    """
+    ws_sessions = getattr(app_state, "workspace_sessions", None)
+    if ws_sessions and repo_id in ws_sessions:
+        return ws_sessions[repo_id]
+    return app_state.session_factory
+
+
+def _launch_job_task(request: Request, job_id: str, repo_id: str) -> None:
     """Launch a background job task with proper lifecycle management.
 
     Stores a strong reference in ``app.state.background_tasks`` to prevent
@@ -280,14 +293,19 @@ def _launch_job_task(request: Request, job_id: str) -> None:
     If task creation itself fails (or the task ends with an unhandled
     exception that ``execute_job`` couldn't record), we mark the job as
     failed via a fallback path so the active-job guard never gets stuck.
+
+    ``repo_id`` is required so we can resolve the per-repo session factory
+    in workspace mode — that's the same DB the route handler just wrote
+    the job to.
     """
     app_state = request.app.state
+    session_factory = _resolve_repo_session_factory(app_state, repo_id)
 
     async def _mark_failed(reason: str) -> None:
         try:
             from repowise.core.persistence.crud import update_job_status
 
-            async with get_session(app_state.session_factory) as session:
+            async with get_session(session_factory) as session:
                 await update_job_status(
                     session,
                     job_id,
@@ -298,7 +316,10 @@ def _launch_job_task(request: Request, job_id: str) -> None:
             logger.exception("fallback_job_failure_record_failed", extra={"job_id": job_id})
 
     try:
-        task = asyncio.create_task(execute_job(job_id, app_state), name=f"job-{job_id}")
+        task = asyncio.create_task(
+            execute_job(job_id, app_state, session_factory_override=session_factory),
+            name=f"job-{job_id}",
+        )
     except Exception as exc:
         logger.exception("create_task_failed", extra={"job_id": job_id})
         # Schedule the failure-marking on the running loop; we're already in

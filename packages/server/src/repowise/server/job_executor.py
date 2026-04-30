@@ -127,7 +127,11 @@ class JobProgressCallback:
             logger.debug("progress_update_failed", job_id=self._job_id, exc_info=True)
 
 
-async def execute_job(job_id: str, app_state: Any) -> None:
+async def execute_job(
+    job_id: str,
+    app_state: Any,
+    session_factory_override: Any = None,
+) -> None:
     """Execute a pending pipeline job in the background.
 
     This is the single entry point called by the endpoint via
@@ -138,6 +142,13 @@ async def execute_job(job_id: str, app_state: Any) -> None:
     3. Runs ``run_pipeline()``
     4. Persists all results via ``persist_pipeline_result()``
     5. Marks the job as ``completed`` (or ``failed`` on error)
+
+    In workspace mode, each repo has its own ``wiki.db`` and the route
+    handler that created this job committed it to a per-repo session
+    factory (``app_state.workspace_sessions[repo_id]``), not the primary
+    one. The caller must pass that same factory in
+    ``session_factory_override`` so we read from the same database — else
+    we'd see "job_not_found" and the row would stay pending forever.
     """
     start = time.monotonic()
     progress: JobProgressCallback | None = None
@@ -148,7 +159,7 @@ async def execute_job(job_id: str, app_state: Any) -> None:
         # missing attribute (e.g., partially-initialised app_state during
         # development hot-reload) gets recorded as a job failure instead of
         # leaving the row stuck in 'pending' forever.
-        session_factory = app_state.session_factory
+        session_factory = session_factory_override or app_state.session_factory
         fts = app_state.fts
         vector_store = app_state.vector_store
 
