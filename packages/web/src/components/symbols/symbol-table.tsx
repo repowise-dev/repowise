@@ -204,13 +204,21 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
         <>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
             <table className="w-full text-sm">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
                   {columns.map(({ col, label, hideOnMobile }) => (
                     <th
                       key={col}
+                      scope="col"
+                      aria-sort={
+                        sortCol === col
+                          ? sortDir === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none"
+                      }
                       className={cn(
-                        "px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider cursor-pointer select-none hover:text-[var(--color-text-primary)] transition-colors",
+                        "px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider cursor-pointer select-none hover:text-[var(--color-text-primary)] transition-colors bg-[var(--color-bg-elevated)]",
                         hideOnMobile && "hidden sm:table-cell",
                       )}
                       onClick={() => handleSort(col)}
@@ -234,10 +242,10 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                     <td className="px-4 py-2.5">
                       <ImportanceBar score={importanceScores.get(sym.id) ?? 0} />
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-0" style={{ maxWidth: 0 }}>
+                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[200px] max-w-[420px]">
                       <span className="truncate block" title={sym.qualified_name || sym.name}>{sym.name}</span>
                       {sym.parent_name && (
-                        <span className="text-[var(--color-text-tertiary)]">.{sym.parent_name}</span>
+                        <span className="block truncate text-[var(--color-text-tertiary)]" title={sym.parent_name}>.{sym.parent_name}</span>
                       )}
                     </td>
                     <td className="px-4 py-2.5">
@@ -246,7 +254,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                     <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] hidden sm:table-cell">
                       {sym.language}
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] min-w-0 hidden sm:table-cell" style={{ maxWidth: 0 }}>
+                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-tertiary)] min-w-[200px] max-w-[420px] hidden sm:table-cell">
                       <span className="block truncate" title={`${sym.file_path}:${sym.start_line}`}>
                         {truncatePath(sym.file_path)}:{sym.start_line}
                       </span>

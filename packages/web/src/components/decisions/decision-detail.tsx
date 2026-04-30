@@ -3,6 +3,7 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { patchDecision } from "@/lib/api/decisions";
 import type { DecisionRecordResponse } from "@/lib/api/types";
@@ -28,6 +29,13 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
     try {
       await patchDecision(repoId, decision.id, { status: newStatus });
       setStatus(newStatus as typeof status);
+      toast.success(`Decision marked ${newStatus.replace(/_/g, " ")}`);
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? `Couldn't update decision: ${err.message}`
+          : "Couldn't update decision",
+      );
     } finally {
       setLoading(false);
     }

@@ -68,7 +68,10 @@ export default async function WorkspaceDashboardPage() {
         <p className="text-sm text-[var(--color-text-secondary)]">
           {workspace?.repos.length ?? 0} repositories
           {workspace?.workspace_root && (
-            <span className="text-[var(--color-text-tertiary)]">
+            <span
+              className="text-[var(--color-text-tertiary)] font-mono break-all"
+              title={workspace.workspace_root}
+            >
               {" "}&middot; {workspace.workspace_root}
             </span>
           )}

@@ -45,11 +45,12 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
   return (
     <div className="space-y-4">
       {/* Filters */}
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+          aria-label="Filter by status"
+          className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
         >
           <option value="all">All statuses</option>
           <option value="active">Active</option>
@@ -60,7 +61,8 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
         <select
           value={sourceFilter}
           onChange={(e) => setSourceFilter(e.target.value)}
-          className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+          aria-label="Filter by source"
+          className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
         >
           <option value="all">All sources</option>
           <option value="inline_marker">Inline markers</option>
@@ -73,14 +75,15 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
       {/* Table */}
       <div className="overflow-x-auto rounded-lg border border-[var(--color-border-default)]">
         <table className="w-full text-sm">
-          <thead>
+          <caption className="sr-only">Architectural decisions</caption>
+          <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
             <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-              <th className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Title</th>
-              <th className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Status</th>
-              <th className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Source</th>
-              <th className="px-4 py-2.5 text-right font-medium text-[var(--color-text-secondary)]">Confidence</th>
-              <th className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Tags</th>
-              <th className="px-4 py-2.5 text-right font-medium text-[var(--color-text-secondary)]">Staleness</th>
+              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Title</th>
+              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Status</th>
+              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Source</th>
+              <th scope="col" className="px-4 py-2.5 text-right font-medium text-[var(--color-text-secondary)]">Confidence</th>
+              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Tags</th>
+              <th scope="col" className="px-4 py-2.5 text-right font-medium text-[var(--color-text-secondary)]">Staleness</th>
             </tr>
           </thead>
           <tbody>
@@ -91,7 +94,7 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
                   d.status === "proposed" ? "border-l-2 border-l-amber-400" : ""
                 }`}
               >
-                <td className="px-4 py-2.5" style={{ maxWidth: 0 }}>
+                <td className="px-4 py-2.5 min-w-[240px] max-w-[520px]">
                   <Link
                     href={`/repos/${repoId}/decisions/${d.id}`}
                     className="font-medium text-[var(--color-accent-primary)] hover:underline block truncate"
@@ -119,15 +122,23 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
                         {tag}
                       </span>
                     ))}
+                    {d.tags.length > 3 && (
+                      <span
+                        className="inline-block rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)]"
+                        title={d.tags.slice(3).join(", ")}
+                      >
+                        +{d.tags.length - 3}
+                      </span>
+                    )}
                   </div>
                 </td>
-                <td className="px-4 py-2.5 text-right tabular-nums">
+                <td className="px-4 py-2.5 text-right tabular-nums" title="0 = fresh, 1 = fully stale">
                   {d.staleness_score > 0.5 ? (
-                    <span className="text-red-500">{d.staleness_score.toFixed(1)}</span>
+                    <span className="text-red-500">{Math.round(d.staleness_score * 100)}%</span>
                   ) : d.staleness_score > 0 ? (
-                    <span className="text-[var(--color-text-tertiary)]">{d.staleness_score.toFixed(1)}</span>
+                    <span className="text-[var(--color-text-tertiary)]">{Math.round(d.staleness_score * 100)}%</span>
                   ) : (
-                    <span className="text-[var(--color-text-tertiary)]">-</span>
+                    <span className="text-[var(--color-text-tertiary)]">—</span>
                   )}
                 </td>
               </tr>

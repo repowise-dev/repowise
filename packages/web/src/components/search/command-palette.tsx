@@ -28,8 +28,13 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
         setOpen((o) => !o);
       }
     };
+    const openHandler = () => setOpen(true);
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("repowise:open-command-palette", openHandler);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      window.removeEventListener("repowise:open-command-palette", openHandler);
+    };
   }, []);
 
   const navigate = useCallback(
@@ -46,7 +51,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
       open={open}
       onOpenChange={setOpen}
       label="Command palette"
-      className="fixed inset-0 z-[calc(var(--z-modal)+1)] flex items-start justify-center pt-[20vh]"
+      className="fixed inset-0 z-[calc(var(--z-modal)+1)] flex items-start justify-center pt-[10vh] sm:pt-[20vh] px-4"
     >
       <div
         className="fixed inset-0 bg-black/60 backdrop-blur-sm"

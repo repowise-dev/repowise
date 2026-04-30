@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { truncatePath, formatConfidence } from "@/lib/utils/format";
@@ -30,6 +31,10 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
     try {
       const updated = await patchDeadCodeFinding(finding.id, { status });
       onUpdate(updated);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? `Couldn't update finding: ${err.message}` : "Couldn't update finding",
+      );
     } finally {
       setPending(false);
     }
@@ -47,13 +52,14 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
           type="checkbox"
           checked={selected}
           onChange={() => onToggle(finding.id)}
+          aria-label={`Select finding ${finding.file_path}`}
           className="rounded border-[var(--color-border-default)]"
         />
       </td>
-      <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)]" style={{ maxWidth: 0 }}>
+      <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[200px] max-w-[480px]">
         <span className="truncate block" title={finding.file_path}>{finding.file_path}</span>
         {finding.symbol_name && (
-          <span className="text-[var(--color-text-tertiary)]">{finding.symbol_name}</span>
+          <span className="block truncate text-[var(--color-text-tertiary)]" title={finding.symbol_name}>{finding.symbol_name}</span>
         )}
       </td>
       <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] tabular-nums">
@@ -93,15 +99,16 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
           {finding.status.replace(/_/g, " ")}
         </span>
       </td>
-      <td className="px-4 py-2.5 hidden lg:table-cell">
+      <td className="px-4 py-2.5">
         {finding.status === "open" && (
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 flex-wrap justify-end">
             <Button
               size="sm"
               variant="ghost"
               disabled={pending}
               onClick={() => patch("resolved")}
               className="h-6 px-2 text-xs text-green-500 hover:text-green-400"
+              aria-label={`Resolve ${finding.file_path}`}
             >
               Resolve
             </Button>
@@ -111,6 +118,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
               disabled={pending}
               onClick={() => patch("acknowledged")}
               className="h-6 px-2 text-xs"
+              aria-label={`Acknowledge ${finding.file_path}`}
             >
               Ack
             </Button>
@@ -120,6 +128,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
               disabled={pending}
               onClick={() => patch("false_positive")}
               className="h-6 px-2 text-xs text-[var(--color-text-tertiary)]"
+              aria-label={`Mark ${finding.file_path} as false positive`}
             >
               FP
             </Button>

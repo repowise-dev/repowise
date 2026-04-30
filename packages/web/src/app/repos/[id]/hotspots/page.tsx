@@ -142,7 +142,12 @@ export default async function HotspotsPage({
               <div className="mt-3 space-y-1.5">
                 {summary.top_owners.slice(0, 5).map((o, i) => (
                   <div key={o.email || `owner-${i}`} className="flex items-center justify-between text-xs">
-                    <span className="text-[var(--color-text-secondary)] truncate">{o.name}</span>
+                    <span
+                      className="text-[var(--color-text-secondary)] truncate"
+                      title={o.email ? `${o.name} <${o.email}>` : o.name}
+                    >
+                      {o.name}
+                    </span>
                     <span className="text-[var(--color-text-tertiary)] tabular-nums ml-2">
                       {formatNumber(o.file_count)} files ({Math.round(o.pct * 100)}%)
                     </span>

@@ -125,3 +125,6 @@ docs/multi-repo/
 
 # Local-only language work tracker (not for git)
 docs/LANGUAGE_REMAINING_WORK.md
+
+# Local UI/UX audit notes
+AUDIT_UI_UX.md

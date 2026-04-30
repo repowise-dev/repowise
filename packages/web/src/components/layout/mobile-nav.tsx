@@ -91,17 +91,17 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
   }, [pathname]);
 
   return (
-    <div className="flex md:hidden h-14 items-center gap-3 px-4 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0">
+    <div className="flex md:hidden min-h-14 items-center gap-3 px-4 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0">
       <Button
         variant="ghost"
         size="icon"
         onClick={() => setOpen(true)}
         aria-label="Open navigation menu"
-        className="h-9 w-9"
+        className="h-11 w-11"
       >
         <Menu className="h-5 w-5" />
       </Button>
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
         <Image
           src="/repowise-logo.png"
           alt="repowise"
@@ -113,9 +113,20 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           repowise
         </span>
       </div>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent("repowise:open-command-palette"));
+        }}
+        aria-label="Open search"
+        className="h-11 w-11"
+      >
+        <Search className="h-5 w-5" />
+      </Button>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="left" className="p-0">
+        <SheetContent side="left" className="w-72 p-0">
           <SheetHeader className="border-b border-[var(--color-border-default)] h-14 flex-row items-center gap-3 py-0 px-4">
             <Image
               src="/repowise-logo.png"

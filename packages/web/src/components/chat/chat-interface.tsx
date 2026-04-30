@@ -225,6 +225,7 @@ export function ChatInterface({ repoId, repoName }: ChatInterfaceProps) {
                 }
               }}
               placeholder="Ask anything about this codebase..."
+              aria-label="Chat message"
               rows={1}
               className="flex-1 resize-none bg-transparent text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none leading-6 max-h-36 overflow-y-auto"
               style={{ scrollbarWidth: "none" }}
@@ -234,6 +235,8 @@ export function ChatInterface({ repoId, repoName }: ChatInterfaceProps) {
               className="h-8 w-8 shrink-0 rounded-xl"
               onClick={isStreaming ? reset : handleSubmit}
               disabled={!input.trim() && !isStreaming}
+              aria-label={isStreaming ? "Stop generation" : "Send message"}
+              title={isStreaming ? "Stop generation" : "Send message"}
             >
               {isStreaming ? (
                 <StopCircle className="h-4 w-4" />

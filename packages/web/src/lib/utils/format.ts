@@ -14,8 +14,9 @@ export function formatTokens(n: number): string {
   return formatNumber(n);
 }
 
-/** Format USD cost: 0.004 → "$0.00", 4.2 → "$4.20", 18.6 → "$18.60" */
+/** Format USD cost: 0.004 → "<$0.01", 4.2 → "$4.20", 18.6 → "$18.60" */
 export function formatCost(usd: number): string {
+  if (usd > 0 && usd < 0.01) return "<$0.01";
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",

@@ -125,9 +125,16 @@ export default function CostsPage() {
                 >
                   <XAxis
                     dataKey="group"
-                    tick={{ fill: "var(--color-text-tertiary)", fontSize: 10 }}
+                    tick={{ fill: "var(--color-text-tertiary)", fontSize: 11 }}
                     axisLine={false}
                     tickLine={false}
+                    interval="preserveStartEnd"
+                    minTickGap={24}
+                    tickFormatter={(v: string) => {
+                      // ISO date "YYYY-MM-DD" → "M/D"
+                      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+                      return m ? `${Number(m[2])}/${Number(m[3])}` : v;
+                    }}
                   />
                   <YAxis
                     tick={{ fill: "var(--color-text-tertiary)", fontSize: 10 }}
@@ -204,8 +211,8 @@ export default function CostsPage() {
                       key={row.group}
                       className="hover:bg-[var(--color-bg-elevated)] transition-colors"
                     >
-                      <td className="py-2 pr-4 text-[var(--color-text-primary)] font-mono text-xs">
-                        {row.group}
+                      <td className="py-2 pr-4 text-[var(--color-text-primary)] font-mono text-xs max-w-[280px]">
+                        <span className="block truncate" title={row.group}>{row.group}</span>
                       </td>
                       <td className="py-2 pr-4 text-right text-[var(--color-text-secondary)] tabular-nums">
                         {formatNumber(row.calls)}

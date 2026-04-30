@@ -32,6 +32,15 @@ export function MermaidDiagram({ chart }: Props) {
         .render(id, chart)
         .then(({ svg }) => {
           el.innerHTML = svg;
+          // Make the rendered SVG fluid so it reflows on narrow viewports
+          // instead of forcing horizontal scroll.
+          const svgEl = el.querySelector("svg");
+          if (svgEl) {
+            svgEl.removeAttribute("width");
+            svgEl.removeAttribute("height");
+            svgEl.style.maxWidth = "100%";
+            svgEl.style.height = "auto";
+          }
         })
         .catch((e: unknown) => {
           setError(e instanceof Error ? e.message : "Diagram render failed");
@@ -48,9 +57,12 @@ export function MermaidDiagram({ chart }: Props) {
   }
 
   return (
-    <div
-      ref={ref}
+    <figure
+      role="img"
+      aria-label="Mermaid diagram"
       className="my-4 flex justify-center overflow-x-auto rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4"
-    />
+    >
+      <div ref={ref} className="w-full" />
+    </figure>
   );
 }

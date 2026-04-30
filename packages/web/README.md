@@ -30,6 +30,10 @@ The home page. Shows aggregate stats across all registered repositories (total f
 
 Landing page for a single repo. Displays health score, git insights (commit activity, churn distribution, bus factor), documentation coverage, and quick links to all sub-pages. Includes a **Graph Intelligence** section with expandable architecture communities (cohesion scores, member lists, neighboring communities) and execution flows panel (entry point scoring, BFS call traces, cross-community classification). Operations panel for triggering sync and full-resync jobs.
 
+### Repository Overview — Standalone (`/repos/[id]/overview`)
+
+Dedicated overview surface separate from the repo landing page. Aggregates 15 parallel data fetches and degrades gracefully on any failure. Sections include the key metrics strip, attention panel (auto-derived issues), language donut, ownership treemap, hotspots mini-leaderboard, decisions timeline, module minimap, dependency heatmap, community summary grid, execution flows panel, and Git Insights row (churn histogram, commit-category donut + sparkline, bus-factor panel).
+
 ### Wiki Pages (`/repos/[id]/wiki/[...slug]`)
 
 The core documentation viewer. Renders AI-generated wiki pages as MDX with:
@@ -94,6 +98,26 @@ Split-pane documentation browser (VS Code-style). Left panel is a searchable fil
 
 Lists extracted architectural decision records with health metrics. Each decision has a detail page (`/repos/[id]/decisions/[decisionId]`) showing context, rationale, alternatives, and consequences rendered as markdown, with Confirm/Dismiss/Deprecate actions.
 
+### Blast Radius (`/repos/[id]/blast-radius`)
+
+Pre-PR impact estimator. Paste a list of changed file paths (one per line) — or click hotspot suggestion chips to prefill — and get an overall risk score (0–10), breakdown of direct risks (per-file risk score, temporal hotspot, centrality), transitive affected files with depth, co-change warnings (files that historically change together but aren't in the diff), recommended reviewers ranked by ownership, and test gaps for code paths without coverage.
+
+### Cost Tracking (`/repos/[id]/costs`)
+
+LLM token usage and spend dashboard. Shows total cost, total calls, input/output token counts (all-time), a daily-spend bar chart, and a breakdown table grouped by day, model, or operation.
+
+### Workspace Dashboard (`/workspace`)
+
+Multi-repo workspace surface. Aggregates totals (files, symbols, average doc coverage, hotspot count, page count) across all registered repos, renders a RepoCard grid with per-repo stats, surfaces cross-repo intelligence (workspace-wide co-change summary, API contract counts by type with provider/consumer split), and shows a top cross-repo co-changes table with deep links into the full views.
+
+### Cross-Repo Co-Changes (`/workspace/co-changes`)
+
+Full browser for files across repositories that change together based on git history. Filterable by source/target repo with summary stats (total pairs, distinct repo pairs).
+
+### API Contracts (`/workspace/contracts`)
+
+All detected API contracts (HTTP, gRPC, topic) and the provider/consumer file links between repos. Filter by contract type, repo, or role. Surfaces unmatched contracts (providers without consumers, or vice versa).
+
 ### Settings (`/settings` and `/repos/[id]/settings`)
 
 Global settings page with sections for API connection, LLM provider/model selection, webhook configuration, and MCP integration. Per-repo settings available under each repository.
@@ -154,7 +178,13 @@ components/
   git/          Churn bars, contributor charts, hotspot/ownership tables
   symbols/      Symbol table, symbol drawer, symbol graph panel (metrics + callers)
   dashboard/    Health ring, attention panel, quick actions, language donut,
-                ownership treemap, community summary grid, execution flows panel
+                ownership treemap, community summary grid, execution flows panel,
+                module minimap, dependency heatmap, hotspots mini, decisions timeline
+  chat/         Streaming chat interface, message bubbles, model selector,
+                tool-call blocks, source citations, conversation history, artifact panel
+  workspace/    Repo cards, cross-repo summary, co-change table,
+                contract links table, contract type / role badges
+  settings/     Connection, MCP integration, webhook, provider sections
   shared/       Stat cards, empty states
 ```
 

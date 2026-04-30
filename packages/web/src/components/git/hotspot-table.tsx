@@ -109,7 +109,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
             className="pl-8 h-8 w-full sm:w-56 text-xs"
           />
         </div>
-        <div className="flex rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
+        <div className="flex flex-wrap rounded-md border border-[var(--color-border-default)] overflow-hidden text-xs">
           {filters.map((f) => (
             <button
               key={f.key}
@@ -134,7 +134,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
       ) : (
         <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
               <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-8">
                   #
@@ -185,7 +185,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                     <td className="px-3 py-2.5 text-[var(--color-text-tertiary)] tabular-nums text-xs">
                       {i + 1}
                     </td>
-                    <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-text-primary)]" style={{ maxWidth: 0 }}>
+                    <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[220px] max-w-[520px]">
                       <span className="block truncate" title={h.file_path}>{h.file_path}</span>
                     </td>
                     <td className="px-3 py-2.5 tabular-nums text-xs">

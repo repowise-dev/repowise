@@ -46,13 +46,19 @@ export default async function RootLayout({
       className={`${GeistSans.variable} ${GeistMono.variable} dark`}
     >
       <body className="bg-[var(--color-bg-root)] text-[var(--color-text-primary)] antialiased">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-[var(--color-bg-elevated)] focus:px-3 focus:py-2 focus:text-sm focus:text-[var(--color-text-primary)] focus:outline focus:outline-2 focus:outline-[var(--color-accent-primary)]"
+        >
+          Skip to content
+        </a>
         <NuqsAdapter>
         <TooltipProvider delayDuration={300}>
           <div className="flex h-screen overflow-hidden">
             <Sidebar repos={repos} workspace={workspace} />
             <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
               <MobileNav repos={repos} workspace={workspace} />
-              <main className="flex-1 overflow-auto min-w-0">
+              <main id="main-content" className="flex-1 overflow-auto min-w-0">
                 {children}
               </main>
             </div>

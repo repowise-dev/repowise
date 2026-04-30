@@ -164,31 +164,39 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
             ) : (
               <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto mt-2">
                 <table className="w-full text-sm">
-                  <thead>
+                  <caption className="sr-only">Dead code findings</caption>
+                  <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
                     <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-                      <th className="px-4 py-2.5 w-8">
+                      <th scope="col" className="px-4 py-2.5 w-8">
                         <input
                           type="checkbox"
                           checked={selected.size === current.length && current.length > 0}
                           onChange={toggleSelectAll}
+                          aria-label="Select all findings"
                           className="rounded border-[var(--color-border-default)]"
                         />
                       </th>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                      <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                         File / Symbol
                       </th>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
+                      <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
                         Confidence
                       </th>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
+                      <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                         Owner
                       </th>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-16 hidden md:table-cell">
+                      <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-16 hidden md:table-cell">
                         Lines
                       </th>
-                      <th className="px-4 py-2.5 w-20 hidden sm:table-cell" />
-                      <th className="px-4 py-2.5 w-24 hidden sm:table-cell" />
-                      <th className="px-4 py-2.5 w-36 hidden lg:table-cell" />
+                      <th scope="col" className="px-4 py-2.5 w-20 hidden sm:table-cell">
+                        <span className="sr-only">Safety</span>
+                      </th>
+                      <th scope="col" className="px-4 py-2.5 w-24 hidden sm:table-cell">
+                        <span className="sr-only">Status</span>
+                      </th>
+                      <th scope="col" className="px-4 py-2.5 w-36">
+                        <span className="sr-only">Actions</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
