@@ -17,6 +17,10 @@
     "./chat": "./src/chat.ts",
     "./workspace": "./src/workspace.ts"
   },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
   "scripts": {
     "type-check": "tsc --noEmit",
     "test": "vitest run --typecheck"
