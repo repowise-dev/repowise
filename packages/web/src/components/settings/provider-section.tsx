@@ -2,17 +2,17 @@
 
 import { useState, useEffect } from "react";
 import { config } from "@/lib/config";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise/ui/ui/card";
+import { Label } from "@repowise/ui/ui/label";
+import { Input } from "@repowise/ui/ui/input";
+import { Badge } from "@repowise/ui/ui/badge";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@repowise/ui/ui/select";
 
 const PROVIDERS = ["gemini", "openai", "anthropic", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai"] as const;

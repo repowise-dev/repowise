@@ -1,7 +1,7 @@
 import { MDXRemote } from "next-mdx-remote/rsc";
 import { codeToHtml } from "shiki";
-import { CodeBlock } from "./code-block";
-import { MermaidDiagram } from "./mermaid-diagram";
+import { CodeBlock } from "@repowise/ui/wiki/code-block";
+import { MermaidDiagram } from "@repowise/ui/wiki/mermaid-diagram";
 
 // ---------------------------------------------------------------------------
 // Custom MDX components

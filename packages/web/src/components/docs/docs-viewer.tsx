@@ -20,14 +20,14 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
-import { WikiMarkdown } from "@/components/wiki/wiki-markdown";
+import { WikiMarkdown } from "@repowise/ui/wiki/wiki-markdown";
 import { VersionHistory } from "@/components/wiki/version-history";
-import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Skeleton } from "@/components/ui/skeleton";
-import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
+import { ConfidenceBadge } from "@repowise/ui/wiki/confidence-badge";
+import { Button } from "@repowise/ui/ui/button";
+import { Badge } from "@repowise/ui/ui/badge";
+import { ScrollArea } from "@repowise/ui/ui/scroll-area";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { formatRelativeTime, formatTokens } from "@repowise/ui/lib/format";
 import { downloadTextFile } from "@/lib/utils/download";
 import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
 import type { PageResponse } from "@/lib/api/types";

@@ -1,19 +1,18 @@
 /**
- * Type-level tests for non-trivial contracts in @repowise/types (per
- * docs/HOSTED_IMPLEMENTATION_GUIDE.md §2.6 — "type-level test where the
- * contract is non-trivial"). These run via `vitest --typecheck` and fail at
- * tsc time if a canonical type drifts from what consumers depend on.
+ * Type-level tests for non-trivial contracts in @repowise/types. These run
+ * via `vitest --typecheck` and fail at tsc time if a canonical type drifts
+ * from what consumers depend on.
  *
  * Coverage focus:
  *   - ChatArtifact discriminated union: narrowing by `type` must surface
  *     the per-variant `data` shape.
  *   - GraphLink: backwards-compatible additions (edge_type, confidence) are
  *     optional, not required.
- *   - DeadCodeFinding: hosted-only enrichment fields stay optional so
- *     OSS-shaped artifacts still satisfy the contract.
+ *   - DeadCodeFinding: optional enrichment fields stay optional so canonical
+ *     artifacts still satisfy the contract without them.
  *   - DecisionRecord: status + source are union literals, not bare strings.
- *   - Hotspot vs hosted HotspotEntry: the canonical Hotspot uses `file_path`,
- *     not `path`, so a raw hosted entry should NOT be assignable.
+ *   - Hotspot key shape: canonical Hotspot uses `file_path`, not `path`, so
+ *     raw entries with a `path` key must adapt before assignment.
  */
 
 import { describe, expectTypeOf, it } from "vitest";
@@ -69,7 +68,7 @@ describe("GraphLink backwards compatibility", () => {
   });
 });
 
-describe("DeadCodeFinding hosted-only enrichment", () => {
+describe("DeadCodeFinding optional enrichment", () => {
   it("treats engine-raw fields (evidence, package, etc.) as optional", () => {
     const minimal: DeadCodeFinding = {
       id: "f1",
@@ -102,11 +101,11 @@ describe("DecisionRecord literal unions", () => {
 });
 
 describe("Canonical Hotspot key shape", () => {
-  it("uses file_path, not path — hosted's HotspotEntry must be adapted", () => {
+  it("uses file_path, not path — raw {path} entries must be adapted", () => {
     expectTypeOf<Hotspot>().toHaveProperty("file_path").toEqualTypeOf<string>();
-    // Hosted backend's raw shape uses `path`. A `{ path: ... }` object should
+    // Some downstream backends emit `path`. A `{ path: ... }` object should
     // NOT satisfy Hotspot; this is the contract that forces an adapter call.
-    type HostedRawHotspot = { path: string };
-    expectTypeOf<HostedRawHotspot>().not.toMatchTypeOf<Hotspot>();
+    type RawPathHotspot = { path: string };
+    expectTypeOf<RawPathHotspot>().not.toMatchTypeOf<Hotspot>();
   });
 });

@@ -6,8 +6,8 @@ import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Badge } from "@repowise/ui/ui/badge";
+import { ConfirmDialog } from "@repowise/ui/ui/confirm-dialog";
 import { patchDecision } from "@/lib/api/decisions";
 import type { DecisionRecordResponse } from "@/lib/api/types";
 

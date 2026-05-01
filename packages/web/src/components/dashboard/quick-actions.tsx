@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { RefreshCw, Trash2, AlertTriangle, Zap } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -11,12 +11,12 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from "@/components/ui/dialog";
+} from "@repowise/ui/ui/dialog";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
 import { GenerationProgress } from "@/components/jobs/generation-progress";
-import { formatNumber, formatCost, formatRelativeTime } from "@/lib/utils/format";
+import { formatNumber, formatCost, formatRelativeTime } from "@repowise/ui/lib/format";
 
 // Weighted average per-page token heuristics from cost_estimator.py _TOKEN_HEURISTICS
 const AVG_INPUT_TOKENS_PER_PAGE = 3500;

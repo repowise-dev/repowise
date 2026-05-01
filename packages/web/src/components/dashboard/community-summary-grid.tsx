@@ -2,11 +2,11 @@
 
 import { useState } from "react";
 import { Network, ChevronRight, ChevronDown, ArrowRight, X } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Skeleton } from "@/components/ui/skeleton";
-import { truncatePath } from "@/lib/utils/format";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { Badge } from "@repowise/ui/ui/badge";
+import { ScrollArea } from "@repowise/ui/ui/scroll-area";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { truncatePath } from "@repowise/ui/lib/format";
 import { useCommunityDetail } from "@/lib/hooks/use-graph";
 import { cn } from "@/lib/utils/cn";
 import type { CommunitySummaryItem } from "@/lib/api/types";

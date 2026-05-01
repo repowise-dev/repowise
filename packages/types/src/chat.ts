@@ -1,12 +1,11 @@
 /**
  * Canonical chat types — conversation, messages, and the discriminated-union
- * `ChatArtifact` type that lets the hosted UI render tool results as
+ * `ChatArtifact` type that lets the chat UI render tool results as
  * mini-visualizations instead of `<pre>{JSON}</pre>`.
  *
- * The discriminated union is **net-new** in @repowise/types — neither OSS nor
- * hosted previously had compile-time typing for tool-result artifacts.
- * Phase 2B's `chat/artifact-panel.tsx` will switch on `artifact.type` to pick
- * a renderer.
+ * The discriminated union is net-new in @repowise/types so the artifact
+ * panel can switch on `artifact.type` to pick a renderer with full
+ * compile-time narrowing per variant.
  */
 
 import type { GraphExport } from "./graph.js";
@@ -43,6 +42,34 @@ export interface ChatMessage {
     tool_calls?: ChatToolCall[];
   };
   created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// UI-flattened message shape (consumed by chat presentation components)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tool call as the chat UI sees it after streaming has accumulated state.
+ * Distinct from the wire `ChatToolCall` because it carries UI-only fields
+ * (`status`, `summary`, `artifact`) that are derived during the SSE merge.
+ */
+export interface ChatUIToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  summary?: string;
+  artifact?: { type: string; data: Record<string, unknown> };
+  status: "running" | "done" | "error";
+}
+
+export interface ChatUIMessage {
+  id: string;
+  serverId?: string;
+  role: "user" | "assistant";
+  text: string;
+  toolCalls: ChatUIToolCall[];
+  isStreaming: boolean;
 }
 
 // ---------------------------------------------------------------------------

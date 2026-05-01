@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@repowise/ui/ui/badge";
 import { listSecurityFindings } from "@/lib/api/security";
 import type { SecurityFinding } from "@/lib/api/security";
 

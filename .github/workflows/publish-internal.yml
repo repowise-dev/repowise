@@ -1,0 +1,103 @@
+name: Publish internal prereleases
+
+# Publishes @repowise-dev/types and @repowise-dev/ui to GitHub Packages on
+# every push to `next`, tagged as `0.0.0-internal.<short-sha>`. Downstream
+# consumers (e.g. hosted-frontend) pin to a specific SHA.
+#
+# Source package.json files keep their workspace-friendly names
+# (`@repowise/types`, `@repowise/ui`) and `private: true`. This workflow
+# rewrites the name, version, inter-package dep, and removes `private` only
+# at publish time. The PyPI publish workflow (`publish.yml`) only fires on
+# `v*` tags and is unaffected.
+#
+# Triggers:
+#   - push to `next` (auto)
+#   - workflow_dispatch (manual, for re-publishes)
+#
+# Explicitly NOT triggered on push to `main` to avoid surfacing prereleases
+# from main while the package consumption pattern is still being validated.
+
+on:
+  push:
+    branches: [next]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-internal-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@repowise-dev"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check + test
+        run: |
+          npm run type-check --workspace @repowise/types
+          npm run type-check --workspace @repowise/ui
+          npm run test --workspace @repowise/ui
+
+      - name: Compute prerelease version
+        id: ver
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "version=0.0.0-internal.${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish @repowise-dev/types
+        working-directory: packages/types
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_GITHUB_PACKAGES }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          npm pkg set name="@repowise-dev/types"
+          npm pkg set version="$VERSION"
+          npm pkg delete private
+          npm publish
+
+      - name: Publish @repowise-dev/ui
+        working-directory: packages/ui
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_GITHUB_PACKAGES }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          npm pkg set name="@repowise-dev/ui"
+          npm pkg set version="$VERSION"
+          npm pkg delete dependencies.@repowise/types
+          npm pkg set dependencies.@repowise-dev/types="$VERSION"
+          npm pkg delete private
+          npm publish
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo ""
+            echo "- \`@repowise-dev/types@${{ steps.ver.outputs.version }}\`"
+            echo "- \`@repowise-dev/ui@${{ steps.ver.outputs.version }}\`"
+            echo ""
+            echo "Consumer install (hosted-frontend):"
+            echo ""
+            echo '```json'
+            echo '"@repowise/types": "npm:@repowise-dev/types@${{ steps.ver.outputs.version }}",'
+            echo '"@repowise/ui":    "npm:@repowise-dev/ui@${{ steps.ver.outputs.version }}"'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -4,7 +4,7 @@ import { memo, useContext } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { FileText } from "lucide-react";
 import { GraphContext } from "../graph-flow";
-import { languageColor } from "@/lib/utils/confidence";
+import { languageColor } from "@repowise/ui/lib/confidence";
 import type { FileNodeData } from "../elk-layout";
 
 const COMMUNITY_COLORS = [

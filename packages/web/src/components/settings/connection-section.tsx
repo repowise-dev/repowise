@@ -5,10 +5,10 @@ import { CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { config } from "@/lib/config";
 import { getHealth } from "@/lib/api/health";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise/ui/ui/card";
+import { Label } from "@repowise/ui/ui/label";
+import { Input } from "@repowise/ui/ui/input";
+import { Button } from "@repowise/ui/ui/button";
 import type { HealthResponse } from "@/lib/api/types";
 
 export function ConnectionSection() {

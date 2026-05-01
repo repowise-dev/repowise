@@ -2,13 +2,13 @@
  * Canonical graph types — file/module dependency graph plus graph-intelligence
  * surfaces (callers/callees, communities, execution flows, metrics).
  *
- * Canonical source: OSS engine `PipelineResult.graph` (NetworkX node_link_data
+ * Canonical source: engine `PipelineResult.graph` (NetworkX node_link_data
  * format) and the per-symbol intelligence endpoints in
  * `packages/server/src/repowise/server/schemas.py`.
  *
- * Hosted backend currently emits a looser `{ nodes, links, directed?, multigraph? }`
- * shape (see `frontend/src/lib/api/types.ts:CanonicalGraph`). Hosted-side
- * adapters are responsible for converting that to `GraphExport` below.
+ * Some downstream backends emit a looser `{ nodes, links, directed?, multigraph? }`
+ * shape; consumer-side adapters are responsible for converting that to
+ * `GraphExport` below before passing data to components.
  */
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ export interface GraphExport {
 }
 
 // ---------------------------------------------------------------------------
-// NetworkX-shaped raw payload (what hosted backend currently returns)
+// NetworkX-shaped raw payload (what some downstream backends emit)
 // ---------------------------------------------------------------------------
 
 export interface RawGraphNode {
@@ -123,6 +123,8 @@ export interface EgoGraph {
   nodes: GraphNode[];
   links: GraphLink[];
   center_node_id: string;
+  /** Optional git metadata for the center file. Present when the engine has indexed git history. */
+  center_git_meta?: import("./git.js").GitMetadata | null;
   inbound_count: number;
   outbound_count: number;
 }

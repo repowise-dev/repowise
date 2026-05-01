@@ -2,7 +2,7 @@
   "name": "@repowise/types",
   "version": "0.0.1",
   "private": true,
-  "description": "Canonical TypeScript data contracts shared between OSS web (packages/web) and hosted web (frontend/, future packages/hosted-web)",
+  "description": "Canonical TypeScript data contracts for the Repowise dashboard (packages/web) and downstream consumers of the same engine artifacts.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -14,7 +14,12 @@
     "./decisions": "./src/decisions.ts",
     "./dead-code": "./src/dead-code.ts",
     "./symbols": "./src/symbols.ts",
-    "./chat": "./src/chat.ts"
+    "./chat": "./src/chat.ts",
+    "./workspace": "./src/workspace.ts"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
   },
   "scripts": {
     "type-check": "tsc --noEmit",

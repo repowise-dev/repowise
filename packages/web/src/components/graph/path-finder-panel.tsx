@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Route, Loader2, X, ArrowRight, Search, ChevronDown } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 import { getGraphPath, searchNodes } from "@/lib/api/graph";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import type { GraphPathResponse, NodeSearchResult } from "@/lib/api/types";

@@ -4,16 +4,16 @@ import { useState } from "react";
 import { Plus } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { createRepo } from "@/lib/api/repos";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogFooter,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
+} from "@repowise/ui/ui/dialog";
+import { Label } from "@repowise/ui/ui/label";
+import { Input } from "@repowise/ui/ui/input";
 
 interface Props {
   /** Render as a sidebar button (icon + label) vs standalone button */

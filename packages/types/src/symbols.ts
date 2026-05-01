@@ -1,9 +1,9 @@
 /**
  * Canonical symbol types.
  *
- * Canonical source: OSS engine `SymbolResponse`. Hosted's `SymbolEntryBackend`
- * is identical except missing `repository_id` and `symbol_id` — adapters
- * synthesise both.
+ * Canonical source: engine `SymbolResponse`. Some downstream backends emit a
+ * leaner shape that omits `repository_id` and `symbol_id` — consumer-side
+ * adapters synthesise both before passing data to components.
  */
 
 export type SymbolKind =

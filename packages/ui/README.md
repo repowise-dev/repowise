@@ -1,17 +1,10 @@
 # @repowise/ui
 
-Shared visualization components for the Repowise OSS dashboard
-(`packages/web`) and the hosted web app (currently `frontend/`, becoming
-`packages/hosted-web/` in Phase 1B per Option α — see
-`docs/HOSTED_PRODUCT_UPGRADE_PLAN.md` §5).
+Shared visualization components for the Repowise dashboard
+(`packages/web`) and any downstream consumer that wants to render the
+same engine artifacts.
 
-## Status
-
-**Phase 1A: scaffold only.** Package layout, exports map, and design-token
-file are stubbed. No components have been moved in yet — that is Phase 1B's
-job.
-
-## Layout (per plan §5.2)
+## Layout
 
 ```
 src/
@@ -44,11 +37,20 @@ import { HotspotTable } from "@repowise/ui/git";
 import { GraphFlow } from "@repowise/ui/graph";
 ```
 
-Both consumers must `transpilePackages: ["@repowise/ui"]` in their
-`next.config.ts` (Tailwind v4 + TS source ship as-is, no pre-build).
+Consumers must add `transpilePackages: ["@repowise/ui", "@repowise/types"]`
+to their `next.config.ts` (Tailwind v4 + TS source ship as-is, no
+pre-build step).
+
+To inherit the canonical design tokens, import the stylesheet once at
+the root of the app:
+
+```css
+@import "@repowise/ui/styles.css";
+```
 
 ## Peer deps
 
 `react`, `react-dom`. Components stay client-pure or pure-presentational —
 they do not call `next/navigation` or `next/link` directly. Where routing
-is needed, accept it via props or context (per plan §5.4).
+is needed, accept it via props or context so consumers can wire their
+own router.

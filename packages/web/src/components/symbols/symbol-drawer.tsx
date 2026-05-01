@@ -6,10 +6,10 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
+} from "@repowise/ui/ui/dialog";
+import { Badge } from "@repowise/ui/ui/badge";
+import { ScrollArea } from "@repowise/ui/ui/scroll-area";
+import { Separator } from "@repowise/ui/ui/separator";
 import { SymbolGraphPanel } from "./symbol-graph-panel";
 import type { SymbolResponse } from "@/lib/api/types";
 

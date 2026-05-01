@@ -1,12 +1,326 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
 /*
- * @repowise/ui — design tokens.
+ * @repowise/ui — canonical design tokens.
  *
- * Phase 1A scaffold. Phase 1B copies the canonical token set from
- * packages/web/src/styles/globals.css into here, then re-points
- * packages/web (and packages/hosted-web) to import this file via:
+ * Imported by every consumer that wants the standard Repowise look.
+ * Tailwind v4 `@theme` block defines CSS custom properties; base styles,
+ * scrollbar, focus, prose overrides, and React Flow theming follow.
  *
- *   @import "@repowise/ui/styles.css";
+ * The `@source` directive below tells Tailwind v4 to scan component
+ * source under `packages/ui/src/**` for utility classes — required so
+ * consumers that import this file pick up classes used by shared
+ * components without each consumer re-declaring the source path.
  *
- * Until 1B, this file intentionally contains no rules so neither consumer
- * accidentally takes a partial token set as a dependency.
+ * Consumers can override individual tokens (accent, surface) by
+ * declaring a `@theme` block of their own after importing this file.
  */
+
+@source "../src/**/*.{ts,tsx}";
+
+@theme {
+  /* ------------------------------------------------------------------ */
+  /* Core Surfaces                                                       */
+  /* ------------------------------------------------------------------ */
+  --color-bg-root: #0d0d0d;
+  --color-bg-surface: #141414;
+  --color-bg-elevated: #1c1c1c;
+  --color-bg-overlay: #202020;
+  --color-bg-inset: #0a0a0a;
+
+  /* ------------------------------------------------------------------ */
+  /* Borders                                                             */
+  /* ------------------------------------------------------------------ */
+  --color-border-default: rgba(255, 255, 255, 0.06);
+  --color-border-hover: rgba(255, 255, 255, 0.12);
+  --color-border-active: rgba(255, 255, 255, 0.20);
+
+  /* ------------------------------------------------------------------ */
+  /* Text                                                                */
+  /* ------------------------------------------------------------------ */
+  --color-text-primary: #ececec;
+  --color-text-secondary: #999999;
+  --color-text-tertiary: #5c5c5c;
+  --color-text-inverse: #0d0d0d;
+
+  /* ------------------------------------------------------------------ */
+  /* Accent — repowise Orange                                            */
+  /* ------------------------------------------------------------------ */
+  --color-accent-primary: #f59520;
+  --color-accent-hover: #f7a94d;
+  --color-accent-muted: rgba(245, 149, 32, 0.15);
+
+  /* ------------------------------------------------------------------ */
+  /* Confidence System                                                   */
+  /* ------------------------------------------------------------------ */
+  --color-confidence-fresh: #22c55e;
+  --color-confidence-stale: #eab308;
+  --color-confidence-outdated: #ef4444;
+
+  /* ------------------------------------------------------------------ */
+  /* Semantic                                                            */
+  /* ------------------------------------------------------------------ */
+  --color-success: #22c55e;
+  --color-warning: #eab308;
+  --color-error: #ef4444;
+  --color-info: #f59520;
+
+  /* Aliases — short names used in component class strings.              */
+  /* Keep these in sync with the canonical confidence/accent tokens.     */
+  --color-fresh: var(--color-confidence-fresh);
+  --color-stale: var(--color-confidence-stale);
+  --color-outdated: var(--color-confidence-outdated);
+  --color-accent: var(--color-accent-primary);
+  --color-accent-blue: var(--color-accent-primary);
+  --color-border-accent: var(--color-accent-primary);
+
+  /* ------------------------------------------------------------------ */
+  /* Graph — React Flow                                                  */
+  /* ------------------------------------------------------------------ */
+  --color-accent-graph: #f59520;
+  --color-risk-low: #22c55e;
+  --color-risk-medium: #f59520;
+  --color-risk-high: #ef4444;
+  --color-node-documented: #22c55e;
+  --color-node-undocumented: #64748b;
+
+  /* ------------------------------------------------------------------ */
+  /* Language Colors (graph nodes)                                       */
+  /* ------------------------------------------------------------------ */
+  --color-lang-python: #3776ab;
+  --color-lang-typescript: #3178c6;
+  --color-lang-go: #00add8;
+  --color-lang-rust: #dea584;
+  --color-lang-java: #ed8b00;
+  --color-lang-cpp: #00599c;
+  --color-lang-config: #6b7280;
+  --color-lang-other: #8b5cf6;
+
+  /* ------------------------------------------------------------------ */
+  /* Edge Colors (graph edges)                                           */
+  /* ------------------------------------------------------------------ */
+  --color-edge-imports: #f59520;
+  --color-edge-calls: #22c55e;
+  --color-edge-inherits: #a855f7;
+  --color-edge-implements: #ec4899;
+  --color-edge-co-change: #8b5cf6;
+
+  /* ------------------------------------------------------------------ */
+  /* Typography                                                          */
+  /* ------------------------------------------------------------------ */
+  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", "Fira Code", monospace;
+
+  --text-xs: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+
+  --leading-tight: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75;
+
+  /* ------------------------------------------------------------------ */
+  /* Spacing (4px base grid)                                             */
+  /* ------------------------------------------------------------------ */
+  --spacing-1: 0.25rem;
+  --spacing-2: 0.5rem;
+  --spacing-3: 0.75rem;
+  --spacing-4: 1rem;
+  --spacing-5: 1.25rem;
+  --spacing-6: 1.5rem;
+  --spacing-8: 2rem;
+  --spacing-10: 2.5rem;
+  --spacing-12: 3rem;
+  --spacing-16: 4rem;
+
+  /* ------------------------------------------------------------------ */
+  /* Radii                                                               */
+  /* ------------------------------------------------------------------ */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* ------------------------------------------------------------------ */
+  /* Z-Index Scale                                                       */
+  /* ------------------------------------------------------------------ */
+  --z-base: 0;
+  --z-elevated: 10;
+  --z-dropdown: 20;
+  --z-sidebar: 30;
+  --z-modal: 40;
+  --z-command: 50;
+  --z-toast: 60;
+
+  /* ------------------------------------------------------------------ */
+  /* Layout                                                              */
+  /* ------------------------------------------------------------------ */
+  --sidebar-width: 260px;
+  --context-panel-width: 280px;
+  --content-max-width: 768px;
+
+  /* ------------------------------------------------------------------ */
+  /* Animation                                                           */
+  /* ------------------------------------------------------------------ */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-inout: cubic-bezier(0.87, 0, 0.13, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+}
+
+/* -------------------------------------------------------------------- */
+/* Base Styles                                                           */
+/* -------------------------------------------------------------------- */
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-bg-root);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* -------------------------------------------------------------------- */
+/* Scrollbar                                                             */
+/* -------------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* -------------------------------------------------------------------- */
+/* Focus Ring                                                            */
+/* -------------------------------------------------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}
+
+/* -------------------------------------------------------------------- */
+/* Selection                                                             */
+/* -------------------------------------------------------------------- */
+
+::selection {
+  background-color: var(--color-accent-muted);
+  color: var(--color-text-primary);
+}
+
+/* -------------------------------------------------------------------- */
+/* Reduced Motion                                                        */
+/* -------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* -------------------------------------------------------------------- */
+/* Typography: prose overrides for wiki content                          */
+/* -------------------------------------------------------------------- */
+
+.prose {
+  --tw-prose-body: var(--color-text-secondary);
+  --tw-prose-headings: var(--color-text-primary);
+  --tw-prose-links: var(--color-accent-primary);
+  --tw-prose-code: var(--color-text-primary);
+  --tw-prose-pre-bg: var(--color-bg-inset);
+  --tw-prose-pre-code: var(--color-text-primary);
+  --tw-prose-bold: var(--color-text-primary);
+  --tw-prose-counters: var(--color-text-tertiary);
+  --tw-prose-bullets: var(--color-text-tertiary);
+  --tw-prose-hr: var(--color-border-default);
+  --tw-prose-quotes: var(--color-text-secondary);
+  --tw-prose-quote-borders: var(--color-border-default);
+  --tw-prose-th-borders: var(--color-border-default);
+  --tw-prose-td-borders: var(--color-border-default);
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.prose pre {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+}
+
+.prose a {
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.prose a:hover {
+  border-bottom-color: var(--color-accent-primary);
+}
+
+/* -------------------------------------------------------------------- */
+/* Tabular numbers for data tables                                       */
+/* -------------------------------------------------------------------- */
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------------- */
+/* React Flow Dark Theme                                                 */
+/* -------------------------------------------------------------------- */
+
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-minimap-background-color: var(--color-bg-surface);
+  --xy-minimap-mask-background: rgba(0, 0, 0, 0.6);
+  --xy-minimap-mask-stroke: none;
+  --xy-controls-button-background-color: var(--color-bg-elevated);
+  --xy-controls-button-background-color-hover: var(--color-bg-overlay);
+  --xy-controls-button-border-color: var(--color-border-default);
+  --xy-controls-button-color: var(--color-text-secondary);
+  --xy-controls-button-color-hover: var(--color-text-primary);
+  --xy-edge-stroke: rgba(245, 149, 32, 0.3);
+  --xy-edge-stroke-selected: var(--color-accent-graph);
+  --xy-node-border-radius: var(--radius-lg);
+}
+
+@keyframes graph-path-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 149, 32, 0.4); }
+  50% { box-shadow: 0 0 12px 4px rgba(245, 149, 32, 0.2); }
+}
+
+@keyframes graph-marching-ants {
+  to { stroke-dashoffset: -20; }
+}

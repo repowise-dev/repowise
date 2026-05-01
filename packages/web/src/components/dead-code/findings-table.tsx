@@ -3,11 +3,11 @@
 import { useState, useEffect } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { EmptyState } from "@/components/shared/empty-state";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@repowise/ui/ui/tabs";
+import { Button } from "@repowise/ui/ui/button";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { ConfirmDialog } from "@repowise/ui/ui/confirm-dialog";
+import { EmptyState } from "@repowise/ui/shared/empty-state";
 import { FindingRow } from "./finding-row";
 import { listDeadCode, patchDeadCodeFinding } from "@/lib/api/dead-code";
 import type { DeadCodeFindingResponse } from "@/lib/api/types";

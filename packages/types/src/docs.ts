@@ -1,10 +1,10 @@
 /**
  * Canonical doc/wiki types — wiki pages, freshness, coverage rollups.
  *
- * Canonical source: OSS engine `PageResponse` (`packages/server/.../schemas.py`).
- * Hosted backend's `DocsResponse.pages` and `CoverageResponse.pages` are
- * currently typed `Array<Record<string, unknown>>` — adapters in
- * `frontend/` cast through these types.
+ * Canonical source: engine `PageResponse` (`packages/server/.../schemas.py`).
+ * Some downstream backends type their `DocsResponse.pages` and
+ * `CoverageResponse.pages` as `Array<Record<string, unknown>>` — consumer
+ * adapters cast through the types below before passing data to components.
  */
 
 export type FreshnessStatus = "fresh" | "stale" | "outdated" | string;

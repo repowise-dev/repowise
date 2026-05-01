@@ -22,9 +22,9 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Loader2, ChevronRight, Home, Search } from "lucide-react";
 import Fuse from "fuse.js";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Input } from "@/components/ui/input";
-import { EmptyState } from "@/components/shared/empty-state";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { Input } from "@repowise/ui/ui/input";
+import { EmptyState } from "@repowise/ui/shared/empty-state";
 import {
   useModuleGraph,
   useGraph,
@@ -40,12 +40,12 @@ import { DependencyEdge } from "./edges/dependency-edge";
 import { groupNodesAsModules, type FileNodeData } from "./elk-layout";
 import { useModuleElkLayout, useFileElkLayout } from "./use-elk-layout";
 import { PathFinderPanel } from "./path-finder-panel";
-import { GraphToolbar, type ColorMode, type ViewMode } from "./graph-toolbar";
-import { GraphLegend } from "./graph-legend";
+import { GraphToolbar, type ColorMode, type ViewMode } from "@repowise/ui/graph/graph-toolbar";
+import { GraphLegend } from "@repowise/ui/graph/graph-legend";
 import { GraphCommunityPanel } from "./graph-community-panel";
-import { GraphContextMenu } from "./graph-context-menu";
+import { GraphContextMenu } from "@repowise/ui/graph/graph-context-menu";
 import { GraphTooltip } from "./graph-tooltip";
-import { languageColor } from "@/lib/utils/confidence";
+import { languageColor } from "@repowise/ui/lib/confidence";
 
 // ---- Context ----
 

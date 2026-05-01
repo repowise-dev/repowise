@@ -9,27 +9,27 @@ import { getGraph, getModuleGraph, getCommunities, getExecutionFlows } from "@/l
 import { getProviders } from "@/lib/api/providers";
 import { listJobs } from "@/lib/api/jobs";
 import { getKnowledgeMap } from "@/lib/api/knowledge-map";
-import { Badge } from "@/components/ui/badge";
-import { StatCard } from "@/components/shared/stat-card";
-import { HealthScoreRing } from "@/components/dashboard/health-score-ring";
-import { AttentionPanel } from "@/components/dashboard/attention-panel";
+import { Badge } from "@repowise/ui/ui/badge";
+import { StatCard } from "@repowise/ui/shared/stat-card";
+import { HealthScoreRing } from "@repowise/ui/dashboard/health-score-ring";
+import { AttentionPanel } from "@repowise/ui/dashboard/attention-panel";
 import { QuickActions } from "@/components/dashboard/quick-actions";
-import { OwnershipTreemap } from "@/components/dashboard/ownership-treemap";
-import { LanguageDonut } from "@/components/dashboard/language-donut";
+import { OwnershipTreemap } from "@repowise/ui/dashboard/ownership-treemap";
+import { LanguageDonut } from "@repowise/ui/dashboard/language-donut";
 import { computeHealthScore, buildAttentionItems, aggregateLanguages } from "@/lib/utils/health-score";
-import { HotspotsMini } from "@/components/dashboard/hotspots-mini";
-import { DecisionsTimeline } from "@/components/dashboard/decisions-timeline";
-import { ModuleMinimap } from "@/components/dashboard/module-minimap";
+import { HotspotsMini } from "@repowise/ui/dashboard/hotspots-mini";
+import { DecisionsTimeline } from "@repowise/ui/dashboard/decisions-timeline";
+import { ModuleMinimap } from "@repowise/ui/dashboard/module-minimap";
 import { CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid";
-import { ExecutionFlowsPanel } from "@/components/dashboard/execution-flows-panel";
-import { DependencyHeatmap } from "@/components/dashboard/dependency-heatmap";
-import { BusFactorPanel } from "@/components/git/bus-factor-panel";
-import { ChurnHistogram } from "@/components/git/churn-histogram";
-import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
-import { CommitCategorySparkline } from "@/components/git/commit-category-sparkline";
-import { OwnershipTreemap as OwnershipTreemapGit } from "@/components/git/ownership-treemap";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatNumber } from "@/lib/utils/format";
+import { ExecutionFlowsPanel } from "@repowise/ui/dashboard/execution-flows-panel";
+import { DependencyHeatmap } from "@repowise/ui/dashboard/dependency-heatmap";
+import { BusFactorPanel } from "@repowise/ui/git/bus-factor-panel";
+import { ChurnHistogram } from "@repowise/ui/git/churn-histogram";
+import { CommitCategoryDonut } from "@repowise/ui/git/commit-category-donut";
+import { CommitCategorySparkline } from "@repowise/ui/git/commit-category-sparkline";
+import { OwnershipTreemap as OwnershipTreemapGit } from "@repowise/ui/git/ownership-treemap";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { formatNumber } from "@repowise/ui/lib/format";
 import type {
   RepoStatsResponse,
   GitSummaryResponse,
