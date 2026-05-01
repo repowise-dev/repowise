@@ -4,7 +4,28 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { cn } from "../lib/cn";
 import { ChatMarkdown } from "./chat-markdown";
-import { MermaidDiagram } from "../wiki/mermaid-diagram";
+import {
+  ContextRenderer,
+  DeadCodeRenderer,
+  DecisionsRenderer,
+  DiagramRenderer,
+  GenericJsonRenderer,
+  GraphPathRenderer,
+  OverviewRenderer,
+  RiskReportRenderer,
+  SearchResultsRenderer,
+} from "./artifacts";
+import type {
+  ChatArtifact,
+  ContextArtifactData,
+  DeadCodeArtifactData,
+  DecisionsArtifactData,
+  DiagramArtifactData,
+  GraphPathArtifactData,
+  OverviewArtifactData,
+  RiskReportArtifactData,
+  SearchResultsArtifactData,
+} from "@repowise-dev/types/chat";
 
 export interface Artifact {
   type: string;
@@ -77,94 +98,48 @@ export function ArtifactPanel({ artifacts, open, onClose }: ArtifactPanelProps) 
   );
 }
 
-function ArtifactRenderer({ artifact }: { artifact: Artifact }) {
+/**
+ * Dispatcher: switches on the artifact `.type` discriminant. Every
+ * `KnownChatArtifact` variant has a dedicated renderer; the `default`
+ * branch handles `wiki_page` (legacy markdown-shaped overview pages from
+ * older indexer outputs) and falls through to `GenericJsonRenderer` for
+ * unknown shapes.
+ */
+function ArtifactRenderer({ artifact }: { artifact: Artifact | ChatArtifact }) {
   const { type, data } = artifact;
 
   switch (type) {
     case "overview":
+      return <OverviewRenderer data={data as unknown as OverviewArtifactData} />;
+    case "context":
+      return <ContextRenderer data={data as unknown as ContextArtifactData} />;
+    case "risk_report":
+      return <RiskReportRenderer data={data as unknown as RiskReportArtifactData} />;
+    case "search_results":
+      return <SearchResultsRenderer data={data as unknown as SearchResultsArtifactData} />;
+    case "graph":
+      return <GraphPathRenderer data={data as unknown as GraphPathArtifactData} />;
+    case "decisions":
+      return <DecisionsRenderer data={data as unknown as DecisionsArtifactData} />;
+    case "dead_code":
+      return <DeadCodeRenderer data={data as unknown as DeadCodeArtifactData} />;
+    case "diagram":
+      return <DiagramRenderer data={data as unknown as DiagramArtifactData} />;
+
     case "wiki_page": {
+      // Legacy markdown-shaped artifact, pre-dating the typed union.
       const content =
-        (data.content_md as string) ??
-        (data.content as string) ??
+        ((data as Record<string, unknown>).content_md as string) ??
+        ((data as Record<string, unknown>).content as string) ??
         "";
-      const targets = data.targets as Record<string, Record<string, unknown>> | undefined;
-      if (targets) {
-        return (
-          <div className="space-y-4">
-            {Object.entries(targets).map(([target, info]) => {
-              const docs = info.docs as Record<string, unknown> | undefined;
-              const md = (docs?.content_md as string) ?? "";
-              return (
-                <div key={target}>
-                  <h3 className="text-xs font-mono text-[var(--color-accent-primary)] mb-2">
-                    {target}
-                  </h3>
-                  {md ? <ChatMarkdown content={md} /> : (
-                    <pre className="text-xs font-mono text-[var(--color-text-secondary)] overflow-auto max-h-96">
-                      {JSON.stringify(info, null, 2)}
-                    </pre>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        );
-      }
-      return content ? <ChatMarkdown content={content} /> : <RawJson data={data} />;
-    }
-
-    case "diagram": {
-      const mermaid = (data.mermaid_syntax as string) ?? "";
-      if (mermaid) {
-        return <MermaidDiagram chart={mermaid} />;
-      }
-      return <RawJson data={data} />;
-    }
-
-    case "search_results": {
-      const results = (data.results as Array<Record<string, unknown>>) ?? [];
-      return (
-        <div className="space-y-2">
-          {results.map((r, i) => (
-            <div
-              key={i}
-              className="rounded-lg border border-[var(--color-border-default)] p-3"
-            >
-              <div className="text-xs font-medium text-[var(--color-text-primary)]">
-                {r.title as string}
-              </div>
-              <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
-                {r.page_type as string} · score: {((r.relevance_score as number) ?? 0).toFixed(2)}
-              </div>
-              {r.snippet ? (
-                <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-3">
-                  {r.snippet as string}
-                </p>
-              ) : null}
-            </div>
-          ))}
-          {results.length === 0 && (
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              No results found.
-            </p>
-          )}
-        </div>
+      return content ? (
+        <ChatMarkdown content={content} />
+      ) : (
+        <GenericJsonRenderer data={data as Record<string, unknown>} />
       );
     }
 
-    case "risk_report":
-    case "decisions":
-    case "dead_code":
-    case "graph":
     default:
-      return <RawJson data={data} />;
+      return <GenericJsonRenderer data={data as Record<string, unknown>} />;
   }
-}
-
-function RawJson({ data }: { data: Record<string, unknown> }) {
-  return (
-    <pre className="text-[10px] font-mono text-[var(--color-text-secondary)] overflow-auto max-h-[70vh] whitespace-pre-wrap break-words">
-      {JSON.stringify(data, null, 2)}
-    </pre>
-  );
 }

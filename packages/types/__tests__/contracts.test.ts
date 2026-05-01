@@ -19,28 +19,33 @@ import { describe, expectTypeOf, it } from "vitest";
 import type {
   ChatArtifact,
   KnownChatArtifact,
-  GraphArtifact,
-  HotspotArtifact,
-  AnswerArtifact,
+  GraphPathArtifact,
+  DeadCodeArtifact,
+  DiagramArtifact,
   GenericArtifact,
 } from "../src/chat.js";
-import type { GraphLink, GraphExport } from "../src/graph.js";
+import type { GraphLink } from "../src/graph.js";
 import type { DeadCodeFinding } from "../src/dead-code.js";
 import type { DecisionRecord, DecisionStatus } from "../src/decisions.js";
 import type { Hotspot } from "../src/git.js";
 
 describe("ChatArtifact discriminated union", () => {
   it("narrows on .type to the per-variant data shape", () => {
+    // Mirrors backend reality (`backend/app/routers/chat.py:_tool_*`):
+    // - get_dependency_path → { type: "graph", data: { path, distance, explanation } }
+    // - get_dead_code       → { type: "dead_code", data: { high_confidence, ... } }
+    // - get_architecture_diagram → { type: "diagram", data: { mermaid_syntax, ... } }
     const narrow = (a: KnownChatArtifact) => {
       if (a.type === "graph") {
-        expectTypeOf(a).toEqualTypeOf<GraphArtifact>();
-        expectTypeOf(a.data).toEqualTypeOf<GraphExport>();
-      } else if (a.type === "hotspot") {
-        expectTypeOf(a).toEqualTypeOf<HotspotArtifact>();
-        expectTypeOf(a.data.hotspots).toEqualTypeOf<Hotspot[]>();
-      } else if (a.type === "answer") {
-        expectTypeOf(a).toEqualTypeOf<AnswerArtifact>();
-        expectTypeOf(a.data.confidence).toEqualTypeOf<"high" | "medium" | "low">();
+        expectTypeOf(a).toEqualTypeOf<GraphPathArtifact>();
+        expectTypeOf(a.data.path).toEqualTypeOf<string[]>();
+        expectTypeOf(a.data.distance).toEqualTypeOf<number>();
+      } else if (a.type === "dead_code") {
+        expectTypeOf(a).toEqualTypeOf<DeadCodeArtifact>();
+        expectTypeOf(a.data.total_findings).toEqualTypeOf<number>();
+      } else if (a.type === "diagram") {
+        expectTypeOf(a).toEqualTypeOf<DiagramArtifact>();
+        expectTypeOf(a.data.mermaid_syntax).toEqualTypeOf<string>();
       }
     };
     expectTypeOf(narrow).toBeFunction();
