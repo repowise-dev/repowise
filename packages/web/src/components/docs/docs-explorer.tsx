@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils/cn";
 import { usePages } from "@/lib/hooks/use-pages";
 import { DocsTree } from "./docs-tree";
 import { DocsViewer } from "./docs-viewer";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
 import type { PageResponse } from "@/lib/api/types";
 
 interface DocsExplorerProps {

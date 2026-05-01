@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { ChevronRight, ChevronDown } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@repowise/ui/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { cn } from "@/lib/utils/cn";
 import type { ExecutionFlowEntry } from "@/lib/api/types";
 

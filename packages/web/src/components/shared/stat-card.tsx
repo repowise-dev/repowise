@@ -1,6 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/utils/cn";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent } from "@repowise/ui/ui/card";
 
 interface StatCardProps {
   label: string;

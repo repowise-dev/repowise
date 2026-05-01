@@ -1,7 +1,7 @@
 "use client";
 
 import { X, GitCommit, User, Clock, ArrowDownToLine, ArrowUpFromLine, FileText } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 import { formatRelativeTime } from "@/lib/utils/format";
 import type { EgoGraphResponse } from "@/lib/api/types";
 

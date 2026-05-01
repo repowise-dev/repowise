@@ -6,7 +6,7 @@ import { ContributorBar } from "@/components/git/contributor-bar";
 import { ChurnHistogram } from "@/components/git/churn-histogram";
 import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
 import { RiskDistributionChart } from "@/components/git/risk-distribution-chart";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { getHotspots, getGitSummary } from "@/lib/api/git";
 import { formatNumber } from "@/lib/utils/format";
 

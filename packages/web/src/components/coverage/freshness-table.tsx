@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@repowise/ui/ui/button";
+import { Badge } from "@repowise/ui/ui/badge";
 import { EmptyState } from "@/components/shared/empty-state";
 import { regeneratePage } from "@/lib/api/pages";
 import { statusBadgeClasses, statusLabel } from "@/lib/utils/confidence";

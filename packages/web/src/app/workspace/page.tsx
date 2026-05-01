@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
 import { StatCard } from "@/components/shared/stat-card";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { RepoCard } from "@/components/workspace/repo-card";
 import { CrossRepoSummary } from "@/components/workspace/cross-repo-summary";
 import { CoChangeTable } from "@/components/workspace/co-change-table";

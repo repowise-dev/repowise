@@ -9,7 +9,7 @@ import { getGraph, getModuleGraph, getCommunities, getExecutionFlows } from "@/l
 import { getProviders } from "@/lib/api/providers";
 import { listJobs } from "@/lib/api/jobs";
 import { getKnowledgeMap } from "@/lib/api/knowledge-map";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@repowise/ui/ui/badge";
 import { StatCard } from "@/components/shared/stat-card";
 import { HealthScoreRing } from "@/components/dashboard/health-score-ring";
 import { AttentionPanel } from "@/components/dashboard/attention-panel";
@@ -28,7 +28,7 @@ import { ChurnHistogram } from "@/components/git/churn-histogram";
 import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
 import { CommitCategorySparkline } from "@/components/git/commit-category-sparkline";
 import { OwnershipTreemap as OwnershipTreemapGit } from "@/components/git/ownership-treemap";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { formatNumber } from "@/lib/utils/format";
 import type {
   RepoStatsResponse,

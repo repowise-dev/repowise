@@ -9,7 +9,7 @@ import {
   type FreshnessStatus,
 } from "@/lib/utils/confidence";
 import { formatConfidence } from "@/lib/utils/format";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise/ui/ui/tooltip";
 
 interface ConfidenceBadgeProps {
   score: number;

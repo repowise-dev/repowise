@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { RefreshCw, Trash2, AlertTriangle, Zap } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -11,7 +11,7 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from "@/components/ui/dialog";
+} from "@repowise/ui/ui/dialog";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";

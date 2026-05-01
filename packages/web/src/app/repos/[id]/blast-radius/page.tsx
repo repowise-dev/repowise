@@ -4,9 +4,9 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Radar, Plus, Flame } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@repowise/ui/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { cn } from "@/lib/utils/cn";
 import {
   analyzeBlastRadius,

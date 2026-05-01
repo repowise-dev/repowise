@@ -4,9 +4,9 @@ import { useState } from "react";
 import { GitMerge, Filter } from "lucide-react";
 import { useWorkspaceCoChanges, useWorkspace } from "@/lib/hooks/use-workspace";
 import { CoChangeTable } from "@/components/workspace/co-change-table";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { StatCard } from "@/components/shared/stat-card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
 
 export default function CoChangesPage() {
   const { workspace } = useWorkspace();

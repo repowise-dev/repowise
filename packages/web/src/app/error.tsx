@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 
 export default function GlobalError({
   error,

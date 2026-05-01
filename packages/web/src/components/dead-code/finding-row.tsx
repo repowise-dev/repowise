@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Button } from "@repowise/ui/ui/button";
+import { Badge } from "@repowise/ui/ui/badge";
+import { ConfirmDialog } from "@repowise/ui/ui/confirm-dialog";
 import { formatConfidence } from "@/lib/utils/format";
 import { patchDeadCodeFinding } from "@/lib/api/dead-code";
 import { cn } from "@/lib/utils/cn";

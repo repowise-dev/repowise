@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { FileText, Flame, BarChart3, ChevronRight } from "lucide-react";
 import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@repowise/ui/ui/card";
+import { Badge } from "@repowise/ui/ui/badge";
 
 interface RepoCardProps {
   repoId: string;

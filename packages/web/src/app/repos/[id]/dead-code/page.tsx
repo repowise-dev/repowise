@@ -5,10 +5,10 @@ import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 import { SummaryBar } from "@/components/dead-code/summary-bar";
 import { FindingsTable } from "@/components/dead-code/findings-table";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { getDeadCodeSummary, analyzeDeadCode } from "@/lib/api/dead-code";
 import type { DeadCodeSummaryResponse } from "@/lib/api/types";
 

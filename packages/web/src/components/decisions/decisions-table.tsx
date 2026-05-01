@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@repowise/ui/ui/badge";
 import { listDecisions } from "@/lib/api/decisions";
 import type { DecisionRecordResponse } from "@/lib/api/types";
 

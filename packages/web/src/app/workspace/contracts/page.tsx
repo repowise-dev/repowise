@@ -6,9 +6,9 @@ import { useWorkspaceContracts } from "@/lib/hooks/use-workspace";
 import { useWorkspace } from "@/lib/hooks/use-workspace";
 import { ContractLinksTable } from "@/components/workspace/contract-links-table";
 import { ContractTypeBadge, RoleBadge } from "@/components/workspace/contract-type-badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { StatCard } from "@/components/shared/stat-card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
 
 const TYPE_OPTIONS = [
   { value: "", label: "All Types" },

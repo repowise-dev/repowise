@@ -1,6 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/utils/cn";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 
 interface EmptyStateProps {
   icon?: React.ReactNode;

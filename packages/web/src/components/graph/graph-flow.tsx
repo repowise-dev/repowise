@@ -22,8 +22,8 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Loader2, ChevronRight, Home, Search } from "lucide-react";
 import Fuse from "fuse.js";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Input } from "@/components/ui/input";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { Input } from "@repowise/ui/ui/input";
 import { EmptyState } from "@/components/shared/empty-state";
 import {
   useModuleGraph,

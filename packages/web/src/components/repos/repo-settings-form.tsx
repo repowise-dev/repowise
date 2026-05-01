@@ -3,11 +3,11 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { Info, Save, X } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Badge } from "@repowise/ui/ui/badge";
+import { Button } from "@repowise/ui/ui/button";
+import { Input } from "@repowise/ui/ui/input";
+import { Label } from "@repowise/ui/ui/label";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@repowise/ui/ui/tooltip";
 import { updateRepo } from "@/lib/api/repos";
 import type { RepoResponse } from "@/lib/api/types";
 

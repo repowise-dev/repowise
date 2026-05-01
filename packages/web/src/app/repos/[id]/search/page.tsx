@@ -6,7 +6,7 @@ import { Search } from "lucide-react";
 import { SearchBar } from "@/components/search/search-bar";
 import { SearchResultCard } from "@/components/search/search-result-card";
 import { EmptyState } from "@/components/shared/empty-state";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { useSearch } from "@/lib/hooks/use-search";
 
 type SearchType = "fulltext" | "semantic";

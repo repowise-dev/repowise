@@ -2,7 +2,7 @@ import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
-} from "@/components/ui/tooltip";
+} from "@repowise/ui/ui/tooltip";
 
 interface CommitCategorySparklineProps {
   categories: Record<string, number>;

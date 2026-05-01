@@ -1,9 +1,9 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
+import { Badge } from "@repowise/ui/ui/badge";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { ScrollArea } from "@repowise/ui/ui/scroll-area";
+import { Separator } from "@repowise/ui/ui/separator";
 import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
 import { truncatePath } from "@/lib/utils/format";
 import { cn } from "@/lib/utils/cn";

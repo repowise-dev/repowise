@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea } from "@repowise/ui/ui/scroll-area";
 
 interface LogEntry {
   text: string;

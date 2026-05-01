@@ -2,8 +2,8 @@
 
 import { useRef, useEffect, useState, useCallback } from "react";
 import * as d3Force from "d3-force";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@repowise/ui/ui/tooltip";
 import { Network } from "lucide-react";
 import Link from "next/link";
 import type { ModuleNodeResponse, ModuleEdgeResponse } from "@/lib/api/types";

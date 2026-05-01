@@ -3,7 +3,7 @@
 import useSWR from "swr";
 import Link from "next/link";
 import { Loader2, CheckCircle, XCircle, ExternalLink } from "lucide-react";
-import { Progress } from "@/components/ui/progress";
+import { Progress } from "@repowise/ui/ui/progress";
 import { listJobs } from "@/lib/api/jobs";
 import { formatNumber, formatRelativeTime } from "@/lib/utils/format";
 import type { JobResponse } from "@/lib/api/types";

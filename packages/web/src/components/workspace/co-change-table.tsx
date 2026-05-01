@@ -1,7 +1,7 @@
 "use client";
 
 import type { WorkspaceCoChangeEntry } from "@/lib/api/types";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@repowise/ui/ui/badge";
 
 interface CoChangeTableProps {
   coChanges: WorkspaceCoChangeEntry[];

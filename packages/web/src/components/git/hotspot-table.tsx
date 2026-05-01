@@ -2,8 +2,8 @@
 
 import { useState, useMemo } from "react";
 import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
+import { Badge } from "@repowise/ui/ui/badge";
+import { Input } from "@repowise/ui/ui/input";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "@/lib/utils/format";

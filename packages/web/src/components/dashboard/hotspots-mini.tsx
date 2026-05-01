@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Flame } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import type { HotspotResponse } from "@/lib/api/types";
 import { truncatePath } from "@/lib/utils/format";
 

@@ -3,8 +3,8 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import Image from "next/image";
 import { Send, StopCircle, PanelRight, MessageSquare } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@repowise/ui/ui/button";
+import { ScrollArea } from "@repowise/ui/ui/scroll-area";
 import { useChat } from "@/lib/hooks/use-chat";
 import { ChatMessage } from "./chat-message";
 import { ModelSelector } from "./model-selector";

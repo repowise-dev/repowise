@@ -5,8 +5,8 @@ import {
   FileWarning,
   Lightbulb,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { Badge } from "@repowise/ui/ui/badge";
 
 import type { AttentionItem } from "@/lib/utils/health-score";
 export type { AttentionItem };

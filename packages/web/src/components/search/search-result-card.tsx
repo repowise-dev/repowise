@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@repowise/ui/ui/badge";
 import { truncatePath } from "@/lib/utils/format";
 import { cn } from "@/lib/utils/cn";
 import type { SearchResultResponse } from "@/lib/api/types";

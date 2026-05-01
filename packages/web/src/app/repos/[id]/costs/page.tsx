@@ -13,8 +13,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { StatCard } from "@/components/shared/stat-card";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { listCosts, getCostSummary } from "@/lib/api/costs";
 import type { CostGroup, CostSummary } from "@/lib/api/costs";
 import { formatCost, formatNumber, formatTokens } from "@/lib/utils/format";

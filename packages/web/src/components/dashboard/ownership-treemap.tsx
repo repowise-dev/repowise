@@ -3,8 +3,8 @@
 import { useRef, useEffect, useState } from "react";
 import * as d3 from "d3-hierarchy";
 import type { OwnershipEntry } from "@/lib/api/types";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@repowise/ui/ui/tooltip";
 import { Users } from "lucide-react";
 
 // Owner color palette — muted, high contrast on dark

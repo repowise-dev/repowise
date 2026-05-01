@@ -5,13 +5,13 @@ import { toast } from "sonner";
 import { RefreshCw } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { regeneratePage } from "@/lib/api/pages";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise/ui/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "@repowise/ui/ui/dialog";
 import { GenerationProgress } from "@/components/jobs/generation-progress";
 
 interface Props {
