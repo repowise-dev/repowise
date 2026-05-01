@@ -1,0 +1,12 @@
+/*
+ * @repowise/ui — design tokens.
+ *
+ * Phase 1A scaffold. Phase 1B copies the canonical token set from
+ * packages/web/src/styles/globals.css into here, then re-points
+ * packages/web (and packages/hosted-web) to import this file via:
+ *
+ *   @import "@repowise/ui/styles.css";
+ *
+ * Until 1B, this file intentionally contains no rules so neither consumer
+ * accidentally takes a partial token set as a dependency.
+ */
