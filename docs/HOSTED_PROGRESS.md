@@ -1,9 +1,18 @@
 # Hosted Implementation — Progress
 
-Last updated: 2026-05-01 by session #1 (Phase 0 close-out)
-Current phase: Phase 0 — Foundation & Hardening (effectively complete; awaiting PR + human-driven smoke + prod migration apply)
-Current branch (frontend): `phase-0-foundation` (head 038e133, 7 commits ahead of main)
-Current branch (backend):  `phase-0-foundation` (head b957dc0, 10 commits ahead of main)
+Last updated: 2026-05-01 by session #2 (Phase 1A close-out)
+Current phase: Phase 1A — `@repowise/ui` extraction (types + ui scaffold) — code done; PR open against OSS `main`
+Current branch (OSS root): `phase-1a-ui-types` (3 commits ahead of main; PR open)
+Current branch (frontend): `phase-0-foundation` (head 038e133, PR #4 open against `hosted-upgrade`, awaiting human approval + merge)
+Current branch (backend):  `phase-0-foundation` (head b957dc0, PR #2 open against `hosted-upgrade`, awaiting human approval + merge)
+
+## Branching model (per plan §13.4)
+
+| Repo | Trunk | Integration branch | Phase branches |
+|---|---|---|---|
+| `backend/` | `main` (auto-deploys to Railway) | `hosted-upgrade` | `phase-{N}{letter}-…` cut from `hosted-upgrade`; PRs into `hosted-upgrade` |
+| `frontend/` | `main` (auto-deploys to Vercel) | `hosted-upgrade` | same |
+| OSS root (this repo) | `main` (PyPI release trunk) | — (no `hosted-upgrade`) | Phase 1A and any later hosted-driven OSS work cut directly off `main`, PR into `main` |
 
 ## Supabase project IDs (per §2.5 rule 1)
 
@@ -15,8 +24,8 @@ Current branch (backend):  `phase-0-foundation` (head b957dc0, 10 commits ahead 
 
 | Phase | Status | Sessions | Branch | PR | Notes |
 |---|---|---|---|---|---|
-| 0  — Foundation & Hardening | ✅ Code done; awaiting PR | #1 | phase-0-foundation (both repos) | — | Test scaffolds, engine bump, migration 006, billing fixes, rate limiting, types/route cleanup, docs. |
-| 1A — `@repowise/ui` extraction (types + ui scaffold) | ⬜ Not started | — | — | — | depends on 0 |
+| 0  — Foundation & Hardening | 🔄 In PR awaiting approval | #1 | phase-0-foundation (both repos) | backend [#2](https://github.com/repowise-dev/hosted-backend/pull/2), frontend [#4](https://github.com/repowise-dev/repowise-hosted-frontend/pull/4) | Test scaffolds, engine bump, migration 006, billing fixes, rate limiting, types/route cleanup, docs. Merge SHAs to be recorded here once human approves + session merges. |
+| 1A — `@repowise/ui` extraction (types + ui scaffold) | 🔄 Code done; PR open | #2 | phase-1a-ui-types (OSS root) | (link added on `gh pr create`) | `packages/types` + `packages/ui` scaffolded inside OSS monorepo (Option α). 12 type-level tests pass. No component moves — that's 1B. |
 | 1B — Wire both apps + delete `components/demo/` | ⬜ Not started | — | — | — | depends on 1A |
 | 2A — Blast radius + costs + knowledge map | ⬜ Not started | — | — | — | depends on 1B + 3A |
 | 2B — Chat enhancements + wiki deep-link | ⬜ Not started | — | — | — | depends on 1B |
@@ -30,6 +39,60 @@ Current branch (backend):  `phase-0-foundation` (head b957dc0, 10 commits ahead 
 | 6  — Security scanning + compliance reports | ⬜ Not started | — | — | — | depends on 5 |
 | 7  — Integrations (Jira, Linear, Slack, Confluence, Notion, Teams, PagerDuty/Opsgenie) | ⬜ Not started | — | — | — | depends on 5 |
 | 8  — Website / marketing rollout | ⬜ Not started (rolling) | — | — | — | batched |
+
+## Phase 1A — what shipped (session #2)
+
+### OSS root (`C:\Users\ragha\Desktop\repowise`, branch `phase-1a-ui-types`)
+- [x] **`.gitignore` cleanup** — dropped `docs/HOSTED_PROGRESS.md` so phase sessions can update it in-repo (commit `96fc138`).
+- [x] **`@repowise/types` workspace package** — `packages/types/` with subpath exports for `graph`, `git`, `docs`, `decisions`, `dead-code`, `symbols`, `chat`. Canonical types built from the union of `packages/web/src/lib/api/types.ts` (canonical for engine-derived data) and `frontend/src/lib/api/types.ts` (canonical for hosted-only enrichment fields like `DeadCodeFinding.status`, `DecisionRecord.staleness_score`, `GraphLink.confidence`/`edge_type`). `Symbol` renamed to `CodeSymbol` to avoid global shadow. (commit `4c4a2ba`)
+- [x] **`ChatArtifact` discriminated union (net-new)** — `KnownChatArtifact` (graph/hotspot/dead_code/decisions/answer) + `GenericArtifact` fallback + `isKnownChatArtifact` narrowing helper. Lets Phase 2B's `chat/artifact-panel.tsx` switch on `.type` instead of casting `Record<string, unknown>`. (commit `4c4a2ba`)
+- [x] **Type-level tests** — `packages/types/__tests__/contracts.test.ts` runs `vitest --typecheck`, 12 assertions covering: ChatArtifact narrowing per variant, `GraphLink` v0.4.x extras stay optional, `DeadCodeFinding` hosted-only fields stay optional, `DecisionStatus` literal union, `Hotspot` `file_path` invariant (raw `{path}` deliberately not assignable). All pass clean under strict TypeScript with `exactOptionalPropertyTypes` + `noUncheckedIndexedAccess`.
+- [x] **`@repowise/ui` workspace package — scaffold only** — `packages/ui/` with subpath exports map for `graph`, `git`, `dead-code`, `decisions`, `docs`, `symbols`, `coverage`, `wiki`, `chat`, `dashboard`, `workspace`, `jobs`, `shared`, `hooks`, `ui` (Radix primitives). React 19 peer dep. `@repowise/types` workspace dep. Empty `styles/globals.css` placeholder; 1B copies the canonical Tailwind v4 `@theme` tokens out of `packages/web`. (commit `4de46a2`)
+- [x] **Root npm workspaces extended** — `packages/types` and `packages/ui` added to root `package.json` workspaces; root scripts `build`/`lint`/`type-check`/`test` use `--workspaces --if-present` so each package opts in.
+
+### Frontend (`frontend/`)
+- [x] No changes this session. `frontend/` does NOT get a `phase-1a-ui-types` branch in 1A — consumer rewrite is 1B per plan §5.3 day 10–11.
+
+### Backend (`backend/`)
+- [x] No changes this session. Phase 1A is OSS-only.
+
+### Decisions taken (session #2)
+
+- 2026-05-01 — **Option α confirmed** by human; no AGPL surprise. `packages/types` + `packages/ui` live inside the OSS monorepo. `frontend/` will move to `packages/hosted-web/` in Phase 1B.
+- 2026-05-01 — **npm workspaces, no Turborepo**. Root already had `packages/web` as a workspace; added `packages/types` + `packages/ui` to the same array. Turborepo's caching value kicks in at >5 build targets — not yet. Re-evaluate at 1B exit once `packages/hosted-web` is also in.
+- 2026-05-01 — **No tsup in 1A.** Plan §5.2 lists tsup for `packages/ui` library bundling, but with both consumers being Next.js apps using `transpilePackages`, raw TS source resolves directly via the `exports` map. Adding tsup pre-1B (before there's anything to bundle) is yak-shaving. Add when 1B starts shipping components, OR if a non-Next consumer ever appears.
+- 2026-05-01 — **Canonical type style.** OSS engine shapes win for engine-derived data (richer, mirror the Pydantic schemas). Hosted-only enrichment surfaces (`DeadCodeFinding.status`/`note`, `DecisionRecord.staleness_score`/`superseded_by`, `GraphLink.edge_type`/`confidence`) are layered as **optional** fields so OSS-shaped artifacts still satisfy the contract. Adapters in `packages/hosted-web/src/lib/api/adapters.ts` (1B) bridge the hosted backend's `path → file_path`, etc.
+- 2026-05-01 — **`Symbol` → `CodeSymbol`** in `packages/types/src/symbols.ts` to avoid shadowing the JavaScript global `Symbol` when consumers re-export the barrel.
+- 2026-05-01 — **`ChatArtifact` split into `KnownChatArtifact` + `GenericArtifact`.** A single union including `GenericArtifact` (which has `type: string`) widens the discriminator and breaks narrowing — TypeScript can't reduce `a.type === "graph"` to `GraphArtifact` alone. `isKnownChatArtifact()` does the narrowing at runtime; the typed switch in 2B operates on `KnownChatArtifact`.
+
+### Phase 1A drift from plan
+
+- Plan §5.2 lists `tsup.config.ts` for `packages/ui` — deferred per the decision above. Will add in 1B if needed.
+- Plan §5.2 lists `styles/globals.css` as "design tokens (extracted from packages/web)". 1A ships an empty placeholder file with a comment pointing to 1B; copying 314 lines of tokens before any consumer reads them risks divergence with `packages/web/src/styles/globals.css` until 1B re-points the import. Strict 1A-scope discipline.
+
+### Phase 0 close-out — still open
+
+These remain owned by the human and are tracked unchanged from session #1:
+- Smoke index of 6 fixture repos (TS/JS, Python, Go, C++, Rust, multi-project .NET) against `repowise==0.4.1` Modal image.
+- Vercel preview deploy of `phase-0-foundation`.
+- Railway deploy verification post-merge.
+- Dodo `subscription.on_hold` flow test in sandbox.
+- Live 429 rejection test for slowapi.
+
+### Next session entry point
+
+**Phase 1A close-out (within this session, after human approval):**
+1. Human approves backend PR [#2](https://github.com/repowise-dev/hosted-backend/pull/2) → session merges into `hosted-upgrade`, records merge SHA here.
+2. Human approves frontend PR [#4](https://github.com/repowise-dev/repowise-hosted-frontend/pull/4) → session merges into `hosted-upgrade`, records merge SHA here.
+3. Human approves OSS PR `phase-1a-ui-types → main` → session merges, records merge SHA here.
+
+**Phase 1B kickoff (next session):**
+- On OSS root, cut `phase-1b-ui-wireup` off `main`. (Hosted repos: cut `phase-1b-ui-wireup` off their respective `hosted-upgrade` branches.)
+- Per plan §5.3 day 5–7: move components from `packages/web/src/components/` into `packages/ui/src/`, factoring data fetching out of components into `@repowise/ui/hooks/` (`use-graph(repoId)`, etc.).
+- Per plan §5.3 day 10–11: move `frontend/` → `packages/hosted-web/`, replace `components/demo/*` imports with `@repowise/ui/*`, drop the `injectDemoData` bridge.
+- Copy the canonical token set from `packages/web/src/styles/globals.css` into `packages/ui/styles/globals.css`; both consumers `@import "@repowise/ui/styles.css"`.
+- Both apps add `transpilePackages: ["@repowise/ui"]` to `next.config.ts`.
+- Acceptance: `components/demo/` deleted from hosted; both apps build; OSS tests pass; Vercel preview renders all hosted routes.
 
 ## Phase 0 — what shipped (session #1)
 
