@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button } from "@repowise/ui/ui/button";
 import { Badge } from "@repowise/ui/ui/badge";
-import { EmptyState } from "@/components/shared/empty-state";
+import { EmptyState } from "@repowise/ui/shared/empty-state";
 import { regeneratePage } from "@/lib/api/pages";
 import { statusBadgeClasses, statusLabel } from "@/lib/utils/confidence";
 import { truncatePath, formatConfidence, formatRelativeTime } from "@/lib/utils/format";

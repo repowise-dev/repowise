@@ -5,7 +5,7 @@ import { Search } from "lucide-react";
 import { Badge } from "@repowise/ui/ui/badge";
 import { Input } from "@repowise/ui/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise/ui/ui/tooltip";
-import { EmptyState } from "@/components/shared/empty-state";
+import { EmptyState } from "@repowise/ui/shared/empty-state";
 import { cn } from "@/lib/utils/cn";
 import type { OwnershipEntry } from "@/lib/api/types";
 

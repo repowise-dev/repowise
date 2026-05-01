@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 import { getDecisionHealth } from "@/lib/api/decisions";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 
 interface DecisionHealthWidgetProps {
   repoId: string;

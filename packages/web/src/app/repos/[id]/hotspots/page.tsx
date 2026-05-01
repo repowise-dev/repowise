@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Flame, Shield } from "lucide-react";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 import { HotspotTable } from "@/components/git/hotspot-table";
 import { ContributorBar } from "@/components/git/contributor-bar";
 import { ChurnHistogram } from "@/components/git/churn-histogram";

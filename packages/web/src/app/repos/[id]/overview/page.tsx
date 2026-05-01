@@ -10,7 +10,7 @@ import { getProviders } from "@/lib/api/providers";
 import { listJobs } from "@/lib/api/jobs";
 import { getKnowledgeMap } from "@/lib/api/knowledge-map";
 import { Badge } from "@repowise/ui/ui/badge";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 import { HealthScoreRing } from "@/components/dashboard/health-score-ring";
 import { AttentionPanel } from "@/components/dashboard/attention-panel";
 import { QuickActions } from "@/components/dashboard/quick-actions";

@@ -9,7 +9,7 @@ import { Button } from "@repowise/ui/ui/button";
 import { Badge } from "@repowise/ui/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@repowise/ui/ui/select";
 import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { EmptyState } from "@/components/shared/empty-state";
+import { EmptyState } from "@repowise/ui/shared/empty-state";
 import { SymbolDrawer } from "./symbol-drawer";
 import { listSymbols } from "@/lib/api/symbols";
 import { getGraph } from "@/lib/api/graph";

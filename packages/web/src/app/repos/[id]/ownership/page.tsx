@@ -4,7 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Users, Shield } from "lucide-react";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 import { OwnershipTable } from "@/components/git/ownership-table";
 import { ContributorBar } from "@/components/git/contributor-bar";
 import { OwnershipTreemap } from "@/components/git/ownership-treemap";

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 import { Button } from "@repowise/ui/ui/button";
 
 interface EmptyStateProps {

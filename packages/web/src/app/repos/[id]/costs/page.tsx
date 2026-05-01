@@ -12,7 +12,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { listCosts, getCostSummary } from "@/lib/api/costs";

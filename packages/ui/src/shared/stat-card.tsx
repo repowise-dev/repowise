@@ -1,5 +1,5 @@
 import * as React from "react";
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 import { Card, CardContent } from "@repowise/ui/ui/card";
 
 interface StatCardProps {

@@ -2,7 +2,7 @@
 
 import { Link2, GitMerge, Package } from "lucide-react";
 import type { WorkspaceCrossRepoSummary, WorkspaceContractSummary } from "@/lib/api/types";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 
 interface CrossRepoSummaryProps {
   crossRepo: WorkspaceCrossRepoSummary | null;

@@ -22,6 +22,7 @@
     "./workspace": "./src/workspace/index.ts",
     "./jobs": "./src/jobs/index.ts",
     "./shared": "./src/shared/index.ts",
+    "./shared/*": "./src/shared/*.tsx",
     "./hooks": "./src/hooks/index.ts",
     "./ui": "./src/ui/index.ts",
     "./ui/*": "./src/ui/*.tsx",

@@ -11,7 +11,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { RepoCard } from "@/components/workspace/repo-card";
 import { CrossRepoSummary } from "@/components/workspace/cross-repo-summary";

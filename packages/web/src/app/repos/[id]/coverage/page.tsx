@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { FileCheck } from "lucide-react";
 import { CoverageDonut } from "@/components/coverage/coverage-donut";
 import { FreshnessTable } from "@/components/coverage/freshness-table";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 import { listPages } from "@/lib/api/pages";
 import { formatNumber } from "@/lib/utils/format";
 

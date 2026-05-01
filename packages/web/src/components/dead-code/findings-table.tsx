@@ -7,7 +7,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@repowise/ui/ui/tabs";
 import { Button } from "@repowise/ui/ui/button";
 import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { ConfirmDialog } from "@repowise/ui/ui/confirm-dialog";
-import { EmptyState } from "@/components/shared/empty-state";
+import { EmptyState } from "@repowise/ui/shared/empty-state";
 import { FindingRow } from "./finding-row";
 import { listDeadCode, patchDeadCodeFinding } from "@/lib/api/dead-code";
 import type { DeadCodeFindingResponse } from "@/lib/api/types";

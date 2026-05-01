@@ -24,7 +24,7 @@ import { Loader2, ChevronRight, Home, Search } from "lucide-react";
 import Fuse from "fuse.js";
 import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { Input } from "@repowise/ui/ui/input";
-import { EmptyState } from "@/components/shared/empty-state";
+import { EmptyState } from "@repowise/ui/shared/empty-state";
 import {
   useModuleGraph,
   useGraph,

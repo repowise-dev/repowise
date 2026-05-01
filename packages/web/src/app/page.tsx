@@ -15,11 +15,11 @@ import { listJobs } from "@/lib/api/jobs";
 import { getGitSummary } from "@/lib/api/git";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
-import { StatCard } from "@/components/shared/stat-card";
+import { StatCard } from "@repowise/ui/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { Badge } from "@repowise/ui/ui/badge";
 import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
-import { EmptyState } from "@/components/shared/empty-state";
+import { EmptyState } from "@repowise/ui/shared/empty-state";
 import { formatRelativeTime, formatNumber } from "@/lib/utils/format";
 import { scoreToStatus } from "@/lib/utils/confidence";
 
