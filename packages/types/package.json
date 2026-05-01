@@ -16,7 +16,9 @@
     "./symbols": "./src/symbols.ts",
     "./chat": "./src/chat.ts",
     "./workspace": "./src/workspace.ts",
-    "./blast-radius": "./src/blast-radius.ts"
+    "./blast-radius": "./src/blast-radius.ts",
+    "./jobs": "./src/jobs.ts",
+    "./settings": "./src/settings.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

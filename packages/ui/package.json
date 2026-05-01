@@ -40,6 +40,8 @@
     "./jobs/*": "./src/jobs/*.tsx",
     "./blast-radius": "./src/blast-radius/index.ts",
     "./blast-radius/*": "./src/blast-radius/*.tsx",
+    "./settings": "./src/settings/index.ts",
+    "./settings/*": "./src/settings/*.tsx",
     "./shared": "./src/shared/index.ts",
     "./shared/*": "./src/shared/*.tsx",
     "./hooks": "./src/hooks/index.ts",
