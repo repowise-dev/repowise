@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./styles.css": "./styles/globals.css",
     "./graph": "./src/graph/index.ts",
+    "./graph/*": "./src/graph/*.tsx",
     "./git": "./src/git/index.ts",
     "./git/*": "./src/git/*.tsx",
     "./dead-code": "./src/dead-code/index.ts",

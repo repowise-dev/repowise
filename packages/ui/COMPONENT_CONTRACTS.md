@@ -353,6 +353,72 @@ Returns `null` when fewer than two headings are found.
 |------|------|----------|
 | `content` | `string` | yes |
 
+## `graph/*` — Standalone graph chrome
+
+Four presentational graph-page chrome components. The `@xyflow/react`
+host (`graph-flow`), its node/edge subcomponents, and the data-coupled
+panels (`graph-doc-panel`, `graph-community-panel`, `path-finder-panel`,
+`graph-tooltip`, `elk-layout`/`use-elk-layout`) stay in `packages/web`
+because they all subscribe to a `GraphContext` provider declared in
+`graph-flow` and reach into `useGraph*` hooks.
+
+### `graph/graph-context-menu` — `GraphContextMenu`
+
+Floating right-click menu rendered at `(x, y)`. Pure UI; the host
+wires the four action callbacks.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `x`, `y` | `number` | yes |
+| `nodeId` | `string` | yes |
+| `isModule` | `boolean` | yes |
+| `onViewDocs` / `onExplore` / `onPathFrom` / `onPathTo` | `() => void` | yes |
+
+### `graph/graph-toolbar` — `GraphToolbar`
+
+Top-right toolbar exposing view mode, color mode, hide-tests toggle,
+fit-view, path-finder toggle, flows toggle, and a search input. Also
+exports the `ColorMode` (`language` / `community` / `risk`) and
+`ViewMode` (`module` / `full` / `architecture` / `dead` / `hotfiles`)
+unions consumed by `GraphLegend` and the host.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `viewMode` / `onViewChange` | `ViewMode` / `(v) => void` | yes |
+| `colorMode` / `onColorModeChange` | `ColorMode` / `(v) => void` | yes |
+| `hideTests` / `onHideTestsChange` | `boolean` / `(v) => void` | yes |
+| `onFitView` | `() => void` | yes |
+| `showPathFinder` / `onTogglePathFinder` | `boolean` / `() => void` | yes |
+| `showFlows` / `onToggleFlows` | `boolean` / `() => void` | yes |
+| `searchQuery` / `onSearchChange` | `string` / `(q) => void` | yes |
+
+### `graph/graph-legend` — `GraphLegend`
+
+Collapsible legend that picks a key per `colorMode`. Imports the
+`ColorMode` and `ViewMode` types from `graph-toolbar`.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `nodeCount` / `edgeCount` | `number` | yes |
+| `colorMode` | `ColorMode` | yes |
+| `viewMode` | `ViewMode` | yes |
+| `communityLabels` | `Map<number, string>` | no |
+
+### `graph/graph-ego-sidebar` — `GraphEgoSidebar`
+
+Right-edge sidebar showing the centre node's neighborhood — inbound
+/ outbound counts, git metadata (owner, last commit, 30d commits),
+and a list of neighbour nodes. Consumes the canonical `EgoGraph`
+type, which now optionally carries `center_git_meta: GitMetadata`.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `graph` | `EgoGraph` (`@repowise/types/graph`) | yes |
+| `onClose` | `() => void` | yes |
+| `onNavigateToNode` | `(nodeId: string) => void` | no |
+
+---
+
 ## `workspace/*` — Multi-repo workspace views
 
 Five presentational components that consume the canonical workspace

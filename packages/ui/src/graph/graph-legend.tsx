@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { LANGUAGE_COLORS } from "@repowise/ui/lib/confidence";
+import { LANGUAGE_COLORS } from "../lib/confidence";
 import type { ColorMode, ViewMode } from "./graph-toolbar";
 
 const COMMUNITY_SAMPLE = [
@@ -43,7 +43,6 @@ export function GraphLegend({
 
   return (
     <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-lg shadow-black/20 min-w-[120px] max-w-[150px]">
-      {/* Header — always visible, clickable to expand */}
       <button
         onClick={() => setExpanded((s) => !s)}
         className="flex items-center justify-between w-full px-2.5 py-2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
@@ -58,7 +57,6 @@ export function GraphLegend({
         )}
       </button>
 
-      {/* Expandable color legend */}
       {expanded && (
         <div className="px-2.5 pb-2.5 space-y-1.5 border-t border-[var(--color-border-default)] pt-2">
           <p className="text-[9px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
@@ -116,7 +114,6 @@ export function GraphLegend({
             </>
           )}
 
-          {/* View-specific info */}
           {viewMode !== "module" && viewMode !== "full" && (
             <p className="text-[9px] text-[var(--color-text-tertiary)] pt-1 border-t border-[var(--color-border-default)]">
               {viewMode === "dead" && "Showing unreachable files"}

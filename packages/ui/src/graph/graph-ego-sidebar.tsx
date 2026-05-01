@@ -1,12 +1,12 @@
 "use client";
 
 import { X, GitCommit, User, Clock, ArrowDownToLine, ArrowUpFromLine, FileText } from "lucide-react";
-import { Button } from "@repowise/ui/ui/button";
-import { formatRelativeTime } from "@repowise/ui/lib/format";
-import type { EgoGraphResponse } from "@/lib/api/types";
+import { Button } from "../ui/button";
+import { formatRelativeTime } from "../lib/format";
+import type { EgoGraph } from "@repowise/types/graph";
 
 interface GraphEgoSidebarProps {
-  graph: EgoGraphResponse;
+  graph: EgoGraph;
   onClose: () => void;
   onNavigateToNode?: (nodeId: string) => void;
 }
@@ -17,7 +17,6 @@ export function GraphEgoSidebar({ graph, onClose, onNavigateToNode }: GraphEgoSi
 
   return (
     <div className="absolute top-3 right-3 z-20 w-[min(18rem,calc(100vw-1.5rem))] rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/95 backdrop-blur-sm shadow-xl text-xs">
-      {/* Header */}
       <div className="flex items-start justify-between p-3 border-b border-[var(--color-border-default)]">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 mb-0.5">
@@ -35,7 +34,6 @@ export function GraphEgoSidebar({ graph, onClose, onNavigateToNode }: GraphEgoSi
         </Button>
       </div>
 
-      {/* Stats */}
       <div className="p-3 space-y-2">
         <div className="grid grid-cols-2 gap-2">
           <div className="rounded-md bg-[var(--color-bg-elevated)] p-2">
@@ -67,46 +65,42 @@ export function GraphEgoSidebar({ graph, onClose, onNavigateToNode }: GraphEgoSi
           </div>
         )}
 
-        {/* Git metadata */}
         {meta && (
-          <>
-            <div className="border-t border-[var(--color-border-default)] pt-2 space-y-1.5">
-              {meta.primary_owner_name && (
-                <div className="flex items-center justify-between text-[var(--color-text-secondary)]">
-                  <div className="flex items-center gap-1.5">
-                    <User className="h-3 w-3" />
-                    <span>Owner</span>
-                  </div>
-                  <span className="font-medium text-[var(--color-text-primary)] truncate max-w-[120px]">
-                    {meta.primary_owner_name}
-                  </span>
-                </div>
-              )}
-              {meta.last_commit_at != null && (
-                <div className="flex items-center justify-between text-[var(--color-text-secondary)]">
-                  <div className="flex items-center gap-1.5">
-                    <Clock className="h-3 w-3" />
-                    <span>Last commit</span>
-                  </div>
-                  <span className="font-medium text-[var(--color-text-primary)]">
-                    {formatRelativeTime(meta.last_commit_at)}
-                  </span>
-                </div>
-              )}
+          <div className="border-t border-[var(--color-border-default)] pt-2 space-y-1.5">
+            {meta.primary_owner_name && (
               <div className="flex items-center justify-between text-[var(--color-text-secondary)]">
                 <div className="flex items-center gap-1.5">
-                  <GitCommit className="h-3 w-3" />
-                  <span>Commits (30d)</span>
+                  <User className="h-3 w-3" />
+                  <span>Owner</span>
                 </div>
-                <span className="font-medium text-[var(--color-text-primary)] tabular-nums">
-                  {meta.commit_count_30d}
+                <span className="font-medium text-[var(--color-text-primary)] truncate max-w-[120px]">
+                  {meta.primary_owner_name}
                 </span>
               </div>
+            )}
+            {meta.last_commit_at != null && (
+              <div className="flex items-center justify-between text-[var(--color-text-secondary)]">
+                <div className="flex items-center gap-1.5">
+                  <Clock className="h-3 w-3" />
+                  <span>Last commit</span>
+                </div>
+                <span className="font-medium text-[var(--color-text-primary)]">
+                  {formatRelativeTime(meta.last_commit_at)}
+                </span>
+              </div>
+            )}
+            <div className="flex items-center justify-between text-[var(--color-text-secondary)]">
+              <div className="flex items-center gap-1.5">
+                <GitCommit className="h-3 w-3" />
+                <span>Commits (30d)</span>
+              </div>
+              <span className="font-medium text-[var(--color-text-primary)] tabular-nums">
+                {meta.commit_count_30d}
+              </span>
             </div>
-          </>
+          </div>
         )}
 
-        {/* Neighborhood nodes */}
         {graph.nodes.length > 1 && (
           <div className="border-t border-[var(--color-border-default)] pt-2">
             <p className="text-[var(--color-text-tertiary)] mb-1.5">

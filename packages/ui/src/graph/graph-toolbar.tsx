@@ -16,8 +16,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { Button } from "@repowise/ui/ui/button";
-import { Input } from "@repowise/ui/ui/input";
+import { Button } from "../ui/button";
 
 export type ColorMode = "language" | "community" | "risk";
 export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles";
@@ -69,7 +68,6 @@ export function GraphToolbar({
 }: GraphToolbarProps) {
   return (
     <div className="flex flex-col gap-1.5 items-end">
-      {/* View modes */}
       <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
         {VIEW_MODES.map((m) => {
           const Icon = m.icon;
@@ -94,9 +92,7 @@ export function GraphToolbar({
         })}
       </div>
 
-      {/* Color mode + actions row */}
       <div className="flex gap-1.5 items-center">
-        {/* Color modes */}
         <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
           {COLOR_MODES.map((m) => {
             const Icon = m.icon;
@@ -120,7 +116,6 @@ export function GraphToolbar({
           })}
         </div>
 
-        {/* Action buttons */}
         <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
           <Button
             size="sm"
@@ -168,7 +163,6 @@ export function GraphToolbar({
         </div>
       </div>
 
-      {/* Search */}
       <div className="relative">
         <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1 shadow-lg shadow-black/20">
           <Search className="w-3 h-3 text-[var(--color-text-tertiary)] shrink-0" />

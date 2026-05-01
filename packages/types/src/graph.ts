@@ -123,6 +123,8 @@ export interface EgoGraph {
   nodes: GraphNode[];
   links: GraphLink[];
   center_node_id: string;
+  /** Optional git metadata for the center file. Present when the engine has indexed git history. */
+  center_git_meta?: import("./git.js").GitMetadata | null;
   inbound_count: number;
   outbound_count: number;
 }

@@ -30,7 +30,6 @@ export function GraphContextMenu({
       className="fixed z-50 min-w-[200px] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-xl shadow-black/40 backdrop-blur-md py-1 text-xs"
       style={{ left: x, top: y }}
     >
-      {/* Node name header */}
       <div className="px-3 py-1.5 text-[10px] text-[var(--color-text-tertiary)] font-mono truncate border-b border-[var(--color-border-default)] mb-1">
         {shortName}
       </div>
