@@ -5,7 +5,7 @@ import * as d3 from "d3-hierarchy";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { Users } from "lucide-react";
-import type { OwnershipEntry } from "@repowise/types/git";
+import type { OwnershipEntry } from "@repowise-dev/types/git";
 
 const OWNER_COLORS = [
   "#3b82f6", "#8b5cf6", "#06b6d4", "#f59520", "#22c55e",
@@ -129,7 +129,7 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
                         className="text-[10px] fill-white pointer-events-none"
                         opacity={0.9}
                       >
-                        {d.name.length > w / 6 ? d.name.slice(0, Math.floor(w / 6)) + "…" : d.name}
+                        {d.name.length > w / 6 ? d.name.slice(0, Math.floor(w / 6)) + "â€¦" : d.name}
                       </text>
                     )}
                     <TooltipContent side="top" className="text-xs">
@@ -138,7 +138,7 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
                         Owner: {d.owner ?? "none"} ({d.ownerPct ? Math.round(d.ownerPct * 100) : 0}%)
                       </p>
                       <p className="text-[var(--color-text-tertiary)]">
-                        {d.value} files{d.isSilo ? " • Knowledge silo" : ""}
+                        {d.value} files{d.isSilo ? " â€¢ Knowledge silo" : ""}
                       </p>
                     </TooltipContent>
                   </Tooltip>

@@ -1,76 +1,47 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 import { CheckCircle, XCircle, Loader2, AlertTriangle, X } from "lucide-react";
-import { useJob } from "@/lib/hooks/use-job";
-import { Progress } from "@repowise/ui/ui/progress";
-import { Badge } from "@repowise/ui/ui/badge";
-import { Button } from "@repowise/ui/ui/button";
-import { JobLog } from "@repowise/ui/jobs/job-log";
-import { formatTokens, formatNumber } from "@repowise/ui/lib/format";
-import { cancelJob } from "@/lib/api/jobs";
-import type { JobProgressEvent } from "@/lib/api/types";
+import { Progress } from "../ui/progress";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { JobLog } from "./job-log";
+import { formatTokens, formatNumber } from "../lib/format";
 
-interface Props {
-  jobId: string;
-  repoName?: string;
-  /** Called when the job reaches a terminal state */
-  onDone?: () => void;
+/** Subset of the Job shape this presentational shell renders. */
+export interface GenerationProgressJob {
+  id: string;
+  status: "pending" | "running" | "completed" | "failed" | string;
+  total_pages: number;
+  completed_pages: number;
+  failed_pages?: number;
+  current_level?: number | null;
+  started_at?: string | null;
+  error_message?: string | null;
+  config?: Record<string, unknown> | null;
 }
 
-// Anything past this without transitioning out of "pending" is almost
-// certainly stuck — the background task crashed before recording running.
-const PENDING_STUCK_THRESHOLD_MS = 30_000;
+export interface GenerationProgressProps {
+  job: GenerationProgressJob | undefined;
+  log: Array<{ text: string }>;
+  /** Wall-clock elapsed time in ms. The wrapper owns the interval timer. */
+  elapsed: number;
+  /** Live cost in USD (null until first SSE progress event with cost). */
+  actualCost: number | null;
+  /** True when the job has been pending past the stuck-threshold and never started. */
+  stuckPending: boolean;
+  cancelling: boolean;
+  onCancel: () => void;
+}
 
-export function GenerationProgress({ jobId, repoName, onDone }: Props) {
-  const { job, sse } = useJob(jobId);
-  const [log, setLog] = useState<Array<{ text: string }>>([]);
-  const [elapsed, setElapsed] = useState(0);
-  const [actualCost, setActualCost] = useState<number | null>(null);
-  const [cancelling, setCancelling] = useState(false);
-  const startRef = useRef(Date.now());
-  const notifiedRef = useRef(false);
-
-  // Elapsed timer
-  useEffect(() => {
-    const id = setInterval(() => setElapsed(Date.now() - startRef.current), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Accumulate log entries and track running cost from SSE progress events
-  useEffect(() => {
-    if (!sse.data) return;
-    const ev = sse.data as JobProgressEvent;
-    if (ev.current_page) {
-      setLog((prev) => [
-        ...prev,
-        { text: `[L${ev.current_level ?? "?"}] ${ev.current_page}` },
-      ]);
-    }
-    if (ev.actual_cost_usd != null) {
-      setActualCost(ev.actual_cost_usd);
-    }
-  }, [sse.data]);
-
-  // Toast on terminal state
-  useEffect(() => {
-    if (notifiedRef.current) return;
-    if (job?.status === "completed") {
-      notifiedRef.current = true;
-      toast.success(`Documentation updated${repoName ? ` — ${repoName}` : ""}`, {
-        description: `${formatNumber(job.completed_pages)} pages generated`,
-      });
-      onDone?.();
-    } else if (job?.status === "failed") {
-      notifiedRef.current = true;
-      toast.error("Generation failed", {
-        description: job.error_message ?? "Unknown error",
-      });
-      onDone?.();
-    }
-  }, [job?.status, job?.completed_pages, job?.error_message, repoName, onDone]);
-
+export function GenerationProgress({
+  job,
+  log,
+  elapsed,
+  actualCost,
+  stuckPending,
+  cancelling,
+  onCancel,
+}: GenerationProgressProps) {
   const progress = job
     ? job.total_pages > 0
       ? Math.round((job.completed_pages / job.total_pages) * 100)
@@ -84,32 +55,8 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
   const isDone = job?.status === "completed";
   const isFailed = job?.status === "failed";
 
-  // Detect a stuck pending job: we've been observing it for >30s and the
-  // server still reports `pending` without `started_at` ever flipping.
-  const stuckPending =
-    isPending &&
-    job?.started_at == null &&
-    elapsed > PENDING_STUCK_THRESHOLD_MS;
-
-  async function handleCancel() {
-    if (!job) return;
-    setCancelling(true);
-    try {
-      await cancelJob(job.id);
-      toast.success("Job cancelled");
-      onDone?.();
-    } catch (e) {
-      toast.error("Couldn't cancel job", {
-        description: e instanceof Error ? e.message : "Unknown error",
-      });
-    } finally {
-      setCancelling(false);
-    }
-  }
-
   return (
     <div className="space-y-3">
-      {/* Header */}
       <div className="flex items-center gap-2">
         {isInflight && <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)] shrink-0" />}
         {isDone && <CheckCircle className="h-4 w-4 text-[var(--color-fresh)] shrink-0" />}
@@ -130,7 +77,7 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
           <Button
             size="sm"
             variant="ghost"
-            onClick={handleCancel}
+            onClick={onCancel}
             disabled={cancelling}
             className="h-7 px-2 text-xs"
             aria-label="Cancel job"
@@ -154,11 +101,10 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
         </div>
       )}
 
-      {/* Progress bar */}
       <div className="space-y-1">
         <Progress
           value={progress}
-          indicatorClassName={isFailed ? "bg-[var(--color-outdated)]" : undefined}
+          {...(isFailed ? { indicatorClassName: "bg-[var(--color-outdated)]" } : {})}
         />
         <div className="flex justify-between text-xs text-[var(--color-text-tertiary)]">
           <span>
@@ -174,7 +120,6 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
         </div>
       </div>
 
-      {/* Live cost */}
       {actualCost != null && (
         <div className="flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)]">
           <span>Cost: ${actualCost.toFixed(4)}</span>
@@ -187,18 +132,17 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
         </div>
       )}
 
-      {/* Summary on done */}
-      {isDone && (
+      {isDone && job && (
         <div className="grid grid-cols-3 gap-2">
           <div className="rounded border border-[var(--color-border-default)] p-2 text-center">
             <p className="text-lg font-semibold text-[var(--color-text-primary)]">
-              {formatNumber(job!.completed_pages)}
+              {formatNumber(job.completed_pages)}
             </p>
             <p className="text-xs text-[var(--color-text-tertiary)]">pages</p>
           </div>
           <div className="rounded border border-[var(--color-border-default)] p-2 text-center">
             <p className="text-lg font-semibold text-[var(--color-text-primary)]">
-              {formatTokens((job!.config?.total_input_tokens as number) ?? 0)}
+              {formatTokens((job.config?.total_input_tokens as number) ?? 0)}
             </p>
             <p className="text-xs text-[var(--color-text-tertiary)]">tokens in</p>
           </div>
@@ -211,12 +155,10 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
         </div>
       )}
 
-      {/* Error */}
       {isFailed && job?.error_message && (
         <p className="text-sm text-[var(--color-outdated)]">{job.error_message}</p>
       )}
 
-      {/* Live log */}
       {log.length > 0 && <JobLog entries={log} />}
     </div>
   );

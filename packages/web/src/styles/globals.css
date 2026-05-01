@@ -1,8 +1,8 @@
 /*
- * packages/web — global stylesheet.
+ * packages/web â€” global stylesheet.
  *
  * Tokens, base styles, prose and React Flow theming live in
- * `@repowise/ui/styles.css`. App-specific overrides go below the import.
+ * `@repowise-dev/ui/styles.css`. App-specific overrides go below the import.
  */
 
-@import "@repowise/ui/styles.css";
+@import "@repowise-dev/ui/styles.css";

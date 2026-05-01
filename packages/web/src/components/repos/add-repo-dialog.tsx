@@ -4,16 +4,16 @@ import { useState } from "react";
 import { Plus } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { createRepo } from "@/lib/api/repos";
-import { Button } from "@repowise/ui/ui/button";
+import { Button } from "@repowise-dev/ui/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogFooter,
-} from "@repowise/ui/ui/dialog";
-import { Label } from "@repowise/ui/ui/label";
-import { Input } from "@repowise/ui/ui/input";
+} from "@repowise-dev/ui/ui/dialog";
+import { Label } from "@repowise-dev/ui/ui/label";
+import { Input } from "@repowise-dev/ui/ui/input";
 
 interface Props {
   /** Render as a sidebar button (icon + label) vs standalone button */
@@ -145,7 +145,7 @@ export function AddRepoDialog({ variant = "default" }: Props) {
                 Cancel
               </Button>
               <Button type="submit" disabled={submitting || !name.trim() || !localPath.trim()}>
-                {submitting ? "Adding…" : "Add Repository"}
+                {submitting ? "Addingâ€¦" : "Add Repository"}
               </Button>
             </DialogFooter>
           </form>

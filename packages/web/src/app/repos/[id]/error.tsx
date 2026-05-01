@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { AlertTriangle, RefreshCw, ArrowLeft } from "lucide-react";
-import { Button } from "@repowise/ui/ui/button";
+import { Button } from "@repowise-dev/ui/ui/button";
 
 export default function RepoError({
   error,

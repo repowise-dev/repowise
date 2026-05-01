@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { DecisionHealthWidget } from "../../src/decisions/decision-health-widget.js";
-import type { DecisionHealth } from "@repowise/types/decisions";
+import type { DecisionHealth } from "@repowise-dev/types/decisions";
 
 const HEALTH: DecisionHealth = {
   summary: { active: 12, proposed: 3, deprecated: 1, superseded: 2, stale: 4 },

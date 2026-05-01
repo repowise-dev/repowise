@@ -8,7 +8,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { truncatePath } from "../lib/format";
-import type { Hotspot } from "@repowise/types/git";
+import type { Hotspot } from "@repowise-dev/types/git";
 
 interface BusFactorPanelProps {
   hotspots: Hotspot[];
@@ -48,7 +48,7 @@ export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
               }}
               formatter={(value, name) => {
                 const n = typeof value === "number" ? value : 0;
-                const label = name === "high" ? "Safe (≥3)" : name === "medium" ? "Warning (2)" : "Risk (≤1)";
+                const label = name === "high" ? "Safe (â‰¥3)" : name === "medium" ? "Warning (2)" : "Risk (â‰¤1)";
                 return [`${n} files`, label];
               }}
             />
@@ -59,13 +59,13 @@ export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
         </ResponsiveContainer>
         <div className="flex items-center gap-4 mt-2 text-[10px] text-[var(--color-text-tertiary)]">
           <span className="flex items-center gap-1">
-            <span className="inline-block h-2 w-2 rounded-sm bg-green-500" /> Safe (≥3): {high}
+            <span className="inline-block h-2 w-2 rounded-sm bg-green-500" /> Safe (â‰¥3): {high}
           </span>
           <span className="flex items-center gap-1">
             <span className="inline-block h-2 w-2 rounded-sm bg-yellow-500" /> Warning (2): {medium}
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block h-2 w-2 rounded-sm bg-red-500" /> Risk (≤1): {low}
+            <span className="inline-block h-2 w-2 rounded-sm bg-red-500" /> Risk (â‰¤1): {low}
           </span>
         </div>
       </div>

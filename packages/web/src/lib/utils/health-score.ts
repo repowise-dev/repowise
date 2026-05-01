@@ -63,8 +63,8 @@ export function aggregateLanguages(
   return counts;
 }
 
-export type { AttentionItem } from "@repowise/ui/dashboard/attention-panel";
-import type { AttentionItem } from "@repowise/ui/dashboard/attention-panel";
+export type { AttentionItem } from "@repowise-dev/ui/dashboard/attention-panel";
+import type { AttentionItem } from "@repowise-dev/ui/dashboard/attention-panel";
 
 /** Build attention items from existing API responses */
 export function buildAttentionItems(params: {

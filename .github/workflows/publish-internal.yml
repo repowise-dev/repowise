@@ -4,11 +4,11 @@ name: Publish internal prereleases
 # every push to `next`, tagged as `0.0.0-internal.<short-sha>`. Downstream
 # consumers (e.g. hosted-frontend) pin to a specific SHA.
 #
-# Source package.json files keep their workspace-friendly names
-# (`@repowise/types`, `@repowise/ui`) and `private: true`. This workflow
-# rewrites the name, version, inter-package dep, and removes `private` only
-# at publish time. The PyPI publish workflow (`publish.yml`) only fires on
-# `v*` tags and is unaffected.
+# Source package.json files declare the published names directly
+# (`@repowise-dev/types`, `@repowise-dev/ui`) but keep `private: true` and
+# `version: 0.0.1`. This workflow stamps the prerelease version and
+# removes `private` only at publish time. The PyPI publish workflow
+# (`publish.yml`) only fires on `v*` tags and is unaffected.
 #
 # Triggers:
 #   - push to `next` (auto)
@@ -52,9 +52,9 @@ jobs:
 
       - name: Type-check + test
         run: |
-          npm run type-check --workspace @repowise/types
-          npm run type-check --workspace @repowise/ui
-          npm run test --workspace @repowise/ui
+          npm run type-check --workspace @repowise-dev/types
+          npm run type-check --workspace @repowise-dev/ui
+          npm run test --workspace @repowise-dev/ui
 
       - name: Compute prerelease version
         id: ver
@@ -68,7 +68,6 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_GITHUB_PACKAGES }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          npm pkg set name="@repowise-dev/types"
           npm pkg set version="$VERSION"
           npm pkg delete private
           npm publish
@@ -79,9 +78,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_GITHUB_PACKAGES }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          npm pkg set name="@repowise-dev/ui"
           npm pkg set version="$VERSION"
-          npm pkg delete dependencies.@repowise/types
           npm pkg set dependencies.@repowise-dev/types="$VERSION"
           npm pkg delete private
           npm publish
@@ -97,7 +94,7 @@ jobs:
             echo "Consumer install (hosted-frontend):"
             echo ""
             echo '```json'
-            echo '"@repowise/types": "npm:@repowise-dev/types@${{ steps.ver.outputs.version }}",'
-            echo '"@repowise/ui":    "npm:@repowise-dev/ui@${{ steps.ver.outputs.version }}"'
+            echo '"@repowise-dev/types": "${{ steps.ver.outputs.version }}",'
+            echo '"@repowise-dev/ui":    "${{ steps.ver.outputs.version }}"'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

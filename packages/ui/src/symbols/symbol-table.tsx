@@ -1,33 +1,42 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
-import useSWR from "swr";
-import useSWRInfinite from "swr/infinite";
+import { useState, useCallback, useMemo, type ReactNode } from "react";
 import { ChevronUp, ChevronDown, ChevronsUpDown, TrendingUp } from "lucide-react";
-import { Input } from "@repowise/ui/ui/input";
-import { Button } from "@repowise/ui/ui/button";
-import { Badge } from "@repowise/ui/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@repowise/ui/ui/select";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { EmptyState } from "@repowise/ui/shared/empty-state";
-import { SymbolDrawer } from "./symbol-drawer";
-import { listSymbols } from "@/lib/api/symbols";
-import { getGraph } from "@/lib/api/graph";
-import { useDebounce } from "@/lib/hooks/use-debounce";
-import { truncatePath } from "@repowise/ui/lib/format";
-import { cn } from "@/lib/utils/cn";
-import type { SymbolResponse, GraphExportResponse } from "@/lib/api/types";
+import { Input } from "../ui/input";
+import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Skeleton } from "../ui/skeleton";
+import { EmptyState } from "../shared/empty-state";
+import { truncatePath } from "../lib/format";
+import { cn } from "../lib/cn";
+import type { CodeSymbol } from "@repowise-dev/types/symbols";
 
-type SortCol = "importance" | "name" | "kind" | "language" | "complexity_estimate" | "start_line";
-type SortDir = "asc" | "desc";
-
-const LIMIT = 50;
+export type SortCol = "importance" | "name" | "kind" | "language" | "complexity_estimate" | "start_line";
+export type SortDir = "asc" | "desc";
 
 const KINDS = ["function", "class", "method", "interface", "variable", "module"];
 const LANGUAGES = ["python", "typescript", "javascript", "go", "rust", "java", "cpp", "c"];
 
-interface SymbolTableProps {
-  repoId: string;
+export interface SymbolTableProps {
+  /** Loaded symbols (already paginated and filtered server-side). */
+  items: CodeSymbol[];
+  /** Map of symbol.id → normalized importance score (0–1). */
+  importanceScores: Map<string, number>;
+  isLoading: boolean;
+  isValidating: boolean;
+  hasMore: boolean;
+  /** Server-driven filters — these affect the fetch key, so they live in the wrapper. */
+  q: string;
+  onQChange: (v: string) => void;
+  kind: string;
+  onKindChange: (v: string) => void;
+  language: string;
+  onLanguageChange: (v: string) => void;
+  onLoadMore: () => void;
+  onSelect: (sym: CodeSymbol) => void;
+  /** Drawer slot for the selected row. Wrapper passes a `<SymbolDrawer>` mounted with its own data. */
+  drawer?: ReactNode;
 }
 
 function SortIcon({ col, sortCol, sortDir }: { col: SortCol; sortCol: SortCol; sortDir: SortDir }) {
@@ -52,63 +61,24 @@ function ImportanceBar({ score }: { score: number }) {
   );
 }
 
-export function SymbolTable({ repoId }: SymbolTableProps) {
-  const [q, setQ] = useState("");
-  const debouncedQ = useDebounce(q, 300);
-  const [kind, setKind] = useState("all");
-  const [language, setLanguage] = useState("all");
+export function SymbolTable({
+  items,
+  importanceScores,
+  isLoading,
+  isValidating,
+  hasMore,
+  q,
+  onQChange,
+  kind,
+  onKindChange,
+  language,
+  onLanguageChange,
+  onLoadMore,
+  onSelect,
+  drawer,
+}: SymbolTableProps) {
   const [sortCol, setSortCol] = useState<SortCol>("importance");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
-  const [selected, setSelected] = useState<SymbolResponse | null>(null);
-
-  // Fetch graph data for pagerank-based importance scoring
-  const { data: graphData } = useSWR<GraphExportResponse>(
-    `graph:${repoId}`,
-    () => getGraph(repoId),
-    { revalidateOnFocus: false, revalidateOnReconnect: false },
-  );
-
-  const pagerankMap = useMemo(() => {
-    if (!graphData) return new Map<string, number>();
-    const m = new Map<string, number>();
-    for (const n of graphData.nodes) m.set(n.node_id, n.pagerank);
-    return m;
-  }, [graphData]);
-
-  const { data, size, setSize, isLoading, isValidating } = useSWRInfinite<SymbolResponse[]>(
-    (pageIndex, previousPageData) => {
-      if (previousPageData && previousPageData.length < LIMIT) return null;
-      return `symbols:${repoId}:${debouncedQ}:${kind}:${language}:${pageIndex}`;
-    },
-    (key) => {
-      const pageIndex = parseInt(key.split(":").pop()!, 10);
-      return listSymbols({
-        repo_id: repoId,
-        q: debouncedQ || undefined,
-        kind: kind !== "all" ? kind : undefined,
-        language: language !== "all" ? language : undefined,
-        limit: LIMIT,
-        offset: pageIndex * LIMIT,
-      });
-    },
-    { revalidateOnFocus: false, revalidateFirstPage: false },
-  );
-
-  const items = useMemo(() => (data ? data.flat() : []), [data]);
-
-  // Compute importance score per symbol: file pagerank * (1 + log(complexity))
-  const importanceScores = useMemo(() => {
-    const scores = new Map<string, number>();
-    for (const sym of items) {
-      const fileRank = pagerankMap.get(sym.file_path) ?? 0;
-      const complexity = Math.max(1, sym.complexity_estimate);
-      scores.set(sym.id, fileRank * (1 + Math.log(complexity)));
-    }
-    // Normalize to 0-1 range
-    const max = Math.max(...scores.values(), 0.0001);
-    for (const [k, v] of scores) scores.set(k, v / max);
-    return scores;
-  }, [items, pagerankMap]);
 
   const handleSort = useCallback(
     (col: SortCol) => {
@@ -129,15 +99,12 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
         const ib = importanceScores.get(b.id) ?? 0;
         return sortDir === "asc" ? ia - ib : ib - ia;
       }
-      const va = a[sortCol] ?? "";
-      const vb = b[sortCol] ?? "";
+      const va = (a as unknown as Record<string, unknown>)[sortCol] ?? "";
+      const vb = (b as unknown as Record<string, unknown>)[sortCol] ?? "";
       const cmp = String(va).localeCompare(String(vb), undefined, { numeric: true });
       return sortDir === "asc" ? cmp : -cmp;
     });
   }, [items, sortCol, sortDir, importanceScores]);
-
-  const lastPage = data ? data[data.length - 1] : undefined;
-  const hasMore = lastPage?.length === LIMIT;
 
   const columns: Array<{ col: SortCol; label: string; hideOnMobile?: boolean }> = [
     { col: "importance", label: "Importance" },
@@ -150,15 +117,14 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
 
   return (
     <div className="space-y-4">
-      {/* Filters */}
       <div className="flex flex-wrap gap-2">
         <Input
           placeholder="Search symbols…"
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => onQChange(e.target.value)}
           className="max-w-xs"
         />
-        <Select value={kind} onValueChange={setKind}>
+        <Select value={kind} onValueChange={onKindChange}>
           <SelectTrigger className="w-36">
             <SelectValue placeholder="Kind" />
           </SelectTrigger>
@@ -171,7 +137,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
             ))}
           </SelectContent>
         </Select>
-        <Select value={language} onValueChange={setLanguage}>
+        <Select value={language} onValueChange={onLanguageChange}>
           <SelectTrigger className="w-36">
             <SelectValue placeholder="Language" />
           </SelectTrigger>
@@ -191,7 +157,6 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
         )}
       </div>
 
-      {/* Table */}
       {isLoading && items.length === 0 ? (
         <div className="space-y-2">
           {Array.from({ length: 8 }).map((_, i) => (
@@ -240,11 +205,11 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                     tabIndex={0}
                     role="button"
                     aria-label={`View ${sym.qualified_name || sym.name}`}
-                    onClick={() => setSelected(sym)}
+                    onClick={() => onSelect(sym)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        setSelected(sym);
+                        onSelect(sym);
                       }
                     }}
                   >
@@ -292,7 +257,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setSize(size + 1)}
+                onClick={onLoadMore}
                 disabled={isValidating}
               >
                 {isValidating ? "Loading…" : "Load more"}
@@ -302,7 +267,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
         </>
       )}
 
-      <SymbolDrawer symbol={selected} repoId={repoId} onClose={() => setSelected(null)} />
+      {drawer}
     </div>
   );
 }

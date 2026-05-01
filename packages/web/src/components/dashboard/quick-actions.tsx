@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { RefreshCw, Trash2, AlertTriangle, Zap } from "lucide-react";
-import { Button } from "@repowise/ui/ui/button";
+import { Button } from "@repowise-dev/ui/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -11,18 +11,18 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from "@repowise/ui/ui/dialog";
+} from "@repowise-dev/ui/ui/dialog";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
-import { GenerationProgress } from "@/components/jobs/generation-progress";
-import { formatNumber, formatCost, formatRelativeTime } from "@repowise/ui/lib/format";
+import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
+import { formatNumber, formatCost, formatRelativeTime } from "@repowise-dev/ui/lib/format";
 
 // Weighted average per-page token heuristics from cost_estimator.py _TOKEN_HEURISTICS
 const AVG_INPUT_TOKENS_PER_PAGE = 3500;
 const AVG_OUTPUT_TOKENS_PER_PAGE = 2200;
 
-// Pricing per 1K tokens (input, output) — mirrors cost_estimator.py _COST_TABLE exactly
+// Pricing per 1K tokens (input, output) â€” mirrors cost_estimator.py _COST_TABLE exactly
 const COST_TABLE_EXACT: Record<string, [number, number]> = {
   "gpt-5.4": [0.0025, 0.015],
   "gpt-5.4-mini": [0.00075, 0.0045],
@@ -35,7 +35,7 @@ const COST_TABLE_EXACT: Record<string, [number, number]> = {
   "claude-haiku-4-5": [0.001, 0.005],
 };
 
-// Prefix fallbacks — longest match wins (same as cost_estimator.py)
+// Prefix fallbacks â€” longest match wins (same as cost_estimator.py)
 const COST_TABLE_PREFIX: [string, [number, number]][] = [
   ["gpt-5.4-nano", [0.0002, 0.00125]],
   ["gpt-5.4-mini", [0.00075, 0.0045]],
@@ -89,7 +89,7 @@ const ACTIONS: ActionDef[] = [
   {
     key: "sync",
     label: "Sync",
-    description: "Update everything — only affected pages regenerated",
+    description: "Update everything â€” only affected pages regenerated",
     icon: Zap,
     destructive: false,
     needsConfirm: true,
@@ -148,7 +148,7 @@ export function QuickActions({ repoId, repoName, pageCount = 0, modelName = "", 
         const inflight = running[0] ?? pending[0];
         if (inflight) setActiveJobId(inflight.id);
       } catch {
-        // best-effort hydration — don't block the UI
+        // best-effort hydration â€” don't block the UI
       }
     })();
     return () => {
@@ -172,11 +172,11 @@ export function QuickActions({ repoId, repoName, pageCount = 0, modelName = "", 
       if (action.key === "sync") {
         const job = await syncRepo(repoId);
         setActiveJobId(job.id);
-        toast.info(`Sync started${repoName ? ` — ${repoName}` : ""}`);
+        toast.info(`Sync started${repoName ? ` â€” ${repoName}` : ""}`);
       } else if (action.key === "resync") {
         const job = await fullResyncRepo(repoId);
         setActiveJobId(job.id);
-        toast.info(`Full resync started${repoName ? ` — ${repoName}` : ""}`);
+        toast.info(`Full resync started${repoName ? ` â€” ${repoName}` : ""}`);
       } else if (action.key === "dead-code") {
         await analyzeDeadCode(repoId);
         toast.info("Dead code analysis started");
@@ -322,7 +322,7 @@ export function QuickActions({ repoId, repoName, pageCount = 0, modelName = "", 
             {estimate && estimate.cost === 0 && (
               <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] p-3">
                 <p className="text-xs text-[var(--color-success)] text-center">
-                  No API cost — running locally via Ollama
+                  No API cost â€” running locally via Ollama
                 </p>
               </div>
             )}

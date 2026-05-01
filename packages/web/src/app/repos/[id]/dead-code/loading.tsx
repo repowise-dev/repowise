@@ -1,4 +1,4 @@
-import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 export default function DeadCodeLoading() {
   return (

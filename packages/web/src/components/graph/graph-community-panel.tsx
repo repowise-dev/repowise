@@ -1,11 +1,11 @@
 "use client";
 
 import { X, ArrowRight } from "lucide-react";
-import { Badge } from "@repowise/ui/ui/badge";
-import { ScrollArea } from "@repowise/ui/ui/scroll-area";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { useCommunityDetail } from "@/lib/hooks/use-graph";
-import { truncatePath } from "@repowise/ui/lib/format";
+import { truncatePath } from "@repowise-dev/ui/lib/format";
 
 interface GraphCommunityPanelProps {
   repoId: string;

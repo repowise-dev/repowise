@@ -20,14 +20,14 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
-import { WikiMarkdown } from "@repowise/ui/wiki/wiki-markdown";
+import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
 import { VersionHistory } from "@/components/wiki/version-history";
-import { ConfidenceBadge } from "@repowise/ui/wiki/confidence-badge";
-import { Button } from "@repowise/ui/ui/button";
-import { Badge } from "@repowise/ui/ui/badge";
-import { ScrollArea } from "@repowise/ui/ui/scroll-area";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { formatRelativeTime, formatTokens } from "@repowise/ui/lib/format";
+import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { formatRelativeTime, formatTokens } from "@repowise-dev/ui/lib/format";
 import { downloadTextFile } from "@/lib/utils/download";
 import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
 import type { PageResponse } from "@/lib/api/types";
@@ -290,7 +290,7 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
               </span>
               <span>v{page.version}</span>
               <span className="font-mono">
-                {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
+                {formatTokens(page.input_tokens)} in Â· {formatTokens(page.output_tokens)} out
               </span>
             </div>
 
@@ -342,7 +342,7 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
         </div>
       </div>
 
-      {/* Right sidebar — Graph Intelligence */}
+      {/* Right sidebar â€” Graph Intelligence */}
       {hasTargetPath && sidebarOpen && (
         <div className="hidden lg:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 w-[240px] overflow-auto">
           <DocsSidebar repoId={repoId} targetPath={page.target_path} />

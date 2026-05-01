@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { Button } from "@repowise/ui/ui/button";
+import { Button } from "@repowise-dev/ui/ui/button";
 import { getCoordinatorHealth, type CoordinatorHealth } from "@/lib/api/health";
 
 interface Props {
@@ -43,8 +43,8 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
     }
   }
 
-  const fmt = (v: number | null) => (v === null ? "—" : String(v));
-  const fmtPct = (v: number | null) => (v === null ? "—" : `${v.toFixed(1)}%`);
+  const fmt = (v: number | null) => (v === null ? "â€”" : String(v));
+  const fmtPct = (v: number | null) => (v === null ? "â€”" : `${v.toFixed(1)}%`);
 
   return (
     <div className="space-y-3">
@@ -65,7 +65,7 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
         </>
       ) : (
         <p className="text-xs text-[var(--color-text-secondary)]">
-          {error ?? "No data — click Refresh to load."}
+          {error ?? "No data â€” click Refresh to load."}
         </p>
       )}
       {error && (
@@ -79,7 +79,7 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
         disabled={loading}
       >
         <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loading ? "animate-spin" : ""}`} />
-        {loading ? "Checking…" : "Refresh"}
+        {loading ? "Checkingâ€¦" : "Refresh"}
       </Button>
     </div>
   );

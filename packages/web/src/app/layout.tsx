@@ -3,7 +3,7 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { Toaster } from "sonner";
-import { TooltipProvider } from "@repowise/ui/ui/tooltip";
+import { TooltipProvider } from "@repowise-dev/ui/ui/tooltip";
 import { Sidebar } from "@/components/layout/sidebar";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
@@ -15,7 +15,7 @@ import "@/styles/globals.css";
 export const metadata: Metadata = {
   title: {
     default: "repowise",
-    template: "%s — repowise",
+    template: "%s â€” repowise",
   },
   description: "Open-source codebase documentation engine",
 };
@@ -37,7 +37,7 @@ export default async function RootLayout({
     if (reposResult.status === "fulfilled") repos = reposResult.value;
     if (wsResult.status === "fulfilled") workspace = wsResult.value;
   } catch {
-    // API not available — show empty sidebar
+    // API not available â€” show empty sidebar
   }
 
   return (

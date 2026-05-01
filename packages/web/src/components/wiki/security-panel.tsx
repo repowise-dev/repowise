@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { Badge } from "@repowise/ui/ui/badge";
+import { Badge } from "@repowise-dev/ui/ui/badge";
 import { listSecurityFindings } from "@/lib/api/security";
 import type { SecurityFinding } from "@/lib/api/security";
 
@@ -53,7 +53,7 @@ export function SecurityPanel({ repoId, filePath }: SecurityPanelProps) {
           </div>
           {f.snippet && (
             <pre className="text-[10px] font-mono text-[var(--color-text-tertiary)] whitespace-pre-wrap break-all line-clamp-3 leading-relaxed">
-              {f.snippet.length > 120 ? f.snippet.slice(0, 120) + "…" : f.snippet}
+              {f.snippet.length > 120 ? f.snippet.slice(0, 120) + "â€¦" : f.snippet}
             </pre>
           )}
         </div>

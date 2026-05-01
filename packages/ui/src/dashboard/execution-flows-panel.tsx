@@ -5,7 +5,7 @@ import { ChevronRight, ChevronDown } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { cn } from "../lib/cn";
-import type { ExecutionFlowEntry } from "@repowise/types/graph";
+import type { ExecutionFlowEntry } from "@repowise-dev/types/graph";
 
 interface ExecutionFlowsPanelProps {
   flows: ExecutionFlowEntry[];

@@ -5,10 +5,10 @@ import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@repowise/ui/ui/button";
-import { SummaryBar } from "@repowise/ui/dead-code/summary-bar";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { SummaryBar } from "@repowise-dev/ui/dead-code/summary-bar";
 import { FindingsTable } from "@/components/dead-code/findings-table";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getDeadCodeSummary, analyzeDeadCode } from "@/lib/api/dead-code";
 import type { DeadCodeSummaryResponse } from "@/lib/api/types";
 
@@ -27,7 +27,7 @@ export default function DeadCodePage() {
     setAnalyzing(true);
     try {
       await analyzeDeadCode(id);
-      toast.success("Analysis started — results will appear shortly.");
+      toast.success("Analysis started â€” results will appear shortly.");
     } catch (err) {
       toast.error(
         err instanceof Error ? `Couldn't start analysis: ${err.message}` : "Couldn't start analysis",
@@ -56,7 +56,7 @@ export default function DeadCodePage() {
             onClick={handleAnalyze}
             disabled={analyzing}
           >
-            {analyzing ? "Starting…" : "Analyze"}
+            {analyzing ? "Startingâ€¦" : "Analyze"}
           </Button>
         </div>
       </div>

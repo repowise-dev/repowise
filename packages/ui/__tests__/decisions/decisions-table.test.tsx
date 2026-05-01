@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { DecisionsTable } from "../../src/decisions/decisions-table.js";
-import type { DecisionRecord } from "@repowise/types/decisions";
+import type { DecisionRecord } from "@repowise-dev/types/decisions";
 
 function makeDecision(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
   return {

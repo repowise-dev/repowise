@@ -2,9 +2,10 @@
 
 import { memo, useContext } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Folder } from "lucide-react";
-import { GraphContext } from "../graph-flow";
-import type { ModuleNodeData } from "../elk-layout";
+import { FileText } from "lucide-react";
+import { GraphContext } from "../context";
+import { languageColor } from "../../lib/confidence";
+import type { FileNodeData } from "../elk-layout";
 
 const COMMUNITY_COLORS = [
   "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#3b82f6", "#a855f7",
@@ -13,44 +14,45 @@ const COMMUNITY_COLORS = [
   "#64748b", "#0891b2", "#059669", "#b45309", "#7c3aed", "#db2777",
 ];
 
-function ModuleGroupNodeInner({ id, data }: NodeProps) {
-  const d = data as ModuleNodeData;
-  const ctx = useContext(GraphContext);
-  const docPct = d.docCoveragePct ?? 0;
+function riskColor(score: number): string {
+  if (score <= 0.3) return "#22c55e";
+  if (score <= 0.7) return "#f59520";
+  return "#ef4444";
+}
 
-  // Color mode determines the accent/border color
-  let accentColor: string;
-  switch (ctx.colorMode) {
-    case "risk": {
-      if (docPct >= 0.7) accentColor = "var(--color-node-documented)";
-      else if (docPct >= 0.3) accentColor = "var(--color-risk-medium)";
-      else accentColor = "var(--color-risk-high)";
-      break;
-    }
-    case "community": {
-      let hash = 0;
-      for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
-      accentColor = COMMUNITY_COLORS[Math.abs(hash) % COMMUNITY_COLORS.length];
-      break;
-    }
-    case "language":
-    default:
-      accentColor = "var(--color-accent-graph)";
-      break;
-  }
+function FileNodeInner({ id, data }: NodeProps) {
+  const d = data as FileNodeData;
+  const ctx = useContext(GraphContext);
 
   const isOnPath = ctx.highlightedPath.has(id);
   const hasActivePath = ctx.highlightedPath.size > 0;
   const isDimmed = hasActivePath && !isOnPath;
+  const isSearchDimmed = ctx.searchDimmedNodes?.has(id) ?? false;
   const isSelected = ctx.selectedNodeId === id;
   const isHovered = ctx.hoveredNodeId === id;
   const hasHover = ctx.hoveredNodeId !== null;
   const isConnected = ctx.connectedNodeIds.has(id);
   const isHoverDimmed = hasHover && !isConnected && !hasActivePath;
 
-  const isSearchDimmed = ctx.searchDimmedNodes?.has(id) ?? false;
-  const searchDimmed = isSearchDimmed && !isOnPath && !isSelected;
+  // Determine node accent color based on color mode
+  let accentColor: string;
+  switch (ctx.colorMode) {
+    case "risk": {
+      const score = ctx.riskScores.get(d.fullPath) ?? (d.pagerank * 3);
+      accentColor = riskColor(Math.min(1, score));
+      break;
+    }
+    case "community":
+      accentColor = COMMUNITY_COLORS[d.communityId % COMMUNITY_COLORS.length] ?? "#6366f1";
+      break;
+    case "language":
+    default:
+      accentColor = languageColor(d.language);
+      break;
+  }
 
+  // Compute opacity
+  const searchDimmed = isSearchDimmed && !isOnPath && !isSelected;
   let opacity = 1;
   if (isDimmed) opacity = 0.15;
   else if (searchDimmed) opacity = 0.12;
@@ -65,14 +67,16 @@ function ModuleGroupNodeInner({ id, data }: NodeProps) {
         opacity,
         transform: isHovered || isSelected ? "scale(1.05)" : "scale(1)",
         boxShadow: isOnPath
-          ? `0 0 24px var(--color-accent-graph)`
+          ? `0 0 24px ${accentColor}80`
           : isSelected
             ? `0 4px 20px rgba(0,0,0,0.5), 0 0 0 3px ${accentColor}`
             : isHovered
               ? `0 4px 16px rgba(0,0,0,0.4), 0 0 16px ${accentColor}40`
               : `0 2px 8px rgba(0,0,0,0.4)`,
         animation: isOnPath ? "graph-path-pulse 2s ease-in-out infinite" : undefined,
+        borderStyle: d.isTest ? "dashed" : undefined,
       }}
+      aria-label={d.fullPath}
     >
       <Handle
         type="target"
@@ -80,15 +84,17 @@ function ModuleGroupNodeInner({ id, data }: NodeProps) {
         className="!w-2 !h-2 !bg-[var(--color-border-subtle)] !border-none"
       />
 
-      {/* Header row: icon + label + file count */}
+      {/* Same layout as module node: icon + label + badge */}
       <div className="flex items-center gap-2">
-        <Folder className="w-3 h-3 shrink-0" style={{ color: accentColor }} />
+        <FileText className="w-3 h-3 shrink-0" style={{ color: accentColor }} />
         <span className="text-[11px] font-medium text-[var(--color-text-primary)] truncate">
           {d.label}
         </span>
-        <span className="ml-auto text-[9px] text-[var(--color-text-tertiary)] tabular-nums shrink-0">
-          {d.fileCount ?? 0}
-        </span>
+        {d.isEntryPoint && (
+          <span className="ml-auto shrink-0 text-[8px] font-bold uppercase px-1 py-0.5 rounded" style={{ background: `${accentColor}30`, color: accentColor }}>
+            EP
+          </span>
+        )}
       </div>
 
       <Handle
@@ -100,4 +106,4 @@ function ModuleGroupNodeInner({ id, data }: NodeProps) {
   );
 }
 
-export const ModuleGroupNode = memo(ModuleGroupNodeInner);
+export const FileNode = memo(FileNodeInner);

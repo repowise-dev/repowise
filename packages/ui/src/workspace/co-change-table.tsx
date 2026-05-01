@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge } from "../ui/badge";
-import type { WorkspaceCoChangeEntry } from "@repowise/types/workspace";
+import type { WorkspaceCoChangeEntry } from "@repowise-dev/types/workspace";
 
 interface CoChangeTableProps {
   coChanges: WorkspaceCoChangeEntry[];
@@ -68,7 +68,7 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
               )}
               {!compact && (
                 <td className="py-2 text-xs text-[var(--color-text-tertiary)]" title={cc.last_date ? new Date(cc.last_date).toLocaleString() : undefined}>
-                  {cc.last_date ? new Date(cc.last_date).toLocaleDateString() : "—"}
+                  {cc.last_date ? new Date(cc.last_date).toLocaleDateString() : "â€”"}
                 </td>
               )}
             </tr>

@@ -3,7 +3,7 @@ import { Badge } from "../ui/badge";
 import { CommitCategorySparkline } from "../git/commit-category-sparkline";
 import { CoChangeList } from "../git/co-change-list";
 import { formatRelativeTime, formatDate, formatAgeDays } from "../lib/format";
-import type { GitMetadata } from "@repowise/types/git";
+import type { GitMetadata } from "@repowise-dev/types/git";
 
 interface GitHistoryPanelProps {
   git: GitMetadata;

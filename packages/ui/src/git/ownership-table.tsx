@@ -7,7 +7,7 @@ import { Input } from "../ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { EmptyState } from "../shared/empty-state";
 import { cn } from "../lib/cn";
-import type { OwnershipEntry } from "@repowise/types/git";
+import type { OwnershipEntry } from "@repowise-dev/types/git";
 
 interface OwnershipTableProps {
   entries: OwnershipEntry[];
@@ -55,7 +55,7 @@ export function OwnershipTable({ entries }: OwnershipTableProps) {
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
           <Input
-            placeholder="Search modules or owners…"
+            placeholder="Search modules or ownersâ€¦"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-8 h-8 w-full sm:w-56 text-xs"
@@ -124,7 +124,7 @@ export function OwnershipTable({ entries }: OwnershipTableProps) {
                   </td>
                   <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] max-w-[200px]">
                     <span className="block truncate" title={entry.primary_owner ?? undefined}>
-                      {entry.primary_owner ?? "—"}
+                      {entry.primary_owner ?? "â€”"}
                     </span>
                   </td>
                   <td className="px-4 py-2.5">
@@ -141,7 +141,7 @@ export function OwnershipTable({ entries }: OwnershipTableProps) {
                         </span>
                       </div>
                     ) : (
-                      <span className="text-[var(--color-text-tertiary)]">—</span>
+                      <span className="text-[var(--color-text-tertiary)]">â€”</span>
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] tabular-nums">

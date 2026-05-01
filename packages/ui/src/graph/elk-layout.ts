@@ -9,11 +9,11 @@ import ELK from "elkjs/lib/elk.bundled.js";
 import type { ElkNode, ElkExtendedEdge } from "elkjs";
 import type { Node, Edge } from "@xyflow/react";
 import type {
-  GraphNodeResponse,
-  GraphEdgeResponse,
-  ModuleNodeResponse,
-  ModuleEdgeResponse,
-} from "@/lib/api/types";
+  GraphNode as GraphNodeResponse,
+  GraphLink as GraphEdgeResponse,
+  ModuleNode as ModuleNodeResponse,
+  ModuleEdge as ModuleEdgeResponse,
+} from "@repowise-dev/types/graph";
 
 // ---- Constants ----
 
@@ -168,9 +168,10 @@ export function groupNodesAsModules(
 
     // A "file entry" is when the module_id equals a single node's full path
     // (i.e., it's a direct file at this level, not a subdirectory)
-    const isSingleFile = fileCount === 1 && groupedNodes[0].node_id === moduleId;
-    if (isSingleFile) {
-      fileEntries.set(moduleId, groupedNodes[0]);
+    const firstNode = groupedNodes[0];
+    const isSingleFile = fileCount === 1 && firstNode?.node_id === moduleId;
+    if (isSingleFile && firstNode) {
+      fileEntries.set(moduleId, firstNode);
     }
 
     moduleNodes.push({
@@ -197,7 +198,7 @@ export function groupNodesAsModules(
 
   const moduleEdges: ModuleEdgeResponse[] = Array.from(edgeCounts.entries()).map(
     ([key, count]) => {
-      const [source, target] = key.split("→");
+      const [source = "", target = ""] = key.split("→");
       return { source, target, edge_count: count };
     },
   );
@@ -253,7 +254,7 @@ export async function layoutFileGraph(
   const dirElkNodes = new Map<string, ElkNode>();
   for (const dir of dirs) {
     const parts = dir.split("/");
-    const label = parts[parts.length - 1];
+    const label = parts[parts.length - 1] ?? dir;
     const elkNode: ElkNode = {
       id: `dir:${dir}`,
       labels: [{ text: label }],
@@ -480,7 +481,7 @@ export async function layoutModuleGraph(
   }
 
   const rfEdges: Edge[] = Array.from(edgeMap.entries()).map(([key, count]) => {
-    const [source, target] = key.split("→");
+    const [source = "", target = ""] = key.split("→");
     return {
       id: key,
       source,

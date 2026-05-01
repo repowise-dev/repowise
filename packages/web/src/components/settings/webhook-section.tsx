@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { Copy, Check } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise/ui/ui/card";
-import { Button } from "@repowise/ui/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
+import { Button } from "@repowise-dev/ui/ui/button";
 
 function CopyField({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);

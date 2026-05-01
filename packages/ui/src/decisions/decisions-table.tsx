@@ -7,7 +7,7 @@ import type {
   DecisionRecord,
   DecisionStatus,
   DecisionSource,
-} from "@repowise/types/decisions";
+} from "@repowise-dev/types/decisions";
 
 const STATUS_VARIANT: Record<string, "default" | "fresh" | "stale" | "outdated" | "outline" | "accent"> = {
   active: "fresh",
@@ -157,7 +157,7 @@ export function DecisionsTable({
                   ) : d.staleness_score > 0 ? (
                     <span className="text-[var(--color-text-tertiary)]">{Math.round(d.staleness_score * 100)}%</span>
                   ) : (
-                    <span className="text-[var(--color-text-tertiary)]">—</span>
+                    <span className="text-[var(--color-text-tertiary)]">â€”</span>
                   )}
                 </td>
               </tr>

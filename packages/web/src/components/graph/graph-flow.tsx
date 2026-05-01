@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  createContext,
   useCallback,
   useMemo,
   useState,
@@ -22,9 +21,9 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Loader2, ChevronRight, Home, Search } from "lucide-react";
 import Fuse from "fuse.js";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { Input } from "@repowise/ui/ui/input";
-import { EmptyState } from "@repowise/ui/shared/empty-state";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { Input } from "@repowise-dev/ui/ui/input";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import {
   useModuleGraph,
   useGraph,
@@ -34,44 +33,19 @@ import {
   useCommunities,
   useExecutionFlows,
 } from "@/lib/hooks/use-graph";
-import { ModuleGroupNode } from "./nodes/module-group-node";
-import { FileNode } from "./nodes/file-node";
-import { DependencyEdge } from "./edges/dependency-edge";
-import { groupNodesAsModules, type FileNodeData } from "./elk-layout";
-import { useModuleElkLayout, useFileElkLayout } from "./use-elk-layout";
+import { ModuleGroupNode } from "@repowise-dev/ui/graph/nodes/module-group-node";
+import { FileNode } from "@repowise-dev/ui/graph/nodes/file-node";
+import { DependencyEdge } from "@repowise-dev/ui/graph/edges/dependency-edge";
+import { GraphProvider, type GraphContextValue } from "@repowise-dev/ui/graph/context";
+import { GraphTooltip } from "@repowise-dev/ui/graph/graph-tooltip";
+import { groupNodesAsModules, type FileNodeData } from "@repowise-dev/ui/graph/elk-layout";
+import { useModuleElkLayout, useFileElkLayout } from "@repowise-dev/ui/graph/use-elk-layout";
 import { PathFinderPanel } from "./path-finder-panel";
-import { GraphToolbar, type ColorMode, type ViewMode } from "@repowise/ui/graph/graph-toolbar";
-import { GraphLegend } from "@repowise/ui/graph/graph-legend";
+import { GraphToolbar, type ColorMode, type ViewMode } from "@repowise-dev/ui/graph/graph-toolbar";
+import { GraphLegend } from "@repowise-dev/ui/graph/graph-legend";
 import { GraphCommunityPanel } from "./graph-community-panel";
-import { GraphContextMenu } from "@repowise/ui/graph/graph-context-menu";
-import { GraphTooltip } from "./graph-tooltip";
-import { languageColor } from "@repowise/ui/lib/confidence";
-
-// ---- Context ----
-
-export interface GraphContextValue {
-  highlightedPath: Set<string>;
-  highlightedEdges: Set<string>;
-  colorMode: ColorMode;
-  riskScores: Map<string, number>;
-  hoveredNodeId: string | null;
-  connectedNodeIds: Set<string>;
-  connectedEdgeIds: Set<string>;
-  selectedNodeId: string | null;
-  searchDimmedNodes: Set<string> | null;
-}
-
-export const GraphContext = createContext<GraphContextValue>({
-  highlightedPath: new Set(),
-  highlightedEdges: new Set(),
-  colorMode: "language",
-  riskScores: new Map(),
-  hoveredNodeId: null,
-  connectedNodeIds: new Set(),
-  connectedEdgeIds: new Set(),
-  selectedNodeId: null,
-  searchDimmedNodes: null,
-});
+import { GraphContextMenu } from "@repowise-dev/ui/graph/graph-context-menu";
+import { languageColor } from "@repowise-dev/ui/lib/confidence";
 
 // ---- Node/Edge types ----
 
@@ -99,7 +73,7 @@ function GraphFlowInner({
 }: GraphFlowInnerProps) {
   const reactFlow = useReactFlow();
 
-  // State — read initial colorMode from URL if present
+  // State â€” read initial colorMode from URL if present
   const [viewMode, setViewMode] = useState<ViewMode>("module");
   const [colorMode, setColorMode] = useState<ColorMode>(() => {
     if (typeof window !== "undefined") {
@@ -149,7 +123,7 @@ function GraphFlowInner({
     isModuleView && !isDrilledDown ? repoId : null,
   );
 
-  // Full graph — needed for drill-down and other views
+  // Full graph â€” needed for drill-down and other views
   const needsFullGraph = isDrilledDown || viewMode === "full";
   const { graph: fullGraph, isLoading: fullLoading } = useGraph(
     needsFullGraph ? repoId : null,
@@ -186,7 +160,7 @@ function GraphFlowInner({
     return groupNodesAsModules(fullGraph.nodes, fullGraph.links, currentPrefix);
   }, [isDrilledDown, fullGraph, currentPrefix]);
 
-  // File-level graph data — only for non-module views
+  // File-level graph data â€” only for non-module views
   const fileGraphData = useMemo(() => {
     switch (viewMode) {
       case "full":
@@ -317,8 +291,8 @@ function GraphFlowInner({
     const pathSet = new Set(flow.trace);
     const edgeKeys = new Set<string>();
     for (let i = 0; i < flow.trace.length - 1; i++) {
-      edgeKeys.add(`${flow.trace[i]}→${flow.trace[i + 1]}`);
-      edgeKeys.add(`${flow.trace[i + 1]}→${flow.trace[i]}`);
+      edgeKeys.add(`${flow.trace[i]}â†’${flow.trace[i + 1]}`);
+      edgeKeys.add(`${flow.trace[i + 1]}â†’${flow.trace[i]}`);
     }
     setHighlightedPath(pathSet);
     setHighlightedEdges(edgeKeys);
@@ -360,7 +334,7 @@ function GraphFlowInner({
   const handleNodeClick: NodeMouseHandler = useCallback(
     (event, node) => {
       if (node.type === "moduleGroup" && isModuleView) {
-        // Drill into this module — the node ID is the full module path
+        // Drill into this module â€” the node ID is the full module path
         setModulePath((prev) => [...prev, node.id]);
         setSelectedNodeId(null);
         return;
@@ -373,7 +347,7 @@ function GraphFlowInner({
         }
       }
 
-      // Toggle selection — show tooltip on click
+      // Toggle selection â€” show tooltip on click
       const mEvent = event as unknown as React.MouseEvent;
       if (selectedNodeId === node.id) {
         setSelectedNodeId(null);
@@ -437,8 +411,8 @@ function GraphFlowInner({
       setHighlightedPath(new Set(pathNodes));
       const edgeKeys = new Set<string>();
       for (let i = 0; i < pathNodes.length - 1; i++) {
-        edgeKeys.add(`${pathNodes[i]}→${pathNodes[i + 1]}`);
-        edgeKeys.add(`${pathNodes[i + 1]}→${pathNodes[i]}`);
+        edgeKeys.add(`${pathNodes[i]}â†’${pathNodes[i + 1]}`);
+        edgeKeys.add(`${pathNodes[i + 1]}â†’${pathNodes[i]}`);
       }
       setHighlightedEdges(edgeKeys);
       if (viewMode === "module") {
@@ -525,12 +499,12 @@ function GraphFlowInner({
         case "dead":
         case "hotfiles":
         case "architecture": {
-          // Small, focused graphs — fit all nodes, zoom in to read them
+          // Small, focused graphs â€” fit all nodes, zoom in to read them
           reactFlow.fitView({ padding: 0.3, duration: 600, maxZoom: 1.5 });
           return;
         }
         case "module": {
-          // Module view — fit all, comfortable zoom
+          // Module view â€” fit all, comfortable zoom
           reactFlow.fitView({ padding: 0.2, duration: 600, maxZoom: 1 });
           return;
         }
@@ -566,7 +540,7 @@ function GraphFlowInner({
   if (isLoading) return <Skeleton className="h-full w-full rounded-lg" />;
 
   return (
-    <GraphContext.Provider value={ctxValue}>
+    <GraphProvider value={ctxValue}>
       <div className="relative w-full h-full" style={{ touchAction: "none" }} aria-label="Dependency graph">
         {isLayouting && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--color-bg-root)]/60 backdrop-blur-sm rounded-lg">
@@ -620,7 +594,7 @@ function GraphFlowInner({
         </ReactFlow>
         )}
 
-        {/* Breadcrumb — shown when drilled into a module */}
+        {/* Breadcrumb â€” shown when drilled into a module */}
         {isModuleView && isDrilledDown && (
           <div className="absolute top-3 left-3 z-10">
             <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
@@ -783,7 +757,7 @@ function GraphFlowInner({
           );
         })()}
       </div>
-    </GraphContext.Provider>
+    </GraphProvider>
   );
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { DecisionHealthWidget } from "@repowise/ui/decisions/decision-health-widget";
+import { DecisionHealthWidget } from "@repowise-dev/ui/decisions/decision-health-widget";
 import { getDecisionHealth } from "@/lib/api/decisions";
 
 interface DecisionHealthWidgetWrapperProps {

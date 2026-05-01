@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 import { Flame, Shield } from "lucide-react";
-import { StatCard } from "@repowise/ui/shared/stat-card";
-import { HotspotTable } from "@repowise/ui/git/hotspot-table";
-import { ContributorBar } from "@repowise/ui/git/contributor-bar";
-import { ChurnHistogram } from "@repowise/ui/git/churn-histogram";
-import { CommitCategoryDonut } from "@repowise/ui/git/commit-category-donut";
-import { RiskDistributionChart } from "@repowise/ui/git/risk-distribution-chart";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
+import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
+import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
+import { CommitCategoryDonut } from "@repowise-dev/ui/git/commit-category-donut";
+import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { getHotspots, getGitSummary } from "@/lib/api/git";
-import { formatNumber } from "@repowise/ui/lib/format";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 export const metadata: Metadata = { title: "Hotspots" };
 
@@ -51,13 +51,13 @@ export default async function HotspotsPage({
           Hotspots
         </h1>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          High-churn files — where the most risky code lives.
+          High-churn files â€” where the most risky code lives.
         </p>
       </div>
 
       {loadError && hotspots.length === 0 && (
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)]">
-          Couldn&apos;t load hotspots. The data may not be ready yet — try running a sync first.
+          Couldn&apos;t load hotspots. The data may not be ready yet â€” try running a sync first.
         </div>
       )}
 
@@ -87,7 +87,7 @@ export default async function HotspotsPage({
           <StatCard
             label="Bus Factor Risk"
             value={formatNumber(busFactorRiskCount)}
-            description="files with factor ≤ 1"
+            description="files with factor â‰¤ 1"
             icon={<Shield className="h-4 w-4 text-red-400" />}
           />
         </div>

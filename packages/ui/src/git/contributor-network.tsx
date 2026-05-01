@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useMemo } from "react";
 import * as d3 from "d3-force";
-import type { Hotspot } from "@repowise/types/git";
+import type { Hotspot } from "@repowise-dev/types/git";
 
 interface ContributorNetworkProps {
   hotspots: Hotspot[];
@@ -121,7 +121,7 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
       text.setAttribute("dy", String(n.radius + 12));
       text.setAttribute("fill", "var(--color-text-secondary)");
       text.setAttribute("font-size", "9");
-      text.textContent = n.id.length > 15 ? n.id.slice(0, 15) + "…" : n.id;
+      text.textContent = n.id.length > 15 ? n.id.slice(0, 15) + "â€¦" : n.id;
       group.appendChild(text);
 
       const title = document.createElementNS(ns, "title");

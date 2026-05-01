@@ -1,5 +1,5 @@
 /**
- * Type-level tests for non-trivial contracts in @repowise/types. These run
+ * Type-level tests for non-trivial contracts in @repowise-dev/types. These run
  * via `vitest --typecheck` and fail at tsc time if a canonical type drifts
  * from what consumers depend on.
  *
@@ -101,7 +101,7 @@ describe("DecisionRecord literal unions", () => {
 });
 
 describe("Canonical Hotspot key shape", () => {
-  it("uses file_path, not path — raw {path} entries must be adapted", () => {
+  it("uses file_path, not path â€” raw {path} entries must be adapted", () => {
     expectTypeOf<Hotspot>().toHaveProperty("file_path").toEqualTypeOf<string>();
     // Some downstream backends emit `path`. A `{ path: ... }` object should
     // NOT satisfy Hotspot; this is the contract that forces an adapter call.

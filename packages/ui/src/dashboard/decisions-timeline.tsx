@@ -2,7 +2,7 @@ import { Landmark } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { formatRelativeTime } from "../lib/format";
-import type { DecisionRecord } from "@repowise/types/decisions";
+import type { DecisionRecord } from "@repowise-dev/types/decisions";
 
 interface DecisionsTimelineProps {
   decisions: DecisionRecord[];
@@ -86,7 +86,7 @@ export function DecisionsTimeline({ decisions, repoId }: DecisionsTimelineProps)
                   </div>
                   <span className="text-[10px] text-[var(--color-text-tertiary)]">
                     {formatRelativeTime(d.created_at)}
-                    {d.source && ` · ${d.source.replace("_", " ")}`}
+                    {d.source && ` Â· ${d.source.replace("_", " ")}`}
                   </span>
                 </div>
               </a>

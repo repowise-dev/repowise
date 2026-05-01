@@ -3,11 +3,11 @@
 import { useState, useEffect, useRef } from "react";
 import type { Node, Edge } from "@xyflow/react";
 import type {
-  GraphNodeResponse,
-  GraphEdgeResponse,
-  ModuleNodeResponse,
-  ModuleEdgeResponse,
-} from "@/lib/api/types";
+  GraphNode as GraphNodeResponse,
+  GraphLink as GraphEdgeResponse,
+  ModuleNode as ModuleNodeResponse,
+  ModuleEdge as ModuleEdgeResponse,
+} from "@repowise-dev/types/graph";
 import { layoutFileGraph, layoutModuleGraph } from "./elk-layout";
 
 interface ElkLayoutResult {

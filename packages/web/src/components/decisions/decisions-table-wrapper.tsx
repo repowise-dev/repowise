@@ -5,9 +5,9 @@ import useSWR from "swr";
 import {
   DecisionsTable,
   type DecisionsTableFilters,
-} from "@repowise/ui/decisions/decisions-table";
+} from "@repowise-dev/ui/decisions/decisions-table";
 import { listDecisions } from "@/lib/api/decisions";
-import type { DecisionRecord } from "@repowise/types/decisions";
+import type { DecisionRecord } from "@repowise-dev/types/decisions";
 
 interface DecisionsTableWrapperProps {
   repoId: string;

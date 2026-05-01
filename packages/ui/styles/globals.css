@@ -2,14 +2,14 @@
 @plugin "@tailwindcss/typography";
 
 /*
- * @repowise/ui — canonical design tokens.
+ * @repowise-dev/ui â€” canonical design tokens.
  *
  * Imported by every consumer that wants the standard Repowise look.
  * Tailwind v4 `@theme` block defines CSS custom properties; base styles,
  * scrollbar, focus, prose overrides, and React Flow theming follow.
  *
  * The `@source` directive below tells Tailwind v4 to scan component
- * source under `packages/ui/src/**` for utility classes — required so
+ * source under `packages/ui/src/**` for utility classes â€” required so
  * consumers that import this file pick up classes used by shared
  * components without each consumer re-declaring the source path.
  *
@@ -45,7 +45,7 @@
   --color-text-inverse: #0d0d0d;
 
   /* ------------------------------------------------------------------ */
-  /* Accent — repowise Orange                                            */
+  /* Accent â€” repowise Orange                                            */
   /* ------------------------------------------------------------------ */
   --color-accent-primary: #f59520;
   --color-accent-hover: #f7a94d;
@@ -66,7 +66,7 @@
   --color-error: #ef4444;
   --color-info: #f59520;
 
-  /* Aliases — short names used in component class strings.              */
+  /* Aliases â€” short names used in component class strings.              */
   /* Keep these in sync with the canonical confidence/accent tokens.     */
   --color-fresh: var(--color-confidence-fresh);
   --color-stale: var(--color-confidence-stale);
@@ -76,7 +76,7 @@
   --color-border-accent: var(--color-accent-primary);
 
   /* ------------------------------------------------------------------ */
-  /* Graph — React Flow                                                  */
+  /* Graph â€” React Flow                                                  */
   /* ------------------------------------------------------------------ */
   --color-accent-graph: #f59520;
   --color-risk-low: #22c55e;

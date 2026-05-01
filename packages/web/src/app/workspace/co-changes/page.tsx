@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { GitMerge, Filter } from "lucide-react";
 import { useWorkspaceCoChanges, useWorkspace } from "@/lib/hooks/use-workspace";
-import { CoChangeTable } from "@repowise/ui/workspace/co-change-table";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { StatCard } from "@repowise/ui/shared/stat-card";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 export default function CoChangesPage() {
   const { workspace } = useWorkspace();
@@ -33,7 +33,7 @@ export default function CoChangesPage() {
           </h1>
         </div>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Files across repositories that frequently change together — implicit coupling detected from git history.
+          Files across repositories that frequently change together â€” implicit coupling detected from git history.
         </p>
       </div>
 
@@ -41,7 +41,7 @@ export default function CoChangesPage() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         <StatCard
           label="Total Co-Change Pairs"
-          value={data?.total ?? "—"}
+          value={data?.total ?? "â€”"}
           icon={<GitMerge className="h-4 w-4 text-[var(--color-accent-primary)]" />}
         />
         <StatCard
@@ -50,10 +50,10 @@ export default function CoChangesPage() {
             data?.co_changes
               ? new Set(
                   data.co_changes.map((cc) =>
-                    [cc.source_repo, cc.target_repo].sort().join("↔"),
+                    [cc.source_repo, cc.target_repo].sort().join("â†”"),
                   ),
                 ).size
-              : "—"
+              : "â€”"
           }
           icon={<GitMerge className="h-4 w-4 text-purple-400" />}
         />
@@ -66,7 +66,7 @@ export default function CoChangesPage() {
                     data.co_changes.length) *
                     100,
                 )}%`
-              : "—"
+              : "â€”"
           }
           icon={<GitMerge className="h-4 w-4 text-orange-400" />}
         />

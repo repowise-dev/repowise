@@ -5,8 +5,8 @@ import { useParams } from "next/navigation";
 import { Search } from "lucide-react";
 import { SearchBar } from "@/components/search/search-bar";
 import { SearchResultCard } from "@/components/search/search-result-card";
-import { EmptyState } from "@repowise/ui/shared/empty-state";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { useSearch } from "@/lib/hooks/use-search";
 
 type SearchType = "fulltext" | "semantic";

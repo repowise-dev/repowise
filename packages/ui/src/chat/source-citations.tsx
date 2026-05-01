@@ -9,7 +9,7 @@ import {
   LayoutGrid,
   ArrowUpRight,
 } from "lucide-react";
-import type { ChatUIToolCall } from "@repowise/types/chat";
+import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 export interface SourceReference {
   id: string;

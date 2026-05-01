@@ -4,8 +4,8 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight, Clock, Diff, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { usePageVersions } from "@/lib/hooks/use-page";
-import { Badge } from "@repowise/ui/ui/badge";
-import { formatRelativeTime } from "@repowise/ui/lib/format";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { formatRelativeTime } from "@repowise-dev/ui/lib/format";
 import type { PageVersionResponse } from "@/lib/api/types";
 
 interface VersionHistoryProps {

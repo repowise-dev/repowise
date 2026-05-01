@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { DocsTree } from "../../src/docs/docs-tree.js";
-import type { DocPage } from "@repowise/types/docs";
+import type { DocPage } from "@repowise-dev/types/docs";
 
 function makePage(overrides: Partial<DocPage> = {}): DocPage {
   return {

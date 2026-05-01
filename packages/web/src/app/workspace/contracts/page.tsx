@@ -4,11 +4,11 @@ import { useState } from "react";
 import { Link2, Filter } from "lucide-react";
 import { useWorkspaceContracts } from "@/lib/hooks/use-workspace";
 import { useWorkspace } from "@/lib/hooks/use-workspace";
-import { ContractLinksTable } from "@repowise/ui/workspace/contract-links-table";
-import { ContractTypeBadge, RoleBadge } from "@repowise/ui/workspace/contract-type-badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { StatCard } from "@repowise/ui/shared/stat-card";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { ContractLinksTable } from "@repowise-dev/ui/workspace/contract-links-table";
+import { ContractTypeBadge, RoleBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 const TYPE_OPTIONS = [
   { value: "", label: "All Types" },
@@ -67,17 +67,17 @@ export default function ContractsPage() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="Total Contracts"
-          value={data?.total_contracts ?? "—"}
+          value={data?.total_contracts ?? "â€”"}
           icon={<Link2 className="h-4 w-4" />}
         />
         <StatCard
           label="Matched Links"
-          value={data?.total_links ?? "—"}
+          value={data?.total_links ?? "â€”"}
           icon={<Link2 className="h-4 w-4 text-green-400" />}
         />
         <StatCard
           label="Unmatched"
-          value={isLoading ? "—" : unmatchedCount}
+          value={isLoading ? "â€”" : unmatchedCount}
           description="No matching provider or consumer"
           icon={<Link2 className="h-4 w-4 text-yellow-400" />}
         />
@@ -86,7 +86,7 @@ export default function ContractsPage() {
           value={
             data?.by_type
               ? Object.values(data.by_type).reduce((a, b) => a + b, 0)
-              : "—"
+              : "â€”"
           }
           description={
             data?.by_type

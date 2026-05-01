@@ -2,17 +2,17 @@
 
 import { useState, useEffect } from "react";
 import { config } from "@/lib/config";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise/ui/ui/card";
-import { Label } from "@repowise/ui/ui/label";
-import { Input } from "@repowise/ui/ui/input";
-import { Badge } from "@repowise/ui/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
+import { Label } from "@repowise-dev/ui/ui/label";
+import { Input } from "@repowise-dev/ui/ui/input";
+import { Badge } from "@repowise-dev/ui/ui/badge";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@repowise/ui/ui/select";
+} from "@repowise-dev/ui/ui/select";
 
 const PROVIDERS = ["gemini", "openai", "anthropic", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai"] as const;
@@ -176,12 +176,12 @@ export function ProviderSection() {
                 {embedderVars.map((v) => (
                   <code key={v} className="font-mono">{v}</code>
                 ))}{" "}
-                — set <code className="font-mono">REPOWISE_EMBEDDER={embedder}</code> on the server.
+                â€” set <code className="font-mono">REPOWISE_EMBEDDER={embedder}</code> on the server.
               </p>
             )}
             {embedder === "mock" && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                Using mock embedder — semantic search disabled. Set{" "}
+                Using mock embedder â€” semantic search disabled. Set{" "}
                 <code className="font-mono">REPOWISE_EMBEDDER=gemini</code> or{" "}
                 <code className="font-mono">REPOWISE_EMBEDDER=openai</code> for real RAG.
               </p>
@@ -210,14 +210,14 @@ export function ProviderSection() {
               disabled={testStatus === "testing"}
               className="text-sm px-3 py-1.5 rounded-md border border-[var(--color-border)] hover:bg-[var(--color-bg-secondary)] disabled:opacity-50 transition-colors"
             >
-              {testStatus === "testing" ? "Testing…" : "Test connection"}
+              {testStatus === "testing" ? "Testingâ€¦" : "Test connection"}
             </button>
             {testStatus === "ok" && (
-              <span className="text-sm text-green-600 dark:text-green-400">✓ Server healthy</span>
+              <span className="text-sm text-green-600 dark:text-green-400">âœ“ Server healthy</span>
             )}
             {testStatus === "error" && (
               <span className="text-sm text-red-600 dark:text-red-400">
-                ✗ {testError || "Connection failed"}
+                âœ— {testError || "Connection failed"}
               </span>
             )}
           </div>

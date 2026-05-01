@@ -1,5 +1,5 @@
-import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { Card, CardContent } from "@repowise/ui/ui/card";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { Card, CardContent } from "@repowise-dev/ui/ui/card";
 
 export default function OverviewLoading() {
   return (
