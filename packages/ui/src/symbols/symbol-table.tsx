@@ -2,14 +2,14 @@
 
 import { useState, useCallback, useMemo, type ReactNode } from "react";
 import { ChevronUp, ChevronDown, ChevronsUpDown, TrendingUp } from "lucide-react";
-import { Input } from "../ui/input.js";
-import { Button } from "../ui/button.js";
-import { Badge } from "../ui/badge.js";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select.js";
-import { Skeleton } from "../ui/skeleton.js";
-import { EmptyState } from "../shared/empty-state.js";
-import { truncatePath } from "../lib/format.js";
-import { cn } from "../lib/cn.js";
+import { Input } from "../ui/input";
+import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Skeleton } from "../ui/skeleton";
+import { EmptyState } from "../shared/empty-state";
+import { truncatePath } from "../lib/format";
+import { cn } from "../lib/cn";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
 
 export type SortCol = "importance" | "name" | "kind" | "language" | "complexity_estimate" | "start_line";

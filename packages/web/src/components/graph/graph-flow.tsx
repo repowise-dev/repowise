@@ -33,18 +33,13 @@ import {
   useCommunities,
   useExecutionFlows,
 } from "@/lib/hooks/use-graph";
-import {
-  ModuleGroupNode,
-  FileNode,
-  DependencyEdge,
-  GraphProvider,
-  GraphTooltip,
-  groupNodesAsModules,
-  useModuleElkLayout,
-  useFileElkLayout,
-  type FileNodeData,
-  type GraphContextValue,
-} from "@repowise-dev/ui/graph";
+import { ModuleGroupNode } from "@repowise-dev/ui/graph/nodes/module-group-node";
+import { FileNode } from "@repowise-dev/ui/graph/nodes/file-node";
+import { DependencyEdge } from "@repowise-dev/ui/graph/edges/dependency-edge";
+import { GraphProvider, type GraphContextValue } from "@repowise-dev/ui/graph/context";
+import { GraphTooltip } from "@repowise-dev/ui/graph/graph-tooltip";
+import { groupNodesAsModules, type FileNodeData } from "@repowise-dev/ui/graph/elk-layout";
+import { useModuleElkLayout, useFileElkLayout } from "@repowise-dev/ui/graph/use-elk-layout";
 import { PathFinderPanel } from "./path-finder-panel";
 import { GraphToolbar, type ColorMode, type ViewMode } from "@repowise-dev/ui/graph/graph-toolbar";
 import { GraphLegend } from "@repowise-dev/ui/graph/graph-legend";

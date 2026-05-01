@@ -1,11 +1,11 @@
 "use client";
 
-import { Badge } from "../ui/badge.js";
-import { Skeleton } from "../ui/skeleton.js";
-import { ScrollArea } from "../ui/scroll-area.js";
-import { Separator } from "../ui/separator.js";
-import { truncatePath } from "../lib/format.js";
-import { cn } from "../lib/cn.js";
+import { Badge } from "../ui/badge";
+import { Skeleton } from "../ui/skeleton";
+import { ScrollArea } from "../ui/scroll-area";
+import { Separator } from "../ui/separator";
+import { truncatePath } from "../lib/format";
+import { cn } from "../lib/cn";
 import type {
   CallerCalleeEntry,
   CallersCallees,

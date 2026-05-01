@@ -1,11 +1,11 @@
 "use client";
 
 import { CheckCircle, XCircle, Loader2, AlertTriangle, X } from "lucide-react";
-import { Progress } from "../ui/progress.js";
-import { Badge } from "../ui/badge.js";
-import { Button } from "../ui/button.js";
-import { JobLog } from "./job-log.js";
-import { formatTokens, formatNumber } from "../lib/format.js";
+import { Progress } from "../ui/progress";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { JobLog } from "./job-log";
+import { formatTokens, formatNumber } from "../lib/format";
 
 /** Subset of the Job shape this presentational shell renders. */
 export interface GenerationProgressJob {

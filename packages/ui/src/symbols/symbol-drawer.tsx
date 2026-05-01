@@ -7,10 +7,10 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from "../ui/dialog.js";
-import { Badge } from "../ui/badge.js";
-import { ScrollArea } from "../ui/scroll-area.js";
-import { Separator } from "../ui/separator.js";
+} from "../ui/dialog";
+import { Badge } from "../ui/badge";
+import { ScrollArea } from "../ui/scroll-area";
+import { Separator } from "../ui/separator";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
 
 interface SymbolDrawerProps {
