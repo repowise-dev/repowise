@@ -353,6 +353,66 @@ Returns `null` when fewer than two headings are found.
 |------|------|----------|
 | `content` | `string` | yes |
 
+## `workspace/*` — Multi-repo workspace views
+
+Five presentational components that consume the canonical workspace
+shapes from `@repowise/types/workspace`.
+
+### `workspace/contract-type-badge` — `ContractTypeBadge`, `RoleBadge`
+
+Inline pill badges for contract type (`http`, `grpc`, `topic`, …) and
+role (`provider` / `consumer`).
+
+| Component | Prop | Type |
+|-----------|------|------|
+| `ContractTypeBadge` | `type` | `string` |
+| `RoleBadge` | `role` | `string` |
+
+### `workspace/repo-card` — `RepoCard`
+
+Tile linking to `/repos/{id}/overview` with file count, doc-coverage,
+hotspot count, and a primary indicator.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `repoId` | `string` | yes |
+| `alias` | `string` | yes |
+| `name` | `string` | yes |
+| `path` | `string` | yes |
+| `isPrimary` | `boolean` | yes |
+| `stats` | `RepoStats \| null` (`@repowise/types/workspace`) | yes |
+| `gitSummary` | `GitSummary \| null` (`@repowise/types/git`) | yes |
+
+### `workspace/co-change-table` — `CoChangeTable`
+
+Sortable cross-repo co-change table.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `coChanges` | `WorkspaceCoChangeEntry[]` | yes | |
+| `compact` | `boolean` | no | Drops the frequency and last-date columns. |
+
+### `workspace/contract-links-table` — `ContractLinksTable`
+
+Provider/consumer table for matched contract links with confidence
+bars colour-graded against the freshness thresholds.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `links` | `WorkspaceContractLinkEntry[]` | yes |
+
+### `workspace/cross-repo-summary` — `CrossRepoSummary`
+
+Four-tile summary header (`StatCard` × 4) for co-change pairs, package
+deps, contract links, and contract count.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `crossRepo` | `WorkspaceCrossRepoSummary \| null` | yes |
+| `contracts` | `WorkspaceContractSummary \| null` | yes |
+
+---
+
 ## `dashboard/*` — Repo overview tiles
 
 Nine presentational tiles that consume canonical engine artifacts.

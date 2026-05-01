@@ -1,8 +1,11 @@
 "use client";
 
 import { Link2, GitMerge, Package } from "lucide-react";
-import type { WorkspaceCrossRepoSummary, WorkspaceContractSummary } from "@/lib/api/types";
-import { StatCard } from "@repowise/ui/shared/stat-card";
+import { StatCard } from "../shared/stat-card";
+import type {
+  WorkspaceCrossRepoSummary,
+  WorkspaceContractSummary,
+} from "@repowise/types/workspace";
 
 interface CrossRepoSummaryProps {
   crossRepo: WorkspaceCrossRepoSummary | null;
@@ -10,6 +13,12 @@ interface CrossRepoSummaryProps {
 }
 
 export function CrossRepoSummary({ crossRepo, contracts }: CrossRepoSummaryProps) {
+  const byTypeDescription = contracts?.by_type
+    ? Object.entries(contracts.by_type)
+        .map(([k, v]) => `${v} ${k}`)
+        .join(", ")
+    : undefined;
+
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <StatCard
@@ -30,13 +39,7 @@ export function CrossRepoSummary({ crossRepo, contracts }: CrossRepoSummaryProps
       <StatCard
         label="Contracts Detected"
         value={contracts?.total_contracts ?? 0}
-        description={
-          contracts?.by_type
-            ? Object.entries(contracts.by_type)
-                .map(([k, v]) => `${v} ${k}`)
-                .join(", ")
-            : undefined
-        }
+        {...(byTypeDescription ? { description: byTypeDescription } : {})}
         icon={<Link2 className="h-4 w-4 text-orange-400" />}
       />
     </div>

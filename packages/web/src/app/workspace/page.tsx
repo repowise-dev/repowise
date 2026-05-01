@@ -13,10 +13,10 @@ import {
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
 import { StatCard } from "@repowise/ui/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { RepoCard } from "@/components/workspace/repo-card";
-import { CrossRepoSummary } from "@/components/workspace/cross-repo-summary";
-import { CoChangeTable } from "@/components/workspace/co-change-table";
-import { ContractTypeBadge } from "@/components/workspace/contract-type-badge";
+import { RepoCard } from "@repowise/ui/workspace/repo-card";
+import { CrossRepoSummary } from "@repowise/ui/workspace/cross-repo-summary";
+import { CoChangeTable } from "@repowise/ui/workspace/co-change-table";
+import { ContractTypeBadge } from "@repowise/ui/workspace/contract-type-badge";
 import { formatNumber } from "@repowise/ui/lib/format";
 
 export const metadata: Metadata = { title: "Workspace" };

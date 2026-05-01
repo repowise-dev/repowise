@@ -1,8 +1,8 @@
-import Link from "next/link";
 import { FileText, Flame, BarChart3, ChevronRight } from "lucide-react";
-import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
-import { Card, CardContent } from "@repowise/ui/ui/card";
-import { Badge } from "@repowise/ui/ui/badge";
+import { Card, CardContent } from "../ui/card";
+import { Badge } from "../ui/badge";
+import type { RepoStats } from "@repowise/types/workspace";
+import type { GitSummary } from "@repowise/types/git";
 
 interface RepoCardProps {
   repoId: string;
@@ -10,8 +10,8 @@ interface RepoCardProps {
   name: string;
   path: string;
   isPrimary: boolean;
-  stats: RepoStatsResponse | null;
-  gitSummary: GitSummaryResponse | null;
+  stats: RepoStats | null;
+  gitSummary: GitSummary | null;
 }
 
 export function RepoCard({
@@ -74,8 +74,8 @@ export function RepoCard({
   if (!repoId) return card;
 
   return (
-    <Link href={`/repos/${repoId}/overview`}>
+    <a href={`/repos/${repoId}/overview`}>
       {card}
-    </Link>
+    </a>
   );
 }

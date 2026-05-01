@@ -1,6 +1,6 @@
 "use client";
 
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 
 const TYPE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   http: { bg: "bg-blue-500/10", text: "text-blue-400", label: "HTTP" },

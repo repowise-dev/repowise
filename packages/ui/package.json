@@ -28,6 +28,7 @@
     "./dashboard": "./src/dashboard/index.ts",
     "./dashboard/*": "./src/dashboard/*.tsx",
     "./workspace": "./src/workspace/index.ts",
+    "./workspace/*": "./src/workspace/*.tsx",
     "./jobs": "./src/jobs/index.ts",
     "./jobs/*": "./src/jobs/*.tsx",
     "./shared": "./src/shared/index.ts",

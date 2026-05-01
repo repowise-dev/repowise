@@ -14,3 +14,4 @@ export * from "./decisions.js";
 export * from "./dead-code.js";
 export * from "./symbols.js";
 export * from "./chat.js";
+export * from "./workspace.js";

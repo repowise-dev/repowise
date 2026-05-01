@@ -14,7 +14,8 @@
     "./decisions": "./src/decisions.ts",
     "./dead-code": "./src/dead-code.ts",
     "./symbols": "./src/symbols.ts",
-    "./chat": "./src/chat.ts"
+    "./chat": "./src/chat.ts",
+    "./workspace": "./src/workspace.ts"
   },
   "scripts": {
     "type-check": "tsc --noEmit",

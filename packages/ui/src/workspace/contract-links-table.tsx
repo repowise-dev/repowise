@@ -1,7 +1,7 @@
 "use client";
 
-import type { WorkspaceContractLinkEntry } from "@/lib/api/types";
 import { ContractTypeBadge } from "./contract-type-badge";
+import type { WorkspaceContractLinkEntry } from "@repowise/types/workspace";
 
 interface ContractLinksTableProps {
   links: WorkspaceContractLinkEntry[];
