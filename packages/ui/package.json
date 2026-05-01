@@ -1,0 +1,47 @@
+{
+  "name": "@repowise/ui",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Shared visualization components for Repowise OSS web (packages/web) and hosted web. Components moved in here from packages/web/src/components/* + frontend/src/components/demo/* during Phase 1B.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles.css": "./styles/globals.css",
+    "./graph": "./src/graph/index.ts",
+    "./git": "./src/git/index.ts",
+    "./dead-code": "./src/dead-code/index.ts",
+    "./decisions": "./src/decisions/index.ts",
+    "./docs": "./src/docs/index.ts",
+    "./symbols": "./src/symbols/index.ts",
+    "./coverage": "./src/coverage/index.ts",
+    "./wiki": "./src/wiki/index.ts",
+    "./chat": "./src/chat/index.ts",
+    "./dashboard": "./src/dashboard/index.ts",
+    "./workspace": "./src/workspace/index.ts",
+    "./jobs": "./src/jobs/index.ts",
+    "./shared": "./src/shared/index.ts",
+    "./hooks": "./src/hooks/index.ts",
+    "./ui": "./src/ui/index.ts"
+  },
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@repowise/types": "*"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
