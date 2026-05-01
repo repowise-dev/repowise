@@ -1,7 +1,7 @@
 import { GitCommit, User } from "lucide-react";
 import { Badge } from "@repowise/ui/ui/badge";
-import { CommitCategorySparkline } from "@/components/git/commit-category-sparkline";
-import { CoChangeList } from "@/components/git/co-change-list";
+import { CommitCategorySparkline } from "@repowise/ui/git/commit-category-sparkline";
+import { CoChangeList } from "@repowise/ui/git/co-change-list";
 import { formatRelativeTime, formatDate, formatAgeDays } from "@repowise/ui/lib/format";
 import type { GitMetadataResponse } from "@/lib/api/types";
 

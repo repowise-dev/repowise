@@ -2,12 +2,12 @@
 
 import { useState, useMemo } from "react";
 import { Search } from "lucide-react";
-import { Badge } from "@repowise/ui/ui/badge";
-import { Input } from "@repowise/ui/ui/input";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise/ui/ui/tooltip";
-import { EmptyState } from "@repowise/ui/shared/empty-state";
-import { cn } from "@/lib/utils/cn";
-import type { OwnershipEntry } from "@/lib/api/types";
+import { Badge } from "../ui/badge";
+import { Input } from "../ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+import { EmptyState } from "../shared/empty-state";
+import { cn } from "../lib/cn";
+import type { OwnershipEntry } from "@repowise/types/git";
 
 interface OwnershipTableProps {
   entries: OwnershipEntry[];
@@ -51,7 +51,6 @@ export function OwnershipTable({ entries }: OwnershipTableProps) {
 
   return (
     <div className="space-y-3">
-      {/* Search + filters */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />

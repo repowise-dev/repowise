@@ -2,7 +2,7 @@ import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
-} from "@repowise/ui/ui/tooltip";
+} from "../ui/tooltip";
 
 interface CommitCategorySparklineProps {
   categories: Record<string, number>;
@@ -27,6 +27,7 @@ export function CommitCategorySparkline({ categories }: CommitCategorySparklineP
         const count = categories[key] || 0;
         if (count === 0) return null;
         const config = CATEGORY_CONFIG[key];
+        if (!config) return null;
         return (
           <Tooltip key={key}>
             <TooltipTrigger asChild>

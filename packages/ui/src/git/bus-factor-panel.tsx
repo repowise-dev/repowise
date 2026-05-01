@@ -7,11 +7,11 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { truncatePath } from "@repowise/ui/lib/format";
-import type { HotspotResponse } from "@/lib/api/types";
+import { truncatePath } from "../lib/format";
+import type { Hotspot } from "@repowise/types/git";
 
 interface BusFactorPanelProps {
-  hotspots: HotspotResponse[];
+  hotspots: Hotspot[];
 }
 
 export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
@@ -29,7 +29,6 @@ export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
 
   return (
     <div className="space-y-4">
-      {/* Stacked bar */}
       <div>
         <div className="flex items-center justify-between text-xs text-[var(--color-text-tertiary)] mb-2">
           <span>Bus Factor Distribution</span>
@@ -47,9 +46,10 @@ export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
                 fontSize: "12px",
                 color: "var(--color-text-primary)",
               }}
-              formatter={(value: number, name: string) => {
+              formatter={(value, name) => {
+                const n = typeof value === "number" ? value : 0;
                 const label = name === "high" ? "Safe (≥3)" : name === "medium" ? "Warning (2)" : "Risk (≤1)";
-                return [`${value} files`, label];
+                return [`${n} files`, label];
               }}
             />
             <Bar dataKey="high" stackId="a" fill="#22c55e" radius={[4, 0, 0, 4]} />
@@ -70,7 +70,6 @@ export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
         </div>
       </div>
 
-      {/* At-risk files list */}
       {riskFiles.length > 0 && (
         <div>
           <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">

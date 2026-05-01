@@ -46,7 +46,7 @@ export function ContributorBar({ owners }: ContributorBarProps) {
             fontSize: "12px",
             color: "var(--color-text-primary)",
           }}
-          formatter={(value: number) => [value, "files"]}
+          formatter={(value) => [typeof value === "number" ? value : 0, "files"]}
         />
         <Bar dataKey="files" fill="var(--color-accent-primary)" radius={[0, 4, 4, 0]} />
       </BarChart>

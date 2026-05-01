@@ -1,7 +1,7 @@
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 
 interface ChurnBarProps {
-  percentile: number; // 0-100
+  percentile: number;
   className?: string;
 }
 

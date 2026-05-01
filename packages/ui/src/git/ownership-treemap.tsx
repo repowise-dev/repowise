@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState, useCallback } from "react";
 import { hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode } from "d3-hierarchy";
-import type { OwnershipEntry } from "@/lib/api/types";
+import type { OwnershipEntry } from "@repowise/types/git";
 
 interface OwnershipTreemapProps {
   entries: OwnershipEntry[];
@@ -12,14 +12,15 @@ const OWNER_COLORS = [
   "#5b9cf6", "#a855f7", "#22c55e", "#eab308",
   "#ec4899", "#6366f1", "#14b8a6", "#f59520",
 ];
+const OWNER_FALLBACK = "#4b5563";
 
 function ownerColor(name: string | null): string {
-  if (!name) return "#4b5563";
+  if (!name) return OWNER_FALLBACK;
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return OWNER_COLORS[Math.abs(hash) % OWNER_COLORS.length];
+  return OWNER_COLORS[Math.abs(hash) % OWNER_COLORS.length] ?? OWNER_FALLBACK;
 }
 
 interface TooltipData {
@@ -40,8 +41,10 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const { width } = entries[0].contentRect;
+    const ro = new ResizeObserver((observed) => {
+      const first = observed[0];
+      if (!first) return;
+      const { width } = first.contentRect;
       if (width > 0) setDims({ width, height: Math.max(240, Math.min(400, width * 0.5)) });
     });
     ro.observe(el);
@@ -164,7 +167,6 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
         })}
       </svg>
 
-      {/* Tooltip */}
       {tooltip && (
         <div
           className="absolute z-20 pointer-events-none rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-3 py-2 text-xs shadow-lg"

@@ -11,6 +11,7 @@
     "./styles.css": "./styles/globals.css",
     "./graph": "./src/graph/index.ts",
     "./git": "./src/git/index.ts",
+    "./git/*": "./src/git/*.tsx",
     "./dead-code": "./src/dead-code/index.ts",
     "./dead-code/*": "./src/dead-code/*.tsx",
     "./decisions": "./src/decisions/index.ts",
@@ -53,6 +54,8 @@
     "@repowise/types": "*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "d3-force": "^3.0.0",
+    "d3-hierarchy": "^3.1.2",
     "lucide-react": "^1.7.0",
     "recharts": "^3.8.1",
     "tailwind-merge": "^3.5.0"

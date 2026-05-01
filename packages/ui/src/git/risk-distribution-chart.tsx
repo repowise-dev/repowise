@@ -11,13 +11,13 @@ import {
   Cell,
   ReferenceLine,
 } from "recharts";
-import type { HotspotResponse } from "@/lib/api/types";
+import type { Hotspot } from "@repowise/types/git";
 
 interface RiskDistributionChartProps {
-  hotspots: HotspotResponse[];
+  hotspots: Hotspot[];
 }
 
-function computeRiskScore(h: HotspotResponse): number {
+function computeRiskScore(h: Hotspot): number {
   const churn = h.churn_percentile / 100;
   const busFactor = h.bus_factor <= 1 ? 1 : h.bus_factor === 2 ? 0.5 : 0;
   const trend = Math.min(1, (h.temporal_hotspot_score ?? 0) / 10);
@@ -81,8 +81,8 @@ export function RiskDistributionChart({ hotspots }: RiskDistributionChartProps) 
               fontSize: 11,
               color: "var(--color-text-primary)",
             }}
-            formatter={(value: number) => [`${value}`, "Risk Score"]}
-            labelFormatter={(label: string) => label}
+            formatter={(value) => [`${typeof value === "number" ? value : 0}`, "Risk Score"]}
+            labelFormatter={(label) => String(label)}
           />
           <ReferenceLine
             x={avgRisk}

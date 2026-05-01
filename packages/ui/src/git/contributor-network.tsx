@@ -2,10 +2,10 @@
 
 import { useRef, useEffect, useMemo } from "react";
 import * as d3 from "d3-force";
-import type { HotspotResponse } from "@/lib/api/types";
+import type { Hotspot } from "@repowise/types/git";
 
 interface ContributorNetworkProps {
-  hotspots: HotspotResponse[];
+  hotspots: Hotspot[];
 }
 
 interface ContributorNode extends d3.SimulationNodeDatum {
@@ -22,12 +22,12 @@ const PALETTE = [
   "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#3b82f6", "#a855f7",
   "#14b8a6", "#f97316", "#84cc16", "#06b6d4", "#e11d48", "#8b5cf6",
 ];
+const PALETTE_FALLBACK = "#6366f1";
 
 export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
   const svgRef = useRef<SVGSVGElement>(null);
 
   const { nodes, links } = useMemo(() => {
-    // Build contributor -> files map
     const ownerFiles = new Map<string, Set<string>>();
     for (const h of hotspots) {
       const owner = h.primary_owner;
@@ -36,7 +36,6 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
       ownerFiles.get(owner)!.add(h.file_path);
     }
 
-    // Build nodes
     const nodeArr: ContributorNode[] = Array.from(ownerFiles.entries())
       .map(([id, files]) => ({
         id,
@@ -48,17 +47,20 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
 
     const nodeIds = new Set(nodeArr.map((n) => n.id));
 
-    // Build links (shared file co-ownership)
     const linkArr: ContributorLink[] = [];
     const nodeList = Array.from(nodeIds);
     for (let i = 0; i < nodeList.length; i++) {
       for (let j = i + 1; j < nodeList.length; j++) {
-        const a = ownerFiles.get(nodeList[i])!;
-        const b = ownerFiles.get(nodeList[j])!;
+        const idA = nodeList[i];
+        const idB = nodeList[j];
+        if (!idA || !idB) continue;
+        const a = ownerFiles.get(idA);
+        const b = ownerFiles.get(idB);
+        if (!a || !b) continue;
         let shared = 0;
         for (const f of a) if (b.has(f)) shared++;
         if (shared > 0) {
-          linkArr.push({ source: nodeList[i], target: nodeList[j], sharedFiles: shared });
+          linkArr.push({ source: idA, target: idB, sharedFiles: shared });
         }
       }
     }
@@ -73,16 +75,13 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
     const width = svg.clientWidth || 400;
     const height = svg.clientHeight || 300;
 
-    // Clear
     while (svg.firstChild) svg.removeChild(svg.firstChild);
 
     const ns = "http://www.w3.org/2000/svg";
 
-    // Create a group for zoom
     const g = document.createElementNS(ns, "g");
     svg.appendChild(g);
 
-    // Reset node positions
     for (const n of nodes) {
       n.x = width / 2 + (Math.random() - 0.5) * 100;
       n.y = height / 2 + (Math.random() - 0.5) * 100;
@@ -95,7 +94,6 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
       .force("center", d3.forceCenter(width / 2, height / 2))
       .force("collide", d3.forceCollide<ContributorNode>().radius((d) => d.radius + 4));
 
-    // Draw links
     const linkElements: SVGLineElement[] = links.map((l) => {
       const line = document.createElementNS(ns, "line");
       line.setAttribute("stroke", "rgba(255,255,255,0.1)");
@@ -104,16 +102,16 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
       return line;
     });
 
-    // Draw nodes
     const nodeGroups: SVGGElement[] = nodes.map((n, i) => {
       const group = document.createElementNS(ns, "g");
       group.style.cursor = "pointer";
 
+      const fill = PALETTE[i % PALETTE.length] ?? PALETTE_FALLBACK;
       const circle = document.createElementNS(ns, "circle");
       circle.setAttribute("r", String(n.radius));
-      circle.setAttribute("fill", PALETTE[i % PALETTE.length]);
+      circle.setAttribute("fill", fill);
       circle.setAttribute("fill-opacity", "0.8");
-      circle.setAttribute("stroke", PALETTE[i % PALETTE.length]);
+      circle.setAttribute("stroke", fill);
       circle.setAttribute("stroke-opacity", "0.3");
       circle.setAttribute("stroke-width", "3");
       group.appendChild(circle);
@@ -137,6 +135,7 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
     simulation.on("tick", () => {
       linkElements.forEach((line, i) => {
         const l = links[i];
+        if (!l) return;
         const s = l.source as ContributorNode;
         const t = l.target as ContributorNode;
         line.setAttribute("x1", String(s.x ?? 0));
@@ -147,6 +146,7 @@ export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
 
       nodeGroups.forEach((group, i) => {
         const n = nodes[i];
+        if (!n) return;
         group.setAttribute("transform", `translate(${n.x ?? 0}, ${n.y ?? 0})`);
       });
     });

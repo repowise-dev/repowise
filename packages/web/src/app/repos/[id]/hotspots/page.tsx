@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import { Flame, Shield } from "lucide-react";
 import { StatCard } from "@repowise/ui/shared/stat-card";
-import { HotspotTable } from "@/components/git/hotspot-table";
-import { ContributorBar } from "@/components/git/contributor-bar";
-import { ChurnHistogram } from "@/components/git/churn-histogram";
-import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
-import { RiskDistributionChart } from "@/components/git/risk-distribution-chart";
+import { HotspotTable } from "@repowise/ui/git/hotspot-table";
+import { ContributorBar } from "@repowise/ui/git/contributor-bar";
+import { ChurnHistogram } from "@repowise/ui/git/churn-histogram";
+import { CommitCategoryDonut } from "@repowise/ui/git/commit-category-donut";
+import { RiskDistributionChart } from "@repowise/ui/git/risk-distribution-chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { getHotspots, getGitSummary } from "@/lib/api/git";
 import { formatNumber } from "@repowise/ui/lib/format";

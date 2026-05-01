@@ -23,11 +23,11 @@ import { ModuleMinimap } from "@/components/dashboard/module-minimap";
 import { CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid";
 import { ExecutionFlowsPanel } from "@/components/dashboard/execution-flows-panel";
 import { DependencyHeatmap } from "@/components/dashboard/dependency-heatmap";
-import { BusFactorPanel } from "@/components/git/bus-factor-panel";
-import { ChurnHistogram } from "@/components/git/churn-histogram";
-import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
-import { CommitCategorySparkline } from "@/components/git/commit-category-sparkline";
-import { OwnershipTreemap as OwnershipTreemapGit } from "@/components/git/ownership-treemap";
+import { BusFactorPanel } from "@repowise/ui/git/bus-factor-panel";
+import { ChurnHistogram } from "@repowise/ui/git/churn-histogram";
+import { CommitCategoryDonut } from "@repowise/ui/git/commit-category-donut";
+import { CommitCategorySparkline } from "@repowise/ui/git/commit-category-sparkline";
+import { OwnershipTreemap as OwnershipTreemapGit } from "@repowise/ui/git/ownership-treemap";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { formatNumber } from "@repowise/ui/lib/format";
 import type {

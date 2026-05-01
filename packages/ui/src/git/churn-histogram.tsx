@@ -9,10 +9,10 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import type { HotspotResponse } from "@/lib/api/types";
+import type { Hotspot } from "@repowise/types/git";
 
 interface ChurnHistogramProps {
-  hotspots: HotspotResponse[];
+  hotspots: Hotspot[];
 }
 
 const BUCKET_COLORS = [
@@ -20,12 +20,13 @@ const BUCKET_COLORS = [
   "#eab308", "#eab308", "#f59520",
   "#ef4444", "#ef4444",
 ];
+const BUCKET_FALLBACK = "#8b5cf6";
 
 export function ChurnHistogram({ hotspots }: ChurnHistogramProps) {
-  const buckets = Array(10).fill(0) as number[];
+  const buckets = Array<number>(10).fill(0);
   for (const h of hotspots) {
     const idx = Math.min(9, Math.floor(h.churn_percentile / 10));
-    buckets[idx]++;
+    buckets[idx] = (buckets[idx] ?? 0) + 1;
   }
 
   const data = buckets.map((count, i) => ({
@@ -57,12 +58,12 @@ export function ChurnHistogram({ hotspots }: ChurnHistogramProps) {
             fontSize: "12px",
             color: "var(--color-text-primary)",
           }}
-          formatter={(value: number) => [`${value} files`, "Count"]}
-          labelFormatter={(label: string) => `Churn ${label}%`}
+          formatter={(value) => [`${typeof value === "number" ? value : 0} files`, "Count"]}
+          labelFormatter={(label) => `Churn ${String(label)}%`}
         />
         <Bar dataKey="count" radius={[4, 4, 0, 0]}>
           {data.map((_, i) => (
-            <Cell key={i} fill={BUCKET_COLORS[i]} />
+            <Cell key={i} fill={BUCKET_COLORS[i] ?? BUCKET_FALLBACK} />
           ))}
         </Bar>
       </BarChart>

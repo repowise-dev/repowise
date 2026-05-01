@@ -1,4 +1,4 @@
-import { truncatePath } from "@repowise/ui/lib/format";
+import { truncatePath } from "../lib/format";
 
 interface CoChangeListProps {
   partners: Array<{ file_path: string; co_change_count: number }>;

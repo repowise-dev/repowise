@@ -2,16 +2,16 @@
 
 import { useState, useMemo } from "react";
 import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
-import { Badge } from "@repowise/ui/ui/badge";
-import { Input } from "@repowise/ui/ui/input";
-import { EmptyState } from "@repowise/ui/shared/empty-state";
+import { Badge } from "../ui/badge";
+import { Input } from "../ui/input";
+import { EmptyState } from "../shared/empty-state";
 import { ChurnBar } from "./churn-bar";
-import { formatLOC } from "@repowise/ui/lib/format";
-import { cn } from "@/lib/utils/cn";
-import type { HotspotResponse } from "@/lib/api/types";
+import { formatLOC } from "../lib/format";
+import { cn } from "../lib/cn";
+import type { Hotspot } from "@repowise/types/git";
 
 interface HotspotTableProps {
-  hotspots: HotspotResponse[];
+  hotspots: Hotspot[];
 }
 
 type Filter = "all" | "hot" | "risk" | "accelerating";
@@ -69,7 +69,6 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
         break;
     }
 
-    // Client-side sort
     const sign = sortDir === "desc" ? -1 : 1;
     items = [...items].sort((a, b) => {
       if (sortKey === "trend") {
@@ -103,7 +102,6 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
 
   return (
     <div className="space-y-3">
-      {/* Search + filters */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
@@ -133,7 +131,6 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
         </div>
       </div>
 
-      {/* Table */}
       {filtered.length === 0 ? (
         <EmptyState title="No matches" description="Try adjusting your search or filters." />
       ) : (

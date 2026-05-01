@@ -58,10 +58,13 @@ export function CommitCategoryDonut({ categories }: CommitCategoryDonutProps) {
               fontSize: "12px",
               color: "var(--color-text-primary)",
             }}
-            formatter={(value: number, name: string) => [
-              `${value} commits (${Math.round((value / total) * 100)}%)`,
-              name,
-            ]}
+            formatter={(value, name) => {
+              const n = typeof value === "number" ? value : 0;
+              return [
+                `${n} commits (${Math.round((n / total) * 100)}%)`,
+                name,
+              ];
+            }}
           />
         </PieChart>
       </ResponsiveContainer>

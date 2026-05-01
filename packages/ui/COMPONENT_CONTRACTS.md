@@ -166,3 +166,121 @@ Behaviour:
 - Confidence column is colour-graded against the same thresholds as
   `lib/confidence.scoreToStatus`.
 - Empty state (`EmptyState`) appears when the filtered set is empty.
+
+---
+
+## `git/*` — Hotspot, ownership, and contributor visualisations
+
+All twelve components are presentational and accept canonical engine
+artifacts via props (`Hotspot`, `OwnershipEntry` from `@repowise/types/git`,
+or anonymous shapes for partner / owner / category records). None reach
+out to data hooks or mutation APIs — fetching belongs to the caller.
+
+### `git/churn-bar` — `ChurnBar`
+
+Inline horizontal bar shaded green/yellow/red against thresholds at
+50% / 75% percentile.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `percentile` | `number` (0–100, clamped) | yes |
+| `className` | `string` | no |
+
+### `git/co-change-list` — `CoChangeList`
+
+Top-5 co-change partners with relative-magnitude bars.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `partners` | `Array<{ file_path: string; co_change_count: number }>` | yes |
+
+### `git/churn-histogram` — `ChurnHistogram`
+
+Recharts bar chart binning hotspots into 10-percentile buckets.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise/types/git`) | yes |
+
+### `git/commit-category-donut` — `CommitCategoryDonut`
+
+Recharts donut with centred dominant-category label. Returns `null`
+when the total is zero.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `categories` | `Record<string, number>` | yes |
+
+### `git/commit-category-sparkline` — `CommitCategorySparkline`
+
+Single-row stacked bar sized by category counts; each segment wears a
+tooltip. Returns `null` when the total is zero.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `categories` | `Record<string, number>` | yes |
+
+### `git/contributor-bar` — `ContributorBar`
+
+Top-5 horizontal bar of files-by-owner.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `owners` | `Array<{ name; email?; file_count; pct }>` | yes |
+
+### `git/contributor-network` — `ContributorNetwork`
+
+Force-directed (`d3-force`) co-ownership graph. Computes nodes/links
+from `hotspots[].primary_owner` and shared-file overlap; top-20
+contributors only.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise/types/git`) | yes |
+
+### `git/hotspot-table` — `HotspotTable`
+
+Searchable, filterable, sortable table of hotspots. Filter chips:
+`all` / `hot` / `risk` / `accelerating`. Sortable columns:
+`commits` / `churn` / `trend`. UI-local state — no fetch coupling.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise/types/git`) | yes |
+
+### `git/ownership-table` — `OwnershipTable`
+
+Search + silo filter over module ownership rows.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `entries` | `OwnershipEntry[]` (`@repowise/types/git`) | yes |
+
+### `git/ownership-treemap` — `OwnershipTreemap`
+
+Treemap (`d3-hierarchy`) with file-count area, owner-hash colour, and
+silo highlight stroke. Hover tooltips computed against the container's
+bounding rect.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `entries` | `OwnershipEntry[]` (`@repowise/types/git`) | yes |
+
+### `git/risk-distribution-chart` — `RiskDistributionChart`
+
+Top-30 risk-scored vertical bar chart with average reference line.
+Score = `0.4·churn + 0.35·busFactor + 0.25·trend`, all normalised to
+0–100.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise/types/git`) | yes |
+
+### `git/bus-factor-panel` — `BusFactorPanel`
+
+Stacked bar of safe / warning / risk counts plus a top-5 highest-risk
+files list.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise/types/git`) | yes |
