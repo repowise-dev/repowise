@@ -15,7 +15,8 @@
     "./dead-code": "./src/dead-code.ts",
     "./symbols": "./src/symbols.ts",
     "./chat": "./src/chat.ts",
-    "./workspace": "./src/workspace.ts"
+    "./workspace": "./src/workspace.ts",
+    "./blast-radius": "./src/blast-radius.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

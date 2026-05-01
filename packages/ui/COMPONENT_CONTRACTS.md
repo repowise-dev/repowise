@@ -768,3 +768,89 @@ slugged heading anchors, copy-on-hover code blocks, and inline
 | Prop | Type | Required |
 |------|------|----------|
 | `content` | `string` | yes |
+
+---
+
+## `blast-radius/*` — PR impact analysis shells
+
+Pure presentational shells for the blast-radius view. Data fetching,
+input form, and SWR hotspot suggestions stay in the consumer page;
+these components only render `BlastRadiusResponse` (from
+`@repowise-dev/types/blast-radius`).
+
+### `blast-radius/risk-score-card` — `RiskScoreCard`
+
+Coloured 0–10 gauge. Red ≥7, amber ≥4, emerald otherwise.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `score` | `number` (0–10) | yes |
+
+### `blast-radius/table-section` — `TableSection`
+
+Card wrapper with title and "empty" placeholder.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `title` | `string` | yes |
+| `empty` | `boolean` | yes |
+| `emptyLabel` | `string` (defaults to "None") | no |
+| `children` | `ReactNode` | yes |
+
+### `blast-radius/direct-risks-table` — `DirectRisksTable`
+
+Renders `DirectRiskEntry[]`. Multiplies `risk_score` and
+`temporal_hotspot` by 10 for display (backend ships 0–1).
+
+| Prop | Type | Required |
+|------|------|----------|
+| `rows` | `DirectRiskEntry[]` | yes |
+
+### `blast-radius/transitive-table` — `TransitiveTable`
+
+Two-column path + dependency depth.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `rows` | `TransitiveEntry[]` | yes |
+
+### `blast-radius/cochange-table` — `CochangeTable`
+
+Three-column changed file / missing partner / score.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `rows` | `CochangeWarning[]` | yes |
+
+### `blast-radius/reviewers-table` — `ReviewersTable`
+
+Email + files-owned + percent ownership. `ownership_pct` is 0–1.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `rows` | `ReviewerEntry[]` | yes |
+
+### `blast-radius/test-gaps-list` — `TestGapsList`
+
+Bullet list of files lacking adjacent test coverage.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `gaps` | `string[]` | yes |
+
+### `blast-radius/blast-radius-summary` — `BlastRadiusSummary`
+
+Four-stat card sitting beside `RiskScoreCard` (Direct Risks /
+Transitive Files / Co-change Warnings / Test Gaps).
+
+| Prop | Type | Required |
+|------|------|----------|
+| `result` | `BlastRadiusResponse` | yes |
+
+### `blast-radius/blast-radius-results` — `BlastRadiusResults`
+
+Composes the full results stack: gauge + summary + the five tables.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `result` | `BlastRadiusResponse` | yes |
