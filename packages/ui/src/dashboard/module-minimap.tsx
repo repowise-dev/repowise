@@ -2,15 +2,14 @@
 
 import { useRef, useEffect, useState, useCallback } from "react";
 import * as d3Force from "d3-force";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@repowise/ui/ui/tooltip";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { Network } from "lucide-react";
-import Link from "next/link";
-import type { ModuleNodeResponse, ModuleEdgeResponse } from "@/lib/api/types";
+import type { ModuleNode, ModuleEdge } from "@repowise/types/graph";
 
 interface ModuleMinimapProps {
-  nodes: ModuleNodeResponse[];
-  edges: ModuleEdgeResponse[];
+  nodes: ModuleNode[];
+  edges: ModuleEdge[];
   repoId: string;
 }
 
@@ -38,7 +37,9 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((es) => {
-      const { width, height } = es[0].contentRect;
+      const first = es[0];
+      if (!first) return;
+      const { width, height } = first.contentRect;
       setDimensions({ width, height: Math.max(height, 200) });
     });
     observer.observe(containerRef.current);
@@ -65,7 +66,7 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
       .forceSimulation(sNodes)
       .force(
         "link",
-        d3Force.forceLink<SimNode, SimLink>(sLinks as never[]).id((d: SimNode) => d.id).distance(60)
+        d3Force.forceLink<SimNode, SimLink>(sLinks as never[]).id((d: SimNode) => d.id).distance(60),
       )
       .force("charge", d3Force.forceManyBody().strength(-120))
       .force("center", d3Force.forceCenter(dimensions.width / 2, dimensions.height / 2))
@@ -73,35 +74,33 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
       .alpha(0.8)
       .alphaDecay(0.05);
 
+    const resolveLink = (l: SimLink) => {
+      const source = sNodes.find(
+        (n) => n.id === (typeof l.source === "string" ? l.source : (l.source as SimNode).id),
+      );
+      const target = sNodes.find(
+        (n) => n.id === (typeof l.target === "string" ? l.target : (l.target as SimNode).id),
+      );
+      if (!source || !target) return null;
+      return { source, target, edgeCount: l.edgeCount };
+    };
+
     sim.on("end", () => {
       setSimNodes([...sNodes]);
-      setSimLinks(
-        sLinks.map((l) => ({
-          source: sNodes.find((n) => n.id === (typeof l.source === "string" ? l.source : (l.source as SimNode).id))!,
-          target: sNodes.find((n) => n.id === (typeof l.target === "string" ? l.target : (l.target as SimNode).id))!,
-          edgeCount: l.edgeCount,
-        }))
-      );
+      setSimLinks(sLinks.map(resolveLink).filter((x): x is { source: SimNode; target: SimNode; edgeCount: number } => x !== null));
     });
 
-    // Run simulation synchronously for small graphs
     sim.tick(150);
     sim.stop();
     setSimNodes([...sNodes]);
-    setSimLinks(
-      sLinks.map((l) => ({
-        source: sNodes.find((n) => n.id === (typeof l.source === "string" ? l.source : (l.source as SimNode).id))!,
-        target: sNodes.find((n) => n.id === (typeof l.target === "string" ? l.target : (l.target as SimNode).id))!,
-        edgeCount: l.edgeCount,
-      }))
-    );
+    setSimLinks(sLinks.map(resolveLink).filter((x): x is { source: SimNode; target: SimNode; edgeCount: number } => x !== null));
 
     return () => { sim.stop(); };
   }, [nodes, edges, dimensions]);
 
   const getNodeRadius = useCallback(
     (n: SimNode) => Math.max(4, Math.min(16, Math.sqrt(n.fileCount) * 3)),
-    []
+    [],
   );
 
   if (nodes.length === 0) return null;
@@ -116,12 +115,12 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
             <Network className="h-4 w-4 text-[var(--color-text-secondary)]" />
             Architecture
           </span>
-          <Link
+          <a
             href={`/repos/${repoId}/graph`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             Full graph
-          </Link>
+          </a>
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
@@ -129,7 +128,6 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
           {width > 0 && simNodes.length > 0 && (
             <TooltipProvider delayDuration={100}>
               <svg width={width} height={height}>
-                {/* Edges */}
                 {simLinks.map((link, i) => (
                   <line
                     key={i}
@@ -149,7 +147,6 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
                     className="transition-opacity"
                   />
                 ))}
-                {/* Nodes */}
                 {simNodes.map((node) => {
                   const r = getNodeRadius(node);
                   const isHovered = hoveredNode === node.id;

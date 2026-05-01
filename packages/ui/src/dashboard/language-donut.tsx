@@ -1,7 +1,7 @@
 "use client";
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Code } from "lucide-react";
 
 const LANG_COLORS: Record<string, string> = {
@@ -33,7 +33,6 @@ export function LanguageDonut({ distribution }: LanguageDonutProps) {
   const total = entries.reduce((s, e) => s + e.value, 0);
   if (total === 0) return null;
 
-  // Show top 6, group rest as "other"
   const shown = entries.slice(0, 6);
   const otherValue = entries.slice(6).reduce((s, e) => s + e.value, 0);
   if (otherValue > 0) shown.push({ name: "other", value: otherValue });
@@ -73,7 +72,10 @@ export function LanguageDonut({ distribution }: LanguageDonutProps) {
                     fontSize: 11,
                     color: "var(--color-text-primary)",
                   }}
-                  formatter={(value: number) => [`${value} files (${Math.round((value / total) * 100)}%)`, ""]}
+                  formatter={(value) => {
+                    const n = typeof value === "number" ? value : 0;
+                    return [`${n} files (${Math.round((n / total) * 100)}%)`, ""];
+                  }}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -101,4 +103,3 @@ export function LanguageDonut({ distribution }: LanguageDonutProps) {
     </Card>
   );
 }
-

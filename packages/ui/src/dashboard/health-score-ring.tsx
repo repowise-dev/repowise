@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 
 interface HealthScoreRingProps {
-  score: number; // 0-100
+  score: number;
   size?: number;
 }
 
@@ -35,7 +35,6 @@ export function HealthScoreRing({ score, size = 160 }: HealthScoreRingProps) {
   return (
     <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
       <svg width={size} height={size} className="-rotate-90">
-        {/* Background track */}
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -44,7 +43,6 @@ export function HealthScoreRing({ score, size = 160 }: HealthScoreRingProps) {
           stroke="var(--color-border-default)"
           strokeWidth={strokeWidth}
         />
-        {/* Animated progress arc */}
         <motion.circle
           cx={size / 2}
           cy={size / 2}
@@ -59,7 +57,6 @@ export function HealthScoreRing({ score, size = 160 }: HealthScoreRingProps) {
           transition={{ duration: 1.2, ease: "easeOut" }}
         />
       </svg>
-      {/* Center text */}
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <motion.span
           className="text-3xl font-bold tabular-nums"
@@ -77,4 +74,3 @@ export function HealthScoreRing({ score, size = 160 }: HealthScoreRingProps) {
     </div>
   );
 }
-

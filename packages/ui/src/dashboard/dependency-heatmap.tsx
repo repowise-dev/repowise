@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo, useRef, useEffect } from "react";
-import type { ModuleGraphResponse } from "@/lib/api/types";
+import type { ModuleGraph } from "@repowise/types/graph";
 
 interface DependencyHeatmapProps {
-  moduleGraph: ModuleGraphResponse;
+  moduleGraph: ModuleGraph;
 }
 
 function heatColor(count: number, max: number): string {
@@ -20,6 +20,7 @@ export function DependencyHeatmap({ moduleGraph }: DependencyHeatmapProps) {
 
   const { modules, matrix, maxCount } = useMemo(() => {
     const mods = moduleGraph.nodes
+      .slice()
       .sort((a, b) => b.avg_pagerank - a.avg_pagerank)
       .slice(0, 20)
       .map((m) => m.module_id);
@@ -28,7 +29,7 @@ export function DependencyHeatmap({ moduleGraph }: DependencyHeatmapProps) {
     mods.forEach((m, i) => modIdx.set(m, i));
 
     const mat: number[][] = Array.from({ length: mods.length }, () =>
-      new Array(mods.length).fill(0)
+      new Array<number>(mods.length).fill(0),
     );
 
     let max = 0;
@@ -36,8 +37,10 @@ export function DependencyHeatmap({ moduleGraph }: DependencyHeatmapProps) {
       const si = modIdx.get(e.source);
       const ti = modIdx.get(e.target);
       if (si !== undefined && ti !== undefined) {
-        mat[si][ti] += e.edge_count;
-        if (mat[si][ti] > max) max = mat[si][ti];
+        const row = mat[si];
+        if (!row) continue;
+        row[ti] = (row[ti] ?? 0) + e.edge_count;
+        if ((row[ti] ?? 0) > max) max = row[ti] ?? 0;
       }
     }
 
@@ -64,16 +67,16 @@ export function DependencyHeatmap({ moduleGraph }: DependencyHeatmapProps) {
     if (!ctx) return;
     ctx.scale(2, 2);
 
-    // Clear
     ctx.clearRect(0, 0, totalWidth, totalHeight);
 
-    // Draw labels (top)
     ctx.save();
     ctx.font = "9px var(--font-geist-mono, monospace)";
     ctx.fillStyle = "var(--color-text-tertiary)";
     ctx.textAlign = "right";
     for (let i = 0; i < size; i++) {
-      const label = modules[i].split("/").pop() ?? modules[i];
+      const mod = modules[i];
+      if (!mod) continue;
+      const label = mod.split("/").pop() ?? mod;
       const x = labelWidth + i * (cellSize + padding) + cellSize / 2;
       ctx.save();
       ctx.translate(x, labelWidth - 4);
@@ -82,20 +85,22 @@ export function DependencyHeatmap({ moduleGraph }: DependencyHeatmapProps) {
       ctx.restore();
     }
 
-    // Draw labels (left)
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     for (let i = 0; i < size; i++) {
-      const label = modules[i].split("/").pop() ?? modules[i];
+      const mod = modules[i];
+      if (!mod) continue;
+      const label = mod.split("/").pop() ?? mod;
       const y = labelWidth + i * (cellSize + padding) + cellSize / 2;
       ctx.fillText(label.slice(0, 12), labelWidth - 6, y);
     }
     ctx.restore();
 
-    // Draw cells
     for (let r = 0; r < size; r++) {
+      const row = matrix[r];
+      if (!row) continue;
       for (let c = 0; c < size; c++) {
-        const count = matrix[r][c];
+        const count = row[c] ?? 0;
         const x = labelWidth + c * (cellSize + padding);
         const y = labelWidth + r * (cellSize + padding);
 

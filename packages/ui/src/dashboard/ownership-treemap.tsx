@@ -2,17 +2,17 @@
 
 import { useRef, useEffect, useState } from "react";
 import * as d3 from "d3-hierarchy";
-import type { OwnershipEntry } from "@/lib/api/types";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@repowise/ui/ui/tooltip";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { Users } from "lucide-react";
+import type { OwnershipEntry } from "@repowise/types/git";
 
-// Owner color palette — muted, high contrast on dark
 const OWNER_COLORS = [
   "#3b82f6", "#8b5cf6", "#06b6d4", "#f59520", "#22c55e",
   "#ec4899", "#eab308", "#ef4444", "#14b8a6", "#a855f7",
   "#6366f1", "#f97316",
 ];
+const OWNER_FALLBACK = "#6b7280";
 
 interface OwnershipTreemapProps {
   entries: OwnershipEntry[];
@@ -34,7 +34,9 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((es) => {
-      const { width, height } = es[0].contentRect;
+      const first = es[0];
+      if (!first) return;
+      const { width, height } = first.contentRect;
       setDimensions({ width, height: Math.max(height, 200) });
     });
     observer.observe(containerRef.current);
@@ -43,12 +45,10 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
 
   if (entries.length === 0) return null;
 
-  // Build unique owner → color map
   const owners = [...new Set(entries.map((e) => e.primary_owner).filter(Boolean))] as string[];
   const ownerColorMap = new Map<string, string>();
-  owners.forEach((o, i) => ownerColorMap.set(o, OWNER_COLORS[i % OWNER_COLORS.length]));
+  owners.forEach((o, i) => ownerColorMap.set(o, OWNER_COLORS[i % OWNER_COLORS.length] ?? OWNER_FALLBACK));
 
-  // Build hierarchy
   const root = d3
     .hierarchy<{ children: TreemapNode[] } | TreemapNode>({
       children: entries.map((e) => ({
@@ -147,7 +147,6 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
             </svg>
           </TooltipProvider>
         </div>
-        {/* Legend */}
         <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
           {owners.slice(0, 6).map((owner) => (
             <div key={owner} className="flex items-center gap-1.5 text-[10px] text-[var(--color-text-secondary)]">

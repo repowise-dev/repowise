@@ -1,12 +1,11 @@
-import Link from "next/link";
 import { Landmark } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { Badge } from "@repowise/ui/ui/badge";
-import type { DecisionRecordResponse } from "@/lib/api/types";
-import { formatRelativeTime } from "@repowise/ui/lib/format";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Badge } from "../ui/badge";
+import { formatRelativeTime } from "../lib/format";
+import type { DecisionRecord } from "@repowise/types/decisions";
 
 interface DecisionsTimelineProps {
-  decisions: DecisionRecordResponse[];
+  decisions: DecisionRecord[];
   repoId: string;
 }
 
@@ -51,29 +50,27 @@ export function DecisionsTimeline({ decisions, repoId }: DecisionsTimelineProps)
             <Landmark className="h-4 w-4 text-[var(--color-text-secondary)]" />
             Recent Decisions
           </span>
-          <Link
+          <a
             href={`/repos/${repoId}/decisions`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             View all
-          </Link>
+          </a>
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
         <div className="relative">
-          {/* Timeline line */}
           <div className="absolute left-[5px] top-1 bottom-1 w-px bg-[var(--color-border-default)]" />
 
           <div className="space-y-3">
             {recent.map((d) => (
-              <Link
+              <a
                 key={d.id}
                 href={`/repos/${repoId}/decisions/${d.id}`}
                 className="flex items-start gap-3 pl-0 group relative"
               >
-                {/* Dot */}
                 <span
-                  className={`h-[11px] w-[11px] rounded-full shrink-0 mt-0.5 ring-2 ring-[var(--color-bg-surface)] relative z-10 ${STATUS_COLORS[d.status] ?? STATUS_COLORS.active}`}
+                  className={`h-[11px] w-[11px] rounded-full shrink-0 mt-0.5 ring-2 ring-[var(--color-bg-surface)] relative z-10 ${STATUS_COLORS[d.status] ?? STATUS_COLORS["active"]}`}
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -92,7 +89,7 @@ export function DecisionsTimeline({ decisions, repoId }: DecisionsTimelineProps)
                     {d.source && ` · ${d.source.replace("_", " ")}`}
                   </span>
                 </div>
-              </Link>
+              </a>
             ))}
           </div>
         </div>

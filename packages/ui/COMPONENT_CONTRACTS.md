@@ -353,6 +353,103 @@ Returns `null` when fewer than two headings are found.
 |------|------|----------|
 | `content` | `string` | yes |
 
+## `dashboard/*` — Repo overview tiles
+
+Nine presentational tiles that consume canonical engine artifacts.
+The data-coupled trio (`active-job-banner`, `quick-actions`,
+`community-summary-grid`) stays in `packages/web` for now.
+
+### `dashboard/attention-panel` — `AttentionPanel`
+
+Categorised list of items needing developer attention. Re-exports the
+`AttentionItem` type so `packages/web`'s `health-score.ts` can derive
+items without recomputing the shape.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `items` | `AttentionItem[]` | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/decisions-timeline` — `DecisionsTimeline`
+
+Top-6 most recent decisions with status dots and a "view all" link.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `decisions` | `DecisionRecord[]` (`@repowise/types/decisions`) | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/dependency-heatmap` — `DependencyHeatmap`
+
+20×20 canvas heatmap of module-to-module edge counts. Modules sorted
+by `avg_pagerank`. Returns `null` when fewer than two modules are
+available.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `moduleGraph` | `ModuleGraph` (`@repowise/types/graph`) | yes |
+
+### `dashboard/execution-flows-panel` — `ExecutionFlowsPanel`
+
+Top-8 execution flows with collapsible call traces. `repoId` is
+accepted for parity with other dashboard tiles but currently unused.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `flows` | `ExecutionFlowEntry[]` (`@repowise/types/graph`) | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/health-score-ring` — `HealthScoreRing`
+
+Animated `framer-motion` SVG ring showing 0–100 score with text label.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `score` | `number` (0–100) | yes |
+| `size` | `number` | no, default `160` |
+
+### `dashboard/hotspots-mini` — `HotspotsMini`
+
+Top-5 hotspots tile.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `hotspots` | `Hotspot[]` (`@repowise/types/git`) | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/language-donut` — `LanguageDonut`
+
+Top-6 languages-by-file-count donut with grouped "other" bucket.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `distribution` | `Record<string, number>` | yes |
+
+### `dashboard/module-minimap` — `ModuleMinimap`
+
+Force-directed module graph using `d3-force`. Doc-coverage colours
+the nodes. The simulation runs synchronously for small graphs (≤150
+ticks) and re-renders once the layout converges.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `nodes` | `ModuleNode[]` (`@repowise/types/graph`) | yes |
+| `edges` | `ModuleEdge[]` (`@repowise/types/graph`) | yes |
+| `repoId` | `string` | yes |
+
+### `dashboard/ownership-treemap` — `OwnershipTreemap`
+
+`d3-hierarchy` treemap colouring rectangles by primary owner; silos
+render at lower opacity. Distinct from `git/ownership-treemap` —
+this variant is the dashboard tile (Card-wrapped, fixed height,
+legend below).
+
+| Prop | Type | Required |
+|------|------|----------|
+| `entries` | `OwnershipEntry[]` (`@repowise/types/git`) | yes |
+
+---
+
 ## `chat/*` — Conversation rendering primitives
 
 The chat UI types are sourced from `@repowise/types/chat` —

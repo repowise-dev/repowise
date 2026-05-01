@@ -5,11 +5,24 @@ import {
   FileWarning,
   Lightbulb,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { Badge } from "@repowise/ui/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Badge } from "../ui/badge";
 
-import type { AttentionItem } from "@/lib/utils/health-score";
-export type { AttentionItem };
+export type AttentionItemType =
+  | "stale_decision"
+  | "knowledge_silo"
+  | "ungoverned_hotspot"
+  | "dead_code"
+  | "proposed_decision";
+
+export interface AttentionItem {
+  id: string;
+  type: AttentionItemType;
+  title: string;
+  description: string;
+  severity: "high" | "medium" | "low";
+  href?: string;
+}
 
 const ICON_MAP = {
   stale_decision: AlertTriangle,
@@ -36,6 +49,22 @@ const TYPE_LABELS = {
 interface AttentionPanelProps {
   items: AttentionItem[];
   repoId: string;
+}
+
+function getDefaultHref(item: AttentionItem, repoId: string): string {
+  switch (item.type) {
+    case "stale_decision":
+    case "proposed_decision":
+      return `/repos/${repoId}/decisions`;
+    case "knowledge_silo":
+      return `/repos/${repoId}/ownership`;
+    case "ungoverned_hotspot":
+      return `/repos/${repoId}/hotspots`;
+    case "dead_code":
+      return `/repos/${repoId}/dead-code`;
+    default:
+      return `/repos/${repoId}`;
+  }
 }
 
 export function AttentionPanel({ items, repoId }: AttentionPanelProps) {
@@ -104,20 +133,3 @@ export function AttentionPanel({ items, repoId }: AttentionPanelProps) {
     </Card>
   );
 }
-
-function getDefaultHref(item: AttentionItem, repoId: string): string {
-  switch (item.type) {
-    case "stale_decision":
-    case "proposed_decision":
-      return `/repos/${repoId}/decisions`;
-    case "knowledge_silo":
-      return `/repos/${repoId}/ownership`;
-    case "ungoverned_hotspot":
-      return `/repos/${repoId}/hotspots`;
-    case "dead_code":
-      return `/repos/${repoId}/dead-code`;
-    default:
-      return `/repos/${repoId}`;
-  }
-}
-

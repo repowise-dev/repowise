@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { ChevronRight, ChevronDown } from "lucide-react";
-import { Badge } from "@repowise/ui/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { cn } from "@/lib/utils/cn";
-import type { ExecutionFlowEntry } from "@/lib/api/types";
+import { Badge } from "../ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { cn } from "../lib/cn";
+import type { ExecutionFlowEntry } from "@repowise/types/graph";
 
 interface ExecutionFlowsPanelProps {
   flows: ExecutionFlowEntry[];
@@ -84,7 +84,7 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
   );
 }
 
-export function ExecutionFlowsPanel({ flows, repoId }: ExecutionFlowsPanelProps) {
+export function ExecutionFlowsPanel({ flows, repoId: _repoId }: ExecutionFlowsPanelProps) {
   if (flows.length === 0) return null;
 
   return (

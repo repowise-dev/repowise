@@ -1,12 +1,17 @@
-import Link from "next/link";
 import { Flame } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import type { HotspotResponse } from "@/lib/api/types";
-import { truncatePath } from "@repowise/ui/lib/format";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { truncatePath } from "../lib/format";
+import type { Hotspot } from "@repowise/types/git";
 
 interface HotspotsMiniProps {
-  hotspots: HotspotResponse[];
+  hotspots: Hotspot[];
   repoId: string;
+}
+
+function getChurnColor(percentile: number): string {
+  if (percentile >= 95) return "var(--color-error)";
+  if (percentile >= 80) return "var(--color-warning)";
+  return "var(--color-accent-primary)";
 }
 
 export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
@@ -36,19 +41,18 @@ export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
             <Flame className="h-4 w-4 text-red-500" />
             Top Hotspots
           </span>
-          <Link
+          <a
             href={`/repos/${repoId}/hotspots`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             View all
-          </Link>
+          </a>
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
         <div className="space-y-2">
           {top.map((h) => (
             <div key={h.file_path} className="flex items-center gap-3">
-              {/* Churn bar */}
               <div className="w-16 shrink-0">
                 <div className="h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden">
                   <div
@@ -60,13 +64,11 @@ export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
                   />
                 </div>
               </div>
-              {/* File info */}
               <div className="min-w-0 flex-1">
                 <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
                   {truncatePath(h.file_path, 40)}
                 </p>
               </div>
-              {/* Stats */}
               <div className="flex items-center gap-2 shrink-0 text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
                 <span>{h.commit_count_90d}c/90d</span>
                 <span className="text-[var(--color-text-secondary)]">
@@ -79,10 +81,4 @@ export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
       </CardContent>
     </Card>
   );
-}
-
-function getChurnColor(percentile: number): string {
-  if (percentile >= 95) return "var(--color-error)";
-  if (percentile >= 80) return "var(--color-warning)";
-  return "var(--color-accent-primary)";
 }
