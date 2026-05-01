@@ -18,7 +18,8 @@
     "./workspace": "./src/workspace.ts",
     "./blast-radius": "./src/blast-radius.ts",
     "./jobs": "./src/jobs.ts",
-    "./settings": "./src/settings.ts"
+    "./settings": "./src/settings.ts",
+    "./security": "./src/security.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
