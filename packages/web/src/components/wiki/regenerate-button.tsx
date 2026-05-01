@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@repowise-dev/ui/ui/dialog";
-import { GenerationProgress } from "@/components/jobs/generation-progress";
+import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
 
 interface Props {
   pageId: string;

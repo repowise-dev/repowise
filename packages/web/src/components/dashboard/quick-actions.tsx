@@ -15,7 +15,7 @@ import {
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
 import { listJobs } from "@/lib/api/jobs";
 import { analyzeDeadCode } from "@/lib/api/dead-code";
-import { GenerationProgress } from "@/components/jobs/generation-progress";
+import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
 import { formatNumber, formatCost, formatRelativeTime } from "@repowise-dev/ui/lib/format";
 
 // Weighted average per-page token heuristics from cost_estimator.py _TOKEN_HEURISTICS

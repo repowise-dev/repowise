@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Code2 } from "lucide-react";
-import { SymbolTable } from "@/components/symbols/symbol-table";
+import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-table-wrapper";
 
 export const metadata: Metadata = { title: "Symbols" };
 

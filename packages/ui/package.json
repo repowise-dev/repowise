@@ -20,6 +20,7 @@
     "./docs": "./src/docs/index.ts",
     "./docs/*": "./src/docs/*.tsx",
     "./symbols": "./src/symbols/index.ts",
+    "./symbols/*": "./src/symbols/*.tsx",
     "./coverage": "./src/coverage/index.ts",
     "./coverage/*": "./src/coverage/*.tsx",
     "./wiki": "./src/wiki/index.ts",

@@ -1,25 +1,29 @@
 "use client";
 
+import type { ReactNode } from "react";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from "@repowise-dev/ui/ui/dialog";
-import { Badge } from "@repowise-dev/ui/ui/badge";
-import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
-import { Separator } from "@repowise-dev/ui/ui/separator";
-import { SymbolGraphPanel } from "./symbol-graph-panel";
-import type { SymbolResponse } from "@/lib/api/types";
+} from "../ui/dialog.js";
+import { Badge } from "../ui/badge.js";
+import { ScrollArea } from "../ui/scroll-area.js";
+import { Separator } from "../ui/separator.js";
+import type { CodeSymbol } from "@repowise-dev/types/symbols";
 
 interface SymbolDrawerProps {
-  symbol: SymbolResponse | null;
-  repoId: string;
+  symbol: CodeSymbol | null;
   onClose: () => void;
+  /**
+   * Right-column graph intelligence slot. Wrappers pass a data-coupled
+   * `<SymbolGraphPanelWrapper>` here; pass `null` to hide the column.
+   */
+  graphPanel?: ReactNode;
 }
 
-export function SymbolDrawer({ symbol, repoId, onClose }: SymbolDrawerProps) {
+export function SymbolDrawer({ symbol, onClose, graphPanel }: SymbolDrawerProps) {
   return (
     <Dialog open={symbol !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-[90vw] w-[900px] max-h-[85vh] overflow-hidden p-0">
@@ -48,7 +52,6 @@ export function SymbolDrawer({ symbol, repoId, onClose }: SymbolDrawerProps) {
             <Separator />
 
             <div className="flex min-h-0 flex-1 overflow-hidden" style={{ maxHeight: "calc(85vh - 120px)" }}>
-              {/* Left column â€” existing content */}
               <ScrollArea className="flex-1 min-w-0">
                 <div className="px-6 py-4 space-y-3">
                   <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
@@ -76,10 +79,11 @@ export function SymbolDrawer({ symbol, repoId, onClose }: SymbolDrawerProps) {
                 </div>
               </ScrollArea>
 
-              {/* Right column â€” graph intelligence */}
-              <div className="hidden md:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-[280px] shrink-0 overflow-hidden">
-                <SymbolGraphPanel repoId={repoId} symbol={symbol} />
-              </div>
+              {graphPanel && (
+                <div className="hidden md:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-[280px] shrink-0 overflow-hidden">
+                  {graphPanel}
+                </div>
+              )}
             </div>
           </>
         )}

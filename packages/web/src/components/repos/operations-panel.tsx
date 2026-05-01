@@ -14,7 +14,7 @@ import {
   DialogFooter,
 } from "@repowise-dev/ui/ui/dialog";
 import { RunConfigForm, type RunConfig } from "./run-config-form";
-import { GenerationProgress } from "@/components/jobs/generation-progress";
+import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
 
 interface Props {
   repoId: string;

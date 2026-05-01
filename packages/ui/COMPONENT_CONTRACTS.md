@@ -287,7 +287,7 @@ files list.
 
 ---
 
-## `jobs/job-log` â€” `JobLog`
+## `jobs/job-log` — `JobLog`
 
 Auto-scrolling fixed-height log viewer for streaming job progress
 entries.
@@ -296,6 +296,70 @@ entries.
 |------|------|----------|-------|
 | `entries` | `Array<{ text: string; level?: number }>` | yes | Caller accumulates from SSE / poll. |
 | `maxLines` | `number` | no | Tail length; default `6`. |
+
+## `jobs/generation-progress` — `GenerationProgress`
+
+Status header, progress bar, live cost, summary tiles, and embedded
+`JobLog` for a documentation-generation job. Presentational — the
+caller polls / streams the job and forwards the snapshot via props.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `job` | `GenerationProgressJob \| undefined` | yes | Local subset of the engine `Job` shape (id, status, total/completed_pages, current_level, started_at, error_message, config). |
+| `log` | `Array<{ text: string }>` | yes | Caller accumulates SSE log events. |
+| `elapsed` | `number` | yes | Wall-clock elapsed in ms. Caller owns the interval. |
+| `actualCost` | `number \| null` | yes | Live USD cost; `null` until the first cost-bearing event. |
+| `stuckPending` | `boolean` | yes | Caller decides — typically `pending && !started_at && elapsed > threshold`. |
+| `cancelling` | `boolean` | yes | Disables the Cancel button while in flight. |
+| `onCancel` | `() => void` | yes | Caller wires to the cancel mutation; toasts/error handling live there. |
+
+---
+
+## `symbols/symbol-graph-panel` — `SymbolGraphPanel`
+
+Right-column graph-intelligence panel for a focused symbol: pagerank /
+betweenness percentile bars, in/out degree, community label, optional
+entry-point score, callers/callees, and heritage (extends/implements).
+Presentational.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `metrics` | `GraphMetrics \| undefined` (`@repowise-dev/types/graph`) | yes | |
+| `metricsLoading` | `boolean` | yes | |
+| `callData` | `CallersCallees \| undefined` (`@repowise-dev/types/graph`) | yes | |
+| `callsLoading` | `boolean` | yes | |
+| `heritageData` | `CallersCallees \| undefined` | no | When omitted or empty, the heritage section is hidden. |
+
+## `symbols/symbol-drawer` — `SymbolDrawer`
+
+Modal dialog over a focused symbol: signature, docstring, parent, plus
+an optional right-column slot for the graph-intelligence panel.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `symbol` | `CodeSymbol \| null` (`@repowise-dev/types/symbols`) | yes | `null` closes the dialog. |
+| `onClose` | `() => void` | yes | |
+| `graphPanel` | `ReactNode` | no | Caller passes a data-coupled `<SymbolGraphPanelWrapper>`; omit to hide the column. |
+
+## `symbols/symbol-table` — `SymbolTable`, `SymbolTableProps`, `SortCol`, `SortDir`
+
+Filterable, sortable table of symbols with importance bars and a
+configurable drawer slot. Server-driven filters (`q`, `kind`,
+`language`) are controlled props because they affect fetch keys; sort
+state is UI-local.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `items` | `CodeSymbol[]` | yes | Caller fetches; flattened across pages. |
+| `importanceScores` | `Map<string, number>` | yes | Normalised 0–1, indexed by `symbol.id`. Caller computes from pagerank × log(complexity). |
+| `isLoading` / `isValidating` | `boolean` | yes | First-load skeleton vs. load-more spinner. |
+| `hasMore` | `boolean` | yes | Renders the Load-more button. |
+| `q` / `onQChange` | `string` / `(v) => void` | yes | Search query. Caller debounces before driving the fetch. |
+| `kind` / `onKindChange` | `string` / `(v) => void` | yes | Filter union; `"all"` is the off state. |
+| `language` / `onLanguageChange` | `string` / `(v) => void` | yes | Same as kind. |
+| `onLoadMore` | `() => void` | yes | Wired to the SWR `setSize` increment. |
+| `onSelect` | `(sym: CodeSymbol) => void` | yes | Caller drives the drawer state. |
+| `drawer` | `ReactNode` | no | Caller renders `<SymbolDrawer>` with its own data wiring. |
 
 ---
 

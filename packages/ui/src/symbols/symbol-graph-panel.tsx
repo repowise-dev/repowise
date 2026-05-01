@@ -1,17 +1,23 @@
 "use client";
 
-import { Badge } from "@repowise-dev/ui/ui/badge";
-import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
-import { Separator } from "@repowise-dev/ui/ui/separator";
-import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
-import { truncatePath } from "@repowise-dev/ui/lib/format";
-import { cn } from "@/lib/utils/cn";
-import type { SymbolResponse, CallerCalleeEntry } from "@/lib/api/types";
+import { Badge } from "../ui/badge.js";
+import { Skeleton } from "../ui/skeleton.js";
+import { ScrollArea } from "../ui/scroll-area.js";
+import { Separator } from "../ui/separator.js";
+import { truncatePath } from "../lib/format.js";
+import { cn } from "../lib/cn.js";
+import type {
+  CallerCalleeEntry,
+  CallersCallees,
+  GraphMetrics,
+} from "@repowise-dev/types/graph";
 
 interface SymbolGraphPanelProps {
-  repoId: string;
-  symbol: SymbolResponse;
+  metrics: GraphMetrics | undefined;
+  metricsLoading: boolean;
+  callData: CallersCallees | undefined;
+  callsLoading: boolean;
+  heritageData?: CallersCallees | undefined;
 }
 
 function PercentileBadge({ value, label }: { value: number; label: string }) {
@@ -61,7 +67,6 @@ function CallerCalleeList({
             key={item.symbol_id}
             className="flex items-start gap-1.5 py-1 px-1.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
           >
-            {/* Confidence dot */}
             <span
               className={cn(
                 "mt-1.5 w-1.5 h-1.5 rounded-full shrink-0",
@@ -97,22 +102,19 @@ function CallerCalleeList({
   );
 }
 
-export function SymbolGraphPanel({ repoId, symbol }: SymbolGraphPanelProps) {
-  const nodeId = `${symbol.file_path}::${symbol.name}`;
-
-  const { metrics, isLoading: metricsLoading } = useGraphMetrics(repoId, nodeId);
-  const { data: callData, isLoading: callsLoading } = useCallersCallees(repoId, nodeId);
-  const { data: heritageData } = useCallersCallees(repoId, nodeId, {
-    edge_types: "extends,implements",
-  });
-
+export function SymbolGraphPanel({
+  metrics,
+  metricsLoading,
+  callData,
+  callsLoading,
+  heritageData,
+}: SymbolGraphPanelProps) {
   const hasHeritage =
     heritageData && (heritageData.caller_count > 0 || heritageData.callee_count > 0);
 
   return (
     <ScrollArea className="h-full">
       <div className="space-y-4 p-1">
-        {/* Graph Metrics */}
         <div>
           <p className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
             Graph Metrics
@@ -127,14 +129,12 @@ export function SymbolGraphPanel({ repoId, symbol }: SymbolGraphPanelProps) {
             <div className="space-y-1.5">
               <PercentileBadge value={metrics.pagerank_percentile} label="PageRank" />
               <PercentileBadge value={metrics.betweenness_percentile} label="Betweenness" />
-
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] text-[var(--color-text-tertiary)]">Degree</span>
                 <span className="text-[11px] font-mono text-[var(--color-text-secondary)]">
                   {metrics.in_degree} in &middot; {metrics.out_degree} out
                 </span>
               </div>
-
               {metrics.community_label && (
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-[var(--color-text-tertiary)]">Community</span>
@@ -143,7 +143,6 @@ export function SymbolGraphPanel({ repoId, symbol }: SymbolGraphPanelProps) {
                   </Badge>
                 </div>
               )}
-
               {metrics.entry_point_score != null && metrics.entry_point_score > 0 && (
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-[var(--color-text-tertiary)]">Entry Point</span>
@@ -170,7 +169,6 @@ export function SymbolGraphPanel({ repoId, symbol }: SymbolGraphPanelProps) {
 
         <Separator />
 
-        {/* Callers & Callees */}
         <div>
           {callsLoading ? (
             <div className="space-y-2">
@@ -186,18 +184,17 @@ export function SymbolGraphPanel({ repoId, symbol }: SymbolGraphPanelProps) {
           ) : null}
         </div>
 
-        {/* Heritage */}
-        {hasHeritage && (
+        {hasHeritage && heritageData && (
           <>
             <Separator />
             <div>
               <p className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-1.5">
                 Heritage
               </p>
-              {heritageData!.callers.length > 0 && (
+              {heritageData.callers.length > 0 && (
                 <div className="mb-2">
                   <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">Extended/Implemented by:</p>
-                  {heritageData!.callers.map((c) => (
+                  {heritageData.callers.map((c) => (
                     <p key={c.symbol_id} className="text-[11px] font-mono text-[var(--color-text-primary)] truncate pl-2">
                       {c.name}
                       <span className="text-[var(--color-text-tertiary)] ml-1">({c.edge_type})</span>
@@ -205,10 +202,10 @@ export function SymbolGraphPanel({ repoId, symbol }: SymbolGraphPanelProps) {
                   ))}
                 </div>
               )}
-              {heritageData!.callees.length > 0 && (
+              {heritageData.callees.length > 0 && (
                 <div>
                   <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1">Extends/Implements:</p>
-                  {heritageData!.callees.map((c) => (
+                  {heritageData.callees.map((c) => (
                     <p key={c.symbol_id} className="text-[11px] font-mono text-[var(--color-text-primary)] truncate pl-2">
                       {c.name}
                       <span className="text-[var(--color-text-tertiary)] ml-1">({c.edge_type})</span>
