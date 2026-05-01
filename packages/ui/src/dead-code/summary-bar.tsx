@@ -1,8 +1,9 @@
-import { formatNumber } from "@repowise/ui/lib/format";
-import type { DeadCodeSummaryResponse } from "@/lib/api/types";
+import { formatNumber } from "../lib/format";
+import type { DeadCodeSummary } from "@repowise/types/dead-code";
 
-interface SummaryBarProps {
-  summary: DeadCodeSummaryResponse;
+export interface SummaryBarProps {
+  /** Summary rollup; caller fetches. */
+  summary: DeadCodeSummary;
 }
 
 export function SummaryBar({ summary }: SummaryBarProps) {

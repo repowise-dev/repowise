@@ -117,6 +117,17 @@ Filter unions:
 
 ---
 
+## `dead-code/summary-bar` — `SummaryBar`
+
+Four-tile summary header for a dead-code report: total findings,
+deletable lines, breakdown by kind, breakdown by confidence band.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `summary` | `DeadCodeSummary` (`@repowise/types/dead-code`) | yes | Caller fetches the rollup. |
+
+---
+
 ## `coverage/freshness-table` — `FreshnessTable`
 
 Filterable table of `DocPage` rows with per-row regenerate action.

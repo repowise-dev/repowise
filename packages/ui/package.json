@@ -12,6 +12,7 @@
     "./graph": "./src/graph/index.ts",
     "./git": "./src/git/index.ts",
     "./dead-code": "./src/dead-code/index.ts",
+    "./dead-code/*": "./src/dead-code/*.tsx",
     "./decisions": "./src/decisions/index.ts",
     "./decisions/*": "./src/decisions/*.tsx",
     "./docs": "./src/docs/index.ts",
