@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { Settings } from "lucide-react";
 import { getRepo } from "@/lib/api/repos";
 import { getCoordinatorHealth } from "@/lib/api/health";
-import { RepoSettingsForm } from "@/components/repos/repo-settings-form";
+import { RepoSettingsFormWrapper as RepoSettingsForm } from "@/components/repos/repo-settings-form-wrapper";
 import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-panel";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
 import { Separator } from "@repowise-dev/ui/ui/separator";

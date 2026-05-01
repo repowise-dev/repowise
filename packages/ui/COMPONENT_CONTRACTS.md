@@ -854,3 +854,68 @@ Composes the full results stack: gauge + summary + the five tables.
 | Prop | Type | Required |
 |------|------|----------|
 | `result` | `BlastRadiusResponse` | yes |
+
+## Phase 2C — dashboard wrappers + settings shells
+
+### `dashboard/active-job-banner` — `ActiveJobBanner`
+
+Slim status strip for the latest indexing/generation job. Wrapper owns
+SWR polling + freshness window; the shell is given a snapshot.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `job` | `Job \| null` | yes |
+| `detailsHref` | `string` | no |
+
+`Job` is canonical (`@repowise-dev/types/jobs`). When `job` is `null`
+or `pending`, the banner renders nothing — the wrapper is responsible
+for filtering out terminal states older than its freshness window.
+
+### `dashboard/quick-actions` — `QuickActions`
+
+Three-button action bar (sync / full-resync / dead-code) with confirm
+dialog and inline cost estimate. Pure presentational — mutations are a
+callback bag.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `onAction` | `(key: QuickActionKey) => Promise<void> \| void` | yes |
+| `actions` | `QuickActionDef[]` | no (defaults to the three baked-in) |
+| `loadingKey` | `QuickActionKey \| null` | no |
+| `lastSyncAt` | `string \| null` | no |
+| `lastResyncAt` | `string \| null` | no |
+| `pageCount` | `number` | no |
+| `modelName` | `string` | no |
+| `activeJobSlot` | `ReactNode` | no — when set, replaces the buttons |
+
+### `dashboard/community-summary-grid` — `CommunitySummaryGrid`
+
+Architecture-community list with expandable detail panel. The wrapper
+owns `useCommunityDetail`; the shell receives resolved details keyed by
+`community_id`.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `communities` | `CommunitySummaryItem[]` | yes |
+| `details` | `Record<number, CommunityDetail \| null>` | no |
+| `loadingDetailId` | `number \| null` | no |
+| `onExpand` | `(communityId: number) => void` | no |
+
+`CommunitySummaryItem` and `CommunityDetail` are canonical types in
+`@repowise-dev/types/graph`.
+
+### `settings/general-form` — `GeneralForm`
+
+Universal repo-settings editor (name, default branch, exclude
+patterns). Read-only when `onSubmit` is omitted — used by hosted, where
+multi-tenant settings persistence is deferred to Phase 5 RBAC.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `value` | `RepoSettingsValue` | yes |
+| `onSubmit` | `(next: RepoSettingsValue) => Promise<void>` | no |
+| `localPath` | `string` | no |
+| `remoteUrl` | `string` | no |
+| `disabledHint` | `string` | no |
+
+`RepoSettingsValue` lives in `@repowise-dev/types/settings`.
