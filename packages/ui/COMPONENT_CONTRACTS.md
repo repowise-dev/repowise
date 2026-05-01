@@ -128,6 +128,27 @@ deletable lines, breakdown by kind, breakdown by confidence band.
 
 ---
 
+## `docs/docs-tree` — `DocsTree`
+
+Filterable, collapsible directory tree of `DocPage` entries. Special
+pages (`repo_overview`, `architecture_diagram`) appear at the top
+level; module pages become directories with their page attached;
+file pages nest under their parent directory.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `pages` | `DocPage[]` (`@repowise/types/docs`) | yes | Caller fetches; tree builds the directory hierarchy each render. |
+| `selectedPageId` | `string \| null` | yes | Currently-active page id; the matching node is highlighted. |
+| `onSelectPage` | `(page: DocPage) => void` | yes | Fires on leaf-page or module-page click. |
+| `className` | `string` | no | Forwarded to the outer container. |
+
+Behaviour: built-in search, type filter (`all` / `file_page` /
+`module_page` / `symbol_spotlight` / `repo_overview`), and freshness
+filter (`all` / `fresh` / `stale` / `outdated`). Filter state is
+UI-local — there's no fetch coupling.
+
+---
+
 ## `coverage/freshness-table` — `FreshnessTable`
 
 Filterable table of `DocPage` rows with per-row regenerate action.

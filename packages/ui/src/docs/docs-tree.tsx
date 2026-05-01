@@ -13,10 +13,9 @@ import {
   Search,
   Filter,
 } from "lucide-react";
-import { cn } from "@/lib/utils/cn";
-import { statusBadgeClasses } from "@repowise/ui/lib/confidence";
-import type { PageResponse } from "@/lib/api/types";
-import type { FreshnessStatus } from "@repowise/ui/lib/confidence";
+import { cn } from "../lib/cn";
+import { statusBadgeClasses, type FreshnessStatus } from "../lib/confidence";
+import type { DocPage } from "@repowise/types/docs";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,14 +25,14 @@ interface TreeNode {
   name: string;
   path: string;
   isDir: boolean;
-  page?: PageResponse;
+  page?: DocPage;
   children: TreeNode[];
 }
 
 interface DocsTreeProps {
-  pages: PageResponse[];
+  pages: DocPage[];
   selectedPageId: string | null;
-  onSelectPage: (page: PageResponse) => void;
+  onSelectPage: (page: DocPage) => void;
   className?: string;
 }
 
@@ -50,19 +49,19 @@ const PAGE_TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>
 
 function PageIcon({ pageType, className }: { pageType: string; className?: string }) {
   const Icon = PAGE_TYPE_ICON[pageType] ?? FileText;
-  return <Icon className={className} />;
+  return <Icon {...(className ? { className } : {})} />;
 }
 
 // ---------------------------------------------------------------------------
 // Build tree from flat page list
 // ---------------------------------------------------------------------------
 
-function buildTree(pages: PageResponse[]): TreeNode[] {
+function buildTree(pages: DocPage[]): TreeNode[] {
   const root: TreeNode[] = [];
 
   // Separate special pages (overview, architecture) from path-based pages
-  const specialPages: PageResponse[] = [];
-  const pathPages: PageResponse[] = [];
+  const specialPages: DocPage[] = [];
+  const pathPages: DocPage[] = [];
 
   for (const page of pages) {
     if (page.page_type === "repo_overview" || page.page_type === "architecture_diagram") {
@@ -90,7 +89,7 @@ function buildTree(pages: PageResponse[]): TreeNode[] {
     if (dirMap.has(dirPath)) return dirMap.get(dirPath)!;
 
     const parts = dirPath.split("/");
-    const name = parts[parts.length - 1];
+    const name = parts[parts.length - 1] ?? dirPath;
     const node: TreeNode = {
       name,
       path: dirPath,
@@ -127,7 +126,7 @@ function buildTree(pages: PageResponse[]): TreeNode[] {
     } else {
       // File pages go into their parent directory
       const parts = targetPath.split("/");
-      const fileName = parts[parts.length - 1];
+      const fileName = parts[parts.length - 1] ?? targetPath;
 
       const fileNode: TreeNode = {
         name: fileName,
@@ -178,7 +177,7 @@ type TypeFilter = "all" | "file_page" | "module_page" | "symbol_spotlight" | "re
 type FreshnessFilter = "all" | "fresh" | "stale" | "outdated";
 
 function matchesFilters(
-  page: PageResponse | undefined,
+  page: DocPage | undefined,
   search: string,
   typeFilter: TypeFilter,
   freshnessFilter: FreshnessFilter,
@@ -238,7 +237,7 @@ function TreeItem({
   selectedPageId: string | null;
   expandedDirs: Set<string>;
   toggleDir: (path: string) => void;
-  onSelectPage: (page: PageResponse) => void;
+  onSelectPage: (page: DocPage) => void;
 }) {
   const isExpanded = expandedDirs.has(node.path);
   const isSelected = node.page && node.page.id === selectedPageId;
@@ -349,7 +348,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
     const dirs = new Set<string>();
     for (const page of pages) {
       const parts = page.target_path.split("/");
-      if (parts.length > 1) dirs.add(parts[0]);
+      if (parts.length > 1 && parts[0]) dirs.add(parts[0]);
     }
     return dirs;
   });
