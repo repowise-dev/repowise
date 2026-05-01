@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 
 interface Heading {
   id: string;
@@ -14,7 +14,7 @@ function extractHeadings(content: string): Heading[] {
   const headings: Heading[] = [];
   for (const line of lines) {
     const match = line.match(/^(#{1,3})\s+(.+)$/);
-    if (match) {
+    if (match && match[1] && match[2]) {
       const text = match[2].trim();
       const id = text
         .toLowerCase()

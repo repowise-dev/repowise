@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 
-interface Props {
+interface MermaidDiagramProps {
   chart: string;
 }
 
-export function MermaidDiagram({ chart }: Props) {
+export function MermaidDiagram({ chart }: MermaidDiagramProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -14,7 +14,6 @@ export function MermaidDiagram({ chart }: Props) {
     if (!ref.current) return;
     const el = ref.current;
 
-    // Dynamic import avoids SSR issues with mermaid
     import("mermaid").then(({ default: mermaid }) => {
       mermaid.initialize({
         startOnLoad: false,
@@ -32,8 +31,6 @@ export function MermaidDiagram({ chart }: Props) {
         .render(id, chart)
         .then(({ svg }) => {
           el.innerHTML = svg;
-          // Make the rendered SVG fluid so it reflows on narrow viewports
-          // instead of forcing horizontal scroll.
           const svgEl = el.querySelector("svg");
           if (svgEl) {
             svgEl.removeAttribute("width");

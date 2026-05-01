@@ -296,3 +296,69 @@ entries.
 |------|------|----------|-------|
 | `entries` | `Array<{ text: string; level?: number }>` | yes | Caller accumulates from SSE / poll. |
 | `maxLines` | `number` | no | Tail length; default `6`. |
+
+---
+
+## `wiki/code-block` — `CodeBlock`
+
+Server-rendered fenced code block. The caller passes pre-highlighted
+HTML (e.g. from Shiki) plus the raw code for copy-to-clipboard.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `code` | `string` | yes | Raw text used for the copy action. |
+| `language` | `string` | no | Shown in the header bar. |
+| `html` | `string` | yes | Trusted HTML, set via `dangerouslySetInnerHTML`. |
+
+## `wiki/confidence-badge` — `ConfidenceBadge`
+
+Coloured pill showing freshness status (`fresh` / `stale` / `outdated`).
+Computes status from `score` unless `status` is supplied. When stale
+with `staleSince`, wraps in a tooltip exposing the date and confidence.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `score` | `number` (0–1) | yes |
+| `status` | `string` | no |
+| `showScore` | `boolean` | no |
+| `staleSince` | `string \| null` | no |
+| `className` | `string` | no |
+
+## `wiki/git-history-panel` — `GitHistoryPanel`
+
+Sidebar panel summarising file lifecycle, commit categories, top
+authors with bars, co-change partners, and recent commits.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `git` | `GitMetadata` (`@repowise/types/git`) | yes |
+
+## `wiki/mermaid-diagram` — `MermaidDiagram`
+
+Client-side mermaid renderer with dynamic import to avoid SSR. Uses a
+dark theme matched to the design tokens. Failures render an inline
+error card.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `chart` | `string` | yes |
+
+## `wiki/table-of-contents` — `TableOfContents`
+
+Extracts `#`/`##`/`###` headings from a markdown string and renders an
+anchor list. An `IntersectionObserver` highlights the active heading.
+Returns `null` when fewer than two headings are found.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `content` | `string` | yes |
+
+## `wiki/wiki-markdown` — `WikiMarkdown`
+
+Client-side markdown renderer (`react-markdown` + `remark-gfm`) with
+slugged heading anchors, copy-on-hover code blocks, and inline
+`MermaidDiagram` for `\`\`\`mermaid` fences.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `content` | `string` | yes |

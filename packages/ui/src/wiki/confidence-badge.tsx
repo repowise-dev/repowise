@@ -1,15 +1,15 @@
 "use client";
 
 import * as React from "react";
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 import {
   scoreToStatus,
   statusBadgeClasses,
   statusLabel,
   type FreshnessStatus,
-} from "@repowise/ui/lib/confidence";
-import { formatConfidence } from "@repowise/ui/lib/format";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise/ui/ui/tooltip";
+} from "../lib/confidence";
+import { formatConfidence } from "../lib/format";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
 interface ConfidenceBadgeProps {
   score: number;

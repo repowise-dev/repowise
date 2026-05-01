@@ -2,16 +2,16 @@
 
 import { useState } from "react";
 import { Copy, Check } from "lucide-react";
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 
-interface Props {
+interface CodeBlockProps {
   code: string;
   language?: string;
   /** Pre-rendered HTML from Shiki — passed through as dangerouslySetInnerHTML */
   html: string;
 }
 
-export function CodeBlock({ code, language, html }: Props) {
+export function CodeBlock({ code, language, html }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -22,7 +22,6 @@ export function CodeBlock({ code, language, html }: Props) {
 
   return (
     <div className="group relative my-4 rounded-lg border border-[var(--color-border-default)] overflow-hidden">
-      {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-1.5 bg-[var(--color-bg-elevated)] border-b border-[var(--color-border-default)]">
         {language && (
           <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
@@ -52,7 +51,6 @@ export function CodeBlock({ code, language, html }: Props) {
         </button>
       </div>
 
-      {/* Shiki-rendered HTML */}
       <div
         className="overflow-x-auto text-sm [&>pre]:p-4 [&>pre]:m-0 [&>pre]:bg-transparent!"
         dangerouslySetInnerHTML={{ __html: html }}

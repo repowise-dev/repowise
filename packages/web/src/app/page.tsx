@@ -18,7 +18,7 @@ import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
 import { StatCard } from "@repowise/ui/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { Badge } from "@repowise/ui/ui/badge";
-import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
+import { ConfidenceBadge } from "@repowise/ui/wiki/confidence-badge";
 import { EmptyState } from "@repowise/ui/shared/empty-state";
 import { formatRelativeTime, formatNumber } from "@repowise/ui/lib/format";
 import { scoreToStatus } from "@repowise/ui/lib/confidence";

@@ -20,9 +20,9 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
-import { WikiMarkdown } from "@/components/wiki/wiki-markdown";
+import { WikiMarkdown } from "@repowise/ui/wiki/wiki-markdown";
 import { VersionHistory } from "@/components/wiki/version-history";
-import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
+import { ConfidenceBadge } from "@repowise/ui/wiki/confidence-badge";
 import { Button } from "@repowise/ui/ui/button";
 import { Badge } from "@repowise/ui/ui/badge";
 import { ScrollArea } from "@repowise/ui/ui/scroll-area";

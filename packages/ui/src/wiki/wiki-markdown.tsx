@@ -6,15 +6,7 @@ import type { Components } from "react-markdown";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { useState } from "react";
 import { Copy, Check } from "lucide-react";
-import { cn } from "@/lib/utils/cn";
-
-/**
- * Client-side wiki markdown renderer with Mermaid diagram support and
- * heading anchor IDs (for ToC scroll-to-heading).
- *
- * This replaces ChatMarkdown in the docs explorer so that Mermaid diagrams
- * render inline and ToC links work correctly.
- */
+import { cn } from "../lib/cn";
 
 function slugify(text: string): string {
   return text

@@ -1,23 +1,25 @@
 import { GitCommit, User } from "lucide-react";
-import { Badge } from "@repowise/ui/ui/badge";
-import { CommitCategorySparkline } from "@repowise/ui/git/commit-category-sparkline";
-import { CoChangeList } from "@repowise/ui/git/co-change-list";
-import { formatRelativeTime, formatDate, formatAgeDays } from "@repowise/ui/lib/format";
-import type { GitMetadataResponse } from "@/lib/api/types";
+import { Badge } from "../ui/badge";
+import { CommitCategorySparkline } from "../git/commit-category-sparkline";
+import { CoChangeList } from "../git/co-change-list";
+import { formatRelativeTime, formatDate, formatAgeDays } from "../lib/format";
+import type { GitMetadata } from "@repowise/types/git";
 
 interface GitHistoryPanelProps {
-  git: GitMetadataResponse;
+  git: GitMetadata;
 }
 
 const AUTHOR_COLORS = [
   "bg-blue-500", "bg-purple-500", "bg-green-500", "bg-yellow-500",
   "bg-pink-500", "bg-indigo-500", "bg-teal-500", "bg-orange-500",
 ];
+const AUTHOR_COLOR_FALLBACK = "bg-gray-500";
 
 const AUTHOR_BAR_COLORS = [
   "#3b82f6", "#a855f7", "#22c55e", "#eab308",
   "#ec4899", "#6366f1", "#14b8a6", "#f97316",
 ];
+const AUTHOR_BAR_FALLBACK = "#6b7280";
 
 function authorColorIndex(name: string): number {
   let hash = 0;
@@ -33,7 +35,7 @@ function AuthorAvatar({ name }: { name: string }) {
     .map((p) => p[0]?.toUpperCase() ?? "")
     .join("");
 
-  const color = AUTHOR_COLORS[authorColorIndex(name)];
+  const color = AUTHOR_COLORS[authorColorIndex(name)] ?? AUTHOR_COLOR_FALLBACK;
 
   return (
     <div
@@ -46,7 +48,7 @@ function AuthorAvatar({ name }: { name: string }) {
   );
 }
 
-function getVelocityLabel(git: GitMetadataResponse): { label: string; color: string } {
+function getVelocityLabel(git: GitMetadata): { label: string; color: string } {
   if (git.commit_count_90d === 0) return { label: "Inactive", color: "text-[var(--color-text-tertiary)]" };
   const rate30 = git.commit_count_30d / 30;
   const rate90 = git.commit_count_90d / 90;
@@ -61,7 +63,6 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
 
   return (
     <div className="space-y-4">
-      {/* File lifecycle */}
       <div>
         <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
           File Status
@@ -115,7 +116,6 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
         </div>
       </div>
 
-      {/* Commit categories sparkline */}
       {git.commit_categories && Object.keys(git.commit_categories).length > 0 && (
         <div>
           <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
@@ -125,7 +125,6 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
         </div>
       )}
 
-      {/* Top authors with bars */}
       {git.top_authors && git.top_authors.length > 0 && (
         <div>
           <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
@@ -148,7 +147,8 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
                     className="h-1 rounded-full transition-all"
                     style={{
                       width: `${Math.min(100, author.pct * 100)}%`,
-                      backgroundColor: AUTHOR_BAR_COLORS[authorColorIndex(author.name)],
+                      backgroundColor:
+                        AUTHOR_BAR_COLORS[authorColorIndex(author.name)] ?? AUTHOR_BAR_FALLBACK,
                     }}
                   />
                 </div>
@@ -158,7 +158,6 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
         </div>
       )}
 
-      {/* Co-change partners */}
       {git.co_change_partners && git.co_change_partners.length > 0 && (
         <div>
           <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
@@ -168,7 +167,6 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
         </div>
       )}
 
-      {/* Recent commits */}
       {commits.length > 0 && (
         <div>
           <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
