@@ -2,10 +2,12 @@
 
 import * as React from "react";
 import Link from "next/link";
-import useSWR from "swr";
-import { Badge } from "@repowise/ui/ui/badge";
-import { listDecisions } from "@/lib/api/decisions";
-import type { DecisionRecordResponse } from "@/lib/api/types";
+import { Badge } from "../ui/badge";
+import type {
+  DecisionRecord,
+  DecisionStatus,
+  DecisionSource,
+} from "@repowise/types/decisions";
 
 const STATUS_VARIANT: Record<string, "default" | "fresh" | "stale" | "outdated" | "outline" | "accent"> = {
   active: "fresh",
@@ -21,34 +23,49 @@ const SOURCE_LABEL: Record<string, string> = {
   cli: "Manual",
 };
 
-interface DecisionsTableProps {
-  repoId: string;
-  initialData?: DecisionRecordResponse[];
+export type DecisionStatusFilter = DecisionStatus | "all";
+export type DecisionSourceFilter = DecisionSource | "all";
+
+export interface DecisionsTableFilters {
+  status: DecisionStatusFilter;
+  source: DecisionSourceFilter;
 }
 
-export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
-  const [statusFilter, setStatusFilter] = React.useState<string>("all");
-  const [sourceFilter, setSourceFilter] = React.useState<string>("all");
+export interface DecisionsTableProps {
+  /** Resolved decision list. Caller fetches; the table renders. */
+  decisions: DecisionRecord[] | undefined;
+  /** Current filter values; the caller controls and reflects them in fetch keys. */
+  filters: DecisionsTableFilters;
+  /** Invoked when the user changes a filter. */
+  onFiltersChange: (filters: DecisionsTableFilters) => void;
+  /** Used to build the "View" link target for each row. */
+  repoId: string;
+  /** Truthy when the most recent fetch errored; an inline retry is rendered. */
+  error?: unknown;
+  /** Truthy while a fetch is in flight; suppresses the empty-state message. */
+  isLoading?: boolean;
+  /** Invoked when the user clicks "Retry" after an error. */
+  onRetry?: () => void;
+}
 
-  const { data: decisions, error, mutate, isLoading } = useSWR(
-    [`/api/repos/${repoId}/decisions`, statusFilter, sourceFilter],
-    () =>
-      listDecisions(repoId, {
-        status: statusFilter !== "all" ? statusFilter : undefined,
-        source: sourceFilter !== "all" ? sourceFilter : undefined,
-        include_proposed: true,
-        limit: 100,
-      }),
-    { fallbackData: initialData },
-  );
-
+export function DecisionsTable({
+  decisions,
+  filters,
+  onFiltersChange,
+  repoId,
+  error,
+  isLoading,
+  onRetry,
+}: DecisionsTableProps) {
   return (
     <div className="space-y-4">
       {/* Filters */}
       <div className="flex flex-wrap gap-3">
         <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
+          value={filters.status}
+          onChange={(e) =>
+            onFiltersChange({ ...filters, status: e.target.value as DecisionStatusFilter })
+          }
           aria-label="Filter by status"
           className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
         >
@@ -59,8 +76,10 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
           <option value="superseded">Superseded</option>
         </select>
         <select
-          value={sourceFilter}
-          onChange={(e) => setSourceFilter(e.target.value)}
+          value={filters.source}
+          onChange={(e) =>
+            onFiltersChange({ ...filters, source: e.target.value as DecisionSourceFilter })
+          }
           aria-label="Filter by source"
           className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
         >
@@ -143,20 +162,22 @@ export function DecisionsTable({ repoId, initialData }: DecisionsTableProps) {
                 </td>
               </tr>
             ))}
-            {!decisions?.length && error && !isLoading && (
+            {!decisions?.length && Boolean(error) && !isLoading && (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-[var(--color-outdated)]">
                   Couldn&apos;t load decisions.{" "}
-                  <button
-                    onClick={() => mutate()}
-                    className="underline text-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)]"
-                  >
-                    Retry
-                  </button>
+                  {onRetry && (
+                    <button
+                      onClick={onRetry}
+                      className="underline text-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)]"
+                    >
+                      Retry
+                    </button>
+                  )}
                 </td>
               </tr>
             )}
-            {!decisions?.length && !error && (
+            {!decisions?.length && !error && !isLoading && (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-[var(--color-text-tertiary)]">
                   No decisions found

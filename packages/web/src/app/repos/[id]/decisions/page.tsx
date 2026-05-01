@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { listDecisions } from "@/lib/api/decisions";
 import { ApiClientError } from "@/lib/api/client";
-import { DecisionsTable } from "@/components/decisions/decisions-table";
+import { DecisionsTableWrapper } from "@/components/decisions/decisions-table-wrapper";
 
 export const revalidate = 30;
 
@@ -33,7 +33,7 @@ export default async function DecisionsPage({ params }: Props) {
           Why the codebase is built the way it is — constraints, tradeoffs, and rejected alternatives.
         </p>
       </div>
-      <DecisionsTable repoId={repoId} initialData={decisions} />
+      <DecisionsTableWrapper repoId={repoId} initialData={decisions} />
     </div>
   );
 }

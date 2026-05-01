@@ -87,6 +87,36 @@ are zero the donut renders empty and the centre text shows `0%`.
 
 ---
 
+## `decisions/decision-health-widget` — `DecisionHealthWidget`
+
+Three-card summary tile for active / proposed / stale counts.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `health` | `DecisionHealth \| undefined` (`@repowise/types/decisions`) | yes | Renders nothing while undefined; useful for the "loading or absent" state. |
+
+---
+
+## `decisions/decisions-table` — `DecisionsTable`
+
+Filterable table of `DecisionRecord` rows with status + source dropdowns.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `decisions` | `DecisionRecord[] \| undefined` (`@repowise/types/decisions`) | yes | Filtered list as resolved by the caller. |
+| `filters` | `DecisionsTableFilters` | yes | Controlled. Caller mirrors these into fetch keys so filter changes drive a re-fetch. |
+| `onFiltersChange` | `(filters: DecisionsTableFilters) => void` | yes | Fires on every dropdown change. |
+| `repoId` | `string` | yes | Used to build the `/repos/{repoId}/decisions/{id}` link target for each row. |
+| `error` | `unknown` | no | Truthy on a failed fetch; renders an inline retry message. |
+| `isLoading` | `boolean` | no | Suppresses the "no decisions found" empty-state during the first fetch. |
+| `onRetry` | `() => void` | no | Wired to the inline retry button when `error` is truthy. |
+
+Filter unions:
+- `DecisionStatusFilter` = `DecisionStatus \| "all"`
+- `DecisionSourceFilter` = `DecisionSource \| "all"`
+
+---
+
 ## `coverage/freshness-table` — `FreshnessTable`
 
 Filterable table of `DocPage` rows with per-row regenerate action.

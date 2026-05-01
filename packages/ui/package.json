@@ -13,6 +13,7 @@
     "./git": "./src/git/index.ts",
     "./dead-code": "./src/dead-code/index.ts",
     "./decisions": "./src/decisions/index.ts",
+    "./decisions/*": "./src/decisions/*.tsx",
     "./docs": "./src/docs/index.ts",
     "./symbols": "./src/symbols/index.ts",
     "./coverage": "./src/coverage/index.ts",
