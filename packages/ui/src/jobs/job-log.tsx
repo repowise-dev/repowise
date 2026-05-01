@@ -1,19 +1,19 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { ScrollArea } from "@repowise/ui/ui/scroll-area";
+import { ScrollArea } from "../ui/scroll-area";
 
 interface LogEntry {
   text: string;
   level?: number;
 }
 
-interface Props {
+interface JobLogProps {
   entries: LogEntry[];
   maxLines?: number;
 }
 
-export function JobLog({ entries, maxLines = 6 }: Props) {
+export function JobLog({ entries, maxLines = 6 }: JobLogProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

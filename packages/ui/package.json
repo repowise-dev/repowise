@@ -26,6 +26,7 @@
     "./dashboard": "./src/dashboard/index.ts",
     "./workspace": "./src/workspace/index.ts",
     "./jobs": "./src/jobs/index.ts",
+    "./jobs/*": "./src/jobs/*.tsx",
     "./shared": "./src/shared/index.ts",
     "./shared/*": "./src/shared/*.tsx",
     "./hooks": "./src/hooks/index.ts",

@@ -7,7 +7,7 @@ import { useJob } from "@/lib/hooks/use-job";
 import { Progress } from "@repowise/ui/ui/progress";
 import { Badge } from "@repowise/ui/ui/badge";
 import { Button } from "@repowise/ui/ui/button";
-import { JobLog } from "./job-log";
+import { JobLog } from "@repowise/ui/jobs/job-log";
 import { formatTokens, formatNumber } from "@repowise/ui/lib/format";
 import { cancelJob } from "@/lib/api/jobs";
 import type { JobProgressEvent } from "@/lib/api/types";

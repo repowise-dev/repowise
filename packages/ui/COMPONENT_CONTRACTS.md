@@ -284,3 +284,15 @@ files list.
 | Prop | Type | Required |
 |------|------|----------|
 | `hotspots` | `Hotspot[]` (`@repowise/types/git`) | yes |
+
+---
+
+## `jobs/job-log` — `JobLog`
+
+Auto-scrolling fixed-height log viewer for streaming job progress
+entries.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `entries` | `Array<{ text: string; level?: number }>` | yes | Caller accumulates from SSE / poll. |
+| `maxLines` | `number` | no | Tail length; default `6`. |
