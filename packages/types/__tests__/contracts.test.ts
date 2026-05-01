@@ -28,6 +28,12 @@ import type { GraphLink } from "../src/graph.js";
 import type { DeadCodeFinding } from "../src/dead-code.js";
 import type { DecisionRecord, DecisionStatus } from "../src/decisions.js";
 import type { Hotspot } from "../src/git.js";
+import type {
+  HeritageKind,
+  HeritageRelation,
+  SymbolHeritage,
+} from "../src/symbols.js";
+import type { SecurityFinding, SecuritySeverity } from "../src/security.js";
 
 describe("ChatArtifact discriminated union", () => {
   it("narrows on .type to the per-variant data shape", () => {
@@ -102,6 +108,62 @@ describe("DecisionRecord literal unions", () => {
       "proposed" | "active" | "deprecated" | "superseded"
     >();
     expectTypeOf<DecisionRecord["status"]>().toEqualTypeOf<DecisionStatus>();
+  });
+});
+
+describe("Heritage relation shape", () => {
+  it("constrains kind to the six-literal union", () => {
+    expectTypeOf<HeritageKind>().toEqualTypeOf<
+      | "extends"
+      | "implements"
+      | "trait_impl"
+      | "mixin"
+      | "method_overrides"
+      | "method_implements"
+    >();
+  });
+
+  it("treats child_id/parent_id/confidence as optional (raw vs resolved)", () => {
+    const raw: HeritageRelation = {
+      child_name: "Cat",
+      parent_name: "Animal",
+      kind: "extends",
+      line: 10,
+    };
+    expectTypeOf(raw).toEqualTypeOf<HeritageRelation>();
+    expectTypeOf<HeritageRelation["confidence"]>().toEqualTypeOf<
+      number | undefined
+    >();
+  });
+
+  it("SymbolHeritage exposes both directions", () => {
+    expectTypeOf<SymbolHeritage["parents"]>().toEqualTypeOf<
+      HeritageRelation[]
+    >();
+    expectTypeOf<SymbolHeritage["children"]>().toEqualTypeOf<
+      HeritageRelation[]
+    >();
+  });
+});
+
+describe("SecurityFinding canonical shape", () => {
+  it("severity is the three-literal union widened to string", () => {
+    expectTypeOf<SecuritySeverity>().toEqualTypeOf<
+      "high" | "med" | "low" | string
+    >();
+  });
+
+  it("snippet is nullable; detected_at is an ISO string", () => {
+    const f: SecurityFinding = {
+      id: 1,
+      file_path: "src/auth.py",
+      kind: "hardcoded_secret",
+      severity: "high",
+      snippet: null,
+      detected_at: "2026-05-02T00:00:00Z",
+    };
+    expectTypeOf(f.snippet).toEqualTypeOf<string | null>();
+    expectTypeOf(f.detected_at).toEqualTypeOf<string>();
   });
 });
 
