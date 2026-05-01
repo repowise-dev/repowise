@@ -4,7 +4,7 @@ import { User } from "lucide-react";
 import { cn } from "../lib/cn";
 import { ToolCallBlock } from "./tool-call-block";
 import { ChatMarkdown } from "./chat-markdown";
-import { SourceCitations } from "./source-citations";
+import { SourceCitations, type SourceReference } from "./source-citations";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 
 interface ChatMessageProps {
@@ -13,6 +13,8 @@ interface ChatMessageProps {
   onViewArtifact?: (artifact: { type: string; data: Record<string, unknown> }) => void;
   /** Optional avatar src for the assistant. Defaults to `/repowise-logo.png`. */
   assistantAvatarSrc?: string;
+  /** Forwarded to `SourceCitations` so consumers can customise the link path. */
+  buildCitationHref?: (source: SourceReference) => string;
 }
 
 export function ChatMessage({
@@ -20,6 +22,7 @@ export function ChatMessage({
   repoId,
   onViewArtifact,
   assistantAvatarSrc = "/repowise-logo.png",
+  buildCitationHref,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
 
@@ -87,7 +90,11 @@ export function ChatMessage({
             )}
 
             {!message.isStreaming && message.toolCalls.length > 0 && (
-              <SourceCitations toolCalls={message.toolCalls} repoId={repoId} />
+              <SourceCitations
+                toolCalls={message.toolCalls}
+                repoId={repoId}
+                {...(buildCitationHref ? { buildHref: buildCitationHref } : {})}
+              />
             )}
 
             {message.isStreaming &&

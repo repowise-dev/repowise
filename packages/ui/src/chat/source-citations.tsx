@@ -146,9 +146,23 @@ function SourceIcon({ pageType, className }: { pageType: string; className?: str
 interface SourceCitationsProps {
   toolCalls: ChatUIToolCall[];
   repoId: string;
+  /**
+   * Builds the navigation URL for a citation. Defaults to OSS web's
+   * `/repos/{repoId}/wiki/{pageId}` shape; hosted-frontend supplies its own
+   * (e.g. `/s/{shortId}/wiki/{pageId}`) so this component stays
+   * framework-neutral.
+   */
+  buildHref?: (source: SourceReference) => string;
 }
 
-export function SourceCitations({ toolCalls, repoId }: SourceCitationsProps) {
+const defaultBuildHref = (s: SourceReference, repoId: string) =>
+  `/repos/${repoId}/wiki/${encodeURIComponent(s.pageId)}`;
+
+export function SourceCitations({
+  toolCalls,
+  repoId,
+  buildHref,
+}: SourceCitationsProps) {
   const sources = useMemo(
     () => extractSources(toolCalls, repoId),
     [toolCalls, repoId],
@@ -165,7 +179,7 @@ export function SourceCitations({ toolCalls, repoId }: SourceCitationsProps) {
         {sources.map((source, idx) => (
           <a
             key={source.id}
-            href={`/repos/${repoId}/wiki/${encodeURIComponent(source.pageId)}`}
+            href={buildHref ? buildHref(source) : defaultBuildHref(source, repoId)}
             className="group inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[10px] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] transition-all"
           >
             <span className="flex items-center justify-center h-3.5 w-3.5 rounded-sm bg-[var(--color-bg-overlay)] text-[9px] font-bold text-[var(--color-text-tertiary)] group-hover:bg-[var(--color-accent-primary)] group-hover:text-white shrink-0 transition-colors">

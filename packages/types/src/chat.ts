@@ -1,11 +1,21 @@
 /**
- * Canonical chat types â€” conversation, messages, and the discriminated-union
+ * Canonical chat types — conversation, messages, and the discriminated-union
  * `ChatArtifact` type that lets the chat UI render tool results as
  * mini-visualizations instead of `<pre>{JSON}</pre>`.
  *
- * The discriminated union is net-new in @repowise-dev/types so the artifact
- * panel can switch on `artifact.type` to pick a renderer with full
- * compile-time narrowing per variant.
+ * The variants below mirror the artifact shapes actually emitted by the
+ * hosted-backend chat router (`backend/app/routers/chat.py:_tool_*`). They are
+ * convenience-shaped (denormalised, not strict `DecisionRecord[]` /
+ * `DeadCodeFinding[]` / `GraphExport`) because the backend currently passes
+ * raw tool result dicts through the SSE wrapper.
+ *
+ * KNOWN FOLLOWUP — Phase 2D candidate: normalise backend tool results to use
+ * strict typed contracts (`DecisionRecord[]`, `DeadCodeFinding[]`, etc.) so
+ * renderers stop reaching for ad-hoc fields like `mode` or
+ * `high_confidence`/`medium_confidence`. Out of scope for Phase 2B because it
+ * would touch all eight `_tool_*` functions in `backend/app/routers/chat.py`,
+ * rewrite `tests/unit/server/test_mcp.py`, and risk LLM tool-call quality
+ * regressions if information density shrinks.
  */
 
 import type { GraphExport } from "./graph.js";
@@ -48,11 +58,6 @@ export interface ChatMessage {
 // UI-flattened message shape (consumed by chat presentation components)
 // ---------------------------------------------------------------------------
 
-/**
- * Tool call as the chat UI sees it after streaming has accumulated state.
- * Distinct from the wire `ChatToolCall` because it carries UI-only fields
- * (`status`, `summary`, `artifact`) that are derived during the SSE merge.
- */
 export interface ChatUIToolCall {
   id: string;
   name: string;
@@ -78,7 +83,7 @@ export interface ChatUIMessage {
 
 /**
  * Common citation surface emitted alongside any artifact when the tool
- * referenced specific files/symbols. Drives `chat/source-citations.tsx`.
+ * referenced specific files/symbols. Drives `chat/source-citation.tsx`.
  */
 export interface ChatCitation {
   file_path: string;
@@ -87,33 +92,136 @@ export interface ChatCitation {
   end_line?: number;
 }
 
-export interface GraphArtifact {
+/** `get_overview` — repository fact sheet. */
+export interface OverviewArtifactData {
+  total_files: number;
+  total_symbols: number;
+  languages: Record<string, number>;
+  modules: string[];
+  entry_points: string[];
+  hotspot_count: number;
+  git_summary?: Record<string, unknown> | null;
+  is_monorepo: boolean;
+}
+export interface OverviewArtifact {
+  type: "overview";
+  data: OverviewArtifactData;
+}
+
+/** `get_context` — per-target wiki snippet + git/decision context. */
+export interface ContextArtifactData {
+  targets: Record<
+    string,
+    {
+      docs?: { content_md?: string; title?: string; page_type?: string; page_id?: string } | null;
+      hotspot_info?: Record<string, unknown> | null;
+      decisions?: Array<Record<string, unknown>>;
+      [k: string]: unknown;
+    }
+  >;
+}
+export interface ContextArtifact {
+  type: "context";
+  data: ContextArtifactData;
+}
+
+/** `get_risk` — modification risk report per target. */
+export interface RiskReportArtifactData {
+  targets: Array<{
+    file_path: string;
+    churn_percentile?: number;
+    is_hotspot?: boolean;
+    [k: string]: unknown;
+  }>;
+  global_hotspots: Array<{ path: string; churn_percentile: number }>;
+}
+export interface RiskReportArtifact {
+  type: "risk_report";
+  data: RiskReportArtifactData;
+}
+
+/** `search_codebase` — wiki page hits. */
+export interface SearchResultsArtifactData {
+  query: string;
+  results: Array<{
+    title: string;
+    page_type: string;
+    page_id?: string;
+    target_path?: string;
+    snippet?: string;
+    relevance_score?: number;
+  }>;
+}
+export interface SearchResultsArtifact {
+  type: "search_results";
+  data: SearchResultsArtifactData;
+}
+
+/** `get_dependency_path` — short import-graph path. */
+export interface GraphPathArtifactData {
+  path: string[];
+  distance: number;
+  explanation: string;
+}
+export interface GraphPathArtifact {
   type: "graph";
-  data: GraphExport;
+  data: GraphPathArtifactData;
 }
 
-export interface HotspotArtifact {
-  type: "hotspot";
-  data: { hotspots: Hotspot[] };
+/** `get_why` — decision register search results / health dashboard. */
+export interface DecisionsArtifactData {
+  mode: "health" | "search";
+  query?: string;
+  total_decisions?: number;
+  by_source?: Record<string, number>;
+  decisions?: Array<{ title: string; status?: string }>;
+  results?: Array<{
+    title: string;
+    decision: string;
+    rationale?: string;
+    affected_files?: string[];
+  }>;
 }
-
-export interface DeadCodeArtifact {
-  type: "dead_code";
-  data: { findings: DeadCodeFinding[] };
-}
-
 export interface DecisionsArtifact {
   type: "decisions";
-  data: { decisions: DecisionRecord[] };
+  data: DecisionsArtifactData;
 }
 
-export interface AnswerArtifact {
-  type: "answer";
-  data: {
-    answer: string;
-    citations: ChatCitation[];
-    confidence: "high" | "medium" | "low";
-  };
+/** `get_dead_code` — confidence-tiered dead-code findings. */
+export interface DeadCodeArtifactData {
+  total_findings: number;
+  deletable_lines: number;
+  high_confidence: Array<{
+    file_path: string;
+    symbol_name?: string | null;
+    kind: string;
+    confidence: number;
+    reason: string;
+    lines: number;
+    safe_to_delete: boolean;
+  }>;
+  medium_confidence: Array<{
+    file_path: string;
+    symbol_name?: string | null;
+    kind: string;
+    confidence: number;
+    reason: string;
+  }>;
+}
+export interface DeadCodeArtifact {
+  type: "dead_code";
+  data: DeadCodeArtifactData;
+}
+
+/** `get_architecture_diagram` — Mermaid flowchart. */
+export interface DiagramArtifactData {
+  diagram_type: string;
+  mermaid_syntax: string;
+  description?: string;
+}
+export interface DiagramArtifact {
+  type: "diagram";
+  data: DiagramArtifactData;
 }
 
 /**
@@ -125,17 +233,47 @@ export interface GenericArtifact {
   data: Record<string, unknown>;
 }
 
+/** Future variants — declared for the type system, not yet emitted on the wire. */
+export interface HotspotArtifact {
+  type: "hotspot";
+  data: { hotspots: Hotspot[] };
+}
+export interface AnswerArtifact {
+  type: "answer";
+  data: {
+    answer: string;
+    citations: ChatCitation[];
+    confidence: "high" | "medium" | "low";
+  };
+}
+/** Strict-typed future variants — wire-format alternatives mirroring engine canonicals. */
+export interface StrictGraphArtifact {
+  type: "graph_export";
+  data: GraphExport;
+}
+export interface StrictDeadCodeArtifact {
+  type: "dead_code_strict";
+  data: { findings: DeadCodeFinding[] };
+}
+export interface StrictDecisionsArtifact {
+  type: "decisions_strict";
+  data: { decisions: DecisionRecord[] };
+}
+
 /**
- * Typed variants only â€” use this when a consumer needs to narrow on `.type`
+ * Typed variants only — use this when a consumer needs to narrow on `.type`
  * and access the per-variant `data` shape. The renderer's `switch` exhaust
  * check should be against this type.
  */
 export type KnownChatArtifact =
-  | GraphArtifact
-  | HotspotArtifact
-  | DeadCodeArtifact
+  | OverviewArtifact
+  | ContextArtifact
+  | RiskReportArtifact
+  | SearchResultsArtifact
+  | GraphPathArtifact
   | DecisionsArtifact
-  | AnswerArtifact;
+  | DeadCodeArtifact
+  | DiagramArtifact;
 
 /**
  * Full union accepted on the wire. Consumers should branch on
@@ -145,11 +283,14 @@ export type KnownChatArtifact =
 export type ChatArtifact = KnownChatArtifact | GenericArtifact;
 
 const KNOWN_ARTIFACT_TYPES: ReadonlyArray<KnownChatArtifact["type"]> = [
+  "overview",
+  "context",
+  "risk_report",
+  "search_results",
   "graph",
-  "hotspot",
-  "dead_code",
   "decisions",
-  "answer",
+  "dead_code",
+  "diagram",
 ];
 
 export function isKnownChatArtifact(
