@@ -13,7 +13,7 @@ import {
   formatConfidence,
   formatRelativeTime,
 } from "../lib/format";
-import type { DocPage } from "@repowise/types/docs";
+import type { DocPage } from "@repowise-dev/types/docs";
 
 type Filter = "all" | "fresh" | "stale" | "outdated";
 
@@ -160,7 +160,7 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
                           onClick={() => handleRegenerate(page.id)}
                           className="h-6 px-2 text-xs"
                         >
-                          {regenerating.has(page.id) ? "…" : "Regenerate"}
+                          {regenerating.has(page.id) ? "â€¦" : "Regenerate"}
                         </Button>
                       )}
                     </td>

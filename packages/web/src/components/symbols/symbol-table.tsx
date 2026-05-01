@@ -4,17 +4,17 @@ import { useState, useCallback, useMemo } from "react";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { ChevronUp, ChevronDown, ChevronsUpDown, TrendingUp } from "lucide-react";
-import { Input } from "@repowise/ui/ui/input";
-import { Button } from "@repowise/ui/ui/button";
-import { Badge } from "@repowise/ui/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@repowise/ui/ui/select";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { EmptyState } from "@repowise/ui/shared/empty-state";
+import { Input } from "@repowise-dev/ui/ui/input";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@repowise-dev/ui/ui/select";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { SymbolDrawer } from "./symbol-drawer";
 import { listSymbols } from "@/lib/api/symbols";
 import { getGraph } from "@/lib/api/graph";
 import { useDebounce } from "@/lib/hooks/use-debounce";
-import { truncatePath } from "@repowise/ui/lib/format";
+import { truncatePath } from "@repowise-dev/ui/lib/format";
 import { cn } from "@/lib/utils/cn";
 import type { SymbolResponse, GraphExportResponse } from "@/lib/api/types";
 
@@ -153,7 +153,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
       {/* Filters */}
       <div className="flex flex-wrap gap-2">
         <Input
-          placeholder="Search symbols…"
+          placeholder="Search symbolsâ€¦"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           className="max-w-xs"
@@ -295,7 +295,7 @@ export function SymbolTable({ repoId }: SymbolTableProps) {
                 onClick={() => setSize(size + 1)}
                 disabled={isValidating}
               >
-                {isValidating ? "Loading…" : "Load more"}
+                {isValidating ? "Loadingâ€¦" : "Load more"}
               </Button>
             </div>
           )}

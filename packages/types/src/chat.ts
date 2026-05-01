@@ -1,9 +1,9 @@
 /**
- * Canonical chat types — conversation, messages, and the discriminated-union
+ * Canonical chat types â€” conversation, messages, and the discriminated-union
  * `ChatArtifact` type that lets the chat UI render tool results as
  * mini-visualizations instead of `<pre>{JSON}</pre>`.
  *
- * The discriminated union is net-new in @repowise/types so the artifact
+ * The discriminated union is net-new in @repowise-dev/types so the artifact
  * panel can switch on `artifact.type` to pick a renderer with full
  * compile-time narrowing per variant.
  */
@@ -126,7 +126,7 @@ export interface GenericArtifact {
 }
 
 /**
- * Typed variants only — use this when a consumer needs to narrow on `.type`
+ * Typed variants only â€” use this when a consumer needs to narrow on `.type`
  * and access the per-variant `data` shape. The renderer's `switch` exhaust
  * check should be against this type.
  */

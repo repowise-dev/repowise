@@ -5,7 +5,7 @@ import * as d3Force from "d3-force";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { Network } from "lucide-react";
-import type { ModuleNode, ModuleEdge } from "@repowise/types/graph";
+import type { ModuleNode, ModuleEdge } from "@repowise-dev/types/graph";
 
 interface ModuleMinimapProps {
   nodes: ModuleNode[];
@@ -173,7 +173,7 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
                       <TooltipContent side="top" className="text-xs">
                         <p className="font-medium font-mono">{node.id}</p>
                         <p className="text-[var(--color-text-tertiary)]">
-                          {node.fileCount} files · {node.symbolCount} symbols · {Math.round(node.docCoverage)}% docs
+                          {node.fileCount} files Â· {node.symbolCount} symbols Â· {Math.round(node.docCoverage)}% docs
                         </p>
                       </TooltipContent>
                     </Tooltip>

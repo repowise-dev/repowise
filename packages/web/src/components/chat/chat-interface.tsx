@@ -3,13 +3,13 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import Image from "next/image";
 import { Send, StopCircle, PanelRight, MessageSquare } from "lucide-react";
-import { Button } from "@repowise/ui/ui/button";
-import { ScrollArea } from "@repowise/ui/ui/scroll-area";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
 import { useChat } from "@/lib/hooks/use-chat";
-import { ChatMessage } from "@repowise/ui/chat/chat-message";
+import { ChatMessage } from "@repowise-dev/ui/chat/chat-message";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
-import { ArtifactPanel, type Artifact } from "@repowise/ui/chat/artifact-panel";
+import { ArtifactPanel, type Artifact } from "@repowise-dev/ui/chat/artifact-panel";
 import { cn } from "@/lib/utils/cn";
 
 interface ChatInterfaceProps {
@@ -247,7 +247,7 @@ export function ChatInterface({ repoId, repoName }: ChatInterfaceProps) {
           </div>
           {isEmpty && (
             <p className="text-center text-[11px] text-[var(--color-text-tertiary)] mt-2.5">
-              Shift+Enter for newline · Enter to send
+              Shift+Enter for newline Â· Enter to send
             </p>
           )}
         </div>

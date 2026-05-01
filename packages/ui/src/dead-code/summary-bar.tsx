@@ -1,5 +1,5 @@
 import { formatNumber } from "../lib/format";
-import type { DeadCodeSummary } from "@repowise/types/dead-code";
+import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
 
 export interface SummaryBarProps {
   /** Summary rollup; caller fetches. */

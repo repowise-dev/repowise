@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useEffect } from "react";
-import type { ModuleGraph } from "@repowise/types/graph";
+import type { ModuleGraph } from "@repowise-dev/types/graph";
 
 interface DependencyHeatmapProps {
   moduleGraph: ModuleGraph;

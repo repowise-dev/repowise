@@ -1,8 +1,8 @@
 import { FileText, Flame, BarChart3, ChevronRight } from "lucide-react";
 import { Card, CardContent } from "../ui/card";
 import { Badge } from "../ui/badge";
-import type { RepoStats } from "@repowise/types/workspace";
-import type { GitSummary } from "@repowise/types/git";
+import type { RepoStats } from "@repowise-dev/types/workspace";
+import type { GitSummary } from "@repowise-dev/types/git";
 
 interface RepoCardProps {
   repoId: string;
@@ -38,7 +38,7 @@ export function RepoCard({
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-[var(--color-text-tertiary)] font-mono mt-0.5 truncate" title={`${alias} · ${path}`}>
+            <p className="text-xs text-[var(--color-text-tertiary)] font-mono mt-0.5 truncate" title={`${alias} Â· ${path}`}>
               {alias} &middot; {path}
             </p>
           </div>
@@ -51,19 +51,19 @@ export function RepoCard({
           <div className="flex items-center gap-1.5">
             <FileText className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
             <span className="text-xs text-[var(--color-text-secondary)]">
-              {stats?.file_count ?? "—"} files
+              {stats?.file_count ?? "â€”"} files
             </span>
           </div>
           <div className="flex items-center gap-1.5">
             <BarChart3 className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
             <span className="text-xs text-[var(--color-text-secondary)]">
-              {stats ? `${Math.round(stats.doc_coverage_pct)}% docs` : "—"}
+              {stats ? `${Math.round(stats.doc_coverage_pct)}% docs` : "â€”"}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
             <Flame className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
             <span className="text-xs text-[var(--color-text-secondary)]">
-              {gitSummary?.hotspot_count ?? "—"} hotspots
+              {gitSummary?.hotspot_count ?? "â€”"} hotspots
             </span>
           </div>
         </div>

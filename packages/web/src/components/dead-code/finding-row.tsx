@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Button } from "@repowise/ui/ui/button";
-import { Badge } from "@repowise/ui/ui/badge";
-import { ConfirmDialog } from "@repowise/ui/ui/confirm-dialog";
-import { formatConfidence } from "@repowise/ui/lib/format";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
+import { formatConfidence } from "@repowise-dev/ui/lib/format";
 import { patchDeadCodeFinding } from "@/lib/api/dead-code";
 import { cn } from "@/lib/utils/cn";
 import type { DeadCodeFindingResponse } from "@/lib/api/types";
@@ -123,7 +123,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
         </span>
       </td>
       <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
-        {finding.primary_owner ?? "—"}
+        {finding.primary_owner ?? "â€”"}
       </td>
       <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] tabular-nums hidden md:table-cell">
         {finding.lines}

@@ -1,5 +1,5 @@
 {
-  "name": "@repowise/ui",
+  "name": "@repowise-dev/ui",
   "version": "0.0.1",
   "private": true,
   "description": "Shared visualization components for the Repowise dashboard (packages/web) and downstream consumers. Domains: graph, git, dead-code, decisions, docs, symbols, coverage, wiki, chat, dashboard, workspace, jobs, plus shared primitives and hooks.",
@@ -61,7 +61,7 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@repowise/types": "*",
+    "@repowise-dev/types": "*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "d3-force": "^3.0.0",

@@ -16,8 +16,8 @@
     "declarationMap": true,
     "noEmit": true,
     "paths": {
-      "@repowise/types": ["../types/src/index.ts"],
-      "@repowise/types/*": ["../types/src/*"]
+      "@repowise-dev/types": ["../types/src/index.ts"],
+      "@repowise-dev/types/*": ["../types/src/*"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "__tests__/**/*.ts", "__tests__/**/*.tsx"]

@@ -6,10 +6,10 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from "@repowise/ui/ui/dialog";
-import { Badge } from "@repowise/ui/ui/badge";
-import { ScrollArea } from "@repowise/ui/ui/scroll-area";
-import { Separator } from "@repowise/ui/ui/separator";
+} from "@repowise-dev/ui/ui/dialog";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
+import { Separator } from "@repowise-dev/ui/ui/separator";
 import { SymbolGraphPanel } from "./symbol-graph-panel";
 import type { SymbolResponse } from "@/lib/api/types";
 
@@ -48,7 +48,7 @@ export function SymbolDrawer({ symbol, repoId, onClose }: SymbolDrawerProps) {
             <Separator />
 
             <div className="flex min-h-0 flex-1 overflow-hidden" style={{ maxHeight: "calc(85vh - 120px)" }}>
-              {/* Left column — existing content */}
+              {/* Left column â€” existing content */}
               <ScrollArea className="flex-1 min-w-0">
                 <div className="px-6 py-4 space-y-3">
                   <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
@@ -76,7 +76,7 @@ export function SymbolDrawer({ symbol, repoId, onClose }: SymbolDrawerProps) {
                 </div>
               </ScrollArea>
 
-              {/* Right column — graph intelligence */}
+              {/* Right column â€” graph intelligence */}
               <div className="hidden md:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-[280px] shrink-0 overflow-hidden">
                 <SymbolGraphPanel repoId={repoId} symbol={symbol} />
               </div>

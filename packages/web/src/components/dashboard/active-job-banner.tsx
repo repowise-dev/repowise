@@ -3,9 +3,9 @@
 import useSWR from "swr";
 import Link from "next/link";
 import { Loader2, CheckCircle, XCircle, ExternalLink } from "lucide-react";
-import { Progress } from "@repowise/ui/ui/progress";
+import { Progress } from "@repowise-dev/ui/ui/progress";
 import { listJobs } from "@/lib/api/jobs";
-import { formatNumber, formatRelativeTime } from "@repowise/ui/lib/format";
+import { formatNumber, formatRelativeTime } from "@repowise-dev/ui/lib/format";
 import type { JobResponse } from "@/lib/api/types";
 
 interface ActiveJobBannerProps {
@@ -62,7 +62,7 @@ export function ActiveJobBanner({ repoId }: ActiveJobBannerProps) {
 
         {/* Label */}
         <span className="text-xs text-[var(--color-text-secondary)]">
-          {isRunning && `${label} · ${phaseLabel}…`}
+          {isRunning && `${label} Â· ${phaseLabel}â€¦`}
           {isDone && `${label} complete`}
           {isFailed && `${label} failed`}
         </span>
@@ -81,9 +81,9 @@ export function ActiveJobBanner({ repoId }: ActiveJobBannerProps) {
             <>
               {formatNumber(job.completed_pages)} pages
               {job.config?.total_input_tokens && (
-                <> · {formatNumber(job.config.total_input_tokens as number)} tokens</>
+                <> Â· {formatNumber(job.config.total_input_tokens as number)} tokens</>
               )}
-              {job.finished_at && <> · {formatRelativeTime(job.finished_at)}</>}
+              {job.finished_at && <> Â· {formatRelativeTime(job.finished_at)}</>}
             </>
           )}
           {isFailed && (job.error_message ?? "Unknown error")}

@@ -6,7 +6,7 @@ import type { ChatSSEEvent } from "@/lib/api/types";
 import type {
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
-} from "@repowise/types/chat";
+} from "@repowise-dev/types/chat";
 
 export type { ChatToolCall, ChatMessage };
 

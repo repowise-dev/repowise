@@ -11,13 +11,13 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { getWorkspace, getWorkspaceCoChanges } from "@/lib/api/workspace";
-import { StatCard } from "@repowise/ui/shared/stat-card";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { RepoCard } from "@repowise/ui/workspace/repo-card";
-import { CrossRepoSummary } from "@repowise/ui/workspace/cross-repo-summary";
-import { CoChangeTable } from "@repowise/ui/workspace/co-change-table";
-import { ContractTypeBadge } from "@repowise/ui/workspace/contract-type-badge";
-import { formatNumber } from "@repowise/ui/lib/format";
+import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { RepoCard } from "@repowise-dev/ui/workspace/repo-card";
+import { CrossRepoSummary } from "@repowise-dev/ui/workspace/cross-repo-summary";
+import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
+import { ContractTypeBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 export const metadata: Metadata = { title: "Workspace" };
 

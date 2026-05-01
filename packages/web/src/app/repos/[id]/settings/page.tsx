@@ -5,8 +5,8 @@ import { getRepo } from "@/lib/api/repos";
 import { getCoordinatorHealth } from "@/lib/api/health";
 import { RepoSettingsForm } from "@/components/repos/repo-settings-form";
 import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-panel";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise/ui/ui/card";
-import { Separator } from "@repowise/ui/ui/separator";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
+import { Separator } from "@repowise-dev/ui/ui/separator";
 import { OperationsPanel } from "@/components/repos/operations-panel";
 
 interface Props {
@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   try {
     const repo = await getRepo(id);
-    return { title: `${repo.name} — Settings` };
+    return { title: `${repo.name} â€” Settings` };
   } catch {
     return { title: "Settings" };
   }

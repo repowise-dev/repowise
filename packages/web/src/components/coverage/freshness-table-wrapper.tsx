@@ -3,7 +3,7 @@
 import {
   FreshnessTable,
   type FreshnessTableProps,
-} from "@repowise/ui/coverage/freshness-table";
+} from "@repowise-dev/ui/coverage/freshness-table";
 import { regeneratePage } from "@/lib/api/pages";
 
 export function FreshnessTableWithRegenerate({

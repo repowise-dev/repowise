@@ -4,9 +4,9 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Radar, Plus, Flame } from "lucide-react";
-import { Button } from "@repowise/ui/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { cn } from "@/lib/utils/cn";
 import {
   analyzeBlastRadius,
@@ -38,7 +38,7 @@ function RiskScoreCard({ score }: { score: number }) {
           {score.toFixed(1)}
         </span>
         <span className={cn("text-sm font-medium", color.split(" ")[0])}>{label}</span>
-        <span className="text-xs text-[var(--color-text-tertiary)]">Overall Risk Score (0–10)</span>
+        <span className="text-xs text-[var(--color-text-tertiary)]">Overall Risk Score (0â€“10)</span>
       </CardContent>
     </Card>
   );
@@ -99,7 +99,7 @@ function Td({ children, className }: { children: React.ReactNode; className?: st
 // ---------------------------------------------------------------------------
 
 function DirectRisksTable({ rows }: { rows: DirectRiskEntry[] }) {
-  // Risk scores from the API are 0–1; render as 0–10 to match the gauge.
+  // Risk scores from the API are 0â€“1; render as 0â€“10 to match the gauge.
   const fmt10 = (v: number) => (v * 10).toFixed(2);
   // Centrality is small; render as percentage with 2 decimals.
   const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`;
@@ -302,7 +302,7 @@ export default function BlastRadiusPage() {
           Blast Radius
         </h1>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Estimate the impact of a proposed PR — direct risks, transitive effects, reviewer
+          Estimate the impact of a proposed PR â€” direct risks, transitive effects, reviewer
           suggestions, and test gaps.
         </p>
       </div>
@@ -314,7 +314,7 @@ export default function BlastRadiusPage() {
         </CardHeader>
         <CardContent className="pt-0 space-y-4">
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            Paste a list of file paths (one per line) — typically the files in your PR diff.
+            Paste a list of file paths (one per line) â€” typically the files in your PR diff.
             Don&apos;t know what to try? Click a hotspot below to prefill, or use{" "}
             <button
               type="button"
@@ -375,11 +375,11 @@ export default function BlastRadiusPage() {
                 value={maxDepth}
                 onChange={(e) => setMaxDepth(Math.max(1, Math.min(10, Number(e.target.value))))}
                 className="w-16 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)]"
-                aria-label="Maximum dependency depth (1–10)"
+                aria-label="Maximum dependency depth (1â€“10)"
               />
             </label>
             <Button onClick={handleAnalyze} disabled={loading} size="sm">
-              {loading ? "Analyzing…" : "Analyze"}
+              {loading ? "Analyzingâ€¦" : "Analyze"}
             </Button>
             {files && (
               <Button onClick={clearFiles} disabled={loading} size="sm" variant="outline">

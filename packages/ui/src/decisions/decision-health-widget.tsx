@@ -1,7 +1,7 @@
 "use client";
 
 import { StatCard } from "../shared/stat-card";
-import type { DecisionHealth } from "@repowise/types/decisions";
+import type { DecisionHealth } from "@repowise-dev/types/decisions";
 
 export interface DecisionHealthWidgetProps {
   /** Resolved health summary; widget renders nothing while undefined. */

@@ -1,11 +1,11 @@
 "use client";
 
-import { Badge } from "@repowise/ui/ui/badge";
-import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { ScrollArea } from "@repowise/ui/ui/scroll-area";
-import { Separator } from "@repowise/ui/ui/separator";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
+import { Separator } from "@repowise-dev/ui/ui/separator";
 import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
-import { truncatePath } from "@repowise/ui/lib/format";
+import { truncatePath } from "@repowise-dev/ui/lib/format";
 import { cn } from "@/lib/utils/cn";
 import type { SymbolResponse, CallerCalleeEntry } from "@/lib/api/types";
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { SummaryBar } from "../../src/dead-code/summary-bar.js";
-import type { DeadCodeSummary } from "@repowise/types/dead-code";
+import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
 
 const SUMMARY: DeadCodeSummary = {
   total_findings: 142,

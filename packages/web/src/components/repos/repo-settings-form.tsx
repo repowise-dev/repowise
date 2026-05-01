@@ -3,11 +3,11 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { Info, Save, X } from "lucide-react";
-import { Badge } from "@repowise/ui/ui/badge";
-import { Button } from "@repowise/ui/ui/button";
-import { Input } from "@repowise/ui/ui/input";
-import { Label } from "@repowise/ui/ui/label";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@repowise/ui/ui/tooltip";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { Input } from "@repowise-dev/ui/ui/input";
+import { Label } from "@repowise-dev/ui/ui/label";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@repowise-dev/ui/ui/tooltip";
 import { updateRepo } from "@/lib/api/repos";
 import type { RepoResponse } from "@/lib/api/types";
 
@@ -141,7 +141,7 @@ export function RepoSettingsForm({ repo }: RepoSettingsFormProps) {
         {/* Chips */}
         {patterns.length === 0 ? (
           <p className="text-xs text-[var(--color-text-tertiary)] italic">
-            No custom patterns — .gitignore and .repowiseIgnore are always respected.
+            No custom patterns â€” .gitignore and .repowiseIgnore are always respected.
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
@@ -214,7 +214,7 @@ export function RepoSettingsForm({ repo }: RepoSettingsFormProps) {
         className="gap-2"
       >
         <Save className="h-3.5 w-3.5" />
-        {saving ? "Saving…" : "Save changes"}
+        {saving ? "Savingâ€¦" : "Save changes"}
       </Button>
     </div>
   );

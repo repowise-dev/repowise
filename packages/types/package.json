@@ -1,5 +1,5 @@
 {
-  "name": "@repowise/types",
+  "name": "@repowise-dev/types",
   "version": "0.0.1",
   "private": true,
   "description": "Canonical TypeScript data contracts for the Repowise dashboard (packages/web) and downstream consumers of the same engine artifacts.",

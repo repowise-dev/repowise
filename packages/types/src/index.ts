@@ -1,9 +1,9 @@
 /**
- * @repowise/types — canonical TypeScript data contracts for the Repowise
+ * @repowise-dev/types â€” canonical TypeScript data contracts for the Repowise
  * dashboard (`packages/web`) and any downstream consumer that renders the
  * same engine artifacts.
  *
- * Re-exports per-domain modules. Subpath imports (`@repowise/types/graph`)
+ * Re-exports per-domain modules. Subpath imports (`@repowise-dev/types/graph`)
  * are also supported via the `exports` map in package.json.
  */
 

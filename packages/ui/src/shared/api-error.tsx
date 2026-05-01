@@ -1,5 +1,5 @@
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import { Button } from "@repowise/ui/ui/button";
+import { Button } from "@repowise-dev/ui/ui/button";
 
 interface ApiErrorProps {
   title?: string;

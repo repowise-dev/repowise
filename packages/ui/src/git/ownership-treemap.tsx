@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState, useCallback } from "react";
 import { hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode } from "d3-hierarchy";
-import type { OwnershipEntry } from "@repowise/types/git";
+import type { OwnershipEntry } from "@repowise-dev/types/git";
 
 interface OwnershipTreemapProps {
   entries: OwnershipEntry[];
@@ -149,7 +149,7 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
                     fontFamily="var(--font-geist-mono)"
                     pointerEvents="none"
                   >
-                    {d.name.length > w / 7 ? d.name.slice(0, Math.floor(w / 7)) + "…" : d.name}
+                    {d.name.length > w / 7 ? d.name.slice(0, Math.floor(w / 7)) + "â€¦" : d.name}
                   </text>
                   <text
                     x={x0 + 6}
@@ -177,7 +177,7 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
         >
           <p className="font-mono font-medium text-[var(--color-text-primary)]">{tooltip.name}</p>
           <p className="text-[var(--color-text-secondary)] mt-0.5">
-            Owner: {tooltip.owner ?? "—"}
+            Owner: {tooltip.owner ?? "â€”"}
             {tooltip.pct != null && ` (${Math.round(tooltip.pct * 100)}%)`}
           </p>
           <p className="text-[var(--color-text-secondary)]">{tooltip.fileCount} files</p>

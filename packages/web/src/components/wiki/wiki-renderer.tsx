@@ -1,7 +1,7 @@
 import { MDXRemote } from "next-mdx-remote/rsc";
 import { codeToHtml } from "shiki";
-import { CodeBlock } from "@repowise/ui/wiki/code-block";
-import { MermaidDiagram } from "@repowise/ui/wiki/mermaid-diagram";
+import { CodeBlock } from "@repowise-dev/ui/wiki/code-block";
+import { MermaidDiagram } from "@repowise-dev/ui/wiki/mermaid-diagram";
 
 // ---------------------------------------------------------------------------
 // Custom MDX components
@@ -25,7 +25,7 @@ function extractText(node: unknown): string {
 }
 
 const mdxComponents = {
-  // Code blocks — pass Shiki-highlighted HTML via a server action wrapper
+  // Code blocks â€” pass Shiki-highlighted HTML via a server action wrapper
   // The actual Shiki call happens in the pre/code override below.
   h1: (props: React.HTMLAttributes<HTMLHeadingElement>) => {
     // Downgrade article-body H1 to H2 to keep the page header as the sole H1.
@@ -97,7 +97,7 @@ const mdxComponents = {
 };
 
 // ---------------------------------------------------------------------------
-// WikiRenderer — server component
+// WikiRenderer â€” server component
 // ---------------------------------------------------------------------------
 
 interface Props {
@@ -173,7 +173,7 @@ async function preprocessCodeBlocks(content: string): Promise<Preprocessed> {
         theme: "vesper",
       });
     } catch {
-      // Unknown language — fall back to plain pre
+      // Unknown language â€” fall back to plain pre
       html = `<pre><code>${code.replace(/</g, "&lt;")}</code></pre>`;
     }
 

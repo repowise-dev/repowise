@@ -15,13 +15,13 @@ import { listJobs } from "@/lib/api/jobs";
 import { getGitSummary } from "@/lib/api/git";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { RepoStatsResponse, GitSummaryResponse } from "@/lib/api/types";
-import { StatCard } from "@repowise/ui/shared/stat-card";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { Badge } from "@repowise/ui/ui/badge";
-import { ConfidenceBadge } from "@repowise/ui/wiki/confidence-badge";
-import { EmptyState } from "@repowise/ui/shared/empty-state";
-import { formatRelativeTime, formatNumber } from "@repowise/ui/lib/format";
-import { scoreToStatus } from "@repowise/ui/lib/confidence";
+import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { formatRelativeTime, formatNumber } from "@repowise-dev/ui/lib/format";
+import { scoreToStatus } from "@repowise-dev/ui/lib/confidence";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -38,12 +38,12 @@ export default async function DashboardPage() {
   const jobList = jobs.status === "fulfilled" ? jobs.value : [];
   const workspace = ws.status === "fulfilled" ? ws.value : null;
 
-  // Workspace mode → workspace dashboard
+  // Workspace mode â†’ workspace dashboard
   if (workspace?.is_workspace) {
     redirect("/workspace");
   }
 
-  // Single repo → go straight to its overview
+  // Single repo â†’ go straight to its overview
   if (repoList.length === 1) {
     redirect(`/repos/${repoList[0].id}/overview`);
   }
@@ -97,7 +97,7 @@ export default async function DashboardPage() {
         <StatCard
           label="Fresh Pages"
           value={formatNumber(freshPages)}
-          description="Confidence ≥ 80%"
+          description="Confidence â‰¥ 80%"
           icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
         />
         <StatCard
@@ -108,7 +108,7 @@ export default async function DashboardPage() {
         />
         <StatCard
           label="Dead Code"
-          value={deadCode > 0 ? formatNumber(deadCode) : "—"}
+          value={deadCode > 0 ? formatNumber(deadCode) : "â€”"}
           description={deadCode > 0 ? "Unused exports" : "Analyze to detect"}
           icon={<Skull className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
         />
@@ -230,7 +230,7 @@ export default async function DashboardPage() {
                         </Badge>
                       </div>
                       <p className="text-xs text-[var(--color-text-tertiary)] mt-0.5">
-                        {job.model_name} · {formatRelativeTime(job.updated_at)}
+                        {job.model_name} Â· {formatRelativeTime(job.updated_at)}
                       </p>
                     </div>
                     </Link>

@@ -5,7 +5,7 @@ import { cn } from "../lib/cn";
 import { ToolCallBlock } from "./tool-call-block";
 import { ChatMarkdown } from "./chat-markdown";
 import { SourceCitations } from "./source-citations";
-import type { ChatUIMessage } from "@repowise/types/chat";
+import type { ChatUIMessage } from "@repowise-dev/types/chat";
 
 interface ChatMessageProps {
   message: ChatUIMessage;

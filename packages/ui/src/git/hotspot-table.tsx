@@ -8,7 +8,7 @@ import { EmptyState } from "../shared/empty-state";
 import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "../lib/format";
 import { cn } from "../lib/cn";
-import type { Hotspot } from "@repowise/types/git";
+import type { Hotspot } from "@repowise-dev/types/git";
 
 interface HotspotTableProps {
   hotspots: Hotspot[];
@@ -88,7 +88,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
     return (
       <EmptyState
         title="No hotspots found"
-        description="All files look stable — great work!"
+        description="All files look stable â€” great work!"
       />
     );
   }
@@ -106,7 +106,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
           <Input
-            placeholder="Search files or owners…"
+            placeholder="Search files or ownersâ€¦"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-8 h-8 w-full sm:w-56 text-xs"
@@ -173,7 +173,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                   Bus Factor
                 </th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 hidden lg:table-cell">
-                  Lines ±90d
+                  Lines Â±90d
                 </th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                   Owner
@@ -226,7 +226,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                             </span>
                           </>
                         ) : (
-                          <span className="text-[var(--color-text-tertiary)]">—</span>
+                          <span className="text-[var(--color-text-tertiary)]">â€”</span>
                         )}
                       </span>
                     </td>
@@ -249,7 +249,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                       <span className="text-red-400">-{formatLOC(h.lines_deleted_90d)}</span>
                     </td>
                     <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
-                      {h.primary_owner ?? "—"}
+                      {h.primary_owner ?? "â€”"}
                     </td>
                     <td className="px-3 py-2.5 flex items-center gap-1">
                       {h.is_hotspot && <Badge variant="outdated">Hot</Badge>}

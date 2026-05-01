@@ -11,7 +11,7 @@ import {
   Cell,
   ReferenceLine,
 } from "recharts";
-import type { Hotspot } from "@repowise/types/git";
+import type { Hotspot } from "@repowise-dev/types/git";
 
 interface RiskDistributionChartProps {
   hotspots: Hotspot[];

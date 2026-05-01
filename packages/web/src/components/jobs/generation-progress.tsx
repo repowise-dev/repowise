@@ -4,11 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CheckCircle, XCircle, Loader2, AlertTriangle, X } from "lucide-react";
 import { useJob } from "@/lib/hooks/use-job";
-import { Progress } from "@repowise/ui/ui/progress";
-import { Badge } from "@repowise/ui/ui/badge";
-import { Button } from "@repowise/ui/ui/button";
-import { JobLog } from "@repowise/ui/jobs/job-log";
-import { formatTokens, formatNumber } from "@repowise/ui/lib/format";
+import { Progress } from "@repowise-dev/ui/ui/progress";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { JobLog } from "@repowise-dev/ui/jobs/job-log";
+import { formatTokens, formatNumber } from "@repowise-dev/ui/lib/format";
 import { cancelJob } from "@/lib/api/jobs";
 import type { JobProgressEvent } from "@/lib/api/types";
 
@@ -20,7 +20,7 @@ interface Props {
 }
 
 // Anything past this without transitioning out of "pending" is almost
-// certainly stuck — the background task crashed before recording running.
+// certainly stuck â€” the background task crashed before recording running.
 const PENDING_STUCK_THRESHOLD_MS = 30_000;
 
 export function GenerationProgress({ jobId, repoName, onDone }: Props) {
@@ -58,7 +58,7 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
     if (notifiedRef.current) return;
     if (job?.status === "completed") {
       notifiedRef.current = true;
-      toast.success(`Documentation updated${repoName ? ` — ${repoName}` : ""}`, {
+      toast.success(`Documentation updated${repoName ? ` â€” ${repoName}` : ""}`, {
         description: `${formatNumber(job.completed_pages)} pages generated`,
       });
       onDone?.();
@@ -116,8 +116,8 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
         {isFailed && <XCircle className="h-4 w-4 text-[var(--color-outdated)] shrink-0" />}
 
         <span className="text-sm font-medium text-[var(--color-text-primary)]">
-          {isPending && "Queued — waiting for worker…"}
-          {isRunning && `Generating level ${job?.current_level ?? "?"}…`}
+          {isPending && "Queued â€” waiting for workerâ€¦"}
+          {isRunning && `Generating level ${job?.current_level ?? "?"}â€¦`}
           {isDone && "Generation complete"}
           {isFailed && "Generation failed"}
         </span>
@@ -136,7 +136,7 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
             aria-label="Cancel job"
           >
             <X className="h-3.5 w-3.5 mr-1" />
-            {cancelling ? "Cancelling…" : "Cancel"}
+            {cancelling ? "Cancellingâ€¦" : "Cancel"}
           </Button>
         )}
       </div>
@@ -148,7 +148,7 @@ export function GenerationProgress({ jobId, repoName, onDone }: Props) {
             <p className="font-medium">Job hasn&apos;t started after {Math.round(elapsed / 1000)}s.</p>
             <p className="mt-0.5 opacity-80">
               The server may have crashed before the worker could pick it up. Cancel
-              this job and try again — if it keeps happening, check the server logs.
+              this job and try again â€” if it keeps happening, check the server logs.
             </p>
           </div>
         </div>

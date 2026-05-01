@@ -13,14 +13,14 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@repowise/types": path.resolve(__dirname, "../types/src/index.ts"),
-      "@repowise/types/graph": path.resolve(__dirname, "../types/src/graph.ts"),
-      "@repowise/types/git": path.resolve(__dirname, "../types/src/git.ts"),
-      "@repowise/types/docs": path.resolve(__dirname, "../types/src/docs.ts"),
-      "@repowise/types/decisions": path.resolve(__dirname, "../types/src/decisions.ts"),
-      "@repowise/types/dead-code": path.resolve(__dirname, "../types/src/dead-code.ts"),
-      "@repowise/types/symbols": path.resolve(__dirname, "../types/src/symbols.ts"),
-      "@repowise/types/chat": path.resolve(__dirname, "../types/src/chat.ts"),
+      "@repowise-dev/types": path.resolve(__dirname, "../types/src/index.ts"),
+      "@repowise-dev/types/graph": path.resolve(__dirname, "../types/src/graph.ts"),
+      "@repowise-dev/types/git": path.resolve(__dirname, "../types/src/git.ts"),
+      "@repowise-dev/types/docs": path.resolve(__dirname, "../types/src/docs.ts"),
+      "@repowise-dev/types/decisions": path.resolve(__dirname, "../types/src/decisions.ts"),
+      "@repowise-dev/types/dead-code": path.resolve(__dirname, "../types/src/dead-code.ts"),
+      "@repowise-dev/types/symbols": path.resolve(__dirname, "../types/src/symbols.ts"),
+      "@repowise-dev/types/chat": path.resolve(__dirname, "../types/src/chat.ts"),
     },
   },
 });

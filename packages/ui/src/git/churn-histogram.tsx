@@ -9,7 +9,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import type { Hotspot } from "@repowise/types/git";
+import type { Hotspot } from "@repowise-dev/types/git";
 
 interface ChurnHistogramProps {
   hotspots: Hotspot[];
@@ -30,7 +30,7 @@ export function ChurnHistogram({ hotspots }: ChurnHistogramProps) {
   }
 
   const data = buckets.map((count, i) => ({
-    range: `${i * 10}–${(i + 1) * 10}`,
+    range: `${i * 10}â€“${(i + 1) * 10}`,
     count,
   }));
 

@@ -12,12 +12,12 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
-import { Button } from "@repowise/ui/ui/button";
-import { Badge } from "@repowise/ui/ui/badge";
-import { ChatMarkdown } from "@repowise/ui/chat/chat-markdown";
-import { ConfidenceBadge } from "@repowise/ui/wiki/confidence-badge";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { ChatMarkdown } from "@repowise-dev/ui/chat/chat-markdown";
+import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
 import { usePage } from "@/lib/hooks/use-page";
-import { formatRelativeTime } from "@repowise/ui/lib/format";
+import { formatRelativeTime } from "@repowise-dev/ui/lib/format";
 
 interface GraphDocPanelProps {
   repoId: string;

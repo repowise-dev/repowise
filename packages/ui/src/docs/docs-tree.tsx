@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { statusBadgeClasses, type FreshnessStatus } from "../lib/confidence";
-import type { DocPage } from "@repowise/types/docs";
+import type { DocPage } from "@repowise-dev/types/docs";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -445,7 +445,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
         {/* Stats line */}
         <div className="flex items-center justify-between text-[10px] text-[var(--color-text-tertiary)]">
           <span>{totalPages} pages</span>
-          <span>{freshCount} fresh · {totalPages - freshCount} need attention</span>
+          <span>{freshCount} fresh Â· {totalPages - freshCount} need attention</span>
         </div>
       </div>
 

@@ -5,7 +5,7 @@ import { StatCard } from "../shared/stat-card";
 import type {
   WorkspaceCrossRepoSummary,
   WorkspaceContractSummary,
-} from "@repowise/types/workspace";
+} from "@repowise-dev/types/workspace";
 
 interface CrossRepoSummaryProps {
   crossRepo: WorkspaceCrossRepoSummary | null;

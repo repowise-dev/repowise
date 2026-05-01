@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, CheckCircle2, ExternalLink } from "lucide-react";
-import type { ChatUIToolCall } from "@repowise/types/chat";
+import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 const TOOL_LABELS: Record<string, string> = {
   get_overview: "Getting codebase overview",
@@ -41,7 +41,7 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
         </span>
         {toolCall.summary && !isRunning && (
           <span className="text-[var(--color-text-tertiary)] truncate ml-1">
-            — {toolCall.summary}
+            â€” {toolCall.summary}
           </span>
         )}
         <span className="ml-auto flex items-center gap-1">
