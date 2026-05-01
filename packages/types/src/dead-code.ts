@@ -1,10 +1,10 @@
 /**
  * Canonical dead-code finding types.
  *
- * Canonical source: OSS engine `DeadCodeFindingResponse` + `DeadCodeSummaryResponse`.
- * Hosted's engine artifact has extra raw-shape fields (`evidence`, `package`,
+ * Canonical source: engine `DeadCodeFindingResponse` + `DeadCodeSummaryResponse`.
+ * Some downstream pipelines emit extra raw-shape fields (`evidence`, `package`,
  * `last_commit_at`, `commit_count_90d`, `age_days`) — preserved here as
- * optional so hosted adapters don't lose information when normalising.
+ * optional so consumer adapters don't lose information when normalising.
  */
 
 export type DeadCodeStatus = "open" | "wont_fix" | "deleted" | string;
@@ -22,7 +22,7 @@ export interface DeadCodeFinding {
   primary_owner: string | null;
   status: DeadCodeStatus;
   note: string | null;
-  /** Raw engine artifact fields (present in hosted's pipeline output, optional in OSS). */
+  /** Raw engine artifact fields — present in some downstream pipelines, optional here. */
   evidence?: string[] | null;
   package?: string | null;
   last_commit_at?: string | null;

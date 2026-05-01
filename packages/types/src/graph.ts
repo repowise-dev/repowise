@@ -44,7 +44,7 @@ export interface GraphExport {
 }
 
 // ---------------------------------------------------------------------------
-// NetworkX-shaped raw payload (what hosted backend currently returns)
+// NetworkX-shaped raw payload (what some downstream backends emit)
 // ---------------------------------------------------------------------------
 
 export interface RawGraphNode {

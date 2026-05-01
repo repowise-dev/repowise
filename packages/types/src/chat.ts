@@ -1,12 +1,11 @@
 /**
  * Canonical chat types — conversation, messages, and the discriminated-union
- * `ChatArtifact` type that lets the hosted UI render tool results as
+ * `ChatArtifact` type that lets the chat UI render tool results as
  * mini-visualizations instead of `<pre>{JSON}</pre>`.
  *
- * The discriminated union is **net-new** in @repowise/types — neither OSS nor
- * hosted previously had compile-time typing for tool-result artifacts.
- * Phase 2B's `chat/artifact-panel.tsx` will switch on `artifact.type` to pick
- * a renderer.
+ * The discriminated union is net-new in @repowise/types so the artifact
+ * panel can switch on `artifact.type` to pick a renderer with full
+ * compile-time narrowing per variant.
  */
 
 import type { GraphExport } from "./graph.js";

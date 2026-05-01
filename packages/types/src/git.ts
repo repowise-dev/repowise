@@ -1,9 +1,10 @@
 /**
  * Canonical git-intelligence types — hotspots, ownership, bus factor, summary.
  *
- * Canonical source: OSS engine `PipelineResult.git_metadata` (per-file) and
- * the rollups produced by `packages/web` UI. Hosted backend's `HotspotEntry`
- * uses `path` instead of `file_path`; hosted-side adapters rename.
+ * Canonical source: engine `PipelineResult.git_metadata` (per-file) and
+ * the rollups produced by `packages/web` UI. Downstream pipelines that emit
+ * a different key (e.g. `path` instead of `file_path`) must rename via an
+ * adapter before passing data to components.
  */
 
 export interface FileAuthor {
