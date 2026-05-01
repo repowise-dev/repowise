@@ -353,14 +353,63 @@ Returns `null` when fewer than two headings are found.
 |------|------|----------|
 | `content` | `string` | yes |
 
-## `graph/*` â€” Standalone graph chrome
+## `graph/*` — Graph layout, presentation, and chrome
 
-Four presentational graph-page chrome components. The `@xyflow/react`
-host (`graph-flow`), its node/edge subcomponents, and the data-coupled
-panels (`graph-doc-panel`, `graph-community-panel`, `path-finder-panel`,
-`graph-tooltip`, `elk-layout`/`use-elk-layout`) stay in `packages/web`
-because they all subscribe to a `GraphContext` provider declared in
-`graph-flow` and reach into `useGraph*` hooks.
+Presentational graph pieces — chrome (toolbar/legend/sidebar/menu),
+ELK layout primitives, `@xyflow/react` node/edge components, and the
+floating `GraphTooltip`. The `GraphContext` provider also lives here
+so node/edge components can be consumed independently of the
+`graph-flow` data-fetching host.
+
+`graph-flow` itself, plus the data-coupled panels (`graph-doc-panel`,
+`graph-community-panel`, `path-finder-panel`), still live in
+`packages/web` because they orchestrate `useGraph*` SWR hooks. They
+will move under a wrapper-pattern refactor in a follow-up.
+
+### `graph/context` — `GraphContext`, `GraphProvider`, `useGraphContext`, `GraphContextValue`
+
+Standalone context module. Node and edge components consume it to
+read selection / hover / highlight state without depending on the
+`graph-flow` host implementation. Hosts wrap their tree in
+`<GraphProvider value={...}>`.
+
+| Export | Type | Notes |
+|--------|------|-------|
+| `GraphContext` | `React.Context<GraphContextValue>` | Default value renders inert. |
+| `GraphProvider` | `React.Provider<GraphContextValue>` | Alias of `GraphContext.Provider`. |
+| `useGraphContext` | `() => GraphContextValue` | Sugar for `useContext(GraphContext)`. |
+| `GraphContextValue` | interface | `highlightedPath`, `highlightedEdges`, `colorMode`, `riskScores`, `hoveredNodeId`, `connectedNodeIds`, `connectedEdgeIds`, `selectedNodeId`, `searchDimmedNodes`. |
+
+### `graph/elk-layout` and `graph/use-elk-layout`
+
+Pure layout primitives. Functions: `layoutFileGraph`,
+`layoutModuleGraph`, `groupNodesAsModules`. Hooks:
+`useFileElkLayout`, `useModuleElkLayout`. Operate on canonical
+`@repowise-dev/types/graph` shapes (`GraphNode`, `GraphLink`,
+`ModuleNode`, `ModuleEdge`) and produce `@xyflow/react` `Node[]` /
+`Edge[]`. No data fetching.
+
+### `graph/nodes/*`, `graph/edges/*`
+
+`FileNode`, `ModuleGroupNode`, `DependencyEdge` — `@xyflow/react`
+node/edge renderers. Consume `GraphContext` for selection / hover /
+path-highlight state. Wear `FileNodeData` / `ModuleNodeData` /
+`DependencyEdgeData` types from `graph/elk-layout`.
+
+### `graph/graph-tooltip` — `GraphTooltip`
+
+Floating tooltip over a focused node, smart-positioned against the
+viewport edges. Renders file or module metadata depending on
+`nodeType`.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `nodeId` | `string` | yes |
+| `nodeType` | `string` (`fileNode` / `moduleGroup`) | yes |
+| `data` | `Record<string, unknown>` (cast to `FileNodeData` or `ModuleNodeData`) | yes |
+| `x`, `y` | `number` | yes |
+| `onClose` / `onViewDocs` | `() => void` | yes |
+| `onExplore` | `() => void` | no — when omitted, the action button is hidden |
 
 ### `graph/graph-context-menu` â€” `GraphContextMenu`
 

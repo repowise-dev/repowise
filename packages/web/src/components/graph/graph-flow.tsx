@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  createContext,
   useCallback,
   useMemo,
   useState,
@@ -34,44 +33,24 @@ import {
   useCommunities,
   useExecutionFlows,
 } from "@/lib/hooks/use-graph";
-import { ModuleGroupNode } from "./nodes/module-group-node";
-import { FileNode } from "./nodes/file-node";
-import { DependencyEdge } from "./edges/dependency-edge";
-import { groupNodesAsModules, type FileNodeData } from "./elk-layout";
-import { useModuleElkLayout, useFileElkLayout } from "./use-elk-layout";
+import {
+  ModuleGroupNode,
+  FileNode,
+  DependencyEdge,
+  GraphProvider,
+  GraphTooltip,
+  groupNodesAsModules,
+  useModuleElkLayout,
+  useFileElkLayout,
+  type FileNodeData,
+  type GraphContextValue,
+} from "@repowise-dev/ui/graph";
 import { PathFinderPanel } from "./path-finder-panel";
 import { GraphToolbar, type ColorMode, type ViewMode } from "@repowise-dev/ui/graph/graph-toolbar";
 import { GraphLegend } from "@repowise-dev/ui/graph/graph-legend";
 import { GraphCommunityPanel } from "./graph-community-panel";
 import { GraphContextMenu } from "@repowise-dev/ui/graph/graph-context-menu";
-import { GraphTooltip } from "./graph-tooltip";
 import { languageColor } from "@repowise-dev/ui/lib/confidence";
-
-// ---- Context ----
-
-export interface GraphContextValue {
-  highlightedPath: Set<string>;
-  highlightedEdges: Set<string>;
-  colorMode: ColorMode;
-  riskScores: Map<string, number>;
-  hoveredNodeId: string | null;
-  connectedNodeIds: Set<string>;
-  connectedEdgeIds: Set<string>;
-  selectedNodeId: string | null;
-  searchDimmedNodes: Set<string> | null;
-}
-
-export const GraphContext = createContext<GraphContextValue>({
-  highlightedPath: new Set(),
-  highlightedEdges: new Set(),
-  colorMode: "language",
-  riskScores: new Map(),
-  hoveredNodeId: null,
-  connectedNodeIds: new Set(),
-  connectedEdgeIds: new Set(),
-  selectedNodeId: null,
-  searchDimmedNodes: null,
-});
 
 // ---- Node/Edge types ----
 
@@ -566,7 +545,7 @@ function GraphFlowInner({
   if (isLoading) return <Skeleton className="h-full w-full rounded-lg" />;
 
   return (
-    <GraphContext.Provider value={ctxValue}>
+    <GraphProvider value={ctxValue}>
       <div className="relative w-full h-full" style={{ touchAction: "none" }} aria-label="Dependency graph">
         {isLayouting && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--color-bg-root)]/60 backdrop-blur-sm rounded-lg">
@@ -783,7 +762,7 @@ function GraphFlowInner({
           );
         })()}
       </div>
-    </GraphContext.Provider>
+    </GraphProvider>
   );
 }
 

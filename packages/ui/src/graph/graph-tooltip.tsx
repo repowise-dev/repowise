@@ -2,8 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import { FileText, Folder, ArrowRight, X, Zap, FlaskConical, BookOpen } from "lucide-react";
-import { formatNumber } from "@repowise-dev/ui/lib/format";
-import { languageColor } from "@repowise-dev/ui/lib/confidence";
+import { formatNumber } from "../lib/format";
+import { languageColor } from "../lib/confidence";
 import type { FileNodeData, ModuleNodeData } from "./elk-layout";
 
 interface GraphTooltipProps {

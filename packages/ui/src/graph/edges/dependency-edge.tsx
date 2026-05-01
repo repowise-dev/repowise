@@ -5,7 +5,7 @@ import {
   getBezierPath,
   type EdgeProps,
 } from "@xyflow/react";
-import { GraphContext } from "../graph-flow";
+import { GraphContext } from "../context";
 import type { DependencyEdgeData } from "../elk-layout";
 
 function DependencyEdgeInner({
