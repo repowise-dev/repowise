@@ -15,3 +15,4 @@ export * from "./dead-code.js";
 export * from "./symbols.js";
 export * from "./chat.js";
 export * from "./workspace.js";
+export * from "./blast-radius.js";
