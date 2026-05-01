@@ -919,3 +919,183 @@ multi-tenant settings persistence is deferred to Phase 5 RBAC.
 | `disabledHint` | `string` | no |
 
 `RepoSettingsValue` lives in `@repowise-dev/types/settings`.
+
+### `chat/conversation-history` — `ConversationHistory`
+
+Dropdown listing prior conversations for a repo with select / delete /
+new-conversation affordances. The wrapper owns the SWR fetch
+(`listConversations`) and the delete mutation; the shell only renders
+the popover surface and emits intents.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `conversations` | `Conversation[] \| undefined` | yes | `undefined` while loading. |
+| `isLoading` | `boolean` | no | Renders a "Loading…" placeholder when no list is yet available. |
+| `selectedId` | `string \| null` | no | Highlights the matching row. |
+| `onSelect` | `(id: string) => void` | yes | Fires when a row is clicked. |
+| `onDelete` | `(id: string) => void \| Promise<void>` | yes | Fires when a row's trash icon is clicked. |
+| `onNew` | `() => void` | yes | Fires when "New conversation" is clicked. |
+| `className` | `string` | no | Forwarded to the outer container. |
+
+`Conversation` is canonical (`@repowise-dev/types/chat`).
+
+### `chat/chat-interface` — `ChatInterface`
+
+Top-level chat surface. Renders empty-state suggestion chips when
+`messages` is empty, otherwise a scrollable transcript above a
+textarea composer. Owns the artifact-panel state internally; transport
+(SSE / federated / mock), history dropdown, and model selector are
+wired by the wrapper as opaque slots.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `repoId` | `string` | yes | Forwarded to `ChatMessage` for citation hrefs. |
+| `repoName` | `string` | no | Used in the empty-state heading. |
+| `messages` | `ChatUIMessage[]` | yes | UI-flattened transcript. |
+| `isStreaming` | `boolean` | yes | Toggles Send → Stop in the composer. |
+| `error` | `string \| null` | no | Inline banner above the transcript. |
+| `onSend` | `(text: string) => void \| Promise<void>` | yes | Fires when the user submits. |
+| `onCancel` | `() => void` | yes | Fires when the user clicks Stop; also used as "reset" in the wrapper. |
+| `modelSelectorSlot` | `ReactNode` | no | Rendered in the header bar AND empty-state composer. |
+| `historySlot` | `ReactNode` | no | Rendered in the header bar AND empty-state composer. |
+| `assistantAvatarSrc` | `string` | no | Forwarded to `ChatMessage`. |
+| `buildCitationHref` | `(source: SourceReference) => string` | no | Forwarded to `ChatMessage` → `SourceCitations`. |
+| `emptyStateLogoSrc` | `string` | no | Defaults to `/repowise-logo.png`. |
+| `suggestions` | `string[]` | no | Override default empty-state chip set. |
+
+`ChatUIMessage` is canonical (`@repowise-dev/types/chat`). Downstream
+consumers can wire a different transport (e.g. a multi-repo fan-out
+streaming endpoint) into the same shell by substituting the wrapper —
+that swap validates the data/presentation split.
+
+### `wiki/security-panel` — `SecurityPanel`
+
+Renders a list of security findings (or an empty-state message) for a
+single file. Wrapper owns the `useSWR(["security", repoId, filePath], …)`
+fetch from `listSecurityFindings`.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `SecurityFinding[] \| undefined` | yes | Empty / undefined → "No security signals." |
+| `isLoading` | `boolean` | no | While loading the shell renders nothing. |
+
+`SecurityFinding` is canonical (`@repowise-dev/types/security`).
+
+### `wiki/regenerate-button` — `RegenerateButton`
+
+Per-page regenerate affordance: a ghost button + a dialog that hosts a
+job-progress widget. Wrapper owns `regeneratePage`, sonner toasts,
+SWR cache invalidation, and the in-flight job id.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `onRegenerate` | `() => void` | yes | Fires when the user clicks regenerate. |
+| `isLoading` | `boolean` | no | Spinner + disabled while the request is in flight. |
+| `isInProgress` | `boolean` | no | When true, the progress dialog is open. |
+| `onDialogClose` | `() => void` | no | Fires when the dialog requests to close. |
+| `jobSlot` | `ReactNode` | no | Rendered inside the dialog — typically a job-progress widget. |
+
+### `wiki/version-history` — `VersionHistory`
+
+Collapsible per-page version-history panel with an inline LCS-based
+diff view. Wrapper owns the `usePageVersions(pageId)` SWR hook; the
+shell owns expand / select / show-diff UI state and the `computeLineDiff`
+helpers.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `versions` | `DocPageVersion[]` | yes | Archived prior versions, newest-first. |
+| `currentVersion` | `number` | yes | Version number of the currently-rendered page. |
+| `currentContent` | `string` | yes | Content used as the "new" side of the diff view. |
+| `isLoading` | `boolean` | no | While loading or empty the shell renders nothing. |
+
+`DocPageVersion` is canonical (`@repowise-dev/types/docs`).
+
+---
+
+## `graph/graph-doc-panel` — `GraphDocPanel`
+
+Side-panel that renders a wiki page for a graph node. Presentational —
+the consumer fetches the `DocPage` and supplies routing hrefs.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `nodeId` | `string` | yes | Used in the header subtitle when no `page.title` is available. |
+| `page` | `DocPage \| null \| undefined` | yes | Pre-fetched wiki page. |
+| `isLoading` | `boolean` | yes | Drives the spinner state. |
+| `error` | `unknown` | no | Truthy renders the empty state. |
+| `fullPageHref` | `string` | no | When provided, renders the "open full page" external-link icon. |
+| `browseDocsHref` | `string` | no | Fallback link inside the empty state. |
+| `onClose` | `() => void` | yes | Close affordance handler. |
+
+`DocPage` is canonical (`@repowise-dev/types/docs`).
+
+---
+
+## `graph/graph-community-panel` — `GraphCommunityPanel`
+
+Side-panel that lists a Leiden community's members + neighboring
+communities. Presentational — consumer fetches the detail.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `communityId` | `number` | yes | Surfaced in the header fallback when `community` is null. |
+| `community` | `CommunityDetail \| null \| undefined` | yes | Pre-fetched detail; `null` while loading or missing. |
+| `isLoading` | `boolean` | yes | Drives the skeleton state. |
+| `onClose` | `() => void` | yes | Close affordance handler. |
+
+`CommunityDetail` is canonical (`@repowise-dev/types/graph`).
+
+---
+
+## `graph/path-finder-panel` — `PathFinderPanel`
+
+Floating panel for picking two nodes and asking the engine for a path
+between them. Presentational — the consumer injects the search and
+path-find callbacks; the shell owns input + dropdown state and uses
+the `useDebounce` presentational hook for autocomplete.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `searchNodes` | `(query: string, limit: number) => Promise<NodeSearchResult[]>` | yes | Backs the autocomplete dropdown. |
+| `findPath` | `(from: string, to: string) => Promise<GraphPath>` | yes | Resolves the highlighted path. |
+| `onPathFound` | `(pathNodes: string[]) => void` | yes | Handed the resolved node ids. |
+| `onClear` | `() => void` | yes | Called when the user clears prior results. |
+| `onClose` | `() => void` | yes | Close affordance handler. |
+| `initialFrom` | `string` | no | Pre-fill from a parent context-menu. |
+| `initialTo` | `string` | no | Pre-fill from a parent context-menu. |
+
+`NodeSearchResult` and `GraphPath` are canonical (`@repowise-dev/types/graph`).
+
+---
+
+## `graph/graph-flow` — `GraphFlow`
+
+The full graph canvas. Presentational shell over `@xyflow/react` that
+handles view-mode, drill-down, search, hover/selection, context menu,
+execution-flow highlighting, and ELK layout. The consumer supplies
+every dataset (one per view mode) and renders the data-coupled child
+panels (path-finder, community-panel) via slot render props.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `moduleGraph` | `ModuleGraph \| undefined` | yes | Top-level module rollup; only required for module view at root. |
+| `isLoadingModuleGraph` | `boolean` | yes | Drives the skeleton when in module view. |
+| `fullGraph` | `GraphExport \| undefined` | yes | File-level graph — needed for drill-down and `full` view. |
+| `isLoadingFullGraph` | `boolean` | yes | |
+| `architectureGraph` | `GraphExport \| undefined` | yes | Entry-point / architecture view. |
+| `isLoadingArchitectureGraph` | `boolean` | yes | |
+| `deadCodeGraph` | `GraphExport \| undefined` | yes | Dead-code-only graph. |
+| `isLoadingDeadCodeGraph` | `boolean` | yes | |
+| `hotFilesGraph` | `GraphExport \| undefined` | yes | Hot-files-only graph. |
+| `isLoadingHotFilesGraph` | `boolean` | yes | |
+| `communities` | `CommunitySummaryItem[]` | no | Used for the legend's community labels. |
+| `executionFlows` | `ExecutionFlows` | no | Backs the flows side panel + trace highlighting. |
+| `onViewModeChange` | `(mode: ViewMode) => void` | no | Fires when the user changes view; consumer uses this to toggle data fetches. |
+| `onModulePathChange` | `(path: string[]) => void` | no | Fires on drill-down navigation. |
+| `onNodeClick` | `(nodeId, nodeType) => void \| Promise<void>` | no | File click handler. |
+| `onNodeViewDocs` | `(nodeId: string) => void` | no | "View docs" intent — surface a side panel. |
+| `renderPathFinder` | `(props) => ReactNode` | no | Render slot for the path-finder sub-panel; the shell only owns when to mount it. |
+| `renderCommunityPanel` | `(props) => ReactNode` | no | Render slot for the community detail sub-panel. |
+
+All graph datasets are canonical (`@repowise-dev/types/graph`).
