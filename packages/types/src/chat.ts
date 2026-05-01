@@ -45,6 +45,34 @@ export interface ChatMessage {
 }
 
 // ---------------------------------------------------------------------------
+// UI-flattened message shape (consumed by chat presentation components)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tool call as the chat UI sees it after streaming has accumulated state.
+ * Distinct from the wire `ChatToolCall` because it carries UI-only fields
+ * (`status`, `summary`, `artifact`) that are derived during the SSE merge.
+ */
+export interface ChatUIToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  summary?: string;
+  artifact?: { type: string; data: Record<string, unknown> };
+  status: "running" | "done" | "error";
+}
+
+export interface ChatUIMessage {
+  id: string;
+  serverId?: string;
+  role: "user" | "assistant";
+  text: string;
+  toolCalls: ChatUIToolCall[];
+  isStreaming: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Tool-result artifacts (discriminated union)
 // ---------------------------------------------------------------------------
 

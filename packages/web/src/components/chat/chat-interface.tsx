@@ -6,10 +6,10 @@ import { Send, StopCircle, PanelRight, MessageSquare } from "lucide-react";
 import { Button } from "@repowise/ui/ui/button";
 import { ScrollArea } from "@repowise/ui/ui/scroll-area";
 import { useChat } from "@/lib/hooks/use-chat";
-import { ChatMessage } from "./chat-message";
+import { ChatMessage } from "@repowise/ui/chat/chat-message";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
-import { ArtifactPanel, type Artifact } from "./artifact-panel";
+import { ArtifactPanel, type Artifact } from "@repowise/ui/chat/artifact-panel";
 import { cn } from "@/lib/utils/cn";
 
 interface ChatInterfaceProps {

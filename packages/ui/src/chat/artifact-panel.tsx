@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { X } from "lucide-react";
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 import { ChatMarkdown } from "./chat-markdown";
+import { MermaidDiagram } from "../wiki/mermaid-diagram";
 
 export interface Artifact {
   type: string;
@@ -23,10 +24,10 @@ export function ArtifactPanel({ artifacts, open, onClose }: ArtifactPanelProps) 
   if (!open || artifacts.length === 0) return null;
 
   const active = artifacts[Math.min(activeIdx, artifacts.length - 1)];
+  if (!active) return null;
 
   return (
     <>
-      {/* Mobile: full-screen overlay */}
       <div className="fixed inset-0 z-[var(--z-modal)] bg-black/50 lg:hidden" onClick={onClose} />
 
       <div
@@ -37,7 +38,6 @@ export function ArtifactPanel({ artifacts, open, onClose }: ArtifactPanelProps) 
           open ? "translate-x-0" : "translate-x-full",
         )}
       >
-        {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-default)] shrink-0">
           <span className="text-xs font-medium text-[var(--color-text-primary)]">
             Artifacts
@@ -50,7 +50,6 @@ export function ArtifactPanel({ artifacts, open, onClose }: ArtifactPanelProps) 
           </button>
         </div>
 
-        {/* Tabs */}
         {artifacts.length > 1 && (
           <div className="flex gap-0 border-b border-[var(--color-border-default)] shrink-0 overflow-x-auto px-2">
             {artifacts.map((art, idx) => (
@@ -70,7 +69,6 @@ export function ArtifactPanel({ artifacts, open, onClose }: ArtifactPanelProps) 
           </div>
         )}
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
           <ArtifactRenderer artifact={active} />
         </div>
@@ -86,17 +84,16 @@ function ArtifactRenderer({ artifact }: { artifact: Artifact }) {
     case "overview":
     case "wiki_page": {
       const content =
-        (data as Record<string, unknown>).content_md as string ??
-        (data as Record<string, unknown>).content as string ??
+        (data.content_md as string) ??
+        (data.content as string) ??
         "";
-      // For get_context with targets
       const targets = data.targets as Record<string, Record<string, unknown>> | undefined;
       if (targets) {
         return (
           <div className="space-y-4">
             {Object.entries(targets).map(([target, info]) => {
-              const docs = (info as Record<string, unknown>).docs as Record<string, unknown> | undefined;
-              const md = docs?.content_md as string ?? "";
+              const docs = info.docs as Record<string, unknown> | undefined;
+              const md = (docs?.content_md as string) ?? "";
               return (
                 <div key={target}>
                   <h3 className="text-xs font-mono text-[var(--color-accent-primary)] mb-2">
@@ -119,7 +116,7 @@ function ArtifactRenderer({ artifact }: { artifact: Artifact }) {
     case "diagram": {
       const mermaid = (data.mermaid_syntax as string) ?? "";
       if (mermaid) {
-        return <MermaidBlock chart={mermaid} />;
+        return <MermaidDiagram chart={mermaid} />;
       }
       return <RawJson data={data} />;
     }
@@ -169,54 +166,5 @@ function RawJson({ data }: { data: Record<string, unknown> }) {
     <pre className="text-[10px] font-mono text-[var(--color-text-secondary)] overflow-auto max-h-[70vh] whitespace-pre-wrap break-words">
       {JSON.stringify(data, null, 2)}
     </pre>
-  );
-}
-
-function MermaidBlock({ chart }: { chart: string }) {
-  // Use dynamic import via useEffect for Mermaid (same pattern as wiki)
-  const [svg, setSvg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // Lazy load mermaid
-  import("mermaid").then((mermaid) => {
-    const mermaidInstance = mermaid.default;
-    mermaidInstance.initialize({
-      startOnLoad: false,
-      theme: "dark",
-      themeVariables: {
-        background: "var(--color-bg-surface)",
-        primaryColor: "#5B9CF6",
-        primaryTextColor: "#e2e8f0",
-        lineColor: "#334155",
-      },
-    });
-    const id = `mermaid-artifact-${Math.random().toString(36).slice(2)}`;
-    mermaidInstance
-      .render(id, chart)
-      .then(({ svg: renderedSvg }) => setSvg(renderedSvg))
-      .catch((err: Error) => setError(err.message));
-  });
-
-  if (error) {
-    return (
-      <div className="rounded border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400">
-        Diagram error: {error}
-      </div>
-    );
-  }
-
-  if (svg) {
-    return (
-      <div
-        className="flex justify-center overflow-x-auto rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4"
-        dangerouslySetInnerHTML={{ __html: svg }}
-      />
-    );
-  }
-
-  return (
-    <div className="flex justify-center p-4">
-      <div className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--color-accent-primary)] border-t-transparent" />
-    </div>
   );
 }

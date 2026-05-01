@@ -3,29 +3,12 @@
 import { useCallback, useRef, useState } from "react";
 import { postChatMessage, getConversation } from "@/lib/api/chat";
 import type { ChatSSEEvent } from "@/lib/api/types";
+import type {
+  ChatUIToolCall as ChatToolCall,
+  ChatUIMessage as ChatMessage,
+} from "@repowise/types/chat";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface ChatToolCall {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-  result?: Record<string, unknown>;
-  summary?: string;
-  artifact?: { type: string; data: Record<string, unknown> };
-  status: "running" | "done" | "error";
-}
-
-export interface ChatMessage {
-  id: string;
-  serverId?: string;
-  role: "user" | "assistant";
-  text: string;
-  toolCalls: ChatToolCall[];
-  isStreaming: boolean;
-}
+export type { ChatToolCall, ChatMessage };
 
 export interface UseChatState {
   messages: ChatMessage[];

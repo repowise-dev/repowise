@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo } from "react";
-import Link from "next/link";
 import {
   FileText,
   FolderOpen,
@@ -10,12 +9,7 @@ import {
   LayoutGrid,
   ArrowUpRight,
 } from "lucide-react";
-import { cn } from "@/lib/utils/cn";
-import type { ChatToolCall } from "@/lib/hooks/use-chat";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import type { ChatUIToolCall } from "@repowise/types/chat";
 
 export interface SourceReference {
   id: string;
@@ -27,13 +21,9 @@ export interface SourceReference {
   toolName: string;
 }
 
-// ---------------------------------------------------------------------------
-// Extract sources from tool call results
-// ---------------------------------------------------------------------------
-
 export function extractSources(
-  toolCalls: ChatToolCall[],
-  repoId: string,
+  toolCalls: ChatUIToolCall[],
+  _repoId: string,
 ): SourceReference[] {
   const seen = new Set<string>();
   const sources: SourceReference[] = [];
@@ -41,9 +31,8 @@ export function extractSources(
   for (const tc of toolCalls) {
     if (tc.status !== "done" || !tc.result) continue;
 
-    const result = tc.result as Record<string, unknown>;
+    const result = tc.result;
 
-    // search_codebase → results array
     if (tc.name === "search_codebase") {
       const results = (result.results as Array<Record<string, unknown>>) ?? [];
       for (const r of results) {
@@ -62,7 +51,6 @@ export function extractSources(
       }
     }
 
-    // get_context → targets dict with docs
     if (tc.name === "get_context") {
       const targets = result.targets as Record<string, Record<string, unknown>> | undefined;
       if (targets) {
@@ -84,7 +72,6 @@ export function extractSources(
       }
     }
 
-    // get_overview → single overview page
     if (tc.name === "get_overview") {
       const title = result.title as string;
       if (title) {
@@ -103,7 +90,6 @@ export function extractSources(
       }
     }
 
-    // get_why → decisions with page references
     if (tc.name === "get_why") {
       const decisions = (result.decisions as Array<Record<string, unknown>>)
         ?? (result.matching_decisions as Array<Record<string, unknown>>)
@@ -126,7 +112,6 @@ export function extractSources(
       }
     }
 
-    // get_architecture_diagram — link to the diagram page
     if (tc.name === "get_architecture_diagram") {
       const pageId = "architecture_diagram:";
       if (!seen.has(pageId)) {
@@ -146,10 +131,6 @@ export function extractSources(
   return sources;
 }
 
-// ---------------------------------------------------------------------------
-// Icon helper
-// ---------------------------------------------------------------------------
-
 const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   repo_overview: Globe,
   architecture_diagram: LayoutGrid,
@@ -159,15 +140,11 @@ const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
 
 function SourceIcon({ pageType, className }: { pageType: string; className?: string }) {
   const Icon = TYPE_ICON[pageType] ?? FileText;
-  return <Icon className={className} />;
+  return <Icon {...(className ? { className } : {})} />;
 }
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
 interface SourceCitationsProps {
-  toolCalls: ChatToolCall[];
+  toolCalls: ChatUIToolCall[];
   repoId: string;
 }
 
@@ -186,7 +163,7 @@ export function SourceCitations({ toolCalls, repoId }: SourceCitationsProps) {
       </p>
       <div className="flex flex-wrap gap-1.5">
         {sources.map((source, idx) => (
-          <Link
+          <a
             key={source.id}
             href={`/repos/${repoId}/wiki/${encodeURIComponent(source.pageId)}`}
             className="group inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[10px] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] transition-all"
@@ -202,7 +179,7 @@ export function SourceCitations({ toolCalls, repoId }: SourceCitationsProps) {
               </span>
             )}
             <ArrowUpRight className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-          </Link>
+          </a>
         ))}
       </div>
     </div>

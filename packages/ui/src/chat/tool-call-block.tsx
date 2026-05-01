@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, CheckCircle2, ExternalLink } from "lucide-react";
-import { cn } from "@/lib/utils/cn";
-import type { ChatToolCall } from "@/lib/hooks/use-chat";
+import type { ChatUIToolCall } from "@repowise/types/chat";
 
 const TOOL_LABELS: Record<string, string> = {
   get_overview: "Getting codebase overview",
@@ -17,7 +16,7 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 interface ToolCallBlockProps {
-  toolCall: ChatToolCall;
+  toolCall: ChatUIToolCall;
   onViewArtifact?: () => void;
 }
 

@@ -353,6 +353,76 @@ Returns `null` when fewer than two headings are found.
 |------|------|----------|
 | `content` | `string` | yes |
 
+## `chat/*` — Conversation rendering primitives
+
+The chat UI types are sourced from `@repowise/types/chat` —
+`ChatUIMessage` and `ChatUIToolCall` are the post-streaming flattened
+shapes consumed by these components. The wire types (`ChatMessage`,
+`ChatToolCall`) live in the same module; consumers are expected to
+keep the SSE merge in their own data layer.
+
+### `chat/chat-markdown` — `ChatMarkdown`
+
+Compact markdown renderer (`react-markdown` + `remark-gfm`) tuned for
+chat density. Code fences are inline `<pre><code>` blocks — no copy
+affordance.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `content` | `string` | yes |
+
+### `chat/tool-call-block` — `ToolCallBlock`
+
+Collapsible card showing a single tool invocation. Friendly labels for
+known tool names; falls back to the raw name. Shows a "View" button
+that fires `onViewArtifact` when an artifact is attached.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `toolCall` | `ChatUIToolCall` (`@repowise/types/chat`) | yes |
+| `onViewArtifact` | `() => void` | no |
+
+### `chat/source-citations` — `SourceCitations`
+
+Renders an inline list of source-page links extracted from
+`tool_calls[]`. Also exports `extractSources(toolCalls, repoId)` for
+callers that need the same shape outside of rendering. Uses plain
+`<a>` (no Next-only `Link`) so the package stays framework-neutral —
+consumers wire prefetching at the parent level if needed.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `toolCalls` | `ChatUIToolCall[]` | yes |
+| `repoId` | `string` | yes |
+
+### `chat/chat-message` — `ChatMessage`
+
+Renders one user or assistant turn: avatar, message bubble for user,
+tool-call cards + markdown + citations for assistant. Streaming
+indicator shows when `message.isStreaming` and there's no text yet.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `message` | `ChatUIMessage` | yes | |
+| `repoId` | `string` | yes | Forwarded to `SourceCitations` for link targets. |
+| `onViewArtifact` | `(artifact: { type; data }) => void` | no | Wired through to `ToolCallBlock` when an artifact is attached. |
+| `assistantAvatarSrc` | `string` | no | Defaults to `/repowise-logo.png`. Override in consumers that don't host that asset. |
+
+### `chat/artifact-panel` — `ArtifactPanel`
+
+Right-edge slide-over panel. Switches on `artifact.type` to pick a
+renderer: markdown for `overview` / `wiki_page`, mermaid (via
+`@repowise/ui/wiki/mermaid-diagram`) for `diagram`, list for
+`search_results`, JSON pretty-print fallback otherwise.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `artifacts` | `Artifact[]` (locally-defined wrapper: `{ type; title; data }`) | yes |
+| `open` | `boolean` | yes |
+| `onClose` | `() => void` | yes |
+
+---
+
 ## `wiki/wiki-markdown` — `WikiMarkdown`
 
 Client-side markdown renderer (`react-markdown` + `remark-gfm`) with

@@ -1,25 +1,30 @@
 "use client";
 
-import Image from "next/image";
 import { User } from "lucide-react";
-import { cn } from "@/lib/utils/cn";
+import { cn } from "../lib/cn";
 import { ToolCallBlock } from "./tool-call-block";
 import { ChatMarkdown } from "./chat-markdown";
 import { SourceCitations } from "./source-citations";
-import type { ChatMessage as ChatMessageType } from "@/lib/hooks/use-chat";
+import type { ChatUIMessage } from "@repowise/types/chat";
 
 interface ChatMessageProps {
-  message: ChatMessageType;
+  message: ChatUIMessage;
   repoId: string;
   onViewArtifact?: (artifact: { type: string; data: Record<string, unknown> }) => void;
+  /** Optional avatar src for the assistant. Defaults to `/repowise-logo.png`. */
+  assistantAvatarSrc?: string;
 }
 
-export function ChatMessage({ message, repoId, onViewArtifact }: ChatMessageProps) {
+export function ChatMessage({
+  message,
+  repoId,
+  onViewArtifact,
+  assistantAvatarSrc = "/repowise-logo.png",
+}: ChatMessageProps) {
   const isUser = message.role === "user";
 
   return (
     <div className={cn("flex gap-3.5", isUser && "flex-row-reverse")}>
-      {/* Avatar */}
       <div
         className={cn(
           "flex shrink-0 items-center justify-center rounded-full mt-0.5",
@@ -31,8 +36,9 @@ export function ChatMessage({ message, repoId, onViewArtifact }: ChatMessageProp
         {isUser ? (
           <User className="h-4 w-4 text-white" />
         ) : (
-          <Image
-            src="/repowise-logo.png"
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            src={assistantAvatarSrc}
             alt="repowise"
             width={22}
             height={22}
@@ -41,53 +47,49 @@ export function ChatMessage({ message, repoId, onViewArtifact }: ChatMessageProp
         )}
       </div>
 
-      {/* Content */}
       <div
         className={cn(
           "flex-1 min-w-0",
           isUser && "flex flex-col items-end",
         )}
       >
-        {/* User message */}
         {isUser && (
           <div className="rounded-2xl rounded-tr-sm bg-[var(--color-accent-primary)] px-4 py-2.5 text-sm text-white max-w-[85%]">
             {message.text}
           </div>
         )}
 
-        {/* Assistant message */}
         {!isUser && (
           <div className="max-w-full space-y-1.5">
-            {/* Tool calls */}
             {message.toolCalls.length > 0 && (
               <div className="space-y-1">
-                {message.toolCalls.map((tc) => (
-                  <ToolCallBlock
-                    key={tc.id}
-                    toolCall={tc}
-                    onViewArtifact={
-                      tc.artifact && onViewArtifact
-                        ? () => onViewArtifact(tc.artifact!)
-                        : undefined
-                    }
-                  />
-                ))}
+                {message.toolCalls.map((tc) => {
+                  const artifact = tc.artifact;
+                  const handler =
+                    artifact && onViewArtifact
+                      ? () => onViewArtifact(artifact)
+                      : undefined;
+                  return (
+                    <ToolCallBlock
+                      key={tc.id}
+                      toolCall={tc}
+                      {...(handler ? { onViewArtifact: handler } : {})}
+                    />
+                  );
+                })}
               </div>
             )}
 
-            {/* Text content */}
             {message.text && (
               <div className="prose-chat">
                 <ChatMarkdown content={message.text} />
               </div>
             )}
 
-            {/* Source citations */}
             {!message.isStreaming && message.toolCalls.length > 0 && (
               <SourceCitations toolCalls={message.toolCalls} repoId={repoId} />
             )}
 
-            {/* Streaming cursor */}
             {message.isStreaming &&
               !message.text &&
               message.toolCalls.length === 0 && (

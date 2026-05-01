@@ -24,6 +24,7 @@
     "./wiki": "./src/wiki/index.ts",
     "./wiki/*": "./src/wiki/*.tsx",
     "./chat": "./src/chat/index.ts",
+    "./chat/*": "./src/chat/*.tsx",
     "./dashboard": "./src/dashboard/index.ts",
     "./workspace": "./src/workspace/index.ts",
     "./jobs": "./src/jobs/index.ts",
