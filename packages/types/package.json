@@ -1,0 +1,27 @@
+{
+  "name": "@repowise/types",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Canonical TypeScript data contracts shared between OSS web (packages/web) and hosted web (frontend/, future packages/hosted-web)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./graph": "./src/graph.ts",
+    "./git": "./src/git.ts",
+    "./docs": "./src/docs.ts",
+    "./decisions": "./src/decisions.ts",
+    "./dead-code": "./src/dead-code.ts",
+    "./symbols": "./src/symbols.ts",
+    "./chat": "./src/chat.ts"
+  },
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test": "vitest run --typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

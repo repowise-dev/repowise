@@ -4,13 +4,16 @@
   "private": true,
   "description": "Root workspace configuration for repowise monorepo",
   "workspaces": [
+    "packages/types",
+    "packages/ui",
     "packages/web"
   ],
   "scripts": {
     "dev": "cd packages/web && npm run dev",
-    "build": "cd packages/web && npm run build",
-    "lint": "cd packages/web && npm run lint",
-    "type-check": "cd packages/web && npm run type-check"
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "type-check": "npm run type-check --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
   },
   "engines": {
     "node": ">=20.0.0"
