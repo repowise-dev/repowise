@@ -1,9 +1,10 @@
 /**
  * Canonical decision-record types.
  *
- * Canonical source: OSS engine `DecisionRecordResponse`. Hosted's `DecisionEntry`
- * is missing `repository_id` and uses `string` for `status`/`source` instead of
- * union literals — adapters fill defaults.
+ * Canonical source: engine `DecisionRecordResponse`. Some downstream backends
+ * emit a leaner `DecisionEntry` shape that omits `repository_id` and types
+ * `status`/`source` as bare `string` instead of literal unions — consumer
+ * adapters fill defaults before passing data to components.
  */
 
 export type DecisionStatus =
