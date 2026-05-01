@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Command } from "cmdk";
 import { Search, LayoutDashboard, Settings, BookOpen, Layers, Link2, GitMerge } from "lucide-react";
 import { useSearch } from "@/lib/hooks/use-search";
-import { truncatePath } from "@/lib/utils/format";
+import { truncatePath } from "@repowise/ui/lib/format";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface CommandPaletteProps {

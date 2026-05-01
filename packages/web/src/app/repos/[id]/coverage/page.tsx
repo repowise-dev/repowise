@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { FileCheck } from "lucide-react";
-import { CoverageDonut } from "@/components/coverage/coverage-donut";
-import { FreshnessTable } from "@/components/coverage/freshness-table";
+import { CoverageDonut } from "@repowise/ui/coverage/coverage-donut";
+import { FreshnessTableWithRegenerate } from "@/components/coverage/freshness-table-wrapper";
 import { StatCard } from "@repowise/ui/shared/stat-card";
 import { listPages } from "@/lib/api/pages";
-import { formatNumber } from "@/lib/utils/format";
+import { formatNumber } from "@repowise/ui/lib/format";
 
 export const metadata: Metadata = { title: "Coverage" };
 
@@ -94,7 +94,7 @@ export default async function CoveragePage({
         </div>
       )}
 
-      <FreshnessTable pages={pages} />
+      <FreshnessTableWithRegenerate pages={pages} />
     </div>
   );
 }

@@ -16,6 +16,7 @@
     "./docs": "./src/docs/index.ts",
     "./symbols": "./src/symbols/index.ts",
     "./coverage": "./src/coverage/index.ts",
+    "./coverage/*": "./src/coverage/*.tsx",
     "./wiki": "./src/wiki/index.ts",
     "./chat": "./src/chat/index.ts",
     "./dashboard": "./src/dashboard/index.ts",
@@ -26,7 +27,9 @@
     "./hooks": "./src/hooks/index.ts",
     "./ui": "./src/ui/index.ts",
     "./ui/*": "./src/ui/*.tsx",
-    "./lib/cn": "./src/lib/cn.ts"
+    "./lib/cn": "./src/lib/cn.ts",
+    "./lib/confidence": "./src/lib/confidence.ts",
+    "./lib/format": "./src/lib/format.ts"
   },
   "scripts": {
     "type-check": "tsc --noEmit",
@@ -48,6 +51,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
+    "recharts": "^3.8.1",
     "tailwind-merge": "^3.5.0"
   },
   "peerDependencies": {

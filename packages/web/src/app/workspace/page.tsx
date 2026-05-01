@@ -17,7 +17,7 @@ import { RepoCard } from "@/components/workspace/repo-card";
 import { CrossRepoSummary } from "@/components/workspace/cross-repo-summary";
 import { CoChangeTable } from "@/components/workspace/co-change-table";
 import { ContractTypeBadge } from "@/components/workspace/contract-type-badge";
-import { formatNumber } from "@/lib/utils/format";
+import { formatNumber } from "@repowise/ui/lib/format";
 
 export const metadata: Metadata = { title: "Workspace" };
 

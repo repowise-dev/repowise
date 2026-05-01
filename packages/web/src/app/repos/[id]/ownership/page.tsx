@@ -13,7 +13,7 @@ import { ContributorNetwork } from "@/components/git/contributor-network";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { getOwnership, getGitSummary, getHotspots } from "@/lib/api/git";
-import { formatNumber } from "@/lib/utils/format";
+import { formatNumber } from "@repowise/ui/lib/format";
 import { cn } from "@/lib/utils/cn";
 import type { OwnershipEntry, GitSummaryResponse, HotspotResponse } from "@/lib/api/types";
 

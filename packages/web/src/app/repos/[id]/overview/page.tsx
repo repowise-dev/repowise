@@ -29,7 +29,7 @@ import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
 import { CommitCategorySparkline } from "@/components/git/commit-category-sparkline";
 import { OwnershipTreemap as OwnershipTreemapGit } from "@/components/git/ownership-treemap";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
-import { formatNumber } from "@/lib/utils/format";
+import { formatNumber } from "@repowise/ui/lib/format";
 import type {
   RepoStatsResponse,
   GitSummaryResponse,

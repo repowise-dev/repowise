@@ -14,7 +14,7 @@ import { SymbolDrawer } from "./symbol-drawer";
 import { listSymbols } from "@/lib/api/symbols";
 import { getGraph } from "@/lib/api/graph";
 import { useDebounce } from "@/lib/hooks/use-debounce";
-import { truncatePath } from "@/lib/utils/format";
+import { truncatePath } from "@repowise/ui/lib/format";
 import { cn } from "@/lib/utils/cn";
 import type { SymbolResponse, GraphExportResponse } from "@/lib/api/types";
 

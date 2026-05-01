@@ -87,7 +87,7 @@ export function truncatePath(path: string, maxChars = 60): string {
     if (candidate.length <= maxChars) return candidate;
   }
   // Just filename
-  const filename = parts[parts.length - 1];
+  const filename = parts[parts.length - 1] ?? path;
   return filename.length <= maxChars ? `…/${filename}` : `…${filename.slice(-(maxChars - 1))}`;
 }
 

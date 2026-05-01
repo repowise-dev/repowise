@@ -6,7 +6,7 @@ import { Badge } from "@repowise/ui/ui/badge";
 import { Input } from "@repowise/ui/ui/input";
 import { EmptyState } from "@repowise/ui/shared/empty-state";
 import { ChurnBar } from "./churn-bar";
-import { formatLOC } from "@/lib/utils/format";
+import { formatLOC } from "@repowise/ui/lib/format";
 import { cn } from "@/lib/utils/cn";
 import type { HotspotResponse } from "@/lib/api/types";
 

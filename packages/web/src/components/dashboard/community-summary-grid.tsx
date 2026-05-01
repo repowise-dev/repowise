@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { Badge } from "@repowise/ui/ui/badge";
 import { ScrollArea } from "@repowise/ui/ui/scroll-area";
 import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { truncatePath } from "@/lib/utils/format";
+import { truncatePath } from "@repowise/ui/lib/format";
 import { useCommunityDetail } from "@/lib/hooks/use-graph";
 import { cn } from "@/lib/utils/cn";
 import type { CommunitySummaryItem } from "@/lib/api/types";

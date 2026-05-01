@@ -14,9 +14,9 @@ import {
   Filter,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
-import { statusBadgeClasses } from "@/lib/utils/confidence";
+import { statusBadgeClasses } from "@repowise/ui/lib/confidence";
 import type { PageResponse } from "@/lib/api/types";
-import type { FreshnessStatus } from "@/lib/utils/confidence";
+import type { FreshnessStatus } from "@repowise/ui/lib/confidence";
 
 // ---------------------------------------------------------------------------
 // Types

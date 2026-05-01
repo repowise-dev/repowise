@@ -78,7 +78,7 @@ export const LANGUAGE_COLORS: Record<string, string> = {
 };
 
 export function languageColor(lang: string): string {
-  return LANGUAGE_COLORS[lang.toLowerCase()] ?? LANGUAGE_COLORS.other;
+  return LANGUAGE_COLORS[lang.toLowerCase()] ?? LANGUAGE_COLORS.other ?? "#8B5CF6";
 }
 
 /** Color hex for a graph edge type */

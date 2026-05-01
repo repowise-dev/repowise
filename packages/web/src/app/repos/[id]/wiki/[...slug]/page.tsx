@@ -14,7 +14,7 @@ import { GitHistoryPanel } from "@/components/wiki/git-history-panel";
 import { SecurityPanel } from "@/components/wiki/security-panel";
 import { Badge } from "@repowise/ui/ui/badge";
 import { Separator } from "@repowise/ui/ui/separator";
-import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
+import { formatRelativeTime, formatTokens } from "@repowise/ui/lib/format";
 import { CoChangeList } from "@/components/git/co-change-list";
 import { Hash, Cpu, StickyNote, Network } from "lucide-react";
 import type { GraphMetricsResponse } from "@/lib/api/types";

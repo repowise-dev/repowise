@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { LANGUAGE_COLORS } from "@/lib/utils/confidence";
+import { LANGUAGE_COLORS } from "@repowise/ui/lib/confidence";
 import type { ColorMode, ViewMode } from "./graph-toolbar";
 
 const COMMUNITY_SAMPLE = [

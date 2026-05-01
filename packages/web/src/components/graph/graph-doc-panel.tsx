@@ -17,7 +17,7 @@ import { Badge } from "@repowise/ui/ui/badge";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
 import { usePage } from "@/lib/hooks/use-page";
-import { formatRelativeTime } from "@/lib/utils/format";
+import { formatRelativeTime } from "@repowise/ui/lib/format";
 
 interface GraphDocPanelProps {
   repoId: string;

@@ -7,8 +7,8 @@ import {
   statusBadgeClasses,
   statusLabel,
   type FreshnessStatus,
-} from "@/lib/utils/confidence";
-import { formatConfidence } from "@/lib/utils/format";
+} from "@repowise/ui/lib/confidence";
+import { formatConfidence } from "@repowise/ui/lib/format";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise/ui/ui/tooltip";
 
 interface ConfidenceBadgeProps {

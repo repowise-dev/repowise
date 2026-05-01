@@ -1,4 +1,4 @@
-import { formatNumber } from "@/lib/utils/format";
+import { formatNumber } from "@repowise/ui/lib/format";
 import type { DeadCodeSummaryResponse } from "@/lib/api/types";
 
 interface SummaryBarProps {

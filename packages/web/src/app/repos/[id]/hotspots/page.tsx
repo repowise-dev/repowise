@@ -8,7 +8,7 @@ import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
 import { RiskDistributionChart } from "@/components/git/risk-distribution-chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { getHotspots, getGitSummary } from "@/lib/api/git";
-import { formatNumber } from "@/lib/utils/format";
+import { formatNumber } from "@repowise/ui/lib/format";
 
 export const metadata: Metadata = { title: "Hotspots" };
 

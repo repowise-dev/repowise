@@ -1,32 +1,47 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@repowise/ui/ui/button";
-import { Badge } from "@repowise/ui/ui/badge";
-import { EmptyState } from "@repowise/ui/shared/empty-state";
-import { regeneratePage } from "@/lib/api/pages";
-import { statusBadgeClasses, statusLabel } from "@/lib/utils/confidence";
-import { truncatePath, formatConfidence, formatRelativeTime } from "@/lib/utils/format";
-import { cn } from "@/lib/utils/cn";
-import type { PageResponse } from "@/lib/api/types";
-import type { FreshnessStatus } from "@/lib/utils/confidence";
+import { Button } from "../ui/button";
+import { EmptyState } from "../shared/empty-state";
+import { cn } from "../lib/cn";
+import {
+  statusBadgeClasses,
+  statusLabel,
+  type FreshnessStatus,
+} from "../lib/confidence";
+import {
+  formatConfidence,
+  formatRelativeTime,
+} from "../lib/format";
+import type { DocPage } from "@repowise/types/docs";
 
-type Filter = "all" | FreshnessStatus;
+type Filter = "all" | "fresh" | "stale" | "outdated";
 
-interface FreshnessTableProps {
-  pages: PageResponse[];
+export interface FreshnessTableProps {
+  /** Pages to render. Caller is responsible for fetching. */
+  pages: DocPage[];
+  /**
+   * Invoked when the user clicks "Regenerate" on a row. Caller wires this
+   * to whichever API client is appropriate; the table only manages the
+   * per-row pending UI state. Omit to hide the regenerate button.
+   */
+  onRegenerate?: (pageId: string) => Promise<void>;
 }
 
-export function FreshnessTable({ pages }: FreshnessTableProps) {
+export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
   const [filter, setFilter] = useState<Filter>("all");
   const [regenerating, setRegenerating] = useState<Set<string>>(new Set());
 
-  const filtered = filter === "all" ? pages : pages.filter((p) => p.freshness_status === filter);
+  const filtered =
+    filter === "all"
+      ? pages
+      : pages.filter((p) => p.freshness_status === filter);
 
   const handleRegenerate = async (pageId: string) => {
+    if (!onRegenerate) return;
     setRegenerating((prev) => new Set(prev).add(pageId));
     try {
-      await regeneratePage(pageId);
+      await onRegenerate(pageId);
     } finally {
       setRegenerating((prev) => {
         const next = new Set(prev);
@@ -38,10 +53,12 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
 
   return (
     <div className="space-y-4">
-      {/* Filter tabs */}
       <div role="tablist" aria-label="Freshness filter" className="flex items-center gap-1">
         {(["all", "fresh", "stale", "outdated"] as Filter[]).map((f) => {
-          const count = f === "all" ? pages.length : pages.filter((p) => p.freshness_status === f).length;
+          const count =
+            f === "all"
+              ? pages.length
+              : pages.filter((p) => p.freshness_status === f).length;
           return (
             <button
               key={f}
@@ -135,15 +152,17 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
                       {formatRelativeTime(page.updated_at)}
                     </td>
                     <td className="px-4 py-2.5">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={regenerating.has(page.id)}
-                        onClick={() => handleRegenerate(page.id)}
-                        className="h-6 px-2 text-xs"
-                      >
-                        {regenerating.has(page.id) ? "…" : "Regenerate"}
-                      </Button>
+                      {onRegenerate && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={regenerating.has(page.id)}
+                          onClick={() => handleRegenerate(page.id)}
+                          className="h-6 px-2 text-xs"
+                        >
+                          {regenerating.has(page.id) ? "…" : "Regenerate"}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 );

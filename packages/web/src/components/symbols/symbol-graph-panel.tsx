@@ -5,7 +5,7 @@ import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { ScrollArea } from "@repowise/ui/ui/scroll-area";
 import { Separator } from "@repowise/ui/ui/separator";
 import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
-import { truncatePath } from "@/lib/utils/format";
+import { truncatePath } from "@repowise/ui/lib/format";
 import { cn } from "@/lib/utils/cn";
 import type { SymbolResponse, CallerCalleeEntry } from "@/lib/api/types";
 

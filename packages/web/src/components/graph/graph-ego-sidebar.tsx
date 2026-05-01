@@ -2,7 +2,7 @@
 
 import { X, GitCommit, User, Clock, ArrowDownToLine, ArrowUpFromLine, FileText } from "lucide-react";
 import { Button } from "@repowise/ui/ui/button";
-import { formatRelativeTime } from "@/lib/utils/format";
+import { formatRelativeTime } from "@repowise/ui/lib/format";
 import type { EgoGraphResponse } from "@/lib/api/types";
 
 interface GraphEgoSidebarProps {

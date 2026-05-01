@@ -8,8 +8,12 @@ interface CoverageDonutProps {
   outdated: number;
 }
 
-const COLORS = ["#22c55e", "#eab308", "#ef4444"];
-const LABELS = ["Fresh", "Stale", "Outdated"];
+const COLORS: Record<string, string> = {
+  Fresh: "#22c55e",
+  Stale: "#eab308",
+  Outdated: "#ef4444",
+};
+const FALLBACK_COLOR = "#22c55e";
 
 export function CoverageDonut({ fresh, stale, outdated }: CoverageDonutProps) {
   const total = fresh + stale + outdated;
@@ -39,7 +43,7 @@ export function CoverageDonut({ fresh, stale, outdated }: CoverageDonutProps) {
             {data.map((entry) => (
               <Cell
                 key={entry.name}
-                fill={COLORS[LABELS.indexOf(entry.name)]}
+                fill={COLORS[entry.name] ?? FALLBACK_COLOR}
                 strokeWidth={0}
               />
             ))}
@@ -52,9 +56,12 @@ export function CoverageDonut({ fresh, stale, outdated }: CoverageDonutProps) {
               fontSize: "12px",
               color: "var(--color-text-primary)",
             }}
-            formatter={(value: number) => [
-              `${value} pages (${total > 0 ? Math.round((value / total) * 100) : 0}%)`,
-            ]}
+            formatter={(value) => {
+              const n = typeof value === "number" ? value : 0;
+              return [
+                `${n} pages (${total > 0 ? Math.round((n / total) * 100) : 0}%)`,
+              ];
+            }}
           />
         </PieChart>
       </ResponsiveContainer>

@@ -3,7 +3,7 @@ import { Landmark } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { Badge } from "@repowise/ui/ui/badge";
 import type { DecisionRecordResponse } from "@/lib/api/types";
-import { formatRelativeTime } from "@/lib/utils/format";
+import { formatRelativeTime } from "@repowise/ui/lib/format";
 
 interface DecisionsTimelineProps {
   decisions: DecisionRecordResponse[];

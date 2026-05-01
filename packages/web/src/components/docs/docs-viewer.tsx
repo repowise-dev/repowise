@@ -27,7 +27,7 @@ import { Button } from "@repowise/ui/ui/button";
 import { Badge } from "@repowise/ui/ui/badge";
 import { ScrollArea } from "@repowise/ui/ui/scroll-area";
 import { Skeleton } from "@repowise/ui/ui/skeleton";
-import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
+import { formatRelativeTime, formatTokens } from "@repowise/ui/lib/format";
 import { downloadTextFile } from "@/lib/utils/download";
 import { useGraphMetrics, useCallersCallees } from "@/lib/hooks/use-graph";
 import type { PageResponse } from "@/lib/api/types";

@@ -5,7 +5,7 @@ import { Badge } from "@repowise/ui/ui/badge";
 import { ScrollArea } from "@repowise/ui/ui/scroll-area";
 import { Skeleton } from "@repowise/ui/ui/skeleton";
 import { useCommunityDetail } from "@/lib/hooks/use-graph";
-import { truncatePath } from "@/lib/utils/format";
+import { truncatePath } from "@repowise/ui/lib/format";
 
 interface GraphCommunityPanelProps {
   repoId: string;

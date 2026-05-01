@@ -20,8 +20,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@repowise/ui/ui/card";
 import { Badge } from "@repowise/ui/ui/badge";
 import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
 import { EmptyState } from "@repowise/ui/shared/empty-state";
-import { formatRelativeTime, formatNumber } from "@/lib/utils/format";
-import { scoreToStatus } from "@/lib/utils/confidence";
+import { formatRelativeTime, formatNumber } from "@repowise/ui/lib/format";
+import { scoreToStatus } from "@repowise/ui/lib/confidence";
 
 export const metadata: Metadata = { title: "Dashboard" };
 

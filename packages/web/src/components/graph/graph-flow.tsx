@@ -45,7 +45,7 @@ import { GraphLegend } from "./graph-legend";
 import { GraphCommunityPanel } from "./graph-community-panel";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphTooltip } from "./graph-tooltip";
-import { languageColor } from "@/lib/utils/confidence";
+import { languageColor } from "@repowise/ui/lib/confidence";
 
 // ---- Context ----
 
