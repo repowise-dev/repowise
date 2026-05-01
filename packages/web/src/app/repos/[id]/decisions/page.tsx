@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { listDecisions } from "@/lib/api/decisions";
+import { ApiClientError } from "@/lib/api/client";
 import { DecisionsTable } from "@/components/decisions/decisions-table";
 
 export const revalidate = 30;
@@ -14,8 +15,12 @@ export default async function DecisionsPage({ params }: Props) {
   let decisions;
   try {
     decisions = await listDecisions(repoId, { include_proposed: true, limit: 100 });
-  } catch {
-    notFound();
+  } catch (err) {
+    if (err instanceof ApiClientError && err.status === 404) {
+      notFound();
+    }
+    // Re-throw so the nearest error.tsx boundary can surface a retry UI
+    throw err;
   }
 
   return (

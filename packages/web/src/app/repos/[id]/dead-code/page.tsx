@@ -4,6 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { SummaryBar } from "@/components/dead-code/summary-bar";
 import { FindingsTable } from "@/components/dead-code/findings-table";
@@ -15,9 +16,8 @@ export default function DeadCodePage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeMsg, setAnalyzeMsg] = useState("");
 
-  const { data: summary, isLoading: loadingSummary } = useSWR<DeadCodeSummaryResponse>(
+  const { data: summary, isLoading: loadingSummary, error: summaryError, mutate: mutateSummary } = useSWR<DeadCodeSummaryResponse>(
     `dead-code-summary:${id}`,
     () => getDeadCodeSummary(id),
     { revalidateOnFocus: false },
@@ -25,12 +25,13 @@ export default function DeadCodePage() {
 
   const handleAnalyze = async () => {
     setAnalyzing(true);
-    setAnalyzeMsg("");
     try {
       await analyzeDeadCode(id);
-      setAnalyzeMsg("Analysis started — results will appear shortly.");
-    } catch {
-      setAnalyzeMsg("Failed to start analysis.");
+      toast.success("Analysis started — results will appear shortly.");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? `Couldn't start analysis: ${err.message}` : "Couldn't start analysis",
+      );
     } finally {
       setAnalyzing(false);
     }
@@ -49,9 +50,6 @@ export default function DeadCodePage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {analyzeMsg && (
-            <span className="text-xs text-green-500">{analyzeMsg}</span>
-          )}
           <Button
             size="sm"
             variant="outline"
@@ -71,6 +69,13 @@ export default function DeadCodePage() {
         </div>
       ) : summary ? (
         <SummaryBar summary={summary} />
+      ) : summaryError ? (
+        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
+          <span>Couldn&apos;t load summary.</span>
+          <Button size="sm" variant="outline" onClick={() => mutateSummary()}>
+            Retry
+          </Button>
+        </div>
       ) : null}
 
       <FindingsTable repoId={id} />

@@ -30,20 +30,20 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--color-border-default)]">
-          {coChanges.map((cc, i) => (
-            <tr key={i} className="hover:bg-[var(--color-bg-elevated)] transition-colors">
-              <td className="py-2 pr-4">
+          {coChanges.map((cc) => (
+            <tr key={`${cc.source_repo}|${cc.source_file}|${cc.target_repo}|${cc.target_file}`} className="hover:bg-[var(--color-bg-elevated)] transition-colors">
+              <td className="py-2 pr-4 min-w-[160px] max-w-[280px]">
                 <div className="flex flex-col gap-0.5">
                   <Badge variant="default" className="w-fit text-[11px]">{cc.source_repo}</Badge>
-                  <span className="text-xs font-mono text-[var(--color-text-secondary)] truncate max-w-[250px]">
+                  <span className="text-xs font-mono text-[var(--color-text-secondary)] truncate block" title={cc.source_file}>
                     {cc.source_file}
                   </span>
                 </div>
               </td>
-              <td className="py-2 pr-4">
+              <td className="py-2 pr-4 min-w-[160px] max-w-[280px]">
                 <div className="flex flex-col gap-0.5">
                   <Badge variant="default" className="w-fit text-[11px]">{cc.target_repo}</Badge>
-                  <span className="text-xs font-mono text-[var(--color-text-secondary)] truncate max-w-[250px]">
+                  <span className="text-xs font-mono text-[var(--color-text-secondary)] truncate block" title={cc.target_file}>
                     {cc.target_file}
                   </span>
                 </div>
@@ -62,12 +62,12 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
                 </div>
               </td>
               {!compact && (
-                <td className="py-2 pr-4 text-xs text-[var(--color-text-secondary)] tabular-nums">
+                <td className="py-2 pr-4 text-xs text-[var(--color-text-secondary)] tabular-nums text-right">
                   {cc.frequency}x
                 </td>
               )}
               {!compact && (
-                <td className="py-2 text-xs text-[var(--color-text-tertiary)]">
+                <td className="py-2 text-xs text-[var(--color-text-tertiary)]" title={cc.last_date ? new Date(cc.last_date).toLocaleString() : undefined}>
                   {cc.last_date ? new Date(cc.last_date).toLocaleDateString() : "—"}
                 </td>
               )}

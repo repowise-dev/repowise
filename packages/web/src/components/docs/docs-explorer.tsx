@@ -17,7 +17,10 @@ interface DocsExplorerProps {
 export function DocsExplorer({ repoId }: DocsExplorerProps) {
   const { pages, isLoading } = usePages(repoId);
   const [selectedPage, setSelectedPage] = useState<PageResponse | null>(null);
-  const [treePanelOpen, setTreePanelOpen] = useState(true);
+  const [treePanelOpen, setTreePanelOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.matchMedia("(min-width: 768px)").matches;
+  });
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -42,7 +45,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   if (isLoading) {
     return (
       <div className="flex h-full">
-        <div className="w-[300px] border-r border-[var(--color-border-default)] p-3 space-y-2">
+        <div className="w-full md:w-[300px] border-r border-[var(--color-border-default)] p-3 space-y-2">
           <Skeleton className="h-8 w-full rounded-md" />
           <Skeleton className="h-4 w-3/4 rounded" />
           <Skeleton className="h-4 w-1/2 rounded" />
@@ -82,23 +85,30 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       <div
         className={cn(
           "border-r border-[var(--color-border-default)] bg-[var(--color-bg-surface)] transition-all duration-200 shrink-0 relative",
-          treePanelOpen ? "w-[300px]" : "w-0 overflow-hidden border-r-0",
+          treePanelOpen ? "w-full md:w-[300px]" : "w-0 overflow-hidden border-r-0",
         )}
       >
         <DocsTree
           pages={pages}
           selectedPageId={selectedPage?.id ?? null}
-          onSelectPage={handleSelectPage}
+          onSelectPage={(p) => {
+            handleSelectPage(p);
+            if (typeof window !== "undefined" && !window.matchMedia("(min-width: 768px)").matches) {
+              setTreePanelOpen(false);
+            }
+          }}
         />
       </div>
 
       {/* Toggle button */}
       <button
         onClick={() => setTreePanelOpen((o) => !o)}
-        className="absolute left-[300px] top-3 z-20 rounded-r-md border border-l-0 border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors"
-        style={{
-          left: treePanelOpen ? "300px" : "0px",
-        }}
+        aria-label={treePanelOpen ? "Hide pages tree" : "Show pages tree"}
+        aria-expanded={treePanelOpen}
+        className={cn(
+          "absolute top-3 z-20 rounded-r-md border border-l-0 border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors",
+          treePanelOpen ? "hidden md:block left-[300px]" : "left-0",
+        )}
       >
         {treePanelOpen ? (
           <PanelLeftClose className="h-3.5 w-3.5" />
@@ -108,7 +118,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
       </button>
 
       {/* Viewer */}
-      <div className="flex-1 min-w-0">
+      <div className={cn("flex-1 min-w-0", treePanelOpen ? "hidden md:block" : "block")}>
         <DocsViewer page={selectedPage} repoId={repoId} />
       </div>
     </div>

@@ -35,7 +35,7 @@ export function GraphDocPanel({ repoId, nodeId, onClose }: GraphDocPanelProps) {
   }, [nodeId]);
 
   return (
-    <div className="absolute top-0 right-0 z-20 h-full w-[400px] flex flex-col bg-[var(--color-bg-surface)] border-l border-[var(--color-border-default)] shadow-2xl shadow-black/30">
+    <div className="absolute top-0 right-0 z-20 h-full w-[min(400px,calc(100vw-1.5rem))] flex flex-col bg-[var(--color-bg-surface)] border-l border-[var(--color-border-default)] shadow-2xl shadow-black/30">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-border-default)] shrink-0">
         <FileText className="h-4 w-4 text-[var(--color-accent-primary)] shrink-0" />

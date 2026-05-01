@@ -74,7 +74,23 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
   const isWorkspace = workspace?.is_workspace ?? false;
   const [open, setOpen] = React.useState(false);
   const pathname = usePathname();
-  const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(new Set());
+  const activeRepoId = React.useMemo(() => {
+    const m = pathname?.match(/^\/repos\/([^/]+)/);
+    return m ? m[1] : undefined;
+  }, [pathname]);
+  const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(
+    activeRepoId ? new Set([activeRepoId]) : new Set(),
+  );
+  React.useEffect(() => {
+    if (activeRepoId) {
+      setExpandedRepos((prev) => {
+        if (prev.has(activeRepoId)) return prev;
+        const next = new Set(prev);
+        next.add(activeRepoId);
+        return next;
+      });
+    }
+  }, [activeRepoId]);
 
   const toggleRepo = (id: string) => {
     setExpandedRepos((prev) => {
@@ -91,17 +107,17 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
   }, [pathname]);
 
   return (
-    <div className="flex md:hidden h-14 items-center gap-3 px-4 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0">
+    <div className="flex md:hidden min-h-14 items-center gap-3 px-4 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0">
       <Button
         variant="ghost"
         size="icon"
         onClick={() => setOpen(true)}
         aria-label="Open navigation menu"
-        className="h-9 w-9"
+        className="h-11 w-11"
       >
         <Menu className="h-5 w-5" />
       </Button>
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
         <Image
           src="/repowise-logo.png"
           alt="repowise"
@@ -113,9 +129,20 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           repowise
         </span>
       </div>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent("repowise:open-command-palette"));
+        }}
+        aria-label="Open search"
+        className="h-11 w-11"
+      >
+        <Search className="h-5 w-5" />
+      </Button>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="left" className="p-0">
+        <SheetContent side="left" className="w-72 p-0">
           <SheetHeader className="border-b border-[var(--color-border-default)] h-14 flex-row items-center gap-3 py-0 px-4">
             <Image
               src="/repowise-logo.png"
@@ -198,6 +225,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                         <div key={repo.id}>
                           <button
                             onClick={() => toggleRepo(repo.id)}
+                            aria-expanded={isExpanded}
                             className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
                           >
                             <Circle className="h-2 w-2 shrink-0 fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]" />

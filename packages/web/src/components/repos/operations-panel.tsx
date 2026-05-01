@@ -79,7 +79,9 @@ export function OperationsPanel({ repoId, repoName }: Props) {
             <CardTitle className="text-sm">Operations</CardTitle>
             <button
               onClick={() => setOpen((v) => !v)}
-              className="flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] transition-colors"
+              aria-expanded={open}
+              aria-controls="operations-panel-content"
+              className="flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] transition-colors cursor-pointer"
             >
               {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
               {open ? "Collapse" : "Configure"}
@@ -87,7 +89,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
           </div>
         </CardHeader>
 
-        <CardContent className="space-y-4">
+        <CardContent id="operations-panel-content" className="space-y-4">
           {/* Active job progress */}
           {activeJobId && (
             <GenerationProgress

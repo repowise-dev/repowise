@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { Radar, Plus, Flame } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils/cn";
 import {
   analyzeBlastRadius,
@@ -98,9 +99,14 @@ function Td({ children, className }: { children: React.ReactNode; className?: st
 // ---------------------------------------------------------------------------
 
 function DirectRisksTable({ rows }: { rows: DirectRiskEntry[] }) {
+  // Risk scores from the API are 0–1; render as 0–10 to match the gauge.
+  const fmt10 = (v: number) => (v * 10).toFixed(2);
+  // Centrality is small; render as percentage with 2 decimals.
+  const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`;
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
+        <caption className="sr-only">Direct risks for the changed files</caption>
         <thead>
           <tr>
             <Th>File</Th>
@@ -113,11 +119,11 @@ function DirectRisksTable({ rows }: { rows: DirectRiskEntry[] }) {
           {rows.map((r) => (
             <tr key={r.path} className="border-t border-[var(--color-border-default)]">
               <Td>
-                <span className="font-mono break-all">{r.path}</span>
+                <span className="font-mono break-all" title={r.path}>{r.path}</span>
               </Td>
-              <Td>{r.risk_score.toFixed(4)}</Td>
-              <Td>{r.temporal_hotspot.toFixed(4)}</Td>
-              <Td>{r.centrality.toFixed(6)}</Td>
+              <Td className="text-right tabular-nums">{fmt10(r.risk_score)}</Td>
+              <Td className="text-right tabular-nums">{fmt10(r.temporal_hotspot)}</Td>
+              <Td className="text-right tabular-nums">{fmtPct(r.centrality)}</Td>
             </tr>
           ))}
         </tbody>
@@ -130,6 +136,7 @@ function TransitiveTable({ rows }: { rows: TransitiveEntry[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
+        <caption className="sr-only">Transitively affected files</caption>
         <thead>
           <tr>
             <Th>File</Th>
@@ -140,9 +147,9 @@ function TransitiveTable({ rows }: { rows: TransitiveEntry[] }) {
           {rows.map((r) => (
             <tr key={r.path} className="border-t border-[var(--color-border-default)]">
               <Td>
-                <span className="font-mono break-all">{r.path}</span>
+                <span className="font-mono break-all" title={r.path}>{r.path}</span>
               </Td>
-              <Td>{r.depth}</Td>
+              <Td className="text-right tabular-nums">{r.depth}</Td>
             </tr>
           ))}
         </tbody>
@@ -155,6 +162,7 @@ function CochangeTable({ rows }: { rows: CochangeWarning[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
+        <caption className="sr-only">Co-change warnings</caption>
         <thead>
           <tr>
             <Th>Changed File</Th>
@@ -164,14 +172,17 @@ function CochangeTable({ rows }: { rows: CochangeWarning[] }) {
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i} className="border-t border-[var(--color-border-default)]">
+            <tr
+              key={`${r.changed}|${r.missing_partner}|${i}`}
+              className="border-t border-[var(--color-border-default)]"
+            >
               <Td>
-                <span className="font-mono break-all">{r.changed}</span>
+                <span className="font-mono break-all" title={r.changed}>{r.changed}</span>
               </Td>
               <Td>
-                <span className="font-mono break-all">{r.missing_partner}</span>
+                <span className="font-mono break-all" title={r.missing_partner}>{r.missing_partner}</span>
               </Td>
-              <Td>{r.score}</Td>
+              <Td className="text-right tabular-nums">{r.score}</Td>
             </tr>
           ))}
         </tbody>
@@ -184,6 +195,7 @@ function ReviewersTable({ rows }: { rows: ReviewerEntry[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
+        <caption className="sr-only">Recommended reviewers</caption>
         <thead>
           <tr>
             <Th>Email</Th>
@@ -195,8 +207,8 @@ function ReviewersTable({ rows }: { rows: ReviewerEntry[] }) {
           {rows.map((r) => (
             <tr key={r.email} className="border-t border-[var(--color-border-default)]">
               <Td>{r.email}</Td>
-              <Td>{r.files}</Td>
-              <Td>{(r.ownership_pct * 100).toFixed(1)}%</Td>
+              <Td className="text-right tabular-nums">{r.files}</Td>
+              <Td className="text-right tabular-nums">{(r.ownership_pct * 100).toFixed(1)}%</Td>
             </tr>
           ))}
         </tbody>
@@ -233,7 +245,7 @@ export default function BlastRadiusPage() {
 
   // Suggestions: top 8 hotspots so users can prefill with one click instead
   // of remembering paths. Falls back gracefully if the call fails.
-  const { data: hotspotSuggestions } = useSWR(
+  const { data: hotspotSuggestions, isLoading: hotspotSuggestionsLoading } = useSWR(
     repoId ? ["blast-radius-suggestions", repoId] : null,
     () => getHotspots(repoId, 8),
   );
@@ -315,6 +327,14 @@ export default function BlastRadiusPage() {
             .
           </p>
 
+          {hotspotSuggestionsLoading && !hotspotSuggestions && (
+            <div className="flex flex-wrap gap-2">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <Skeleton key={i} className="h-7 w-32 rounded-full" />
+              ))}
+            </div>
+          )}
+
           {hotspotSuggestions && hotspotSuggestions.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {hotspotSuggestions.map((h) => (
@@ -323,7 +343,8 @@ export default function BlastRadiusPage() {
                   type="button"
                   onClick={() => addSuggestion(h.file_path)}
                   className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1 text-[11px] font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-text-primary)] transition-colors"
-                  title={`Add ${h.file_path}`}
+                  title={h.file_path}
+                  aria-label={`Add ${h.file_path} to changed files`}
                 >
                   <Flame className="h-3 w-3 text-orange-500" />
                   <span className="truncate max-w-[260px]">{h.file_path}</span>
@@ -333,11 +354,16 @@ export default function BlastRadiusPage() {
             </div>
           )}
 
+          <label htmlFor="blast-radius-changed-files" className="sr-only">
+            Changed file paths, one per line
+          </label>
           <textarea
+            id="blast-radius-changed-files"
             className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2 text-xs font-mono text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)] resize-y min-h-[120px]"
             placeholder={"src/auth/login.py\nsrc/models/user.py\n..."}
             value={files}
             onChange={(e) => setFiles(e.target.value)}
+            aria-label="Changed file paths, one per line"
           />
           <div className="flex items-center gap-4 flex-wrap">
             <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
@@ -349,6 +375,7 @@ export default function BlastRadiusPage() {
                 value={maxDepth}
                 onChange={(e) => setMaxDepth(Math.max(1, Math.min(10, Number(e.target.value))))}
                 className="w-16 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)]"
+                aria-label="Maximum dependency depth (1–10)"
               />
             </label>
             <Button onClick={handleAnalyze} disabled={loading} size="sm">

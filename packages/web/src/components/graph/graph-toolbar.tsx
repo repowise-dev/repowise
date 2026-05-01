@@ -84,6 +84,8 @@ export function GraphToolbar({
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
               }`}
               title={m.label}
+              aria-label={m.label}
+              aria-pressed={isActive}
             >
               <Icon className="w-3 h-3" />
               <span className="hidden lg:inline">{m.label}</span>
@@ -109,6 +111,8 @@ export function GraphToolbar({
                     : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
                 }`}
                 title={m.label}
+                aria-label={m.label}
+                aria-pressed={isActive}
               >
                 <Icon className="w-3 h-3" />
               </button>
@@ -124,6 +128,8 @@ export function GraphToolbar({
             onClick={onTogglePathFinder}
             className={`h-7 w-7 p-0 ${showPathFinder ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
             title="Find dependency path"
+            aria-label="Find dependency path"
+            aria-pressed={showPathFinder}
           >
             <Route className="w-3.5 h-3.5" />
           </Button>
@@ -133,6 +139,8 @@ export function GraphToolbar({
             onClick={onToggleFlows}
             className={`h-7 w-7 p-0 ${showFlows ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
             title="Execution flows"
+            aria-label="Execution flows"
+            aria-pressed={showFlows}
           >
             <Workflow className="w-3.5 h-3.5" />
           </Button>
@@ -142,6 +150,8 @@ export function GraphToolbar({
             onClick={() => onHideTestsChange(!hideTests)}
             className={`h-7 w-7 p-0 ${hideTests ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
             title={hideTests ? "Show test files" : "Hide test files"}
+            aria-label={hideTests ? "Show test files" : "Hide test files"}
+            aria-pressed={hideTests}
           >
             <EyeOff className="w-3.5 h-3.5" />
           </Button>
@@ -151,6 +161,7 @@ export function GraphToolbar({
             onClick={onFitView}
             className="h-7 w-7 p-0 text-[var(--color-text-tertiary)]"
             title="Fit view"
+            aria-label="Fit view"
           >
             <Maximize className="w-3.5 h-3.5" />
           </Button>
@@ -166,10 +177,15 @@ export function GraphToolbar({
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Search nodes…"
+            aria-label="Search graph nodes"
             className="bg-transparent text-[11px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none w-28 lg:w-40"
           />
           {searchQuery && (
-            <button onClick={() => onSearchChange("")} className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]">
+            <button
+              onClick={() => onSearchChange("")}
+              aria-label="Clear search"
+              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+            >
               <X className="w-3 h-3" />
             </button>
           )}

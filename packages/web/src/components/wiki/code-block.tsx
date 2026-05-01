@@ -35,7 +35,8 @@ export function CodeBlock({ code, language, html }: Props) {
             "ml-auto flex items-center gap-1 text-xs text-[var(--color-text-tertiary)]",
             "hover:text-[var(--color-text-secondary)] transition-colors",
           )}
-          aria-label="Copy code"
+          aria-label={copied ? "Copied" : "Copy code"}
+          aria-live="polite"
         >
           {copied ? (
             <>

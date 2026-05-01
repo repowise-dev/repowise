@@ -10,7 +10,7 @@ FastAPI REST API, webhook handlers, MCP server, and background job scheduler for
 
 | Component | Description |
 |-----------|-------------|
-| **REST API** | FastAPI application with full CRUD for repos, pages (with version history), symbols, jobs, git analytics, dead code, decisions, graph intelligence |
+| **REST API** | FastAPI application with full CRUD for repos, pages (with version history), symbols, jobs, git analytics, dead code, decisions, graph intelligence, blast radius, costs, knowledge map, security findings, providers, chat, CLAUDE.md generation, and multi-repo workspace |
 | **MCP Server** | 16 MCP tools for AI coding assistants (Claude Code, Cursor, Cline) |
 | **Webhooks** | GitHub and GitLab push event handlers — trigger sync jobs automatically on push |
 | **Scheduler** | APScheduler background jobs — polling fallback (auto-syncs diverged repos), stale page detection |
@@ -156,6 +156,64 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/search` | Search wiki pages. Body: `{"query": "...", "repo_id": "...", "mode": "fts|semantic|hybrid"}` |
+
+### Blast Radius
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/repos/{repo_id}/blast-radius` | Estimate PR impact for a list of changed files — returns overall risk score, direct/transitive risks, co-change warnings, recommended reviewers, and test gaps |
+
+### Costs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/repos/{repo_id}/costs/summary` | All-time totals: cost (USD), call count, input/output token counts |
+| `GET` | `/api/repos/{repo_id}/costs` | Per-group breakdown of LLM usage with `by=day|model|operation` |
+
+### Knowledge Map
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/repos/{repo_id}/knowledge-map` | Bus-factor / silo / freshness intelligence — files owned by single contributors, knowledge concentration risk |
+
+### Security
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/repos/{repo_id}/security` | List security findings (filterable by kind/severity) |
+
+### Chat
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/repos/{repo_id}/chat/messages` | Send a chat message; SSE streams the assistant reply with tool calls and source citations |
+| `GET`  | `/api/repos/{repo_id}/chat/conversations` | List saved conversations for a repo |
+| `GET`  | `/api/repos/{repo_id}/chat/conversations/{conversation_id}` | Fetch a full conversation with its messages |
+| `DELETE` | `/api/repos/{repo_id}/chat/conversations/{conversation_id}` | Delete a conversation |
+
+### CLAUDE.md Generation
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`  | `/api/repos/{repo_id}/claude-md` | Fetch the latest generated CLAUDE.md content for the repo |
+| `POST` | `/api/repos/{repo_id}/claude-md/generate` | Trigger a fresh CLAUDE.md generation job (returns 202 with job id) |
+
+### Providers
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`    | `/api/providers` | List available LLM providers and which one is active |
+| `PATCH`  | `/api/providers/active` | Switch the active provider |
+| `POST`   | `/api/providers/{provider_id}/key` | Store an encrypted API key for the provider |
+| `DELETE` | `/api/providers/{provider_id}/key` | Remove the stored API key |
+
+### Workspace (Multi-Repo)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/workspace` | Workspace summary — registered repos with per-repo stats, cross-repo and contract summaries |
+| `GET` | `/api/workspace/co-changes` | Cross-repo co-change pairs (files in different repos that frequently change together) |
+| `GET` | `/api/workspace/contracts` | Detected API contracts (HTTP/gRPC/topic) and their provider/consumer file links |
 
 ### Webhooks
 

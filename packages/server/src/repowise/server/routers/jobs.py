@@ -23,6 +23,34 @@ router = APIRouter(
 )
 
 
+async def _find_job_factory(app_state, job_id: str):
+    """Locate the session_factory whose database contains ``job_id``.
+
+    In workspace mode each repo has its own ``wiki.db``. The /api/jobs/*
+    endpoints don't take repo_id in the path, so we must scan: primary
+    first, then all per-repo factories. Returns ``(factory, job)`` or
+    ``(None, None)`` if no DB has the row.
+    """
+    candidates = [app_state.session_factory]
+    ws = getattr(app_state, "workspace_sessions", None)
+    if ws:
+        candidates.extend(ws.values())
+    seen: set[int] = set()
+    for factory in candidates:
+        if id(factory) in seen:
+            continue
+        seen.add(id(factory))
+        try:
+            async with get_session(factory) as session:
+                job = await crud.get_generation_job(session, job_id)
+            if job is not None:
+                return factory, job
+        except Exception:
+            # Don't let one bad DB poison the lookup; try the rest.
+            continue
+    return None, None
+
+
 @router.get("", response_model=list[JobResponse])
 async def list_jobs(
     repo_id: str | None = Query(None),
@@ -45,14 +73,41 @@ async def list_jobs(
 
 
 @router.get("/{job_id}", response_model=JobResponse)
-async def get_job(
-    job_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
-) -> JobResponse:
+async def get_job(job_id: str, request: Request) -> JobResponse:
     """Get a single generation job by ID."""
-    job = await crud.get_generation_job(session, job_id)
+    _, job = await _find_job_factory(request.app.state, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    return JobResponse.from_orm(job)
+
+
+@router.post("/{job_id}/cancel", response_model=JobResponse)
+async def cancel_job(job_id: str, request: Request) -> JobResponse:
+    """Cancel a pending or running generation job.
+
+    Marks the job as ``failed`` with a cancellation message. The background
+    task itself is not interrupted — but in practice this unblocks the
+    active-job guard in /repos/{id}/sync so the user can start a new sync
+    immediately. Useful when a job is stuck in ``pending`` because the
+    background task crashed before it could record a failure.
+    """
+    factory, job = await _find_job_factory(request.app.state, job_id)
+    if job is None or factory is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in ("pending", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel a job in '{job.status}' state",
+        )
+    async with get_session(factory) as session:
+        await crud.update_job_status(
+            session,
+            job_id,
+            "failed",
+            error_message="Cancelled by user",
+        )
+        job = await crud.get_generation_job(session, job_id)
+    assert job is not None  # we just updated it
     return JobResponse.from_orm(job)
 
 
@@ -63,7 +118,11 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
     Emits ``event: progress`` every second until the job completes or fails,
     then emits ``event: done`` and closes.
     """
-    factory = request.app.state.session_factory
+    factory, _ = await _find_job_factory(request.app.state, job_id)
+    if factory is None:
+        # Fall back to the primary so we still emit a structured "not found"
+        # event instead of a connection error.
+        factory = request.app.state.session_factory
 
     async def event_generator():
         while True:

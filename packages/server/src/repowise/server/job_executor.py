@@ -58,6 +58,14 @@ class JobProgressCallback:
         self._pending_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         # Batch DB writes: flush every N items to avoid per-item overhead
         self._flush_interval = 5
+        # Time-based throttling: hold off issuing a new write while one is
+        # already in flight or one fired in the last second. Without this,
+        # a tight phase (e.g. 1000 fast items) would create N concurrent
+        # writes that all contend with the main pipeline's bulk persist
+        # transaction, producing "database is locked" errors.
+        self._min_write_interval_s = 1.0
+        self._last_write_at: float = 0.0
+        self._inflight: bool = False
 
     def on_phase_start(self, phase: str, total: int | None) -> None:
         self._phase = phase
@@ -65,7 +73,9 @@ class JobProgressCallback:
         self._completed = 0
         self._total = total
         self._pending_flush = 0
-        self._sync_job_status()  # Flush immediately so the label updates
+        # Force a write at phase boundaries so the UI label updates promptly
+        # even if a throttled write was just issued.
+        self._sync_job_status(force=True)
         logger.info("job_phase_start", job_id=self._job_id, phase=phase, total=total)
 
     def on_item_done(self, phase: str) -> None:
@@ -80,19 +90,36 @@ class JobProgressCallback:
             text, job_id=self._job_id, phase=self._phase
         )
 
-    def _sync_job_status(self) -> None:
+    def _sync_job_status(self, *, force: bool = False) -> None:
         """Fire-and-forget progress update in the current event loop.
 
         Tracks task references to allow cancellation before final status.
+        Throttled: skipped if another write is already in flight, or if the
+        last write was less than ``_min_write_interval_s`` ago — unless
+        ``force=True`` (used at phase boundaries).
         """
         if self._stopped:
             return
 
+        if not force:
+            if self._inflight:
+                return
+            now = time.monotonic()
+            if now - self._last_write_at < self._min_write_interval_s:
+                return
+
         try:
             loop = asyncio.get_running_loop()
+            self._inflight = True
+            self._last_write_at = time.monotonic()
             t = loop.create_task(self._async_update())
             self._pending_tasks.add(t)
-            t.add_done_callback(self._pending_tasks.discard)
+
+            def _on_done(task: asyncio.Task) -> None:
+                self._pending_tasks.discard(task)
+                self._inflight = False
+
+            t.add_done_callback(_on_done)
         except RuntimeError:
             pass  # No event loop — skip the update
 
@@ -123,11 +150,26 @@ class JobProgressCallback:
                     total_pages=self._total,
                     current_level=_PHASE_LEVELS.get(self._phase, 0),
                 )
-        except Exception:
-            logger.debug("progress_update_failed", job_id=self._job_id, exc_info=True)
+        except Exception as exc:
+            # Lock contention with the main pipeline transaction is recoverable —
+            # the next throttled write will pick up the latest counts. Log a
+            # brief one-liner instead of a multi-page traceback.
+            msg = str(exc)
+            if "database is locked" in msg or "OperationalError" in type(exc).__name__:
+                logger.debug(
+                    "progress_update_skipped_locked",
+                    job_id=self._job_id,
+                    phase=self._phase,
+                )
+            else:
+                logger.debug("progress_update_failed", job_id=self._job_id, exc_info=True)
 
 
-async def execute_job(job_id: str, app_state: Any) -> None:
+async def execute_job(
+    job_id: str,
+    app_state: Any,
+    session_factory_override: Any = None,
+) -> None:
     """Execute a pending pipeline job in the background.
 
     This is the single entry point called by the endpoint via
@@ -138,14 +180,27 @@ async def execute_job(job_id: str, app_state: Any) -> None:
     3. Runs ``run_pipeline()``
     4. Persists all results via ``persist_pipeline_result()``
     5. Marks the job as ``completed`` (or ``failed`` on error)
+
+    In workspace mode, each repo has its own ``wiki.db`` and the route
+    handler that created this job committed it to a per-repo session
+    factory (``app_state.workspace_sessions[repo_id]``), not the primary
+    one. The caller must pass that same factory in
+    ``session_factory_override`` so we read from the same database — else
+    we'd see "job_not_found" and the row would stay pending forever.
     """
-    session_factory = app_state.session_factory
-    fts = app_state.fts
-    vector_store = app_state.vector_store
     start = time.monotonic()
     progress: JobProgressCallback | None = None
+    session_factory = None
 
     try:
+        # Resolve required app_state attributes inside the try block so a
+        # missing attribute (e.g., partially-initialised app_state during
+        # development hot-reload) gets recorded as a job failure instead of
+        # leaving the row stuck in 'pending' forever.
+        session_factory = session_factory_override or app_state.session_factory
+        fts = app_state.fts
+        vector_store = app_state.vector_store
+
         # ---- Fetch job + repo metadata ------------------------------------
         async with get_session(session_factory) as session:
             job = await get_generation_job(session, job_id)
@@ -306,16 +361,22 @@ async def execute_job(job_id: str, app_state: Any) -> None:
                 await progress.drain_and_stop()
             except Exception:
                 logger.debug("drain_failed_on_error_path", job_id=job_id, exc_info=True)
-        try:
-            async with get_session(session_factory) as session:
-                await update_job_status(
-                    session,
-                    job_id,
-                    "failed",
-                    error_message=str(exc)[:500],
-                )
-        except Exception:
-            logger.exception("job_status_update_failed", job_id=job_id)
+        # If we failed before resolving session_factory, fall back to the one
+        # on app_state (best-effort) so the row never stays stuck in pending.
+        recovery_factory = session_factory or getattr(app_state, "session_factory", None)
+        if recovery_factory is not None:
+            try:
+                async with get_session(recovery_factory) as session:
+                    await update_job_status(
+                        session,
+                        job_id,
+                        "failed",
+                        error_message=str(exc)[:500],
+                    )
+            except Exception:
+                logger.exception("job_status_update_failed", job_id=job_id)
+        else:
+            logger.error("job_status_update_skipped_no_session", job_id=job_id)
 
 
 # ---------------------------------------------------------------------------

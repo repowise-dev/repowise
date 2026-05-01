@@ -31,8 +31,8 @@ export function ContractLinksTable({ links }: ContractLinksTableProps) {
         <tbody className="divide-y divide-[var(--color-border-default)]">
           {links.map((link, i) => (
             <tr key={i} className="hover:bg-[var(--color-bg-elevated)] transition-colors">
-              <td className="py-2 pr-4">
-                <span className="text-xs font-mono text-[var(--color-text-secondary)] break-all">
+              <td className="py-2 pr-4 min-w-[140px] max-w-[280px]">
+                <span className="text-xs font-mono text-[var(--color-text-secondary)] [overflow-wrap:anywhere]" title={link.contract_id}>
                   {link.contract_id}
                 </span>
               </td>
@@ -44,7 +44,7 @@ export function ContractLinksTable({ links }: ContractLinksTableProps) {
                   <span className="text-xs font-medium text-[var(--color-text-primary)]">
                     {link.provider_repo}
                   </span>
-                  <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate max-w-[200px]">
+                  <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate min-w-[140px] max-w-[260px] block" title={link.provider_file}>
                     {link.provider_file}
                   </span>
                 </div>
@@ -54,7 +54,7 @@ export function ContractLinksTable({ links }: ContractLinksTableProps) {
                   <span className="text-xs font-medium text-[var(--color-text-primary)]">
                     {link.consumer_repo}
                   </span>
-                  <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate max-w-[200px]">
+                  <span className="text-xs font-mono text-[var(--color-text-tertiary)] truncate min-w-[140px] max-w-[260px] block" title={link.consumer_file}>
                     {link.consumer_file}
                   </span>
                 </div>

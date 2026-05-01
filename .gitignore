@@ -125,3 +125,23 @@ docs/multi-repo/
 
 # Local-only language work tracker (not for git)
 docs/LANGUAGE_REMAINING_WORK.md
+
+# Local UI/UX audit notes
+AUDIT_UI_UX.md
+
+# Local scratch / sibling tools (not for distribution)
+GitNexus/
+graphify/
+test-repos/
+
+# Office temp / lock files
+~$*
+*.zip
+
+# Local hosted-product planning (not for OSS distribution)
+docs/IXOPAY_FEATURES.md
+docs/IXOPAY_FEATURES.docx
+docs/HOSTED_PRODUCT_UPGRADE_PLAN.md
+docs/HOSTED_IMPLEMENTATION_GUIDE.md
+docs/HOSTED_PROGRESS.md
+scripts/md_to_docx.py

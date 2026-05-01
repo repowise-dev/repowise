@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from repowise.core.persistence import crud
+from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GenerationJob,
@@ -227,7 +228,7 @@ async def sync_repo(
     # see the job row.  SQLite WAL isolation hides uncommitted rows from
     # other connections, so flush() alone is not sufficient.
     await session.commit()
-    _launch_job_task(request, job.id)
+    _launch_job_task(request, job.id, repo_id)
     return {"job_id": job.id, "status": "accepted"}
 
 
@@ -265,25 +266,82 @@ async def full_resync(
     # Commit (not just flush) so the background task's separate session can
     # see the job row.  See sync_repo comment for rationale.
     await session.commit()
-    _launch_job_task(request, job.id)
+    _launch_job_task(request, job.id, repo_id)
     return {"job_id": job.id, "status": "accepted"}
 
 
-def _launch_job_task(request: Request, job_id: str) -> None:
+def _resolve_repo_session_factory(app_state, repo_id: str):
+    """Return the session_factory whose database contains this repo's row.
+
+    In workspace mode each repo has its own ``wiki.db`` registered under
+    ``app_state.workspace_sessions[repo_id]``. The primary session_factory
+    (``app_state.session_factory``) does NOT see those rows.
+    """
+    ws_sessions = getattr(app_state, "workspace_sessions", None)
+    if ws_sessions and repo_id in ws_sessions:
+        return ws_sessions[repo_id]
+    return app_state.session_factory
+
+
+def _launch_job_task(request: Request, job_id: str, repo_id: str) -> None:
     """Launch a background job task with proper lifecycle management.
 
     Stores a strong reference in ``app.state.background_tasks`` to prevent
     garbage collection, and removes it when the task finishes.  Exceptions
     are logged instead of silently swallowed.
+
+    If task creation itself fails (or the task ends with an unhandled
+    exception that ``execute_job`` couldn't record), we mark the job as
+    failed via a fallback path so the active-job guard never gets stuck.
+
+    ``repo_id`` is required so we can resolve the per-repo session factory
+    in workspace mode — that's the same DB the route handler just wrote
+    the job to.
     """
-    task = asyncio.create_task(execute_job(job_id, request.app.state), name=f"job-{job_id}")
-    bg_tasks: set[asyncio.Task] = request.app.state.background_tasks  # type: ignore[assignment]
+    app_state = request.app.state
+    session_factory = _resolve_repo_session_factory(app_state, repo_id)
+
+    async def _mark_failed(reason: str) -> None:
+        try:
+            from repowise.core.persistence.crud import update_job_status
+
+            async with get_session(session_factory) as session:
+                await update_job_status(
+                    session,
+                    job_id,
+                    "failed",
+                    error_message=reason[:500],
+                )
+        except Exception:
+            logger.exception("fallback_job_failure_record_failed", extra={"job_id": job_id})
+
+    try:
+        task = asyncio.create_task(
+            execute_job(job_id, app_state, session_factory_override=session_factory),
+            name=f"job-{job_id}",
+        )
+    except Exception as exc:
+        logger.exception("create_task_failed", extra={"job_id": job_id})
+        # Schedule the failure-marking on the running loop; we're already in
+        # an async request handler so a fresh task is fine.
+        asyncio.create_task(_mark_failed(f"Failed to launch background task: {exc}"))
+        return
+
+    bg_tasks: set[asyncio.Task] = app_state.background_tasks  # type: ignore[assignment]
     bg_tasks.add(task)
 
     def _on_done(t: asyncio.Task) -> None:
         bg_tasks.discard(t)
-        if not t.cancelled() and t.exception() is not None:
-            logger.error("background_job_failed", exc_info=t.exception())
+        if t.cancelled():
+            asyncio.create_task(_mark_failed("Job task was cancelled"))
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.error("background_job_failed", exc_info=exc)
+            # execute_job already tries to mark failed in its except block,
+            # but if that itself raised we must still ensure the row is
+            # not left in pending/running.
+            asyncio.create_task(_mark_failed(f"Background task crashed: {exc}"))
 
     task.add_done_callback(_on_done)
 

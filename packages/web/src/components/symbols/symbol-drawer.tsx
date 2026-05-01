@@ -28,7 +28,7 @@ export function SymbolDrawer({ symbol, repoId, onClose }: SymbolDrawerProps) {
             <div className="px-6 pt-6 pb-3">
               <DialogHeader>
                 <DialogTitle className="font-mono text-base">{symbol.name}</DialogTitle>
-                <DialogDescription className="font-mono text-xs text-[var(--color-text-tertiary)]">
+                <DialogDescription className="font-mono text-xs text-[var(--color-text-tertiary)] break-all">
                   {symbol.file_path}:{symbol.start_line}
                 </DialogDescription>
               </DialogHeader>

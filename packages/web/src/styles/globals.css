@@ -54,6 +54,15 @@
   --color-error: #ef4444;
   --color-info: #f59520;
 
+  /* Aliases — short names used in component class strings.              */
+  /* Keep these in sync with the canonical confidence/accent tokens.     */
+  --color-fresh: var(--color-confidence-fresh);
+  --color-stale: var(--color-confidence-stale);
+  --color-outdated: var(--color-confidence-outdated);
+  --color-accent: var(--color-accent-primary);
+  --color-accent-blue: var(--color-accent-primary);
+  --color-border-accent: var(--color-accent-primary);
+
   /* ------------------------------------------------------------------ */
   /* Graph — React Flow                                                  */
   /* ------------------------------------------------------------------ */

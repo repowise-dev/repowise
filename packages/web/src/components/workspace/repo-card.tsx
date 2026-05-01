@@ -38,7 +38,7 @@ export function RepoCard({
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-[var(--color-text-tertiary)] font-mono mt-0.5 truncate">
+            <p className="text-xs text-[var(--color-text-tertiary)] font-mono mt-0.5 truncate" title={`${alias} · ${path}`}>
               {alias} &middot; {path}
             </p>
           </div>

@@ -38,7 +38,7 @@ function buildHeaders(extra?: Record<string, string>): Headers {
   return headers;
 }
 
-class ApiClientError extends Error {
+export class ApiClientError extends Error {
   constructor(
     public readonly status: number,
     public readonly detail: string,
@@ -134,4 +134,4 @@ export async function apiDelete<T>(
   return handleResponse<T>(res);
 }
 
-export { ApiClientError, BASE_URL, buildHeaders };
+export { BASE_URL, buildHeaders };

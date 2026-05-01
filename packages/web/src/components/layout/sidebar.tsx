@@ -81,9 +81,24 @@ interface SidebarProps {
 export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
   const isWorkspace = workspace?.is_workspace ?? false;
   const pathname = usePathname();
+  const derivedActiveRepoId = React.useMemo(() => {
+    if (activeRepoId) return activeRepoId;
+    const m = pathname?.match(/^\/repos\/([^/]+)/);
+    return m ? m[1] : undefined;
+  }, [activeRepoId, pathname]);
   const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(
-    activeRepoId ? new Set([activeRepoId]) : new Set(),
+    derivedActiveRepoId ? new Set([derivedActiveRepoId]) : new Set(),
   );
+  React.useEffect(() => {
+    if (derivedActiveRepoId) {
+      setExpandedRepos((prev) => {
+        if (prev.has(derivedActiveRepoId)) return prev;
+        const next = new Set(prev);
+        next.add(derivedActiveRepoId);
+        return next;
+      });
+    }
+  }, [derivedActiveRepoId]);
   const [collapsed, setCollapsed] = React.useState(false);
 
   const toggleRepo = (id: string) => {
@@ -120,14 +135,16 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
         )}
         <button
           onClick={() => setCollapsed((c) => !c)}
-          className="ml-auto shrink-0 rounded-md p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] transition-colors"
+          className="ml-auto shrink-0 rounded-md p-2.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] transition-colors"
           aria-label={isIconOnly ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!isIconOnly}
+          aria-controls="sidebar-nav"
         >
           <PanelLeft className={cn("h-4 w-4 transition-transform", isIconOnly && "rotate-180")} />
         </button>
       </div>
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1" id="sidebar-nav">
         <div className={cn("px-3 py-2", isIconOnly && "px-2")}>
           {/* Global nav */}
           <nav className="space-y-1">
@@ -184,7 +201,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
               <div className="space-y-0.5">
                 {repos.map((repo) => {
                   const isExpanded = expandedRepos.has(repo.id);
-                  const isActive = activeRepoId === repo.id;
+                  const isActive = derivedActiveRepoId === repo.id;
                   const navItems = repoNavItems(repo.id);
 
                   if (isIconOnly) {
@@ -211,6 +228,8 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                     <div key={repo.id}>
                       <button
                         onClick={() => toggleRepo(repo.id)}
+                        aria-expanded={isExpanded}
+                        aria-controls={`sidebar-repo-${repo.id}`}
                         className={cn(
                           "flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-[var(--color-bg-elevated)]",
                           isActive
@@ -231,7 +250,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                         )}
                       </button>
                       {isExpanded && (
-                        <div className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
+                        <div id={`sidebar-repo-${repo.id}`} className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
                           {navItems.map((item) => (
                             <SidebarNavItem
                               key={item.href}
@@ -306,7 +325,7 @@ function SidebarNavItem({
                 : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
             )}
           >
-            <Icon className="h-4.5 w-4.5 shrink-0" />
+            <Icon className="h-[18px] w-[18px] shrink-0" />
           </Link>
         </TooltipTrigger>
         <TooltipContent side="right">{item.label}</TooltipContent>

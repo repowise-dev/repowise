@@ -39,12 +39,14 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
   return (
     <div className="space-y-4">
       {/* Filter tabs */}
-      <div className="flex items-center gap-1">
+      <div role="tablist" aria-label="Freshness filter" className="flex items-center gap-1">
         {(["all", "fresh", "stale", "outdated"] as Filter[]).map((f) => {
           const count = f === "all" ? pages.length : pages.filter((p) => p.freshness_status === f).length;
           return (
             <button
               key={f}
+              role="tab"
+              aria-selected={filter === f}
               onClick={() => setFilter(f)}
               className={cn(
                 "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
@@ -65,24 +67,27 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
       ) : (
         <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
+            <caption className="sr-only">Documentation freshness</caption>
+            <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
               <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
                   Page
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
+                <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
                   Status
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
+                <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24">
                   Confidence
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                   Model
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-28">
+                <th scope="col" className="px-4 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-28 hidden md:table-cell">
                   Updated
                 </th>
-                <th className="px-4 py-2.5 w-24" />
+                <th scope="col" className="px-4 py-2.5 w-24">
+                  <span className="sr-only">Action</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -93,9 +98,9 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
                     key={page.id}
                     className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0"
                   >
-                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)]" style={{ maxWidth: 0 }}>
+                    <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[220px] max-w-[480px]">
                       <div className="truncate" title={page.target_path}>{page.target_path}</div>
-                      <div className="text-[var(--color-text-tertiary)]">{page.page_type}</div>
+                      <div className="truncate text-[var(--color-text-tertiary)]" title={page.page_type}>{page.page_type}</div>
                     </td>
                     <td className="px-4 py-2.5">
                       <span
@@ -120,10 +125,13 @@ export function FreshnessTable({ pages }: FreshnessTableProps) {
                         {formatConfidence(page.confidence)}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)]">
-                      {page.model_name}
+                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] max-w-[200px] hidden md:table-cell">
+                      <span className="block truncate" title={page.model_name}>{page.model_name}</span>
                     </td>
-                    <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)]">
+                    <td
+                      className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] hidden md:table-cell"
+                      title={new Date(page.updated_at).toLocaleString()}
+                    >
                       {formatRelativeTime(page.updated_at)}
                     </td>
                     <td className="px-4 py-2.5">

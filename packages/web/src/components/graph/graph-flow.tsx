@@ -421,8 +421,15 @@ function GraphFlowInner({
   useEffect(() => {
     if (!ctxMenu) return;
     const close = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
     window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [ctxMenu]);
 
   const handlePathFound = useCallback(
@@ -560,7 +567,7 @@ function GraphFlowInner({
 
   return (
     <GraphContext.Provider value={ctxValue}>
-      <div className="relative w-full h-full">
+      <div className="relative w-full h-full" style={{ touchAction: "none" }} aria-label="Dependency graph">
         {isLayouting && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--color-bg-root)]/60 backdrop-blur-sm rounded-lg">
             <div className="flex items-center gap-3 text-sm text-[var(--color-text-secondary)]">
@@ -606,7 +613,7 @@ function GraphFlowInner({
           <MiniMap
             nodeColor={minimapNodeColor}
             maskColor="rgba(0, 0, 0, 0.6)"
-            className="!bg-[var(--color-bg-surface)] !border-[var(--color-border-default)] !shadow-lg !shadow-black/20 !rounded-lg"
+            className="!bg-[var(--color-bg-surface)] !border-[var(--color-border-default)] !shadow-lg !shadow-black/20 !rounded-lg !hidden sm:!block"
             pannable
             zoomable
           />
@@ -684,7 +691,7 @@ function GraphFlowInner({
 
         {/* Execution Flows Panel */}
         {showFlows && executionFlowsData && executionFlowsData.flows.length > 0 && (
-          <div className="absolute top-14 right-3 z-10 w-64">
+          <div className="absolute top-14 right-3 z-10 w-[min(16rem,calc(100vw-1.5rem))]">
             <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm shadow-lg shadow-black/20 p-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[11px] font-medium text-[var(--color-text-primary)]">

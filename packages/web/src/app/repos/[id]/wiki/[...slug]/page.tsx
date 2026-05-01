@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ApiClientError } from "@/lib/api/client";
 import { getRepo } from "@/lib/api/repos";
 import { getPageById, getPageVersions } from "@/lib/api/pages";
 import { getGitMetadata } from "@/lib/api/git";
@@ -40,8 +41,11 @@ export default async function WikiPageRoute({ params }: Props) {
   let page;
   try {
     page = await getPageById(pageId);
-  } catch {
-    notFound();
+  } catch (err) {
+    if (err instanceof ApiClientError && err.status === 404) {
+      notFound();
+    }
+    throw err;
   }
 
   const [repo, versions, gitMeta, graphMetricsResult] = await Promise.allSettled([
