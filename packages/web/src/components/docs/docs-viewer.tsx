@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
-import { VersionHistory } from "@/components/wiki/version-history";
+import { VersionHistoryWrapper } from "@/components/wiki/version-history";
 import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Badge } from "@repowise-dev/ui/ui/badge";
@@ -316,7 +316,7 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
 
             {/* Version history */}
             <div className="mt-8">
-              <VersionHistory
+              <VersionHistoryWrapper
                 pageId={page.id}
                 currentVersion={page.version}
                 currentContent={page.content}

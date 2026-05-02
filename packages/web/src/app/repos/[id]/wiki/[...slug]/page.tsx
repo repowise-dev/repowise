@@ -9,9 +9,9 @@ import { getGraphMetrics } from "@/lib/api/graph";
 import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
 import { WikiRenderer } from "@/components/wiki/wiki-renderer";
 import { TableOfContents } from "@repowise-dev/ui/wiki/table-of-contents";
-import { RegenerateButton } from "@/components/wiki/regenerate-button";
+import { RegenerateButtonWrapper } from "@/components/wiki/regenerate-button";
 import { GitHistoryPanel } from "@repowise-dev/ui/wiki/git-history-panel";
-import { SecurityPanel } from "@/components/wiki/security-panel";
+import { SecurityPanelWrapper } from "@/components/wiki/security-panel";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { Separator } from "@repowise-dev/ui/ui/separator";
 import { formatRelativeTime, formatTokens } from "@repowise-dev/ui/lib/format";
@@ -102,7 +102,7 @@ export default async function WikiPageRoute({ params }: Props) {
           )}
 
           {/* Regenerate */}
-          <RegenerateButton pageId={page.id} repoId={id} />
+          <RegenerateButtonWrapper pageId={page.id} repoId={id} />
         </div>
 
         {/* Page content */}
@@ -247,7 +247,7 @@ export default async function WikiPageRoute({ params }: Props) {
               <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
                 Security Signals
               </p>
-              <SecurityPanel repoId={id} filePath={page.target_path} />
+              <SecurityPanelWrapper repoId={id} filePath={page.target_path} />
             </div>
           )}
 

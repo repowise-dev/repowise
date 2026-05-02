@@ -137,6 +137,17 @@ export interface GraphPath {
   path: string[];
   distance: number;
   explanation: string;
+  visual_context?: unknown;
+}
+
+/**
+ * Lightweight node-search result used by the path finder autocomplete.
+ * Mirrors `NodeSearchResultResponse` from the engine.
+ */
+export interface NodeSearchResult {
+  node_id: string;
+  language: string;
+  symbol_count: number;
 }
 
 // ---------------------------------------------------------------------------

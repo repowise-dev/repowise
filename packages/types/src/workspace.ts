@@ -51,3 +51,11 @@ export interface WorkspaceCoChangeEntry {
   frequency: number;
   last_date: string;
 }
+
+export interface WorkspacePackageDepEntry {
+  source_repo: string;
+  source_manifest: string;
+  target_repo: string;
+  target_package: string;
+  kind: string;
+}
