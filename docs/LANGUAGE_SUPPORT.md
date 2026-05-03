@@ -50,7 +50,7 @@ All eight languages support:
 - Named binding extraction (mapping imported names to source symbols)
 - Heritage extraction (class/interface/trait/record inheritance chains)
 - Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen, XML doc)
-- Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection; ASP.NET controllers / minimal API / EF Core DbContext for C#; Spring Boot DI + `@Bean` factories for Java/Kotlin; Rails routes + ActiveRecord relationships; Laravel routes + service providers + Eloquent; Express `app.use(router)` + NestJS `@Module` arrays; Gin/Echo/Chi router → handler files for Go; Axum/Actix `.route` → handler files for Rust)
+- Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection; ASP.NET controllers / minimal API / EF Core DbContext for C#; Spring Boot DI + `@Bean` factories for Java/Kotlin; Rails routes + ActiveRecord relationships; Laravel routes + service providers + Eloquent; TYPO3 convention files (`ext_localconf.php`, `Configuration/TCA/*`, `JavaScriptModules.php` registrations) for PHP; Express `app.use(router)` + NestJS `@Module` arrays; Gin/Echo/Chi router → handler files for Go; Axum/Actix `.route` → handler files for Rust)
 - Per-language dynamic-hint extractors (Django/Pytest/Node for Python+JS/TS; .NET DI/Activator/InternalsVisibleTo for C#; Spring `getBean`/`@Bean` factories for Java/Kotlin; Ruby `send`/`const_get`/`define_method`/`delegate`; PHP `call_user_func`/`ReflectionClass`/container `get`; Scala `Class.forName`/`given`/`implicit val`; Swift `NSClassFromString`/`Selector`/`#selector`/KVC; C function-pointer assignment + `dlopen`/`dlsym`; Luau `game:GetService`/`setmetatable __index`; Go `reflect.TypeOf`/`plugin.Open`/`plugin.Lookup`)
 - For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace → file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection
 
@@ -315,7 +315,7 @@ ingestion/
     scala.py           #   package-to-directory mapping
     php.py             #   namespace/PSR-4 resolution
     generic.py         #   stem-matching fallback
-  framework_edges.py   # Django, FastAPI, Flask, pytest, ASP.NET detection
+  framework_edges.py   # Django, FastAPI, Flask, pytest, ASP.NET, Rails, Laravel, TYPO3, Spring, Express, Gin, Axum detection
   dynamic_hints/       # Per-language dynamic-edge extractors
     base.py            #   DynamicHintExtractor + DynamicEdge
     registry.py        #   HintRegistry

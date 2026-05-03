@@ -402,7 +402,7 @@ repowise dead-code
   ✗ analytics/v1/tracker.ts         file      0.41   recent activity — review first
 ```
 
-Conservative by design. `safe_to_delete` requires confidence ≥ 0.70 and excludes dynamically-loaded patterns (`*Plugin`, `*Handler`, `*Adapter`, `*Middleware`). Dynamic import detection (`importlib.import_module()`, `__import__()`) and framework decorator awareness (Flask/FastAPI/Django routes) further reduce false positives. repowise surfaces candidates. Engineers decide.
+Conservative by design. `safe_to_delete` requires confidence ≥ 0.70 and excludes dynamically-loaded patterns (`*Plugin`, `*Handler`, `*Adapter`, `*Middleware`). Dynamic import detection (`importlib.import_module()`, `__import__()`) and framework awareness (Flask/FastAPI/Django/Rails/Laravel/TYPO3 routes and convention files) further reduce false positives. repowise surfaces candidates. Engineers decide.
 
 ---
 
@@ -550,7 +550,7 @@ repowise reindex                  # rebuild vector store (no LLM calls)
 | Tier | Languages | What works |
 |------|-----------|------------|
 | **Full** | Python · TypeScript · JavaScript · Java · Go · Rust · C++ · C# | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers (`.csproj`/`.sln` for C#, `Cargo.toml [workspace]` for Rust, `go.mod` multi-module, `package.json` workspaces, etc.); framework-aware edges (Django, FastAPI, Flask, ASP.NET, Spring Boot, Express/NestJS, Gin/Echo/Chi, Axum/Actix); per-language dynamic-hint extractors for runtime-resolved DI / reflection / plugins |
-| **Good** | C · Kotlin · Ruby · Swift · Scala · PHP | AST parsing, import resolution, named bindings, call resolution, heritage (mixins, derive, extensions, traits), docstrings, dedicated workspace-aware resolvers (Gradle subprojects, Rails / Zeitwerk, SPM, SBT/Mill, composer PSR-4); Rails / Laravel framework edges for Ruby and PHP; per-language dynamic-hint extractors |
+| **Good** | C · Kotlin · Ruby · Swift · Scala · PHP | AST parsing, import resolution, named bindings, call resolution, heritage (mixins, derive, extensions, traits), docstrings, dedicated workspace-aware resolvers (Gradle subprojects, Rails / Zeitwerk, SPM, SBT/Mill, composer PSR-4); Rails / Laravel / TYPO3 framework edges for Ruby and PHP; per-language dynamic-hint extractors |
 | **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · SQL · Terraform | Included in the file tree; special handlers extract endpoints/targets where applicable |
 
 14 languages with full AST support, 8 of them at the Full tier. Adding a new language requires one `.scm` tree-sitter query file and one config entry. No changes to the parser core. See [Language Support](docs/LANGUAGE_SUPPORT.md) for details.

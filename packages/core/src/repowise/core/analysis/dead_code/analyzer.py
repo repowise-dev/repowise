@@ -31,6 +31,22 @@ from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 logger = structlog.get_logger(__name__)
 
 
+def _is_synthetic_node(node: str) -> bool:
+    """True for non-file graph nodes that should be skipped in 'is this dead?' passes.
+
+    Two synthetic prefixes exist:
+      - ``external:`` — third-party / unresolved imports.
+      - ``framework:`` — anchors added by ``framework_edges`` to model
+        convention-based loading (e.g. TYPO3 core loading ``ext_localconf.php``).
+
+    Both are skipped when the analyzer asks "is this node itself dead?",
+    but they are treated differently in the zombie-package pass: ``framework:``
+    predecessors *do* count as cross-package importers (real framework-
+    mediated dependencies), whereas ``external:`` predecessors do not.
+    """
+    return node.startswith("external:") or node.startswith("framework:")
+
+
 class DeadCodeAnalyzer:
     """Detects unreachable files, unused exports, unused internals, and
     zombie packages using the dependency graph and git metadata.
@@ -148,7 +164,7 @@ class DeadCodeAnalyzer:
         findings = []
 
         for node in self.graph.nodes():
-            if str(node).startswith("external:"):
+            if _is_synthetic_node(str(node)):
                 continue
 
             node_data = self.graph.nodes[node]
@@ -246,7 +262,7 @@ class DeadCodeAnalyzer:
         findings = []
 
         for node in self.graph.nodes():
-            if str(node).startswith("external:"):
+            if _is_synthetic_node(str(node)):
                 continue
 
             node_data = self.graph.nodes[node]
@@ -399,12 +415,18 @@ class DeadCodeAnalyzer:
         return findings
 
     def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
-        """Detect monorepo packages with no incoming inter_package edges."""
+        """Detect monorepo packages with no incoming inter_package edges.
+
+        ``framework:`` predecessors (synthetic anchors added by
+        ``framework_edges``) count as cross-package importers — TYPO3 / Django
+        / etc. wiring is a real cross-cutting dependency. ``external:``
+        predecessors do not count (they represent third-party imports).
+        """
         findings = []
 
         packages: dict[str, list[str]] = {}
         for node in self.graph.nodes():
-            if str(node).startswith("external:"):
+            if _is_synthetic_node(str(node)):
                 continue
             parts = Path(str(node)).parts
             if len(parts) > 1:
@@ -423,6 +445,8 @@ class DeadCodeAnalyzer:
                 for pred in self.graph.predecessors(f):
                     pred_str = str(pred)
                     if pred_str.startswith("external:"):
+                        # Third-party imports don't count as cross-package
+                        # importers; framework: synthetic anchors do.
                         continue
                     pred_parts = Path(pred_str).parts
                     if len(pred_parts) > 0 and pred_parts[0] != pkg:

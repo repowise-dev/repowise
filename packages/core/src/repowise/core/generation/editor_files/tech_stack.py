@@ -119,8 +119,27 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
         add("Ruby", None, "language")
 
     # --- composer.json (PHP) ---
-    if (repo_path / "composer.json").exists():
+    composer_json = repo_path / "composer.json"
+    if composer_json.exists():
         add("PHP", None, "language")
+        try:
+            composer = json.loads(composer_json.read_text(encoding="utf-8"))
+        except Exception:
+            composer = None
+        if isinstance(composer, dict):
+            requires = {
+                **(composer.get("require") or {}),
+                **(composer.get("require-dev") or {}),
+            }
+            if (
+                composer.get("type") == "typo3-cms-extension"
+                or "typo3/cms-core" in requires
+            ):
+                add("TYPO3", None, "framework")
+            elif "symfony/framework-bundle" in requires or "symfony/symfony" in requires:
+                add("Symfony", None, "framework")
+            elif "laravel/framework" in requires:
+                add("Laravel", None, "framework")
 
     # --- Docker ---
     if (repo_path / "Dockerfile").exists():
