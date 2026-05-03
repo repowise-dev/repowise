@@ -9,27 +9,27 @@ import { getGraph, getModuleGraph, getCommunities, getExecutionFlows } from "@/l
 import { getProviders } from "@/lib/api/providers";
 import { listJobs } from "@/lib/api/jobs";
 import { getKnowledgeMap } from "@/lib/api/knowledge-map";
-import { Badge } from "@/components/ui/badge";
-import { StatCard } from "@/components/shared/stat-card";
-import { HealthScoreRing } from "@/components/dashboard/health-score-ring";
-import { AttentionPanel } from "@/components/dashboard/attention-panel";
-import { QuickActions } from "@/components/dashboard/quick-actions";
-import { OwnershipTreemap } from "@/components/dashboard/ownership-treemap";
-import { LanguageDonut } from "@/components/dashboard/language-donut";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { HealthScoreRing } from "@repowise-dev/ui/dashboard/health-score-ring";
+import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
+import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
+import { OwnershipTreemap } from "@repowise-dev/ui/dashboard/ownership-treemap";
+import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
 import { computeHealthScore, buildAttentionItems, aggregateLanguages } from "@/lib/utils/health-score";
-import { HotspotsMini } from "@/components/dashboard/hotspots-mini";
-import { DecisionsTimeline } from "@/components/dashboard/decisions-timeline";
-import { ModuleMinimap } from "@/components/dashboard/module-minimap";
-import { CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid";
-import { ExecutionFlowsPanel } from "@/components/dashboard/execution-flows-panel";
-import { DependencyHeatmap } from "@/components/dashboard/dependency-heatmap";
-import { BusFactorPanel } from "@/components/git/bus-factor-panel";
-import { ChurnHistogram } from "@/components/git/churn-histogram";
-import { CommitCategoryDonut } from "@/components/git/commit-category-donut";
-import { CommitCategorySparkline } from "@/components/git/commit-category-sparkline";
-import { OwnershipTreemap as OwnershipTreemapGit } from "@/components/git/ownership-treemap";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatNumber } from "@/lib/utils/format";
+import { HotspotsMini } from "@repowise-dev/ui/dashboard/hotspots-mini";
+import { DecisionsTimeline } from "@repowise-dev/ui/dashboard/decisions-timeline";
+import { ModuleMinimap } from "@repowise-dev/ui/dashboard/module-minimap";
+import { CommunitySummaryGridWrapper as CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid-wrapper";
+import { ExecutionFlowsPanel } from "@repowise-dev/ui/dashboard/execution-flows-panel";
+import { DependencyHeatmap } from "@repowise-dev/ui/dashboard/dependency-heatmap";
+import { BusFactorPanel } from "@repowise-dev/ui/git/bus-factor-panel";
+import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
+import { CommitCategoryDonut } from "@repowise-dev/ui/git/commit-category-donut";
+import { CommitCategorySparkline } from "@repowise-dev/ui/git/commit-category-sparkline";
+import { OwnershipTreemap as OwnershipTreemapGit } from "@repowise-dev/ui/git/ownership-treemap";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type {
   RepoStatsResponse,
   GitSummaryResponse,
@@ -50,7 +50,7 @@ interface Props {
   params: Promise<{ id: string }>;
 }
 
-// Each fetch wrapped to return null on failure — the dashboard degrades gracefully
+// Each fetch wrapped to return null on failure â€” the dashboard degrades gracefully
 async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
@@ -65,7 +65,7 @@ export default async function OverviewPage({ params }: Props) {
   const repo = await safeFetch(() => getRepo(id));
   if (!repo) notFound();
 
-  // Fetch all data in parallel — each independently failable
+  // Fetch all data in parallel â€” each independently failable
   const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs, knowledgeMap, communities, executionFlows] =
     await Promise.all([
       safeFetch(() => getRepoStats(id)),
@@ -116,7 +116,7 @@ export default async function OverviewPage({ params }: Props) {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
-      {/* ── Hero: Health Score + Repo Info + Quick Actions ── */}
+      {/* â”€â”€ Hero: Health Score + Repo Info + Quick Actions â”€â”€ */}
       <div className="flex flex-col sm:flex-row items-start gap-6">
         <HealthScoreRing score={healthScore} />
 
@@ -155,27 +155,27 @@ export default async function OverviewPage({ params }: Props) {
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             <StatCard
               label="Files"
-              value={stats ? formatNumber(stats.file_count) : "—"}
+              value={stats ? formatNumber(stats.file_count) : "â€”"}
               className="!p-0 [&>div]:!p-3"
             />
             <StatCard
               label="Symbols"
-              value={stats ? formatNumber(stats.symbol_count) : "—"}
+              value={stats ? formatNumber(stats.symbol_count) : "â€”"}
               className="!p-0 [&>div]:!p-3"
             />
             <StatCard
               label="Entry Points"
-              value={stats ? formatNumber(stats.entry_point_count) : "—"}
+              value={stats ? formatNumber(stats.entry_point_count) : "â€”"}
               className="!p-0 [&>div]:!p-3"
             />
             <StatCard
               label="Doc Coverage"
-              value={stats ? `${Math.round(stats.doc_coverage_pct)}%` : "—"}
+              value={stats ? `${Math.round(stats.doc_coverage_pct)}%` : "â€”"}
               className="!p-0 [&>div]:!p-3"
             />
             <StatCard
               label="Dead Exports"
-              value={stats ? formatNumber(stats.dead_export_count) : "—"}
+              value={stats ? formatNumber(stats.dead_export_count) : "â€”"}
               description={
                 deadCodeSummary
                   ? `${formatNumber(deadCodeSummary.deletable_lines)} deletable lines`
@@ -187,9 +187,9 @@ export default async function OverviewPage({ params }: Props) {
         </div>
       </div>
 
-      {/* ── Main Grid ── */}
+      {/* â”€â”€ Main Grid â”€â”€ */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Left column — Attention + Hotspots */}
+        {/* Left column â€” Attention + Hotspots */}
         <div className="space-y-4 lg:col-span-2">
           <AttentionPanel items={attentionItems} repoId={id} />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -207,7 +207,7 @@ export default async function OverviewPage({ params }: Props) {
           </div>
         </div>
 
-        {/* Right column — Visualizations */}
+        {/* Right column â€” Visualizations */}
         <div className="space-y-4">
           <LanguageDonut distribution={langDistribution} />
           {ownership && ownership.length > 0 && (
@@ -216,7 +216,7 @@ export default async function OverviewPage({ params }: Props) {
         </div>
       </div>
 
-      {/* ── Git Insights ── */}
+      {/* â”€â”€ Git Insights â”€â”€ */}
       {hotspots && hotspots.length > 0 && (() => {
         const aggregatedCategories: Record<string, number> = {};
         for (const h of hotspots) {
@@ -299,7 +299,7 @@ export default async function OverviewPage({ params }: Props) {
         );
       })()}
 
-      {/* ── Module Architecture Map + Dependency Heatmap ── */}
+      {/* â”€â”€ Module Architecture Map + Dependency Heatmap â”€â”€ */}
       {moduleGraph && moduleGraph.nodes.length > 0 && (
         <div className="space-y-4">
           <ModuleMinimap
@@ -312,7 +312,7 @@ export default async function OverviewPage({ params }: Props) {
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium">Dependency Heatmap</CardTitle>
                 <p className="text-xs text-[var(--color-text-tertiary)]">
-                  Module-to-module dependency density — brighter cells indicate more connections
+                  Module-to-module dependency density â€” brighter cells indicate more connections
                 </p>
               </CardHeader>
               <CardContent>
@@ -323,7 +323,7 @@ export default async function OverviewPage({ params }: Props) {
         </div>
       )}
 
-      {/* ── Graph Intelligence: Communities & Execution Flows ── */}
+      {/* â”€â”€ Graph Intelligence: Communities & Execution Flows â”€â”€ */}
       {((communities && communities.length > 0) || (executionFlows && executionFlows.flows.length > 0)) && (
         <div className="space-y-4">
           <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
@@ -340,7 +340,7 @@ export default async function OverviewPage({ params }: Props) {
         </div>
       )}
 
-      {/* ── Knowledge Map ── */}
+      {/* â”€â”€ Knowledge Map â”€â”€ */}
       {knowledgeMap && (
         <div className="space-y-4">
           <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
@@ -390,7 +390,7 @@ export default async function OverviewPage({ params }: Props) {
               </CardHeader>
               <CardContent>
                 {knowledgeMap.knowledge_silos.length === 0 ? (
-                  <p className="text-xs text-[var(--color-text-tertiary)]">No silos detected — good bus factor!</p>
+                  <p className="text-xs text-[var(--color-text-tertiary)]">No silos detected â€” good bus factor!</p>
                 ) : (
                   <div className="space-y-1">
                     <p className="text-xs text-[var(--color-text-secondary)] mb-2">
@@ -435,7 +435,7 @@ export default async function OverviewPage({ params }: Props) {
                           {target.path}
                         </p>
                         <p className="text-[10px] text-[var(--color-text-tertiary)]">
-                          pagerank {target.pagerank.toFixed(4)} · {formatNumber(target.doc_words)} doc words
+                          pagerank {target.pagerank.toFixed(4)} Â· {formatNumber(target.doc_words)} doc words
                         </p>
                       </li>
                     ))}

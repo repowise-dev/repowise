@@ -6,16 +6,16 @@ import { getRepo } from "@/lib/api/repos";
 import { getPageById, getPageVersions } from "@/lib/api/pages";
 import { getGitMetadata } from "@/lib/api/git";
 import { getGraphMetrics } from "@/lib/api/graph";
-import { ConfidenceBadge } from "@/components/wiki/confidence-badge";
+import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
 import { WikiRenderer } from "@/components/wiki/wiki-renderer";
-import { TableOfContents } from "@/components/wiki/table-of-contents";
-import { RegenerateButton } from "@/components/wiki/regenerate-button";
-import { GitHistoryPanel } from "@/components/wiki/git-history-panel";
-import { SecurityPanel } from "@/components/wiki/security-panel";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import { formatRelativeTime, formatTokens } from "@/lib/utils/format";
-import { CoChangeList } from "@/components/git/co-change-list";
+import { TableOfContents } from "@repowise-dev/ui/wiki/table-of-contents";
+import { RegenerateButtonWrapper } from "@/components/wiki/regenerate-button";
+import { GitHistoryPanel } from "@repowise-dev/ui/wiki/git-history-panel";
+import { SecurityPanelWrapper } from "@/components/wiki/security-panel";
+import { Badge } from "@repowise-dev/ui/ui/badge";
+import { Separator } from "@repowise-dev/ui/ui/separator";
+import { formatRelativeTime, formatTokens } from "@repowise-dev/ui/lib/format";
+import { CoChangeList } from "@repowise-dev/ui/git/co-change-list";
 import { Hash, Cpu, StickyNote, Network } from "lucide-react";
 import type { GraphMetricsResponse } from "@/lib/api/types";
 
@@ -102,7 +102,7 @@ export default async function WikiPageRoute({ params }: Props) {
           )}
 
           {/* Regenerate */}
-          <RegenerateButton pageId={page.id} repoId={id} />
+          <RegenerateButtonWrapper pageId={page.id} repoId={id} />
         </div>
 
         {/* Page content */}
@@ -151,7 +151,7 @@ export default async function WikiPageRoute({ params }: Props) {
           <span>Generated {formatRelativeTime(page.updated_at)}</span>
           <Separator orientation="vertical" className="h-4 hidden sm:block" />
           <span className="font-mono">
-            {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
+            {formatTokens(page.input_tokens)} in Â· {formatTokens(page.output_tokens)} out
           </span>
           {versionList.length > 0 && (
             <>
@@ -247,7 +247,7 @@ export default async function WikiPageRoute({ params }: Props) {
               <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
                 Security Signals
               </p>
-              <SecurityPanel repoId={id} filePath={page.target_path} />
+              <SecurityPanelWrapper repoId={id} filePath={page.target_path} />
             </div>
           )}
 

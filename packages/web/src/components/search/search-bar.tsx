@@ -1,7 +1,7 @@
 "use client";
 
 import { Search } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { Input } from "@repowise-dev/ui/ui/input";
 import { cn } from "@/lib/utils/cn";
 
 type SearchType = "fulltext" | "semantic";
@@ -28,7 +28,7 @@ export function SearchBar({
         <Input
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="Search wiki pages…"
+          placeholder="Search wiki pagesâ€¦"
           className="pl-9"
           autoFocus
         />

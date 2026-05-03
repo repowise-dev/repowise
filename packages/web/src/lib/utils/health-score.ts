@@ -63,14 +63,8 @@ export function aggregateLanguages(
   return counts;
 }
 
-export interface AttentionItem {
-  id: string;
-  type: "stale_decision" | "knowledge_silo" | "ungoverned_hotspot" | "dead_code" | "proposed_decision";
-  title: string;
-  description: string;
-  severity: "high" | "medium" | "low";
-  href?: string;
-}
+export type { AttentionItem } from "@repowise-dev/ui/dashboard/attention-panel";
+import type { AttentionItem } from "@repowise-dev/ui/dashboard/attention-panel";
 
 /** Build attention items from existing API responses */
 export function buildAttentionItems(params: {

@@ -2,7 +2,7 @@
 
 import { use, useState } from "react";
 import { Download, FolderArchive, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@repowise-dev/ui/ui/button";
 import { DocsExplorer } from "@/components/docs/docs-explorer";
 import { listAllPages } from "@/lib/api/pages";
 import { downloadTextFile } from "@/lib/utils/download";

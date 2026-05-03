@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { Copy, Check } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
+import { Button } from "@repowise-dev/ui/ui/button";
 
 const MCP_CONFIG = JSON.stringify(
   {

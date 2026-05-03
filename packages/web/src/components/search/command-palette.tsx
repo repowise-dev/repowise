@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Command } from "cmdk";
 import { Search, LayoutDashboard, Settings, BookOpen, Layers, Link2, GitMerge } from "lucide-react";
 import { useSearch } from "@/lib/hooks/use-search";
-import { truncatePath } from "@/lib/utils/format";
+import { truncatePath } from "@repowise-dev/ui/lib/format";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface CommandPaletteProps {
@@ -63,7 +63,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
           <Command.Input
             value={query}
             onValueChange={setQuery}
-            placeholder="Search pages, navigate repos…"
+            placeholder="Search pages, navigate reposâ€¦"
             className="flex-1 bg-transparent text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
           />
           <kbd className="hidden sm:inline-flex items-center rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-xs text-[var(--color-text-tertiary)] font-mono">
@@ -73,7 +73,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
 
         <Command.List className="max-h-[60dvh] overflow-y-auto py-2">
           <Command.Empty className="px-4 py-8 text-center text-sm text-[var(--color-text-tertiary)]">
-            {isLoading ? "Searching…" : "No results found."}
+            {isLoading ? "Searchingâ€¦" : "No results found."}
           </Command.Empty>
 
           {/* Quick navigation */}
@@ -172,8 +172,8 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
         </Command.List>
 
         <div className="border-t border-[var(--color-border-default)] px-4 py-2 flex items-center gap-4 text-xs text-[var(--color-text-tertiary)]">
-          <span>↑↓ navigate</span>
-          <span>↵ select</span>
+          <span>â†‘â†“ navigate</span>
+          <span>â†µ select</span>
           <span>esc close</span>
         </div>
       </div>

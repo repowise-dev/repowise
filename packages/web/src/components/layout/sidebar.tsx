@@ -29,9 +29,9 @@ import {
   GitMerge,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
+import { Separator } from "@repowise-dev/ui/ui/separator";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise-dev/ui/ui/tooltip";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
@@ -158,7 +158,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
             ))}
           </nav>
 
-          {/* Workspace nav — only shown in workspace mode */}
+          {/* Workspace nav â€” only shown in workspace mode */}
           {isWorkspace && (
             <>
               {!isIconOnly && (

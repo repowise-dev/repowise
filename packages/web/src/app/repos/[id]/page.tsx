@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Hash } from "lucide-react";
 import { getRepo } from "@/lib/api/repos";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@repowise-dev/ui/ui/badge";
 import { ChatInterface } from "@/components/chat/chat-interface";
 
 interface Props {
@@ -13,7 +13,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   try {
     const repo = await getRepo(id);
-    return { title: `${repo.name} — Chat` };
+    return { title: `${repo.name} â€” Chat` };
   } catch {
     return { title: "Repository" };
   }

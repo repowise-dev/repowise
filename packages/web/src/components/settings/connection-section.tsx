@@ -5,10 +5,10 @@ import { CheckCircle, XCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { config } from "@/lib/config";
 import { getHealth } from "@/lib/api/health";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
+import { Label } from "@repowise-dev/ui/ui/label";
+import { Input } from "@repowise-dev/ui/ui/input";
+import { Button } from "@repowise-dev/ui/ui/button";
 import type { HealthResponse } from "@/lib/api/types";
 
 export function ConnectionSection() {
@@ -87,7 +87,7 @@ export function ConnectionSection() {
           <Input
             id="api-key"
             type="password"
-            placeholder="Optional — only required if REPOWISE_API_KEY is set on the server"
+            placeholder="Optional â€” only required if REPOWISE_API_KEY is set on the server"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             onBlur={save}
@@ -112,7 +112,7 @@ export function ConnectionSection() {
           {health && (
             <span className="flex items-center gap-1.5 text-sm text-[var(--color-fresh)]">
               <CheckCircle className="h-4 w-4" />
-              Connected · v{health.version} · DB {health.db}
+              Connected Â· v{health.version} Â· DB {health.db}
             </span>
           )}
           {error && (

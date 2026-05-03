@@ -28,10 +28,10 @@ import {
   Link2,
   GitMerge,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@repowise-dev/ui/ui/sheet";
+import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
+import { Separator } from "@repowise-dev/ui/ui/separator";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { cn } from "@/lib/utils/cn";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";

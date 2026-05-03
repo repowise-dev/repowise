@@ -11,7 +11,7 @@ Four intelligence layers. Seven MCP tools. Multi-repo workspaces. Auto-sync hook
 [![MCP](https://img.shields.io/badge/MCP-compatible-F59520?labelColor=0A0A0A)](https://modelcontextprotocol.io)
 [![Stars](https://img.shields.io/github/stars/repowise-dev/repowise?color=F59520&labelColor=0A0A0A)](https://github.com/repowise-dev/repowise)
 
-[**Live Demo →**](https://repowise.dev/examples) · [**Hosted for teams**](https://www.repowise.dev/#contact) · [**Docs**](https://repowise-dev.github.io) · [**Discord**](https://discord.gg/cQVpuDB6rh) · [**Contact**](mailto:hello@repowise.dev)
+[**Explore real codebases →**](https://www.repowise.dev/explore) · [**Hosted for teams →**](https://www.repowise.dev/#contact) · [**Docs**](https://repowise-dev.github.io) · [**Discord**](https://discord.gg/cQVpuDB6rh) · [**Contact**](mailto:hello@repowise.dev)
 
 ---
 
@@ -467,17 +467,16 @@ repowise is the intersection: CodeScene-level git intelligence + auto-generated 
 
 ## Hosted version — for teams
 
-For teams that want repowise managed, we offer a hosted version. No self-hosting, no infrastructure to maintain — we handle deployment, updates, and webhooks. If your team wants shared codebase intelligence without the operational overhead, reach out.
+[**repowise.dev**](https://www.repowise.dev) is the same engine, fully managed. Now at feature parity with self-hosted: every CLI command, every MCP tool, the full dashboard. Connect your IDE to the hosted MCP endpoint and skip the install entirely.
 
-Hosted adds what only makes sense in a managed, multi-user environment:
+We use it on our own codebase — see the live snapshot of repowise indexing itself: [**dogfood example →**](https://www.repowise.dev/s/5a6b93fa9a69). More public repos indexed on the [**explore page →**](https://www.repowise.dev/explore).
 
-- **Shared team context layer** — one CLAUDE.md backed by the full graph and decision layer, auto-injected into every team member's Claude Code session via MCP
-- **Session intelligence harvesting** — architectural decisions extracted from AI coding sessions and proposed to the team knowledge base automatically
-- **Security vulnerability reporting** — repowise scans for known vulnerability patterns, dependency risks, and security anti-patterns across your codebase and surfaces them proactively. Not just `eval` calls — real CVE-aware analysis
-- **Engineering leader dashboard** — bus factor trends, hotspot evolution over time, cross-repo dead code, ownership drift
-- **Managed webhooks** — zero-configuration auto re-index on every commit to any branch
-- **Integrations** — Slack alerts, Jira and Linear decision linking, Confluence and Notion doc sync, GitHub and GitLab webhooks, PagerDuty escalation routing
-- **Cross-repo intelligence at scale** — hotspots, dead code, and ownership across all your repositories with centralized dashboards (beyond what local workspaces provide)
+**What you get on top of self-hosting:**
+- **Zero ops** — managed deploys, managed webhooks, auto re-index on every commit, no infrastructure
+- **Hosted MCP endpoint** — point Claude Code (or any MCP client) at one URL, no local server to run
+- **Security scanning layer** — CVE-aware vulnerability detection, dependency risk surfacing, and security anti-pattern analysis across your repositories
+- **Cross-repo intelligence at scale** — federated hotspots, dead code, and ownership across all your repos in one dashboard
+- **Integrations** *(rolling out)* — Slack alerts, Jira/Linear decision linking, Confluence/Notion doc sync, PagerDuty escalation
 
 [Get in touch →](https://www.repowise.dev/#contact) · [hello@repowise.dev](mailto:hello@repowise.dev)
 
@@ -634,6 +633,6 @@ For commercial licensing — embedding repowise in a product, white-labeling, or
 
 Built for engineers who got tired of watching their AI agent `cat` the same file for the fourth time.
 
-[repowise.dev](https://repowise.dev) · [Live Demo →](https://repowise.dev/examples) · [Discord](https://discord.gg/cQVpuDB6rh) · [X](https://x.com/repowisedev) · [hello@repowise.dev](mailto:hello@repowise.dev)
+[repowise.dev](https://repowise.dev) · [Explore →](https://www.repowise.dev/explore) · [Discord](https://discord.gg/cQVpuDB6rh) · [X](https://x.com/repowisedev) · [hello@repowise.dev](mailto:hello@repowise.dev)
 
 </div>

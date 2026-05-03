@@ -1,0 +1,36 @@
+{
+  "name": "@repowise-dev/types",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Canonical TypeScript data contracts for the Repowise dashboard (packages/web) and downstream consumers of the same engine artifacts.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./graph": "./src/graph.ts",
+    "./git": "./src/git.ts",
+    "./docs": "./src/docs.ts",
+    "./decisions": "./src/decisions.ts",
+    "./dead-code": "./src/dead-code.ts",
+    "./symbols": "./src/symbols.ts",
+    "./chat": "./src/chat.ts",
+    "./workspace": "./src/workspace.ts",
+    "./blast-radius": "./src/blast-radius.ts",
+    "./jobs": "./src/jobs.ts",
+    "./settings": "./src/settings.ts",
+    "./security": "./src/security.ts"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test": "vitest run --typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

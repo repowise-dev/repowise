@@ -4,17 +4,17 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { RefreshCw, Zap, ChevronDown, ChevronUp, AlertTriangle, Download } from "lucide-react";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@repowise-dev/ui/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogFooter,
-} from "@/components/ui/dialog";
+} from "@repowise-dev/ui/ui/dialog";
 import { RunConfigForm, type RunConfig } from "./run-config-form";
-import { GenerationProgress } from "@/components/jobs/generation-progress";
+import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
 
 interface Props {
   repoId: string;
@@ -41,7 +41,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     try {
       const job = await syncRepo(repoId);
       setActiveJobId(job.id);
-      toast.info(`Sync started — ${repoName}`);
+      toast.info(`Sync started â€” ${repoName}`);
     } catch (e) {
       toast.error("Sync failed", {
         description: e instanceof Error ? e.message : "Unknown error",
@@ -57,7 +57,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     try {
       const job = await fullResyncRepo(repoId);
       setActiveJobId(job.id);
-      toast.info(`Full resync started — ${repoName}`);
+      toast.info(`Full resync started â€” ${repoName}`);
     } catch (e) {
       toast.error("Resync failed", {
         description: e instanceof Error ? e.message : "Unknown error",
@@ -115,7 +115,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
                 className="flex-1"
               >
                 <Zap className="h-3.5 w-3.5 mr-1.5" />
-                {loading === "sync" ? "Starting…" : "Sync"}
+                {loading === "sync" ? "Startingâ€¦" : "Sync"}
               </Button>
               <Button
                 variant="outline"
@@ -125,7 +125,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
                 className="flex-1"
               >
                 <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                {loading === "resync" ? "Starting…" : "Full Resync"}
+                {loading === "resync" ? "Startingâ€¦" : "Full Resync"}
               </Button>
               <Button
                 variant="ghost"

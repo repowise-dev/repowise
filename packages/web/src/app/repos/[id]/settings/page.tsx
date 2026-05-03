@@ -3,10 +3,10 @@ import { notFound } from "next/navigation";
 import { Settings } from "lucide-react";
 import { getRepo } from "@/lib/api/repos";
 import { getCoordinatorHealth } from "@/lib/api/health";
-import { RepoSettingsForm } from "@/components/repos/repo-settings-form";
+import { RepoSettingsFormWrapper as RepoSettingsForm } from "@/components/repos/repo-settings-form-wrapper";
 import { CoordinatorHealthPanel } from "@/components/repos/coordinator-health-panel";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
+import { Separator } from "@repowise-dev/ui/ui/separator";
 import { OperationsPanel } from "@/components/repos/operations-panel";
 
 interface Props {
@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   try {
     const repo = await getRepo(id);
-    return { title: `${repo.name} — Settings` };
+    return { title: `${repo.name} â€” Settings` };
   } catch {
     return { title: "Settings" };
   }

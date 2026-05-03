@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getRepo } from "@/lib/api/repos";
-import { ActiveJobBanner } from "@/components/dashboard/active-job-banner";
+import { ActiveJobBannerWrapper as ActiveJobBanner } from "@/components/dashboard/active-job-banner-wrapper";
 import { PageTransition } from "@/components/layout/page-transition";
 
 interface RepoLayoutProps {

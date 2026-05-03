@@ -12,12 +12,12 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { StatCard } from "@/components/shared/stat-card";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { listCosts, getCostSummary } from "@/lib/api/costs";
 import type { CostGroup, CostSummary } from "@/lib/api/costs";
-import { formatCost, formatNumber, formatTokens } from "@/lib/utils/format";
+import { formatCost, formatNumber, formatTokens } from "@repowise-dev/ui/lib/format";
 
 type GroupBy = "day" | "model" | "operation";
 
@@ -108,7 +108,7 @@ export default function CostsPage() {
         ))}
       </div>
 
-      {/* Chart — only when grouping by day */}
+      {/* Chart â€” only when grouping by day */}
       {by === "day" && (
         <Card>
           <CardHeader className="pb-2">
@@ -131,7 +131,7 @@ export default function CostsPage() {
                     interval="preserveStartEnd"
                     minTickGap={24}
                     tickFormatter={(v: string) => {
-                      // ISO date "YYYY-MM-DD" → "M/D"
+                      // ISO date "YYYY-MM-DD" â†’ "M/D"
                       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
                       return m ? `${Number(m[2])}/${Number(m[3])}` : v;
                     }}

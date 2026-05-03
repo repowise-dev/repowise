@@ -1,4 +1,4 @@
-import { Skeleton } from "@/components/ui/skeleton";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 export default function HotspotsLoading() {
   return (

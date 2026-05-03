@@ -2,24 +2,18 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw } from "lucide-react";
 import { useSWRConfig } from "swr";
+import { RegenerateButton as RegenerateButtonShell } from "@repowise-dev/ui/wiki/regenerate-button";
 import { regeneratePage } from "@/lib/api/pages";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { GenerationProgress } from "@/components/jobs/generation-progress";
+import { GenerationProgressWrapper as GenerationProgress } from "@/components/jobs/generation-progress-wrapper";
 
 interface Props {
   pageId: string;
+  // repoId retained for parent compat; not currently consumed in the wrapper.
   repoId: string;
 }
 
-export function RegenerateButton({ pageId, repoId }: Props) {
+export function RegenerateButtonWrapper({ pageId }: Props) {
   const { mutate } = useSWRConfig();
   const [loading, setLoading] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -41,34 +35,17 @@ export function RegenerateButton({ pageId, repoId }: Props) {
 
   function handleDone() {
     // Revalidate the page data so confidence badge and content refresh
-    mutate(`/api/pages/lookup?page_id=${pageId}`);
+    void mutate(`/api/pages/lookup?page_id=${pageId}`);
     setJobId(null);
   }
 
   return (
-    <>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={handleRegenerate}
-        disabled={loading || !!jobId}
-        className="h-7 gap-1.5 text-xs"
-        aria-label="Regenerate this page"
-      >
-        <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-        <span className="hidden sm:inline">Regenerate</span>
-      </Button>
-
-      <Dialog open={!!jobId} onOpenChange={(v) => { if (!v) setJobId(null); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Regenerating Page</DialogTitle>
-          </DialogHeader>
-          {jobId && (
-            <GenerationProgress jobId={jobId} onDone={handleDone} />
-          )}
-        </DialogContent>
-      </Dialog>
-    </>
+    <RegenerateButtonShell
+      onRegenerate={handleRegenerate}
+      isLoading={loading}
+      isInProgress={!!jobId}
+      onDialogClose={() => setJobId(null)}
+      jobSlot={jobId ? <GenerationProgress jobId={jobId} onDone={handleDone} /> : null}
+    />
   );
 }
