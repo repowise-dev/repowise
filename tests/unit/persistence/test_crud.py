@@ -15,12 +15,14 @@ from repowise.core.persistence.crud import (
     batch_upsert_graph_edges,
     batch_upsert_graph_nodes,
     batch_upsert_symbols,
+    delete_repository,
     get_generation_job,
     get_page,
     get_page_versions,
     get_repository,
     get_repository_by_path,
     get_stale_pages,
+    list_page_ids,
     list_pages,
     mark_webhook_processed,
     store_webhook_event,
@@ -70,6 +72,32 @@ async def test_get_repository_returns_inserted(async_session):
     found = await get_repository(async_session, repo.id)
     assert found is not None
     assert found.id == repo.id
+
+
+async def test_delete_repository_success(async_session):
+    repo = await insert_repo(async_session, name="doomed", local_path="/tmp/doomed")
+    repo_id = repo.id
+    await async_session.commit()
+
+    deleted = await delete_repository(async_session, repo_id)
+    await async_session.commit()
+    assert deleted is True
+    assert await get_repository(async_session, repo_id) is None
+
+
+async def test_delete_repository_not_found(async_session):
+    deleted = await delete_repository(async_session, "nonexistent")
+    assert deleted is False
+
+
+async def test_list_page_ids(async_session):
+    repo = await insert_repo(async_session)
+    kwargs = make_page_kwargs(repo.id)
+    page = await upsert_page(async_session, **kwargs)
+    await async_session.commit()
+
+    ids = await list_page_ids(async_session, repo.id)
+    assert page.id in ids
 
 
 # ---------------------------------------------------------------------------
