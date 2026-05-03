@@ -81,7 +81,7 @@ dependencies = [
     "uvicorn[standard]>=0.32,<1",
     "mcp>=1.0,<2",
     "apscheduler>=3.10,<4",
-    "cryptography>=43,<44",
+    "cryptography>=43,<47",
     # LLM providers (bundled — no extras needed)
     "anthropic>=0.40,<1",
     "openai>=1.50,<3",
