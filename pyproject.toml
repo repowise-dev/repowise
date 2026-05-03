@@ -119,45 +119,17 @@ Issues = "https://github.com/repowise-dev/repowise/issues"
 Documentation = "https://github.com/repowise-dev/repowise/blob/main/docs/USER_GUIDE.md"
 
 # ---------------------------------------------------------------------------
-# setuptools — explicit package-dir mapping across three src/ directories
+# setuptools — auto-discover packages across three src/ roots
 # ---------------------------------------------------------------------------
 [tool.setuptools.package-dir]
 "repowise.core" = "packages/core/src/repowise/core"
 "repowise.cli" = "packages/cli/src/repowise/cli"
 "repowise.server" = "packages/server/src/repowise/server"
 
-[tool.setuptools]
-packages = [
-    # core
-    "repowise.core",
-    "repowise.core.analysis",
-    "repowise.core.analysis.dead_code",
-    "repowise.core.generation",
-    "repowise.core.generation.editor_files",
-    "repowise.core.ingestion",
-    "repowise.core.ingestion.dynamic_hints",
-    "repowise.core.ingestion.extractors",
-    "repowise.core.ingestion.extractors.bindings",
-    "repowise.core.ingestion.extractors.heritage",
-    "repowise.core.ingestion.languages",
-    "repowise.core.ingestion.resolvers",
-    "repowise.core.ingestion.resolvers.dotnet",
-    "repowise.core.pipeline",
-    "repowise.core.persistence",
-    "repowise.core.providers",
-    "repowise.core.providers.llm",
-    "repowise.core.providers.embedding",
-    "repowise.core.workspace",
-    "repowise.core.workspace.extractors",
-    # cli
-    "repowise.cli",
-    "repowise.cli.commands",
-    # server
-    "repowise.server",
-    "repowise.server.routers",
-    "repowise.server.mcp_server",
-    "repowise.server.services",
-]
+[tool.setuptools.packages.find]
+where = ["packages/core/src", "packages/cli/src", "packages/server/src"]
+include = ["repowise*"]
+namespaces = true
 
 [tool.setuptools.package-data]
 "repowise.core.ingestion" = ["queries/*.scm"]
