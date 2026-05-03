@@ -98,7 +98,7 @@ graph-extra = [
     "graspologic>=3.4,<4",
 ]
 dev = [
-    "pytest>=8,<9",
+    "pytest>=8,<10",
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
     "respx>=0.21,<1",
@@ -175,7 +175,7 @@ members = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8,<9",
+    "pytest>=8,<10",
     "pytest-asyncio>=0.23,<1",
     "pytest-snapshot>=0.9,<1",
     "respx>=0.21,<1",
