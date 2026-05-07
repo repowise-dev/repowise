@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useRef, useEffect } from "react";
+import { Grid3X3 } from "lucide-react";
+import { EmptyState } from "../shared/empty-state";
 import type { ModuleGraph } from "@repowise-dev/types/graph";
 
 interface DependencyHeatmapProps {
@@ -116,7 +118,17 @@ export function DependencyHeatmap({ moduleGraph }: DependencyHeatmapProps) {
     }
   }, [modules, matrix, maxCount]);
 
-  if (modules.length < 2) return null;
+  if (modules.length < 2) {
+    return (
+      <div className="overflow-x-auto">
+        <EmptyState
+          icon={<Grid3X3 className="h-8 w-8" />}
+          title="No dependency data"
+          description="Not enough modules to generate a dependency heatmap."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="overflow-x-auto">

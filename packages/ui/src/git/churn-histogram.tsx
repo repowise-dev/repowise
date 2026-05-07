@@ -9,6 +9,8 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
+import { GitCommitHorizontal } from "lucide-react";
+import { EmptyState } from "../shared/empty-state";
 import type { Hotspot } from "@repowise-dev/types/git";
 
 interface ChurnHistogramProps {
@@ -23,6 +25,16 @@ const BUCKET_COLORS = [
 const BUCKET_FALLBACK = "#8b5cf6";
 
 export function ChurnHistogram({ hotspots }: ChurnHistogramProps) {
+  if (!hotspots || hotspots.length === 0) {
+    return (
+      <EmptyState
+        icon={<GitCommitHorizontal className="h-8 w-8" />}
+        title="No churn data"
+        description="No file churn data is available for this repository."
+      />
+    );
+  }
+
   const buckets = Array<number>(10).fill(0);
   for (const h of hotspots) {
     const idx = Math.min(9, Math.floor(h.churn_percentile / 10));

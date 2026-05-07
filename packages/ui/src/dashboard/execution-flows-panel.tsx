@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronRight, ChevronDown } from "lucide-react";
+import { ChevronRight, ChevronDown, Workflow } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { cn } from "../lib/cn";
+import { EmptyState } from "../shared/empty-state";
 import type { ExecutionFlowEntry } from "@repowise-dev/types/graph";
 
 interface ExecutionFlowsPanelProps {
@@ -85,7 +86,19 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
 }
 
 export function ExecutionFlowsPanel({ flows, repoId: _repoId }: ExecutionFlowsPanelProps) {
-  if (flows.length === 0) return null;
+  if (flows.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-0">
+          <EmptyState
+            icon={<Workflow className="h-8 w-8" />}
+            title="No execution flows"
+            description="No execution flow data is available for this repository."
+          />
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card>

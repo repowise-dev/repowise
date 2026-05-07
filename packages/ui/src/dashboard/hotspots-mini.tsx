@@ -1,5 +1,6 @@
 import { Flame } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { EmptyState } from "../shared/empty-state";
 import { truncatePath } from "../lib/format";
 import type { Hotspot } from "@repowise-dev/types/git";
 
@@ -20,14 +21,12 @@ export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
   if (top.length === 0) {
     return (
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Flame className="h-4 w-4 text-red-500" />
-            Top Hotspots
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <p className="text-xs text-[var(--color-text-tertiary)]">No hotspot data</p>
+        <CardContent className="p-0">
+          <EmptyState
+            icon={<Flame className="h-8 w-8" />}
+            title="No hotspot data"
+            description="No churn or complexity hotspots detected in this repository."
+          />
         </CardContent>
       </Card>
     );

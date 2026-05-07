@@ -7,6 +7,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { Users } from "lucide-react";
+import { EmptyState } from "../shared/empty-state";
 import { truncatePath } from "../lib/format";
 import type { Hotspot } from "@repowise-dev/types/git";
 
@@ -15,6 +17,16 @@ interface BusFactorPanelProps {
 }
 
 export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
+  if (!hotspots || hotspots.length === 0) {
+    return (
+      <EmptyState
+        icon={<Users className="h-8 w-8" />}
+        title="No bus factor data"
+        description="No ownership data is available for this repository."
+      />
+    );
+  }
+
   const high = hotspots.filter((h) => h.bus_factor >= 3).length;
   const medium = hotspots.filter((h) => h.bus_factor === 2).length;
   const low = hotspots.filter((h) => h.bus_factor <= 1).length;

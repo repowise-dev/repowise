@@ -1,6 +1,8 @@
 "use client";
 
+import { PieChart as PieChartIcon } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
+import { EmptyState } from "../shared/empty-state";
 
 interface CommitCategoryDonutProps {
   categories: Record<string, number>;
@@ -23,7 +25,15 @@ export function CommitCategoryDonut({ categories }: CommitCategoryDonutProps) {
   })).filter((d) => d.value > 0);
 
   const total = data.reduce((sum, d) => sum + d.value, 0);
-  if (total === 0) return null;
+  if (total === 0) {
+    return (
+      <EmptyState
+        icon={<PieChartIcon className="h-8 w-8" />}
+        title="No commit data"
+        description="No commit category data is available for this repository."
+      />
+    );
+  }
 
   const dominant = data.reduce((a, b) => (a.value >= b.value ? a : b));
 
