@@ -50,6 +50,11 @@ function ModuleGroupNodeInner({ id, data }: NodeProps) {
 
   const isSearchDimmed = ctx.searchDimmedNodes?.has(id) ?? false;
   const searchDimmed = isSearchDimmed && !isOnPath && !isSelected;
+  const isUnified = ctx.viewMode === "unified";
+  const dominantCid = (d as { dominantCommunityId?: number }).dominantCommunityId;
+  const communityTintColor = isUnified && dominantCid != null
+    ? COMMUNITY_COLORS[dominantCid % COMMUNITY_COLORS.length] ?? "#6366f1"
+    : null;
 
   let opacity = 1;
   if (isDimmed) opacity = 0.15;
@@ -60,8 +65,10 @@ function ModuleGroupNodeInner({ id, data }: NodeProps) {
     <div
       className="rounded-lg px-2 py-1.5 transition-all duration-200 cursor-pointer"
       style={{
-        border: `2px solid ${accentColor}`,
-        background: `linear-gradient(135deg, ${accentColor}50 0%, #1e293b 100%)`,
+        border: communityTintColor ? `2px solid ${communityTintColor}40` : `2px solid ${accentColor}`,
+        background: communityTintColor
+          ? `linear-gradient(135deg, ${communityTintColor}20 0%, ${communityTintColor}08 50%, #1e293b 100%)`
+          : `linear-gradient(135deg, ${accentColor}50 0%, #1e293b 100%)`,
         opacity,
         transform: isHovered || isSelected ? "scale(1.05)" : "scale(1)",
         boxShadow: isOnPath

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { FileText, Folder, ArrowRight, X, Zap, FlaskConical, BookOpen } from "lucide-react";
+import { FileText, Folder, ArrowRight, X, Zap, FlaskConical, BookOpen, Code2 } from "lucide-react";
 import { formatNumber } from "../lib/format";
 import { languageColor } from "../lib/confidence";
 import type { FileNodeData, ModuleNodeData } from "./elk-layout";
@@ -14,6 +14,7 @@ interface GraphTooltipProps {
   y: number;
   onClose: () => void;
   onViewDocs: () => void;
+  onViewSymbol?: () => void;
   onExplore?: () => void;
 }
 
@@ -31,6 +32,7 @@ export function GraphTooltip({
   y,
   onClose,
   onViewDocs,
+  onViewSymbol,
   onExplore,
 }: GraphTooltipProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -240,6 +242,15 @@ export function GraphTooltip({
           <BookOpen className="w-3 h-3" />
           View Docs
         </button>
+        {isFile && onViewSymbol && (
+          <button
+            onClick={onViewSymbol}
+            className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            <Code2 className="w-3 h-3" />
+            View Symbol
+          </button>
+        )}
         {onExplore && (
           <button
             onClick={onExplore}

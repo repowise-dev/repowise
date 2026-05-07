@@ -30,6 +30,10 @@ interface GraphLegendProps {
   colorMode: ColorMode;
   viewMode: ViewMode;
   communityLabels?: Map<number, string>;
+  onCommunityClick?: (communityId: number) => void;
+  activeCommunities?: Set<number> | undefined;
+  onCommunityToggle?: (communityId: number) => void;
+  onToggleAllCommunities?: (selectAll: boolean) => void;
 }
 
 export function GraphLegend({
@@ -38,6 +42,10 @@ export function GraphLegend({
   colorMode,
   viewMode,
   communityLabels,
+  onCommunityClick,
+  activeCommunities,
+  onCommunityToggle,
+  onToggleAllCommunities,
 }: GraphLegendProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -74,28 +82,74 @@ export function GraphLegend({
               </div>
             ))}
 
-          {colorMode === "community" &&
-            (communityLabels && communityLabels.size > 0
-              ? Array.from(communityLabels.entries())
-                  .slice(0, 8)
-                  .map(([cid, label], i) => (
-                    <div key={cid} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ background: COMMUNITY_SAMPLE[i % COMMUNITY_SAMPLE.length]?.color ?? "#888" }}
-                      />
-                      <span className="truncate">{label}</span>
-                    </div>
-                  ))
-              : COMMUNITY_SAMPLE.map((c, i) => (
-                  <div key={i} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0"
-                      style={{ background: c.color }}
-                    />
-                    <span>{c.label}</span>
-                  </div>
-                )))}
+          {colorMode === "community" && (() => {
+            const entries = communityLabels && communityLabels.size > 0
+              ? Array.from(communityLabels.entries()).slice(0, 8)
+              : null;
+            const allSelected = !activeCommunities || (entries
+              ? entries.every(([cid]) => activeCommunities.has(cid))
+              : true);
+            return (
+              <>
+                {onToggleAllCommunities && entries && (
+                  <button
+                    onClick={() => onToggleAllCommunities(!allSelected)}
+                    className="text-[9px] text-[var(--color-accent-graph)] hover:underline mb-0.5"
+                  >
+                    {allSelected ? "Deselect All" : "Select All"}
+                  </button>
+                )}
+                {entries
+                  ? entries.map(([cid, label], i) => {
+                      const color = COMMUNITY_SAMPLE[i % COMMUNITY_SAMPLE.length]?.color ?? "#888";
+                      const checked = !activeCommunities || activeCommunities.has(cid);
+                      return (
+                        <div
+                          key={cid}
+                          className={`flex items-center gap-2 text-[var(--color-text-tertiary)]${
+                            onCommunityClick
+                              ? " cursor-pointer rounded px-1 -mx-1 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
+                              : ""
+                          }`}
+                        >
+                          {onCommunityToggle && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); onCommunityToggle(cid); }}
+                              className="shrink-0 w-[10px] h-[10px] rounded-sm border"
+                              style={{
+                                borderColor: color,
+                                background: checked ? color : "transparent",
+                              }}
+                              aria-label={`Toggle community ${label}`}
+                            />
+                          )}
+                          {!onCommunityToggle && (
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ background: color }}
+                            />
+                          )}
+                          <span
+                            className="truncate"
+                            onClick={() => onCommunityClick?.(cid)}
+                          >
+                            {label}
+                          </span>
+                        </div>
+                      );
+                    })
+                  : COMMUNITY_SAMPLE.map((c, i) => (
+                      <div key={i} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ background: c.color }}
+                        />
+                        <span>{c.label}</span>
+                      </div>
+                    ))}
+              </>
+            );
+          })()}
 
           {colorMode === "risk" && (
             <>
@@ -119,6 +173,7 @@ export function GraphLegend({
               {viewMode === "dead" && "Showing unreachable files"}
               {viewMode === "hotfiles" && "Most-committed files (30d)"}
               {viewMode === "architecture" && "Entry-point reachable (3 hops)"}
+              {viewMode === "unified" && "Unified: community + risk signals"}
             </p>
           )}
         </div>

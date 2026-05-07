@@ -2,9 +2,10 @@
 
 import { memo, useContext } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { FileText } from "lucide-react";
+import { FileText, Flame, Skull } from "lucide-react";
 import { GraphContext } from "../context";
 import { languageColor } from "../../lib/confidence";
+import { FORCE_COMMUNITY_PALETTE } from "../force-layout";
 import type { FileNodeData } from "../elk-layout";
 
 const COMMUNITY_COLORS = [
@@ -28,11 +29,13 @@ function FileNodeInner({ id, data }: NodeProps) {
   const hasActivePath = ctx.highlightedPath.size > 0;
   const isDimmed = hasActivePath && !isOnPath;
   const isSearchDimmed = ctx.searchDimmedNodes?.has(id) ?? false;
+  const isCommunityDimmed = ctx.communityDimmedNodes?.has(id) ?? false;
   const isSelected = ctx.selectedNodeId === id;
   const isHovered = ctx.hoveredNodeId === id;
   const hasHover = ctx.hoveredNodeId !== null;
   const isConnected = ctx.connectedNodeIds.has(id);
   const isHoverDimmed = hasHover && !isConnected && !hasActivePath;
+  const isUnified = ctx.viewMode === "unified";
 
   // Determine node accent color based on color mode
   let accentColor: string;
@@ -51,16 +54,75 @@ function FileNodeInner({ id, data }: NodeProps) {
       break;
   }
 
-  // Compute opacity
+  // Compute opacity — community filter is most aggressive (0.1), then search (0.12)
   const searchDimmed = isSearchDimmed && !isOnPath && !isSelected;
+  const communityDimmed = isCommunityDimmed && !isOnPath && !isSelected;
   let opacity = 1;
   if (isDimmed) opacity = 0.15;
+  else if (communityDimmed) opacity = 0.1;
   else if (searchDimmed) opacity = 0.12;
   else if (isHoverDimmed) opacity = 0.35;
 
+  if (ctx.layoutMode === "force") {
+    const maxPr = ctx.maxPagerank || 0.001;
+    const normalizedPr = d.pagerank / maxPr;
+    const size = 10 + 30 * normalizedPr;
+    const communityColor = FORCE_COMMUNITY_PALETTE[d.communityId % FORCE_COMMUNITY_PALETTE.length] ?? "#4E79A7";
+    const labelVisible = d.pagerank >= ctx.medianPagerank || isHovered || isSelected;
+    const isDark = ctx.graphTheme === "dark";
+
+    return (
+      <div
+        className="relative flex items-center justify-center cursor-pointer"
+        style={{ width: size, height: size, opacity }}
+        aria-label={d.fullPath}
+      >
+        <Handle
+          type="target"
+          position={Position.Top}
+          className="!w-0 !h-0 !min-w-0 !min-h-0 !border-none !bg-transparent"
+        />
+        <div
+          className="rounded-full w-full h-full transition-shadow duration-200"
+          style={{
+            backgroundColor: communityColor,
+            boxShadow: isOnPath
+              ? `0 0 20px ${communityColor}`
+              : isHovered || isSelected
+                ? `0 0 12px ${communityColor}80`
+                : `0 1px 4px rgba(0,0,0,0.3)`,
+            animation: isOnPath ? "graph-path-pulse 2s ease-in-out infinite" : undefined,
+          }}
+        />
+        {labelVisible && (
+          <span
+            className="absolute whitespace-nowrap text-[9px] font-mono pointer-events-none"
+            style={{
+              top: "100%",
+              left: "50%",
+              transform: "translateX(-50%)",
+              marginTop: 2,
+              color: isDark ? "#fff" : "var(--color-text-primary)",
+              textShadow: isDark
+                ? "0 1px 3px rgba(0,0,0,0.8)"
+                : "0 1px 2px rgba(255,255,255,0.8)",
+            }}
+          >
+            {d.label}
+          </span>
+        )}
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          className="!w-0 !h-0 !min-w-0 !min-h-0 !border-none !bg-transparent"
+        />
+      </div>
+    );
+  }
+
   return (
     <div
-      className="rounded-lg px-2 py-1.5 transition-all duration-200 cursor-pointer"
+      className="relative rounded-lg px-2 py-1.5 transition-all duration-200 cursor-pointer"
       style={{
         border: `2px solid ${accentColor}`,
         background: `linear-gradient(135deg, ${accentColor}50 0%, #1e293b 100%)`,
@@ -84,7 +146,15 @@ function FileNodeInner({ id, data }: NodeProps) {
         className="!w-2 !h-2 !bg-[var(--color-border-subtle)] !border-none"
       />
 
-      {/* Same layout as module node: icon + label + badge */}
+      {isUnified && (d.isHotspot || d.isDead) && (
+        <span
+          className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center z-10"
+          style={{ background: d.isDead ? "rgba(239, 68, 68, 0.9)" : "rgba(249, 115, 22, 0.9)" }}
+        >
+          {d.isDead ? <Skull className="w-2.5 h-2.5 text-white" /> : <Flame className="w-2.5 h-2.5 text-white" />}
+        </span>
+      )}
+
       <div className="flex items-center gap-2">
         <FileText className="w-3 h-3 shrink-0" style={{ color: accentColor }} />
         <span className="text-[11px] font-medium text-[var(--color-text-primary)] truncate">

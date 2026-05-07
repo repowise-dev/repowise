@@ -37,6 +37,8 @@ export interface FileNodeData {
   isTest: boolean;
   isEntryPoint: boolean;
   hasDoc: boolean;
+  isHotspot?: boolean | undefined;
+  isDead?: boolean | undefined;
   [key: string]: unknown;
 }
 
@@ -54,12 +56,14 @@ export interface ModuleNodeData {
   hasDoc?: boolean;
   isEntryPoint?: boolean;
   isTest?: boolean;
+  dominantCommunityId?: number | undefined;
   [key: string]: unknown;
 }
 
 export interface DependencyEdgeData {
   importedNames: string[];
   edgeCount: number;
+  confidence?: number | undefined;
   [key: string]: unknown;
 }
 
@@ -85,10 +89,10 @@ function ancestorDirs(dir: string): string[] {
 /** Deduplicate edges: group by (source, target) pair, merge imported_names, sum count. */
 function deduplicateEdges(
   edges: GraphEdgeResponse[],
-): { source: string; target: string; importedNames: string[]; edgeCount: number }[] {
+): { source: string; target: string; importedNames: string[]; edgeCount: number; confidence: number | undefined }[] {
   const map = new Map<
     string,
-    { source: string; target: string; importedNames: string[]; edgeCount: number }
+    { source: string; target: string; importedNames: string[]; edgeCount: number; confidence: number | undefined }
   >();
   for (const e of edges) {
     const key = `${e.source}→${e.target}`;
@@ -96,12 +100,16 @@ function deduplicateEdges(
     if (existing) {
       existing.importedNames.push(...e.imported_names);
       existing.edgeCount++;
+      if (e.confidence != null) {
+        existing.confidence = Math.max(existing.confidence ?? 0, e.confidence);
+      }
     } else {
       map.set(key, {
         source: e.source,
         target: e.target,
         importedNames: [...e.imported_names],
         edgeCount: 1,
+        confidence: e.confidence,
       });
     }
   }
@@ -137,16 +145,29 @@ export function groupNodesAsModules(
     return { moduleNodes: [], moduleEdges: [], fileEntries: new Map() };
   }
 
+  // Auto-detect monorepo: if >50% of root-level nodes live under packages/,
+  // group by second segment (packages/<name>) instead of first segment.
+  const isMonorepo = !prefix &&
+    scopedNodes.filter((n) => n.node_id.startsWith("packages/")).length > scopedNodes.length * 0.5;
+
   // Group by next path segment after the prefix
   const modules = new Map<string, GraphNodeResponse[]>();
   const nodeToModule = new Map<string, string>();
 
   for (const n of scopedNodes) {
     const rest = prefix ? n.node_id.slice(slash.length) : n.node_id;
-    const slashIdx = rest.indexOf("/");
-    const moduleId = slashIdx >= 0
-      ? (prefix ? slash + rest.slice(0, slashIdx) : rest.slice(0, slashIdx))
-      : (prefix ? slash + rest : rest); // file at this level
+
+    let moduleId: string;
+    if (isMonorepo && rest.startsWith("packages/")) {
+      const afterPkg = rest.slice("packages/".length);
+      const idx = afterPkg.indexOf("/");
+      moduleId = idx >= 0 ? "packages/" + afterPkg.slice(0, idx) : rest;
+    } else {
+      const slashIdx = rest.indexOf("/");
+      moduleId = slashIdx >= 0
+        ? (prefix ? slash + rest.slice(0, slashIdx) : rest.slice(0, slashIdx))
+        : (prefix ? slash + rest : rest);
+    }
 
     const list = modules.get(moduleId) ?? [];
     list.push(n);
@@ -217,6 +238,27 @@ export async function layoutFileGraph(
   const nodeSet = new Set(nodes.map((n) => n.node_id));
   const validEdges = edges.filter((e) => nodeSet.has(e.source) && nodeSet.has(e.target));
   const dedupedEdges = deduplicateEdges(validEdges);
+
+  // Compute dominant community per directory (for module group tinting)
+  const dirCommunityCounts = new Map<string, Map<number, number>>();
+  for (const n of nodes) {
+    const dir = dirOf(n.node_id);
+    if (!dir) continue;
+    for (const ancestor of ancestorDirs(dir)) {
+      let counts = dirCommunityCounts.get(ancestor);
+      if (!counts) { counts = new Map(); dirCommunityCounts.set(ancestor, counts); }
+      counts.set(n.community_id, (counts.get(n.community_id) ?? 0) + 1);
+    }
+  }
+  const dirDominantCommunity = new Map<string, number>();
+  for (const [dir, counts] of dirCommunityCounts) {
+    let maxCount = 0;
+    let dominant = 0;
+    for (const [cid, count] of counts) {
+      if (count > maxCount) { maxCount = count; dominant = cid; }
+    }
+    dirDominantCommunity.set(dir, dominant);
+  }
 
   // Build directory hierarchy
   const dirSet = new Set<string>();
@@ -339,6 +381,7 @@ export async function layoutFileGraph(
             label,
             fullPath: dirPath,
             fileCount: child.children?.filter((c) => !c.id.startsWith("dir:")).length ?? 0,
+            dominantCommunityId: dirDominantCommunity.get(dirPath),
           } satisfies Record<string, unknown>,
         });
         // Recurse into children
@@ -384,6 +427,7 @@ export async function layoutFileGraph(
       data: {
         importedNames: e.importedNames,
         edgeCount: e.edgeCount,
+        confidence: e.confidence,
       } satisfies DependencyEdgeData,
     });
   }

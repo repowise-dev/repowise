@@ -12,14 +12,21 @@ import {
   Skull,
   Flame,
   LayoutGrid,
+  Layers,
   Workflow,
   Search,
   X,
+  GitBranch,
+  Waypoints,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { Button } from "../ui/button";
 
 export type ColorMode = "language" | "community" | "risk";
-export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles";
+export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
+export type LayoutMode = "hierarchical" | "force";
+export type GraphTheme = "light" | "dark";
 
 interface GraphToolbarProps {
   viewMode: ViewMode;
@@ -35,6 +42,13 @@ interface GraphToolbarProps {
   onToggleFlows: () => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
+  searchMatchCount?: number;
+  searchTotalCount?: number;
+  onSearchKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  layoutMode: LayoutMode;
+  onLayoutModeChange: (mode: LayoutMode) => void;
+  graphTheme: GraphTheme;
+  onGraphThemeChange: (theme: GraphTheme) => void;
 }
 
 const VIEW_MODES: { id: ViewMode; icon: typeof Boxes; label: string }[] = [
@@ -43,12 +57,18 @@ const VIEW_MODES: { id: ViewMode; icon: typeof Boxes; label: string }[] = [
   { id: "architecture", icon: GitFork, label: "Architecture" },
   { id: "dead", icon: Skull, label: "Dead Code" },
   { id: "hotfiles", icon: Flame, label: "Hot Files" },
+  { id: "unified", icon: Layers, label: "Unified" },
 ];
 
 const COLOR_MODES: { id: ColorMode; icon: typeof Palette; label: string }[] = [
   { id: "language", icon: Palette, label: "Language" },
   { id: "community", icon: Network, label: "Community" },
   { id: "risk", icon: Shield, label: "Risk" },
+];
+
+const LAYOUT_MODES: { id: LayoutMode; icon: typeof GitBranch; label: string }[] = [
+  { id: "hierarchical", icon: GitBranch, label: "Hierarchical" },
+  { id: "force", icon: Waypoints, label: "Force-directed" },
 ];
 
 export function GraphToolbar({
@@ -65,6 +85,13 @@ export function GraphToolbar({
   onToggleFlows,
   searchQuery,
   onSearchChange,
+  searchMatchCount,
+  searchTotalCount,
+  onSearchKeyDown,
+  layoutMode,
+  onLayoutModeChange,
+  graphTheme,
+  onGraphThemeChange,
 }: GraphToolbarProps) {
   return (
     <div className="flex flex-col gap-1.5 items-end">
@@ -94,6 +121,29 @@ export function GraphToolbar({
 
       <div className="flex gap-1.5 items-center">
         <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+          {LAYOUT_MODES.map((m) => {
+            const Icon = m.icon;
+            const isActive = layoutMode === m.id;
+            return (
+              <button
+                key={m.id}
+                onClick={() => onLayoutModeChange(m.id)}
+                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                  isActive
+                    ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
+                    : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
+                }`}
+                title={m.label}
+                aria-label={m.label}
+                aria-pressed={isActive}
+              >
+                <Icon className="w-3 h-3" />
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
           {COLOR_MODES.map((m) => {
             const Icon = m.icon;
             const isActive = colorMode === m.id;
@@ -117,6 +167,17 @@ export function GraphToolbar({
         </div>
 
         <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onGraphThemeChange(graphTheme === "light" ? "dark" : "light")}
+            className={`h-7 w-7 p-0 ${graphTheme === "dark" ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            title={graphTheme === "dark" ? "Light graph theme" : "Dark graph theme"}
+            aria-label={graphTheme === "dark" ? "Light graph theme" : "Dark graph theme"}
+            aria-pressed={graphTheme === "dark"}
+          >
+            {graphTheme === "dark" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+          </Button>
           <Button
             size="sm"
             variant="ghost"
@@ -170,10 +231,16 @@ export function GraphToolbar({
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
+            onKeyDown={onSearchKeyDown}
             placeholder="Search nodes…"
             aria-label="Search graph nodes"
             className="bg-transparent text-[11px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none w-28 lg:w-40"
           />
+          {searchQuery && searchMatchCount != null && searchTotalCount != null && (
+            <span className="text-[9px] text-[var(--color-text-tertiary)] tabular-nums whitespace-nowrap">
+              {searchMatchCount} / {searchTotalCount}
+            </span>
+          )}
           {searchQuery && (
             <button
               onClick={() => onSearchChange("")}

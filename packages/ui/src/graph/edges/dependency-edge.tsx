@@ -27,11 +27,18 @@ function DependencyEdgeInner({
   const hasActivePath = ctx.highlightedPath.size > 0;
   const isDimmed = hasActivePath && !isOnPath;
   const isDynamic = d.importedNames.length === 0;
+  const confidence = (d as { confidence?: number }).confidence;
 
   // Hover-aware: highlight edges connected to hovered node
   const isHoverHighlighted = ctx.connectedEdgeIds.has(id);
   const hasHover = ctx.hoveredNodeId !== null;
   const isHoverDimmed = hasHover && !isHoverHighlighted && !hasActivePath;
+
+  // Community / search dimming: dim edge if either endpoint is dimmed
+  const isCommunityEdgeDimmed = ctx.communityDimmedNodes != null &&
+    (ctx.communityDimmedNodes.has(source) || ctx.communityDimmedNodes.has(target));
+  const isSearchEdgeDimmed = ctx.searchDimmedNodes != null &&
+    (ctx.searchDimmedNodes.has(source) || ctx.searchDimmedNodes.has(target));
 
   const [edgePath] = getBezierPath({
     sourceX,
@@ -57,6 +64,12 @@ function DependencyEdgeInner({
   } else if (isDimmed) {
     stroke = "rgba(200, 215, 230, 0.25)";
     opacity = 0.5;
+  } else if (isCommunityEdgeDimmed) {
+    stroke = "rgba(200, 215, 230, 0.08)";
+    opacity = 0.15;
+  } else if (isSearchEdgeDimmed) {
+    stroke = "rgba(200, 215, 230, 0.1)";
+    opacity = 0.15;
   } else if (isHoverHighlighted) {
     stroke = "#93c5fd";
     opacity = 1;
@@ -70,6 +83,11 @@ function DependencyEdgeInner({
   } else {
     stroke = "rgba(200, 215, 230, 0.55)";
     opacity = 1;
+    const isLowConfidence = confidence != null ? confidence < 0.7 : d.edgeCount === 1;
+    if (isLowConfidence) {
+      dashArray = "6 3";
+      stroke = "rgba(200, 215, 230, 0.4)";
+    }
   }
 
   const tooltip = d.importedNames.length > 0
