@@ -89,6 +89,8 @@ export interface UseSigmaOptions {
   colorMode: ColorMode;
   activeSignals: Set<Signal>;
   graphTheme: "light" | "dark";
+  hiddenNodes?: Set<string> | undefined;
+  visibleEdgeTypes?: Set<string> | undefined;
 }
 
 export interface UseSigmaReturn {
@@ -107,6 +109,8 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
   const searchDimmedRef = useRef<Set<string> | null>(null);
   const communityDimmedRef = useRef<Set<string> | null>(null);
   const colorModeRef = useRef<ColorMode>("language");
+  const hiddenNodesRef = useRef<Set<string> | undefined>(undefined);
+  const visibleEdgeTypesRef = useRef<Set<string> | undefined>(undefined);
   const graphRef = useRef<Graph<
     SigmaNodeAttributes,
     SigmaEdgeAttributes
@@ -120,6 +124,8 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     searchDimmedRef.current = options.searchDimmedNodes;
     communityDimmedRef.current = options.communityDimmedNodes;
     colorModeRef.current = options.colorMode;
+    hiddenNodesRef.current = options.hiddenNodes;
+    visibleEdgeTypesRef.current = options.visibleEdgeTypes;
     sigmaRef.current?.refresh();
   }, [
     options.selectedNodeId,
@@ -128,6 +134,8 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     options.searchDimmedNodes,
     options.communityDimmedNodes,
     options.colorMode,
+    options.hiddenNodes,
+    options.visibleEdgeTypes,
   ]);
 
   // Initialize Sigma
@@ -212,6 +220,12 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           return res;
         }
 
+        const hiddenSet = hiddenNodesRef.current;
+        if (hiddenSet && hiddenSet.has(node)) {
+          res.hidden = true;
+          return res;
+        }
+
         const graph = graphRef.current;
         const selected = selectedRef.current;
         const pathNodes = highlightedPathRef.current;
@@ -242,6 +256,17 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           }
           if (attrs.isEntryPoint) {
             res.size = (res.size || 6) * 1.5;
+          }
+
+          if (attrs.betweenness > 0.01) {
+            res.size = (res.size || 6) * (1 + Math.min(attrs.betweenness * 3, 0.8));
+          }
+
+          if (attrs.nodeType === "module") {
+            const docPct = attrs.docCoveragePct ?? 0;
+            if (docPct < 0.3) {
+              res.color = desaturateColor(res.color, 0.4);
+            }
           }
         }
 
@@ -295,6 +320,19 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
 
       edgeReducer: (edge, data) => {
         const res = { ...data };
+
+        const visibleTypes = visibleEdgeTypesRef.current;
+        if (visibleTypes) {
+          const g = graphRef.current;
+          if (g) {
+            const edgeAttrs = g.getEdgeAttributes(edge);
+            if (!visibleTypes.has(edgeAttrs.edgeKind)) {
+              res.hidden = true;
+              return res;
+            }
+          }
+        }
+
         const selected = selectedRef.current;
         const pathNodes = highlightedPathRef.current;
         const pathEdges = highlightedEdgesRef.current;

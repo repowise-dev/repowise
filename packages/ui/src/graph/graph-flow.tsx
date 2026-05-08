@@ -31,6 +31,7 @@ import {
   moduleGraphToGraphology,
   groupFilesAsModules,
 } from "./sigma/graphology-adapter";
+import { useEgoFilter } from "./sigma/use-ego-filter";
 import {
   NODE_BASE_SIZES,
   EDGE_COLORS,
@@ -114,6 +115,12 @@ function GraphFlowInner(props: GraphFlowProps) {
   const [showPathFinder, setShowPathFinder] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
   const [graphTheme, setGraphTheme] = useState<GraphTheme>("light");
+
+  const [egoDepth, setEgoDepth] = useState(0);
+
+  const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<string>>(
+    () => new Set(["import", "crossCommunity", "internal", "dynamic", "lowConfidence"]),
+  );
 
   // Signal overlays (replaces separate view modes for dead/hot/arch)
   const [activeSignals, setActiveSignals] = useState<Set<Signal>>(() => {
@@ -359,6 +366,12 @@ function GraphFlowInner(props: GraphFlowProps) {
     );
   }, [isModuleView, isDrilledDown, fullGraph, currentPrefix, moduleGraph, communities, expandedModules, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds]);
 
+  const { hiddenNodes, isActive: isEgoActive, visibleCount: egoVisibleCount } = useEgoFilter({
+    graph: sigmaGraph,
+    selectedNodeId,
+    depth: egoDepth,
+  });
+
   // Sigma data maps
   const sigmaDataMaps = useMemo(() => {
     if (!sigmaGraph) return null;
@@ -565,8 +578,10 @@ function GraphFlowInner(props: GraphFlowProps) {
       medianPagerank,
       expandedModules,
       activeSignals,
+      egoDepth,
+      visibleEdgeTypes,
     }),
-    [highlightedPath, highlightedEdges, colorMode, viewMode, hoveredNodeId, connectedNodeIds, connectedEdgeIds, selectedNodeId, searchDimmedNodes, communityDimmedNodes, layoutMode, graphTheme, maxPagerank, medianPagerank, expandedModules, activeSignals],
+    [highlightedPath, highlightedEdges, colorMode, viewMode, hoveredNodeId, connectedNodeIds, connectedEdgeIds, selectedNodeId, searchDimmedNodes, communityDimmedNodes, layoutMode, graphTheme, maxPagerank, medianPagerank, expandedModules, activeSignals, egoDepth, visibleEdgeTypes],
   );
 
   // ---- Handlers ----
@@ -586,6 +601,7 @@ function GraphFlowInner(props: GraphFlowProps) {
     (nodeId: string, _nodeType: string) => {
       if (selectedNodeId === nodeId) {
         setSelectedNodeId(null);
+        setEgoDepth(0);
       } else {
         setSelectedNodeId(nodeId);
       }
@@ -631,6 +647,7 @@ function GraphFlowInner(props: GraphFlowProps) {
           break;
         case "Escape":
           setSelectedNodeId(null);
+          setEgoDepth(0);
           setSearchQuery("");
           setCtxMenu(null);
           setCommunityPanelId(null);
@@ -714,6 +731,18 @@ function GraphFlowInner(props: GraphFlowProps) {
       const next = new Set(prev);
       if (next.has(signal)) next.delete(signal);
       else next.add(signal);
+      return next;
+    });
+  }, []);
+
+  const handleEdgeTypeToggle = useCallback((edgeType: string) => {
+    setVisibleEdgeTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(edgeType)) {
+        if (next.size > 1) next.delete(edgeType);
+      } else {
+        next.add(edgeType);
+      }
       return next;
     });
   }, []);
@@ -872,6 +901,8 @@ function GraphFlowInner(props: GraphFlowProps) {
             onNodeHover={setHoveredNodeId}
             onNodeContextMenu={handleSigmaNodeContextMenu}
             onStageClick={() => setSelectedNodeId(null)}
+            hiddenNodes={isEgoActive ? hiddenNodes : undefined}
+            visibleEdgeTypes={visibleEdgeTypes.size < 5 ? visibleEdgeTypes : undefined}
           />
         ) : !isLoading ? (
           <div className="flex items-center justify-center h-full">
@@ -882,8 +913,23 @@ function GraphFlowInner(props: GraphFlowProps) {
           </div>
         ) : null}
 
-        {/* Breadcrumb — shown when drilled into a module */}
-        {isModuleView && isDrilledDown && (
+        {/* Ego indicator or breadcrumb */}
+        {isEgoActive && selectedNodeId ? (
+          <div className="absolute top-3 left-3 z-10">
+            <div className="flex items-center gap-2 rounded-lg border border-[var(--color-accent-graph)]/30 bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
+              <span className="text-[10px] text-[var(--color-accent-graph)]">
+                Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
+                <span className="font-mono font-medium">{selectedNodeId.split("/").pop()}</span>
+              </span>
+              <button
+                onClick={() => setEgoDepth(0)}
+                className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] text-[10px]"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        ) : isModuleView && isDrilledDown ? (
           <div className="absolute top-3 left-3 z-10">
             <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
               <button
@@ -915,7 +961,7 @@ function GraphFlowInner(props: GraphFlowProps) {
               })}
             </div>
           </div>
-        )}
+        ) : null}
 
         {/* Toolbar */}
         <div className="absolute top-3 right-3 z-10">
@@ -1006,6 +1052,8 @@ function GraphFlowInner(props: GraphFlowProps) {
             activeCommunities={activeCommunities ?? undefined}
             onCommunityToggle={handleCommunityToggle}
             onToggleAllCommunities={handleToggleAllCommunities}
+            visibleEdgeTypes={visibleEdgeTypes}
+            onEdgeTypeToggle={handleEdgeTypeToggle}
           />
         </div>
 
@@ -1050,6 +1098,9 @@ function GraphFlowInner(props: GraphFlowProps) {
               onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); }}
               onFindPath={handleInspectFindPath}
               onExpandModule={modNd ? handleInspectExpandModule : undefined}
+              egoDepth={egoDepth}
+              onEgoDepthChange={setEgoDepth}
+              egoVisibleCount={egoVisibleCount}
             />
           );
         })()}

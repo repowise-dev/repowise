@@ -48,6 +48,9 @@ export interface GraphInspectionPanelProps {
   onFindPath?: (() => void) | undefined;
   onShowEgoGraph?: (() => void) | undefined;
   onExpandModule?: (() => void) | undefined;
+  egoDepth?: number | undefined;
+  onEgoDepthChange?: ((depth: number) => void) | undefined;
+  egoVisibleCount?: number | undefined;
 }
 
 function isModuleData(data: FileNodeData | ModuleNodeData): data is ModuleNodeData {
@@ -79,6 +82,9 @@ export function GraphInspectionPanel({
   onFindPath,
   onShowEgoGraph,
   onExpandModule,
+  egoDepth,
+  onEgoDepthChange,
+  egoVisibleCount,
 }: GraphInspectionPanelProps) {
   const neighbors = useMemo(() => {
     const result: NeighborInfo[] = [];
@@ -187,6 +193,41 @@ export function GraphInspectionPanel({
           )}
         </div>
       </ScrollArea>
+
+      {onEgoDepthChange && (
+        <div className="px-4 py-3 border-t border-[var(--color-border-default)]">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] font-medium text-[var(--color-text-secondary)]">
+              Ego Graph
+            </span>
+            {egoDepth != null && egoDepth > 0 && egoVisibleCount != null && (
+              <span className="text-[9px] text-[var(--color-text-tertiary)] tabular-nums">
+                {egoVisibleCount} nodes
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] text-[var(--color-text-tertiary)] w-4 text-right tabular-nums">
+              {egoDepth ?? 0}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={5}
+              value={egoDepth ?? 0}
+              onChange={(e) => onEgoDepthChange(parseInt(e.target.value, 10))}
+              className="flex-1 h-1 accent-[var(--color-accent-graph)] cursor-pointer"
+              aria-label="Ego graph depth"
+            />
+            <span className="text-[9px] text-[var(--color-text-tertiary)]">5</span>
+          </div>
+          <p className="text-[9px] text-[var(--color-text-tertiary)] mt-1">
+            {(egoDepth ?? 0) === 0
+              ? "Slide to filter by hop distance"
+              : `Showing nodes within ${egoDepth} hop${egoDepth === 1 ? "" : "s"}`}
+          </p>
+        </div>
+      )}
 
       {/* Actions */}
       <div className="border-t border-[var(--color-border-default)] p-3 grid grid-cols-2 gap-2">

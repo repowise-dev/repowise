@@ -46,6 +46,8 @@ export interface SigmaCanvasProps {
     | undefined;
   onNodeDoubleClick?: ((nodeId: string, nodeType: string) => void) | undefined;
   onStageClick?: (() => void) | undefined;
+  hiddenNodes?: Set<string> | undefined;
+  visibleEdgeTypes?: Set<string> | undefined;
 }
 
 export interface SigmaCanvasHandle {
@@ -71,6 +73,8 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       colorMode: props.colorMode,
       activeSignals: props.activeSignals,
       graphTheme: props.graphTheme,
+      hiddenNodes: props.hiddenNodes,
+      visibleEdgeTypes: props.visibleEdgeTypes,
     });
 
     const { isRunning: isLayoutRunning, toggle: toggleLayout } = useFA2Layout({

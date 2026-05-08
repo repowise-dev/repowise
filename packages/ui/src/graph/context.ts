@@ -3,6 +3,8 @@
 import { createContext, useContext } from "react";
 import type { ColorMode, ViewMode, LayoutMode, GraphTheme } from "./graph-toolbar";
 
+export type Signal = "dead" | "hot" | "architecture" | "hideTests";
+
 export interface GraphContextValue {
   highlightedPath: Set<string>;
   highlightedEdges: Set<string>;
@@ -19,6 +21,10 @@ export interface GraphContextValue {
   graphTheme: GraphTheme;
   maxPagerank: number;
   medianPagerank: number;
+  expandedModules: Set<string>;
+  activeSignals: Set<Signal>;
+  egoDepth: number;
+  visibleEdgeTypes: Set<string>;
 }
 
 const defaultValue: GraphContextValue = {
@@ -33,10 +39,14 @@ const defaultValue: GraphContextValue = {
   selectedNodeId: null,
   searchDimmedNodes: null,
   communityDimmedNodes: null,
-  layoutMode: "hierarchical",
+  layoutMode: "force",
   graphTheme: "light",
   maxPagerank: 0,
   medianPagerank: 0,
+  expandedModules: new Set(),
+  activeSignals: new Set(),
+  egoDepth: 0,
+  visibleEdgeTypes: new Set(["import", "crossCommunity", "internal", "dynamic", "lowConfidence"]),
 };
 
 export const GraphContext = createContext<GraphContextValue>(defaultValue);

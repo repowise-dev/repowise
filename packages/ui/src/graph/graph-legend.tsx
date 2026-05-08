@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { LANGUAGE_COLORS } from "../lib/confidence";
+import { EDGE_COLORS } from "./sigma/constants";
 import type { ColorMode, ViewMode } from "./graph-toolbar";
 
 const COMMUNITY_SAMPLE = [
@@ -34,6 +35,8 @@ interface GraphLegendProps {
   activeCommunities?: Set<number> | undefined;
   onCommunityToggle?: (communityId: number) => void;
   onToggleAllCommunities?: (selectAll: boolean) => void;
+  visibleEdgeTypes?: Set<string> | undefined;
+  onEdgeTypeToggle?: ((edgeType: string) => void) | undefined;
 }
 
 export function GraphLegend({
@@ -46,6 +49,8 @@ export function GraphLegend({
   activeCommunities,
   onCommunityToggle,
   onToggleAllCommunities,
+  visibleEdgeTypes,
+  onEdgeTypeToggle,
 }: GraphLegendProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -165,6 +170,39 @@ export function GraphLegend({
                 <span className="w-2 h-2 rounded-full shrink-0 bg-[#ef4444]" />
                 <span>High risk</span>
               </div>
+            </>
+          )}
+
+          {onEdgeTypeToggle && visibleEdgeTypes && (
+            <>
+              <p className="text-[9px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium pt-1.5 border-t border-[var(--color-border-default)] mt-1.5">
+                Edges
+              </p>
+              {([
+                { type: "import", label: "Imports", color: EDGE_COLORS.import },
+                { type: "crossCommunity", label: "Cross-community", color: EDGE_COLORS.crossCommunity },
+                { type: "internal", label: "Internal", color: EDGE_COLORS.internal },
+                { type: "dynamic", label: "Dynamic", color: EDGE_COLORS.dynamic },
+                { type: "lowConfidence", label: "Low confidence", color: EDGE_COLORS.lowConfidence },
+              ] as const).map((et) => {
+                const checked = visibleEdgeTypes.has(et.type);
+                return (
+                  <div key={et.type} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
+                    <button
+                      onClick={() => onEdgeTypeToggle(et.type)}
+                      className="shrink-0 w-[10px] h-[10px] rounded-sm border"
+                      style={{
+                        borderColor: et.color,
+                        background: checked ? et.color : "transparent",
+                      }}
+                      aria-label={`Toggle ${et.label} edges`}
+                    />
+                    <span className={checked ? "" : "line-through opacity-50"}>
+                      {et.label}
+                    </span>
+                  </div>
+                );
+              })}
             </>
           )}
 
