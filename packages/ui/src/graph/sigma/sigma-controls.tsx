@@ -9,7 +9,7 @@ interface SigmaControlsProps {
   onFitView: () => void;
   onFocusSelected?: (() => void) | undefined;
   isLayoutRunning: boolean;
-  onToggleLayout: () => void;
+  onToggleLayout?: (() => void) | undefined;
   graphTheme: "light" | "dark";
 }
 
@@ -71,20 +71,22 @@ export function SigmaControls({
           <Focus className="w-3.5 h-3.5" />
         </Button>
       )}
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={onToggleLayout}
-        className={btnClass}
-        title={isLayoutRunning ? "Stop layout" : "Run layout"}
-        aria-label={isLayoutRunning ? "Stop layout" : "Run layout"}
-      >
-        {isLayoutRunning ? (
-          <Pause className="w-3.5 h-3.5" />
-        ) : (
-          <Play className="w-3.5 h-3.5" />
-        )}
-      </Button>
+      {onToggleLayout && (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onToggleLayout}
+          className={btnClass}
+          title={isLayoutRunning ? "Stop layout" : "Run layout"}
+          aria-label={isLayoutRunning ? "Stop layout" : "Run layout"}
+        >
+          {isLayoutRunning ? (
+            <Pause className="w-3.5 h-3.5" />
+          ) : (
+            <Play className="w-3.5 h-3.5" />
+          )}
+        </Button>
+      )}
       {isLayoutRunning && (
         <div className="text-[9px] text-center text-[var(--color-accent-graph)] animate-pulse whitespace-nowrap">
           Layout optimizing...

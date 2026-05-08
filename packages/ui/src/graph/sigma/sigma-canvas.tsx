@@ -8,15 +8,24 @@ import {
 } from "react";
 import type Graph from "graphology";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
-import type { ColorMode } from "../graph-toolbar";
+import type { ColorMode, ViewMode } from "../graph-toolbar";
 import type { Signal } from "../context";
+import type {
+  GraphNode as GraphNodeResponse,
+  GraphLink as GraphEdgeResponse,
+  ModuleNode as ModuleNodeResponse,
+  ModuleEdge as ModuleEdgeResponse,
+} from "@repowise-dev/types/graph";
 import { useSigmaRenderer } from "./use-sigma";
 import { useFA2Layout } from "./use-fa2-layout";
+import { useElkSigmaLayout } from "./use-elk-sigma-layout";
 import { SigmaControls } from "./sigma-controls";
 import { SigmaMinimap } from "./sigma-minimap";
 
 export interface SigmaCanvasProps {
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
+  layoutMode: "force" | "hierarchical";
+  viewMode: ViewMode;
   selectedNodeId: string | null;
   hoveredNodeId: string | null;
   highlightedPath: Set<string>;
@@ -26,6 +35,10 @@ export interface SigmaCanvasProps {
   colorMode: ColorMode;
   activeSignals: Set<Signal>;
   graphTheme: "light" | "dark";
+  fileNodes?: GraphNodeResponse[] | undefined;
+  fileEdges?: GraphEdgeResponse[] | undefined;
+  moduleNodes?: ModuleNodeResponse[] | undefined;
+  moduleEdges?: ModuleEdgeResponse[] | undefined;
   onNodeClick?: ((nodeId: string, nodeType: string) => void) | undefined;
   onNodeHover?: ((nodeId: string | null) => void) | undefined;
   onNodeContextMenu?:
@@ -63,7 +76,18 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
     const { isRunning: isLayoutRunning, toggle: toggleLayout } = useFA2Layout({
       graph: props.graph,
       sigma,
-      enabled: true,
+      enabled: props.layoutMode === "force",
+    });
+
+    const { isComputing: isElkComputing } = useElkSigmaLayout({
+      graph: props.graph,
+      sigma,
+      enabled: props.layoutMode === "hierarchical",
+      fileNodes: props.fileNodes,
+      fileEdges: props.fileEdges,
+      moduleNodes: props.moduleNodes,
+      moduleEdges: props.moduleEdges,
+      viewMode: props.viewMode,
     });
 
     // Wire Sigma events
@@ -157,8 +181,8 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
               ? () => focusNode(props.selectedNodeId!)
               : undefined
           }
-          isLayoutRunning={isLayoutRunning}
-          onToggleLayout={toggleLayout}
+          isLayoutRunning={props.layoutMode === "force" ? isLayoutRunning : isElkComputing}
+          onToggleLayout={props.layoutMode === "force" ? toggleLayout : undefined}
           graphTheme={props.graphTheme}
         />
         <SigmaMinimap sigma={sigma} graphTheme={props.graphTheme} />

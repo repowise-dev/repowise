@@ -227,6 +227,173 @@ export function groupNodesAsModules(
   return { moduleNodes, moduleEdges, fileEntries };
 }
 
+// ---- Pure position computation (for Sigma bridge) ----
+
+export interface ElkPositionResult {
+  positions: Map<string, { x: number; y: number; width: number; height: number }>;
+  groups: Map<string, { x: number; y: number; width: number; height: number }>;
+}
+
+function flattenPositions(
+  elkNode: ElkNode,
+  offsetX = 0,
+  offsetY = 0,
+  positions: Map<string, { x: number; y: number; width: number; height: number }>,
+  groups: Map<string, { x: number; y: number; width: number; height: number }>,
+) {
+  if (!elkNode.children) return;
+  for (const child of elkNode.children) {
+    const x = (child.x ?? 0) + offsetX;
+    const y = (child.y ?? 0) + offsetY;
+    const w = child.width ?? 0;
+    const h = child.height ?? 0;
+    if (child.id.startsWith("dir:")) {
+      groups.set(child.id, { x, y, width: w, height: h });
+      flattenPositions(child, x, y, positions, groups);
+    } else {
+      positions.set(child.id, { x, y, width: w, height: h });
+    }
+  }
+}
+
+export async function computeElkFilePositions(
+  nodes: GraphNodeResponse[],
+  edges: GraphEdgeResponse[],
+): Promise<ElkPositionResult> {
+  if (nodes.length === 0) return { positions: new Map(), groups: new Map() };
+
+  const nodeSet = new Set(nodes.map((n) => n.node_id));
+  const validEdges = edges.filter((e) => nodeSet.has(e.source) && nodeSet.has(e.target));
+  const dedupedEdges = deduplicateEdges(validEdges);
+
+  const dirSet = new Set<string>();
+  for (const n of nodes) {
+    const dir = dirOf(n.node_id);
+    if (dir) {
+      for (const ancestor of ancestorDirs(dir)) {
+        dirSet.add(ancestor);
+      }
+    }
+  }
+
+  const dirs = Array.from(dirSet).sort();
+
+  const elkGraph: ElkNode = {
+    id: "root",
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "DOWN",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "80",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "35",
+      "elk.spacing.nodeNode": "40",
+      "elk.spacing.componentComponent": "60",
+      "elk.hierarchyHandling": "INCLUDE_CHILDREN",
+      "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+      "elk.padding": "[top=45,left=15,bottom=15,right=15]",
+    },
+    children: [],
+    edges: [],
+  };
+
+  const dirElkNodes = new Map<string, ElkNode>();
+  for (const dir of dirs) {
+    const parts = dir.split("/");
+    const label = parts[parts.length - 1] ?? dir;
+    const elkNode: ElkNode = {
+      id: `dir:${dir}`,
+      labels: [{ text: label }],
+      layoutOptions: {
+        "elk.padding": "[top=40,left=12,bottom=12,right=12]",
+      },
+      children: [],
+    };
+    dirElkNodes.set(dir, elkNode);
+  }
+
+  for (const dir of dirs) {
+    const parentDir = dirOf(dir);
+    const parentElk = parentDir ? dirElkNodes.get(parentDir) : null;
+    const elkNode = dirElkNodes.get(dir)!;
+    if (parentElk) {
+      parentElk.children!.push(elkNode);
+    } else {
+      elkGraph.children!.push(elkNode);
+    }
+  }
+
+  for (const n of nodes) {
+    const scale = 1 + Math.min(0.6, n.pagerank * 25);
+    const elkFileNode: ElkNode = {
+      id: n.node_id,
+      width: Math.round(FILE_NODE_WIDTH * scale),
+      height: Math.round(FILE_NODE_HEIGHT * scale),
+      labels: [{ text: n.node_id.split("/").pop() ?? n.node_id }],
+    };
+    const dir = dirOf(n.node_id);
+    const parentElk = dir ? dirElkNodes.get(dir) : null;
+    if (parentElk) {
+      parentElk.children!.push(elkFileNode);
+    } else {
+      elkGraph.children!.push(elkFileNode);
+    }
+  }
+
+  const elkEdges: ElkExtendedEdge[] = dedupedEdges.map((e, i) => ({
+    id: `e${i}`,
+    sources: [e.source],
+    targets: [e.target],
+  }));
+  elkGraph.edges = elkEdges;
+
+  const layout = await elk.layout(elkGraph);
+
+  const positions = new Map<string, { x: number; y: number; width: number; height: number }>();
+  const groups = new Map<string, { x: number; y: number; width: number; height: number }>();
+  flattenPositions(layout, 0, 0, positions, groups);
+
+  return { positions, groups };
+}
+
+export async function computeElkModulePositions(
+  moduleNodes: ModuleNodeResponse[],
+  moduleEdges: ModuleEdgeResponse[],
+): Promise<Map<string, { x: number; y: number }>> {
+  if (moduleNodes.length === 0) return new Map();
+
+  const elkGraph: ElkNode = {
+    id: "root",
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "DOWN",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "80",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "40",
+      "elk.spacing.nodeNode": "40",
+      "elk.spacing.componentComponent": "60",
+      "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+    },
+    children: moduleNodes.map((m) => ({
+      id: m.module_id,
+      width: MODULE_NODE_WIDTH,
+      height: MODULE_NODE_HEIGHT,
+      labels: [{ text: m.module_id }],
+    })),
+    edges: moduleEdges.map((e, i) => ({
+      id: `me${i}`,
+      sources: [e.source],
+      targets: [e.target],
+    })),
+  };
+
+  const layout = await elk.layout(elkGraph);
+
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const child of layout.children ?? []) {
+    positions.set(child.id, { x: child.x ?? 0, y: child.y ?? 0 });
+  }
+
+  return positions;
+}
+
 // ---- Layout for file-level graph ----
 
 export async function layoutFileGraph(

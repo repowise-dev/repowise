@@ -18,7 +18,6 @@ import {
   X,
   GitBranch,
   Waypoints,
-  Atom,
   Sun,
   Moon,
 } from "lucide-react";
@@ -26,7 +25,7 @@ import { Button } from "../ui/button";
 
 export type ColorMode = "language" | "community" | "risk";
 export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
-export type LayoutMode = "hierarchical" | "force" | "sigma";
+export type LayoutMode = "hierarchical" | "force";
 export type GraphTheme = "light" | "dark";
 
 interface GraphToolbarProps {
@@ -68,9 +67,8 @@ const COLOR_MODES: { id: ColorMode; icon: typeof Palette; label: string }[] = [
 ];
 
 const LAYOUT_MODES: { id: LayoutMode; icon: typeof GitBranch; label: string }[] = [
+  { id: "force", icon: Waypoints, label: "Force (FA2)" },
   { id: "hierarchical", icon: GitBranch, label: "Hierarchical" },
-  { id: "force", icon: Waypoints, label: "Force-directed" },
-  { id: "sigma", icon: Atom, label: "Sigma" },
 ];
 
 export function GraphToolbar({
