@@ -378,19 +378,6 @@ function GraphFlowInner(props: GraphFlowProps) {
     return { connectedNodeIds: nodeIds, connectedEdgeIds: edgeIds };
   }, [hoveredNodeId, currentEdges]);
 
-  // Community dimming
-  const communityDimmedNodes = useMemo(() => {
-    if (!activeCommunities) return null;
-    const dimmed = new Set<string>();
-    for (const n of filteredNodes) {
-      if (n.type === "fileNode") {
-        const cid = (n.data as { communityId?: number }).communityId;
-        if (cid !== undefined && !activeCommunities.has(cid)) dimmed.add(n.id);
-      }
-    }
-    return dimmed.size > 0 ? dimmed : null;
-  }, [activeCommunities, filteredNodes]);
-
   // Signal overlay node sets
   const hotNodeIds = useMemo(() => {
     if (!hotFilesGraph) return new Set<string>();
@@ -452,11 +439,115 @@ function GraphFlowInner(props: GraphFlowProps) {
     );
   }, [isSigmaMode, isModuleView, moduleGraph, communities, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds]);
 
+  // Sigma-mode data maps (equivalent to allNodeDataMap etc for React Flow mode)
+  const sigmaDataMaps = useMemo(() => {
+    if (!isSigmaMode || !sigmaGraph) return null;
+
+    const fileMap = new Map<string, FileNodeData>();
+    const modMap = new Map<string, ModuleNodeData>();
+    const prs: number[] = [];
+    const bts: number[] = [];
+
+    sigmaGraph.forEachNode((nodeId, attrs) => {
+      if (attrs.nodeType === "file") {
+        const fileData: FileNodeData = {
+          label: attrs.label,
+          fullPath: attrs.fullPath,
+          language: attrs.language,
+          symbolCount: attrs.symbolCount,
+          pagerank: attrs.pagerank,
+          betweenness: attrs.betweenness,
+          communityId: attrs.communityId,
+          isTest: attrs.isTest,
+          isEntryPoint: attrs.isEntryPoint,
+          hasDoc: attrs.hasDoc,
+        };
+        if (attrs.isHotspot) (fileData as Record<string, unknown>).isHotspot = true;
+        if (attrs.isDead) (fileData as Record<string, unknown>).isDead = true;
+        fileMap.set(nodeId, fileData);
+        prs.push(attrs.pagerank);
+        bts.push(attrs.betweenness);
+      } else if (attrs.nodeType === "module") {
+        modMap.set(nodeId, {
+          label: attrs.label,
+          fullPath: attrs.fullPath,
+          fileCount: attrs.fileCount ?? 0,
+          symbolCount: attrs.symbolCount,
+          avgPagerank: attrs.avgPagerank ?? 0,
+          docCoveragePct: attrs.docCoveragePct ?? 0,
+          dominantCommunityId: attrs.dominantCommunityId,
+        });
+      }
+    });
+
+    prs.sort((a, b) => a - b);
+    bts.sort((a, b) => a - b);
+
+    return { fileMap, modMap, sortedPageranks: prs, sortedBetweenness: bts };
+  }, [isSigmaMode, sigmaGraph]);
+
+  // Synthetic Edge[] from Graphology edges (for inspection panel in sigma mode)
+  const sigmaEdges = useMemo(() => {
+    if (!isSigmaMode || !sigmaGraph) return [];
+    const edges: Edge[] = [];
+    sigmaGraph.forEachEdge((edgeKey, attrs, source, target) => {
+      edges.push({
+        id: edgeKey,
+        source,
+        target,
+        type: "dependency",
+        data: {
+          importedNames: attrs.importedNames,
+          edgeCount: attrs.edgeCount,
+          confidence: attrs.confidence,
+        },
+      });
+    });
+    return edges;
+  }, [isSigmaMode, sigmaGraph]);
+
+  // Unified data accessors — select between React Flow and Sigma sources
+  const effectiveNodeDataMap = isSigmaMode && sigmaDataMaps ? sigmaDataMaps.fileMap : allNodeDataMap;
+  const effectiveModuleDataMap = isSigmaMode && sigmaDataMaps ? sigmaDataMaps.modMap : allModuleDataMap;
+  const effectivePageranks = isSigmaMode && sigmaDataMaps ? sigmaDataMaps.sortedPageranks : sortedPageranks;
+  const effectiveBetweenness = isSigmaMode && sigmaDataMaps ? sigmaDataMaps.sortedBetweenness : sortedBetweenness;
+  const effectiveEdges = isSigmaMode ? sigmaEdges : currentEdges;
+
+  // Community dimming
+  const communityDimmedNodes = useMemo(() => {
+    if (!activeCommunities) return null;
+    const dimmed = new Set<string>();
+
+    if (isSigmaMode && sigmaGraph) {
+      sigmaGraph.forEachNode((nodeId, attrs) => {
+        if (attrs.nodeType === "file" && !activeCommunities.has(attrs.communityId)) {
+          dimmed.add(nodeId);
+        }
+      });
+    } else {
+      for (const n of filteredNodes) {
+        if (n.type === "fileNode") {
+          const cid = (n.data as { communityId?: number }).communityId;
+          if (cid !== undefined && !activeCommunities.has(cid)) dimmed.add(n.id);
+        }
+      }
+    }
+    return dimmed.size > 0 ? dimmed : null;
+  }, [activeCommunities, filteredNodes, isSigmaMode, sigmaGraph]);
+
   // Search
   const fuseIndex = useMemo(() => {
+    if (isSigmaMode && sigmaGraph) {
+      const items: { id: string; label: string }[] = [];
+      sigmaGraph.forEachNode((id, attrs) => {
+        if (hideTests && attrs.isTest) return;
+        items.push({ id, label: attrs.label });
+      });
+      return new Fuse(items, { keys: ["id", "label"], threshold: 0.4 });
+    }
     const items = filteredNodes.map((n) => ({ id: n.id, label: (n.data as { label?: string }).label ?? n.id }));
     return new Fuse(items, { keys: ["id", "label"], threshold: 0.4 });
-  }, [filteredNodes]);
+  }, [isSigmaMode, sigmaGraph, filteredNodes, hideTests]);
 
   useEffect(() => {
     if (!searchQuery || searchQuery.length < 2) {
@@ -469,9 +560,17 @@ function GraphFlowInner(props: GraphFlowProps) {
     const matchIds = new Set(results.map((r) => r.item.id));
     const ids = results.map((r) => r.item.id);
     const dimmed = new Set<string>();
-    for (const n of filteredNodes) {
-      if (!matchIds.has(n.id)) dimmed.add(n.id);
+
+    if (isSigmaMode && sigmaGraph) {
+      sigmaGraph.forEachNode((nodeId) => {
+        if (!matchIds.has(nodeId)) dimmed.add(nodeId);
+      });
+    } else {
+      for (const n of filteredNodes) {
+        if (!matchIds.has(n.id)) dimmed.add(n.id);
+      }
     }
+
     setSearchDimmedNodes(dimmed);
     setSearchResults(ids);
     setSearchResultIndex(0);
@@ -481,14 +580,18 @@ function GraphFlowInner(props: GraphFlowProps) {
     }
 
     if (ids.length > 0 && ids.length <= 20) {
-      const matchedRfNodes = results
-        .map((r) => reactFlow.getNode(r.item.id))
-        .filter(Boolean) as Node[];
-      if (matchedRfNodes.length > 0) {
-        reactFlow.fitView({ nodes: matchedRfNodes, padding: 0.4, duration: 500 });
+      if (isSigmaMode) {
+        sigmaRef.current?.focusNode(ids[0]!);
+      } else {
+        const matchedRfNodes = results
+          .map((r) => reactFlow.getNode(r.item.id))
+          .filter(Boolean) as Node[];
+        if (matchedRfNodes.length > 0) {
+          reactFlow.fitView({ nodes: matchedRfNodes, padding: 0.4, duration: 500 });
+        }
       }
     }
-  }, [searchQuery, fuseIndex, filteredNodes, reactFlow]);
+  }, [searchQuery, fuseIndex, filteredNodes, reactFlow, isSigmaMode, sigmaGraph]);
 
   // Execution flow highlighting
   useEffect(() => {
@@ -517,11 +620,16 @@ function GraphFlowInner(props: GraphFlowProps) {
     }
 
     setTimeout(() => {
-      const traceNodes = flow.trace
-        .map((id) => reactFlow.getNode(id))
-        .filter(Boolean) as Node[];
-      if (traceNodes.length > 0) {
-        reactFlow.fitView({ nodes: traceNodes, padding: 0.3, duration: 600 });
+      if (isSigmaMode) {
+        const firstNode = flow.trace[0];
+        if (firstNode) sigmaRef.current?.focusNode(firstNode);
+      } else {
+        const traceNodes = flow.trace
+          .map((id) => reactFlow.getNode(id))
+          .filter(Boolean) as Node[];
+        if (traceNodes.length > 0) {
+          reactFlow.fitView({ nodes: traceNodes, padding: 0.3, duration: 600 });
+        }
       }
     }, 800);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -765,14 +873,20 @@ function GraphFlowInner(props: GraphFlowProps) {
   // Community filter handlers
   const allCommunityIds = useMemo(() => {
     const ids = new Set<number>();
-    for (const n of filteredNodes) {
-      if (n.type === "fileNode") {
-        const cid = (n.data as { communityId?: number }).communityId;
-        if (cid !== undefined) ids.add(cid);
+    if (isSigmaMode && sigmaGraph) {
+      sigmaGraph.forEachNode((_nodeId, attrs) => {
+        if (attrs.nodeType === "file") ids.add(attrs.communityId);
+      });
+    } else {
+      for (const n of filteredNodes) {
+        if (n.type === "fileNode") {
+          const cid = (n.data as { communityId?: number }).communityId;
+          if (cid !== undefined) ids.add(cid);
+        }
       }
     }
     return ids;
-  }, [filteredNodes]);
+  }, [filteredNodes, isSigmaMode, sigmaGraph]);
 
   const handleCommunityToggle = useCallback((cid: number) => {
     setActiveCommunities((prev) => {
@@ -1011,7 +1125,7 @@ function GraphFlowInner(props: GraphFlowProps) {
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             searchMatchCount={searchResults.length}
-            searchTotalCount={filteredNodes.length}
+            searchTotalCount={isSigmaMode && sigmaGraph ? sigmaGraph.order : filteredNodes.length}
             onSearchKeyDown={handleSearchKeyDown}
             layoutMode={layoutMode}
             onLayoutModeChange={handleLayoutModeChange}
@@ -1074,8 +1188,8 @@ function GraphFlowInner(props: GraphFlowProps) {
         {/* Legend */}
         <div className="absolute bottom-3 left-3 z-10">
           <GraphLegend
-            nodeCount={displayNodes.length}
-            edgeCount={currentEdges.length}
+            nodeCount={isSigmaMode && sigmaGraph ? sigmaGraph.order : displayNodes.length}
+            edgeCount={isSigmaMode && sigmaGraph ? sigmaGraph.size : currentEdges.length}
             colorMode={colorMode}
             viewMode={viewMode}
             {...(communityLabels ? { communityLabels } : {})}
@@ -1109,18 +1223,18 @@ function GraphFlowInner(props: GraphFlowProps) {
 
         {/* Inspection panel — works for both file and module nodes */}
         {selectedNodeId && (() => {
-          const fileNd = allNodeDataMap.get(selectedNodeId);
-          const modNd = allModuleDataMap.get(selectedNodeId);
+          const fileNd = effectiveNodeDataMap.get(selectedNodeId);
+          const modNd = effectiveModuleDataMap.get(selectedNodeId);
           const nd = fileNd ?? modNd;
           if (!nd) return null;
           return (
             <GraphInspectionPanel
               nodeId={selectedNodeId}
               data={nd}
-              edges={currentEdges}
-              allNodes={allNodeDataMap}
-              allPageranks={sortedPageranks}
-              allBetweenness={sortedBetweenness}
+              edges={effectiveEdges}
+              allNodes={effectiveNodeDataMap}
+              allPageranks={effectivePageranks}
+              allBetweenness={effectiveBetweenness}
               communityLabel={fileNd ? communityLabels?.get(fileNd.communityId) : undefined}
               onClose={() => { setSelectedNodeId(null); }}
               onNavigateToNode={handleInspectNavigate}
