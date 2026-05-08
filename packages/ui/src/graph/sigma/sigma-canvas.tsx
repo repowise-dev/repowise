@@ -31,6 +31,7 @@ export interface SigmaCanvasProps {
   onNodeContextMenu?:
     | ((event: MouseEvent, nodeId: string, nodeType: string) => void)
     | undefined;
+  onNodeDoubleClick?: ((nodeId: string, nodeType: string) => void) | undefined;
   onStageClick?: (() => void) | undefined;
 }
 
@@ -105,11 +106,18 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
         }
       };
 
+      const handleDoubleClickNode = ({ node }: { node: string }) => {
+        const graph = sigma.getGraph();
+        const attrs = graph.getNodeAttributes(node);
+        props.onNodeDoubleClick?.(node, attrs.nodeType);
+      };
+
       sigma.on("clickNode", handleClickNode);
       sigma.on("clickStage", handleClickStage);
       sigma.on("enterNode", handleEnterNode);
       sigma.on("leaveNode", handleLeaveNode);
       sigma.on("rightClickNode", handleRightClickNode);
+      sigma.on("doubleClickNode", handleDoubleClickNode);
 
       return () => {
         sigma.off("clickNode", handleClickNode);
@@ -117,6 +125,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
         sigma.off("enterNode", handleEnterNode);
         sigma.off("leaveNode", handleLeaveNode);
         sigma.off("rightClickNode", handleRightClickNode);
+        sigma.off("doubleClickNode", handleDoubleClickNode);
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sigma]);

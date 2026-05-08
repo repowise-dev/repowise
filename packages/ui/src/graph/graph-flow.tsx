@@ -48,7 +48,15 @@ import { SigmaCanvas, type SigmaCanvasHandle } from "./sigma/sigma-canvas";
 import {
   fileGraphToGraphology,
   moduleGraphToGraphology,
+  groupFilesAsModules,
 } from "./sigma/graphology-adapter";
+import {
+  NODE_BASE_SIZES,
+  EDGE_COLORS,
+  getScaledNodeSize,
+  getNodeMass,
+  languageColor as sigmaLanguageColor,
+} from "./sigma/constants";
 
 const nodeTypes = {
   moduleGroup: ModuleGroupNode,
@@ -422,8 +430,112 @@ function GraphFlowInner(props: GraphFlowProps) {
     if (!isSigmaMode) return null;
 
     if (isModuleView) {
+      if (isDrilledDown && fullGraph) {
+        return groupFilesAsModules(fullGraph, { prefix: currentPrefix });
+      }
+
       if (!moduleGraph) return null;
-      return moduleGraphToGraphology(moduleGraph, communities ? { communities } : {});
+
+      if (expandedModules.size === 0 || !fullGraph) {
+        return moduleGraphToGraphology(moduleGraph, communities ? { communities } : {});
+      }
+
+      const graph = moduleGraphToGraphology(moduleGraph, communities ? { communities } : {});
+
+      for (const moduleId of expandedModules) {
+        if (!graph.hasNode(moduleId)) continue;
+
+        const modAttrs = graph.getNodeAttributes(moduleId);
+        const modX = modAttrs.x;
+        const modY = modAttrs.y;
+
+        graph.dropNode(moduleId);
+
+        const prefix = moduleId + "/";
+        const childNodes = fullGraph.nodes.filter(
+          (n) => n.node_id.startsWith(prefix) || n.node_id === moduleId,
+        );
+
+        const nodeCount = fullGraph.nodes.length;
+        const jitter = 30;
+
+        for (const node of childNodes) {
+          if (graph.hasNode(node.node_id)) continue;
+          const baseSize = node.is_entry_point
+            ? NODE_BASE_SIZES.entryPoint
+            : node.is_test ? NODE_BASE_SIZES.test : NODE_BASE_SIZES.file;
+          let size = getScaledNodeSize(baseSize, nodeCount);
+          size *= Math.min(1 + node.pagerank * 2, 2);
+          const color = sigmaLanguageColor(node.language);
+
+          graph.addNode(node.node_id, {
+            x: modX + (Math.random() - 0.5) * jitter,
+            y: modY + (Math.random() - 0.5) * jitter,
+            size,
+            color,
+            label: node.node_id.split("/").pop() ?? node.node_id,
+            nodeType: "file",
+            fullPath: node.node_id,
+            language: node.language,
+            communityId: node.community_id,
+            pagerank: node.pagerank,
+            betweenness: node.betweenness,
+            isTest: node.is_test,
+            isEntryPoint: node.is_entry_point,
+            hasDoc: node.has_doc,
+            symbolCount: node.symbol_count,
+            mass: getNodeMass("file", nodeCount),
+            originalColor: color,
+          });
+        }
+
+        const childIds = new Set(childNodes.map((n) => n.node_id));
+        for (const link of fullGraph.links) {
+          const srcInModule = childIds.has(link.source);
+          const tgtInModule = childIds.has(link.target);
+          const edgeKey = link.source + "→" + link.target;
+
+          if (srcInModule && tgtInModule) {
+            if (!graph.hasEdge(edgeKey) && graph.hasNode(link.source) && graph.hasNode(link.target)) {
+              graph.addEdgeWithKey(edgeKey, link.source, link.target, {
+                size: 0.4,
+                color: EDGE_COLORS.internal,
+                type: "curved",
+                curvature: 0.15,
+                edgeKind: "internal",
+                importedNames: link.imported_names,
+                edgeCount: 1,
+              });
+            }
+          } else if (srcInModule && graph.hasNode(link.target)) {
+            if (!graph.hasEdge(edgeKey)) {
+              graph.addEdgeWithKey(edgeKey, link.source, link.target, {
+                size: 0.5,
+                color: EDGE_COLORS.import,
+                type: "curved",
+                curvature: 0.15,
+                edgeKind: "import",
+                importedNames: link.imported_names,
+                edgeCount: 1,
+              });
+            }
+          } else if (tgtInModule && graph.hasNode(link.source)) {
+            if (!graph.hasEdge(edgeKey)) {
+              graph.addEdgeWithKey(edgeKey, link.source, link.target, {
+                size: 0.5,
+                color: EDGE_COLORS.import,
+                type: "curved",
+                curvature: 0.15,
+                edgeKind: "import",
+                importedNames: link.imported_names,
+                edgeCount: 1,
+              });
+            }
+          }
+        }
+      }
+
+      return graph;
     }
 
     const graphData = fileGraphData;
@@ -437,7 +549,7 @@ function GraphFlowInner(props: GraphFlowProps) {
       { nodes: graphData.nodes, links: graphData.links },
       { signals },
     );
-  }, [isSigmaMode, isModuleView, moduleGraph, communities, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds]);
+  }, [isSigmaMode, isModuleView, isDrilledDown, fullGraph, currentPrefix, moduleGraph, communities, expandedModules, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds]);
 
   // Sigma-mode data maps (equivalent to allNodeDataMap etc for React Flow mode)
   const sigmaDataMaps = useMemo(() => {
@@ -711,6 +823,17 @@ function GraphFlowInner(props: GraphFlowProps) {
       });
     },
     [],
+  );
+
+  const handleSigmaDoubleClick = useCallback(
+    (nodeId: string, nodeType: string) => {
+      if (nodeType === "module") {
+        toggleModule(nodeId);
+      } else {
+        onNodeViewDocs?.(nodeId);
+      }
+    },
+    [onNodeViewDocs, toggleModule],
   );
 
   const handleSigmaNodeClick = useCallback(
@@ -1020,6 +1143,7 @@ function GraphFlowInner(props: GraphFlowProps) {
             activeSignals={activeSignals}
             graphTheme={graphTheme}
             onNodeClick={handleSigmaNodeClick}
+            onNodeDoubleClick={handleSigmaDoubleClick}
             onNodeHover={setHoveredNodeId}
             onNodeContextMenu={handleSigmaNodeContextMenu}
             onStageClick={() => setSelectedNodeId(null)}

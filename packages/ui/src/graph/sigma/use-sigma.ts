@@ -38,6 +38,26 @@ function rgbToHex(r: number, g: number, b: number): string {
   );
 }
 
+function desaturateColor(hex: string, amount: number): string {
+  const rgb = hexToRgb(hex);
+  const gray = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
+  return rgbToHex(
+    rgb.r + (gray - rgb.r) * amount,
+    rgb.g + (gray - rgb.g) * amount,
+    rgb.b + (gray - rgb.b) * amount,
+  );
+}
+
+function tintColor(hex: string, tintHex: string, amount: number): string {
+  const rgb = hexToRgb(hex);
+  const tint = hexToRgb(tintHex);
+  return rgbToHex(
+    rgb.r + (tint.r - rgb.r) * amount,
+    rgb.g + (tint.g - rgb.g) * amount,
+    rgb.b + (tint.b - rgb.b) * amount,
+  );
+}
+
 function dimColor(hex: string, amount: number): string {
   const rgb = hexToRgb(hex);
   const bg = { r: 18, g: 18, b: 28 };
@@ -209,6 +229,19 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
             const risk = attrs.pagerank * 3;
             res.color =
               risk > 0.7 ? "#ef4444" : risk > 0.3 ? "#f59e0b" : "#22c55e";
+          }
+        }
+
+        // Signal overlays
+        if (attrs) {
+          if (attrs.isDead) {
+            res.color = desaturateColor(res.color, 0.6);
+          }
+          if (attrs.isHotspot) {
+            res.color = tintColor(res.color, "#f97316", 0.4);
+          }
+          if (attrs.isEntryPoint) {
+            res.size = (res.size || 6) * 1.5;
           }
         }
 
