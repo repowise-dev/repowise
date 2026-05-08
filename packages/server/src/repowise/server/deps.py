@@ -36,23 +36,42 @@ if _API_KEY is None and _REPOWISE_HOST in ("0.0.0.0", "::"):
     )
 
 
+def resolve_session_factory(app_state, repo_id: str | None):
+    """Pick the session factory whose database contains ``repo_id``.
+
+    In workspace mode each repo has its own ``wiki.db`` registered under
+    ``app_state.workspace_sessions[repo_id]``. The primary
+    ``app_state.session_factory`` does NOT see those rows. When ``repo_id``
+    is ``None`` or unknown, falls back to the primary factory (single-repo
+    mode, or the primary repo of a workspace).
+    """
+    if repo_id:
+        ws_sessions = getattr(app_state, "workspace_sessions", None)
+        if ws_sessions and repo_id in ws_sessions:
+            return ws_sessions[repo_id]
+    return app_state.session_factory
+
+
+def resolve_request_session_factory(request: Request):
+    """Return the session factory for the active route's ``repo_id``.
+
+    Reads ``repo_id`` from the path (e.g. ``/api/repos/{repo_id}/...``)
+    or query string (e.g. ``/api/pages?repo_id=xxx``), then delegates to
+    :func:`resolve_session_factory`. Used by streaming endpoints that
+    can't take a single ``Depends(get_db_session)`` because they need to
+    open multiple sessions over the request lifetime.
+    """
+    repo_id = request.path_params.get("repo_id") or request.query_params.get("repo_id")
+    return resolve_session_factory(request.app.state, repo_id)
+
+
 async def get_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
     """Yield an async DB session with auto-commit on success, rollback on error.
 
     In workspace mode, routes to the correct repo's DB based on the
     ``repo_id`` path parameter when a matching session factory exists.
     """
-    factory = request.app.state.session_factory
-
-    # In workspace mode, check if the request targets a specific repo DB
-    # Check both path params (e.g. /api/repos/{repo_id}/stats) and
-    # query params (e.g. /api/pages?repo_id=xxx) for the repo_id
-    repo_id = request.path_params.get("repo_id") or request.query_params.get("repo_id")
-    if repo_id:
-        ws_sessions = getattr(request.app.state, "workspace_sessions", None)
-        if ws_sessions and repo_id in ws_sessions:
-            factory = ws_sessions[repo_id]
-
+    factory = resolve_request_session_factory(request)
     async with get_session(factory) as session:
         yield session
 

@@ -271,16 +271,15 @@ async def full_resync(
 
 
 def _resolve_repo_session_factory(app_state, repo_id: str):
-    """Return the session_factory whose database contains this repo's row.
+    """Backward-compatible alias for :func:`deps.resolve_session_factory`.
 
-    In workspace mode each repo has its own ``wiki.db`` registered under
-    ``app_state.workspace_sessions[repo_id]``. The primary session_factory
-    (``app_state.session_factory``) does NOT see those rows.
+    Kept to avoid churn at call sites; new code should call
+    ``resolve_session_factory`` (or its request-scoped sibling
+    ``resolve_request_session_factory``) directly.
     """
-    ws_sessions = getattr(app_state, "workspace_sessions", None)
-    if ws_sessions and repo_id in ws_sessions:
-        return ws_sessions[repo_id]
-    return app_state.session_factory
+    from repowise.server.deps import resolve_session_factory  # noqa: PLC0415
+
+    return resolve_session_factory(app_state, repo_id)
 
 
 def _launch_job_task(request: Request, job_id: str, repo_id: str) -> None:

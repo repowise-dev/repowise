@@ -17,7 +17,11 @@ from repowise.server.chat_tools import (
     get_artifact_type,
     get_tool_schemas_for_llm,
 )
-from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.deps import (
+    get_db_session,
+    resolve_request_session_factory,
+    verify_api_key,
+)
 from repowise.server.provider_config import get_chat_provider_instance, set_active_provider
 from repowise.server.schemas import (
     ChatMessageResponse,
@@ -70,7 +74,12 @@ async def _get_repo_info(factory: Any, repo_id: str) -> tuple[str, str]:
 @router.post("/api/repos/{repo_id}/chat/messages")
 async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     """Stream an agentic chat response via SSE."""
-    factory = request.app.state.session_factory
+    # In workspace mode each repo has its own ``wiki.db``; the primary
+    # ``app.state.session_factory`` does NOT contain non-primary repos'
+    # rows, so resolving by ``repo_id`` is required for the
+    # ``_get_repo_info`` lookup (and every subsequent ``get_session``
+    # call inside ``event_stream``) to land in the right database.
+    factory = resolve_request_session_factory(request)
 
     # Resolve repo
     repo_name, repo_path = await _get_repo_info(factory, repo_id)
