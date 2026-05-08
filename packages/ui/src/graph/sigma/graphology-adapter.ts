@@ -1,0 +1,314 @@
+import Graph from "graphology";
+import type {
+  GraphExport,
+  GraphNode,
+  GraphLink,
+  ModuleGraph,
+  ModuleNode,
+  ModuleEdge,
+  CommunitySummaryItem,
+} from "@repowise-dev/types/graph";
+import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
+import {
+  NODE_BASE_SIZES,
+  EDGE_COLORS,
+  EDGE_SIZE_MULTIPLIERS,
+  getScaledNodeSize,
+  getNodeMass,
+  getCommunityColor,
+  languageColor,
+} from "./constants";
+import { groupNodesAsModules } from "../elk-layout";
+
+function simpleHash(str: string): number {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + (str.charCodeAt(i) ?? 0)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function classifyEdge(
+  link: GraphLink,
+  nodeMap: Map<string, GraphNode>,
+): SigmaEdgeAttributes["edgeKind"] {
+  if (link.confidence !== undefined && link.confidence < 0.5)
+    return "lowConfidence";
+  if (link.imported_names.length === 0) return "dynamic";
+  const sourceNode = nodeMap.get(link.source);
+  const targetNode = nodeMap.get(link.target);
+  if (
+    sourceNode &&
+    targetNode &&
+    sourceNode.community_id === targetNode.community_id
+  )
+    return "internal";
+  if (
+    sourceNode &&
+    targetNode &&
+    sourceNode.community_id !== targetNode.community_id
+  )
+    return "crossCommunity";
+  return "import";
+}
+
+function computeEdgeSize(
+  edgeKind: SigmaEdgeAttributes["edgeKind"],
+  nodeCount: number,
+): number {
+  const baseScale =
+    nodeCount > 5000 ? 0.4 : nodeCount > 1000 ? 0.6 : 1.0;
+  return baseScale * EDGE_SIZE_MULTIPLIERS[edgeKind];
+}
+
+function computeEdgeCurvature(edgeKey: string): number {
+  const hash = simpleHash(edgeKey);
+  return 0.12 + (hash % 80) / 1000;
+}
+
+export function fileGraphToGraphology(
+  graph: GraphExport,
+  options?: {
+    signals?: { hotNodeIds?: Set<string>; deadNodeIds?: Set<string> };
+    nodeCount?: number;
+  },
+): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> {
+  const result = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  const nodeCount = options?.nodeCount ?? graph.nodes.length;
+
+  // Build lookup maps
+  const nodeMap = new Map<string, GraphNode>();
+  const communityNodes = new Map<number, GraphNode[]>();
+  for (const node of graph.nodes) {
+    nodeMap.set(node.node_id, node);
+    const list = communityNodes.get(node.community_id) ?? [];
+    list.push(node);
+    communityNodes.set(node.community_id, list);
+  }
+
+  // Warm-start positioning with golden-angle radial distribution
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const spread = Math.sqrt(nodeCount) * 40;
+  const sortedCommunities = Array.from(communityNodes.keys()).sort(
+    (a, b) => a - b,
+  );
+  const communityCount = sortedCommunities.length;
+  const jitter = Math.sqrt(nodeCount) * 3;
+
+  for (let i = 0; i < sortedCommunities.length; i++) {
+    const communityId = sortedCommunities[i]!;
+    const members = communityNodes.get(communityId)!;
+
+    const angle = i * goldenAngle;
+    const radius = spread * Math.sqrt((i + 1) / communityCount);
+    const centroidX = radius * Math.cos(angle);
+    const centroidY = radius * Math.sin(angle);
+
+    for (const node of members) {
+      const x = centroidX + (Math.random() - 0.5) * jitter;
+      const y = centroidY + (Math.random() - 0.5) * jitter;
+
+      let baseSize: number;
+      if (node.is_entry_point) {
+        baseSize = NODE_BASE_SIZES.entryPoint;
+      } else if (node.is_test) {
+        baseSize = NODE_BASE_SIZES.test;
+      } else {
+        baseSize = NODE_BASE_SIZES.file;
+      }
+      let size = getScaledNodeSize(baseSize, nodeCount);
+      size *= Math.min(1 + node.pagerank * 2, 2);
+
+      const color = languageColor(node.language);
+
+      const attrs: SigmaNodeAttributes = {
+        x,
+        y,
+        size,
+        color,
+        label: node.node_id.split("/").pop() ?? node.node_id,
+        nodeType: "file",
+        fullPath: node.node_id,
+        language: node.language,
+        communityId: node.community_id,
+        pagerank: node.pagerank,
+        betweenness: node.betweenness,
+        isTest: node.is_test,
+        isEntryPoint: node.is_entry_point,
+        hasDoc: node.has_doc,
+        symbolCount: node.symbol_count,
+        mass: getNodeMass("file", nodeCount),
+        originalColor: color,
+      };
+
+      if (options?.signals?.hotNodeIds?.has(node.node_id)) {
+        attrs.isHotspot = true;
+      }
+      if (options?.signals?.deadNodeIds?.has(node.node_id)) {
+        attrs.isDead = true;
+      }
+
+      result.addNode(node.node_id, attrs);
+    }
+  }
+
+  // Add edges
+  for (const link of graph.links) {
+    if (!result.hasNode(link.source) || !result.hasNode(link.target)) continue;
+    const edgeKey = link.source + "→" + link.target;
+    if (result.hasEdge(edgeKey)) continue;
+
+    const edgeKind = classifyEdge(link, nodeMap);
+
+    const edgeAttrs: SigmaEdgeAttributes = {
+      size: computeEdgeSize(edgeKind, nodeCount),
+      color: EDGE_COLORS[edgeKind],
+      type: "curved",
+      curvature: computeEdgeCurvature(edgeKey),
+      edgeKind,
+      importedNames: link.imported_names,
+      edgeCount: 1,
+    };
+
+    if (link.confidence !== undefined) {
+      edgeAttrs.confidence = link.confidence;
+    }
+
+    result.addEdgeWithKey(edgeKey, link.source, link.target, edgeAttrs);
+  }
+
+  return result;
+}
+
+export function moduleGraphToGraphology(
+  graph: ModuleGraph,
+  options?: {
+    communities?: CommunitySummaryItem[];
+    nodeCount?: number;
+  },
+): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> {
+  const result = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  const nodeCount = options?.nodeCount ?? graph.nodes.length;
+
+  // Build community lookup: map module_id to community_id
+  const moduleCommunity = new Map<string, number>();
+  if (options?.communities) {
+    for (const community of options.communities) {
+      for (const mod of graph.nodes) {
+        if (community.top_file.startsWith(mod.module_id)) {
+          moduleCommunity.set(mod.module_id, community.community_id);
+        }
+      }
+    }
+  }
+  // Fill in missing modules with deterministic hash
+  for (const mod of graph.nodes) {
+    if (!moduleCommunity.has(mod.module_id)) {
+      moduleCommunity.set(mod.module_id, simpleHash(mod.module_id) % 24);
+    }
+  }
+
+  // Group modules by community for warm-start positioning
+  const communityModules = new Map<number, ModuleNode[]>();
+  for (const mod of graph.nodes) {
+    const cid = moduleCommunity.get(mod.module_id) ?? 0;
+    const list = communityModules.get(cid) ?? [];
+    list.push(mod);
+    communityModules.set(cid, list);
+  }
+
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const spread = Math.sqrt(nodeCount) * 60;
+  const sortedCommunities = Array.from(communityModules.keys()).sort(
+    (a, b) => a - b,
+  );
+  const communityCount = sortedCommunities.length;
+  const jitter = Math.sqrt(nodeCount) * 5;
+
+  for (let i = 0; i < sortedCommunities.length; i++) {
+    const communityId = sortedCommunities[i]!;
+    const members = communityModules.get(communityId)!;
+
+    const angle = i * goldenAngle;
+    const radius = spread * Math.sqrt((i + 1) / communityCount);
+    const centroidX = radius * Math.cos(angle);
+    const centroidY = radius * Math.sin(angle);
+
+    for (const mod of members) {
+      const x = centroidX + (Math.random() - 0.5) * jitter;
+      const y = centroidY + (Math.random() - 0.5) * jitter;
+
+      const size =
+        getScaledNodeSize(NODE_BASE_SIZES.module, nodeCount) *
+        Math.max(mod.avg_pagerank, 0.1);
+      const color = getCommunityColor(communityId);
+
+      result.addNode(mod.module_id, {
+        x,
+        y,
+        size,
+        color,
+        label: mod.module_id.split("/").pop() ?? mod.module_id,
+        nodeType: "module",
+        fullPath: mod.module_id,
+        language: "",
+        communityId,
+        pagerank: mod.avg_pagerank,
+        betweenness: 0,
+        isTest: false,
+        isEntryPoint: false,
+        hasDoc: mod.doc_coverage_pct > 0,
+        symbolCount: mod.symbol_count,
+        fileCount: mod.file_count,
+        avgPagerank: mod.avg_pagerank,
+        docCoveragePct: mod.doc_coverage_pct,
+        dominantCommunityId: communityId,
+        mass: getNodeMass("module", nodeCount),
+        originalColor: color,
+      });
+    }
+  }
+
+  // Add edges
+  for (const edge of graph.edges) {
+    if (!result.hasNode(edge.source) || !result.hasNode(edge.target)) continue;
+    const edgeKey = edge.source + "→" + edge.target;
+    if (result.hasEdge(edgeKey)) continue;
+
+    const sourceCid = moduleCommunity.get(edge.source) ?? 0;
+    const targetCid = moduleCommunity.get(edge.target) ?? 0;
+    const edgeKind: SigmaEdgeAttributes["edgeKind"] =
+      sourceCid === targetCid ? "internal" : "crossCommunity";
+
+    const baseScale =
+      nodeCount > 5000 ? 0.4 : nodeCount > 1000 ? 0.6 : 1.0;
+
+    result.addEdgeWithKey(edgeKey, edge.source, edge.target, {
+      size:
+        baseScale *
+        EDGE_SIZE_MULTIPLIERS[edgeKind] *
+        (1 + Math.log2(edge.edge_count)),
+      color: EDGE_COLORS[edgeKind],
+      type: "curved",
+      curvature: computeEdgeCurvature(edgeKey),
+      edgeKind,
+      importedNames: [],
+      edgeCount: edge.edge_count,
+    });
+  }
+
+  return result;
+}
+
+export function groupFilesAsModules(
+  graph: GraphExport,
+  options?: { prefix?: string },
+): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> {
+  const { moduleNodes, moduleEdges } = groupNodesAsModules(
+    graph.nodes,
+    graph.links,
+    options?.prefix ?? "",
+  );
+
+  return moduleGraphToGraphology({ nodes: moduleNodes, edges: moduleEdges });
+}
