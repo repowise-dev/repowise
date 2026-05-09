@@ -13,11 +13,21 @@ def extract_python_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[
     names: list[str] = []
     bindings: list[NamedBinding] = []
     is_from_import = stmt_node.type == "import_from_statement"
+    # For absolute `from foo.bar import X`, tree-sitter places the module
+    # `foo.bar` as the first top-level `dotted_name` child — we must skip it.
+    # For relative `from .bar import X`, the module is wrapped in a
+    # `relative_import` node, so every top-level `dotted_name` is an
+    # imported name and nothing should be skipped.
+    has_relative_module = any(c.type == "relative_import" for c in stmt_node.children)
+    skip_first_dotted = is_from_import and not has_relative_module
     first_dotted_seen = False
 
     for child in stmt_node.children:
         if child.type == "wildcard_import":
             return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
+
+        if child.type == "relative_import":
+            continue
 
         if child.type == "aliased_import":
             name_node = child.child_by_field_name("name") or (
@@ -48,7 +58,7 @@ def extract_python_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[
         elif child.type == "dotted_name":
             text = node_text(child, src)
             bare = text.split(".")[-1]
-            if is_from_import and not first_dotted_seen:
+            if skip_first_dotted and not first_dotted_seen:
                 first_dotted_seen = True
                 continue
             names.append(bare)

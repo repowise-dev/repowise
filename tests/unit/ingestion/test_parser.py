@@ -140,6 +140,36 @@ class TestPythonParser:
         op_import = next(i for i in result.imports if i.module_path == "python_pkg.models")
         assert "Operation" in op_import.imported_names
 
+    def test_relative_from_import_single_name(self, parser: ASTParser) -> None:
+        # Regression: `from .X import Y` was dropping the only imported name.
+        fi = _make_file_info("pkg/__init__.py", "python")
+        result = parser.parse_file(fi, b"from .graph import GraphBuilder\n")
+        rel_import = next(i for i in result.imports if "graph" in i.module_path)
+        assert rel_import.imported_names == ["GraphBuilder"]
+
+    def test_relative_from_import_multiple_names_keeps_first(
+        self, parser: ASTParser
+    ) -> None:
+        # Regression: `from .X import A, B, C` was dropping `A`.
+        fi = _make_file_info("pkg/__init__.py", "python")
+        result = parser.parse_file(
+            fi, b"from .change_detector import AffectedPages, ChangeDetector, FileDiff\n"
+        )
+        rel_import = next(i for i in result.imports if "change_detector" in i.module_path)
+        assert rel_import.imported_names == ["AffectedPages", "ChangeDetector", "FileDiff"]
+
+    def test_absolute_from_import_skips_module_keeps_first_name(
+        self, parser: ASTParser
+    ) -> None:
+        # Guard against over-correction: absolute imports must still drop the
+        # module path while keeping every imported name including the first.
+        fi = _make_file_info("pkg/use.py", "python")
+        result = parser.parse_file(
+            fi, b"from python_pkg.models import Operation, Result\n"
+        )
+        imp = next(i for i in result.imports if i.module_path == "python_pkg.models")
+        assert imp.imported_names == ["Operation", "Result"]
+
     def test_function_docstring(self, parser: ASTParser) -> None:
         fi = _make_file_info("pkg/calc.py", "python")
         result = parser.parse_file(fi, PYTHON_SOURCE)
