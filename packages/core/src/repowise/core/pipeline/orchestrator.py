@@ -339,10 +339,13 @@ async def run_pipeline(
 
     # ---- Execution flow tracing -----------------------------------------------
     execution_flow_report = None
+    if progress:
+        progress.on_phase_start("graph.flows", None)
     try:
-        execution_flow_report = graph_builder.execution_flows()
+        execution_flow_report = await asyncio.to_thread(graph_builder.execution_flows)
     except Exception as _flow_err:
         logger.warning("execution_flow_tracing_skipped", error=str(_flow_err))
+    _phase_done(progress, "graph.flows")
 
     # ---- Build result -------------------------------------------------------
     elapsed = time.monotonic() - start
@@ -522,14 +525,17 @@ async def _run_ingestion(
         logger.warning("tsconfig_resolver_init_failed", error=str(_resolver_exc))
 
     # ---- Graph build phase -------------------------------------------------
+    # Sub-phases (graph.imports / graph.heritage / graph.calls) are emitted
+    # from inside GraphBuilder.build(); the orchestrator drives metrics/
+    # communities/flows below so the longest-running step is no longer an
+    # opaque "graph 0/1" spinner.
     if progress:
-        progress.on_phase_start("graph", 1)
         progress.on_message(
             "info",
             "  (graph build can take several minutes on first run — safe to "
             "Ctrl-C, then run 'repowise init --resume' to continue)",
         )
-    await asyncio.to_thread(graph_builder.build)
+    await asyncio.to_thread(graph_builder.build, progress)
 
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
     try:
@@ -551,9 +557,22 @@ async def _run_ingestion(
     except Exception as hints_exc:
         logger.warning("dynamic_hints_failed", error=str(hints_exc))
 
+    # ---- Graph metrics: prime caches with live progress ---------------------
+    # pagerank/betweenness/community/symbol_communities/execution_flows are
+    # otherwise computed lazily during persist + generation, where they hide
+    # behind opaque progress bars. Pre-compute them here so each is its own
+    # visible sub-phase.
     if progress:
-        progress.on_item_done("graph")
-    _phase_done(progress, "graph")
+        progress.on_phase_start("graph.metrics", None)
+    await asyncio.to_thread(graph_builder.pagerank)
+    await asyncio.to_thread(graph_builder.betweenness_centrality)
+    _phase_done(progress, "graph.metrics")
+
+    if progress:
+        progress.on_phase_start("graph.communities", None)
+    await asyncio.to_thread(graph_builder.community_detection)
+    await asyncio.to_thread(graph_builder.symbol_communities)
+    _phase_done(progress, "graph.communities")
 
     # Emit filtering summary so users can see what was included/excluded
     stats = traverser.stats

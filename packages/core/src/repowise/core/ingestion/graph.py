@@ -181,8 +181,14 @@ class GraphBuilder:
         )
         self._graph.add_edge(path, module_sym_id, edge_type="defines")
 
-    def build(self) -> nx.DiGraph:
-        """Resolve imports and calls, add edges. Returns the finalized graph."""
+    def build(self, progress: Any | None = None) -> nx.DiGraph:
+        """Resolve imports and calls, add edges. Returns the finalized graph.
+
+        *progress* is an optional ``ProgressCallback`` (duck-typed). When
+        provided, sub-phase events ``graph.imports`` / ``graph.heritage`` /
+        ``graph.calls`` are emitted so the CLI can surface per-file progress
+        instead of a single opaque "0/1" bar over the whole build.
+        """
         # Invalidate cached metrics
         self._community_cache = None
         self._symbol_community_cache = None
@@ -220,6 +226,8 @@ class GraphBuilder:
         # --- Phase 1: Resolve file-level imports ---
         import_targets: dict[str, set[str]] = {}  # file → set of imported files
 
+        if progress:
+            progress.on_phase_start("graph.imports", len(self._parsed_files))
         for path, parsed in self._parsed_files.items():
             file_imports: set[str] = set()
             for imp in parsed.imports:
@@ -240,12 +248,18 @@ class GraphBuilder:
                             imported_names=list(imp.imported_names),
                         )
             import_targets[path] = file_imports
+            if progress:
+                progress.on_item_done("graph.imports")
+        if progress:
+            _phase_done = getattr(progress, "on_phase_done", None)
+            if _phase_done is not None:
+                _phase_done("graph.imports")
 
         # --- Phase 2: Resolve heritage (extends/implements) ---
-        self._resolve_heritage(import_targets)
+        self._resolve_heritage(import_targets, progress=progress)
 
         # --- Phase 3: Resolve symbol-level calls ---
-        self._resolve_calls(import_targets)
+        self._resolve_calls(import_targets, progress=progress)
 
         self._built = True
 
@@ -271,17 +285,23 @@ class GraphBuilder:
         )
         return self._graph
 
-    def _resolve_heritage(self, import_targets: dict[str, set[str]]) -> None:
+    def _resolve_heritage(
+        self,
+        import_targets: dict[str, set[str]],
+        progress: Any | None = None,
+    ) -> None:
         """Resolve heritage relations and add EXTENDS/IMPLEMENTS edges."""
         from .heritage_resolver import HeritageResolver
 
         resolver = HeritageResolver(self._parsed_files, import_targets)
         total_resolved = 0
 
-        for path, parsed in self._parsed_files.items():
-            if not parsed.heritage:
-                continue
-
+        files_with_heritage = [
+            (p, pf) for p, pf in self._parsed_files.items() if pf.heritage
+        ]
+        if progress:
+            progress.on_phase_start("graph.heritage", len(files_with_heritage))
+        for path, parsed in files_with_heritage:
             resolved = resolver.resolve_file(path, parsed.heritage)
             for rh in resolved:
                 if rh.child_id in self._graph and rh.parent_id in self._graph:
@@ -297,20 +317,32 @@ class GraphBuilder:
                         existing = self._graph[rh.child_id][rh.parent_id]
                         if rh.confidence > existing.get("confidence", 0):
                             existing["confidence"] = rh.confidence
+            if progress:
+                progress.on_item_done("graph.heritage")
 
+        if progress:
+            _phase_done = getattr(progress, "on_phase_done", None)
+            if _phase_done is not None:
+                _phase_done("graph.heritage")
         log.info("Heritage edges resolved", total=total_resolved)
 
-    def _resolve_calls(self, import_targets: dict[str, set[str]]) -> None:
+    def _resolve_calls(
+        self,
+        import_targets: dict[str, set[str]],
+        progress: Any | None = None,
+    ) -> None:
         """Run three-tier call resolution and add CALLS edges to the graph."""
         from .call_resolver import CallResolver
 
         resolver = CallResolver(self._parsed_files, import_targets)
         total_resolved = 0
 
-        for path, parsed in self._parsed_files.items():
-            if not parsed.calls:
-                continue
-
+        files_with_calls = [
+            (p, pf) for p, pf in self._parsed_files.items() if pf.calls
+        ]
+        if progress:
+            progress.on_phase_start("graph.calls", len(files_with_calls))
+        for path, parsed in files_with_calls:
             resolved = resolver.resolve_file(path, parsed.calls)
             for rc in resolved:
                 if rc.caller_id in self._graph and rc.callee_id in self._graph:
@@ -326,7 +358,13 @@ class GraphBuilder:
                         existing = self._graph[rc.caller_id][rc.callee_id]
                         if rc.confidence > existing.get("confidence", 0):
                             existing["confidence"] = rc.confidence
+            if progress:
+                progress.on_item_done("graph.calls")
 
+        if progress:
+            _phase_done = getattr(progress, "on_phase_done", None)
+            if _phase_done is not None:
+                _phase_done("graph.calls")
         log.info("Call edges resolved", total=total_resolved)
 
     def graph(self) -> nx.DiGraph:
