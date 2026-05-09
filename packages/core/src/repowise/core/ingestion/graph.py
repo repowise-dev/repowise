@@ -100,11 +100,14 @@ class GraphBuilder:
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
         self._tsconfig_resolver: Any | None = None  # TsconfigResolver (lazy import)
 
-        # Community / flow caches (invalidated on build)
+        # Community / flow / metric caches (invalidated on build)
         self._community_cache: dict[str, int] | None = None
         self._symbol_community_cache: dict[str, int] | None = None
         self._community_info_cache: dict[int, Any] | None = None
         self._community_algo: str = ""
+        self._pagerank_cache: dict[str, float] | None = None
+        self._betweenness_cache: dict[str, float] | None = None
+        self._execution_flow_cache: Any | None = None
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -194,6 +197,9 @@ class GraphBuilder:
         self._symbol_community_cache = None
         self._community_info_cache = None
         self._community_algo = ""
+        self._pagerank_cache = None
+        self._betweenness_cache = None
+        self._execution_flow_cache = None
 
         # Clear import/call edges but keep structural edges (defines, has_method)
         edges_to_remove = [
@@ -382,15 +388,20 @@ class GraphBuilder:
         return [frozenset(scc) for scc in nx.strongly_connected_components(self.file_subgraph())]
 
     def betweenness_centrality(self) -> dict[str, float]:
-        """Return betweenness centrality for file nodes."""
+        """Return betweenness centrality for file nodes (cached)."""
+        if self._betweenness_cache is not None:
+            return self._betweenness_cache
         g = self.file_subgraph()
         n = g.number_of_nodes()
         if n == 0:
-            return {}
+            self._betweenness_cache = {}
+            return self._betweenness_cache
         if n > _LARGE_REPO_THRESHOLD:
             k = min(500, n)
-            return nx.betweenness_centrality(g, k=k, normalized=True)
-        return nx.betweenness_centrality(g, normalized=True)
+            self._betweenness_cache = nx.betweenness_centrality(g, k=k, normalized=True)
+        else:
+            self._betweenness_cache = nx.betweenness_centrality(g, normalized=True)
+        return self._betweenness_cache
 
     def community_detection(self) -> dict[str, int]:
         """Assign a community ID to each file node."""
@@ -435,11 +446,16 @@ class GraphBuilder:
         return self._community_info_cache or {}
 
     def execution_flows(self, config: Any | None = None) -> Any:
-        """Trace execution flows from entry-point symbols."""
+        """Trace execution flows from entry-point symbols (cached when ``config`` is None)."""
         from repowise.core.analysis.execution_flows import (
             ExecutionFlowReport,
             trace_execution_flows,
         )
+
+        # Only the no-config path is cached — callers that pass custom
+        # FlowConfig still get a fresh trace.
+        if config is None and self._execution_flow_cache is not None:
+            return self._execution_flow_cache
 
         file_cd = self.community_detection()
         merged_cd: dict[str, int] = dict(file_cd)
@@ -454,14 +470,40 @@ class GraphBuilder:
                     merged_cd[node_id] = file_cd[file_path]
 
         try:
-            return trace_execution_flows(self._graph, merged_cd, config)
+            report = trace_execution_flows(self._graph, merged_cd, config)
         except Exception as exc:
             log.warning("execution_flow_tracing_failed", error=str(exc))
-            return ExecutionFlowReport(
+            report = ExecutionFlowReport(
                 total_entry_points_scored=0,
                 total_flows=0,
                 flows=[],
             )
+        if config is None:
+            self._execution_flow_cache = report
+        return report
+
+    async def compute_metrics_parallel(self) -> None:
+        """Eagerly populate all metric caches with fan-out parallelism.
+
+        Runs PageRank, betweenness, file/symbol community detection in
+        parallel via ``asyncio.gather`` + ``asyncio.to_thread`` (the
+        scipy- and igraph-backed kernels release the GIL during heavy
+        compute, so true parallelism is achievable). Execution flows then
+        run after, since they depend on the community caches.
+
+        Calling this is optional — every metric falls back to lazy
+        computation, so existing call sites keep working unchanged.
+        """
+        import asyncio as _asyncio
+
+        await _asyncio.gather(
+            _asyncio.to_thread(self.pagerank),
+            _asyncio.to_thread(self.betweenness_centrality),
+            _asyncio.to_thread(self.community_detection),
+            _asyncio.to_thread(self.symbol_communities),
+        )
+        # execution_flows reads from the community caches just primed above.
+        await _asyncio.to_thread(self.execution_flows)
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -703,17 +745,21 @@ class GraphBuilder:
         return sub
 
     def pagerank(self, alpha: float = 0.85) -> dict[str, float]:
-        """Return PageRank scores for file nodes only."""
+        """Return PageRank scores for file nodes only (cached)."""
+        if self._pagerank_cache is not None:
+            return self._pagerank_cache
         filtered = self.file_subgraph()
         if filtered.number_of_nodes() == 0:
-            return {}
+            self._pagerank_cache = {}
+            return self._pagerank_cache
 
         try:
-            return nx.pagerank(filtered, alpha=alpha)
+            self._pagerank_cache = nx.pagerank(filtered, alpha=alpha)
         except nx.PowerIterationFailedConvergence:
             log.warning("PageRank did not converge, using uniform scores")
             n = filtered.number_of_nodes()
-            return {node: 1.0 / n for node in filtered.nodes()}
+            self._pagerank_cache = {node: 1.0 / n for node in filtered.nodes()}
+        return self._pagerank_cache
 
     def _build_scc_map(self) -> dict[str, int]:
         """Assign a numeric SCC ID to each node."""

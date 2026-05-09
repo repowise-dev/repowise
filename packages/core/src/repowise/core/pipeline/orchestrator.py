@@ -561,17 +561,23 @@ async def _run_ingestion(
     # pagerank/betweenness/community/symbol_communities/execution_flows are
     # otherwise computed lazily during persist + generation, where they hide
     # behind opaque progress bars. Pre-compute them here so each is its own
-    # visible sub-phase.
+    # visible sub-phase, and fan the within-phase work out via
+    # asyncio.gather so betweenness (the dominant cost) overlaps with
+    # PageRank / community detection rather than running serially.
     if progress:
         progress.on_phase_start("graph.metrics", None)
-    await asyncio.to_thread(graph_builder.pagerank)
-    await asyncio.to_thread(graph_builder.betweenness_centrality)
+    await asyncio.gather(
+        asyncio.to_thread(graph_builder.pagerank),
+        asyncio.to_thread(graph_builder.betweenness_centrality),
+    )
     _phase_done(progress, "graph.metrics")
 
     if progress:
         progress.on_phase_start("graph.communities", None)
-    await asyncio.to_thread(graph_builder.community_detection)
-    await asyncio.to_thread(graph_builder.symbol_communities)
+    await asyncio.gather(
+        asyncio.to_thread(graph_builder.community_detection),
+        asyncio.to_thread(graph_builder.symbol_communities),
+    )
     _phase_done(progress, "graph.communities")
 
     # Emit filtering summary so users can see what was included/excluded
