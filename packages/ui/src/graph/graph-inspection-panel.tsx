@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, memo } from "react";
 import {
   X,
   FileText,
@@ -17,7 +17,9 @@ import {
 import { ScrollArea } from "../ui/scroll-area";
 import { languageColor } from "../lib/confidence";
 import { formatNumber } from "../lib/format";
-import type { FileNodeData, ModuleNodeData, GraphEdge } from "./elk-layout";
+import type { FileNodeData, ModuleNodeData } from "./elk-layout";
+import type Graph from "graphology";
+import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./sigma/types";
 import { COMMUNITY_COLORS } from "./sigma/constants";
 
 interface NeighborInfo {
@@ -30,10 +32,8 @@ interface NeighborInfo {
 export interface GraphInspectionPanelProps {
   nodeId: string;
   data: FileNodeData | ModuleNodeData;
-  edges: GraphEdge[];
+  graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
   allNodes: Map<string, FileNodeData>;
-  allPageranks: number[];
-  allBetweenness: number[];
   communityLabel?: string | undefined;
   onClose: () => void;
   onNavigateToNode: (nodeId: string) => void;
@@ -61,13 +61,11 @@ function percentileOf(value: number, sorted: number[]): number {
   return Math.round((count / sorted.length) * 100);
 }
 
-export function GraphInspectionPanel({
+export const GraphInspectionPanel = memo(function GraphInspectionPanel({
   nodeId,
   data,
-  edges,
+  graph,
   allNodes,
-  allPageranks,
-  allBetweenness,
   communityLabel,
   onClose,
   onNavigateToNode,
@@ -81,37 +79,51 @@ export function GraphInspectionPanel({
   egoVisibleCount,
 }: GraphInspectionPanelProps) {
   const neighbors = useMemo(() => {
+    if (!graph || !graph.hasNode(nodeId)) return [];
     const result: NeighborInfo[] = [];
     const seen = new Set<string>();
-    for (const edge of edges) {
-      if (edge.source === nodeId && !seen.has(edge.target)) {
-        seen.add(edge.target);
-        const nd = allNodes.get(edge.target);
-        result.push({
-          id: edge.target,
-          label: edge.target.split("/").pop() ?? edge.target,
-          communityId: nd?.communityId ?? 0,
-          direction: "import",
-        });
-      } else if (edge.target === nodeId && !seen.has(edge.source)) {
-        seen.add(edge.source);
-        const nd = allNodes.get(edge.source);
-        result.push({
-          id: edge.source,
-          label: edge.source.split("/").pop() ?? edge.source,
-          communityId: nd?.communityId ?? 0,
-          direction: "importer",
-        });
-      }
-    }
+    graph.forEachOutEdge(nodeId, (_edge, _attrs, _source, target) => {
+      if (seen.has(target)) return;
+      seen.add(target);
+      const nd = allNodes.get(target);
+      result.push({
+        id: target,
+        label: target.split("/").pop() ?? target,
+        communityId: nd?.communityId ?? 0,
+        direction: "import",
+      });
+    });
+    graph.forEachInEdge(nodeId, (_edge, _attrs, source) => {
+      if (seen.has(source)) return;
+      seen.add(source);
+      const nd = allNodes.get(source);
+      result.push({
+        id: source,
+        label: source.split("/").pop() ?? source,
+        communityId: nd?.communityId ?? 0,
+        direction: "importer",
+      });
+    });
     return result;
-  }, [nodeId, edges, allNodes]);
+  }, [nodeId, graph, allNodes]);
+
+  const { sortedPageranks, sortedBetweenness } = useMemo(() => {
+    const prs: number[] = [];
+    const bts: number[] = [];
+    allNodes.forEach((nd) => {
+      prs.push(nd.pagerank);
+      bts.push(nd.betweenness);
+    });
+    prs.sort((a, b) => a - b);
+    bts.sort((a, b) => a - b);
+    return { sortedPageranks: prs, sortedBetweenness: bts };
+  }, [allNodes]);
 
   const isMod = isModuleData(data);
   const inDegree = neighbors.filter((n) => n.direction === "importer").length;
   const outDegree = neighbors.filter((n) => n.direction === "import").length;
-  const pagerankPct = !isMod ? percentileOf((data as FileNodeData).pagerank, allPageranks) : 0;
-  const betweennessPct = !isMod ? percentileOf((data as FileNodeData).betweenness, allBetweenness) : 0;
+  const pagerankPct = !isMod ? percentileOf((data as FileNodeData).pagerank, sortedPageranks) : 0;
+  const betweennessPct = !isMod ? percentileOf((data as FileNodeData).betweenness, sortedBetweenness) : 0;
 
   const headerIcon = isMod
     ? <Folder className="w-4 h-4 text-[var(--color-text-secondary)] mt-0.5 shrink-0" />
@@ -268,7 +280,7 @@ export function GraphInspectionPanel({
       </div>
     </div>
   );
-}
+});
 
 function FileMetadata({
   data,

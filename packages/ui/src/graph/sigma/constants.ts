@@ -110,6 +110,10 @@ export const NOVERLAP_SETTINGS = {
   expansion: 1.05,
 } as const;
 
+// ---- Edge rendering thresholds ----
+
+export const CURVED_EDGE_THRESHOLD = 3000;
+
 // ---- Label rendering ----
 
 export const LABEL_FONT = "JetBrains Mono, ui-monospace, monospace";

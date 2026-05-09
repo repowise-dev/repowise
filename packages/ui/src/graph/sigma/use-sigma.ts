@@ -32,22 +32,40 @@ const THEME_COLORS = {
 
 let activeBg: readonly [number, number, number] = THEME_COLORS.dark.bg;
 
+const dimColorCache = new Map<string, string>();
+const brightenColorCache = new Map<string, string>();
+
+function clearColorCaches() {
+  dimColorCache.clear();
+  brightenColorCache.clear();
+}
+
 function dimColor(hex: string, amount: number): string {
+  const key = hex + amount;
+  const cached = dimColorCache.get(key);
+  if (cached) return cached;
   const [r, g, b] = hexToRgb(hex);
-  return rgbToHex(
+  const result = rgbToHex(
     Math.round(activeBg[0] + (r - activeBg[0]) * amount),
     Math.round(activeBg[1] + (g - activeBg[1]) * amount),
     Math.round(activeBg[2] + (b - activeBg[2]) * amount),
   );
+  dimColorCache.set(key, result);
+  return result;
 }
 
 function brightenColor(hex: string, factor: number): string {
+  const key = hex + factor;
+  const cached = brightenColorCache.get(key);
+  if (cached) return cached;
   const [r, g, b] = hexToRgb(hex);
-  return rgbToHex(
+  const result = rgbToHex(
     Math.round(r + ((255 - r) * (factor - 1)) / factor),
     Math.round(g + ((255 - g) * (factor - 1)) / factor),
     Math.round(b + ((255 - b) * (factor - 1)) / factor),
   );
+  brightenColorCache.set(key, result);
+  return result;
 }
 
 function desaturateColor(hex: string, amount: number): string {
@@ -95,7 +113,11 @@ export interface UseSigmaReturn {
 }
 
 export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
-  activeBg = (THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark).bg;
+  const newBg = (THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark).bg;
+  if (newBg !== activeBg) {
+    activeBg = newBg;
+    clearColorCaches();
+  }
 
   const sigmaRef = useRef<Sigma | null>(null);
   const [sigmaReady, setSigmaReady] = useState<Sigma | null>(null);
@@ -177,12 +199,14 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     let sigmaInstance: Sigma | null = null;
 
     (async () => {
-      const [{ default: SigmaConstructor }, { default: EdgeCurveProgram }, graphologyModule] =
+      const [{ default: SigmaConstructor }, { default: EdgeCurveProgram }, sigmaRendering, graphologyModule] =
         await Promise.all([
           import("sigma"),
           import("@sigma/edge-curve"),
+          import("sigma/rendering"),
           import("graphology"),
         ]);
+      const EdgeLineProgram = sigmaRendering.EdgeLineProgram;
 
       if (cancelled) return;
 
@@ -203,6 +227,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         defaultEdgeType: "curved",
         edgeProgramClasses: {
           curved: EdgeCurveProgram,
+          line: EdgeLineProgram,
         },
         minCameraRatio: 0.002,
         maxCameraRatio: 50,

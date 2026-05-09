@@ -21,6 +21,7 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
+import { memo } from "react";
 import { Button } from "../ui/button";
 
 export type ColorMode = "language" | "community" | "risk";
@@ -71,7 +72,7 @@ const LAYOUT_MODES: { id: LayoutMode; icon: typeof GitBranch; label: string }[] 
   { id: "hierarchical", icon: GitBranch, label: "Hierarchical" },
 ];
 
-export function GraphToolbar({
+export const GraphToolbar = memo(function GraphToolbar({
   viewMode,
   onViewChange,
   colorMode,
@@ -254,4 +255,4 @@ export function GraphToolbar({
       </div>
     </div>
   );
-}
+});

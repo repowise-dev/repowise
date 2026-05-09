@@ -31,11 +31,17 @@ export function useFA2Layout(
   const cancelledRef = useRef(false);
   const [isRunning, setIsRunning] = useState(false);
 
+  const convergenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const killLayout = useCallback(() => {
     cancelledRef.current = true;
     if (layoutTimeoutRef.current) {
       clearTimeout(layoutTimeoutRef.current);
       layoutTimeoutRef.current = null;
+    }
+    if (convergenceIntervalRef.current) {
+      clearInterval(convergenceIntervalRef.current);
+      convergenceIntervalRef.current = null;
     }
     if (layoutRef.current) {
       layoutRef.current.kill();
@@ -65,11 +71,18 @@ export function useFA2Layout(
         layout.start();
         setIsRunning(true);
 
-        layoutTimeoutRef.current = setTimeout(async () => {
+        const finishLayout = async () => {
+          if (convergenceIntervalRef.current) {
+            clearInterval(convergenceIntervalRef.current);
+            convergenceIntervalRef.current = null;
+          }
+          if (layoutTimeoutRef.current) {
+            clearTimeout(layoutTimeoutRef.current);
+            layoutTimeoutRef.current = null;
+          }
           layout.stop();
           layout.kill();
           layoutRef.current = null;
-          layoutTimeoutRef.current = null;
 
           const { default: noverlap } = await import(
             "graphology-layout-noverlap"
@@ -77,6 +90,38 @@ export function useFA2Layout(
           noverlap.assign(graph, NOVERLAP_SETTINGS);
           options.sigma?.refresh();
           setIsRunning(false);
+        };
+
+        // Convergence detection: sample 50 nodes every 500ms
+        const sampleSize = Math.min(50, graph.order);
+        const nodeIds = graph.nodes().slice(0, sampleSize);
+        let prevPositions = nodeIds.map((id) => {
+          const a = graph.getNodeAttributes(id);
+          return { x: a.x, y: a.y };
+        });
+
+        convergenceIntervalRef.current = setInterval(() => {
+          if (cancelledRef.current) return;
+          const currentPositions = nodeIds.map((id) => {
+            const a = graph.getNodeAttributes(id);
+            return { x: a.x, y: a.y };
+          });
+          let totalDelta = 0;
+          for (let i = 0; i < nodeIds.length; i++) {
+            const dx = currentPositions[i]!.x - prevPositions[i]!.x;
+            const dy = currentPositions[i]!.y - prevPositions[i]!.y;
+            totalDelta += Math.sqrt(dx * dx + dy * dy);
+          }
+          const avgDelta = totalDelta / nodeIds.length;
+          prevPositions = currentPositions;
+          if (avgDelta < 0.5) {
+            finishLayout();
+          }
+        }, 500);
+
+        // Hard cap timeout as fallback
+        layoutTimeoutRef.current = setTimeout(() => {
+          finishLayout();
         }, getLayoutDuration(graph.order));
       })();
     },

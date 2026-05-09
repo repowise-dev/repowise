@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { FileText, Search, Route, ArrowRightFromLine, ArrowLeftToLine } from "lucide-react";
 
 interface GraphContextMenuProps {
@@ -13,7 +14,7 @@ interface GraphContextMenuProps {
   onPathTo: () => void;
 }
 
-export function GraphContextMenu({
+export const GraphContextMenu = memo(function GraphContextMenu({
   x,
   y,
   nodeId,
@@ -69,4 +70,4 @@ export function GraphContextMenu({
       </button>
     </div>
   );
-}
+});

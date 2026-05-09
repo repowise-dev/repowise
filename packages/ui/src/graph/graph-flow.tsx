@@ -13,7 +13,9 @@ import Fuse from "fuse.js";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
 import { GraphProvider, type GraphContextValue, type Signal } from "./context";
-import { groupNodesAsModules, type FileNodeData, type ModuleNodeData, type GraphEdge } from "./elk-layout";
+import { groupNodesAsModules, type FileNodeData, type ModuleNodeData } from "./elk-layout";
+
+const EMPTY_STRING_SET = new Set<string>();
 import { useExpandedModules } from "./use-expanded-modules";
 import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
@@ -243,6 +245,32 @@ export function GraphFlow(props: GraphFlowProps) {
   const hasDeadSignal = activeSignals.has("dead");
   const hasHotSignal = activeSignals.has("hot");
 
+  // Pre-build indexes for O(1) module expansion lookups (Fix 1.1)
+  const fullGraphIndexes = useMemo(() => {
+    if (!fullGraph) return null;
+    const moduleChildIndex = new Map<string, typeof fullGraph.nodes>();
+    const nodeEdgeIndex = new Map<string, typeof fullGraph.links>();
+
+    for (const node of fullGraph.nodes) {
+      const parts = node.node_id.split("/");
+      for (let depth = 1; depth < parts.length; depth++) {
+        const prefix = parts.slice(0, depth).join("/");
+        let children = moduleChildIndex.get(prefix);
+        if (!children) { children = []; moduleChildIndex.set(prefix, children); }
+        children.push(node);
+      }
+    }
+    for (const link of fullGraph.links) {
+      let srcEdges = nodeEdgeIndex.get(link.source);
+      if (!srcEdges) { srcEdges = []; nodeEdgeIndex.set(link.source, srcEdges); }
+      srcEdges.push(link);
+      let tgtEdges = nodeEdgeIndex.get(link.target);
+      if (!tgtEdges) { tgtEdges = []; nodeEdgeIndex.set(link.target, tgtEdges); }
+      tgtEdges.push(link);
+    }
+    return { moduleChildIndex, nodeEdgeIndex };
+  }, [fullGraph]);
+
   // Build Graphology graph for Sigma rendering
   const sigmaGraph = useMemo(() => {
     if (isModuleView) {
@@ -252,7 +280,7 @@ export function GraphFlow(props: GraphFlowProps) {
 
       if (!moduleGraph) return null;
 
-      if (expandedModules.size === 0 || !fullGraph) {
+      if (expandedModules.size === 0 || !fullGraph || !fullGraphIndexes) {
         return moduleGraphToGraphology(moduleGraph, communities ? { communities } : {});
       }
 
@@ -267,10 +295,7 @@ export function GraphFlow(props: GraphFlowProps) {
 
         graph.dropNode(moduleId);
 
-        const prefix = moduleId + "/";
-        const childNodes = fullGraph.nodes.filter(
-          (n) => n.node_id.startsWith(prefix) || n.node_id === moduleId,
-        );
+        const childNodes = fullGraphIndexes.moduleChildIndex.get(moduleId) ?? [];
 
         const nodeCount = fullGraph.nodes.length;
         const jitter = 30;
@@ -306,10 +331,16 @@ export function GraphFlow(props: GraphFlowProps) {
         }
 
         const childIds = new Set(childNodes.map((n) => n.node_id));
-        for (const link of fullGraph.links) {
-          const srcInModule = childIds.has(link.source);
-          const tgtInModule = childIds.has(link.target);
-          const edgeKey = link.source + "→" + link.target;
+        const seenEdges = new Set<string>();
+        for (const childId of childIds) {
+          const edges = fullGraphIndexes.nodeEdgeIndex.get(childId) ?? [];
+          for (const link of edges) {
+            const edgeKey = link.source + "→" + link.target;
+            if (seenEdges.has(edgeKey)) continue;
+            seenEdges.add(edgeKey);
+
+            const srcInModule = childIds.has(link.source);
+            const tgtInModule = childIds.has(link.target);
 
           if (srcInModule && tgtInModule) {
             if (!graph.hasEdge(edgeKey) && graph.hasNode(link.source) && graph.hasNode(link.target)) {
@@ -348,6 +379,7 @@ export function GraphFlow(props: GraphFlowProps) {
               });
             }
           }
+          }
         }
       }
 
@@ -365,7 +397,7 @@ export function GraphFlow(props: GraphFlowProps) {
       { nodes: graphData.nodes, links: graphData.links },
       { signals },
     );
-  }, [isModuleView, isDrilledDown, fullGraph, currentPrefix, moduleGraph, communities, expandedModules, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds]);
+  }, [isModuleView, isDrilledDown, fullGraph, currentPrefix, moduleGraph, communities, expandedModules, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds, fullGraphIndexes]);
 
   const { hiddenNodes, isActive: isEgoActive, visibleCount: egoVisibleCount } = useEgoFilter({
     graph: sigmaGraph,
@@ -373,14 +405,12 @@ export function GraphFlow(props: GraphFlowProps) {
     depth: egoDepth,
   });
 
-  // Sigma data maps
-  const sigmaDataMaps = useMemo(() => {
+  // Node data maps (sorted metrics moved into GraphInspectionPanel)
+  const sigmaNodeMaps = useMemo(() => {
     if (!sigmaGraph) return null;
 
     const fileMap = new Map<string, FileNodeData>();
     const modMap = new Map<string, ModuleNodeData>();
-    const prs: number[] = [];
-    const bts: number[] = [];
 
     sigmaGraph.forEachNode((nodeId, attrs) => {
       if (attrs.nodeType === "file") {
@@ -400,8 +430,6 @@ export function GraphFlow(props: GraphFlowProps) {
         if (attrs.isHotspot) fileData.isHotspot = true;
         if (attrs.isDead) fileData.isDead = true;
         fileMap.set(nodeId, fileData);
-        prs.push(attrs.pagerank);
-        bts.push(attrs.betweenness);
       } else if (attrs.nodeType === "module") {
         modMap.set(nodeId, {
           nodeType: "module",
@@ -416,61 +444,11 @@ export function GraphFlow(props: GraphFlowProps) {
       }
     });
 
-    prs.sort((a, b) => a - b);
-    bts.sort((a, b) => a - b);
-
-    return { fileMap, modMap, sortedPageranks: prs, sortedBetweenness: bts };
+    return { fileMap, modMap };
   }, [sigmaGraph]);
 
-  // Synthetic GraphEdge[] from Graphology edges (for inspection panel)
-  const sigmaEdges = useMemo((): GraphEdge[] => {
-    if (!sigmaGraph) return [];
-    const edges: GraphEdge[] = [];
-    sigmaGraph.forEachEdge((edgeKey, attrs, source, target) => {
-      edges.push({
-        id: edgeKey,
-        source,
-        target,
-        type: "dependency",
-        data: {
-          importedNames: attrs.importedNames,
-          edgeCount: attrs.edgeCount,
-          confidence: attrs.confidence,
-        },
-      });
-    });
-    return edges;
-  }, [sigmaGraph]);
-
-  // Derived pagerank stats from sigma data
-  const maxPagerank = sigmaDataMaps
-    ? (sigmaDataMaps.sortedPageranks[sigmaDataMaps.sortedPageranks.length - 1] ?? 0)
-    : 0;
-  const medianPagerank = sigmaDataMaps
-    ? (sigmaDataMaps.sortedPageranks[Math.floor(sigmaDataMaps.sortedPageranks.length / 2)] ?? 0)
-    : 0;
-
-  // Data accessors
-  const effectiveNodeDataMap = sigmaDataMaps?.fileMap ?? new Map<string, FileNodeData>();
-  const effectiveModuleDataMap = sigmaDataMaps?.modMap ?? new Map<string, ModuleNodeData>();
-  const effectivePageranks = sigmaDataMaps?.sortedPageranks ?? [];
-  const effectiveBetweenness = sigmaDataMaps?.sortedBetweenness ?? [];
-  const effectiveEdges: GraphEdge[] = sigmaEdges;
-
-  // Hover highlighting
-  const { connectedNodeIds, connectedEdgeIds } = useMemo(() => {
-    if (!hoveredNodeId) return { connectedNodeIds: new Set<string>(), connectedEdgeIds: new Set<string>() };
-    const nodeIds = new Set<string>([hoveredNodeId]);
-    const edgeIds = new Set<string>();
-    for (const edge of sigmaEdges) {
-      if (edge.source === hoveredNodeId || edge.target === hoveredNodeId) {
-        edgeIds.add(edge.id);
-        nodeIds.add(edge.source);
-        nodeIds.add(edge.target);
-      }
-    }
-    return { connectedNodeIds: nodeIds, connectedEdgeIds: edgeIds };
-  }, [hoveredNodeId, sigmaEdges]);
+  const effectiveNodeDataMap = sigmaNodeMaps?.fileMap ?? new Map<string, FileNodeData>();
+  const effectiveModuleDataMap = sigmaNodeMaps?.modMap ?? new Map<string, ModuleNodeData>();
 
   // Community dimming
   const communityDimmedNodes = useMemo(() => {
@@ -497,35 +475,41 @@ export function GraphFlow(props: GraphFlowProps) {
     return new Fuse(items, { keys: ["id", "label"], threshold: 0.4 });
   }, [sigmaGraph, hideTests]);
 
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
     if (!searchQuery || searchQuery.length < 2) {
+      clearTimeout(searchTimerRef.current);
       setSearchDimmedNodes(null);
       setSearchResults([]);
       setSearchResultIndex(0);
       return;
     }
-    const results = fuseIndex.search(searchQuery);
-    const matchIds = new Set(results.map((r) => r.item.id));
-    const ids = results.map((r) => r.item.id);
-    const dimmed = new Set<string>();
+    clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      const results = fuseIndex.search(searchQuery);
+      const matchIds = new Set(results.map((r) => r.item.id));
+      const ids = results.map((r) => r.item.id);
+      const dimmed = new Set<string>();
 
-    if (sigmaGraph) {
-      sigmaGraph.forEachNode((nodeId) => {
-        if (!matchIds.has(nodeId)) dimmed.add(nodeId);
-      });
-    }
+      if (sigmaGraph) {
+        sigmaGraph.forEachNode((nodeId) => {
+          if (!matchIds.has(nodeId)) dimmed.add(nodeId);
+        });
+      }
 
-    setSearchDimmedNodes(dimmed);
-    setSearchResults(ids);
-    setSearchResultIndex(0);
+      setSearchDimmedNodes(dimmed);
+      setSearchResults(ids);
+      setSearchResultIndex(0);
 
-    if (ids.length === 1) {
-      setSelectedNodeId(ids[0]!);
-    }
+      if (ids.length === 1) {
+        setSelectedNodeId(ids[0]!);
+      }
 
-    if (ids.length > 0 && ids.length <= 20) {
-      sigmaRef.current?.focusNode(ids[0]!);
-    }
+      if (ids.length > 0 && ids.length <= 20) {
+        sigmaRef.current?.focusNode(ids[0]!);
+      }
+    }, 150);
+    return () => clearTimeout(searchTimerRef.current);
   }, [searchQuery, fuseIndex, sigmaGraph]);
 
   // Execution flow highlighting
@@ -563,7 +547,7 @@ export function GraphFlow(props: GraphFlowProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFlowIdx, executionFlows]);
 
-  // Context value
+  // Context value (hover fields use static empty sets — highlighting handled by Sigma reducers)
   const ctxValue = useMemo<GraphContextValue>(
     () => ({
       highlightedPath,
@@ -571,21 +555,21 @@ export function GraphFlow(props: GraphFlowProps) {
       colorMode,
       viewMode,
       hoveredNodeId,
-      connectedNodeIds,
-      connectedEdgeIds,
+      connectedNodeIds: EMPTY_STRING_SET,
+      connectedEdgeIds: EMPTY_STRING_SET,
       selectedNodeId,
       searchDimmedNodes,
       communityDimmedNodes,
       layoutMode,
       graphTheme,
-      maxPagerank,
-      medianPagerank,
+      maxPagerank: 0,
+      medianPagerank: 0,
       expandedModules,
       activeSignals,
       egoDepth,
       visibleEdgeTypes,
     }),
-    [highlightedPath, highlightedEdges, colorMode, viewMode, hoveredNodeId, connectedNodeIds, connectedEdgeIds, selectedNodeId, searchDimmedNodes, communityDimmedNodes, layoutMode, graphTheme, maxPagerank, medianPagerank, expandedModules, activeSignals, egoDepth, visibleEdgeTypes],
+    [highlightedPath, highlightedEdges, colorMode, viewMode, hoveredNodeId, selectedNodeId, searchDimmedNodes, communityDimmedNodes, layoutMode, graphTheme, expandedModules, activeSignals, egoDepth, visibleEdgeTypes],
   );
 
   // ---- Handlers ----
@@ -1100,10 +1084,8 @@ export function GraphFlow(props: GraphFlowProps) {
             <GraphInspectionPanel
               nodeId={selectedNodeId}
               data={nd}
-              edges={effectiveEdges}
+              graph={sigmaGraph}
               allNodes={effectiveNodeDataMap}
-              allPageranks={effectivePageranks}
-              allBetweenness={effectiveBetweenness}
               communityLabel={fileNd ? communityLabels?.get(fileNd.communityId) : undefined}
               onClose={() => { setSelectedNodeId(null); }}
               onNavigateToNode={handleInspectNavigate}

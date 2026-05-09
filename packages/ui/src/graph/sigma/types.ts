@@ -57,8 +57,8 @@ export interface SigmaEdgeAttributes {
   size: number;
   color: string;
 
-  // Sigma edge program type (always "curved" for EdgeCurveProgram)
-  type: "curved";
+  // Sigma edge program type ("curved" for small graphs, "line" for large)
+  type: "curved" | "line";
 
   // Random curvature for visual variety (0.12-0.20)
   curvature: number;

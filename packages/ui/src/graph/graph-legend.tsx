@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, memo } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { LANGUAGE_COLORS } from "../lib/confidence";
 import { EDGE_COLORS, getCommunityColor } from "./sigma/constants";
@@ -30,7 +30,7 @@ interface GraphLegendProps {
   onEdgeTypeToggle?: ((edgeType: string) => void) | undefined;
 }
 
-export function GraphLegend({
+export const GraphLegend = memo(function GraphLegend({
   nodeCount,
   edgeCount,
   colorMode,
@@ -209,4 +209,4 @@ export function GraphLegend({
       )}
     </div>
   );
-}
+});

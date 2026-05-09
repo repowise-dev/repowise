@@ -13,6 +13,7 @@ import {
   NODE_BASE_SIZES,
   EDGE_COLORS,
   EDGE_SIZE_MULTIPLIERS,
+  CURVED_EDGE_THRESHOLD,
   getScaledNodeSize,
   getNodeMass,
   getCommunityColor,
@@ -169,27 +170,32 @@ export function fileGraphToGraphology(
     }
   }
 
-  // Sort edges: cross-community first, then by imported symbol count descending
-  const sortedLinks = [...graph.links].sort((a, b) => {
-    const aKind = classifyEdge(a, nodeMap);
-    const bKind = classifyEdge(b, nodeMap);
-    const kindPriority: Record<SigmaEdgeAttributes["edgeKind"], number> = {
-      crossCommunity: 0,
-      import: 1,
-      internal: 2,
-      dynamic: 3,
-      lowConfidence: 4,
-    };
-    const diff = kindPriority[aKind] - kindPriority[bKind];
-    if (diff !== 0) return diff;
-    return b.imported_names.length - a.imported_names.length;
-  });
+  // Classify edges in one O(E) pass, then bucket by kind (avoids O(E log E) sort)
+  const kindBuckets: Record<SigmaEdgeAttributes["edgeKind"], GraphLink[]> = {
+    crossCommunity: [],
+    import: [],
+    internal: [],
+    dynamic: [],
+    lowConfidence: [],
+  };
+  const edgeKindMap = new Map<GraphLink, SigmaEdgeAttributes["edgeKind"]>();
+  for (const link of graph.links) {
+    const kind = classifyEdge(link, nodeMap);
+    edgeKindMap.set(link, kind);
+    kindBuckets[kind].push(link);
+  }
+  const orderedLinks = (
+    kindBuckets.crossCommunity
+      .concat(kindBuckets.import)
+      .concat(kindBuckets.internal)
+      .concat(kindBuckets.dynamic)
+      .concat(kindBuckets.lowConfidence)
+  );
 
-  // Cap per-node edge count for large graphs to reduce star-burst clutter
   const maxEdgesPerNode = nodeCount > 1000 ? 25 : Infinity;
   const edgesPerSource = new Map<string, number>();
 
-  for (const link of sortedLinks) {
+  for (const link of orderedLinks) {
     if (!result.hasNode(link.source) || !result.hasNode(link.target)) continue;
     const edgeKey = link.source + "→" + link.target;
     if (result.hasEdge(edgeKey)) continue;
@@ -198,13 +204,14 @@ export function fileGraphToGraphology(
     if (srcCount >= maxEdgesPerNode) continue;
     edgesPerSource.set(link.source, srcCount + 1);
 
-    const edgeKind = classifyEdge(link, nodeMap);
+    const edgeKind = edgeKindMap.get(link) ?? classifyEdge(link, nodeMap);
 
+    const useCurved = nodeCount <= CURVED_EDGE_THRESHOLD;
     const edgeAttrs: SigmaEdgeAttributes = {
       size: computeEdgeSize(edgeKind, nodeCount),
       color: EDGE_COLORS[edgeKind],
-      type: "curved",
-      curvature: computeEdgeCurvature(edgeKey),
+      type: useCurved ? "curved" : "line",
+      curvature: useCurved ? computeEdgeCurvature(edgeKey) : 0,
       edgeKind,
       importedNames: link.imported_names,
       edgeCount: 1,
