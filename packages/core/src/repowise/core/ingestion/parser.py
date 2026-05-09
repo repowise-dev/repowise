@@ -554,7 +554,6 @@ class ASTParser:
 
             compiled = Query(language, scm_text)
             self._query_cache[lang] = compiled
-            log.debug("Compiled query", language=lang)
             return compiled
         except Exception as exc:
             log.warning("Failed to compile query", language=lang, error=str(exc))
