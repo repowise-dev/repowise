@@ -524,6 +524,11 @@ async def _run_ingestion(
     # ---- Graph build phase -------------------------------------------------
     if progress:
         progress.on_phase_start("graph", 1)
+        progress.on_message(
+            "info",
+            "  (graph build can take several minutes on first run — safe to "
+            "Ctrl-C, then run 'repowise init --resume' to continue)",
+        )
     await asyncio.to_thread(graph_builder.build)
 
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)

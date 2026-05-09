@@ -461,7 +461,13 @@ def _workspace_init(
     try:
         import structlog
 
-        structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR))
+        # cache_logger_on_first_use=False: see init_command for rationale —
+        # otherwise module-level ``structlog.get_logger`` calls hold a logger
+        # snapshotted before configure() and bypass this filter.
+        structlog.configure(
+            wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
+            cache_logger_on_first_use=False,
+        )
     except ImportError:
         pass
 
@@ -943,8 +949,14 @@ def init_command(
     try:
         import structlog
 
+        # Without cache_logger_on_first_use=False, modules that called
+        # ``structlog.get_logger(__name__)`` at import time hold a bound logger
+        # snapshotted before this configure ran — so debug lines from
+        # ``core/ingestion/*`` (graph, traverser, parser, …) would leak past
+        # the ERROR filter on the first ``init`` of a session.
         structlog.configure(
             wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
+            cache_logger_on_first_use=False,
         )
     except ImportError:
         pass
