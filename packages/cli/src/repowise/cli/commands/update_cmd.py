@@ -28,6 +28,22 @@ from repowise.cli.helpers import (
 # ---------------------------------------------------------------------------
 
 
+def _infer_legacy_docs_enabled(state: dict) -> bool:
+    """Infer ``docs_enabled`` for state files written before the field existed.
+
+    Pre-migration ``init`` only wrote ``provider`` / ``model`` to state when
+    docs were generated; index-only init wrote nothing past ``last_sync_commit``.
+    So absence of both fields is a reliable signal that the original run was
+    index-only and we should default new updates to index-only too — this
+    avoids surprising those users with a full LLM regen on first upgrade.
+    Full-init users keep the old default (full mode) because their state
+    has ``provider`` and ``model`` populated.
+    """
+    if state.get("provider") or state.get("model"):
+        return True
+    return False
+
+
 def _resolve_index_only_mode(
     *,
     index_only: bool,
@@ -37,18 +53,21 @@ def _resolve_index_only_mode(
     """Decide whether this update should skip LLM regeneration.
 
     Priority: explicit ``--index-only`` flag > ``--docs/--no-docs`` >
-    ``state.docs_enabled`` (default: True for backward compatibility with
-    state files written before the field existed). Encapsulated as a pure
-    function so the post-commit hook does the right thing without needing
-    any extra knobs at install time.
+    ``state.docs_enabled`` > inferred default from legacy state shape.
+    Encapsulated as a pure function so the post-commit hook does the right
+    thing without needing any extra knobs at install time.
     """
     if index_only:
         return True
     if docs_flag is False:
         return True
-    if docs_flag is None and state.get("docs_enabled", True) is False:
-        return True
-    return False
+    if docs_flag is True:
+        return False
+    # No explicit override — read state, falling back to a shape-based
+    # inference for state files predating the docs_enabled field.
+    if "docs_enabled" in state:
+        return state["docs_enabled"] is False
+    return _infer_legacy_docs_enabled(state) is False
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +256,22 @@ def update_command(
     if head and head == base_ref:
         console.print("[green]Already up to date.[/green]")
         return
+
+    # Backfill docs_enabled on legacy state files using the same
+    # shape-based inference the resolver uses, so the post-commit hook
+    # and future runs stop relying on the inference. Done before mode
+    # resolution and only when no explicit override was passed, so a
+    # one-off `--docs` / `--no-docs` doesn't lock anything in.
+    explicit_override = (
+        # The CLI default of index_only is False; treat it like an
+        # override only when the user actually passed the flag, which we
+        # can't distinguish here — but the conservative choice is fine:
+        # index_only=True is always treated as an override.
+        index_only or docs_flag is not None
+    )
+    if "docs_enabled" not in state and not explicit_override:
+        state["docs_enabled"] = _infer_legacy_docs_enabled(state)
+        save_state(repo_path, state)
 
     # --- Resolve effective mode (index-only vs full LLM regen) ---
     index_only = _resolve_index_only_mode(

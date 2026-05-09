@@ -33,6 +33,32 @@ from repowise.cli.ui import MaybeCountColumn
 # ---------------------------------------------------------------------------
 
 
+class CostGateDeclined(Exception):
+    """Raised when the user answers No at the LLM-cost confirmation prompt.
+
+    Carries no payload — the caller just needs to know that generation was
+    declined so it can persist state in index-only shape (no docs) and
+    return cleanly. Using an exception (vs. a sentinel return value) lets
+    us bail out of nested generation flows without rethreading return
+    types through every helper.
+    """
+
+
+def _confirm_cost_gate(message: str) -> bool:
+    """Render the cost-gate `[y/N]` prompt with visual padding.
+
+    Click's plain ``confirm`` interleaves with the trailing line of any
+    prior Rich output (progress-bar frames, status spinners), making the
+    `[y/N]` glyphs hard to spot — users have walked past it and approved
+    a $14 bill thinking they were still in cost-estimate territory. A
+    blank line + horizontal rule cleanly separates the prompt from
+    whatever was printed above it.
+    """
+    console.line()
+    console.rule(style="yellow")
+    return click.confirm(message, default=False)
+
+
 def _offer_hook_install(
     console_obj: Any,
     repo_paths: list[Path],
@@ -359,10 +385,19 @@ def _run_workspace_generation(
     if (
         est.estimated_cost_usd > 2.00
         and not yes
-        and not click.confirm(f"    Cost for {repo_path.name} exceeds $2.00. Continue?")
+        and not _confirm_cost_gate(
+            f"    Cost for {repo_path.name} exceeds $2.00. Continue?"
+        )
     ):
-        console.print("    [yellow]Skipped.[/yellow]")
-        return []
+        console.print(
+            "    [yellow]Skipped.[/yellow] "
+            "[dim]Index will be saved without docs; "
+            "future `repowise update` runs default to index-only.[/dim]"
+        )
+        # Sentinel — caller treats this exactly like an index-only run so
+        # state.docs_enabled lands as False and the post-commit hook
+        # doesn't surprise the user with LLM regen later.
+        raise CostGateDeclined()
 
     # Cost tracker (DB-backed when possible)
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -627,7 +662,10 @@ def _workspace_init(
             console.print(f"    [red]\u2717 Failed: {exc}[/red]\n")
             continue
 
-        # Generation phase (per-repo, only when not index-only)
+        # Generation phase (per-repo, only when not index-only).
+        # Track per-repo whether the user declined cost so state.docs_enabled
+        # reflects the actual choice instead of the original init mode.
+        repo_docs_enabled = not index_only and provider is not None
         if not index_only and provider is not None:
             if dry_run:
                 console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
@@ -650,6 +688,9 @@ def _workspace_init(
                     console.print(
                         f"    [green]\u2713[/green] Generated {len(generated_pages)} pages\n"
                     )
+                except CostGateDeclined:
+                    repo_docs_enabled = False
+                    result.generated_pages = []
                 except Exception as gen_exc:
                     console.print(f"    [yellow]Generation failed: {gen_exc}[/yellow]\n")
         else:
@@ -664,9 +705,9 @@ def _workspace_init(
         state: dict[str, Any] = {
             "last_sync_commit": head,
             "total_pages": pages_count,
-            "docs_enabled": not index_only and provider is not None,
+            "docs_enabled": repo_docs_enabled,
         }
-        if not index_only and provider is not None:
+        if repo_docs_enabled and provider is not None:
             state["provider"] = provider.provider_name
             state["model"] = provider.model_name
         save_state(repo.path, state)
@@ -1077,6 +1118,11 @@ def init_command(
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----
     total_phases = 3 if index_only else 4
+    # Tracks whether the user declined the LLM cost gate. When True we
+    # skip generation but still persist the index/graph/git/dead-code so
+    # the run isn't wasted, and propagate the choice to state.docs_enabled
+    # so subsequent updates default to index-only.
+    cost_declined = False
     llm_client = provider if not index_only else decision_provider
 
     from repowise.core.pipeline import run_pipeline
@@ -1208,123 +1254,132 @@ def init_command(
             console.print("[yellow]Dry run — no pages generated.[/yellow]")
             return
 
-        if (
+        cost_declined = (
             est.estimated_cost_usd > 2.00
             and not yes
-            and not click.confirm("  Estimated cost exceeds $2.00. Continue?")
-        ):
-            console.print("[yellow]Aborted.[/yellow]")
-            return
-
-        # Build embedder + vector store
-        from repowise.core.persistence.vector_store import InMemoryVectorStore
-        from repowise.core.providers.embedding.base import MockEmbedder
-
-        embedder_impl: Any
-        if embedder_name_resolved == "gemini":
-            try:
-                from repowise.core.providers.embedding.gemini import GeminiEmbedder
-
-                embedder_impl = GeminiEmbedder()
-            except Exception:
-                embedder_impl = MockEmbedder()
-        elif embedder_name_resolved == "openai":
-            try:
-                from repowise.core.providers.embedding.openai import OpenAIEmbedder
-
-                embedder_impl = OpenAIEmbedder()
-            except Exception:
-                embedder_impl = MockEmbedder()
-        else:
-            embedder_impl = MockEmbedder()
-
-        lance_dir = repo_path / ".repowise" / "lancedb"
-        try:
-            from repowise.core.persistence.vector_store import LanceDBVectorStore
-
-            lance_dir.mkdir(parents=True, exist_ok=True)
-            vector_store: Any = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
-        except ImportError:
-            vector_store = InMemoryVectorStore(embedder_impl)
-
-        # Run generation via the pipeline's generation function
-        from repowise.core.pipeline import run_generation
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            MaybeCountColumn(),
-            TimeElapsedColumn(),
-            TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
-            console=console,
-        ) as gen_progress:
-            gen_callback = RichProgressCallback(gen_progress, console)
-
-            # Construct a CostTracker backed by the real DB so every LLM call
-            # is persisted to the llm_costs table.  We need the repo_id from the
-            # database row that was created/upserted during _persist_result
-            # (which has not run yet), so we look it up or fall back to in-memory.
-            from repowise.core.generation.cost_tracker import CostTracker
-            from repowise.cli.helpers import get_db_url_for_repo
-            from repowise.core.persistence import (
-                create_engine as _create_engine,
-                create_session_factory as _create_sf,
-                get_session as _get_session,
-                init_db as _init_db,
-                upsert_repository as _upsert_repo,
+            and not _confirm_cost_gate("  Estimated cost exceeds $2.00. Continue?")
+        )
+        if cost_declined:
+            console.print(
+                "[yellow]Skipped LLM generation.[/yellow] "
+                "[dim]Index/graph/git/dead-code will be saved; future "
+                "`repowise update` runs default to index-only so the "
+                "post-commit hook won't trigger LLM regen.[/dim]"
             )
 
-            async def _make_cost_tracker() -> CostTracker:
-                url = get_db_url_for_repo(repo_path)
-                engine = _create_engine(url)
-                await _init_db(engine)
-                sf = _create_sf(engine)
-                async with _get_session(sf) as _sess:
-                    _repo = await _upsert_repo(
-                        _sess,
-                        name=result.repo_name,
-                        local_path=str(repo_path),
-                    )
-                    _repo_id = _repo.id
-                # Keep engine alive for the duration of generation — it will be
-                # disposed by _persist_result's own engine later.
-                return CostTracker(session_factory=sf, repo_id=_repo_id)
+        if not cost_declined:
+            # Build embedder + vector store
+            from repowise.core.persistence.vector_store import InMemoryVectorStore
+            from repowise.core.providers.embedding.base import MockEmbedder
 
+            embedder_impl: Any
+            if embedder_name_resolved == "gemini":
+                try:
+                    from repowise.core.providers.embedding.gemini import GeminiEmbedder
+
+                    embedder_impl = GeminiEmbedder()
+                except Exception:
+                    embedder_impl = MockEmbedder()
+            elif embedder_name_resolved == "openai":
+                try:
+                    from repowise.core.providers.embedding.openai import OpenAIEmbedder
+
+                    embedder_impl = OpenAIEmbedder()
+                except Exception:
+                    embedder_impl = MockEmbedder()
+            else:
+                embedder_impl = MockEmbedder()
+
+            lance_dir = repo_path / ".repowise" / "lancedb"
             try:
-                cost_tracker = run_async(_make_cost_tracker())
-            except Exception:
-                # Fallback to in-memory tracker if DB setup fails
-                cost_tracker = CostTracker()
+                from repowise.core.persistence.vector_store import LanceDBVectorStore
 
-            # Attach tracker to provider unconditionally (all providers now
-            # accept _cost_tracker as an attribute)
-            provider._cost_tracker = cost_tracker
+                lance_dir.mkdir(parents=True, exist_ok=True)
+                vector_store: Any = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
+            except ImportError:
+                vector_store = InMemoryVectorStore(embedder_impl)
 
-            generated_pages = run_async(
-                run_generation(
-                    repo_path=repo_path,
-                    parsed_files=result.parsed_files,
-                    source_map=result.source_map,
-                    graph_builder=result.graph_builder,
-                    repo_structure=result.repo_structure,
-                    git_meta_map=result.git_meta_map,
-                    llm_client=provider,
-                    embedder=embedder_impl,
-                    vector_store=vector_store,
-                    concurrency=concurrency,
-                    progress=gen_callback,
-                    resume=resume,
-                    cost_tracker=cost_tracker,
-                    generation_config=gen_config,
+            # Run generation via the pipeline's generation function
+            from repowise.core.pipeline import run_generation
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MaybeCountColumn(),
+                TimeElapsedColumn(),
+                TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
+                console=console,
+            ) as gen_progress:
+                gen_callback = RichProgressCallback(gen_progress, console)
+
+                # Construct a CostTracker backed by the real DB so every LLM call
+                # is persisted to the llm_costs table.  We need the repo_id from the
+                # database row that was created/upserted during _persist_result
+                # (which has not run yet), so we look it up or fall back to in-memory.
+                from repowise.core.generation.cost_tracker import CostTracker
+                from repowise.cli.helpers import get_db_url_for_repo
+                from repowise.core.persistence import (
+                    create_engine as _create_engine,
+                    create_session_factory as _create_sf,
+                    get_session as _get_session,
+                    init_db as _init_db,
+                    upsert_repository as _upsert_repo,
                 )
-            )
 
-        result.generated_pages = generated_pages
-        console.print(f"  [green]✓[/green] Generated [bold]{len(generated_pages)}[/bold] pages")
+                async def _make_cost_tracker() -> CostTracker:
+                    url = get_db_url_for_repo(repo_path)
+                    engine = _create_engine(url)
+                    await _init_db(engine)
+                    sf = _create_sf(engine)
+                    async with _get_session(sf) as _sess:
+                        _repo = await _upsert_repo(
+                            _sess,
+                            name=result.repo_name,
+                            local_path=str(repo_path),
+                        )
+                        _repo_id = _repo.id
+                    # Keep engine alive for the duration of generation — it will be
+                    # disposed by _persist_result's own engine later.
+                    return CostTracker(session_factory=sf, repo_id=_repo_id)
+
+                try:
+                    cost_tracker = run_async(_make_cost_tracker())
+                except Exception:
+                    # Fallback to in-memory tracker if DB setup fails
+                    cost_tracker = CostTracker()
+
+                # Attach tracker to provider unconditionally (all providers now
+                # accept _cost_tracker as an attribute)
+                provider._cost_tracker = cost_tracker
+
+                generated_pages = run_async(
+                    run_generation(
+                        repo_path=repo_path,
+                        parsed_files=result.parsed_files,
+                        source_map=result.source_map,
+                        graph_builder=result.graph_builder,
+                        repo_structure=result.repo_structure,
+                        git_meta_map=result.git_meta_map,
+                        llm_client=provider,
+                        embedder=embedder_impl,
+                        vector_store=vector_store,
+                        concurrency=concurrency,
+                        progress=gen_callback,
+                        resume=resume,
+                        cost_tracker=cost_tracker,
+                        generation_config=gen_config,
+                    )
+                )
+
+            result.generated_pages = generated_pages
+            console.print(f"  [green]✓[/green] Generated [bold]{len(generated_pages)}[/bold] pages")
 
     # ---- Persistence ----
-    if index_only:
+    # `cost_declined` short-circuits any further LLM work for the rest of
+    # this run, so persistence/state below treat it as index-only.
+    effective_index_only = index_only or cost_declined
+    if effective_index_only:
         print_phase_header(console, 3, total_phases, "Persistence", "Saving to database")
     else:
         print_phase_header(
@@ -1366,12 +1421,12 @@ def init_command(
     head = get_head_commit(repo_path)
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
-    base_state["docs_enabled"] = not index_only and provider is not None
-    if index_only or provider is None:
+    base_state["docs_enabled"] = not effective_index_only and provider is not None
+    if effective_index_only or provider is None:
         save_state(repo_path, base_state)
 
     # ---- State + config (full mode only) ----
-    if not index_only and provider:
+    if not effective_index_only and provider:
 
         async def _count_db_pages() -> int:
             from sqlalchemy import func as sa_func
@@ -1466,7 +1521,7 @@ def init_command(
     else:
         _lang_summary_final = str(len(result.languages))
 
-    if index_only:
+    if effective_index_only:
         metrics: list[tuple[str, str]] = [
             ("Files indexed", str(result.file_count)),
             ("Symbols", f"{result.symbol_count:,}"),
