@@ -7,7 +7,7 @@
  * adapters cast through the types below before passing data to components.
  */
 
-export type FreshnessStatus = "fresh" | "stale" | "outdated" | string;
+export type FreshnessStatus = "fresh" | "stale" | "outdated" | (string & {});
 
 export interface DocPage {
   id: string;

@@ -2,7 +2,6 @@ export * from "./graph-context-menu.js";
 export * from "./graph-ego-sidebar.js";
 export * from "./graph-legend.js";
 export * from "./graph-toolbar.js";
-export * from "./graph-tooltip.js";
 export * from "./graph-doc-panel.js";
 export * from "./graph-community-panel.js";
 export * from "./graph-inspection-panel.js";

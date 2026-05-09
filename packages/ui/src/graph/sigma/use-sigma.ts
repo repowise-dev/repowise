@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState, type RefObject } from "react";
+import { useRef, useEffect, useCallback, useState } from "react";
 import type Sigma from "sigma";
 import type Graph from "graphology";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
@@ -25,14 +25,19 @@ function rgbToHex(r: number, g: number, b: number): string {
   return "#" + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
 }
 
-const BG_R = 18, BG_G = 18, BG_B = 28;
+const THEME_COLORS = {
+  dark:  { bg: [18, 18, 28] as const, text: "#f5f5f7", subtitle: "#888888", tooltip: "#12121c" },
+  light: { bg: [250, 250, 252] as const, text: "#1a1a2e", subtitle: "#666666", tooltip: "#ffffff" },
+};
+
+let activeBg: readonly [number, number, number] = THEME_COLORS.dark.bg;
 
 function dimColor(hex: string, amount: number): string {
   const [r, g, b] = hexToRgb(hex);
   return rgbToHex(
-    Math.round(BG_R + (r - BG_R) * amount),
-    Math.round(BG_G + (g - BG_G) * amount),
-    Math.round(BG_B + (b - BG_B) * amount),
+    Math.round(activeBg[0] + (r - activeBg[0]) * amount),
+    Math.round(activeBg[1] + (g - activeBg[1]) * amount),
+    Math.round(activeBg[2] + (b - activeBg[2]) * amount),
   );
 }
 
@@ -66,7 +71,7 @@ function tintColor(hex: string, tintHex: string, amount: number): string {
 }
 
 export interface UseSigmaOptions {
-  containerRef: RefObject<HTMLDivElement | null>;
+  container: HTMLDivElement | null;
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
   selectedNodeId: string | null;
   hoveredNodeId: string | null;
@@ -90,6 +95,8 @@ export interface UseSigmaReturn {
 }
 
 export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
+  activeBg = (THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark).bg;
+
   const sigmaRef = useRef<Sigma | null>(null);
   const [sigmaReady, setSigmaReady] = useState<Sigma | null>(null);
   const selectedRef = useRef<string | null>(null);
@@ -163,7 +170,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
 
   // Initialize Sigma (dynamic import to avoid SSR WebGL crash)
   useEffect(() => {
-    const container = options.containerRef.current;
+    const container = options.container;
     if (!container) return;
 
     let cancelled = false;
@@ -206,6 +213,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           const label = data.label;
           if (!label) return;
 
+          const theme = THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark;
           const extra = data as Record<string, unknown>;
           const fullPath = (extra.fullPath as string) ?? undefined;
 
@@ -234,7 +242,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           const x = data.x;
           const y = data.y - nodeSize - 12 - height / 2;
 
-          context.fillStyle = "#12121c";
+          context.fillStyle = theme.tooltip;
           context.beginPath();
           context.roundRect(x - width / 2, y - height / 2, width, height, radius);
           context.fill();
@@ -246,12 +254,12 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           context.textBaseline = "middle";
 
           const labelY = showPath ? y - (lineGap + secondarySize) / 2 : y;
-          context.fillStyle = "#f5f5f7";
+          context.fillStyle = theme.text;
           context.font = `500 ${primarySize}px ${font}`;
           context.fillText(label, x, labelY);
 
           if (showPath) {
-            context.fillStyle = "#888888";
+            context.fillStyle = theme.subtitle;
             context.font = `400 ${secondarySize}px ${font}`;
             context.fillText(
               fullPath!,
@@ -372,8 +380,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
       sigmaRef.current = null;
       setSigmaReady(null);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options.containerRef.current]);
+  }, [options.container]);
 
   // Update graph when it changes
   useEffect(() => {

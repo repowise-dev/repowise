@@ -981,7 +981,7 @@ def _add_rust_router_edges(
 # files are never imported via PHP/JS imports, so the static graph reports
 # ``in_degree=0`` and the dead-code analyzer flags them as unreachable.
 #
-# We attach an ``external:typo3-core`` synthetic source to each convention
+# We attach a ``framework:typo3-core`` synthetic source to each convention
 # file present in an extension. ``Configuration/JavaScriptModules.php`` is
 # also parsed to add edges to the JS modules it registers (CKEditor plugins,
 # backend modules, etc.).
@@ -1155,7 +1155,7 @@ def _add_typo3_edges(
     """Add framework edges for each detected TYPO3 extension.
 
     Edges added:
-      - ``external:typo3-core`` → each convention file present in the extension.
+      - ``framework:typo3-core`` → each convention file present in the extension.
       - ``Configuration/JavaScriptModules.php`` → each JS file it registers.
     """
     count = 0

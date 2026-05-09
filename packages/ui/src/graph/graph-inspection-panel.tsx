@@ -18,13 +18,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { languageColor } from "../lib/confidence";
 import { formatNumber } from "../lib/format";
 import type { FileNodeData, ModuleNodeData, GraphEdge } from "./elk-layout";
-
-const COMMUNITY_COLORS = [
-  "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#3b82f6", "#a855f7",
-  "#14b8a6", "#f97316", "#84cc16", "#06b6d4", "#e11d48", "#8b5cf6",
-  "#22c55e", "#eab308", "#0ea5e9", "#d946ef", "#ef4444", "#78716c",
-  "#64748b", "#0891b2", "#059669", "#b45309", "#7c3aed", "#db2777",
-];
+import { COMMUNITY_COLORS } from "./sigma/constants";
 
 interface NeighborInfo {
   id: string;
@@ -54,7 +48,7 @@ export interface GraphInspectionPanelProps {
 }
 
 function isModuleData(data: FileNodeData | ModuleNodeData): data is ModuleNodeData {
-  return "fileCount" in data && !("pagerank" in data && "betweenness" in data && "language" in data);
+  return data.nodeType === "module";
 }
 
 function percentileOf(value: number, sorted: number[]): number {

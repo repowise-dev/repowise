@@ -15,6 +15,8 @@ interface ChatMessageProps {
   assistantAvatarSrc?: string;
   /** Forwarded to `SourceCitations` so consumers can customise the link path. */
   buildCitationHref?: (source: SourceReference) => string;
+  /** Forwarded to `SourceCitations` for route-agnostic link generation. */
+  linkPrefix?: string;
 }
 
 export function ChatMessage({
@@ -23,6 +25,7 @@ export function ChatMessage({
   onViewArtifact,
   assistantAvatarSrc = "/repowise-logo.png",
   buildCitationHref,
+  linkPrefix,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
 
@@ -93,6 +96,7 @@ export function ChatMessage({
               <SourceCitations
                 toolCalls={message.toolCalls}
                 repoId={repoId}
+                {...(linkPrefix ? { linkPrefix } : {})}
                 {...(buildCitationHref ? { buildHref: buildCitationHref } : {})}
               />
             )}

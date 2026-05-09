@@ -21,6 +21,9 @@ export default defineConfig({
       "@repowise-dev/types/dead-code": path.resolve(__dirname, "../types/src/dead-code.ts"),
       "@repowise-dev/types/symbols": path.resolve(__dirname, "../types/src/symbols.ts"),
       "@repowise-dev/types/chat": path.resolve(__dirname, "../types/src/chat.ts"),
+      "@repowise-dev/types/blast-radius": path.resolve(__dirname, "../types/src/blast-radius.ts"),
+      "@repowise-dev/types/jobs": path.resolve(__dirname, "../types/src/jobs.ts"),
+      "@repowise-dev/types/settings": path.resolve(__dirname, "../types/src/settings.ts"),
     },
   },
 });

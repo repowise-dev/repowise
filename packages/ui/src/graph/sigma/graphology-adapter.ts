@@ -121,8 +121,9 @@ export function fileGraphToGraphology(
     const centroidY = radius * Math.sin(angle);
 
     for (const node of members) {
-      const x = centroidX + (Math.random() - 0.5) * jitter;
-      const y = centroidY + (Math.random() - 0.5) * jitter;
+      const hash = simpleHash(node.node_id);
+      const x = centroidX + ((hash % 1000) / 1000 - 0.5) * jitter;
+      const y = centroidY + (((hash >> 10) % 1000) / 1000 - 0.5) * jitter;
 
       let baseSize: number;
       if (node.is_entry_point) {
@@ -234,7 +235,8 @@ export function moduleGraphToGraphology(
   if (options?.communities) {
     for (const community of options.communities) {
       for (const mod of graph.nodes) {
-        if (community.top_file.startsWith(mod.module_id)) {
+        if (community.top_file === mod.module_id ||
+            community.top_file.startsWith(mod.module_id + "/")) {
           moduleCommunity.set(mod.module_id, community.community_id);
         }
       }

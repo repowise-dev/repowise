@@ -1,3 +1,10 @@
+import type { HealthScoreComponent } from "@repowise-dev/ui/dashboard/health-score-ring";
+
+export interface HealthScoreResult {
+  score: number;
+  components: HealthScoreComponent[];
+}
+
 /** Compute composite health score from available repo data */
 export function computeHealthScore(params: {
   docCoveragePct: number;
@@ -8,7 +15,7 @@ export function computeHealthScore(params: {
   totalFiles: number;
   siloCount: number;
   totalModules: number;
-}): number {
+}): HealthScoreResult {
   const {
     docCoveragePct,
     freshnessScore,
@@ -28,7 +35,7 @@ export function computeHealthScore(params: {
 
   // Dead code: lower is better, weight 20%
   const deadRatio = symbolCount > 0 ? deadExportCount / symbolCount : 0;
-  const deadScore = Math.max(0, (1 - deadRatio * 5) * 100); // 20% dead = 0 score
+  const deadScore = Math.max(0, (1 - deadRatio * 5) * 100);
 
   // Hotspot density: lower is better, weight 15%
   const hotspotRatio = totalFiles > 0 ? hotspotCount / totalFiles : 0;
@@ -46,7 +53,46 @@ export function computeHealthScore(params: {
     siloScore * 0.15
   );
 
-  return Math.max(0, Math.min(100, composite));
+  return {
+    score: Math.max(0, Math.min(100, composite)),
+    components: [
+      {
+        key: "doc_coverage",
+        label: "Doc Coverage",
+        weight: 0.25,
+        score: Math.round(docScore),
+        detail: `${Math.round(docCoveragePct)}% of symbols documented`,
+      },
+      {
+        key: "freshness",
+        label: "Freshness",
+        weight: 0.25,
+        score: Math.round(freshScore),
+        detail: `Based on doc-to-code drift analysis`,
+      },
+      {
+        key: "dead_code",
+        label: "Dead Code",
+        weight: 0.20,
+        score: Math.round(deadScore),
+        detail: `${deadExportCount} dead exports out of ${symbolCount} symbols`,
+      },
+      {
+        key: "hotspot_density",
+        label: "Hotspot Density",
+        weight: 0.15,
+        score: Math.round(hotspotScore),
+        detail: `${hotspotCount} hotspots across ${totalFiles} files`,
+      },
+      {
+        key: "knowledge_silos",
+        label: "Knowledge Silos",
+        weight: 0.15,
+        score: Math.round(siloScore),
+        detail: `${siloCount} silo${siloCount === 1 ? "" : "s"} out of ${totalModules} modules`,
+      },
+    ],
+  };
 }
 
 /** Aggregate language distribution from graph nodes */

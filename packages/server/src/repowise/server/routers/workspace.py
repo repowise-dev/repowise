@@ -54,14 +54,13 @@ def _query_top_language(db_path: Path) -> str:
     if not db_path.exists():
         return "unknown"
     try:
-        conn = sqlite3.connect(str(db_path))
-        row = conn.execute(
-            "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
-            "WHERE language IS NOT NULL AND language != '' "
-            "GROUP BY language ORDER BY cnt DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        return row[0] if row else "unknown"
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
+                "WHERE language IS NOT NULL AND language != '' "
+                "GROUP BY language ORDER BY cnt DESC LIMIT 1"
+            ).fetchone()
+            return row[0] if row else "unknown"
     except Exception:
         return "unknown"
 

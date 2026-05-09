@@ -54,6 +54,7 @@ jobs:
         run: |
           npm run type-check --workspace @repowise-dev/types
           npm run type-check --workspace @repowise-dev/ui
+          npm run test --workspace @repowise-dev/types
           npm run test --workspace @repowise-dev/ui
 
       - name: Compute prerelease version

@@ -4,7 +4,8 @@
  * Freshness: "fresh" | "stale" | "outdated"
  */
 
-export type FreshnessStatus = "fresh" | "stale" | "outdated";
+import type { FreshnessStatus } from "@repowise-dev/types/docs";
+export type { FreshnessStatus };
 
 export function scoreToStatus(score: number): FreshnessStatus {
   if (score >= 0.8) return "fresh";
@@ -20,6 +21,7 @@ export function statusColor(status: FreshnessStatus): string {
     case "stale":
       return "var(--color-confidence-stale)";
     case "outdated":
+    default:
       return "var(--color-confidence-outdated)";
   }
 }
@@ -32,6 +34,7 @@ export function statusTextClass(status: FreshnessStatus): string {
     case "stale":
       return "text-yellow-500";
     case "outdated":
+    default:
       return "text-red-500";
   }
 }
@@ -44,6 +47,7 @@ export function statusBadgeClasses(status: FreshnessStatus): string {
     case "stale":
       return "bg-yellow-500/10 text-yellow-500 border-yellow-500/20";
     case "outdated":
+    default:
       return "bg-red-500/10 text-red-500 border-red-500/20";
   }
 }
@@ -56,6 +60,7 @@ export function statusLabel(status: FreshnessStatus): string {
     case "stale":
       return "Stale";
     case "outdated":
+    default:
       return "Outdated";
   }
 }

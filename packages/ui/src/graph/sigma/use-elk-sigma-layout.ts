@@ -25,6 +25,7 @@ export interface UseElkSigmaLayoutOptions {
   moduleNodes?: ModuleNodeResponse[] | undefined;
   moduleEdges?: ModuleEdgeResponse[] | undefined;
   viewMode: ViewMode;
+  onSkipped?: (reason: string) => void;
 }
 
 export interface UseElkSigmaLayoutReturn {
@@ -38,16 +39,18 @@ export function useElkSigmaLayout(
   const [isComputing, setIsComputing] = useState(false);
   const computeIdRef = useRef(0);
 
+  const {
+    graph,
+    sigma,
+    enabled,
+    fileNodes,
+    fileEdges,
+    moduleNodes,
+    moduleEdges,
+    viewMode,
+  } = options;
+
   const compute = useCallback(() => {
-    const {
-      graph,
-      sigma,
-      fileNodes,
-      fileEdges,
-      moduleNodes,
-      moduleEdges,
-      viewMode,
-    } = options;
     if (!graph || graph.order === 0 || !sigma) return;
 
     const computeId = ++computeIdRef.current;
@@ -89,14 +92,17 @@ export function useElkSigmaLayout(
     };
 
     void run();
-  }, [options]);
+  }, [graph, sigma, fileNodes, fileEdges, moduleNodes, moduleEdges, viewMode]);
 
   useEffect(() => {
-    // Cap at 500 nodes — elkjs bundled runs on the main thread and will freeze the UI for larger graphs
-    if (options.enabled && options.graph && options.graph.order > 0 && options.graph.order <= 500) {
+    if (enabled && graph && graph.order > 0) {
+      if (graph.order > 500) {
+        options.onSkipped?.("Graph too large for hierarchical layout (>500 nodes)");
+        return;
+      }
       compute();
     }
-  }, [options.enabled, options.graph, compute]);
+  }, [enabled, graph, compute, options.onSkipped]);
 
   return { isComputing, recompute: compute };
 }

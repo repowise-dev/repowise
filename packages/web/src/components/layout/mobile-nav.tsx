@@ -15,7 +15,6 @@ import {
   Search,
   GitBranch,
   Code2,
-
   Users,
   Flame,
   Trash2,
@@ -49,7 +48,6 @@ function repoNavItems(repoId: string) {
     { label: "Search", href: `/repos/${repoId}/search`, icon: Search },
     { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
     { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
-
     { label: "Ownership", href: `/repos/${repoId}/ownership`, icon: Users },
     { label: "Hotspots", href: `/repos/${repoId}/hotspots`, icon: Flame },
     { label: "Dead Code", href: `/repos/${repoId}/dead-code`, icon: Trash2 },

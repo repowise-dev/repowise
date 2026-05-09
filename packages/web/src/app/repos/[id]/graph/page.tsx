@@ -18,7 +18,7 @@ export default function GraphPage({
 
   const viewModeParam = searchParams.get("viewMode");
   const initialViewMode = VALID_VIEW_MODES.has(viewModeParam ?? "")
-    ? (viewModeParam as "module" | "full" | "architecture" | "dead" | "hotfiles")
+    ? (viewModeParam as "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified")
     : undefined;
   const initialNode = searchParams.get("node");
 

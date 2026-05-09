@@ -10,7 +10,6 @@ export interface GraphContextValue {
   highlightedEdges: Set<string>;
   colorMode: ColorMode;
   viewMode: ViewMode;
-  riskScores: Map<string, number>;
   hoveredNodeId: string | null;
   connectedNodeIds: Set<string>;
   connectedEdgeIds: Set<string>;
@@ -32,7 +31,6 @@ const defaultValue: GraphContextValue = {
   highlightedEdges: new Set(),
   colorMode: "language",
   viewMode: "module",
-  riskScores: new Map(),
   hoveredNodeId: null,
   connectedNodeIds: new Set(),
   connectedEdgeIds: new Set(),

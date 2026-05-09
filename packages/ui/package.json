@@ -6,6 +6,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "files": ["src", "styles"],
   "sideEffects": [
     "./styles/globals.css",
     "**/*.css"

@@ -17,9 +17,9 @@ export type SymbolKind =
   | "module"
   | "variable"
   | "type"
-  | string;
+  | (string & {});
 
-export type SymbolVisibility = "public" | "private" | "protected" | string;
+export type SymbolVisibility = "public" | "private" | "protected" | (string & {});
 
 /** Renamed `CodeSymbol` to avoid shadowing the global `Symbol`. */
 export interface CodeSymbol {

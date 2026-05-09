@@ -2,6 +2,8 @@
 
 import {
   useRef,
+  useState,
+  useCallback,
   forwardRef,
   useImperativeHandle,
   useEffect,
@@ -59,10 +61,13 @@ export interface SigmaCanvasHandle {
 
 export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
   function SigmaCanvas(props, ref) {
-    const containerRef = useRef<HTMLDivElement>(null);
+    const [container, setContainer] = useState<HTMLDivElement | null>(null);
+    const containerCallback = useCallback((node: HTMLDivElement | null) => {
+      setContainer(node);
+    }, []);
 
     const { sigma, focusNode, fitView, zoomIn, zoomOut } = useSigmaRenderer({
-      containerRef,
+      container,
       graph: props.graph,
       selectedNodeId: props.selectedNodeId,
       hoveredNodeId: props.hoveredNodeId,
@@ -94,6 +99,20 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       viewMode: props.viewMode,
     });
 
+    // Keep callback refs up to date so Sigma event handlers always use latest props
+    const onNodeClickRef = useRef(props.onNodeClick);
+    const onStageClickRef = useRef(props.onStageClick);
+    const onNodeHoverRef = useRef(props.onNodeHover);
+    const onNodeContextMenuRef = useRef(props.onNodeContextMenu);
+    const onNodeDoubleClickRef = useRef(props.onNodeDoubleClick);
+    useEffect(() => {
+      onNodeClickRef.current = props.onNodeClick;
+      onStageClickRef.current = props.onStageClick;
+      onNodeHoverRef.current = props.onNodeHover;
+      onNodeContextMenuRef.current = props.onNodeContextMenu;
+      onNodeDoubleClickRef.current = props.onNodeDoubleClick;
+    });
+
     // Wire Sigma events
     useEffect(() => {
       if (!sigma) return;
@@ -101,22 +120,22 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       const handleClickNode = ({ node }: { node: string }) => {
         const graph = sigma.getGraph();
         const attrs = graph.getNodeAttributes(node);
-        props.onNodeClick?.(node, attrs.nodeType);
+        onNodeClickRef.current?.(node, attrs.nodeType);
       };
 
       const handleClickStage = () => {
-        props.onStageClick?.();
+        onStageClickRef.current?.();
       };
 
       const handleEnterNode = ({ node }: { node: string }) => {
-        props.onNodeHover?.(node);
-        if (containerRef.current)
-          containerRef.current.style.cursor = "pointer";
+        onNodeHoverRef.current?.(node);
+        if (container)
+          container.style.cursor = "pointer";
       };
 
       const handleLeaveNode = () => {
-        props.onNodeHover?.(null);
-        if (containerRef.current) containerRef.current.style.cursor = "grab";
+        onNodeHoverRef.current?.(null);
+        if (container) container.style.cursor = "grab";
       };
 
       const handleRightClickNode = ({
@@ -130,14 +149,14 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
         if (event.original instanceof MouseEvent) {
           const graph = sigma.getGraph();
           const attrs = graph.getNodeAttributes(node);
-          props.onNodeContextMenu?.(event.original, node, attrs.nodeType);
+          onNodeContextMenuRef.current?.(event.original, node, attrs.nodeType);
         }
       };
 
       const handleDoubleClickNode = ({ node }: { node: string }) => {
         const graph = sigma.getGraph();
         const attrs = graph.getNodeAttributes(node);
-        props.onNodeDoubleClick?.(node, attrs.nodeType);
+        onNodeDoubleClickRef.current?.(node, attrs.nodeType);
       };
 
       sigma.on("clickNode", handleClickNode);
@@ -155,8 +174,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
         sigma.off("rightClickNode", handleRightClickNode);
         sigma.off("doubleClickNode", handleDoubleClickNode);
       };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sigma]);
+    }, [sigma, container]);
 
     useImperativeHandle(ref, () => ({
       focusNode,
@@ -168,7 +186,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
     return (
       <div className="relative w-full h-full">
         <div
-          ref={containerRef}
+          ref={containerCallback}
           className="w-full h-full"
           style={{
             background:

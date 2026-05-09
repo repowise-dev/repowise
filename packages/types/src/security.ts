@@ -6,7 +6,7 @@
  * already used by the OSS web `listSecurityFindings` API client.
  */
 
-export type SecuritySeverity = "high" | "med" | "low" | string;
+export type SecuritySeverity = "high" | "med" | "low" | (string & {});
 
 export interface SecurityFinding {
   id: number;

@@ -73,7 +73,7 @@ export interface GraphFlowProps {
   }) => ReactNode;
 }
 
-function GraphFlowInner(props: GraphFlowProps) {
+export function GraphFlow(props: GraphFlowProps) {
   const {
     moduleGraph,
     isLoadingModuleGraph,
@@ -99,6 +99,7 @@ function GraphFlowInner(props: GraphFlowProps) {
   } = props;
 
   const sigmaRef = useRef<SigmaCanvasHandle>(null);
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // ---- Core state ----
   const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "module");
@@ -384,6 +385,7 @@ function GraphFlowInner(props: GraphFlowProps) {
     sigmaGraph.forEachNode((nodeId, attrs) => {
       if (attrs.nodeType === "file") {
         const fileData: FileNodeData = {
+          nodeType: "file",
           label: attrs.label,
           fullPath: attrs.fullPath,
           language: attrs.language,
@@ -395,13 +397,14 @@ function GraphFlowInner(props: GraphFlowProps) {
           isEntryPoint: attrs.isEntryPoint,
           hasDoc: attrs.hasDoc,
         };
-        if (attrs.isHotspot) (fileData as Record<string, unknown>).isHotspot = true;
-        if (attrs.isDead) (fileData as Record<string, unknown>).isDead = true;
+        if (attrs.isHotspot) fileData.isHotspot = true;
+        if (attrs.isDead) fileData.isDead = true;
         fileMap.set(nodeId, fileData);
         prs.push(attrs.pagerank);
         bts.push(attrs.betweenness);
       } else if (attrs.nodeType === "module") {
         modMap.set(nodeId, {
+          nodeType: "module",
           label: attrs.label,
           fullPath: attrs.fullPath,
           fileCount: attrs.fileCount ?? 0,
@@ -551,10 +554,12 @@ function GraphFlowInner(props: GraphFlowProps) {
       onViewModeChange?.("full");
     }
 
-    setTimeout(() => {
+    clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = setTimeout(() => {
       const firstNode = flow.trace[0];
       if (firstNode) sigmaRef.current?.focusNode(firstNode);
     }, 800);
+    return () => clearTimeout(focusTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFlowIdx, executionFlows]);
 
@@ -565,7 +570,6 @@ function GraphFlowInner(props: GraphFlowProps) {
       highlightedEdges,
       colorMode,
       viewMode,
-      riskScores: new Map(),
       hoveredNodeId,
       connectedNodeIds,
       connectedEdgeIds,
@@ -691,7 +695,8 @@ function GraphFlowInner(props: GraphFlowProps) {
         setModulePath([]);
         onViewModeChange?.("full");
       }
-      setTimeout(() => {
+      clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = setTimeout(() => {
         if (pathNodes.length > 0) {
           sigmaRef.current?.focusNode(pathNodes[0]!);
         }
@@ -972,7 +977,13 @@ function GraphFlowInner(props: GraphFlowProps) {
             colorMode={colorMode}
             onColorModeChange={setColorMode}
             hideTests={hideTests}
-            onHideTestsChange={(v) => handleSignalToggle("hideTests")}
+            onHideTestsChange={(v) => {
+              setActiveSignals(prev => {
+                const next = new Set(prev);
+                v ? next.add("hideTests") : next.delete("hideTests");
+                return next;
+              });
+            }}
             onFitView={handleFitView}
             showPathFinder={showPathFinder}
             onTogglePathFinder={() => setShowPathFinder((s) => !s)}
@@ -1110,6 +1121,3 @@ function GraphFlowInner(props: GraphFlowProps) {
   );
 }
 
-export function GraphFlow(props: GraphFlowProps) {
-  return <GraphFlowInner {...props} />;
-}

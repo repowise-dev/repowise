@@ -57,7 +57,7 @@ export interface DecisionCreateInput {
 }
 
 export interface DecisionStatusUpdate {
-  status: DecisionStatus | string;
+  status: DecisionStatus;
   superseded_by?: string;
 }
 

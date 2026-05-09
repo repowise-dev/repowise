@@ -9,21 +9,17 @@ export interface BreadcrumbSegment {
 
 interface BreadcrumbProps {
   segments: BreadcrumbSegment[];
-  LinkComponent?: React.ComponentType<{
+  LinkComponent?: React.ElementType<{
     href: string;
     className?: string;
     children: React.ReactNode;
   }>;
 }
 
-export function Breadcrumb({ segments, LinkComponent = "a" as never }: BreadcrumbProps) {
+export function Breadcrumb({ segments, LinkComponent = "a" }: BreadcrumbProps) {
   if (segments.length === 0) return null;
 
-  const Link = LinkComponent as React.ComponentType<{
-    href: string;
-    className?: string;
-    children: React.ReactNode;
-  }>;
+  const Link = LinkComponent;
 
   return (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-sm">

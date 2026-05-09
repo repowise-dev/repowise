@@ -59,6 +59,11 @@ router = APIRouter(
 )
 
 
+def _escape_like(s: str) -> str:
+    """Escape special characters for SQL LIKE patterns."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _parse_imported_names(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -103,6 +108,10 @@ async def module_graph(
     total = len(nodes) or 1
     monorepo_roots: set[str] = set()
     for seg, seg_nodes in first_level.items():
+        # When a single top-level directory contains >70% of all files, treat it
+        # as a monorepo root and group by the *second* path segment instead.
+        # Threshold chosen empirically: catches src/-heavy repos without
+        # splitting balanced monorepos like packages/a + packages/b (each ~50%).
         if len(seg_nodes) / total > 0.70:
             monorepo_roots.add(seg)
 
@@ -619,7 +628,7 @@ async def search_nodes(
         select(GraphNode)
         .where(
             GraphNode.repository_id == repo_id,
-            GraphNode.node_id.ilike(f"%{q}%"),
+            GraphNode.node_id.ilike(f"%{_escape_like(q)}%"),
         )
         .order_by(GraphNode.symbol_count.desc(), GraphNode.pagerank.desc())
         .limit(limit)

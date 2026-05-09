@@ -26,6 +26,7 @@ const elk = new ELK();
 // ---- Types ----
 
 export interface FileNodeData {
+  nodeType: "file";
   label: string;
   fullPath: string;
   language: string;
@@ -42,6 +43,7 @@ export interface FileNodeData {
 }
 
 export interface ModuleNodeData {
+  nodeType: "module";
   label: string;
   fullPath: string;
   fileCount: number;

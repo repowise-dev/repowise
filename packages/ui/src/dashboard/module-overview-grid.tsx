@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { Network } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Network, ChevronDown, ChevronUp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { cn } from "../lib/cn";
 import { formatNumber } from "../lib/format";
@@ -12,10 +12,13 @@ interface ModuleOverviewGridProps {
   edges: ModuleEdge[];
   repoId: string;
   linkPrefix?: string;
+  /** Number of columns in the first visible row. Defaults to 4. */
+  initialVisibleCols?: number;
 }
 
-export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix }: ModuleOverviewGridProps) {
+export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix, initialVisibleCols = 4 }: ModuleOverviewGridProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
+  const [expanded, setExpanded] = useState(false);
   const modules = useMemo(() => {
     const edgeCounts = new Map<string, number>();
     for (const e of edges) {
@@ -34,6 +37,9 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix }: ModuleO
 
   if (modules.length === 0) return null;
 
+  const hasMore = modules.length > initialVisibleCols;
+  const visibleModules = expanded ? modules : modules.slice(0, initialVisibleCols);
+
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -41,6 +47,9 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix }: ModuleO
           <span className="flex items-center gap-2">
             <Network className="h-4 w-4 text-[var(--color-text-secondary)]" />
             Architecture
+            <span className="text-[10px] font-normal text-[var(--color-text-tertiary)]">
+              {modules.length} modules
+            </span>
           </span>
           <a
             href={`${prefix}/graph`}
@@ -52,7 +61,7 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix }: ModuleO
       </CardHeader>
       <CardContent className="pt-0">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-          {modules.map((m) => {
+          {visibleModules.map((m) => {
             const coverageColor =
               m.doc_coverage_pct >= 70
                 ? "bg-green-500"
@@ -101,6 +110,25 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix }: ModuleO
             );
           })}
         </div>
+        {hasMore && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-2 w-full flex items-center justify-center gap-1 rounded-md border border-[var(--color-border-default)] py-1.5 text-[11px] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors"
+          >
+            {expanded ? (
+              <>
+                <ChevronUp className="h-3 w-3" />
+                Show less
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-3 w-3" />
+                Show all {modules.length} modules
+              </>
+            )}
+          </button>
+        )}
       </CardContent>
     </Card>
   );

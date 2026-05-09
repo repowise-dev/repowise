@@ -10,6 +10,7 @@
 import { useState } from "react";
 import { History, Plus, Trash2 } from "lucide-react";
 import { cn } from "../lib/cn";
+import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "@repowise-dev/types/chat";
 
 export interface ConversationHistoryProps {
@@ -21,18 +22,6 @@ export interface ConversationHistoryProps {
   onDelete: (id: string) => void | Promise<void>;
   onNew: () => void;
   className?: string;
-}
-
-function formatRelativeTime(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(dateStr).toLocaleDateString();
 }
 
 export function ConversationHistory({

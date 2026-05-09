@@ -73,6 +73,8 @@ export interface ChatInterfaceProps {
   assistantAvatarSrc?: string;
   /** Forwarded to `SourceCitations` for href customisation. */
   buildCitationHref?: (source: SourceReference) => string;
+  /** Forwarded to `SourceCitations` for route-agnostic link generation. */
+  linkPrefix?: string;
   /** Logo shown above the empty-state heading. */
   emptyStateLogoSrc?: string;
   /** Override default suggestion chips. */
@@ -91,6 +93,7 @@ export function ChatInterface({
   historySlot,
   assistantAvatarSrc,
   buildCitationHref,
+  linkPrefix,
   emptyStateLogoSrc = "/repowise-logo.png",
   suggestions = DEFAULT_SUGGESTIONS,
 }: ChatInterfaceProps) {
@@ -230,6 +233,7 @@ export function ChatInterface({
                   onViewArtifact={handleViewArtifact}
                   {...(assistantAvatarSrc ? { assistantAvatarSrc } : {})}
                   {...(buildCitationHref ? { buildCitationHref } : {})}
+                  {...(linkPrefix ? { linkPrefix } : {})}
                 />
               ))}
               {error && (

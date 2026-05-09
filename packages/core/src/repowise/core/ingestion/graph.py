@@ -436,6 +436,7 @@ class GraphBuilder:
     async def persist(self, db_path: Path, repo_id: str) -> None:
         """Persist the graph to an SQLite database."""
         import aiosqlite
+        import sqlite3
 
         pr = self.pagerank()
         bc = self.betweenness_centrality()
@@ -470,7 +471,7 @@ class GraphBuilder:
                 await db.execute(
                     "ALTER TABLE graph_nodes ADD COLUMN community_id INTEGER DEFAULT 0"
                 )
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
 
             node_rows = [

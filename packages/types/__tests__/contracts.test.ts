@@ -147,9 +147,9 @@ describe("Heritage relation shape", () => {
 });
 
 describe("SecurityFinding canonical shape", () => {
-  it("severity is the three-literal union widened to string", () => {
+  it("severity is the three-literal union with string & {} for autocomplete", () => {
     expectTypeOf<SecuritySeverity>().toEqualTypeOf<
-      "high" | "med" | "low" | string
+      "high" | "med" | "low" | (string & {})
     >();
   });
 

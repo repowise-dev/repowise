@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { Badge } from "../ui/badge";
 import type {
   DecisionRecord,
@@ -41,6 +40,7 @@ export interface DecisionsTableProps {
   /** Used to build the "View" link target for each row. */
   repoId: string;
   linkPrefix?: string;
+  LinkComponent?: React.ElementType<{ href: string; className?: string; children: React.ReactNode }>;
   /** Truthy when the most recent fetch errored; an inline retry is rendered. */
   error?: unknown;
   /** Truthy while a fetch is in flight; suppresses the empty-state message. */
@@ -55,11 +55,13 @@ export function DecisionsTable({
   onFiltersChange,
   repoId,
   linkPrefix,
+  LinkComponent = "a",
   error,
   isLoading,
   onRetry,
 }: DecisionsTableProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
+  const Link = LinkComponent;
   return (
     <div className="space-y-4">
       {/* Filters */}

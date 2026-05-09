@@ -113,7 +113,7 @@ export default async function OverviewPage({ params }: Props) {
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
       {/* ── Hero: Health Score + Repo Info + Quick Actions ── */}
       <div className="flex flex-col sm:flex-row items-start gap-6">
-        <HealthScoreRing score={healthScore} />
+        <HealthScoreRing score={healthScore.score} components={healthScore.components} />
 
         <div className="flex-1 min-w-0 space-y-3">
           <div>

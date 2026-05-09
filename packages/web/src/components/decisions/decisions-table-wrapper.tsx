@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import useSWR from "swr";
+import Link from "next/link";
 import {
   DecisionsTable,
   type DecisionsTableFilters,
@@ -41,6 +42,7 @@ export function DecisionsTableWrapper({
       filters={filters}
       onFiltersChange={setFilters}
       repoId={repoId}
+      LinkComponent={Link}
       error={error}
       isLoading={isLoading}
       onRetry={() => mutate()}

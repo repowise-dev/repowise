@@ -28,9 +28,11 @@ export function useFA2Layout(
 ): UseFA2LayoutReturn {
   const layoutRef = useRef<FA2LayoutType | null>(null);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelledRef = useRef(false);
   const [isRunning, setIsRunning] = useState(false);
 
   const killLayout = useCallback(() => {
+    cancelledRef.current = true;
     if (layoutTimeoutRef.current) {
       clearTimeout(layoutTimeoutRef.current);
       layoutTimeoutRef.current = null;
@@ -44,6 +46,7 @@ export function useFA2Layout(
   const runLayout = useCallback(
     (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
       killLayout();
+      cancelledRef.current = false;
 
       (async () => {
         const [{ default: FA2Layout }, { default: forceAtlas2 }] =
@@ -51,6 +54,8 @@ export function useFA2Layout(
             import("graphology-layout-forceatlas2/worker"),
             import("graphology-layout-forceatlas2"),
           ]);
+
+        if (cancelledRef.current) return;
 
         const inferred = forceAtlas2.inferSettings(graph);
         const settings = { ...inferred, ...getFA2Settings(graph.order) };
