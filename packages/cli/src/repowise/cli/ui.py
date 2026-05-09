@@ -1187,11 +1187,25 @@ class RichProgressCallback:
         style = style_map.get(level, "")
         # Insight lines (indented with →) get special formatting
         if text.lstrip().startswith("→"):
-            self._progress.console.print(f"  [dim]{text}[/dim]")
+            line = f"  [dim]{text}[/dim]"
         elif style:
-            self._progress.console.print(f"  [{style}]{text}[/{style}]")
+            line = f"  [{style}]{text}[/{style}]"
         else:
-            self._progress.console.print(f"  {text}")
+            line = f"  {text}"
+
+        # Print under the Live lock so the line lands cleanly above the
+        # progress region instead of interleaving with still-rendering
+        # spinners (issue: phase summary lines interleaved with bars).
+        live = getattr(self._progress, "live", None)
+        if live is not None:
+            try:
+                with live._lock:
+                    self._progress.console.print(line)
+                self._progress.refresh()
+                return
+            except Exception:
+                pass
+        self._progress.console.print(line)
 
     def set_cost(self, total_cost: float) -> None:
         """Update the live cost display on all active progress tasks."""

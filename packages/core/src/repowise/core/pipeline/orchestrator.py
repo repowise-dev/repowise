@@ -667,13 +667,21 @@ async def _run_dead_code_analysis(
     try:
         from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 
+        # Four detectors run sequentially inside analyze(); drive a
+        # determinate bar so users see progress instead of "0".
+        _DEAD_CODE_STEPS = 4
         if progress:
-            progress.on_phase_start("dead_code", None)
+            progress.on_phase_start("dead_code", _DEAD_CODE_STEPS)
 
         analyzer = DeadCodeAnalyzer(
             graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
         )
-        report = analyzer.analyze()
+
+        def _step(_stage: str) -> None:
+            if progress:
+                progress.on_item_done("dead_code")
+
+        report = await asyncio.to_thread(analyzer.analyze, None, on_step=_step)
 
         if progress:
             unreachable = sum(1 for f in report.findings if f.kind.value == "unreachable_file")
@@ -706,8 +714,11 @@ async def _run_decision_extraction(
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
+        # Three sources run concurrently inside extract_all(); drive a
+        # determinate bar so users see live progress.
+        _DECISION_STEPS = 3
         if progress:
-            progress.on_phase_start("decisions", None)
+            progress.on_phase_start("decisions", _DECISION_STEPS)
 
         extractor = DecisionExtractor(
             repo_path=repo_path,
@@ -716,8 +727,14 @@ async def _run_decision_extraction(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
         )
+
+        def _decision_step(_source: str) -> None:
+            if progress:
+                progress.on_item_done("decisions")
+
         report = await asyncio.wait_for(
-            extractor.extract_all(), timeout=DECISION_EXTRACTION_TIMEOUT_SECS
+            extractor.extract_all(on_step=_decision_step),
+            timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
         )
 
         if progress:

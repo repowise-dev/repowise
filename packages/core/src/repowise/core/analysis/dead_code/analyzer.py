@@ -64,8 +64,19 @@ class DeadCodeAnalyzer:
             parsed_files or {}
         ) | find_dynamic_edge_files(graph)
 
-    def analyze(self, config: dict | None = None) -> DeadCodeReport:
-        """Full analysis. Returns report with all findings."""
+    def analyze(
+        self,
+        config: dict | None = None,
+        *,
+        on_step: Any | None = None,
+    ) -> DeadCodeReport:
+        """Full analysis. Returns report with all findings.
+
+        *on_step* is an optional callable invoked with a stage name after
+        each detector finishes (``unreachable_files``, ``unused_exports``,
+        ``unused_internals``, ``zombie_packages``). Used by the CLI to
+        advance per-stage progress; safe to pass ``None``.
+        """
         cfg = config or {}
         findings: list[DeadCodeFindingData] = []
 
@@ -74,15 +85,23 @@ class DeadCodeAnalyzer:
 
         if cfg.get("detect_unreachable_files", True):
             findings.extend(self._detect_unreachable_files(dynamic_patterns, whitelist))
+            if on_step:
+                on_step("unreachable_files")
 
         if cfg.get("detect_unused_exports", True):
             findings.extend(self._detect_unused_exports(dynamic_patterns, whitelist))
+            if on_step:
+                on_step("unused_exports")
 
         if cfg.get("detect_unused_internals", True):
             findings.extend(self._detect_unused_internals(dynamic_patterns, whitelist))
+            if on_step:
+                on_step("unused_internals")
 
         if cfg.get("detect_zombie_packages", True):
             findings.extend(self._detect_zombie_packages(whitelist))
+            if on_step:
+                on_step("zombie_packages")
 
         min_conf = cfg.get("min_confidence", 0.4)
         findings = [f for f in findings if f.confidence >= min_conf]
