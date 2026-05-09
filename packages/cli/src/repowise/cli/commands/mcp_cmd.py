@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from repowise.cli.helpers import console, resolve_repo_path
+from repowise.cli.ui import load_dotenv
 
 
 @click.command("mcp")
@@ -27,6 +28,10 @@ def mcp_command(path: str | None, transport: str, port: int) -> None:
     Exposes 16 tools for querying the repowise wiki via the MCP protocol.
     Supports both stdio (for Claude Code, Cursor, Cline) and SSE transports.
 
+    Loads ``<repo>/.repowise/.env`` into the environment before starting so
+    that MCP tools (e.g. ``get_answer``) can resolve the configured LLM
+    provider and API keys.
+
     Examples:
 
         repowise mcp                     # stdio, current directory
@@ -34,6 +39,7 @@ def mcp_command(path: str | None, transport: str, port: int) -> None:
         repowise mcp --transport sse     # SSE on port 7338
     """
     repo_path = resolve_repo_path(path)
+    load_dotenv(repo_path)
 
     repowise_dir = repo_path / ".repowise"
     if not repowise_dir.exists():

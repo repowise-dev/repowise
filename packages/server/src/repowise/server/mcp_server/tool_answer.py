@@ -351,7 +351,7 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
     try:
         from repowise.core.providers.llm.registry import get_provider
     except Exception:
-        _log.debug("Provider registry import failed", exc_info=True)
+        _log.warning("Provider registry import failed", exc_info=True)
         return None
 
     persisted_name, persisted_model, env_overlay = _load_repo_provider_config(
@@ -374,7 +374,7 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
         try:
             return get_provider(provider_name, **kwargs)
         except Exception:
-            _log.debug("get_provider(%s) failed", provider_name, exc_info=True)
+            _log.warning("get_provider(%s) failed", provider_name, exc_info=True)
             return None
 
     def _resolve_base_url(provider_name: str) -> str | None:
@@ -382,6 +382,7 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
             "openai": ["OPENAI_BASE_URL"],
             "anthropic": ["ANTHROPIC_BASE_URL"],
             "gemini": ["GEMINI_BASE_URL"],
+            "deepseek": ["DEEPSEEK_BASE_URL"],
             "ollama": ["OLLAMA_BASE_URL"],
             "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
         }
@@ -400,6 +401,8 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
             kw["api_key"] = _env("ANTHROPIC_API_KEY")
         elif name == "openai" and _env("OPENAI_API_KEY"):
             kw["api_key"] = _env("OPENAI_API_KEY")
+        elif name == "deepseek" and _env("DEEPSEEK_API_KEY"):
+            kw["api_key"] = _env("DEEPSEEK_API_KEY")
         elif name == "gemini" and (
             _env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")
         ):
@@ -439,6 +442,14 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
         if model:
             kw["model"] = model
         return _try("ollama", **kw)
+    if _env("DEEPSEEK_API_KEY"):
+        kw = {"api_key": _env("DEEPSEEK_API_KEY")}
+        if model:
+            kw["model"] = model
+        base_url = _resolve_base_url("deepseek")
+        if base_url:
+            kw["base_url"] = base_url
+        return _try("deepseek", **kw)
     return None
 
 

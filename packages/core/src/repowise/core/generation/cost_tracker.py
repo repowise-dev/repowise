@@ -36,6 +36,9 @@ _PRICING: dict[str, dict[str, float]] = {
     # Gemini preview / experimental models
     "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
     "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
+    # DeepSeek
+    "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
+    "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}

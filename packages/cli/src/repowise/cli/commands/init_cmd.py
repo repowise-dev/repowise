@@ -819,7 +819,7 @@ def _workspace_init(
     "--provider",
     "provider_name",
     default=None,
-    help="LLM provider name (anthropic, openai, gemini, ollama, mock).",
+    help="LLM provider name (anthropic, openai, gemini, deepseek, ollama, litellm, mock).",
 )
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option(

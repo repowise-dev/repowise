@@ -27,6 +27,8 @@ const COST_TABLE_EXACT: Record<string, [number, number]> = {
   "claude-opus-4-6": [0.005, 0.025],
   "claude-sonnet-4-6": [0.003, 0.015],
   "claude-haiku-4-5": [0.001, 0.005],
+  "deepseek-v4-flash": [0.00014, 0.00028],
+  "deepseek-v4-pro": [0.00174, 0.00348],
 };
 
 const COST_TABLE_PREFIX: [string, [number, number]][] = [
@@ -37,6 +39,7 @@ const COST_TABLE_PREFIX: [string, [number, number]][] = [
   ["claude-sonnet", [0.003, 0.015]],
   ["claude-haiku", [0.001, 0.005]],
   ["claude", [0.003, 0.015]],
+  ["deepseek", [0.00014, 0.00028]],
   ["gemini", [0.00025, 0.0015]],
   ["llama", [0, 0]],
   ["mock", [0, 0]],

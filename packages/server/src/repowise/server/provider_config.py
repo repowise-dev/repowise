@@ -61,6 +61,14 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "default_model": "deepseek-v4-flash",
+        "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+        "env_keys": ["DEEPSEEK_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "ollama",
         "name": "Ollama (Local)",
         "default_model": "llama3.2",
@@ -139,6 +147,7 @@ def _get_base_url_for_provider(provider_id: str) -> str | None:
         "openai": ["OPENAI_BASE_URL"],
         "gemini": ["GEMINI_BASE_URL"],
         "ollama": ["OLLAMA_BASE_URL"],
+        "deepseek": ["DEEPSEEK_BASE_URL"],
         "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
     }
     for env_var in env_map.get(provider_id, []):

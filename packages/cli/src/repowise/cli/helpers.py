@@ -316,6 +316,7 @@ def resolve_provider(
             "anthropic": ["ANTHROPIC_BASE_URL"],
             "openai": ["OPENAI_BASE_URL"],
             "gemini": ["GEMINI_BASE_URL"],
+            "deepseek": ["DEEPSEEK_BASE_URL"],
             "ollama": ["OLLAMA_BASE_URL"],
             "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
         }
@@ -357,6 +358,10 @@ def resolve_provider(
             kwargs["api_key"] = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         elif provider_name == "openrouter" and os.environ.get("OPENROUTER_API_KEY"):
             kwargs["api_key"] = os.environ["OPENROUTER_API_KEY"]
+        elif provider_name == "deepseek" and os.environ.get("DEEPSEEK_API_KEY"):
+            kwargs["api_key"] = os.environ["DEEPSEEK_API_KEY"]
+        elif provider_name == "litellm" and os.environ.get("LITELLM_API_KEY"):
+            kwargs["api_key"] = os.environ["LITELLM_API_KEY"]
         elif provider_name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
             kwargs["base_url"] = os.environ["OLLAMA_BASE_URL"]
 
@@ -406,10 +411,20 @@ def resolve_provider(
         if base_url:
             kwargs["base_url"] = base_url
         return get_provider("gemini", **kwargs)
+    if os.environ.get("DEEPSEEK_API_KEY") and os.environ["DEEPSEEK_API_KEY"].strip():
+        kwargs = (
+            {"model": model, "api_key": os.environ["DEEPSEEK_API_KEY"]}
+            if model
+            else {"api_key": os.environ["DEEPSEEK_API_KEY"]}
+        )
+        base_url = _resolve_base_url("deepseek")
+        if base_url:
+            kwargs["base_url"] = base_url
+        return get_provider("deepseek", **kwargs)
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
-        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY."
+        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / LITELLM_API_KEY."
     )
 
 
@@ -444,6 +459,7 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         "anthropic": ["ANTHROPIC_API_KEY"],
         "openai": ["OPENAI_API_KEY"],
         "openrouter": ["OPENROUTER_API_KEY"],
+        "deepseek": ["DEEPSEEK_API_KEY"],
         "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],  # Either one
         "ollama": ["OLLAMA_BASE_URL"],
         "litellm": ["LITELLM_API_KEY"],  # May need others depending on backend

@@ -8,6 +8,7 @@ Built-in providers:
     - anthropic   → AnthropicProvider
     - openai      → OpenAIProvider
     - openrouter  → OpenRouterProvider
+    - deepseek    → DeepSeekProvider
     - ollama      → OllamaProvider
     - litellm     → LiteLLMProvider
     - mock        → MockProvider (testing only)
@@ -41,6 +42,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "gemini": ("repowise.core.providers.llm.gemini", "GeminiProvider"),
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
+    "deepseek": ("repowise.core.providers.llm.deepseek", "DeepSeekProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
 }
 
@@ -137,6 +139,7 @@ def get_provider(
             "gemini": "google-genai",
             "ollama": "openai",  # ollama uses the openai package
             "openrouter": "openai",  # openrouter uses the openai package
+            "deepseek": "openai",  # deepseek uses the openai package
             "litellm": "litellm",
         }
         package = _missing.get(name, name)
