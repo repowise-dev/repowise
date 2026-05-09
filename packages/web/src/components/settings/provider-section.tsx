@@ -176,12 +176,12 @@ export function ProviderSection() {
                 {embedderVars.map((v) => (
                   <code key={v} className="font-mono">{v}</code>
                 ))}{" "}
-                â€” set <code className="font-mono">REPOWISE_EMBEDDER={embedder}</code> on the server.
+                — set <code className="font-mono">REPOWISE_EMBEDDER={embedder}</code> on the server.
               </p>
             )}
             {embedder === "mock" && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                Using mock embedder â€” semantic search disabled. Set{" "}
+                Using mock embedder — semantic search disabled. Set{" "}
                 <code className="font-mono">REPOWISE_EMBEDDER=gemini</code> or{" "}
                 <code className="font-mono">REPOWISE_EMBEDDER=openai</code> for real RAG.
               </p>
@@ -210,14 +210,14 @@ export function ProviderSection() {
               disabled={testStatus === "testing"}
               className="text-sm px-3 py-1.5 rounded-md border border-[var(--color-border)] hover:bg-[var(--color-bg-secondary)] disabled:opacity-50 transition-colors"
             >
-              {testStatus === "testing" ? "Testingâ€¦" : "Test connection"}
+              {testStatus === "testing" ? "Testing…" : "Test connection"}
             </button>
             {testStatus === "ok" && (
-              <span className="text-sm text-green-600 dark:text-green-400">âœ“ Server healthy</span>
+              <span className="text-sm text-green-600 dark:text-green-400">✓ Server healthy</span>
             )}
             {testStatus === "error" && (
               <span className="text-sm text-red-600 dark:text-red-400">
-                âœ— {testError || "Connection failed"}
+                ✗ {testError || "Connection failed"}
               </span>
             )}
           </div>

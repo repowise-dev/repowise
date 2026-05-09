@@ -290,7 +290,7 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
               </span>
               <span>v{page.version}</span>
               <span className="font-mono">
-                {formatTokens(page.input_tokens)} in Â· {formatTokens(page.output_tokens)} out
+                {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
               </span>
             </div>
 
@@ -342,7 +342,7 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
         </div>
       </div>
 
-      {/* Right sidebar â€” Graph Intelligence */}
+      {/* Right sidebar — Graph Intelligence */}
       {hasTargetPath && sidebarOpen && (
         <div className="hidden lg:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 w-[240px] overflow-auto">
           <DocsSidebar repoId={repoId} targetPath={page.target_path} />

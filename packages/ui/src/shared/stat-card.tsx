@@ -19,9 +19,10 @@ export function StatCard({
   trend,
   icon,
   className,
+  href,
 }: StatCardProps) {
-  return (
-    <Card className={cn("transition-colors hover:border-[var(--color-border-hover)]", className)}>
+  const card = (
+    <Card className={cn("transition-colors hover:border-[var(--color-border-hover)]", href && "cursor-pointer", className)}>
       <CardContent className="p-4">
         <div className="flex items-start justify-between">
           <div className="space-y-1">
@@ -58,4 +59,14 @@ export function StatCard({
       </CardContent>
     </Card>
   );
+
+  if (href) {
+    return (
+      <a href={href} className="block no-underline">
+        {card}
+      </a>
+    );
+  }
+
+  return card;
 }

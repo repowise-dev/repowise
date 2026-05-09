@@ -116,6 +116,8 @@ function DetailPanel({ detail, isLoading, onClose }: DetailPanelProps) {
 
 export interface CommunitySummaryGridProps {
   communities: CommunitySummaryItem[];
+  repoId?: string;
+  linkPrefix?: string;
   /** Already-resolved details keyed by community_id. The wrapper fetches in
    *  parallel (or lazily) and forwards. Missing entries render skeletons. */
   details?: Record<number, CommunityDetail | null>;
@@ -127,20 +129,30 @@ export interface CommunitySummaryGridProps {
 
 export function CommunitySummaryGrid({
   communities,
+  repoId,
+  linkPrefix,
   details = {},
   loadingDetailId = null,
   onExpand,
 }: CommunitySummaryGridProps) {
+  const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   if (communities.length === 0) return null;
 
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <Network className="h-4 w-4" />
-          Architecture Communities ({communities.length})
-        </CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Network className="h-4 w-4" />
+            Architecture Communities ({communities.length})
+          </CardTitle>
+          {prefix && (
+            <a href={`${prefix}/graph?colorMode=community`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+              View in Graph →
+            </a>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         <div className="divide-y divide-[var(--color-border-default)]">

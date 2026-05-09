@@ -28,7 +28,7 @@ export function SearchBar({
         <Input
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="Search wiki pagesâ€¦"
+          placeholder="Search wiki pages…"
           className="pl-9"
           autoFocus
         />

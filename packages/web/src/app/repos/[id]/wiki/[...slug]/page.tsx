@@ -151,7 +151,7 @@ export default async function WikiPageRoute({ params }: Props) {
           <span>Generated {formatRelativeTime(page.updated_at)}</span>
           <Separator orientation="vertical" className="h-4 hidden sm:block" />
           <span className="font-mono">
-            {formatTokens(page.input_tokens)} in Â· {formatTokens(page.output_tokens)} out
+            {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
           </span>
           {versionList.length > 0 && (
             <>

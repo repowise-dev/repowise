@@ -2,8 +2,11 @@
 
 import { use, useCallback, useState } from "react";
 import { useQueryState } from "nuqs";
+import { useSearchParams } from "next/navigation";
 import { GraphFlow } from "@/components/graph/graph-flow";
 import { GraphDocPanel } from "@/components/graph/graph-doc-panel";
+
+const VALID_VIEW_MODES = new Set(["module", "full", "architecture", "dead", "hotfiles", "unified"]);
 
 export default function GraphPage({
   params,
@@ -11,6 +14,13 @@ export default function GraphPage({
   params: Promise<{ id: string }>;
 }) {
   const { id: repoId } = use(params);
+  const searchParams = useSearchParams();
+
+  const viewModeParam = searchParams.get("viewMode");
+  const initialViewMode = VALID_VIEW_MODES.has(viewModeParam ?? "")
+    ? (viewModeParam as "module" | "full" | "architecture" | "dead" | "hotfiles")
+    : undefined;
+  const initialNode = searchParams.get("node");
 
   const [, setSelectedNode] = useQueryState("node");
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
@@ -54,6 +64,8 @@ export default function GraphPage({
         <div className="h-full w-full rounded-lg border border-[var(--color-border-default)] overflow-hidden relative">
           <GraphFlow
             repoId={repoId}
+            initialViewMode={initialNode ? "full" : initialViewMode}
+            initialSelectedNode={initialNode}
             onNodeClick={handleNodeClick}
             onNodeViewDocs={handleNodeViewDocs}
           />

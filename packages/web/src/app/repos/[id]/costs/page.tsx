@@ -108,7 +108,7 @@ export default function CostsPage() {
         ))}
       </div>
 
-      {/* Chart â€” only when grouping by day */}
+      {/* Chart — only when grouping by day */}
       {by === "day" && (
         <Card>
           <CardHeader className="pb-2">
@@ -131,7 +131,7 @@ export default function CostsPage() {
                     interval="preserveStartEnd"
                     minTickGap={24}
                     tickFormatter={(v: string) => {
-                      // ISO date "YYYY-MM-DD" â†’ "M/D"
+                      // ISO date "YYYY-MM-DD" → "M/D"
                       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
                       return m ? `${Number(m[2])}/${Number(m[3])}` : v;
                     }}

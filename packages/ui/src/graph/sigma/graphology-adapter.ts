@@ -57,8 +57,24 @@ function computeEdgeSize(
   nodeCount: number,
 ): number {
   const baseScale =
-    nodeCount > 5000 ? 0.4 : nodeCount > 1000 ? 0.6 : 1.0;
+    nodeCount > 10000
+      ? 0.15
+      : nodeCount > 5000
+        ? 0.25
+        : nodeCount > 2000
+          ? 0.35
+          : nodeCount > 1000
+            ? 0.5
+            : nodeCount > 500
+              ? 0.7
+              : 1.0;
   return baseScale * EDGE_SIZE_MULTIPLIERS[edgeKind];
+}
+
+function smartLabel(fullPath: string): string {
+  const parts = fullPath.split("/");
+  if (parts.length >= 2) return parts.slice(-2).join("/");
+  return parts[parts.length - 1] ?? fullPath;
 }
 
 function computeEdgeCurvature(edgeKey: string): number {
@@ -126,7 +142,7 @@ export function fileGraphToGraphology(
         y,
         size,
         color,
-        label: node.node_id.split("/").pop() ?? node.node_id,
+        label: smartLabel(node.node_id),
         nodeType: "file",
         fullPath: node.node_id,
         language: node.language,
@@ -152,11 +168,34 @@ export function fileGraphToGraphology(
     }
   }
 
-  // Add edges
-  for (const link of graph.links) {
+  // Sort edges: cross-community first, then by imported symbol count descending
+  const sortedLinks = [...graph.links].sort((a, b) => {
+    const aKind = classifyEdge(a, nodeMap);
+    const bKind = classifyEdge(b, nodeMap);
+    const kindPriority: Record<SigmaEdgeAttributes["edgeKind"], number> = {
+      crossCommunity: 0,
+      import: 1,
+      internal: 2,
+      dynamic: 3,
+      lowConfidence: 4,
+    };
+    const diff = kindPriority[aKind] - kindPriority[bKind];
+    if (diff !== 0) return diff;
+    return b.imported_names.length - a.imported_names.length;
+  });
+
+  // Cap per-node edge count for large graphs to reduce star-burst clutter
+  const maxEdgesPerNode = nodeCount > 1000 ? 25 : Infinity;
+  const edgesPerSource = new Map<string, number>();
+
+  for (const link of sortedLinks) {
     if (!result.hasNode(link.source) || !result.hasNode(link.target)) continue;
     const edgeKey = link.source + "→" + link.target;
     if (result.hasEdge(edgeKey)) continue;
+
+    const srcCount = edgesPerSource.get(link.source) ?? 0;
+    if (srcCount >= maxEdgesPerNode) continue;
+    edgesPerSource.set(link.source, srcCount + 1);
 
     const edgeKind = classifyEdge(link, nodeMap);
 
@@ -217,30 +256,30 @@ export function moduleGraphToGraphology(
     communityModules.set(cid, list);
   }
 
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-  const spread = Math.sqrt(nodeCount) * 60;
+  // Grid-based warm-start: communities in a grid, modules jittered around centroids
   const sortedCommunities = Array.from(communityModules.keys()).sort(
     (a, b) => a - b,
   );
   const communityCount = sortedCommunities.length;
-  const jitter = Math.sqrt(nodeCount) * 5;
+  const cols = Math.max(Math.ceil(Math.sqrt(communityCount)), 1);
+  const cellSize = Math.sqrt(nodeCount) * 80;
+  const jitter = cellSize * 0.3;
 
   for (let i = 0; i < sortedCommunities.length; i++) {
     const communityId = sortedCommunities[i]!;
     const members = communityModules.get(communityId)!;
 
-    const angle = i * goldenAngle;
-    const radius = spread * Math.sqrt((i + 1) / communityCount);
-    const centroidX = radius * Math.cos(angle);
-    const centroidY = radius * Math.sin(angle);
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const centroidX = (col - (cols - 1) / 2) * cellSize;
+    const centroidY = (row - (Math.ceil(communityCount / cols) - 1) / 2) * cellSize;
 
     for (const mod of members) {
       const x = centroidX + (Math.random() - 0.5) * jitter;
       const y = centroidY + (Math.random() - 0.5) * jitter;
 
-      const size =
-        getScaledNodeSize(NODE_BASE_SIZES.module, nodeCount) *
-        Math.max(mod.avg_pagerank, 0.1);
+      const baseSize = getScaledNodeSize(NODE_BASE_SIZES.module, nodeCount);
+      const size = baseSize * (0.5 + Math.min(Math.log2(Math.max(mod.file_count, 1)) * 0.3, 1.5));
       const color = getCommunityColor(communityId);
 
       result.addNode(mod.module_id, {
@@ -248,7 +287,7 @@ export function moduleGraphToGraphology(
         y,
         size,
         color,
-        label: mod.module_id.split("/").pop() ?? mod.module_id,
+        label: smartLabel(mod.module_id),
         nodeType: "module",
         fullPath: mod.module_id,
         language: "",

@@ -33,6 +33,7 @@ import type {
 } from "@repowise-dev/types/chat";
 import { ChatMarkdown } from "./chat-markdown";
 import { MermaidDiagram } from "../wiki/mermaid-diagram";
+import { getPageTypeLabel } from "../lib/page-types";
 
 // ---------------------------------------------------------------------------
 // Shared atoms
@@ -264,7 +265,7 @@ export function SearchResultsRenderer({
             {r.title}
           </div>
           <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5">
-            {r.page_type}
+            {getPageTypeLabel(r.page_type)}
             {typeof r.relevance_score === "number" && (
               <> · score {(r.relevance_score as number).toFixed(2)}</>
             )}

@@ -1,15 +1,14 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import type Sigma from "sigma";
 import type Graph from "graphology";
-import FA2Layout from "graphology-layout-forceatlas2/worker";
-import forceAtlas2 from "graphology-layout-forceatlas2";
-import noverlap from "graphology-layout-noverlap";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
 import {
   getFA2Settings,
   getLayoutDuration,
   NOVERLAP_SETTINGS,
 } from "./constants";
+
+type FA2LayoutType = import("graphology-layout-forceatlas2/worker").default;
 
 export interface UseFA2LayoutOptions {
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
@@ -27,7 +26,7 @@ export interface UseFA2LayoutReturn {
 export function useFA2Layout(
   options: UseFA2LayoutOptions,
 ): UseFA2LayoutReturn {
-  const layoutRef = useRef<FA2Layout | null>(null);
+  const layoutRef = useRef<FA2LayoutType | null>(null);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isRunning, setIsRunning] = useState(false);
 
@@ -46,24 +45,35 @@ export function useFA2Layout(
     (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
       killLayout();
 
-      const inferred = forceAtlas2.inferSettings(graph);
-      const settings = { ...inferred, ...getFA2Settings(graph.order) };
+      (async () => {
+        const [{ default: FA2Layout }, { default: forceAtlas2 }] =
+          await Promise.all([
+            import("graphology-layout-forceatlas2/worker"),
+            import("graphology-layout-forceatlas2"),
+          ]);
 
-      const layout = new FA2Layout(graph, { settings });
-      layoutRef.current = layout;
-      layout.start();
-      setIsRunning(true);
+        const inferred = forceAtlas2.inferSettings(graph);
+        const settings = { ...inferred, ...getFA2Settings(graph.order) };
 
-      layoutTimeoutRef.current = setTimeout(() => {
-        layout.stop();
-        layout.kill();
-        layoutRef.current = null;
-        layoutTimeoutRef.current = null;
+        const layout = new FA2Layout(graph, { settings });
+        layoutRef.current = layout;
+        layout.start();
+        setIsRunning(true);
 
-        noverlap.assign(graph, NOVERLAP_SETTINGS);
-        options.sigma?.refresh();
-        setIsRunning(false);
-      }, getLayoutDuration(graph.order));
+        layoutTimeoutRef.current = setTimeout(async () => {
+          layout.stop();
+          layout.kill();
+          layoutRef.current = null;
+          layoutTimeoutRef.current = null;
+
+          const { default: noverlap } = await import(
+            "graphology-layout-noverlap"
+          );
+          noverlap.assign(graph, NOVERLAP_SETTINGS);
+          options.sigma?.refresh();
+          setIsRunning(false);
+        }, getLayoutDuration(graph.order));
+      })();
     },
     [killLayout, options.sigma],
   );
@@ -90,8 +100,12 @@ export function useFA2Layout(
   const stop = useCallback(() => {
     killLayout();
     if (options.graph) {
-      noverlap.assign(options.graph, NOVERLAP_SETTINGS);
-      options.sigma?.refresh();
+      const g = options.graph;
+      const s = options.sigma;
+      import("graphology-layout-noverlap").then(({ default: noverlap }) => {
+        noverlap.assign(g, NOVERLAP_SETTINGS);
+        s?.refresh();
+      });
     }
     setIsRunning(false);
   }, [killLayout, options.graph, options.sigma]);

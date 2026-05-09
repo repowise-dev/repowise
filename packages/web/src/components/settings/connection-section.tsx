@@ -87,7 +87,7 @@ export function ConnectionSection() {
           <Input
             id="api-key"
             type="password"
-            placeholder="Optional â€” only required if REPOWISE_API_KEY is set on the server"
+            placeholder="Optional — only required if REPOWISE_API_KEY is set on the server"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             onBlur={save}
@@ -112,7 +112,7 @@ export function ConnectionSection() {
           {health && (
             <span className="flex items-center gap-1.5 text-sm text-[var(--color-fresh)]">
               <CheckCircle className="h-4 w-4" />
-              Connected Â· v{health.version} Â· DB {health.db}
+              Connected · v{health.version} · DB {health.db}
             </span>
           )}
           {error && (

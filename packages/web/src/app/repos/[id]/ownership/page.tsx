@@ -9,7 +9,6 @@ import { OwnershipTable } from "@repowise-dev/ui/git/ownership-table";
 import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
 import { OwnershipTreemap } from "@repowise-dev/ui/git/ownership-treemap";
 import { BusFactorPanel } from "@repowise-dev/ui/git/bus-factor-panel";
-import { ContributorNetwork } from "@repowise-dev/ui/git/contributor-network";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getOwnership, getGitSummary, getHotspots } from "@/lib/api/git";
@@ -53,7 +52,7 @@ export default function OwnershipPage() {
           Code Ownership
         </h1>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Who owns what â€” silo detection and bus factor risk.
+          Who owns what — silo detection and bus factor risk.
         </p>
       </div>
 
@@ -79,7 +78,7 @@ export default function OwnershipPage() {
           <StatCard
             label="Bus Factor Risk"
             value={formatNumber(busFactorRiskCount)}
-            description="files with factor â‰¤ 1"
+            description="files with factor ≤ 1"
             icon={<Shield className="h-4 w-4 text-red-400" />}
           />
         </div>
@@ -151,21 +150,6 @@ export default function OwnershipPage() {
         )}
       </div>
 
-      {/* Contributor Network */}
-      {hotspotData && hotspotData.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Contributor Network</CardTitle>
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              Contributors linked by shared file ownership â€” larger nodes own more files
-            </p>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <ContributorNetwork hotspots={hotspotData} />
-          </CardContent>
-        </Card>
-      )}
-
       {/* Detail table */}
       {loadingEntries ? (
         <div className="space-y-2">
@@ -174,7 +158,7 @@ export default function OwnershipPage() {
           ))}
         </div>
       ) : (
-        <OwnershipTable entries={entries ?? []} />
+        <OwnershipTable entries={entries ?? []} repoId={id} />
       )}
     </div>
   );

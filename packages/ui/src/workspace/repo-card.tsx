@@ -6,6 +6,7 @@ import type { GitSummary } from "@repowise-dev/types/git";
 
 interface RepoCardProps {
   repoId: string;
+  linkPrefix?: string;
   alias: string;
   name: string;
   path: string;
@@ -16,6 +17,7 @@ interface RepoCardProps {
 
 export function RepoCard({
   repoId,
+  linkPrefix,
   alias,
   name,
   path,
@@ -23,6 +25,7 @@ export function RepoCard({
   stats,
   gitSummary,
 }: RepoCardProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
   const card = (
     <Card className={`group transition-colors ${repoId ? "hover:border-[var(--color-accent-primary)]/30 cursor-pointer" : "opacity-60"}`}>
       <CardContent className="p-4">
@@ -38,7 +41,7 @@ export function RepoCard({
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-[var(--color-text-tertiary)] font-mono mt-0.5 truncate" title={`${alias} Â· ${path}`}>
+            <p className="text-xs text-[var(--color-text-tertiary)] font-mono mt-0.5 truncate" title={`${alias} · ${path}`}>
               {alias} &middot; {path}
             </p>
           </div>
@@ -51,19 +54,19 @@ export function RepoCard({
           <div className="flex items-center gap-1.5">
             <FileText className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
             <span className="text-xs text-[var(--color-text-secondary)]">
-              {stats?.file_count ?? "â€”"} files
+              {stats?.file_count ?? "—"} files
             </span>
           </div>
           <div className="flex items-center gap-1.5">
             <BarChart3 className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
             <span className="text-xs text-[var(--color-text-secondary)]">
-              {stats ? `${Math.round(stats.doc_coverage_pct)}% docs` : "â€”"}
+              {stats ? `${Math.round(stats.doc_coverage_pct)}% docs` : "—"}
             </span>
           </div>
           <div className="flex items-center gap-1.5">
             <Flame className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
             <span className="text-xs text-[var(--color-text-secondary)]">
-              {gitSummary?.hotspot_count ?? "â€”"} hotspots
+              {gitSummary?.hotspot_count ?? "—"} hotspots
             </span>
           </div>
         </div>
@@ -74,7 +77,7 @@ export function RepoCard({
   if (!repoId) return card;
 
   return (
-    <a href={`/repos/${repoId}/overview`}>
+    <a href={`${prefix}/overview`}>
       {card}
     </a>
   );

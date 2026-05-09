@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getRepo } from "@/lib/api/repos";
 import { ActiveJobBannerWrapper as ActiveJobBanner } from "@/components/dashboard/active-job-banner-wrapper";
 import { PageTransition } from "@/components/layout/page-transition";
+import { RepoBreadcrumb } from "@/components/layout/repo-breadcrumb";
 
 interface RepoLayoutProps {
   children: React.ReactNode;
@@ -10,16 +11,17 @@ interface RepoLayoutProps {
 
 export default async function RepoLayout({ children, params }: RepoLayoutProps) {
   const { id } = await params;
+  let repoName = id;
   try {
-    await getRepo(id);
+    const repo = await getRepo(id);
+    repoName = repo.name;
   } catch {
-    // Repo doesn't exist in this database (e.g. stale URL from a previous
-    // project). Redirect to the dashboard so the user sees what's available.
     redirect("/");
   }
   return (
     <>
       <ActiveJobBanner repoId={id} />
+      <RepoBreadcrumb repoName={repoName} />
       <PageTransition>{children}</PageTransition>
     </>
   );

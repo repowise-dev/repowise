@@ -367,23 +367,83 @@ export async function computeElkModulePositions(
 ): Promise<Map<string, { x: number; y: number }>> {
   if (moduleNodes.length === 0) return new Map();
 
+  const moduleIds = new Set(moduleNodes.map((m) => m.module_id));
+
+  // Build all ancestor directories for compound node nesting
+  const dirSet = new Set<string>();
+  for (const m of moduleNodes) {
+    const ancestors = ancestorDirs(dirOf(m.module_id));
+    for (const a of ancestors) {
+      if (!moduleIds.has(a)) dirSet.add(a);
+    }
+  }
+  const dirs = Array.from(dirSet).sort();
+
+  // Create ELK compound nodes for each directory
+  const dirElkNodes = new Map<string, ElkNode>();
+  for (const dir of dirs) {
+    dirElkNodes.set(dir, {
+      id: `dir:${dir}`,
+      labels: [{ text: dir.split("/").pop() ?? dir }],
+      layoutOptions: {
+        "elk.padding": "[top=35,left=12,bottom=12,right=12]",
+      },
+      children: [],
+    });
+  }
+
+  // Nest directories into their parents
+  const rootChildren: ElkNode[] = [];
+  for (const dir of dirs) {
+    const parentDir = dirOf(dir);
+    const parentElk = parentDir ? dirElkNodes.get(parentDir) : null;
+    const elkNode = dirElkNodes.get(dir)!;
+    if (parentElk) {
+      parentElk.children!.push(elkNode);
+    } else {
+      rootChildren.push(elkNode);
+    }
+  }
+
+  // Place module nodes into their parent directory (or root)
+  for (const m of moduleNodes) {
+    const elkNode: ElkNode = {
+      id: m.module_id,
+      width: MODULE_NODE_WIDTH,
+      height: MODULE_NODE_HEIGHT,
+      labels: [{ text: m.module_id.split("/").pop() ?? m.module_id }],
+    };
+    const parentDir = dirOf(m.module_id);
+    const parentElk = parentDir ? dirElkNodes.get(parentDir) : null;
+    if (parentElk) {
+      parentElk.children!.push(elkNode);
+    } else {
+      rootChildren.push(elkNode);
+    }
+  }
+
+  // Remove empty compound nodes (directories with no children)
+  function pruneEmpty(node: ElkNode): boolean {
+    if (!node.children) return true;
+    node.children = node.children.filter(pruneEmpty);
+    return node.children.length > 0 || !node.id.startsWith("dir:");
+  }
+  rootChildren.forEach(pruneEmpty);
+
   const elkGraph: ElkNode = {
     id: "root",
     layoutOptions: {
       "elk.algorithm": "layered",
       "elk.direction": "DOWN",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "80",
-      "elk.layered.spacing.edgeNodeBetweenLayers": "40",
-      "elk.spacing.nodeNode": "40",
-      "elk.spacing.componentComponent": "60",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "60",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "30",
+      "elk.spacing.nodeNode": "25",
+      "elk.spacing.componentComponent": "50",
+      "elk.hierarchyHandling": "INCLUDE_CHILDREN",
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+      "elk.padding": "[top=25,left=20,bottom=20,right=20]",
     },
-    children: moduleNodes.map((m) => ({
-      id: m.module_id,
-      width: MODULE_NODE_WIDTH,
-      height: MODULE_NODE_HEIGHT,
-      labels: [{ text: m.module_id }],
-    })),
+    children: rootChildren,
     edges: moduleEdges.map((e, i) => ({
       id: `me${i}`,
       sources: [e.source],
@@ -394,9 +454,18 @@ export async function computeElkModulePositions(
   const layout = await elk.layout(elkGraph);
 
   const positions = new Map<string, { x: number; y: number }>();
-  for (const child of layout.children ?? []) {
-    positions.set(child.id, { x: child.x ?? 0, y: child.y ?? 0 });
-  }
+  const extractPositions = (node: ElkNode, ox = 0, oy = 0) => {
+    for (const child of node.children ?? []) {
+      const x = (child.x ?? 0) + ox;
+      const y = (child.y ?? 0) + oy;
+      if (child.id.startsWith("dir:")) {
+        extractPositions(child, x, y);
+      } else {
+        positions.set(child.id, { x, y });
+      }
+    }
+  };
+  extractPositions(layout);
 
   return positions;
 }

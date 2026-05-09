@@ -11,6 +11,7 @@ interface ModuleMinimapProps {
   nodes: ModuleNode[];
   edges: ModuleEdge[];
   repoId: string;
+  linkPrefix?: string;
 }
 
 interface SimNode extends d3Force.SimulationNodeDatum {
@@ -27,7 +28,8 @@ interface SimLink {
   edgeCount: number;
 }
 
-export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
+export function ModuleMinimap({ nodes, edges, repoId, linkPrefix }: ModuleMinimapProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const [simNodes, setSimNodes] = useState<SimNode[]>([]);
   const [simLinks, setSimLinks] = useState<Array<{ source: SimNode; target: SimNode; edgeCount: number }>>([]);
@@ -116,7 +118,7 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
             Architecture
           </span>
           <a
-            href={`/repos/${repoId}/graph`}
+            href={`${prefix}/graph`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             Full graph
@@ -173,7 +175,7 @@ export function ModuleMinimap({ nodes, edges, repoId }: ModuleMinimapProps) {
                       <TooltipContent side="top" className="text-xs">
                         <p className="font-medium font-mono">{node.id}</p>
                         <p className="text-[var(--color-text-tertiary)]">
-                          {node.fileCount} files Â· {node.symbolCount} symbols Â· {Math.round(node.docCoverage)}% docs
+                          {node.fileCount} files · {node.symbolCount} symbols · {Math.round(node.docCoverage)}% docs
                         </p>
                       </TooltipContent>
                     </Tooltip>

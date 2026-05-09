@@ -15,7 +15,7 @@ import "@/styles/globals.css";
 export const metadata: Metadata = {
   title: {
     default: "repowise",
-    template: "%s â€” repowise",
+    template: "%s — repowise",
   },
   description: "Open-source codebase documentation engine",
 };
@@ -37,7 +37,7 @@ export default async function RootLayout({
     if (reposResult.status === "fulfilled") repos = reposResult.value;
     if (wsResult.status === "fulfilled") workspace = wsResult.value;
   } catch {
-    // API not available â€” show empty sidebar
+    // API not available — show empty sidebar
   }
 
   return (

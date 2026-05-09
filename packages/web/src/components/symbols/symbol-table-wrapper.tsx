@@ -76,6 +76,7 @@ export function SymbolTableWrapper({ repoId }: Props) {
     <SymbolTable
       items={items}
       importanceScores={importanceScores}
+      repoId={repoId}
       isLoading={isLoading}
       isValidating={isValidating}
       hasMore={hasMore}

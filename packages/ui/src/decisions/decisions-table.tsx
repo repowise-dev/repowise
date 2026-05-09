@@ -40,6 +40,7 @@ export interface DecisionsTableProps {
   onFiltersChange: (filters: DecisionsTableFilters) => void;
   /** Used to build the "View" link target for each row. */
   repoId: string;
+  linkPrefix?: string;
   /** Truthy when the most recent fetch errored; an inline retry is rendered. */
   error?: unknown;
   /** Truthy while a fetch is in flight; suppresses the empty-state message. */
@@ -53,10 +54,12 @@ export function DecisionsTable({
   filters,
   onFiltersChange,
   repoId,
+  linkPrefix,
   error,
   isLoading,
   onRetry,
 }: DecisionsTableProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
   return (
     <div className="space-y-4">
       {/* Filters */}
@@ -115,7 +118,7 @@ export function DecisionsTable({
               >
                 <td className="px-4 py-2.5 min-w-[240px] max-w-[520px]">
                   <Link
-                    href={`/repos/${repoId}/decisions/${d.id}`}
+                    href={`${prefix}/decisions/${d.id}`}
                     className="font-medium text-[var(--color-accent-primary)] hover:underline block truncate"
                     title={d.title}
                   >
@@ -157,7 +160,7 @@ export function DecisionsTable({
                   ) : d.staleness_score > 0 ? (
                     <span className="text-[var(--color-text-tertiary)]">{Math.round(d.staleness_score * 100)}%</span>
                   ) : (
-                    <span className="text-[var(--color-text-tertiary)]">â€”</span>
+                    <span className="text-[var(--color-text-tertiary)]">—</span>
                   )}
                 </td>
               </tr>

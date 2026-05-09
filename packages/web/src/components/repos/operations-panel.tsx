@@ -41,7 +41,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     try {
       const job = await syncRepo(repoId);
       setActiveJobId(job.id);
-      toast.info(`Sync started â€” ${repoName}`);
+      toast.info(`Sync started — ${repoName}`);
     } catch (e) {
       toast.error("Sync failed", {
         description: e instanceof Error ? e.message : "Unknown error",
@@ -57,7 +57,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
     try {
       const job = await fullResyncRepo(repoId);
       setActiveJobId(job.id);
-      toast.info(`Full resync started â€” ${repoName}`);
+      toast.info(`Full resync started — ${repoName}`);
     } catch (e) {
       toast.error("Resync failed", {
         description: e instanceof Error ? e.message : "Unknown error",
@@ -115,7 +115,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
                 className="flex-1"
               >
                 <Zap className="h-3.5 w-3.5 mr-1.5" />
-                {loading === "sync" ? "Startingâ€¦" : "Sync"}
+                {loading === "sync" ? "Starting…" : "Sync"}
               </Button>
               <Button
                 variant="outline"
@@ -125,7 +125,7 @@ export function OperationsPanel({ repoId, repoName }: Props) {
                 className="flex-1"
               >
                 <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                {loading === "resync" ? "Startingâ€¦" : "Full Resync"}
+                {loading === "resync" ? "Starting…" : "Full Resync"}
               </Button>
               <Button
                 variant="ghost"

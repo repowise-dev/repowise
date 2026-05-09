@@ -23,25 +23,27 @@ import type {
   CommunitySummaryItem,
 } from "@repowise-dev/types/graph";
 
+type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
+
 export interface GraphFlowProps {
   repoId: string;
+  initialViewMode?: ViewMode;
+  initialSelectedNode?: string | null;
   onNodeClick?: GraphFlowShellProps["onNodeClick"];
   onNodeViewDocs?: GraphFlowShellProps["onNodeViewDocs"];
 }
 
-export function GraphFlow({ repoId, onNodeClick, onNodeViewDocs }: GraphFlowProps) {
-  // Track view-mode + drill-down so we can suppress fetches we don't need.
-  const [viewMode, setViewMode] = useState<
-    "module" | "full" | "architecture" | "dead" | "hotfiles"
-  >("module");
+export function GraphFlow({ repoId, initialViewMode, initialSelectedNode, onNodeClick, onNodeViewDocs }: GraphFlowProps) {
+  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "module");
   const [modulePath, setModulePath] = useState<string[]>([]);
+  const [hasExpandedModules, setHasExpandedModules] = useState(false);
   const isDrilledDown = modulePath.length > 0;
   const isModuleView = viewMode === "module";
 
   const { graph: moduleGraph, isLoading: moduleLoading } = useModuleGraph(
-    isModuleView && !isDrilledDown ? repoId : null,
+    isModuleView ? repoId : null,
   );
-  const needsFullGraph = isDrilledDown || viewMode === "full";
+  const needsFullGraph = isDrilledDown || viewMode === "full" || viewMode === "unified" || hasExpandedModules;
   const { graph: fullGraph, isLoading: fullLoading } = useGraph(
     needsFullGraph ? repoId : null,
   );
@@ -74,8 +76,11 @@ export function GraphFlow({ repoId, onNodeClick, onNodeViewDocs }: GraphFlowProp
       isLoadingHotFilesGraph={hotLoading}
       communities={communities as CommunitySummaryItem[] | undefined}
       executionFlows={executionFlowsData as ExecutionFlows | undefined}
+      initialViewMode={initialViewMode}
+      initialSelectedNode={initialSelectedNode}
       onViewModeChange={setViewMode}
       onModulePathChange={setModulePath}
+      onExpandedModulesChange={(expanded) => setHasExpandedModules(expanded.size > 0)}
       onNodeClick={onNodeClick}
       onNodeViewDocs={onNodeViewDocs}
       renderPathFinder={(props) => (

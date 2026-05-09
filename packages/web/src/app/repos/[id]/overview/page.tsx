@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { Hash, Activity } from "lucide-react";
+import { Hash } from "lucide-react";
 import { getRepo, getRepoStats } from "@/lib/api/repos";
 import { getGitSummary, getHotspots, getOwnership } from "@/lib/api/git";
 import { getDeadCodeSummary, listDeadCode } from "@/lib/api/dead-code";
@@ -14,20 +14,15 @@ import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { HealthScoreRing } from "@repowise-dev/ui/dashboard/health-score-ring";
 import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
 import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
-import { OwnershipTreemap } from "@repowise-dev/ui/dashboard/ownership-treemap";
 import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
 import { computeHealthScore, buildAttentionItems, aggregateLanguages } from "@/lib/utils/health-score";
 import { HotspotsMini } from "@repowise-dev/ui/dashboard/hotspots-mini";
 import { DecisionsTimeline } from "@repowise-dev/ui/dashboard/decisions-timeline";
-import { ModuleMinimap } from "@repowise-dev/ui/dashboard/module-minimap";
+import { ModuleOverviewGrid } from "@repowise-dev/ui/dashboard/module-overview-grid";
 import { CommunitySummaryGridWrapper as CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid-wrapper";
 import { ExecutionFlowsPanel } from "@repowise-dev/ui/dashboard/execution-flows-panel";
-import { DependencyHeatmap } from "@repowise-dev/ui/dashboard/dependency-heatmap";
 import { BusFactorPanel } from "@repowise-dev/ui/git/bus-factor-panel";
-import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
-import { CommitCategoryDonut } from "@repowise-dev/ui/git/commit-category-donut";
 import { CommitCategorySparkline } from "@repowise-dev/ui/git/commit-category-sparkline";
-import { OwnershipTreemap as OwnershipTreemapGit } from "@repowise-dev/ui/git/ownership-treemap";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type {
@@ -50,7 +45,7 @@ interface Props {
   params: Promise<{ id: string }>;
 }
 
-// Each fetch wrapped to return null on failure â€” the dashboard degrades gracefully
+// Each fetch wrapped to return null on failure — the dashboard degrades gracefully
 async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
@@ -65,7 +60,7 @@ export default async function OverviewPage({ params }: Props) {
   const repo = await safeFetch(() => getRepo(id));
   if (!repo) notFound();
 
-  // Fetch all data in parallel â€” each independently failable
+  // Fetch all data in parallel — each independently failable
   const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs, knowledgeMap, communities, executionFlows] =
     await Promise.all([
       safeFetch(() => getRepoStats(id)),
@@ -116,7 +111,7 @@ export default async function OverviewPage({ params }: Props) {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
-      {/* â”€â”€ Hero: Health Score + Repo Info + Quick Actions â”€â”€ */}
+      {/* ── Hero: Health Score + Repo Info + Quick Actions ── */}
       <div className="flex flex-col sm:flex-row items-start gap-6">
         <HealthScoreRing score={healthScore} />
 
@@ -155,41 +150,46 @@ export default async function OverviewPage({ params }: Props) {
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             <StatCard
               label="Files"
-              value={stats ? formatNumber(stats.file_count) : "â€”"}
+              value={stats ? formatNumber(stats.file_count) : "–"}
+              href={`/repos/${id}/graph`}
               className="!p-0 [&>div]:!p-3"
             />
             <StatCard
               label="Symbols"
-              value={stats ? formatNumber(stats.symbol_count) : "â€”"}
+              value={stats ? formatNumber(stats.symbol_count) : "–"}
+              href={`/repos/${id}/symbols`}
               className="!p-0 [&>div]:!p-3"
             />
             <StatCard
               label="Entry Points"
-              value={stats ? formatNumber(stats.entry_point_count) : "â€”"}
+              value={stats ? formatNumber(stats.entry_point_count) : "–"}
+              href={`/repos/${id}/graph?viewMode=architecture`}
               className="!p-0 [&>div]:!p-3"
             />
             <StatCard
               label="Doc Coverage"
-              value={stats ? `${Math.round(stats.doc_coverage_pct)}%` : "â€”"}
+              value={stats ? `${Math.round(stats.doc_coverage_pct)}%` : "–"}
+              href={`/repos/${id}/docs/coverage`}
               className="!p-0 [&>div]:!p-3"
             />
             <StatCard
               label="Dead Exports"
-              value={stats ? formatNumber(stats.dead_export_count) : "â€”"}
+              value={stats ? formatNumber(stats.dead_export_count) : "–"}
               description={
                 deadCodeSummary
                   ? `${formatNumber(deadCodeSummary.deletable_lines)} deletable lines`
                   : undefined
               }
+              href={`/repos/${id}/dead-code`}
               className="!p-0 [&>div]:!p-3"
             />
           </div>
         </div>
       </div>
 
-      {/* â”€â”€ Main Grid â”€â”€ */}
+      {/* ── Main Grid ── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Left column â€” Attention + Hotspots */}
+        {/* Left column — Attention + Hotspots */}
         <div className="space-y-4 lg:col-span-2">
           <AttentionPanel items={attentionItems} repoId={id} />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -207,16 +207,19 @@ export default async function OverviewPage({ params }: Props) {
           </div>
         </div>
 
-        {/* Right column â€” Visualizations */}
+        {/* Right column — Visualizations */}
         <div className="space-y-4">
           <LanguageDonut distribution={langDistribution} />
-          {ownership && ownership.length > 0 && (
-            <OwnershipTreemap entries={ownership} />
-          )}
+          <a
+            href={`/repos/${id}/graph?colorMode=language`}
+            className="block text-[10px] text-[var(--color-accent-primary)] hover:underline text-right -mt-1"
+          >
+            View in Graph →
+          </a>
         </div>
       </div>
 
-      {/* â”€â”€ Git Insights â”€â”€ */}
+      {/* ── Git Insights ── */}
       {hotspots && hotspots.length > 0 && (() => {
         const aggregatedCategories: Record<string, number> = {};
         for (const h of hotspots) {
@@ -226,109 +229,54 @@ export default async function OverviewPage({ params }: Props) {
         }
         const hasCategories = Object.values(aggregatedCategories).some((v) => v > 0);
 
-        return (
+        return hasCategories ? (
           <div className="space-y-4">
-            <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
-              Git Insights
-            </h2>
-
-            {/* Commit category sparkline (full width) */}
-            {hasCategories && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Commit Activity</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <CommitCategorySparkline categories={aggregatedCategories} />
-                  <div className="flex items-center gap-4 mt-2 text-[10px] text-[var(--color-text-tertiary)]">
-                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#5b9cf6" }} /> Feature</span>
-                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#ef4444" }} /> Fix</span>
-                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#a855f7" }} /> Refactor</span>
-                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#f59520" }} /> Dependency</span>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              {/* Churn Histogram */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Churn Distribution</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <ChurnHistogram hotspots={hotspots} />
-                </CardContent>
-              </Card>
-
-              {/* Commit Category Donut */}
-              {hasCategories && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium">Commit Categories</CardTitle>
-                  </CardHeader>
-                  <CardContent className="flex items-center justify-center">
-                    <CommitCategoryDonut categories={aggregatedCategories} />
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Bus Factor */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Bus Factor</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <BusFactorPanel hotspots={hotspots} />
-                </CardContent>
-              </Card>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
+                Git Insights
+              </h2>
+              <a href={`/repos/${id}/hotspots`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+                View all →
+              </a>
             </div>
-
-            {/* Ownership Treemap (git-level, file granularity) */}
-            {ownership && ownership.length > 0 && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Ownership Map</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <OwnershipTreemapGit entries={ownership} />
-                </CardContent>
-              </Card>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* â”€â”€ Module Architecture Map + Dependency Heatmap â”€â”€ */}
-      {moduleGraph && moduleGraph.nodes.length > 0 && (
-        <div className="space-y-4">
-          <ModuleMinimap
-            nodes={moduleGraph.nodes}
-            edges={moduleGraph.edges}
-            repoId={id}
-          />
-          {moduleGraph.nodes.length >= 2 && (
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Dependency Heatmap</CardTitle>
-                <p className="text-xs text-[var(--color-text-tertiary)]">
-                  Module-to-module dependency density â€” brighter cells indicate more connections
-                </p>
+                <CardTitle className="text-sm font-medium">Commit Activity</CardTitle>
               </CardHeader>
               <CardContent>
-                <DependencyHeatmap moduleGraph={moduleGraph} />
+                <CommitCategorySparkline categories={aggregatedCategories} />
+                <div className="flex items-center gap-4 mt-2 text-[10px] text-[var(--color-text-tertiary)]">
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#5b9cf6" }} /> Feature</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#ef4444" }} /> Fix</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#a855f7" }} /> Refactor</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#f59520" }} /> Dependency</span>
+                </div>
               </CardContent>
             </Card>
-          )}
-        </div>
+          </div>
+        ) : null;
+      })()}
+
+      {/* ── Architecture ── */}
+      {moduleGraph && moduleGraph.nodes.length > 0 && (
+        <ModuleOverviewGrid
+          nodes={moduleGraph.nodes}
+          edges={moduleGraph.edges}
+          repoId={id}
+        />
       )}
 
-      {/* â”€â”€ Graph Intelligence: Communities & Execution Flows â”€â”€ */}
+      {/* ── Graph Intelligence: Communities & Execution Flows ── */}
       {((communities && communities.length > 0) || (executionFlows && executionFlows.flows.length > 0)) && (
         <div className="space-y-4">
-          <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
-            Graph Intelligence
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
+              Graph Intelligence
+            </h2>
+            <a href={`/repos/${id}/graph?colorMode=community`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+              View all →
+            </a>
+          </div>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {communities && communities.length > 0 && (
               <CommunitySummaryGrid communities={communities} repoId={id} />
@@ -340,110 +288,103 @@ export default async function OverviewPage({ params }: Props) {
         </div>
       )}
 
-      {/* â”€â”€ Knowledge Map â”€â”€ */}
-      {knowledgeMap && (
+      {/* ── Ownership & Knowledge ── */}
+      {(hotspots || knowledgeMap) && (
         <div className="space-y-4">
-          <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
-            Knowledge Map
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
+              Ownership & Knowledge
+            </h2>
+            <a href={`/repos/${id}/ownership`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+              View all →
+            </a>
+          </div>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            {hotspots && hotspots.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Bus Factor</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <BusFactorPanel hotspots={hotspots} />
+                </CardContent>
+              </Card>
+            )}
 
-            {/* Top Owners */}
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Top Owners</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {knowledgeMap.top_owners.length === 0 ? (
-                  <p className="text-xs text-[var(--color-text-tertiary)]">No ownership data available.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {knowledgeMap.top_owners.slice(0, 5).map((owner) => (
-                      <li key={owner.email} className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-xs font-medium text-[var(--color-text-primary)] truncate">
-                            {owner.name || owner.email}
-                          </p>
-                          {owner.name && (
-                            <p className="text-[10px] text-[var(--color-text-tertiary)] truncate">{owner.email}</p>
-                          )}
-                        </div>
-                        <div className="text-right shrink-0">
-                          <span className="text-xs font-mono text-[var(--color-text-secondary)]">
-                            {formatNumber(owner.files_owned)} files
-                          </span>
-                          <span className="ml-2 text-[10px] text-[var(--color-text-tertiary)]">
-                            {owner.percentage}%
-                          </span>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
+            {knowledgeMap && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Knowledge Silos</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {knowledgeMap.knowledge_silos.length === 0 ? (
+                    <p className="text-xs text-[var(--color-text-tertiary)]">No silos detected — good bus factor!</p>
+                  ) : (
+                    <div className="space-y-1">
+                      <p className="text-xs text-[var(--color-text-secondary)] mb-2">
+                        {formatNumber(knowledgeMap.knowledge_silos.length)} file
+                        {knowledgeMap.knowledge_silos.length === 1 ? "" : "s"} with &gt;80% single-owner concentration
+                      </p>
+                      <ul className="space-y-1">
+                        {knowledgeMap.knowledge_silos.slice(0, 3).map((silo) => (
+                          <li key={silo.file_path}>
+                            <a
+                              href={`/repos/${id}/graph?node=${encodeURIComponent(silo.file_path)}`}
+                              className="flex items-center justify-between gap-2 -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
+                            >
+                              <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate min-w-0">
+                                {silo.file_path}
+                              </p>
+                              <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
+                                {Math.round(silo.owner_pct * 100)}%
+                              </span>
+                            </a>
+                          </li>
+                        ))}
+                        {knowledgeMap.knowledge_silos.length > 3 && (
+                          <li>
+                            <a href={`/repos/${id}/ownership`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+                              +{knowledgeMap.knowledge_silos.length - 3} more
+                            </a>
+                          </li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
-            {/* Knowledge Silos */}
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Knowledge Silos</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {knowledgeMap.knowledge_silos.length === 0 ? (
-                  <p className="text-xs text-[var(--color-text-tertiary)]">No silos detected â€” good bus factor!</p>
-                ) : (
-                  <div className="space-y-1">
-                    <p className="text-xs text-[var(--color-text-secondary)] mb-2">
-                      {formatNumber(knowledgeMap.knowledge_silos.length)} file
-                      {knowledgeMap.knowledge_silos.length === 1 ? "" : "s"} with &gt;80% single-owner concentration
-                    </p>
-                    <ul className="space-y-1">
-                      {knowledgeMap.knowledge_silos.slice(0, 3).map((silo) => (
-                        <li key={silo.file_path} className="flex items-center justify-between gap-2">
-                          <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate min-w-0">
-                            {silo.file_path}
-                          </p>
-                          <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
-                            {Math.round(silo.owner_pct * 100)}%
-                          </span>
+            {knowledgeMap && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Onboarding Targets</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {knowledgeMap.onboarding_targets.length === 0 ? (
+                    <p className="text-xs text-[var(--color-text-tertiary)]">No graph data available.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {knowledgeMap.onboarding_targets.slice(0, 5).map((target) => (
+                        <li key={target.path}>
+                          <a
+                            href={`/repos/${id}/graph?node=${encodeURIComponent(target.path)}`}
+                            className="block -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors space-y-0.5"
+                          >
+                            <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
+                              {target.path}
+                            </p>
+                            <p className="text-[10px] text-[var(--color-text-tertiary)]">
+                              pagerank {target.pagerank.toFixed(4)} · {formatNumber(target.doc_words)} doc words
+                            </p>
+                          </a>
                         </li>
                       ))}
-                      {knowledgeMap.knowledge_silos.length > 3 && (
-                        <li className="text-[10px] text-[var(--color-text-tertiary)]">
-                          +{knowledgeMap.knowledge_silos.length - 3} more
-                        </li>
-                      )}
                     </ul>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Onboarding Targets */}
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Onboarding Targets</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {knowledgeMap.onboarding_targets.length === 0 ? (
-                  <p className="text-xs text-[var(--color-text-tertiary)]">No graph data available.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {knowledgeMap.onboarding_targets.slice(0, 5).map((target) => (
-                      <li key={target.path} className="space-y-0.5">
-                        <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
-                          {target.path}
-                        </p>
-                        <p className="text-[10px] text-[var(--color-text-tertiary)]">
-                          pagerank {target.pagerank.toFixed(4)} Â· {formatNumber(target.doc_words)} doc words
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
-
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       )}

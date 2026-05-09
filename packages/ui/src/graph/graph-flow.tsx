@@ -108,7 +108,7 @@ function GraphFlowInner(props: GraphFlowProps) {
       const cm = params.get("colorMode");
       if (cm === "community" || cm === "language" || cm === "risk") return cm;
     }
-    return "language";
+    return "community";
   });
   const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set());
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
@@ -119,7 +119,7 @@ function GraphFlowInner(props: GraphFlowProps) {
   const [egoDepth, setEgoDepth] = useState(0);
 
   const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<string>>(
-    () => new Set(["import", "crossCommunity", "internal", "dynamic", "lowConfidence"]),
+    () => new Set(["import", "crossCommunity"]),
   );
 
   // Signal overlays (replaces separate view modes for dead/hot/arch)
@@ -711,6 +711,7 @@ function GraphFlowInner(props: GraphFlowProps) {
 
   const handleViewChange = useCallback((v: ViewMode) => {
     setViewMode(v);
+    setLayoutMode("force");
     setModulePath([]);
     setHighlightedPath(new Set());
     setHighlightedEdges(new Set());
@@ -902,7 +903,7 @@ function GraphFlowInner(props: GraphFlowProps) {
             onNodeContextMenu={handleSigmaNodeContextMenu}
             onStageClick={() => setSelectedNodeId(null)}
             hiddenNodes={isEgoActive ? hiddenNodes : undefined}
-            visibleEdgeTypes={visibleEdgeTypes.size < 5 ? visibleEdgeTypes : undefined}
+            visibleEdgeTypes={visibleEdgeTypes}
           />
         ) : !isLoading ? (
           <div className="flex items-center justify-center h-full">

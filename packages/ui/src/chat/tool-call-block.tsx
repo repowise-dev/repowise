@@ -41,7 +41,7 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
         </span>
         {toolCall.summary && !isRunning && (
           <span className="text-[var(--color-text-tertiary)] truncate ml-1">
-            â€” {toolCall.summary}
+            — {toolCall.summary}
           </span>
         )}
         <span className="ml-auto flex items-center gap-1">

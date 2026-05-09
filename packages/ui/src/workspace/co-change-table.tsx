@@ -68,7 +68,7 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
               )}
               {!compact && (
                 <td className="py-2 text-xs text-[var(--color-text-tertiary)]" title={cc.last_date ? new Date(cc.last_date).toLocaleString() : undefined}>
-                  {cc.last_date ? new Date(cc.last_date).toLocaleDateString() : "â€”"}
+                  {cc.last_date ? new Date(cc.last_date).toLocaleDateString() : "—"}
                 </td>
               )}
             </tr>

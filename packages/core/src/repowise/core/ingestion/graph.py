@@ -440,6 +440,7 @@ class GraphBuilder:
         pr = self.pagerank()
         bc = self.betweenness_centrality()
         scc_map = self._build_scc_map()
+        cd = self.community_detection()
         g = self.graph()
 
         async with aiosqlite.connect(db_path) as db:
@@ -453,6 +454,7 @@ class GraphBuilder:
                     pagerank     REAL,
                     betweenness  REAL,
                     scc_id       INTEGER,
+                    community_id INTEGER DEFAULT 0,
                     PRIMARY KEY (repo_id, path)
                 );
                 CREATE TABLE IF NOT EXISTS graph_edges (
@@ -464,6 +466,13 @@ class GraphBuilder:
                 );
             """)
 
+            try:
+                await db.execute(
+                    "ALTER TABLE graph_nodes ADD COLUMN community_id INTEGER DEFAULT 0"
+                )
+            except Exception:
+                pass
+
             node_rows = [
                 (
                     repo_id,
@@ -474,11 +483,12 @@ class GraphBuilder:
                     pr.get(path, 0.0),
                     bc.get(path, 0.0),
                     scc_map.get(path, 0),
+                    cd.get(path, cd.get(data.get("file_path", ""), 0)),
                 )
                 for path, data in g.nodes(data=True)
             ]
             await db.executemany(
-                "INSERT OR REPLACE INTO graph_nodes VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO graph_nodes VALUES (?,?,?,?,?,?,?,?,?)",
                 node_rows,
             )
 

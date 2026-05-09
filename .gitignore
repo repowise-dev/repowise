@@ -26,7 +26,7 @@ share/python-wheels/
 venv/
 ENV/
 env/
-
+/papers/
 # uv
 .uv/
 

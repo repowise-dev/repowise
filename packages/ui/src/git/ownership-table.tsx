@@ -1,21 +1,25 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { Search } from "lucide-react";
+import { Search, GitBranch, Flame } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { EmptyState } from "../shared/empty-state";
+import { RowActions } from "../shared/row-actions";
 import { cn } from "../lib/cn";
 import type { OwnershipEntry } from "@repowise-dev/types/git";
 
 interface OwnershipTableProps {
   entries: OwnershipEntry[];
+  repoId?: string;
+  linkPrefix?: string;
 }
 
 type Filter = "all" | "silo";
 
-export function OwnershipTable({ entries }: OwnershipTableProps) {
+export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTableProps) {
+  const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
 
@@ -55,7 +59,7 @@ export function OwnershipTable({ entries }: OwnershipTableProps) {
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
           <Input
-            placeholder="Search modules or ownersâ€¦"
+            placeholder="Search modules or owners…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-8 h-8 w-full sm:w-56 text-xs"
@@ -124,7 +128,7 @@ export function OwnershipTable({ entries }: OwnershipTableProps) {
                   </td>
                   <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] max-w-[200px]">
                     <span className="block truncate" title={entry.primary_owner ?? undefined}>
-                      {entry.primary_owner ?? "â€”"}
+                      {entry.primary_owner ?? "—"}
                     </span>
                   </td>
                   <td className="px-4 py-2.5">
@@ -141,23 +145,33 @@ export function OwnershipTable({ entries }: OwnershipTableProps) {
                         </span>
                       </div>
                     ) : (
-                      <span className="text-[var(--color-text-tertiary)]">â€”</span>
+                      <span className="text-[var(--color-text-tertiary)]">—</span>
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] tabular-nums">
                     {entry.file_count}
                   </td>
                   <td className="px-4 py-2.5">
-                    {entry.is_silo && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span>
-                            <Badge variant="stale">Silo</Badge>
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>Bus factor risk</TooltipContent>
-                      </Tooltip>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {entry.is_silo && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span>
+                              <Badge variant="stale">Silo</Badge>
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>Bus factor risk</TooltipContent>
+                        </Tooltip>
+                      )}
+                      {prefix && (
+                        <RowActions
+                          actions={[
+                            { icon: GitBranch, label: "Graph", href: `${prefix}/graph?node=${encodeURIComponent(entry.module_path)}` },
+                            { icon: Flame, label: "Hotspots", href: `${prefix}/hotspots` },
+                          ]}
+                        />
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

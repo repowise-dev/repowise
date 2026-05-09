@@ -27,7 +27,7 @@ export default function DeadCodePage() {
     setAnalyzing(true);
     try {
       await analyzeDeadCode(id);
-      toast.success("Analysis started â€” results will appear shortly.");
+      toast.success("Analysis started — results will appear shortly.");
     } catch (err) {
       toast.error(
         err instanceof Error ? `Couldn't start analysis: ${err.message}` : "Couldn't start analysis",
@@ -56,7 +56,7 @@ export default function DeadCodePage() {
             onClick={handleAnalyze}
             disabled={analyzing}
           >
-            {analyzing ? "Startingâ€¦" : "Analyze"}
+            {analyzing ? "Starting…" : "Analyze"}
           </Button>
         </div>
       </div>

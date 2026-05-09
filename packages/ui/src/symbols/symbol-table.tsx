@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useCallback, useMemo, type ReactNode } from "react";
-import { ChevronUp, ChevronDown, ChevronsUpDown, TrendingUp } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronsUpDown, TrendingUp, GitBranch, BookOpen } from "lucide-react";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
+import { RowActions } from "../shared/row-actions";
 import { truncatePath } from "../lib/format";
 import { cn } from "../lib/cn";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
@@ -35,6 +36,8 @@ export interface SymbolTableProps {
   onLanguageChange: (v: string) => void;
   onLoadMore: () => void;
   onSelect: (sym: CodeSymbol) => void;
+  repoId?: string;
+  linkPrefix?: string;
   /** Drawer slot for the selected row. Wrapper passes a `<SymbolDrawer>` mounted with its own data. */
   drawer?: ReactNode;
 }
@@ -75,8 +78,11 @@ export function SymbolTable({
   onLanguageChange,
   onLoadMore,
   onSelect,
+  repoId,
+  linkPrefix,
   drawer,
 }: SymbolTableProps) {
+  const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
   const [sortCol, setSortCol] = useState<SortCol>("importance");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -246,6 +252,16 @@ export function SymbolTable({
                         {sym.complexity_estimate}
                       </span>
                     </td>
+                    {prefix && (
+                      <td className="px-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        <RowActions
+                          actions={[
+                            { icon: GitBranch, label: "Graph", href: `${prefix}/graph?node=${encodeURIComponent(sym.file_path)}` },
+                            { icon: BookOpen, label: "Docs", href: `${prefix}/docs?file=${encodeURIComponent(sym.file_path)}` },
+                          ]}
+                        />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

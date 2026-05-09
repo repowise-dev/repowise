@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown, GitBranch, BookOpen, Radius } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
+import { RowActions } from "../shared/row-actions";
 import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "../lib/format";
 import { cn } from "../lib/cn";
@@ -12,6 +13,8 @@ import type { Hotspot } from "@repowise-dev/types/git";
 
 interface HotspotTableProps {
   hotspots: Hotspot[];
+  repoId?: string;
+  linkPrefix?: string;
 }
 
 type Filter = "all" | "hot" | "risk" | "accelerating";
@@ -30,7 +33,8 @@ function ariaSortFor(column: SortKey, sortKey: SortKey, sortDir: SortDir): "none
   return sortDir === "asc" ? "ascending" : "descending";
 }
 
-export function HotspotTable({ hotspots }: HotspotTableProps) {
+export function HotspotTable({ hotspots, repoId, linkPrefix }: HotspotTableProps) {
+  const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("trend");
@@ -88,7 +92,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
     return (
       <EmptyState
         title="No hotspots found"
-        description="All files look stable â€” great work!"
+        description="All files look stable — great work!"
       />
     );
   }
@@ -106,7 +110,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
           <Input
-            placeholder="Search files or ownersâ€¦"
+            placeholder="Search files or owners…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-8 h-8 w-full sm:w-56 text-xs"
@@ -173,7 +177,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                   Bus Factor
                 </th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-24 hidden lg:table-cell">
-                  Lines Â±90d
+                  Lines ±90d
                 </th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider hidden md:table-cell">
                   Owner
@@ -226,7 +230,7 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                             </span>
                           </>
                         ) : (
-                          <span className="text-[var(--color-text-tertiary)]">â€”</span>
+                          <span className="text-[var(--color-text-tertiary)]">—</span>
                         )}
                       </span>
                     </td>
@@ -249,11 +253,22 @@ export function HotspotTable({ hotspots }: HotspotTableProps) {
                       <span className="text-red-400">-{formatLOC(h.lines_deleted_90d)}</span>
                     </td>
                     <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
-                      {h.primary_owner ?? "â€”"}
+                      {h.primary_owner ?? "—"}
                     </td>
-                    <td className="px-3 py-2.5 flex items-center gap-1">
-                      {h.is_hotspot && <Badge variant="outdated">Hot</Badge>}
-                      {h.is_stable && <Badge variant="fresh">Stable</Badge>}
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-1">
+                        {h.is_hotspot && <Badge variant="outdated">Hot</Badge>}
+                        {h.is_stable && <Badge variant="fresh">Stable</Badge>}
+                        {prefix && (
+                          <RowActions
+                            actions={[
+                              { icon: GitBranch, label: "Graph", href: `${prefix}/graph?node=${encodeURIComponent(h.file_path)}` },
+                              { icon: BookOpen, label: "Docs", href: `${prefix}/docs?file=${encodeURIComponent(h.file_path)}` },
+                              { icon: Radius, label: "Blast Radius", href: `${prefix}/blast-radius?file=${encodeURIComponent(h.file_path)}` },
+                            ]}
+                          />
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );

@@ -4,15 +4,12 @@ import { useState, useMemo } from "react";
 import {
   ChevronDown,
   ChevronRight,
-  FileText,
   FolderOpen,
   Folder,
-  Globe,
-  LayoutGrid,
-  Sparkles,
   Search,
   Filter,
 } from "lucide-react";
+import { getPageTypeIcon, getPageTypeLabel, ALL_PAGE_TYPES } from "../lib/page-types";
 import { cn } from "../lib/cn";
 import { statusBadgeClasses, type FreshnessStatus } from "../lib/confidence";
 import type { DocPage } from "@repowise-dev/types/docs";
@@ -40,15 +37,8 @@ interface DocsTreeProps {
 // Page type icons
 // ---------------------------------------------------------------------------
 
-const PAGE_TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
-  repo_overview: Globe,
-  architecture_diagram: LayoutGrid,
-  module_page: FolderOpen,
-  symbol_spotlight: Sparkles,
-};
-
 function PageIcon({ pageType, className }: { pageType: string; className?: string }) {
-  const Icon = PAGE_TYPE_ICON[pageType] ?? FileText;
+  const Icon = getPageTypeIcon(pageType);
   return <Icon {...(className ? { className } : {})} />;
 }
 
@@ -173,7 +163,7 @@ function buildTree(pages: DocPage[]): TreeNode[] {
 // Filter helpers
 // ---------------------------------------------------------------------------
 
-type TypeFilter = "all" | "file_page" | "module_page" | "symbol_spotlight" | "repo_overview";
+type TypeFilter = "all" | typeof ALL_PAGE_TYPES[number];
 type FreshnessFilter = "all" | "fresh" | "stale" | "outdated";
 
 function matchesFilters(
@@ -405,7 +395,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
           <div className="space-y-1.5">
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium w-10">Type</span>
-              {(["all", "file_page", "module_page", "symbol_spotlight", "repo_overview"] as TypeFilter[]).map((t) => (
+              {(["all", ...ALL_PAGE_TYPES] as TypeFilter[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTypeFilter(t)}
@@ -416,7 +406,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
                       : "border-[var(--color-border-default)] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
                   )}
                 >
-                  {t === "all" ? "All" : t.replace(/_/g, " ").replace("page", "").trim() || "file"}
+                  {t === "all" ? "All" : getPageTypeLabel(t)}
                 </button>
               ))}
             </div>
@@ -445,7 +435,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
         {/* Stats line */}
         <div className="flex items-center justify-between text-[10px] text-[var(--color-text-tertiary)]">
           <span>{totalPages} pages</span>
-          <span>{freshCount} fresh Â· {totalPages - freshCount} need attention</span>
+          <span>{freshCount} fresh · {totalPages - freshCount} need attention</span>
         </div>
       </div>
 

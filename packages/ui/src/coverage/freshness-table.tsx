@@ -13,6 +13,7 @@ import {
   formatConfidence,
   formatRelativeTime,
 } from "../lib/format";
+import { getPageTypeIcon, getPageTypeLabel } from "../lib/page-types";
 import type { DocPage } from "@repowise-dev/types/docs";
 
 type Filter = "all" | "fresh" | "stale" | "outdated";
@@ -117,7 +118,12 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
                   >
                     <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[220px] max-w-[480px]">
                       <div className="truncate" title={page.target_path}>{page.target_path}</div>
-                      <div className="truncate text-[var(--color-text-tertiary)]" title={page.page_type}>{page.page_type}</div>
+                      {(() => { const TypeIcon = getPageTypeIcon(page.page_type); return (
+                        <div className="flex items-center gap-1 truncate text-[var(--color-text-tertiary)]" title={page.page_type}>
+                          <TypeIcon className="h-3 w-3 shrink-0" />
+                          <span>{getPageTypeLabel(page.page_type)}</span>
+                        </div>
+                      ); })()}
                     </td>
                     <td className="px-4 py-2.5">
                       <span
@@ -160,7 +166,7 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
                           onClick={() => handleRegenerate(page.id)}
                           className="h-6 px-2 text-xs"
                         >
-                          {regenerating.has(page.id) ? "â€¦" : "Regenerate"}
+                          {regenerating.has(page.id) ? "…" : "Regenerate"}
                         </Button>
                       )}
                     </td>

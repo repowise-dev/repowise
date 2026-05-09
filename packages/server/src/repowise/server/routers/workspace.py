@@ -26,6 +26,9 @@ from repowise.server.schemas import (
     WorkspaceContractsResponse,
     WorkspaceContractSummary,
     WorkspaceCrossRepoSummary,
+    WorkspaceGraphEdge,
+    WorkspaceGraphNode,
+    WorkspaceGraphResponse,
     WorkspaceRepoEntry,
     WorkspaceResponse,
 )
@@ -44,6 +47,33 @@ def _require_workspace(ws_config: object) -> None:
     """Raise 404 if not in workspace mode."""
     if ws_config is None:
         raise HTTPException(status_code=404, detail="Not running in workspace mode")
+
+
+def _query_top_language(db_path: Path) -> str:
+    """Return the most common language across graph_nodes in a repo's wiki.db."""
+    if not db_path.exists():
+        return "unknown"
+    try:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
+            "WHERE language IS NOT NULL AND language != '' "
+            "GROUP BY language ORDER BY cnt DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return row[0] if row else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _compute_health_score(file_count: int, doc_coverage_pct: float, hotspot_count: int) -> int:
+    """Derive a 0-100 health score from available repo metrics."""
+    if file_count == 0:
+        return 0
+    coverage_component = doc_coverage_pct * 0.6
+    hotspot_ratio = min(hotspot_count / max(file_count, 1), 1.0)
+    hotspot_component = (1.0 - hotspot_ratio) * 100 * 0.4
+    return max(0, min(100, round(coverage_component + hotspot_component)))
 
 
 def _query_repo_stats(db_path: Path) -> dict:
@@ -299,3 +329,108 @@ async def get_co_changes(
         ],
         total=total,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/graph
+# ---------------------------------------------------------------------------
+
+
+@router.get("/graph", response_model=WorkspaceGraphResponse)
+async def get_workspace_graph(
+    request: Request,
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+):
+    """Cross-repo graph: repos as mega-nodes, contracts/co-changes as edges."""
+    _require_workspace(ws_config)
+
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    ws_root_path = Path(ws_root) if ws_root else None
+
+    # Build nodes from repo metadata
+    repo_id_map: dict[str, str] = {}  # alias → repo_id
+    nodes: list[WorkspaceGraphNode] = []
+    for r in ws_config.repos:
+        stats: dict = {}
+        top_language = "unknown"
+        if ws_root_path:
+            repo_path = (ws_root_path / r.path).resolve()
+            db_path = repo_path / ".repowise" / "wiki.db"
+            stats = _query_repo_stats(db_path)
+            top_language = _query_top_language(db_path)
+        rid = stats.get("repo_id") or r.alias
+        repo_id_map[r.alias] = rid
+        nodes.append(
+            WorkspaceGraphNode(
+                repo_id=rid,
+                name=r.alias,
+                file_count=stats.get("file_count", 0),
+                coverage_pct=stats.get("doc_coverage_pct", 0.0),
+                health_score=_compute_health_score(
+                    stats.get("file_count", 0),
+                    stats.get("doc_coverage_pct", 0.0),
+                    stats.get("hotspot_count", 0),
+                ),
+                top_language=top_language,
+            )
+        )
+
+    # Build edges
+    edges: list[WorkspaceGraphEdge] = []
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    if enricher is not None:
+        # Contract-based edges: each link connects two repos
+        links = list(getattr(enricher, "_contract_links", []))
+        for lk in links:
+            p_repo = lk.get("provider_repo", "")
+            c_repo = lk.get("consumer_repo", "")
+            if not p_repo or not c_repo or p_repo == c_repo:
+                continue
+            p_id = repo_id_map.get(p_repo, p_repo)
+            c_id = repo_id_map.get(c_repo, c_repo)
+            key = (min(p_id, c_id), max(p_id, c_id), "contract")
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            edges.append(
+                WorkspaceGraphEdge(
+                    source=p_id,
+                    target=c_id,
+                    type="contract",
+                    strength=lk.get("confidence", 0.8),
+                    label=lk.get("contract_type"),
+                )
+            )
+
+        # Co-change-based edges: aggregate per repo-pair
+        co_changes = list(getattr(enricher, "_co_changes", []))
+        pair_strengths: dict[tuple[str, str], list[float]] = {}
+        for cc in co_changes:
+            s_repo = cc.get("source_repo", "")
+            t_repo = cc.get("target_repo", "")
+            if not s_repo or not t_repo or s_repo == t_repo:
+                continue
+            s_id = repo_id_map.get(s_repo, s_repo)
+            t_id = repo_id_map.get(t_repo, t_repo)
+            pair_key = (min(s_id, t_id), max(s_id, t_id))
+            pair_strengths.setdefault(pair_key, []).append(cc.get("strength", 0.0))
+
+        for (src, tgt), strengths in pair_strengths.items():
+            key = (src, tgt, "co_change")
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            avg_strength = sum(strengths) / len(strengths)
+            edges.append(
+                WorkspaceGraphEdge(
+                    source=src,
+                    target=tgt,
+                    type="co_change",
+                    strength=round(avg_strength, 3),
+                    label=f"{len(strengths)} co-changes",
+                )
+            )
+
+    return WorkspaceGraphResponse(nodes=nodes, edges=edges)

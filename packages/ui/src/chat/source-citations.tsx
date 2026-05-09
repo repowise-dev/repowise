@@ -1,14 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import {
-  FileText,
-  FolderOpen,
-  Globe,
-  Sparkles,
-  LayoutGrid,
-  ArrowUpRight,
-} from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
+import { getPageTypeIcon } from "../lib/page-types";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 export interface SourceReference {
@@ -131,38 +125,33 @@ export function extractSources(
   return sources;
 }
 
-const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
-  repo_overview: Globe,
-  architecture_diagram: LayoutGrid,
-  module_page: FolderOpen,
-  symbol_spotlight: Sparkles,
-};
-
 function SourceIcon({ pageType, className }: { pageType: string; className?: string }) {
-  const Icon = TYPE_ICON[pageType] ?? FileText;
+  const Icon = getPageTypeIcon(pageType);
   return <Icon {...(className ? { className } : {})} />;
 }
 
 interface SourceCitationsProps {
   toolCalls: ChatUIToolCall[];
   repoId: string;
+  linkPrefix?: string;
   /**
-   * Builds the navigation URL for a citation. Defaults to OSS web's
-   * `/repos/{repoId}/wiki/{pageId}` shape; hosted-frontend supplies its own
-   * (e.g. `/s/{shortId}/wiki/{pageId}`) so this component stays
-   * framework-neutral.
+   * Builds the navigation URL for a citation. Defaults to
+   * `{linkPrefix}/wiki/{pageId}` (or `/repos/{repoId}/wiki/{pageId}`).
+   * Hosted-frontend can supply its own or just pass `linkPrefix`.
    */
   buildHref?: (source: SourceReference) => string;
 }
 
-const defaultBuildHref = (s: SourceReference, repoId: string) =>
-  `/repos/${repoId}/wiki/${encodeURIComponent(s.pageId)}`;
+const defaultBuildHref = (s: SourceReference, prefix: string) =>
+  `${prefix}/wiki/${encodeURIComponent(s.pageId)}`;
 
 export function SourceCitations({
   toolCalls,
   repoId,
+  linkPrefix,
   buildHref,
 }: SourceCitationsProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
   const sources = useMemo(
     () => extractSources(toolCalls, repoId),
     [toolCalls, repoId],
@@ -179,7 +168,7 @@ export function SourceCitations({
         {sources.map((source, idx) => (
           <a
             key={source.id}
-            href={buildHref ? buildHref(source) : defaultBuildHref(source, repoId)}
+            href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
             className="group inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[10px] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] transition-all"
           >
             <span className="flex items-center justify-center h-3.5 w-3.5 rounded-sm bg-[var(--color-bg-overlay)] text-[9px] font-bold text-[var(--color-text-tertiary)] group-hover:bg-[var(--color-accent-primary)] group-hover:text-white shrink-0 transition-colors">

@@ -101,10 +101,26 @@ def _suppress_graspologic_output():
 # ---------------------------------------------------------------------------
 
 
+def _directory_fallback(nodes: list[str]) -> dict[str, int]:
+    """Group nodes by first-level directory when graph-based community detection fails."""
+    dir_to_id: dict[str, int] = {}
+    result: dict[str, int] = {}
+    next_id = 1
+    for path in nodes:
+        parts = path.split("/")
+        dir_key = parts[0] if len(parts) > 1 else "__root__"
+        if dir_key not in dir_to_id:
+            dir_to_id[dir_key] = next_id
+            next_id += 1
+        result[path] = dir_to_id[dir_key]
+    return result
+
+
 def _partition(G: nx.Graph) -> tuple[dict, str]:
     """Run community detection. Returns ({node: community_id}, algorithm_name).
 
-    Tries Leiden (graspologic) first, falls back to Louvain (networkx).
+    Tries Leiden (graspologic) first, falls back to Louvain (networkx),
+    then to directory-based grouping as a last resort.
     """
     try:
         from graspologic.partition import leiden
@@ -116,13 +132,19 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
         pass
 
     # Fallback: networkx Louvain
-    kwargs: dict = {"seed": 42, "threshold": 1e-4}
-    if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
-        kwargs["max_level"] = 10
+    try:
+        kwargs: dict = {"seed": 42, "threshold": 1e-4}
+        if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
+            kwargs["max_level"] = 10
 
-    communities = nx.community.louvain_communities(G, **kwargs)
-    assignment = {node: cid for cid, nodes in enumerate(communities) for node in nodes}
-    return assignment, "louvain"
+        communities = nx.community.louvain_communities(G, **kwargs)
+        assignment = {node: cid for cid, nodes in enumerate(communities) for node in nodes}
+        return assignment, "louvain"
+    except Exception as exc:
+        log.warning("louvain_failed_using_directory_fallback", error=str(exc))
+
+    # Final fallback: directory-based grouping
+    return _directory_fallback(list(G.nodes())), "directory"
 
 
 # ---------------------------------------------------------------------------

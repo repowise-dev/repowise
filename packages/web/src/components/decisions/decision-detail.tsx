@@ -119,7 +119,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
       {/* Stale warning */}
       {decision.staleness_score > 0.5 && (
         <div className="rounded-md border border-amber-400/30 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-          This decision may be stale â€” affected files have changed significantly since it was recorded.
+          This decision may be stale — affected files have changed significantly since it was recorded.
         </div>
       )}
 

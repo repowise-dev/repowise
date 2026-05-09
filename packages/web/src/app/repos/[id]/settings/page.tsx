@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   try {
     const repo = await getRepo(id);
-    return { title: `${repo.name} â€” Settings` };
+    return { title: `${repo.name} — Settings` };
   } catch {
     return { title: "Settings" };
   }

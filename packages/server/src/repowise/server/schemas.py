@@ -1009,3 +1009,25 @@ class WorkspaceCoChangeEntry(BaseModel):
 class WorkspaceCoChangesResponse(BaseModel):
     co_changes: list[WorkspaceCoChangeEntry]
     total: int
+
+
+class WorkspaceGraphNode(BaseModel):
+    repo_id: str
+    name: str
+    file_count: int = 0
+    coverage_pct: float = 0.0
+    health_score: int = 0
+    top_language: str = "unknown"
+
+
+class WorkspaceGraphEdge(BaseModel):
+    source: str
+    target: str
+    type: str  # "contract" or "co_change"
+    strength: float = 0.0
+    label: str | None = None
+
+
+class WorkspaceGraphResponse(BaseModel):
+    nodes: list[WorkspaceGraphNode] = []
+    edges: list[WorkspaceGraphEdge] = []

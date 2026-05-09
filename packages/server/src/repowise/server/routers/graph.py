@@ -93,11 +93,28 @@ async def module_graph(
     node_result = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
     nodes = node_result.scalars().all()
 
-    # Group nodes by first path segment
+    # Group nodes by first path segment, detecting monorepo roots
+    first_level: dict[str, list[GraphNode]] = {}
+    for n in nodes:
+        parts = n.node_id.split("/")
+        seg = parts[0] if len(parts) > 1 else n.node_id
+        first_level.setdefault(seg, []).append(n)
+
+    total = len(nodes) or 1
+    monorepo_roots: set[str] = set()
+    for seg, seg_nodes in first_level.items():
+        if len(seg_nodes) / total > 0.70:
+            monorepo_roots.add(seg)
+
     modules: dict[str, list[GraphNode]] = {}
     for n in nodes:
         parts = n.node_id.split("/")
-        module = parts[0] if len(parts) > 1 else n.node_id
+        if len(parts) <= 1:
+            module = n.node_id
+        elif parts[0] in monorepo_roots and len(parts) > 2:
+            module = parts[0] + "/" + parts[1]
+        else:
+            module = parts[0]
         modules.setdefault(module, []).append(n)
 
     # Fetch page confidence for doc coverage

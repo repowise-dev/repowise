@@ -1,3 +1,4 @@
+/** @deprecated Use GraphInspectionPanel instead — this tooltip is no longer mounted by GraphFlow. */
 "use client";
 
 import { useEffect, useRef } from "react";

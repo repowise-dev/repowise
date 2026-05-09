@@ -13,7 +13,7 @@ import {
   MessageSquare,
   Search,
   Code2,
-  BarChart3,
+
   Users,
   Flame,
   Trash2,
@@ -39,6 +39,7 @@ interface NavItem {
   label: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
+  exact?: boolean;
 }
 
 const GLOBAL_NAV: NavItem[] = [
@@ -47,7 +48,7 @@ const GLOBAL_NAV: NavItem[] = [
 ];
 
 const WORKSPACE_NAV: NavItem[] = [
-  { label: "Overview", href: "/workspace", icon: Layers },
+  { label: "Overview", href: "/workspace", icon: Layers, exact: true },
   { label: "Contracts", href: "/workspace/contracts", icon: Link2 },
   { label: "Co-Changes", href: "/workspace/co-changes", icon: GitMerge },
 ];
@@ -56,12 +57,12 @@ const WORKSPACE_NAV: NavItem[] = [
 function repoNavItems(repoId: string): NavItem[] {
   return [
     { label: "Overview", href: `/repos/${repoId}/overview`, icon: Activity },
-    { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare },
+    { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare, exact: true },
     { label: "Docs", href: `/repos/${repoId}/docs`, icon: BookOpen },
     { label: "Search", href: `/repos/${repoId}/search`, icon: Search },
     { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
     { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
-    { label: "Coverage", href: `/repos/${repoId}/coverage`, icon: BarChart3 },
+
     { label: "Ownership", href: `/repos/${repoId}/ownership`, icon: Users },
     { label: "Hotspots", href: `/repos/${repoId}/hotspots`, icon: Flame },
     { label: "Dead Code", href: `/repos/${repoId}/dead-code`, icon: Trash2 },
@@ -158,7 +159,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
             ))}
           </nav>
 
-          {/* Workspace nav â€” only shown in workspace mode */}
+          {/* Workspace nav — only shown in workspace mode */}
           {isWorkspace && (
             <>
               {!isIconOnly && (
@@ -175,11 +176,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                   <SidebarNavItem
                     key={item.href}
                     item={item}
-                    isActive={
-                      item.href === "/workspace"
-                        ? pathname === "/workspace"
-                        : pathname.startsWith(`${item.href}`)
-                    }
+                    isActive={item.exact ? pathname === item.href : pathname.startsWith(`${item.href}`)}
                     iconOnly={isIconOnly}
                   />
                 ))}
@@ -255,7 +252,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                             <SidebarNavItem
                               key={item.href}
                               item={item}
-                              isActive={pathname === item.href || pathname.startsWith(`${item.href}/`)}
+                              isActive={item.exact ? pathname === item.href : (pathname === item.href || pathname.startsWith(`${item.href}/`))}
                               size="sm"
                               iconOnly={false}
                             />

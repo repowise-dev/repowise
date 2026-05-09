@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { truncatePath } from "@repowise-dev/ui/lib/format";
+import { getPageTypeLabel } from "@repowise-dev/ui/lib/page-types";
 import { cn } from "@/lib/utils/cn";
 import type { SearchResultResponse } from "@/lib/api/types";
 
@@ -41,7 +42,7 @@ export function SearchResultCard({ result, query, repoId }: SearchResultCardProp
           {result.title}
         </h3>
         <div className="flex items-center gap-1.5 shrink-0">
-          <Badge variant="default">{result.page_type.replace(/_/g, " ")}</Badge>
+          <Badge variant="default">{getPageTypeLabel(result.page_type)}</Badge>
           <span
             className={cn(
               "inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium tabular-nums",

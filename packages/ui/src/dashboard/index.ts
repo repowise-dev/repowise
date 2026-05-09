@@ -6,6 +6,7 @@ export * from "./health-score-ring.js";
 export * from "./hotspots-mini.js";
 export * from "./language-donut.js";
 export * from "./module-minimap.js";
+export * from "./module-overview-grid.js";
 export * from "./ownership-treemap.js";
 export * from "./active-job-banner.js";
 export * from "./quick-actions.js";

@@ -92,7 +92,8 @@ export function useElkSigmaLayout(
   }, [options]);
 
   useEffect(() => {
-    if (options.enabled && options.graph && options.graph.order > 0) {
+    // Cap at 500 nodes — elkjs bundled runs on the main thread and will freeze the UI for larger graphs
+    if (options.enabled && options.graph && options.graph.order > 0 && options.graph.order <= 500) {
       compute();
     }
   }, [options.enabled, options.graph, compute]);

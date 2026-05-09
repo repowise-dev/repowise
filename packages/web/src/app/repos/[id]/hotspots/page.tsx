@@ -51,13 +51,13 @@ export default async function HotspotsPage({
           Hotspots
         </h1>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          High-churn files â€” where the most risky code lives.
+          High-churn files — where the most risky code lives.
         </p>
       </div>
 
       {loadError && hotspots.length === 0 && (
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)]">
-          Couldn&apos;t load hotspots. The data may not be ready yet â€” try running a sync first.
+          Couldn&apos;t load hotspots. The data may not be ready yet — try running a sync first.
         </div>
       )}
 
@@ -87,7 +87,7 @@ export default async function HotspotsPage({
           <StatCard
             label="Bus Factor Risk"
             value={formatNumber(busFactorRiskCount)}
-            description="files with factor â‰¤ 1"
+            description="files with factor ≤ 1"
             icon={<Shield className="h-4 w-4 text-red-400" />}
           />
         </div>
@@ -136,7 +136,7 @@ export default async function HotspotsPage({
       {/* Table + sidebar */}
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
         <div className="xl:col-span-3">
-          <HotspotTable hotspots={hotspots} />
+          <HotspotTable hotspots={hotspots} repoId={id} />
         </div>
 
         {/* Top owners leaderboard */}

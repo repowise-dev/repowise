@@ -149,7 +149,7 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
             onClick={() => setBulkConfirmOpen(true)}
             className="text-green-500 border-green-500/30 hover:bg-green-500/10"
           >
-            {bulkPending ? "Resolvingâ€¦" : `Resolve ${selected.size} selected`}
+            {bulkPending ? "Resolving…" : `Resolve ${selected.size} selected`}
           </Button>
         )}
       </div>
@@ -233,6 +233,7 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
                       <FindingRow
                         key={f.id}
                         finding={f}
+                        repoId={repoId}
                         selected={selected.has(f.id)}
                         onToggle={toggleSelect}
                         onUpdate={handleUpdate}

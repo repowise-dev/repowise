@@ -54,7 +54,8 @@
     "./ui/*": "./src/ui/*.tsx",
     "./lib/cn": "./src/lib/cn.ts",
     "./lib/confidence": "./src/lib/confidence.ts",
-    "./lib/format": "./src/lib/format.ts"
+    "./lib/format": "./src/lib/format.ts",
+    "./lib/page-types": "./src/lib/page-types.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

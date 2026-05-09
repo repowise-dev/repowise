@@ -2,9 +2,11 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
+import { GitBranch, Code2 } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
+import { RowActions } from "@repowise-dev/ui/shared/row-actions";
 import { formatConfidence } from "@repowise-dev/ui/lib/format";
 import { patchDeadCodeFinding } from "@/lib/api/dead-code";
 import { cn } from "@/lib/utils/cn";
@@ -33,6 +35,7 @@ const STATUS_LABELS: Record<string, { title: string; description: string; confir
 
 interface FindingRowProps {
   finding: DeadCodeFindingResponse;
+  repoId: string;
   selected: boolean;
   onToggle: (id: string) => void;
   onUpdate: (updated: DeadCodeFindingResponse) => void;
@@ -45,7 +48,7 @@ const STATUS_COLORS: Record<string, string> = {
   false_positive: "bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] border-[var(--color-border-default)]",
 };
 
-export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRowProps) {
+export function FindingRow({ finding, repoId, selected, onToggle, onUpdate }: FindingRowProps) {
   const [pending, setPending] = useState(false);
   const [confirmStatus, setConfirmStatus] = useState<string | null>(null);
 
@@ -123,7 +126,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
         </span>
       </td>
       <td className="px-4 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
-        {finding.primary_owner ?? "â€”"}
+        {finding.primary_owner ?? "—"}
       </td>
       <td className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] tabular-nums hidden md:table-cell">
         {finding.lines}
@@ -146,6 +149,13 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
         </span>
       </td>
       <td className="px-4 py-2.5">
+        <div className="flex items-center gap-1 flex-wrap justify-end">
+          <RowActions
+            actions={[
+              { icon: GitBranch, label: "Graph", href: `/repos/${repoId}/graph?node=${encodeURIComponent(finding.file_path)}` },
+              ...(finding.symbol_name ? [{ icon: Code2, label: "Symbol", href: `/repos/${repoId}/symbols` }] : []),
+            ]}
+          />
         {finding.status === "open" && (
           <div className="flex items-center gap-1 flex-wrap justify-end">
             <Button
@@ -180,6 +190,7 @@ export function FindingRow({ finding, selected, onToggle, onUpdate }: FindingRow
             </Button>
           </div>
         )}
+        </div>
       </td>
       {confirmConfig && (
         <ConfirmDialog

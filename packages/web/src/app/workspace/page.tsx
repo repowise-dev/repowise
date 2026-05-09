@@ -18,6 +18,7 @@ import { CrossRepoSummary } from "@repowise-dev/ui/workspace/cross-repo-summary"
 import { CoChangeTable } from "@repowise-dev/ui/workspace/co-change-table";
 import { ContractTypeBadge } from "@repowise-dev/ui/workspace/contract-type-badge";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { WorkspaceGraphSection } from "./workspace-graph-section";
 
 export const metadata: Metadata = { title: "Workspace" };
 
@@ -140,6 +141,9 @@ export default async function WorkspaceDashboardPage() {
           ))}
         </div>
       </section>
+
+      {/* Cross-Repo Graph */}
+      <WorkspaceGraphSection repoCount={wsRepos.length} />
 
       {/* Cross-Repo Intelligence */}
       {(workspace?.cross_repo_summary || workspace?.contract_summary) && (

@@ -8,6 +8,7 @@ import type { DecisionRecord } from "@repowise-dev/types/decisions";
 interface DecisionsTimelineProps {
   decisions: DecisionRecord[];
   repoId: string;
+  linkPrefix?: string;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -24,7 +25,8 @@ const STATUS_BADGE_VARIANT: Record<string, string> = {
   superseded: "text-[var(--color-text-tertiary)] border-[var(--color-text-tertiary)]/30",
 };
 
-export function DecisionsTimeline({ decisions, repoId }: DecisionsTimelineProps) {
+export function DecisionsTimeline({ decisions, repoId, linkPrefix }: DecisionsTimelineProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
   const recent = decisions.slice(0, 6);
 
   if (recent.length === 0) {
@@ -50,7 +52,7 @@ export function DecisionsTimeline({ decisions, repoId }: DecisionsTimelineProps)
             Recent Decisions
           </span>
           <a
-            href={`/repos/${repoId}/decisions`}
+            href={`${prefix}/decisions`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             View all
@@ -65,7 +67,7 @@ export function DecisionsTimeline({ decisions, repoId }: DecisionsTimelineProps)
             {recent.map((d) => (
               <a
                 key={d.id}
-                href={`/repos/${repoId}/decisions/${d.id}`}
+                href={`${prefix}/decisions/${d.id}`}
                 className="flex items-start gap-3 pl-0 group relative"
               >
                 <span
@@ -85,7 +87,7 @@ export function DecisionsTimeline({ decisions, repoId }: DecisionsTimelineProps)
                   </div>
                   <span className="text-[10px] text-[var(--color-text-tertiary)]">
                     {formatRelativeTime(d.created_at)}
-                    {d.source && ` Â· ${d.source.replace("_", " ")}`}
+                    {d.source && ` · ${d.source.replace("_", " ")}`}
                   </span>
                 </div>
               </a>

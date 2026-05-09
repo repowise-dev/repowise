@@ -27,6 +27,7 @@ export function CommunitySummaryGridWrapper({ communities, repoId }: Props) {
   return (
     <CommunitySummaryGridShell
       communities={communities}
+      repoId={repoId}
       details={details}
       loadingDetailId={isLoading ? activeId : null}
       onExpand={(id) => setActiveId(id)}

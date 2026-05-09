@@ -3,17 +3,8 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { LANGUAGE_COLORS } from "../lib/confidence";
-import { EDGE_COLORS } from "./sigma/constants";
+import { EDGE_COLORS, getCommunityColor } from "./sigma/constants";
 import type { ColorMode, ViewMode } from "./graph-toolbar";
-
-const COMMUNITY_SAMPLE = [
-  { color: "#6366f1", label: "Community 1" },
-  { color: "#ec4899", label: "Community 2" },
-  { color: "#10b981", label: "Community 3" },
-  { color: "#f59e0b", label: "Community 4" },
-  { color: "#3b82f6", label: "Community 5" },
-  { color: "#a855f7", label: "Community 6" },
-];
 
 const LANGUAGE_LEGEND = [
   { lang: "python", color: LANGUAGE_COLORS.python, label: "Python" },
@@ -106,7 +97,7 @@ export function GraphLegend({
                 )}
                 {entries
                   ? entries.map(([cid, label], i) => {
-                      const color = COMMUNITY_SAMPLE[i % COMMUNITY_SAMPLE.length]?.color ?? "#888";
+                      const color = getCommunityColor(cid);
                       const checked = !activeCommunities || activeCommunities.has(cid);
                       return (
                         <div
@@ -143,13 +134,13 @@ export function GraphLegend({
                         </div>
                       );
                     })
-                  : COMMUNITY_SAMPLE.map((c, i) => (
+                  : Array.from({ length: 6 }, (_, i) => (
                       <div key={i} className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
                         <span
                           className="w-2 h-2 rounded-full shrink-0"
-                          style={{ background: c.color }}
+                          style={{ background: getCommunityColor(i) }}
                         />
-                        <span>{c.label}</span>
+                        <span>Community {i + 1}</span>
                       </div>
                     ))}
               </>

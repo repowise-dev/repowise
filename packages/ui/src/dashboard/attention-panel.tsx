@@ -49,25 +49,27 @@ const TYPE_LABELS = {
 interface AttentionPanelProps {
   items: AttentionItem[];
   repoId: string;
+  linkPrefix?: string;
 }
 
-function getDefaultHref(item: AttentionItem, repoId: string): string {
+function getDefaultHref(item: AttentionItem, prefix: string): string {
   switch (item.type) {
     case "stale_decision":
     case "proposed_decision":
-      return `/repos/${repoId}/decisions`;
+      return `${prefix}/decisions`;
     case "knowledge_silo":
-      return `/repos/${repoId}/ownership`;
+      return `${prefix}/ownership`;
     case "ungoverned_hotspot":
-      return `/repos/${repoId}/hotspots`;
+      return `${prefix}/hotspots`;
     case "dead_code":
-      return `/repos/${repoId}/dead-code`;
+      return `${prefix}/dead-code`;
     default:
-      return `/repos/${repoId}`;
+      return prefix;
   }
 }
 
-export function AttentionPanel({ items, repoId }: AttentionPanelProps) {
+export function AttentionPanel({ items, repoId, linkPrefix }: AttentionPanelProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
   if (items.length === 0) {
     return (
       <Card>
@@ -97,7 +99,7 @@ export function AttentionPanel({ items, repoId }: AttentionPanelProps) {
         <div className="space-y-1">
           {items.slice(0, 8).map((item) => {
             const Icon = ICON_MAP[item.type];
-            const href = item.href ?? getDefaultHref(item, repoId);
+            const href = item.href ?? getDefaultHref(item, prefix);
             return (
               <a
                 key={item.id}

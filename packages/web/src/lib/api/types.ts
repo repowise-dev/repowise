@@ -714,3 +714,25 @@ export interface WorkspaceCoChangesResponse {
   co_changes: WorkspaceCoChangeEntry[];
   total: number;
 }
+
+export interface WorkspaceGraphNode {
+  repo_id: string;
+  name: string;
+  file_count: number;
+  coverage_pct: number;
+  health_score: number;
+  top_language: string;
+}
+
+export interface WorkspaceGraphEdge {
+  source: string;
+  target: string;
+  type: "contract" | "co_change";
+  strength: number;
+  label: string | null;
+}
+
+export interface WorkspaceGraphResponse {
+  nodes: WorkspaceGraphNode[];
+  edges: WorkspaceGraphEdge[];
+}

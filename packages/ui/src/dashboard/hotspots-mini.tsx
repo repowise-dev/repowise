@@ -7,6 +7,7 @@ import type { Hotspot } from "@repowise-dev/types/git";
 interface HotspotsMiniProps {
   hotspots: Hotspot[];
   repoId: string;
+  linkPrefix?: string;
 }
 
 function getChurnColor(percentile: number): string {
@@ -15,7 +16,8 @@ function getChurnColor(percentile: number): string {
   return "var(--color-accent-primary)";
 }
 
-export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
+export function HotspotsMini({ hotspots, repoId, linkPrefix }: HotspotsMiniProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
   const top = hotspots.slice(0, 5);
 
   if (top.length === 0) {
@@ -41,7 +43,7 @@ export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
             Top Hotspots
           </span>
           <a
-            href={`/repos/${repoId}/hotspots`}
+            href={`${prefix}/hotspots`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             View all
@@ -51,7 +53,11 @@ export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
       <CardContent className="pt-0">
         <div className="space-y-2">
           {top.map((h) => (
-            <div key={h.file_path} className="flex items-center gap-3">
+            <a
+              key={h.file_path}
+              href={`${prefix}/graph?node=${encodeURIComponent(h.file_path)}`}
+              className="flex items-center gap-3 -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
+            >
               <div className="w-16 shrink-0">
                 <div className="h-1.5 rounded-full bg-[var(--color-bg-elevated)] overflow-hidden">
                   <div
@@ -74,7 +80,7 @@ export function HotspotsMini({ hotspots, repoId }: HotspotsMiniProps) {
                   {Math.round(h.churn_percentile)}%
                 </span>
               </div>
-            </div>
+            </a>
           ))}
         </div>
       </CardContent>

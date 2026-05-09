@@ -11,6 +11,7 @@ import type { ExecutionFlowEntry } from "@repowise-dev/types/graph";
 interface ExecutionFlowsPanelProps {
   flows: ExecutionFlowEntry[];
   repoId: string;
+  linkPrefix?: string;
 }
 
 function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
@@ -85,7 +86,8 @@ function FlowRow({ flow }: { flow: ExecutionFlowEntry }) {
   );
 }
 
-export function ExecutionFlowsPanel({ flows, repoId: _repoId }: ExecutionFlowsPanelProps) {
+export function ExecutionFlowsPanel({ flows, repoId, linkPrefix }: ExecutionFlowsPanelProps) {
+  const prefix = linkPrefix ?? `/repos/${repoId}`;
   if (flows.length === 0) {
     return (
       <Card>
@@ -103,7 +105,12 @@ export function ExecutionFlowsPanel({ flows, repoId: _repoId }: ExecutionFlowsPa
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Execution Flows</CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-medium">Execution Flows</CardTitle>
+          <a href={`${prefix}/graph?viewMode=architecture`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+            View in Graph →
+          </a>
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         <div className="divide-y divide-[var(--color-border-default)]">

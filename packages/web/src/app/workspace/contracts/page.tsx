@@ -67,17 +67,17 @@ export default function ContractsPage() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="Total Contracts"
-          value={data?.total_contracts ?? "â€”"}
+          value={data?.total_contracts ?? "—"}
           icon={<Link2 className="h-4 w-4" />}
         />
         <StatCard
           label="Matched Links"
-          value={data?.total_links ?? "â€”"}
+          value={data?.total_links ?? "—"}
           icon={<Link2 className="h-4 w-4 text-green-400" />}
         />
         <StatCard
           label="Unmatched"
-          value={isLoading ? "â€”" : unmatchedCount}
+          value={isLoading ? "—" : unmatchedCount}
           description="No matching provider or consumer"
           icon={<Link2 className="h-4 w-4 text-yellow-400" />}
         />
@@ -86,7 +86,7 @@ export default function ContractsPage() {
           value={
             data?.by_type
               ? Object.values(data.by_type).reduce((a, b) => a + b, 0)
-              : "â€”"
+              : "—"
           }
           description={
             data?.by_type

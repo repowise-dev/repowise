@@ -168,7 +168,7 @@ describe("SecurityFinding canonical shape", () => {
 });
 
 describe("Canonical Hotspot key shape", () => {
-  it("uses file_path, not path â€” raw {path} entries must be adapted", () => {
+  it("uses file_path, not path — raw {path} entries must be adapted", () => {
     expectTypeOf<Hotspot>().toHaveProperty("file_path").toEqualTypeOf<string>();
     // Some downstream backends emit `path`. A `{ path: ... }` object should
     // NOT satisfy Hotspot; this is the contract that forces an adapter call.

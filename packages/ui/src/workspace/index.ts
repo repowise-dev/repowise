@@ -5,3 +5,5 @@ export * from "./cross-repo-summary.js";
 export * from "./package-deps-table.js";
 export * from "./repo-card.js";
 export * from "./repo-card-compact.js";
+export * from "./workspace-graph.js";
+export * from "./workspace-graph-node.js";

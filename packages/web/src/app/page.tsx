@@ -38,12 +38,12 @@ export default async function DashboardPage() {
   const jobList = jobs.status === "fulfilled" ? jobs.value : [];
   const workspace = ws.status === "fulfilled" ? ws.value : null;
 
-  // Workspace mode â†’ workspace dashboard
+  // Workspace mode → workspace dashboard
   if (workspace?.is_workspace) {
     redirect("/workspace");
   }
 
-  // Single repo â†’ go straight to its overview
+  // Single repo → go straight to its overview
   if (repoList.length === 1) {
     redirect(`/repos/${repoList[0].id}/overview`);
   }
@@ -97,7 +97,7 @@ export default async function DashboardPage() {
         <StatCard
           label="Fresh Pages"
           value={formatNumber(freshPages)}
-          description="Confidence â‰¥ 80%"
+          description="Confidence ≥ 80%"
           icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
         />
         <StatCard
@@ -108,7 +108,7 @@ export default async function DashboardPage() {
         />
         <StatCard
           label="Dead Code"
-          value={deadCode > 0 ? formatNumber(deadCode) : "â€”"}
+          value={deadCode > 0 ? formatNumber(deadCode) : "—"}
           description={deadCode > 0 ? "Unused exports" : "Analyze to detect"}
           icon={<Skull className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
         />
@@ -230,7 +230,7 @@ export default async function DashboardPage() {
                         </Badge>
                       </div>
                       <p className="text-xs text-[var(--color-text-tertiary)] mt-0.5">
-                        {job.model_name} Â· {formatRelativeTime(job.updated_at)}
+                        {job.model_name} · {formatRelativeTime(job.updated_at)}
                       </p>
                     </div>
                     </Link>

@@ -3,18 +3,14 @@ import { LANGUAGE_COLORS, languageColor } from "../../lib/confidence";
 // Re-export for convenience
 export { LANGUAGE_COLORS, languageColor };
 
-export const FORCE_COMMUNITY_PALETTE = [
-  "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
-  "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
-];
-
-// ---- Community palette (24 colors, matches graph-inspection-panel.tsx) ----
+// ---- Community palette (24 perceptually-optimized colors for dark backgrounds) ----
 
 export const COMMUNITY_COLORS = [
-  "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#3b82f6", "#a855f7",
-  "#14b8a6", "#f97316", "#84cc16", "#06b6d4", "#e11d48", "#8b5cf6",
-  "#22c55e", "#eab308", "#0ea5e9", "#d946ef", "#ef4444", "#78716c",
-  "#64748b", "#0891b2", "#059669", "#b45309", "#7c3aed", "#db2777",
+  "#FF6B6B", "#4ECDC4", "#FFE66D", "#AA96DA", "#F38181",
+  "#A8E6CF", "#87CEEB", "#F4A460", "#98FB98", "#FF69B4",
+  "#20B2AA", "#FFA07A", "#9370DB", "#3CB371", "#FF7F50",
+  "#6495ED", "#DAA520", "#00CED1", "#FF1493", "#32CD32",
+  "#BA55D3", "#FF8C00", "#7B68EE", "#48D1CC",
 ];
 
 export function getCommunityColor(communityId: number): string {
@@ -50,7 +46,7 @@ export function getNodeMass(
 ): number {
   const baseMassMultiplier = nodeCount > 5000 ? 2 : nodeCount > 1000 ? 1.5 : 1;
   return nodeType === "module"
-    ? 20 * baseMassMultiplier
+    ? 5 * baseMassMultiplier
     : 3 * baseMassMultiplier;
 }
 
@@ -80,9 +76,9 @@ export function getFA2Settings(nodeCount: number): Record<string, unknown> {
   const isLarge = nodeCount >= 2000 && nodeCount < 10000;
 
   return {
-    gravity: isSmall ? 0.8 : isMedium ? 0.5 : isLarge ? 0.3 : 0.15,
-    scalingRatio: isSmall ? 15 : isMedium ? 30 : isLarge ? 60 : 100,
-    slowDown: isSmall ? 1 : isMedium ? 2 : isLarge ? 3 : 5,
+    gravity: isSmall ? 0.8 : isMedium ? 0.5 : isLarge ? 0.3 : 0.2,
+    scalingRatio: isSmall ? 12 : isMedium ? 20 : isLarge ? 30 : 40,
+    slowDown: isSmall ? 10 : isMedium ? 12 : isLarge ? 15 : 20,
     barnesHutOptimize: nodeCount > 200,
     barnesHutTheta: isLarge ? 0.8 : 0.6,
     strongGravityMode: false,
@@ -97,12 +93,12 @@ export function getFA2Settings(nodeCount: number): Record<string, unknown> {
  * How long FA2 should run before stopping (ms).
  */
 export function getLayoutDuration(nodeCount: number): number {
-  if (nodeCount > 10000) return 45000;
-  if (nodeCount > 5000) return 35000;
-  if (nodeCount > 2000) return 30000;
-  if (nodeCount > 1000) return 30000;
-  if (nodeCount > 500) return 25000;
-  return 20000;
+  if (nodeCount > 10000) return 20000;
+  if (nodeCount > 5000) return 15000;
+  if (nodeCount > 2000) return 12000;
+  if (nodeCount > 1000) return 10000;
+  if (nodeCount > 500) return 8000;
+  return 5000;
 }
 
 // ---- Noverlap post-layout settings ----
@@ -118,9 +114,9 @@ export const NOVERLAP_SETTINGS = {
 
 export const LABEL_FONT = "JetBrains Mono, ui-monospace, monospace";
 export const LABEL_SIZE = 11;
-export const LABEL_DENSITY = 0.1;
-export const LABEL_GRID_CELL_SIZE = 70;
-export const LABEL_RENDERED_SIZE_THRESHOLD = 8;
+export const LABEL_DENSITY = 0.15;
+export const LABEL_GRID_CELL_SIZE = 80;
+export const LABEL_RENDERED_SIZE_THRESHOLD = 6;
 
 // ---- Surface depth system (for panels, tooltips, controls) ----
 

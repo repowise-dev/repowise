@@ -3,6 +3,7 @@ import type {
   WorkspaceResponse,
   WorkspaceContractsResponse,
   WorkspaceCoChangesResponse,
+  WorkspaceGraphResponse,
 } from "./types";
 
 export async function getWorkspace(): Promise<WorkspaceResponse> {
@@ -35,4 +36,8 @@ export async function getWorkspaceCoChanges(opts?: {
   if (opts?.min_strength != null) params.min_strength = String(opts.min_strength);
   if (opts?.limit != null) params.limit = String(opts.limit);
   return apiGet<WorkspaceCoChangesResponse>("/api/workspace/co-changes", params);
+}
+
+export async function getWorkspaceGraph(): Promise<WorkspaceGraphResponse> {
+  return apiGet<WorkspaceGraphResponse>("/api/workspace/graph");
 }

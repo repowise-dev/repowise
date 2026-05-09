@@ -1,5 +1,5 @@
 /**
- * @repowise-dev/types â€” canonical TypeScript data contracts for the Repowise
+ * @repowise-dev/types — canonical TypeScript data contracts for the Repowise
  * dashboard (`packages/web`) and any downstream consumer that renders the
  * same engine artifacts.
  *

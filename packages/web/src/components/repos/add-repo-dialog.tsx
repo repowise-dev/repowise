@@ -145,7 +145,7 @@ export function AddRepoDialog({ variant = "default" }: Props) {
                 Cancel
               </Button>
               <Button type="submit" disabled={submitting || !name.trim() || !localPath.trim()}>
-                {submitting ? "Addingâ€¦" : "Add Repository"}
+                {submitting ? "Adding…" : "Add Repository"}
               </Button>
             </DialogFooter>
           </form>

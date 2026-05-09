@@ -13,7 +13,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
   try {
     const repo = await getRepo(id);
-    return { title: `${repo.name} â€” Chat` };
+    return { title: `${repo.name} — Chat` };
   } catch {
     return { title: "Repository" };
   }
