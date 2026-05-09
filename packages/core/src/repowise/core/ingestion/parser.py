@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import structlog
@@ -67,6 +68,33 @@ from .models import (
 log = structlog.get_logger(__name__)
 
 QUERIES_DIR = Path(__file__).parent / "queries"
+
+
+@lru_cache(maxsize=None)
+def _load_compiled_query(lang: str) -> object | None:
+    """Process-wide cache of compiled tree-sitter Query objects by language tag.
+
+    Compiling `.scm` queries is non-trivial; in process-pool parsing each worker
+    would otherwise recompile per file. Keyed by lang because `_get_language`
+    returns a stable Language singleton per tag within a process.
+    """
+    language = _get_language(lang)
+    if language is None:
+        return None
+
+    scm_path = QUERIES_DIR / f"{lang}.scm"
+    if not scm_path.exists():
+        log.debug("No .scm query file found", language=lang, path=str(scm_path))
+        return None
+
+    scm_text = scm_path.read_text(encoding="utf-8")
+    try:
+        from tree_sitter import Query  # type: ignore[attr-defined]
+
+        return Query(language, scm_text)
+    except Exception as exc:
+        log.warning("Failed to compile query", language=lang, error=str(exc))
+        return None
 
 # Languages that intentionally have no AST parser.  Derived from the
 # centralised LanguageRegistry — only non-code passthrough languages are
@@ -474,8 +502,7 @@ class ASTParser:
     """
 
     def __init__(self) -> None:
-        # Cache: lang → compiled Query object (None if .scm not found)
-        self._query_cache: dict[str, object] = {}
+        pass
 
     def parse_file(self, file_info: FileInfo, source: bytes) -> ParsedFile:
         """Parse *source* bytes and return a fully populated ParsedFile."""
@@ -537,28 +564,7 @@ class ASTParser:
 
     def _get_query(self, lang: str, language: Language) -> object | None:
         """Load and cache the compiled tree-sitter Query for *lang*."""
-        if lang in self._query_cache:
-            return self._query_cache[lang]
-
-        scm_lang = lang
-        scm_path = QUERIES_DIR / f"{scm_lang}.scm"
-
-        if not scm_path.exists():
-            log.debug("No .scm query file found", language=lang, path=str(scm_path))
-            self._query_cache[lang] = None
-            return None
-
-        scm_text = scm_path.read_text(encoding="utf-8")
-        try:
-            from tree_sitter import Query  # type: ignore[attr-defined]
-
-            compiled = Query(language, scm_text)
-            self._query_cache[lang] = compiled
-            return compiled
-        except Exception as exc:
-            log.warning("Failed to compile query", language=lang, error=str(exc))
-            self._query_cache[lang] = None
-            return None
+        return _load_compiled_query(lang)
 
     # ------------------------------------------------------------------
     # Symbol extraction
