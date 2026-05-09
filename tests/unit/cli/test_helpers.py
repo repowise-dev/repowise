@@ -123,6 +123,72 @@ class TestStateFile:
 
 
 # ---------------------------------------------------------------------------
+# Update lock
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateLock:
+    def test_acquire_writes_payload(self, tmp_path):
+        from repowise.cli.helpers import acquire_update_lock, read_update_lock
+
+        acquire_update_lock(tmp_path, "abc123def")
+        payload = read_update_lock(tmp_path)
+        assert payload is not None
+        assert payload["target_commit"] == "abc123def"
+        assert isinstance(payload["pid"], int)
+        assert isinstance(payload["started_at"], (int, float))
+
+    def test_release_removes_lock(self, tmp_path):
+        from repowise.cli.helpers import (
+            acquire_update_lock,
+            read_update_lock,
+            release_update_lock,
+        )
+
+        acquire_update_lock(tmp_path, "abc")
+        release_update_lock(tmp_path)
+        assert read_update_lock(tmp_path) is None
+
+    def test_release_is_idempotent(self, tmp_path):
+        from repowise.cli.helpers import release_update_lock
+
+        # Should not raise even when no lock exists.
+        release_update_lock(tmp_path)
+        release_update_lock(tmp_path)
+
+    def test_read_returns_none_when_stale(self, tmp_path):
+        import json
+
+        from repowise.cli.helpers import (
+            UPDATE_LOCK_FILENAME,
+            ensure_repowise_dir,
+            read_update_lock,
+        )
+
+        ensure_repowise_dir(tmp_path)
+        lock_path = tmp_path / ".repowise" / UPDATE_LOCK_FILENAME
+        # Stale: started 2 hours ago
+        lock_path.write_text(
+            json.dumps({"pid": 1, "target_commit": "x", "started_at": 0}),
+            encoding="utf-8",
+        )
+        assert read_update_lock(tmp_path) is None
+
+    def test_read_handles_corrupt_payload(self, tmp_path):
+        from repowise.cli.helpers import (
+            UPDATE_LOCK_FILENAME,
+            ensure_repowise_dir,
+            read_update_lock,
+        )
+
+        ensure_repowise_dir(tmp_path)
+        (tmp_path / ".repowise" / UPDATE_LOCK_FILENAME).write_text(
+            "not json", encoding="utf-8"
+        )
+        assert read_update_lock(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
 # Git HEAD
 # ---------------------------------------------------------------------------
 

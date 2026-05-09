@@ -664,6 +664,7 @@ def _workspace_init(
         state: dict[str, Any] = {
             "last_sync_commit": head,
             "total_pages": pages_count,
+            "docs_enabled": not index_only and provider is not None,
         }
         if not index_only and provider is not None:
             state["provider"] = provider.provider_name
@@ -1357,6 +1358,18 @@ def init_command(
 
     _maybe_generate_claude_md(console, repo_path, no_claude_md=no_claude_md)
 
+    # ---- State (always) ----
+    # Even in index-only mode we persist `last_sync_commit` so that a
+    # subsequent `repowise update` (e.g. fired by the post-commit hook) has
+    # a baseline to diff against. Without this, index-only users hit
+    # "No previous sync found" on every update.
+    head = get_head_commit(repo_path)
+    base_state = load_state(repo_path)
+    base_state["last_sync_commit"] = head
+    base_state["docs_enabled"] = not index_only and provider is not None
+    if index_only or provider is None:
+        save_state(repo_path, base_state)
+
     # ---- State + config (full mode only) ----
     if not index_only and provider:
 
@@ -1394,6 +1407,7 @@ def init_command(
         state["total_pages"] = run_async(_count_db_pages())
         state["provider"] = provider.provider_name
         state["model"] = provider.model_name
+        state["docs_enabled"] = True
         total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
         state["total_tokens"] = total_tokens
         save_state(repo_path, state)

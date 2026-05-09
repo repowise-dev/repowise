@@ -8,17 +8,47 @@ import click
 from rich.table import Table
 
 from repowise.cli.helpers import (
+    acquire_update_lock,
     console,
     ensure_repowise_dir,
     find_workspace_root,
     get_head_commit,
     load_config,
     load_state,
+    release_update_lock,
     resolve_provider,
     resolve_repo_path,
     run_async,
     save_state,
 )
+
+
+# ---------------------------------------------------------------------------
+# Mode resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_index_only_mode(
+    *,
+    index_only: bool,
+    docs_flag: bool | None,
+    state: dict,
+) -> bool:
+    """Decide whether this update should skip LLM regeneration.
+
+    Priority: explicit ``--index-only`` flag > ``--docs/--no-docs`` >
+    ``state.docs_enabled`` (default: True for backward compatibility with
+    state files written before the field existed). Encapsulated as a pure
+    function so the post-commit hook does the right thing without needing
+    any extra knobs at install time.
+    """
+    if index_only:
+        return True
+    if docs_flag is False:
+        return True
+    if docs_flag is None and state.get("docs_enabled", True) is False:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +184,18 @@ def _workspace_update(
         "iteration on extractors / resolvers without spending tokens."
     ),
 )
+@click.option(
+    "--docs/--no-docs",
+    "docs_flag",
+    default=None,
+    help=(
+        "Override the persisted init mode for this run. --no-docs is "
+        "equivalent to --index-only; --docs forces LLM page regeneration "
+        "even when the repo was indexed without docs. Without either flag, "
+        "the value of `docs_enabled` from .repowise/state.json is used "
+        "(set during `repowise init`)."
+    ),
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -164,6 +206,7 @@ def update_command(
     workspace: bool,
     repo_alias: str | None,
     index_only: bool = False,
+    docs_flag: bool | None = None,
     concurrency: int = 5,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync."""
@@ -194,6 +237,20 @@ def update_command(
     if head and head == base_ref:
         console.print("[green]Already up to date.[/green]")
         return
+
+    # --- Resolve effective mode (index-only vs full LLM regen) ---
+    index_only = _resolve_index_only_mode(
+        index_only=index_only, docs_flag=docs_flag, state=state
+    )
+
+    # --- Acquire update lock so the augment hook can suppress its
+    # stale-wiki warning while this run is in flight (typical case: the
+    # post-commit hook fires `repowise update` in the background, then a
+    # follow-on tool call would otherwise warn that HEAD has moved). ---
+    import atexit
+
+    acquire_update_lock(repo_path, head)
+    atexit.register(release_update_lock, repo_path)
 
     console.print(f"[bold]repowise update[/bold] — {repo_path}")
     console.print(f"Diffing [cyan]{base_ref[:8]}..{(head or 'HEAD')[:8]}[/cyan]")

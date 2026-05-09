@@ -362,11 +362,81 @@ def _handle_post_tool_use(tool_input: dict, tool_output: dict, cwd: str) -> str 
     if head == last_sync:
         return None
 
+    # Suppress while a `repowise update` is in flight — the post-commit
+    # hook typically kicks one off in the background, and warning the
+    # agent that the wiki is stale right after the commit is just noise.
+    if _update_in_flight(repo_path, head):
+        return None
+
+    # Once-per-HEAD dedupe: every tool call after a commit would otherwise
+    # repeat the same staleness warning until an update completes (which
+    # may never happen if the user's hook is misconfigured). Cache the
+    # already-warned HEAD so the message fires once per stale state.
+    if _already_warned(repo_path, head):
+        return None
+    _record_warning(repo_path, head)
+
+    docs_enabled = state.get("docs_enabled", True)
+    artifact = "Wiki" if docs_enabled else "Index"
     return (
-        "[repowise] Wiki is stale — last indexed at commit "
+        f"[repowise] {artifact} is stale — last indexed at commit "
         f"{last_sync[:8]}, HEAD is now {head[:8]}. "
         "Run `repowise update` to refresh documentation and graph context."
     )
+
+
+def _update_in_flight(repo_path: "Path", head: str) -> bool:
+    """Return True if a recent `repowise update` is still running.
+
+    Reads ``.repowise/.update.lock`` written by ``update_command``. A lock
+    is considered live if it was written within the last 30 minutes; older
+    entries are treated as crashed runs and ignored. If the lock's target
+    commit matches HEAD, the update will land us in sync — suppress the
+    warning either way.
+    """
+    import time
+
+    lock_path = repo_path / ".repowise" / ".update.lock"
+    if not lock_path.exists():
+        return False
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    started = payload.get("started_at")
+    if not isinstance(started, (int, float)):
+        return False
+    if time.time() - started > 30 * 60:
+        return False
+
+    target = payload.get("target_commit")
+    if target and target == head:
+        return True
+    # Lock is live but for a different (presumably older) commit. The
+    # in-flight update will at least narrow the gap; one more tool call
+    # later will re-evaluate. Suppress for now.
+    return True
+
+
+def _already_warned(repo_path: "Path", head: str) -> bool:
+    """Check the per-HEAD warning marker, written by ``_record_warning``."""
+    marker = repo_path / ".repowise" / ".augment-warned"
+    if not marker.exists():
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == head
+    except OSError:
+        return False
+
+
+def _record_warning(repo_path: "Path", head: str) -> None:
+    """Persist that we have warned about staleness at *head*. Best-effort."""
+    marker = repo_path / ".repowise" / ".augment-warned"
+    try:
+        marker.write_text(head, encoding="utf-8")
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------

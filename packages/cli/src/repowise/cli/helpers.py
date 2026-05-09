@@ -127,6 +127,76 @@ def save_state(repo_path: Path, state: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Update lock — coordinates concurrent `repowise update` invocations and
+# lets the augment hook suppress stale-wiki warnings while a refresh is in
+# flight (post-commit hook firing → tool-call warning would be spurious).
+# ---------------------------------------------------------------------------
+
+UPDATE_LOCK_FILENAME = ".update.lock"
+
+# Locks older than this are considered stale (a crashed update); the hook
+# will ignore them and the next update will overwrite. Generous enough to
+# cover a slow full-update on a large repo.
+UPDATE_LOCK_STALE_AFTER_SECONDS = 30 * 60
+
+
+def _update_lock_path(repo_path: Path) -> Path:
+    return get_repowise_dir(repo_path) / UPDATE_LOCK_FILENAME
+
+
+def acquire_update_lock(repo_path: Path, target_commit: str | None) -> Path:
+    """Write the update lock file. Returns its path.
+
+    The lock contains the PID and target commit so the augment hook can
+    decide whether a stale-wiki warning is redundant. Best-effort: if write
+    fails (read-only fs, permissions), returns the path anyway — callers
+    must still call ``release_update_lock`` in a finally block.
+    """
+    import time
+
+    ensure_repowise_dir(repo_path)
+    lock_path = _update_lock_path(repo_path)
+    payload = {
+        "pid": os.getpid(),
+        "target_commit": target_commit,
+        "started_at": time.time(),
+    }
+    try:
+        lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        pass
+    return lock_path
+
+
+def release_update_lock(repo_path: Path) -> None:
+    """Remove the update lock file. Safe to call if it doesn't exist."""
+    try:
+        _update_lock_path(repo_path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def read_update_lock(repo_path: Path) -> dict[str, Any] | None:
+    """Return the lock payload if present and not stale, else ``None``."""
+    import time
+
+    lock_path = _update_lock_path(repo_path)
+    if not lock_path.exists():
+        return None
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    started = payload.get("started_at")
+    if not isinstance(started, (int, float)):
+        return None
+    if time.time() - started > UPDATE_LOCK_STALE_AFTER_SECONDS:
+        return None
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
 
