@@ -150,6 +150,7 @@ class GraphBuilder:
                 language=sym.language,
                 parent_name=sym.parent_name,
                 signature=sym.signature,
+                decorators=sym.decorators,
             )
 
             # DEFINES edge: file → symbol

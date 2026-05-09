@@ -282,6 +282,105 @@ def test_dynamic_pattern_excluded():
 
 
 # ---------------------------------------------------------------------------
+# 6b. test_nested_function_not_flagged
+# ---------------------------------------------------------------------------
+
+
+def test_nested_function_not_flagged():
+    """Symbols defined inside another function's body cannot be imported by
+    name and must not be flagged as unused exports."""
+    g = _build_graph(
+        nodes={
+            "pkg/server.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "symbols": [
+                    {
+                        "name": "chat",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 10,
+                        "end_line": 80,
+                    },
+                    # Nested closure / inner generator — line range strictly
+                    # contained inside ``chat``.
+                    {
+                        "name": "event_stream",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 25,
+                        "end_line": 60,
+                    },
+                ],
+            },
+        },
+    )
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+        }
+    )
+    sym_names = [f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
+    assert "event_stream" not in sym_names
+
+
+# ---------------------------------------------------------------------------
+# 6c. test_at_prefixed_decorator_excluded
+# ---------------------------------------------------------------------------
+
+
+def test_at_prefixed_decorator_excluded():
+    """Decorators stored with the leading '@' (as the parser emits them)
+    must still match the framework-decorator whitelist."""
+    g = _build_graph(
+        nodes={
+            "pkg/routes.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "symbols": [
+                    {
+                        "name": "list_items",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": ["@router.get(\"/items\")"],
+                        "start_line": 1,
+                        "end_line": 8,
+                    },
+                    {
+                        "name": "lifespan",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": ["@asynccontextmanager"],
+                        "start_line": 10,
+                        "end_line": 20,
+                    },
+                ],
+            },
+        },
+    )
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+        }
+    )
+    sym_names = [f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
+    assert "list_items" not in sym_names
+    assert "lifespan" not in sym_names
+
+
+# ---------------------------------------------------------------------------
 # 7. test_confidence_low_for_recent_files
 # ---------------------------------------------------------------------------
 

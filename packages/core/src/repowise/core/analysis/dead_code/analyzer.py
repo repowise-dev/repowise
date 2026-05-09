@@ -305,6 +305,17 @@ class DeadCodeAnalyzer:
 
             file_has_importers = self.graph.in_degree(node) > 0
 
+            # Function/method line ranges in this file — used to skip symbols
+            # whose definition is nested inside another function (closures,
+            # inner helpers).  Such symbols are only reachable from their
+            # enclosing scope and are guaranteed false positives.
+            enclosing_ranges = [
+                (sym.get("start_line", 0), sym.get("end_line", 0))
+                for sym in symbols
+                if sym.get("kind") in ("function", "method", "async_function")
+                and sym.get("end_line", 0) > sym.get("start_line", 0)
+            ]
+
             for sym in symbols:
                 if sym.get("visibility") != "public":
                     continue
@@ -319,9 +330,25 @@ class DeadCodeAnalyzer:
                 if sym_name.startswith("__") and sym_name.endswith("__"):
                     continue
 
+                # Skip nested defs: a symbol whose start_line falls strictly
+                # inside another function/method's body cannot be imported
+                # by name from outside the enclosing scope.
+                sym_start = sym.get("start_line", 0)
+                if any(
+                    start < sym_start < end
+                    for start, end in enclosing_ranges
+                    if (start, end) != (sym_start, sym.get("end_line", 0))
+                ):
+                    continue
+
+                # Decorators are stored with the leading "@" (e.g. "@app.route").
+                # _FRAMEWORK_DECORATORS entries are bare prefixes, so compare
+                # against the stripped form.
                 decorators = sym.get("decorators", [])
                 if any(
-                    d.startswith(prefix) for d in decorators for prefix in _FRAMEWORK_DECORATORS
+                    d.lstrip("@").startswith(prefix)
+                    for d in decorators
+                    for prefix in _FRAMEWORK_DECORATORS
                 ):
                     continue
 
