@@ -42,14 +42,20 @@ async def _workspace_overview() -> dict:
         async with get_session(ctx.session_factory) as session:
             repo_obj = await _get_repo(session)
 
-            # One-line summary from repo_overview page
+            # One-line summary from repo_overview page. Same multi-row
+            # safety as the single-repo path below.
             ov_result = await session.execute(
-                select(Page.content).where(
+                select(Page.content)
+                .where(
                     Page.repository_id == repo_obj.id,
                     Page.page_type == "repo_overview",
                 )
+                .order_by(
+                    (Page.target_path == repo_obj.name).desc(),
+                    Page.updated_at.desc(),
+                )
             )
-            ov_content = ov_result.scalar_one_or_none() or ""
+            ov_content = ov_result.scalars().first() or ""
             summary = ov_content.split("\n")[0].strip("# ").strip()[:200] if ov_content else ""
 
             # File and symbol counts
@@ -182,14 +188,24 @@ async def get_overview(repo: str | None = None) -> dict:
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
-        # Get repo overview page
+        # Get repo overview page. Older indexes occasionally left a stale
+        # row with target_path='repo' alongside the canonical
+        # target_path=<repo_name> row, so prefer the row matching the repo
+        # name and fall back to the most recently updated one. Using
+        # scalar_one_or_none here would crash with MultipleResultsFound on
+        # those legacy DBs.
         result = await session.execute(
-            select(Page).where(
+            select(Page)
+            .where(
                 Page.repository_id == repository.id,
                 Page.page_type == "repo_overview",
             )
+            .order_by(
+                (Page.target_path == repository.name).desc(),
+                Page.updated_at.desc(),
+            )
         )
-        overview_page = result.scalar_one_or_none()
+        overview_page = result.scalars().first()
 
         # Get module pages
         result = await session.execute(

@@ -807,6 +807,11 @@ class DecisionExtractor:
             dirnames[:] = [
                 d for d in dirnames
                 if d not in _SKIP_DIRS
+                # Skip setuptools build metadata: PKG-INFO embeds the README
+                # verbatim, so example marker lines in docs become spurious
+                # decisions. Same risk for *.dist-info from wheels.
+                and not d.endswith(".egg-info")
+                and not d.endswith(".dist-info")
                 # Skip nested git repositories — they are separate codebases
                 # and should not contribute decisions to the parent repo.
                 and not (Path(dirpath) / d / ".git").exists()
