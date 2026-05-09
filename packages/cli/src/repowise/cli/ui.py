@@ -219,7 +219,23 @@ def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
         lang_parts.append(f"+{len(source_langs) - 4} more")
     lang_line = ", ".join(lang_parts) if lang_parts else "no source files detected"
 
-    body = f"  {header_line}\n  [dim]{lang_line}[/dim]"
+    # Rough wall-time estimate so users know what they're committing to.
+    # Calibrated against ~700-file Python+TS repos: traverse+parse+graph
+    # comes in around 2 min/1k source files, plus ~1 min/100 LLM pages.
+    # We surface a range, not a point, to set honest expectations.
+    src_files = sum(source_langs.values()) or scan.total_files
+    ingest_min = max(1, round(src_files / 500))
+    ingest_max = max(2, round(src_files / 250))
+    eta_line = (
+        f"~{ingest_min}-{ingest_max} min ingestion"
+        " · LLM generation depends on model + page count"
+    )
+
+    body = (
+        f"  {header_line}\n"
+        f"  [dim]{lang_line}[/dim]\n"
+        f"  [dim]{eta_line}[/dim]"
+    )
 
     console.print(
         Panel(
@@ -710,7 +726,7 @@ def interactive_advanced_config(
     )
 
     result["test_run"] = click.confirm(
-        "  Test run? (limit to top 10 files for quick validation)",
+        "  Test run? (full ingestion; LLM page generation limited to top 10 files for quick validation)",
         default=False,
     )
 
