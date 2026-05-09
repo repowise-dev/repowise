@@ -372,8 +372,18 @@ async def get_overview(repo: str | None = None) -> dict:
                 "cohesion": round(cohesion, 3),
             })
 
+        # Older indexes persisted titles like "Repository Overview: repo" because
+        # repo_name was not passed through to generate_repo_overview. Substitute
+        # the actual repo name back in so the response is useful without reindex.
+        if overview_page:
+            persisted_title = overview_page.title or ""
+            title = persisted_title.replace(
+                "Repository Overview: repo", f"Repository Overview: {repository.name}"
+            )
+        else:
+            title = repository.name
         result = {
-            "title": overview_page.title if overview_page else repository.name,
+            "title": title,
             "content_md": overview_page.content if overview_page else "No overview generated yet.",
             "key_modules": [
                 {

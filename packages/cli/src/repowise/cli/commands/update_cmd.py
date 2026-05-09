@@ -144,6 +144,16 @@ def _workspace_update(
     default=None,
     help="Update only this repo alias within the workspace.",
 )
+@click.option(
+    "--index-only",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip LLM page regeneration. Re-parses files, rebuilds the dependency "
+        "graph, and refreshes git/dead-code artifacts only. Useful for tight "
+        "iteration on extractors / resolvers without spending tokens."
+    ),
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -153,6 +163,7 @@ def update_command(
     dry_run: bool,
     workspace: bool,
     repo_alias: str | None,
+    index_only: bool = False,
     concurrency: int = 5,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync."""
@@ -283,6 +294,68 @@ def update_command(
 
     if dry_run:
         console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
+        return
+
+    if index_only:
+        # Refresh graph, git metadata, and dead-code artifacts without
+        # paying for LLM regeneration. Persist what we already computed
+        # above and skip provider/decision/page-generation work.
+        async def _persist_index_only() -> None:
+            from repowise.cli.helpers import get_db_url_for_repo
+            from repowise.core.persistence import (
+                create_engine,
+                create_session_factory,
+                get_session,
+                init_db,
+                upsert_repository,
+            )
+
+            url = get_db_url_for_repo(repo_path)
+            engine = create_engine(url)
+            await init_db(engine)
+            sf = create_session_factory(engine)
+
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=repo_path.name, local_path=str(repo_path)
+                )
+                repo_id = repo.id
+
+                if git_meta_map:
+                    try:
+                        from repowise.core.persistence.crud import (
+                            recompute_git_percentiles,
+                            upsert_git_metadata_bulk,
+                        )
+
+                        await upsert_git_metadata_bulk(
+                            session, repo_id, list(git_meta_map.values())
+                        )
+                        await recompute_git_percentiles(session, repo_id)
+                    except Exception as exc:
+                        console.print(f"[yellow]Git persist skipped: {exc}[/yellow]")
+
+                if dead_code_report is not None:
+                    try:
+                        from repowise.core.persistence.crud import (
+                            save_dead_code_findings,
+                        )
+
+                        await save_dead_code_findings(
+                            session, repo_id, dead_code_report.findings
+                        )
+                    except Exception as exc:
+                        console.print(
+                            f"[yellow]Dead-code persist skipped: {exc}[/yellow]"
+                        )
+
+        run_async(_persist_index_only())
+        save_state(repo_path, {**state, "last_sync_commit": head})
+        elapsed = time.monotonic() - start
+        console.print(
+            f"[green]Index-only update complete[/green] in {elapsed:.1f}s — "
+            "graph + git + dead-code refreshed; LLM pages unchanged."
+        )
         return
 
     provider = resolve_provider(provider_name, model, repo_path=repo_path)

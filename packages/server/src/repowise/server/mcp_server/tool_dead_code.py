@@ -70,7 +70,9 @@ async def get_dead_code(
         min_confidence: Minimum confidence threshold (default 0.5). Use 0.7 for high-confidence
             cleanups only.
         safe_only: Only return findings marked safe_to_delete (default false).
-        limit: Maximum findings per tier (default 20).
+        limit: Maximum findings per tier (default 20). Clamped to 25 because larger
+            payloads exceed MCP transport token caps; paginate by tier/directory/owner
+            for deeper exploration.
         tier: Focus on a single tier: "high" (>=0.8), "medium" (0.5-0.8), or "low" (<0.5).
         directory: Filter findings to a specific directory prefix.
         owner: Filter findings by primary owner name.
@@ -82,6 +84,14 @@ async def get_dead_code(
         no_unreachable: Suppress unreachable-file findings (default false).
         no_unused_exports: Suppress unused-export findings (default false).
     """
+    # MCP transport rejects payloads above ~25k tokens. A single serialized
+    # finding is ~400 chars, so 3 tiers x ~25 findings keeps us under budget
+    # with headroom for summary/grouping fields.
+    _MAX_PER_TIER = 25
+    requested_limit = limit
+    limit = min(max(limit, 1), _MAX_PER_TIER)
+    limit_clamped = requested_limit > _MAX_PER_TIER
+
     # --- repo="all": aggregate dead code across all repos ---
     if repo == "all":
         contexts = await _resolve_all_contexts()
@@ -202,12 +212,19 @@ async def get_dead_code(
         # Cross-repo confidence adjustment for workspace-wide findings
         _adjust_dead_code_cross_repo(tiers, None)
 
-        return {
+        result_ws: dict[str, Any] = {
             "workspace": True,
             "summary": summary,
             "tiers": tiers,
             "impact": _compute_impact(tiers),
         }
+        if limit_clamped:
+            result_ws["limit_note"] = (
+                f"Requested limit={requested_limit} exceeded the MCP transport budget "
+                f"and was clamped to {_MAX_PER_TIER}. Use tier/directory/owner filters "
+                "or paginate to see more findings."
+            )
+        return result_ws
 
     # --- Single repo path ---
     ctx = await _resolve_repo_context(repo)
@@ -293,6 +310,13 @@ async def get_dead_code(
 
     # --- Impact estimate ---
     result["impact"] = _compute_impact(tiers)
+
+    if limit_clamped:
+        result["limit_note"] = (
+            f"Requested limit={requested_limit} exceeded the MCP transport budget "
+            f"and was clamped to {_MAX_PER_TIER}. Use tier/directory/owner filters "
+            "or paginate to see more findings."
+        )
 
     return result
 

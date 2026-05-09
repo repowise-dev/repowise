@@ -297,6 +297,7 @@ class PageGenerator:
         community: dict[str, int],
         git_meta_map: dict[str, dict] | None = None,
         graph_builder: Any | None = None,
+        repo_name: str | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
@@ -323,7 +324,8 @@ class PageGenerator:
             }
         user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
         response = await self._call_provider("repo_overview", user_prompt, str(uuid.uuid4()))
-        repo_name = getattr(repo_structure, "name", "repo")
+        if not repo_name:
+            repo_name = getattr(repo_structure, "name", None) or "repo"
         return self._build_generated_page(
             "repo_overview",
             repo_name,
@@ -858,6 +860,7 @@ class PageGenerator:
                         community,
                         git_meta_map=git_meta_map,
                         graph_builder=graph_builder,
+                        repo_name=repo_name,
                     ),
                 )
             )

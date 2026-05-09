@@ -291,6 +291,15 @@ class DeadCodeAnalyzer:
                     continue
                 sym_name = sym.get("name", "")
 
+                # Methods are not independently importable — they're attribute
+                # access on an instance — so flagging them as unused-exports
+                # produces guaranteed false positives.  Same for dunders, which
+                # are invoked by the language runtime, not by name lookup.
+                if sym.get("kind") == "method":
+                    continue
+                if sym_name.startswith("__") and sym_name.endswith("__"):
+                    continue
+
                 decorators = sym.get("decorators", [])
                 if any(
                     d.startswith(prefix) for d in decorators for prefix in _FRAMEWORK_DECORATORS

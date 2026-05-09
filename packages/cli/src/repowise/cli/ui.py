@@ -490,12 +490,38 @@ def interactive_provider_select(
 
     # --- model ---
     default_model = _PROVIDER_DEFAULTS.get(chosen, "")
+    if not model_flag:
+        console.print(
+            "  [dim]↳ Smaller is fine — repowise is calibrated for "
+            "flash-lite / nano / haiku / 8B-class ollama. Bigger models "
+            "don't improve doc quality.[/]"
+        )
     model = model_flag or click.prompt(
         "  Model",
         default=default_model,
     )
 
+    if not model_flag and _is_flagship_model(model):
+        console.print(
+            f"  [{WARN}]Note:[/] [dim]'{model}' works, but flash-lite / haiku / "
+            "nano produce equivalent docs at ~10x lower cost on most repos.[/]"
+        )
+
     return chosen, model
+
+
+_FLAGSHIP_MODEL_TOKENS = (
+    "opus", "gpt-4o", "gpt-5", "-pro", "sonnet-4-7", "sonnet-4-6",
+    "ultra", "o1", "o3",
+)
+
+
+def _is_flagship_model(model: str) -> bool:
+    """Heuristic: True if the model name suggests a flagship-tier model."""
+    if not model:
+        return False
+    m = model.lower()
+    return any(tok in m for tok in _FLAGSHIP_MODEL_TOKENS)
 
 
 def _prompt_api_key(
@@ -610,15 +636,18 @@ def interactive_advanced_config(
     console.print("  [dim]Gitignore-style patterns, comma-separated or one per line.[/dim]")
     console.print("  [dim]Press Enter with empty input to finish.[/dim]")
     patterns: list[str] = []
+    seen_patterns: set[str] = set()
     while True:
         raw = click.prompt("  Pattern", default="", show_default=False)
         raw = raw.strip()
         if not raw:
             break
-        # Support comma-separated input
+        # Support comma-separated input; dedupe so re-pasting / re-entering
+        # the same suggestions doesn't bloat the summary panel.
         for part in raw.split(","):
             part = part.strip()
-            if part:
+            if part and part not in seen_patterns:
+                seen_patterns.add(part)
                 patterns.append(part)
     result["exclude"] = tuple(patterns)
 
@@ -699,7 +728,11 @@ def interactive_advanced_config(
     summary.add_row("Concurrency", str(result["concurrency"]))
     summary.add_row("Embedder", result["embedder"])
     if patterns:
-        summary.add_row("Exclude", ", ".join(patterns))
+        if len(patterns) <= 5:
+            summary.add_row("Exclude", ", ".join(patterns))
+        else:
+            # Bullet-list when many patterns — comma-joined wraps unreadably.
+            summary.add_row("Exclude", "\n".join(f"• {p}" for p in patterns))
     summary.add_row("Test run", "yes" if result["test_run"] else "no")
 
     console.print(
