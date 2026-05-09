@@ -29,6 +29,20 @@ from repowise.core.pipeline.progress import ProgressCallback
 logger = structlog.get_logger(__name__)
 
 
+def _phase_done(progress: ProgressCallback | None, phase: str) -> None:
+    """Best-effort call to ``progress.on_phase_done`` — older callbacks may
+    not implement it, so fall back to a no-op silently.
+    """
+    if progress is None:
+        return
+    fn = getattr(progress, "on_phase_done", None)
+    if callable(fn):
+        try:
+            fn(phase)
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Process-pool worker (module-level — must be picklable)
 # ---------------------------------------------------------------------------
@@ -414,6 +428,7 @@ async def _run_ingestion(
         await asyncio.to_thread(io_pool.shutdown, wait=True)
 
     repo_structure = traverser.get_repo_structure(file_infos)
+    _phase_done(progress, "traverse")
 
     # Filter
     if skip_tests:
@@ -492,6 +507,8 @@ async def _run_ingestion(
         if _use_process_pool and progress:
             progress.on_item_done("parse")
 
+    _phase_done(progress, "parse")
+
     # ---- tsconfig path-alias resolver (before graph build) ------------------
     try:
         from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
@@ -531,6 +548,7 @@ async def _run_ingestion(
 
     if progress:
         progress.on_item_done("graph")
+    _phase_done(progress, "graph")
 
     # Emit filtering summary so users can see what was included/excluded
     stats = traverser.stats
@@ -623,10 +641,14 @@ async def _run_git_indexing(
             on_commit_done=_on_commit_done,
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
+        _phase_done(progress, "git")
+        _phase_done(progress, "co_change")
         return git_summary, git_metadata_list, git_meta_map
     except Exception as exc:
         if progress:
             progress.on_message("warning", f"Git indexing skipped: {exc}")
+        _phase_done(progress, "git")
+        _phase_done(progress, "co_change")
         return None, [], {}
 
 
@@ -657,10 +679,12 @@ async def _run_dead_code_analysis(
                 f"{unused_exports} unused exports · ~{report.deletable_lines:,} deletable lines",
             )
 
+        _phase_done(progress, "dead_code")
         return report
     except Exception as exc:
         if progress:
             progress.on_message("warning", f"Dead code detection skipped: {exc}")
+        _phase_done(progress, "dead_code")
         return None
 
 
@@ -701,10 +725,12 @@ async def _run_decision_extraction(
                 f"→ {total_decisions} decisions: {inline} inline · {readme} from docs · {git_arch} from git",
             )
 
+        _phase_done(progress, "decisions")
         return report
     except Exception as exc:
         if progress:
             progress.on_message("warning", f"Decision extraction skipped: {exc}")
+        _phase_done(progress, "decisions")
         return None
 
 
@@ -806,5 +832,6 @@ async def run_generation(
 
     if progress:
         progress.on_message("info", f"Generated {len(generated_pages)} pages")
+    _phase_done(progress, "generation")
 
     return generated_pages

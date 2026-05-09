@@ -73,11 +73,38 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "router.put",
     "router.delete",
     "router.patch",
+    "router.head",
+    "router.options",
+    "router.websocket",
     "app.get",
     "app.post",
+    "app.put",
+    "app.delete",
+    "app.patch",
+    "app.head",
+    "app.options",
+    "app.websocket",
+    "app.middleware",
+    "app.exception_handler",
+    # asynccontextmanager / contextmanager — used as values
+    # (e.g. FastAPI(lifespan=...)) rather than imported by name.
+    "asynccontextmanager",
+    "contextmanager",
+    "contextlib.asynccontextmanager",
+    "contextlib.contextmanager",
     # Django
     "admin.register",
     "receiver",
+    # Celery / RQ task registration
+    "app.task",
+    "celery.task",
+    "shared_task",
+    # Click CLI commands — registered with the parent group/command.
+    "click.command",
+    "click.group",
+    # Typer — same shape.
+    "typer.command",
+    "typer.callback",
 )
 
 # Default dynamic patterns (plugins, handlers, etc.)

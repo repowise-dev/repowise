@@ -1147,6 +1147,25 @@ class RichProgressCallback:
         if phase in self._tasks:
             self._progress.advance(self._tasks[phase])
 
+    def on_phase_done(self, phase: str) -> None:
+        """Mark a phase task as fully complete and hide it from the live
+        display, so the phase-summary lines that follow aren't interleaved
+        with stale progress bars (issue: phantom/duplicated progress bars).
+        """
+        task_id = self._tasks.get(phase)
+        if task_id is None:
+            return
+        try:
+            task = next(
+                (t for t in self._progress.tasks if t.id == task_id), None
+            )
+            if task is not None and task.total is not None:
+                self._progress.update(task_id, completed=task.total, visible=False)
+            else:
+                self._progress.update(task_id, visible=False)
+        except Exception:
+            pass
+
     def on_message(self, level: str, text: str) -> None:
         style_map = {"info": OK, "warning": WARN, "error": ERR}
         style = style_map.get(level, "")
