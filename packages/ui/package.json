@@ -47,6 +47,8 @@
     "./blast-radius/*": "./src/blast-radius/*.tsx",
     "./costs": "./src/costs/index.ts",
     "./costs/*": "./src/costs/*.tsx",
+    "./security": "./src/security/index.ts",
+    "./security/*": "./src/security/*.tsx",
     "./settings": "./src/settings/index.ts",
     "./settings/*": "./src/settings/*.tsx",
     "./shared": "./src/shared/index.ts",

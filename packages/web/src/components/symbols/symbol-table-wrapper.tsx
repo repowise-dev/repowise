@@ -4,6 +4,7 @@ import { useState, useMemo } from "react";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { SymbolTable } from "@repowise-dev/ui/symbols/symbol-table";
+import { HotSymbolsBoard, type HotSymbol } from "@repowise-dev/ui/symbols/hot-symbols-board";
 import { SymbolDrawerWrapper } from "./symbol-drawer-wrapper";
 import { listSymbols } from "@/lib/api/symbols";
 import { getGraph } from "@/lib/api/graph";
@@ -72,8 +73,24 @@ export function SymbolTableWrapper({ repoId }: Props) {
   const lastPage = data ? data[data.length - 1] : undefined;
   const hasMore = lastPage?.length === LIMIT;
 
+  const hotSymbols: HotSymbol[] = useMemo(() => {
+    return [...items]
+      .map((s) => {
+        const pr = pagerankMap.get(s.file_path) ?? 0;
+        const cx = Math.max(1, s.complexity_estimate);
+        return { symbol: s, score: pr * (1 + Math.log(cx)), pagerank: pr };
+      })
+      .sort((a, b) => b.score - a.score)
+      .filter((h) => h.score > 0)
+      .slice(0, 8);
+  }, [items, pagerankMap]);
+
   return (
-    <SymbolTable
+    <div className="space-y-6">
+      {hotSymbols.length > 0 && (
+        <HotSymbolsBoard items={hotSymbols} onSelect={setSelected} />
+      )}
+      <SymbolTable
       items={items}
       importanceScores={importanceScores}
       repoId={repoId}
@@ -96,5 +113,6 @@ export function SymbolTableWrapper({ repoId }: Props) {
         />
       }
     />
+    </div>
   );
 }

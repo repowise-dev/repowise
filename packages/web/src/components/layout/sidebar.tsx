@@ -59,6 +59,7 @@ function repoNavItems(repoId: string): NavItem[] {
     { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },
     { label: "Docs", href: `/repos/${repoId}/docs`, icon: BookOpen },
     { label: "Costs", href: `/repos/${repoId}/costs`, icon: DollarSign },
+    { label: "Security", href: `/repos/${repoId}/security`, icon: ShieldAlert },
     { label: "Settings", href: `/repos/${repoId}/settings`, icon: Settings },
   ];
 }
