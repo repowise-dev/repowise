@@ -80,7 +80,7 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="relative flex h-full">
       {/* Tree sidebar */}
       <div
         className={cn(
