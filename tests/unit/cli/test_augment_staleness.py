@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from repowise.cli.commands.augment_cmd import _handle_post_tool_use
+from repowise.cli.commands.augment_cmd import _handle_bash_post
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def _commit(repo_path: Path) -> str:
 
 
 def _post(repo_path: Path):
-    return _handle_post_tool_use(
+    return _handle_bash_post(
         tool_input={"command": "git commit -m 'x'"},
         tool_output={"exit_code": 0},
         cwd=str(repo_path),

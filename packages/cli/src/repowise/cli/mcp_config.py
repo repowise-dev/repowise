@@ -163,26 +163,18 @@ def install_claude_code_hooks() -> Path | None:
     """
     settings_path = _claude_code_settings_path()
 
-    pre_hook_entry = {
-        "matcher": "Grep|Glob",
-        "hooks": [
-            {
-                "type": "command",
-                "command": "repowise-augment",
-                "timeout": 10,
-                "statusMessage": "Enriching with codebase context...",
-            }
-        ],
-    }
-
+    # Single PostToolUse hook covers Bash (stale-wiki nudge) and Grep/Glob
+    # (zero-result rescue + big-result triage). PreToolUse enrichment was
+    # removed: PostToolUse can see the actual result count and is strictly
+    # more informed about whether enrichment will help.
     post_hook_entry = {
-        "matcher": "Bash",
+        "matcher": "Bash|Grep|Glob",
         "hooks": [
             {
                 "type": "command",
                 "command": "repowise-augment",
                 "timeout": 10,
-                "statusMessage": "Checking wiki freshness...",
+                "statusMessage": "Checking codebase context...",
             }
         ],
     }
@@ -196,13 +188,14 @@ def install_claude_code_hooks() -> Path | None:
 
         hooks = existing.setdefault("hooks", {})
 
-        # Merge PreToolUse — migrate legacy entries, then add if missing
+        # Drop any pre-existing repowise PreToolUse entry — the new design
+        # routes everything through PostToolUse.
         pre_hooks = hooks.setdefault("PreToolUse", [])
-        _migrate_legacy_hook(pre_hooks)
-        if not _has_repowise_hook(pre_hooks):
-            pre_hooks.append(pre_hook_entry)
+        _strip_repowise_pretool(pre_hooks)
+        if not pre_hooks:
+            hooks.pop("PreToolUse", None)
 
-        # Merge PostToolUse — migrate legacy entries, then add if missing
+        # PostToolUse: migrate legacy command + matcher, then add if missing.
         post_hooks = hooks.setdefault("PostToolUse", [])
         _migrate_legacy_hook(post_hooks)
         if not _has_repowise_hook(post_hooks):
@@ -224,33 +217,91 @@ def _has_repowise_hook(hook_list: list) -> bool:
     return False
 
 
+def _is_repowise_hook(hook: dict) -> bool:
+    cmd = hook.get("command", "")
+    return "repowise-augment" in cmd or "repowise augment" in cmd
+
+
+def _strip_repowise_pretool(hook_list: list) -> bool:
+    """Remove repowise's PreToolUse entry from a hook bucket in place.
+
+    Pre-0.6.2 versions registered a PreToolUse Grep|Glob hook that
+    enriched every search unconditionally. The new design moves all
+    Grep/Glob enrichment into PostToolUse so the hook can see the
+    actual result count and stay silent on focused searches. Existing
+    users have a stale PreToolUse entry that needs to be removed
+    rather than rewritten — the function it served is now folded into
+    the PostToolUse handler.
+
+    Returns True if anything was removed (caller may want to know).
+    """
+    changed = False
+    for entry in list(hook_list):
+        # Drop only repowise hooks within this entry; if that empties
+        # the entry, drop the entry too. User-defined sibling hooks in
+        # the same matcher block are preserved.
+        kept = [h for h in entry.get("hooks", []) if not _is_repowise_hook(h)]
+        if len(kept) != len(entry.get("hooks", [])):
+            changed = True
+            if kept:
+                entry["hooks"] = kept
+            else:
+                hook_list.remove(entry)
+    return changed
+
+
 def _migrate_legacy_hook(hook_list: list) -> bool:
-    """Rewrite legacy ``repowise augment`` commands to ``repowise-augment``.
+    """In-place migration of legacy PostToolUse entries to current shape.
 
-    Pre-0.6.1 installs registered ``repowise augment``, which goes through
-    the full Click CLI and crashes on any import failure (e.g. missing
-    ``networkx`` in the active venv) — exiting non-zero on every tool call.
-    The standalone ``repowise-augment`` console script is import-isolated
-    and crash-safe; rewrite in place so existing users get the fix.
+    Two layers of legacy:
 
-    Returns True if any entry was changed.
+      * Pre-0.6.1 used the ``repowise augment`` Click subcommand, which
+        crashes if any module in the full CLI fails to import (a single
+        missing dep nukes every Bash/Grep tool call). Rewrite to the
+        import-isolated ``repowise-augment`` console script.
+
+      * Pre-0.6.2 used matcher ``"Bash"`` for the PostToolUse entry.
+        The new design folds Grep/Glob enrichment into the same hook,
+        so the matcher widens to ``"Bash|Grep|Glob"``.
+
+    Idempotent: a hook already in the current shape is left alone.
+    Returns True if anything was changed.
     """
     changed = False
     for entry in hook_list:
+        # Migrate command names.
         for hook in entry.get("hooks", []):
             cmd = hook.get("command", "")
             if cmd == "repowise augment":
                 hook["command"] = "repowise-augment"
                 changed = True
+        # Widen matcher on entries that only carry a repowise hook.
+        matcher = entry.get("matcher", "")
+        only_repowise = entry.get("hooks") and all(
+            _is_repowise_hook(h) for h in entry["hooks"]
+        )
+        if only_repowise and matcher == "Bash":
+            entry["matcher"] = "Bash|Grep|Glob"
+            changed = True
     return changed
 
 
 def migrate_claude_code_hooks() -> bool:
-    """Self-healing migration of pre-0.6.1 hook entries in settings.json.
+    """Self-healing migration of legacy hook entries in settings.json.
 
     Idempotent and silent — does nothing if the file is missing, malformed,
-    or already migrated. Writes settings.json only when a legacy
-    ``repowise augment`` entry was actually rewritten to ``repowise-augment``.
+    or already migrated. Writes settings.json only when a legacy entry
+    was actually rewritten or stripped.
+
+    Two migrations are applied:
+
+      1. PostToolUse: legacy ``repowise augment`` command names are
+         rewritten to ``repowise-augment`` (pre-0.6.1), and the
+         matcher is widened from ``"Bash"`` to ``"Bash|Grep|Glob"``
+         (pre-0.6.2) so a single hook serves all three tool types.
+      2. PreToolUse: any repowise-owned entry is removed entirely.
+         The new design moves Grep/Glob enrichment into PostToolUse,
+         which can see the actual result count.
 
     Called from both ``cli.main`` (so any ``repowise <command>`` after
     upgrade self-heals) and ``augment_hook`` (so users whose only repowise
@@ -267,8 +318,6 @@ def migrate_claude_code_hooks() -> bool:
     try:
         existing = _load_existing_config(settings_path)
     except Exception:
-        # Malformed JSON, etc. — bail silently; the user will see this on
-        # their next `repowise init`, where it raises a ClickException.
         return False
 
     hooks = existing.get("hooks")
@@ -276,11 +325,20 @@ def migrate_claude_code_hooks() -> bool:
         return False
 
     changed = False
-    for key in ("PreToolUse", "PostToolUse"):
-        bucket = hooks.get(key)
-        if isinstance(bucket, list):
-            if _migrate_legacy_hook(bucket):
-                changed = True
+
+    # Strip stale PreToolUse repowise entry.
+    pre = hooks.get("PreToolUse")
+    if isinstance(pre, list):
+        if _strip_repowise_pretool(pre):
+            changed = True
+            if not pre:
+                hooks.pop("PreToolUse", None)
+
+    # Migrate PostToolUse.
+    post = hooks.get("PostToolUse")
+    if isinstance(post, list):
+        if _migrate_legacy_hook(post):
+            changed = True
 
     if not changed:
         return False
