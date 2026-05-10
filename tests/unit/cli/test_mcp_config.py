@@ -132,11 +132,63 @@ def test_install_claude_code_hooks_merges_valid_existing_file(
     assert saved["permissions"] == {"allow": ["Bash(git status:*)"]}
     assert saved["hooks"]["PreToolUse"][0]["matcher"] == "Read"
     assert any(
-        hook["command"] == "repowise augment"
+        hook["command"] == "repowise-augment"
         for entry in saved["hooks"]["PreToolUse"]
         for hook in entry["hooks"]
     )
     assert "PostToolUse" in saved["hooks"]
+
+
+def test_install_claude_code_hooks_migrates_legacy_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-0.6.1 installs wrote ``repowise augment`` (the Click CLI), which
+    crashes whenever any subcommand fails to import. The installer should
+    rewrite in place to the import-isolated ``repowise-augment`` script."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Grep|Glob",
+                            "hooks": [
+                                {"type": "command", "command": "repowise augment"}
+                            ],
+                        }
+                    ],
+                    "PostToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command", "command": "repowise augment"}
+                            ],
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert mcp_config.install_claude_code_hooks() == settings_path
+
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    pre_cmds = [
+        h["command"]
+        for entry in saved["hooks"]["PreToolUse"]
+        for h in entry["hooks"]
+    ]
+    post_cmds = [
+        h["command"]
+        for entry in saved["hooks"]["PostToolUse"]
+        for h in entry["hooks"]
+    ]
+    assert pre_cmds == ["repowise-augment"]
+    assert post_cmds == ["repowise-augment"]
 
 
 def test_install_claude_code_hooks_rejects_invalid_existing_file(

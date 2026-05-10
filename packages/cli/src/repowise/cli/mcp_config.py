@@ -168,7 +168,7 @@ def install_claude_code_hooks() -> Path | None:
         "hooks": [
             {
                 "type": "command",
-                "command": "repowise augment",
+                "command": "repowise-augment",
                 "timeout": 10,
                 "statusMessage": "Enriching with codebase context...",
             }
@@ -180,7 +180,7 @@ def install_claude_code_hooks() -> Path | None:
         "hooks": [
             {
                 "type": "command",
-                "command": "repowise augment",
+                "command": "repowise-augment",
                 "timeout": 10,
                 "statusMessage": "Checking wiki freshness...",
             }
@@ -196,13 +196,15 @@ def install_claude_code_hooks() -> Path | None:
 
         hooks = existing.setdefault("hooks", {})
 
-        # Merge PreToolUse — avoid duplicates
+        # Merge PreToolUse — migrate legacy entries, then add if missing
         pre_hooks = hooks.setdefault("PreToolUse", [])
+        _migrate_legacy_hook(pre_hooks)
         if not _has_repowise_hook(pre_hooks):
             pre_hooks.append(pre_hook_entry)
 
-        # Merge PostToolUse — avoid duplicates
+        # Merge PostToolUse — migrate legacy entries, then add if missing
         post_hooks = hooks.setdefault("PostToolUse", [])
+        _migrate_legacy_hook(post_hooks)
         if not _has_repowise_hook(post_hooks):
             post_hooks.append(post_hook_entry)
 
@@ -213,13 +215,30 @@ def install_claude_code_hooks() -> Path | None:
 
 
 def _has_repowise_hook(hook_list: list) -> bool:
-    """Check if a repowise augment hook is already registered."""
+    """Check if a repowise hook is already registered (current or legacy)."""
     for entry in hook_list:
         for hook in entry.get("hooks", []):
             cmd = hook.get("command", "")
-            if "repowise augment" in cmd:
+            if "repowise-augment" in cmd or "repowise augment" in cmd:
                 return True
     return False
+
+
+def _migrate_legacy_hook(hook_list: list) -> None:
+    """Rewrite legacy ``repowise augment`` commands to ``repowise-augment``.
+
+    Pre-0.6.1 installs registered ``repowise augment``, which goes through
+    the full Click CLI and crashes on any import failure (e.g. missing
+    ``networkx`` in the active venv) — exiting non-zero on every tool call.
+    The standalone ``repowise-augment`` console script is import-isolated
+    and crash-safe; rewrite in place so existing users get the fix the next
+    time ``repowise init`` runs.
+    """
+    for entry in hook_list:
+        for hook in entry.get("hooks", []):
+            cmd = hook.get("command", "")
+            if cmd == "repowise augment":
+                hook["command"] = "repowise-augment"
 
 
 def format_setup_instructions(repo_path: Path) -> str:
