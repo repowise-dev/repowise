@@ -6,6 +6,7 @@ export * from "./graph-doc-panel.js";
 export * from "./graph-community-panel.js";
 export * from "./graph-inspection-panel.js";
 export * from "./path-finder-panel.js";
+export * from "./centrality-leaderboard.js";
 export * from "./graph-flow.js";
 export * from "./context.js";
 export * from "./elk-layout.js";
