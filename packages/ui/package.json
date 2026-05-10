@@ -48,6 +48,7 @@
     "./settings": "./src/settings/index.ts",
     "./settings/*": "./src/settings/*.tsx",
     "./shared": "./src/shared/index.ts",
+    "./shared/entity": "./src/shared/entity/index.ts",
     "./shared/*": "./src/shared/*.tsx",
     "./hooks": "./src/hooks/index.ts",
     "./ui": "./src/ui/index.ts",
@@ -67,6 +68,7 @@
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-hover-card": "^1.1.15",
     "@radix-ui/react-label": "^2.1.8",
     "@radix-ui/react-progress": "^1.1.8",
     "@radix-ui/react-scroll-area": "^1.2.10",
