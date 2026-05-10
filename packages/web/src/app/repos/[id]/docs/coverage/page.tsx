@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import { FileCheck } from "lucide-react";
 import { CoverageDonut } from "@repowise-dev/ui/coverage/coverage-donut";
+import { DriftBanner } from "@repowise-dev/ui/coverage/drift-banner";
+import { ConfidenceVsFreshnessMatrix } from "@repowise-dev/ui/coverage/confidence-vs-freshness-matrix";
 import { FreshnessTableWithRegenerate } from "@/components/coverage/freshness-table-wrapper";
+import type { DocPage } from "@repowise-dev/types/docs";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { listPages } from "@/lib/api/pages";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
@@ -92,6 +95,12 @@ export default async function CoveragePage({
             </span>
           </div>
         </div>
+      )}
+
+      <DriftBanner pages={pages as DocPage[]} />
+
+      {pages.length > 0 && (
+        <ConfidenceVsFreshnessMatrix pages={pages as DocPage[]} />
       )}
 
       <FreshnessTableWithRegenerate pages={pages} />
