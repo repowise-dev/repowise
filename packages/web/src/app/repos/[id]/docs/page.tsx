@@ -1,11 +1,15 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useMemo, useState } from "react";
+import useSWR from "swr";
 import { Download, FolderArchive, Loader2 } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
+import { FirstFiveFiles, type FirstFiveFile } from "@repowise-dev/ui/onboarding/first-five-files";
 import { DocsExplorer } from "@/components/docs/docs-explorer";
 import { listAllPages } from "@/lib/api/pages";
+import { getGraph } from "@/lib/api/graph";
 import { downloadTextFile } from "@/lib/utils/download";
+import type { GraphExportResponse } from "@/lib/api/types";
 
 export default function DocsPage({
   params,
@@ -14,6 +18,28 @@ export default function DocsPage({
 }) {
   const { id: repoId } = use(params);
   const [isExporting, setIsExporting] = useState(false);
+
+  const { data: graphData } = useSWR<GraphExportResponse>(
+    `graph:${repoId}`,
+    () => getGraph(repoId),
+    { revalidateOnFocus: false, revalidateOnReconnect: false },
+  );
+
+  const startHere: FirstFiveFile[] = useMemo(() => {
+    if (!graphData) return [];
+    const entries = graphData.nodes.filter((n) => n.is_entry_point);
+    const pool = entries.length > 0 ? entries : graphData.nodes;
+    return [...pool]
+      .sort((a, b) => b.pagerank - a.pagerank)
+      .slice(0, 5)
+      .map((n) => ({
+        file_path: n.node_id,
+        is_entry_point: n.is_entry_point,
+        has_doc: n.has_doc,
+        pagerank: n.pagerank,
+        reason: n.is_entry_point ? "entry point" : "high centrality",
+      }));
+  }, [graphData]);
 
   const handleExportAll = async () => {
     setIsExporting(true);
@@ -63,6 +89,16 @@ export default function DocsPage({
           </Button>
         </div>
       </div>
+
+      {startHere.length > 0 && (
+        <div className="px-4 sm:px-6 pt-3">
+          <FirstFiveFiles
+            files={startHere}
+            title="Start here"
+            hrefFor={(f) => `/repos/${repoId}/wiki/${encodeURIComponent(f.file_path)}`}
+          />
+        </div>
+      )}
 
       {/* Explorer */}
       <div className="flex-1 min-h-0">

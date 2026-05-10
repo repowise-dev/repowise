@@ -18,6 +18,8 @@ const SEGMENT_LABELS: Record<string, string> = {
   "blast-radius": "Blast Radius",
   decisions: "Decisions",
   costs: "Costs",
+  risk: "Risk",
+  security: "Security",
   settings: "Settings",
 };
 
