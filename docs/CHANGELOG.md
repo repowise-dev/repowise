@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] — 2026-05-10
+
+### Added
+- **Risk page (consolidated).** New `/repos/<id>/risk` route brings the Heatmap, Hotspots, Dead Code, and Impact views under a single page with a persistent summary strip across the top. Hotspot rows are now clickable and open the universal File Card (#168).
+- **Security page.** New `/repos/<id>/security` route renders severity distribution, findings-by-directory, and a clickable findings table over the existing security signals (#168).
+- **Costs reorganization.** `/repos/<id>/costs` now splits into five tabs — Daily, Cache, Hotspots, Providers, Operations — backed by new `cache-hit-ratio-card`, `cost-heatmap`, `operation-breakdown`, and `provider-comparison` components (#168).
+- **Universal File Card.** New `FileCard` + `FileCardDialog` (`@repowise-dev/ui/shared/file-card`) shows a unified overview of any file — git signals, docs, symbols, dead-code findings, decisions, security issues — with sections that render only when the underlying data exists. Wired into Risk and Symbols (#168).
+- **Hot Symbols Board** with score-driven intensity bars over the symbols table; **Centrality Leaderboard** as a collapsible right-rail panel on the graph view (PageRank / Betweenness / Degree) (#168).
+- **Docs onboarding.** `FirstFiveFiles` "Start here" card on the Docs page (collapsed by default) links to `/docs?page=<id>`. New `DriftBanner` and `ConfidenceVsFreshnessMatrix` on docs/coverage. Mermaid diagrams now have a maximize button with a zoom/pan modal and a neutral brand theme (#168).
+- **Cross-page surfacing.** Shared `RelatedAcrossRepowise` collapsible footer plus new `EntityLink` / `EntityHoverCard` primitives and a `ContextDrawer` scaffold with URL sync (#168).
+- **`packages/ui` exports.** New entry points: `./costs`, `./security`, `./onboarding`, `./shared/file-card`, `./shared/related` (#168).
+
+### Fixed
+- **SymbolDrawer right-rail text cutoff** — drawer widened and `ScrollArea` padding adjusted (#168).
+- **Risk Hotspots table overflow** — long rows now truncate cleanly and open the File Card on click instead of pushing the layout (#168).
+- **Health-score ring** skipped doc components for index-only repos so the score reflects what was actually computed (#168).
+- **Chat `ToolCallBlock` hydration error** — split a button nested inside another button into sibling elements (#168).
+- **Docs explorer sidebar toggle** anchored to its `relative` parent instead of falling back to the viewport, so it no longer overlaps the header (#168).
+- **Docs "Start here" links** now route to `/docs?page=<id>` instead of broken wiki slugs (#168).
+
+---
+
 ## [0.6.2] — 2026-05-10
 
 ### Fixed
