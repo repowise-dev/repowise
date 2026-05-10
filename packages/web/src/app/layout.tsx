@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
@@ -55,18 +56,20 @@ export default async function RootLayout({
         </a>
         <NuqsAdapter>
         <TooltipProvider delayDuration={300}>
-          <ContextDrawerShell>
-            <div className="flex h-screen overflow-hidden">
-              <Sidebar repos={repos} workspace={workspace} />
-              <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-                <MobileNav repos={repos} workspace={workspace} />
-                <main id="main-content" className="flex-1 overflow-auto min-w-0">
-                  {children}
-                </main>
+          <Suspense fallback={null}>
+            <ContextDrawerShell>
+              <div className="flex h-screen overflow-hidden">
+                <Sidebar repos={repos} workspace={workspace} />
+                <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+                  <MobileNav repos={repos} workspace={workspace} />
+                  <main id="main-content" className="flex-1 overflow-auto min-w-0">
+                    {children}
+                  </main>
+                </div>
               </div>
-            </div>
-            <CommandPalette repos={repos} workspace={workspace} />
-          </ContextDrawerShell>
+              <CommandPalette repos={repos} workspace={workspace} />
+            </ContextDrawerShell>
+          </Suspense>
         </TooltipProvider>
         </NuqsAdapter>
         <Toaster

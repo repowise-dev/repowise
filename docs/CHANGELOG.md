@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.1] — 2026-05-10
+
+### Fixed
+- **`repowise serve` 404 on the web tarball for v0.7.0.** The v0.7.0 publish workflow failed during the web build: `useSearchParams()` inside the new `ContextDrawerShell` (mounted in the root layout for the `?drawer=` URL sync added in #168) tripped Next.js' static prerender of `/settings` with a missing-Suspense bailout. The Python wheel published to PyPI but no `repowise-web.tar.gz` was attached to the v0.7.0 GitHub release, so end-user `repowise serve` falls through to "API only". v0.7.1 wraps `ContextDrawerShell` in a `<Suspense>` boundary in `packages/web/src/app/layout.tsx` so the layout no longer blocks static prerendering. **Anyone who installed 0.7.0 should upgrade to 0.7.1** to get a working web UI from `repowise serve`.
+
+---
+
 ## [0.7.0] — 2026-05-10
 
 ### Added
