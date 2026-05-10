@@ -114,7 +114,7 @@ export function SymbolGraphPanel({
 
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-4 p-1">
+      <div className="space-y-4 px-3 py-3">
         <div>
           <p className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
             Graph Metrics

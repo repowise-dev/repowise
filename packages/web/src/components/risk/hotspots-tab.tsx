@@ -1,6 +1,9 @@
 "use client";
 
 import useSWR from "swr";
+import { useFileCardHost } from "@/components/shared/file-card-host";
+import type { HotspotResponse as HotspotRowType } from "@/lib/api/types";
+import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
 import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
 import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
@@ -13,7 +16,24 @@ import { getHotspots, getGitSummary } from "@/lib/api/git";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type { GitSummaryResponse, HotspotResponse } from "@/lib/api/types";
 
+function hotspotToFileCard(h: HotspotRowType): FileCardData {
+  return {
+    file_path: h.file_path,
+    git: {
+      churn_percentile: h.churn_percentile,
+      commit_count_90d: h.commit_count_90d,
+      lines_added_90d: h.lines_added_90d,
+      lines_deleted_90d: h.lines_deleted_90d,
+      bus_factor: h.bus_factor,
+      primary_owner: h.primary_owner,
+      is_hotspot: h.is_hotspot,
+      temporal_hotspot_score: h.temporal_hotspot_score,
+    },
+  };
+}
+
 export function HotspotsTab({ repoId }: { repoId: string }) {
+  const { showFile, dialog } = useFileCardHost(repoId);
   const { data: hotspots, isLoading: loadingHotspots, error: hotspotsError } = useSWR<HotspotResponse[]>(
     `risk-hotspots:${repoId}`,
     () => getHotspots(repoId, 100),
@@ -106,7 +126,7 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
         <div className="xl:col-span-3">
-          <HotspotTable hotspots={list} repoId={repoId} />
+          <HotspotTable hotspots={list} repoId={repoId} onSelect={(h) => showFile(hotspotToFileCard(h))} />
         </div>
 
         {summary && summary.top_owners.length > 0 && (
@@ -135,6 +155,7 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
           </Card>
         )}
       </div>
+      {dialog}
     </div>
   );
 }

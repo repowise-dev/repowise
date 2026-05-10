@@ -15,6 +15,13 @@ interface HotspotTableProps {
   hotspots: Hotspot[];
   repoId?: string;
   linkPrefix?: string;
+  /**
+   * Optional row-click handler. When set, the entire row becomes clickable and
+   * the host can render a FileCardDialog (or similar) populated from the
+   * passed Hotspot. The action buttons in the rightmost column are still
+   * clickable independently — they stop propagation.
+   */
+  onSelect?: (hotspot: Hotspot) => void;
 }
 
 type Filter = "all" | "hot" | "risk" | "accelerating";
@@ -33,7 +40,7 @@ function ariaSortFor(column: SortKey, sortKey: SortKey, sortDir: SortDir): "none
   return sortDir === "asc" ? "ascending" : "descending";
 }
 
-export function HotspotTable({ hotspots, repoId, linkPrefix }: HotspotTableProps) {
+export function HotspotTable({ hotspots, repoId, linkPrefix, onSelect }: HotspotTableProps) {
   const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -139,7 +146,7 @@ export function HotspotTable({ hotspots, repoId, linkPrefix }: HotspotTableProps
         <EmptyState title="No matches" description="Try adjusting your search or filters." />
       ) : (
         <div className="rounded-lg border border-[var(--color-border-default)] overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[760px] text-sm">
             <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
               <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-8">
@@ -192,12 +199,16 @@ export function HotspotTable({ hotspots, repoId, linkPrefix }: HotspotTableProps
                 return (
                   <tr
                     key={h.file_path}
-                    className="border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0"
+                    onClick={onSelect ? () => onSelect(h) : undefined}
+                    className={cn(
+                      "border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0",
+                      onSelect && "cursor-pointer",
+                    )}
                   >
                     <td className="px-3 py-2.5 text-[var(--color-text-tertiary)] tabular-nums text-xs">
                       {i + 1}
                     </td>
-                    <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[220px] max-w-[520px]">
+                    <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[180px] max-w-[420px]">
                       <span className="block truncate" title={h.file_path}>{h.file_path}</span>
                     </td>
                     <td className="px-3 py-2.5 tabular-nums text-xs text-right">
@@ -255,7 +266,7 @@ export function HotspotTable({ hotspots, repoId, linkPrefix }: HotspotTableProps
                     <td className="px-3 py-2.5 text-xs text-[var(--color-text-secondary)] hidden md:table-cell">
                       {h.primary_owner ?? "—"}
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-1">
                         {h.is_hotspot && <Badge variant="outdated">Hot</Badge>}
                         {h.is_stable && <Badge variant="fresh">Stable</Badge>}

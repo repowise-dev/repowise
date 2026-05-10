@@ -52,6 +52,7 @@
     "./shared": "./src/shared/index.ts",
     "./shared/entity": "./src/shared/entity/index.ts",
     "./shared/context-drawer": "./src/shared/context-drawer/index.ts",
+    "./shared/file-card": "./src/shared/file-card/index.ts",
     "./shared/*": "./src/shared/*.tsx",
     "./hooks": "./src/hooks/index.ts",
     "./ui": "./src/ui/index.ts",

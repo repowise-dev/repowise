@@ -26,7 +26,7 @@ interface SymbolDrawerProps {
 export function SymbolDrawer({ symbol, onClose, graphPanel }: SymbolDrawerProps) {
   return (
     <Dialog open={symbol !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-[90vw] w-[900px] max-h-[85vh] overflow-hidden p-0">
+      <DialogContent className="max-w-[95vw] w-[1000px] max-h-[88vh] overflow-hidden p-0">
         {symbol && (
           <>
             <div className="px-6 pt-6 pb-3">
@@ -80,7 +80,7 @@ export function SymbolDrawer({ symbol, onClose, graphPanel }: SymbolDrawerProps)
               </ScrollArea>
 
               {graphPanel && (
-                <div className="hidden md:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-[280px] shrink-0 overflow-hidden">
+                <div className="hidden md:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-[340px] shrink-0 overflow-hidden">
                   {graphPanel}
                 </div>
               )}
