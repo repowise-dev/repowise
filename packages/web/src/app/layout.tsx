@@ -7,6 +7,7 @@ import { TooltipProvider } from "@repowise-dev/ui/ui/tooltip";
 import { Sidebar } from "@/components/layout/sidebar";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
+import { ContextDrawerShell } from "@/components/layout/context-drawer-provider";
 import { listRepos } from "@/lib/api/repos";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceResponse } from "@/lib/api/types";
@@ -54,16 +55,18 @@ export default async function RootLayout({
         </a>
         <NuqsAdapter>
         <TooltipProvider delayDuration={300}>
-          <div className="flex h-screen overflow-hidden">
-            <Sidebar repos={repos} workspace={workspace} />
-            <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-              <MobileNav repos={repos} workspace={workspace} />
-              <main id="main-content" className="flex-1 overflow-auto min-w-0">
-                {children}
-              </main>
+          <ContextDrawerShell>
+            <div className="flex h-screen overflow-hidden">
+              <Sidebar repos={repos} workspace={workspace} />
+              <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+                <MobileNav repos={repos} workspace={workspace} />
+                <main id="main-content" className="flex-1 overflow-auto min-w-0">
+                  {children}
+                </main>
+              </div>
             </div>
-          </div>
-          <CommandPalette repos={repos} workspace={workspace} />
+            <CommandPalette repos={repos} workspace={workspace} />
+          </ContextDrawerShell>
         </TooltipProvider>
         </NuqsAdapter>
         <Toaster
