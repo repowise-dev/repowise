@@ -132,11 +132,165 @@ def test_install_claude_code_hooks_merges_valid_existing_file(
     assert saved["permissions"] == {"allow": ["Bash(git status:*)"]}
     assert saved["hooks"]["PreToolUse"][0]["matcher"] == "Read"
     assert any(
-        hook["command"] == "repowise augment"
+        hook["command"] == "repowise-augment"
         for entry in saved["hooks"]["PreToolUse"]
         for hook in entry["hooks"]
     )
     assert "PostToolUse" in saved["hooks"]
+
+
+def test_install_claude_code_hooks_migrates_legacy_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-0.6.1 installs wrote ``repowise augment`` (the Click CLI), which
+    crashes whenever any subcommand fails to import. The installer should
+    rewrite in place to the import-isolated ``repowise-augment`` script."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Grep|Glob",
+                            "hooks": [
+                                {"type": "command", "command": "repowise augment"}
+                            ],
+                        }
+                    ],
+                    "PostToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command", "command": "repowise augment"}
+                            ],
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert mcp_config.install_claude_code_hooks() == settings_path
+
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    pre_cmds = [
+        h["command"]
+        for entry in saved["hooks"]["PreToolUse"]
+        for h in entry["hooks"]
+    ]
+    post_cmds = [
+        h["command"]
+        for entry in saved["hooks"]["PostToolUse"]
+        for h in entry["hooks"]
+    ]
+    assert pre_cmds == ["repowise-augment"]
+    assert post_cmds == ["repowise-augment"]
+
+
+def test_migrate_claude_code_hooks_rewrites_legacy_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Self-heal path: any `repowise <cmd>` after upgrade should rewrite a
+    legacy ``repowise augment`` entry to ``repowise-augment`` in place."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Grep|Glob",
+                            "hooks": [
+                                {"type": "command", "command": "repowise augment"}
+                            ],
+                        }
+                    ],
+                    "PostToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command", "command": "repowise augment"}
+                            ],
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert mcp_config.migrate_claude_code_hooks() is True
+
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    pre_cmds = [
+        h["command"]
+        for entry in saved["hooks"]["PreToolUse"]
+        for h in entry["hooks"]
+    ]
+    post_cmds = [
+        h["command"]
+        for entry in saved["hooks"]["PostToolUse"]
+        for h in entry["hooks"]
+    ]
+    assert pre_cmds == ["repowise-augment"]
+    assert post_cmds == ["repowise-augment"]
+
+    # Idempotent: a second run finds nothing to do and returns False.
+    assert mcp_config.migrate_claude_code_hooks() is False
+
+
+def test_migrate_claude_code_hooks_noop_when_already_migrated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must not rewrite settings.json when the new command is already in place."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    payload = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Grep|Glob",
+                    "hooks": [{"type": "command", "command": "repowise-augment"}],
+                }
+            ]
+        }
+    }
+    original = json.dumps(payload, indent=2) + "\n"
+    settings_path.write_text(original, encoding="utf-8")
+    mtime_before = settings_path.stat().st_mtime_ns
+
+    assert mcp_config.migrate_claude_code_hooks() is False
+    # File untouched — same content, same mtime (the function returned before write).
+    assert settings_path.read_text(encoding="utf-8") == original
+    assert settings_path.stat().st_mtime_ns == mtime_before
+
+
+def test_migrate_claude_code_hooks_silent_when_settings_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # No ~/.claude/settings.json at all.
+    assert mcp_config.migrate_claude_code_hooks() is False
+
+
+def test_migrate_claude_code_hooks_silent_on_malformed_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed settings.json must not raise — the user sees the error
+    on their next `repowise init`, not via a self-heal pass."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text("{ not json", encoding="utf-8")
+
+    assert mcp_config.migrate_claude_code_hooks() is False
 
 
 def test_install_claude_code_hooks_rejects_invalid_existing_file(

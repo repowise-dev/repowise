@@ -843,12 +843,13 @@ Hooks are written to `~/.claude/settings.json` automatically during `repowise in
 | `PreToolUse` | `Grep\|Glob` | Query `wiki.db` and prepend graph context to the result |
 | `PostToolUse` | `Bash` | Check for git operations and notify if wiki is stale |
 
-Both hooks call the `repowise augment` CLI command internally. Hooks are designed for graceful failure — any error results in a silent exit so a repowise issue never breaks the agent.
+Both hooks call the `repowise-augment` console script — a standalone, import-isolated entry point that does not load the full `repowise` CLI. This keeps cold start under the 500ms target and ensures a broken environment (missing optional dep, corrupt DB, etc.) never crashes the agent: any failure exits 0 silently. The equivalent `repowise augment` Click subcommand still exists for manual debugging.
 
 ### CLI command
 
 ```bash
-repowise augment    # Not meant to be called manually — invoked by Claude Code hooks
+repowise-augment    # Not meant to be called manually — invoked by Claude Code hooks
+repowise augment    # Equivalent Click subcommand, useful for manual debugging
 ```
 
 ### Sample enrichment output
