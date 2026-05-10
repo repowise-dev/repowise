@@ -16,6 +16,13 @@ interface HealthScoreRingProps {
   score: number;
   size?: number;
   components?: HealthScoreComponent[];
+  /**
+   * Optional note rendered at the top of the score breakdown (e.g.
+   * to explain that some components were skipped because docs weren't
+   * generated). Surfacing the explanation here keeps `index-only` repos
+   * from looking unfairly penalized without bloating the ring itself.
+   */
+  note?: string;
 }
 
 function getScoreColor(score: number): string {
@@ -32,7 +39,7 @@ function getScoreLabel(score: number): string {
   return "Critical";
 }
 
-export function HealthScoreRing({ score, size = 160, components }: HealthScoreRingProps) {
+export function HealthScoreRing({ score, size = 160, components, note }: HealthScoreRingProps) {
   const [mounted, setMounted] = useState(false);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -105,6 +112,11 @@ export function HealthScoreRing({ score, size = 160, components }: HealthScoreRi
           <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
             Score = weighted average of {components.length} components
           </p>
+          {note && (
+            <p className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1.5 text-[11px] leading-snug text-[var(--color-text-secondary)]">
+              {note}
+            </p>
+          )}
           <ul className="space-y-2">
             {components.map((c) => {
               const barColor =
