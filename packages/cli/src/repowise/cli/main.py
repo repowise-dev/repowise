@@ -26,8 +26,21 @@ from repowise.cli.commands.workspace_cmd import workspace_group
 
 @click.group()
 @click.version_option(version=__version__, prog_name="repowise")
-def cli() -> None:
+@click.pass_context
+def cli(ctx: click.Context) -> None:
     """repowise -- codebase intelligence for developers and AI."""
+    # Self-heal: migrate any legacy `repowise augment` Claude Code hooks
+    # to the import-isolated `repowise-augment` console script. Cheap,
+    # silent, idempotent — only writes when there is something to change.
+    # Skipped when invoked as the augment subcommand itself (hot path on
+    # every Grep/Glob/Bash) — `augment_hook.main` handles that case.
+    if ctx.invoked_subcommand != "augment":
+        try:
+            from repowise.cli.mcp_config import migrate_claude_code_hooks
+
+            migrate_claude_code_hooks()
+        except Exception:
+            pass
 
 
 cli.add_command(augment_command)

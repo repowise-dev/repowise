@@ -224,21 +224,74 @@ def _has_repowise_hook(hook_list: list) -> bool:
     return False
 
 
-def _migrate_legacy_hook(hook_list: list) -> None:
+def _migrate_legacy_hook(hook_list: list) -> bool:
     """Rewrite legacy ``repowise augment`` commands to ``repowise-augment``.
 
     Pre-0.6.1 installs registered ``repowise augment``, which goes through
     the full Click CLI and crashes on any import failure (e.g. missing
     ``networkx`` in the active venv) — exiting non-zero on every tool call.
     The standalone ``repowise-augment`` console script is import-isolated
-    and crash-safe; rewrite in place so existing users get the fix the next
-    time ``repowise init`` runs.
+    and crash-safe; rewrite in place so existing users get the fix.
+
+    Returns True if any entry was changed.
     """
+    changed = False
     for entry in hook_list:
         for hook in entry.get("hooks", []):
             cmd = hook.get("command", "")
             if cmd == "repowise augment":
                 hook["command"] = "repowise-augment"
+                changed = True
+    return changed
+
+
+def migrate_claude_code_hooks() -> bool:
+    """Self-healing migration of pre-0.6.1 hook entries in settings.json.
+
+    Idempotent and silent — does nothing if the file is missing, malformed,
+    or already migrated. Writes settings.json only when a legacy
+    ``repowise augment`` entry was actually rewritten to ``repowise-augment``.
+
+    Called from both ``cli.main`` (so any ``repowise <command>`` after
+    upgrade self-heals) and ``augment_hook`` (so users whose only repowise
+    invocation is via the hook are also migrated on first successful fire).
+    Wrapped failures: a malformed settings.json or a permissions error
+    must never break the CLI or the hook.
+
+    Returns True if a migration was performed.
+    """
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+
+    try:
+        existing = _load_existing_config(settings_path)
+    except Exception:
+        # Malformed JSON, etc. — bail silently; the user will see this on
+        # their next `repowise init`, where it raises a ClickException.
+        return False
+
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+
+    changed = False
+    for key in ("PreToolUse", "PostToolUse"):
+        bucket = hooks.get(key)
+        if isinstance(bucket, list):
+            if _migrate_legacy_hook(bucket):
+                changed = True
+
+    if not changed:
+        return False
+
+    try:
+        settings_path.write_text(
+            json.dumps(existing, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        return False
+    return True
 
 
 def format_setup_instructions(repo_path: Path) -> str:

@@ -36,6 +36,19 @@ def main() -> None:
         raise
     except BaseException:
         pass
+
+    # Best-effort self-heal for users whose only repowise invocation is
+    # through this hook. Idempotent: rewrites settings.json only when a
+    # legacy `repowise augment` entry is still present, then becomes a
+    # no-op on every subsequent fire. Wrapped so a write failure never
+    # propagates back to the agent.
+    try:
+        from repowise.cli.mcp_config import migrate_claude_code_hooks
+
+        migrate_claude_code_hooks()
+    except BaseException:
+        pass
+
     sys.exit(0)
 
 
