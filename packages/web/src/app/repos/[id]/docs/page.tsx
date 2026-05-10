@@ -126,8 +126,8 @@ export default function DocsPage({
                 hrefFor={(f) => {
                   const pageId = (f as FirstFiveFile & { page_id?: string }).page_id;
                   return pageId
-                    ? `/repos/${repoId}/wiki/${encodeURIComponent(pageId)}`
-                    : `/repos/${repoId}/docs?file=${encodeURIComponent(f.file_path)}`;
+                    ? `/repos/${repoId}/docs?page=${encodeURIComponent(pageId)}`
+                    : undefined;
                 }}
               />
             </div>
