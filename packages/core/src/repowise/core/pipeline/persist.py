@@ -234,7 +234,7 @@ async def persist_pipeline_result(
         "pipeline_result_persisted",
         repo_id=repo_id,
         pages=len(result.generated_pages) if result.generated_pages else 0,
-        graph_nodes=len(nodes),
+        graph_nodes=result.graph_builder.graph().number_of_nodes(),
         symbols=len(all_symbols),
         git_files=len(result.git_metadata_list),
     )

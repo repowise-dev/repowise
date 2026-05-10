@@ -33,6 +33,17 @@ from .constants import (
 # namespace. C# auto-properties land in the graph as ``variable``;
 # fields / enum members / type aliases / namespace anchors share the
 # same property.
+#
+# ``interface`` is included here because in practice interfaces are
+# resolved through indirections the import-name analyser cannot see —
+# DI container registration, generic type constraints, type assertions
+# / casts, and (in C# / Java / Kotlin / Scala) namespace-level
+# ``using`` / ``import`` directives that don't name the interface
+# individually. Treating every public interface with no named-import
+# edge as dead produced 100s of false positives on DI-heavy codebases
+# (every ``IRepository<T>``, every ``IService``). The cost of missing
+# a genuinely dead public interface is low (it'll surface elsewhere
+# the moment its single implementation file is flagged dead).
 _NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = frozenset({
     "method",
     "variable",
@@ -43,6 +54,7 @@ _NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = frozenset({
     "type_alias",
     "namespace",
     "module",
+    "interface",
 })
 
 # Symbol names that are language-runtime entry points or compiler-implicit
