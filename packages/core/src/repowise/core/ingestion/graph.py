@@ -107,6 +107,8 @@ class GraphBuilder:
         self._community_algo: str = ""
         self._pagerank_cache: dict[str, float] | None = None
         self._betweenness_cache: dict[str, float] | None = None
+        self._symbol_pagerank_cache: dict[str, float] | None = None
+        self._symbol_betweenness_cache: dict[str, float] | None = None
         self._execution_flow_cache: Any | None = None
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
@@ -200,6 +202,8 @@ class GraphBuilder:
         self._community_algo = ""
         self._pagerank_cache = None
         self._betweenness_cache = None
+        self._symbol_pagerank_cache = None
+        self._symbol_betweenness_cache = None
         self._execution_flow_cache = None
 
         # Clear import/call edges but keep structural edges (defines, has_method)
@@ -500,6 +504,8 @@ class GraphBuilder:
         await _asyncio.gather(
             _asyncio.to_thread(self.pagerank),
             _asyncio.to_thread(self.betweenness_centrality),
+            _asyncio.to_thread(self.symbol_pagerank),
+            _asyncio.to_thread(self.symbol_betweenness_centrality),
             _asyncio.to_thread(self.community_detection),
             _asyncio.to_thread(self.symbol_communities),
         )
@@ -761,6 +767,67 @@ class GraphBuilder:
             n = filtered.number_of_nodes()
             self._pagerank_cache = {node: 1.0 / n for node in filtered.nodes()}
         return self._pagerank_cache
+
+    def symbol_subgraph(self) -> nx.DiGraph:
+        """Return a subgraph of symbol nodes connected by call + heritage edges.
+
+        File-to-symbol ``defines`` edges and class-to-method ``has_method``
+        ownership edges are dropped so that the resulting centrality
+        scores reflect call/heritage flow rather than containment.
+        """
+        g = self.graph()
+        symbol_nodes = [
+            n for n, d in g.nodes(data=True) if d.get("node_type") == "symbol"
+        ]
+        sub = g.subgraph(symbol_nodes).copy()
+        edges_to_remove = [
+            (u, v)
+            for u, v, d in sub.edges(data=True)
+            if d.get("edge_type") not in ("calls", "extends", "implements")
+        ]
+        sub.remove_edges_from(edges_to_remove)
+        return sub
+
+    def symbol_pagerank(self, alpha: float = 0.85) -> dict[str, float]:
+        """Return PageRank scores for symbol nodes only (cached).
+
+        Computed on the call/heritage symbol subgraph — this is what the
+        UI's per-symbol "graph metrics" panel reads. Without it every
+        symbol shows ``Not indexed in graph``.
+        """
+        if self._symbol_pagerank_cache is not None:
+            return self._symbol_pagerank_cache
+        sub = self.symbol_subgraph()
+        if sub.number_of_nodes() == 0:
+            self._symbol_pagerank_cache = {}
+            return self._symbol_pagerank_cache
+        try:
+            self._symbol_pagerank_cache = nx.pagerank(sub, alpha=alpha)
+        except nx.PowerIterationFailedConvergence:
+            log.warning("Symbol PageRank did not converge, using uniform scores")
+            n = sub.number_of_nodes()
+            self._symbol_pagerank_cache = {node: 1.0 / n for node in sub.nodes()}
+        return self._symbol_pagerank_cache
+
+    def symbol_betweenness_centrality(self) -> dict[str, float]:
+        """Return betweenness centrality for symbol nodes (cached)."""
+        if self._symbol_betweenness_cache is not None:
+            return self._symbol_betweenness_cache
+        sub = self.symbol_subgraph()
+        n = sub.number_of_nodes()
+        if n == 0:
+            self._symbol_betweenness_cache = {}
+            return self._symbol_betweenness_cache
+        if n > _LARGE_REPO_THRESHOLD:
+            k = min(500, n)
+            self._symbol_betweenness_cache = nx.betweenness_centrality(
+                sub, k=k, normalized=True
+            )
+        else:
+            self._symbol_betweenness_cache = nx.betweenness_centrality(
+                sub, normalized=True
+            )
+        return self._symbol_betweenness_cache
 
     def _build_scc_map(self) -> dict[str, int]:
         """Assign a numeric SCC ID to each node."""

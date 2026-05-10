@@ -684,7 +684,13 @@ _SPECS: tuple[LanguageSpec, ...] = (
                 "record_declaration",
             }
         ),
-        entry_point_patterns=("Program.cs", "Startup.cs"),
+        entry_point_patterns=(
+            "Program.cs",
+            "Startup.cs",
+            "MauiProgram.cs",   # .NET MAUI host bootstrap
+            "Main.cs",           # Tizen / classic console entry
+            "App.xaml.cs",       # WPF / WinUI / MAUI app shell
+        ),
         manifest_files=(
             "Directory.Build.props",
             "Directory.Build.targets",

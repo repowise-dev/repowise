@@ -15,6 +15,88 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+async def persist_graph_nodes(
+    session: Any,
+    repo_id: str,
+    graph_builder: Any,
+    ep_scores: dict[str, float] | None = None,
+) -> None:
+    """Persist file- and symbol-level graph nodes with full centrality metrics.
+
+    Lifted out of :func:`persist_pipeline_result` so the incremental
+    update path can refresh ``graph_nodes`` (including symbol-level
+    PageRank / betweenness) without constructing a full ``PipelineResult``.
+    """
+    from repowise.core.persistence import batch_upsert_graph_nodes
+
+    graph = graph_builder.graph()
+    pr = graph_builder.pagerank()
+    bc = graph_builder.betweenness_centrality()
+    sym_pr = graph_builder.symbol_pagerank()
+    sym_bc = graph_builder.symbol_betweenness_centrality()
+    cd = graph_builder.community_detection()
+    sc = graph_builder.symbol_communities()
+    ci = graph_builder.community_info()
+    ep_scores = ep_scores or {}
+
+    nodes = []
+    for node_id in graph.nodes:
+        data = graph.nodes[node_id]
+        node_type = data.get("node_type", "file")
+
+        node_dict: dict[str, Any] = {
+            "node_id": node_id,
+            "node_type": node_type,
+            "language": data.get("language", "unknown"),
+            "symbol_count": data.get("symbol_count", 0),
+            "has_error": data.get("has_error", False),
+            "is_test": data.get("is_test", False),
+            "is_entry_point": data.get("is_entry_point", False),
+            # Files draw from the file-level metric tables; symbols fall
+            # back to the symbol subgraph (calls + heritage) so that the
+            # per-symbol UI panel shows real centrality instead of 0.
+            "pagerank": pr.get(node_id, sym_pr.get(node_id, 0.0)),
+            "betweenness": bc.get(node_id, sym_bc.get(node_id, 0.0)),
+            "community_id": cd.get(node_id, 0),
+        }
+
+        community_meta: dict[str, Any] = {}
+        if node_type == "file":
+            cid = cd.get(node_id, 0)
+            comm_info = ci.get(cid)
+            if comm_info:
+                community_meta = {
+                    "label": comm_info.label,
+                    "cohesion": comm_info.cohesion,
+                }
+        elif node_type == "symbol":
+            sym_cid = sc.get(node_id)
+            if sym_cid is not None:
+                community_meta = {"symbol_community_id": sym_cid}
+            if node_id in ep_scores:
+                community_meta["entry_point_score"] = ep_scores[node_id]
+        node_dict["community_meta_json"] = json.dumps(community_meta)
+
+        if node_type == "symbol":
+            node_dict.update(
+                {
+                    "kind": data.get("kind"),
+                    "name": data.get("name"),
+                    "qualified_name": data.get("qualified_name"),
+                    "file_path": data.get("file_path"),
+                    "start_line": data.get("start_line"),
+                    "end_line": data.get("end_line"),
+                    "visibility": data.get("visibility"),
+                    "signature": data.get("signature"),
+                    "parent_symbol_id": data.get("parent_name"),
+                }
+            )
+        nodes.append(node_dict)
+
+    if nodes:
+        await batch_upsert_graph_nodes(session, repo_id, nodes)
+
+
 async def persist_pipeline_result(
     result: Any,
     session: Any,
@@ -58,14 +140,6 @@ async def persist_pipeline_result(
             await upsert_page_from_generated(session, page, repo_id)
 
     # ---- Graph nodes ---------------------------------------------------------
-    graph = result.graph_builder.graph()
-    pr = result.graph_builder.pagerank()
-    bc = result.graph_builder.betweenness_centrality()
-    cd = result.graph_builder.community_detection()
-    sc = result.graph_builder.symbol_communities()
-    ci = result.graph_builder.community_info()
-
-    # Entry point scores from execution flow analysis
     ep_scores: dict[str, float] = {}
     if result.execution_flow_report and getattr(result.execution_flow_report, "flows", None):
         ep_scores = {
@@ -73,64 +147,10 @@ async def persist_pipeline_result(
             for f in result.execution_flow_report.flows
             if hasattr(f, "entry_point_id") and hasattr(f, "entry_point_score")
         }
-
-    nodes = []
-    for node_id in graph.nodes:
-        data = graph.nodes[node_id]
-        node_type = data.get("node_type", "file")
-
-        node_dict: dict[str, Any] = {
-            "node_id": node_id,
-            "node_type": node_type,
-            "language": data.get("language", "unknown"),
-            "symbol_count": data.get("symbol_count", 0),
-            "has_error": data.get("has_error", False),
-            "is_test": data.get("is_test", False),
-            "is_entry_point": data.get("is_entry_point", False),
-            "pagerank": pr.get(node_id, 0.0),
-            "betweenness": bc.get(node_id, 0.0),
-            "community_id": cd.get(node_id, 0),
-        }
-
-        # Community metadata
-        community_meta: dict[str, Any] = {}
-        if node_type == "file":
-            cid = cd.get(node_id, 0)
-            comm_info = ci.get(cid)
-            if comm_info:
-                community_meta = {
-                    "label": comm_info.label,
-                    "cohesion": comm_info.cohesion,
-                }
-        elif node_type == "symbol":
-            sym_cid = sc.get(node_id)
-            if sym_cid is not None:
-                community_meta = {"symbol_community_id": sym_cid}
-            if node_id in ep_scores:
-                community_meta["entry_point_score"] = ep_scores[node_id]
-        node_dict["community_meta_json"] = json.dumps(community_meta)
-
-        # Symbol-specific fields
-        if node_type == "symbol":
-            node_dict.update(
-                {
-                    "kind": data.get("kind"),
-                    "name": data.get("name"),
-                    "qualified_name": data.get("qualified_name"),
-                    "file_path": data.get("file_path"),
-                    "start_line": data.get("start_line"),
-                    "end_line": data.get("end_line"),
-                    "visibility": data.get("visibility"),
-                    "signature": data.get("signature"),
-                    "parent_symbol_id": data.get("parent_name"),
-                }
-            )
-
-        nodes.append(node_dict)
-    if nodes:
-        await batch_upsert_graph_nodes(session, repo_id, nodes)
+    await persist_graph_nodes(session, repo_id, result.graph_builder, ep_scores)
 
     # ---- Graph edges ---------------------------------------------------------
+    graph = result.graph_builder.graph()
     edges = []
     for u, v, data in graph.edges(data=True):
         edges.append(

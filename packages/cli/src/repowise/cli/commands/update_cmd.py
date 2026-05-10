@@ -388,6 +388,24 @@ def update_command(
         console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
         return
 
+    # Run partial dead-code analysis up front so both branches can
+    # persist its results. Previously this sat below the ``if index_only``
+    # short-circuit, which left the closure's reference to
+    # ``dead_code_report`` unbound and crashed every ``--index-only`` run.
+    dead_code_report = None
+    try:
+        from repowise.core.analysis.dead_code import DeadCodeAnalyzer
+
+        _analyzer_partial = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+        _changed_paths_partial = [fd.path for fd in file_diffs]
+        dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)
+        if dead_code_report.total_findings:
+            console.print(
+                f"Dead code findings (partial): [yellow]{dead_code_report.total_findings}[/yellow]"
+            )
+    except Exception as exc:
+        console.print(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
+
     if index_only:
         # Refresh graph, git metadata, and dead-code artifacts without
         # paying for LLM regeneration. Persist what we already computed
@@ -441,6 +459,21 @@ def update_command(
                             f"[yellow]Dead-code persist skipped: {exc}[/yellow]"
                         )
 
+                # Re-persist graph_nodes so symbol-level PageRank /
+                # betweenness / community ids stay in sync with the
+                # current graph build. Without this, ``repowise update``
+                # leaves stale per-symbol metrics from the original init
+                # and the UI shows "Not indexed in graph" for every
+                # symbol on existing repos.
+                try:
+                    from repowise.core.pipeline.persist import persist_graph_nodes
+
+                    await persist_graph_nodes(session, repo_id, graph_builder)
+                except Exception as exc:
+                    console.print(
+                        f"[yellow]Graph nodes persist skipped: {exc}[/yellow]"
+                    )
+
         run_async(_persist_index_only())
         save_state(repo_path, {**state, "last_sync_commit": head})
         elapsed = time.monotonic() - start
@@ -482,20 +515,7 @@ def update_command(
         cost_tracker = CostTracker()
     provider._cost_tracker = cost_tracker
 
-    # Run partial dead code analysis on affected files
-    dead_code_report = None
-    try:
-        from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-
-        analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
-        changed_paths = [fd.path for fd in file_diffs]
-        dead_code_report = analyzer.analyze_partial(changed_paths)
-        if dead_code_report.total_findings:
-            console.print(
-                f"Dead code findings (partial): [yellow]{dead_code_report.total_findings}[/yellow]"
-            )
-    except Exception as exc:
-        console.print(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
+    # (dead_code_report computed above, before the index-only branch)
 
     # Re-scan changed files for inline decision markers
     new_decision_markers: list = []
@@ -620,6 +640,18 @@ def update_command(
                     )
             except Exception:
                 pass  # dead code persistence is best-effort
+
+        # Re-persist graph_nodes so symbol-level PageRank / betweenness
+        # / community ids reflect the current build. Same rationale as
+        # the index-only branch above — without this every per-symbol
+        # metric stays at its original value forever.
+        try:
+            from repowise.core.pipeline.persist import persist_graph_nodes
+
+            async with get_session(sf) as session:
+                await persist_graph_nodes(session, repo_id, graph_builder)
+        except Exception:
+            pass  # graph node persistence is best-effort
 
         # Record a GenerationJob so the web UI "last synced" timestamp updates
         try:

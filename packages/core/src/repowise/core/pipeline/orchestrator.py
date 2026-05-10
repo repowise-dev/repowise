@@ -569,6 +569,8 @@ async def _run_ingestion(
     await asyncio.gather(
         asyncio.to_thread(graph_builder.pagerank),
         asyncio.to_thread(graph_builder.betweenness_centrality),
+        asyncio.to_thread(graph_builder.symbol_pagerank),
+        asyncio.to_thread(graph_builder.symbol_betweenness_centrality),
     )
     _phase_done(progress, "graph.metrics")
 

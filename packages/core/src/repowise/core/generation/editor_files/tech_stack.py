@@ -66,23 +66,49 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
             items[name] = TechStackItem(name=name, version=version, category=category)
 
     # --- package.json (Node.js) ---
+    # Many .NET / Python / Go repos drop a package.json at the root for
+    # tooling like Playwright or Husky without being Node.js applications.
+    # We only register Node.js as a language when there is real evidence
+    # of a Node.js runtime: a ``main``/``bin`` field, runtime
+    # ``dependencies``, or a known framework dep.
     pkg_json = repo_path / "package.json"
+    pkg: dict[str, object] | None = None
     if pkg_json.exists():
         try:
             pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
-            # Detect Node version from engines field
-            node_ver = pkg.get("engines", {}).get("node")
+        except Exception:
+            pkg = None
+
+    if isinstance(pkg, dict):
+        runtime_deps = pkg.get("dependencies") or {}
+        dev_deps = pkg.get("devDependencies") or {}
+        all_deps = {**runtime_deps, **dev_deps}
+        node_ver = (pkg.get("engines") or {}).get("node") if isinstance(pkg.get("engines"), dict) else None
+        # Tooling-only manifests (e.g. .NET / Python repos that drop a
+        # package.json for Playwright or Husky) declare no runtime
+        # dependencies, no entry-point fields, and no engines hint. We
+        # gate the "Node.js" language tag on at least one of those
+        # signals to keep them from being labelled Node.js apps.
+        has_runtime_signal = bool(
+            runtime_deps
+            or pkg.get("main")
+            or pkg.get("bin")
+            or pkg.get("module")
+            or pkg.get("exports")
+            or node_ver
+        )
+        has_framework_dep = any(dep_key in all_deps for dep_key in _NODE_FRAMEWORKS)
+        if has_runtime_signal or has_framework_dep:
             add("Node.js", node_ver, "language")
-            all_deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
             for dep_key, (display, cat) in _NODE_FRAMEWORKS.items():
                 if dep_key in all_deps:
                     raw = all_deps[dep_key].lstrip("^~>=")
                     add(display, raw or None, cat)
-            if "typescript" in all_deps or (repo_path / "tsconfig.json").exists():
-                ts_ver = all_deps.get("typescript", "").lstrip("^~>=") or None
-                add("TypeScript", ts_ver, "language")
-        except Exception:
-            pass
+        # TypeScript can be added independently — many monorepos only use
+        # TS via tsconfig.json without depending on a Node.js runtime.
+        if "typescript" in all_deps or (repo_path / "tsconfig.json").exists():
+            ts_ver = all_deps.get("typescript", "").lstrip("^~>=") or None
+            add("TypeScript", ts_ver, "language")
 
     # --- pyproject.toml / setup.py (Python) ---
     pyproject = repo_path / "pyproject.toml"
@@ -140,6 +166,53 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
                 add("Symfony", None, "framework")
             elif "laravel/framework" in requires:
                 add("Laravel", None, "framework")
+
+    # --- .NET / C# (.csproj / .sln / Directory.Build.props) ---
+    # Walk one level deep so multi-project solutions like eShop register.
+    csproj_files = list(repo_path.glob("*.csproj")) + list(repo_path.glob("*/*.csproj"))
+    sln_files = list(repo_path.glob("*.sln"))
+    has_directory_build = (repo_path / "Directory.Build.props").exists() or (
+        repo_path / "Directory.Packages.props"
+    ).exists()
+    if csproj_files or sln_files or has_directory_build:
+        # Pull TargetFramework from the first .csproj — captures net9.0,
+        # net8.0, etc. Best-effort regex; the .csproj XML is small so a
+        # full parser would be overkill.
+        target_fw: str | None = None
+        for csproj in csproj_files[:3]:
+            try:
+                ctext = csproj.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            m = re.search(
+                r"<TargetFrameworks?>\s*([^<;]+)", ctext
+            )
+            if m:
+                target_fw = m.group(1).strip()
+                break
+        add("C#", target_fw, "language")
+        add(".NET", target_fw, "framework")
+        # Common .NET stack indicators read from any .csproj text.
+        joined_csproj = ""
+        for csproj in csproj_files[:20]:
+            try:
+                joined_csproj += csproj.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+        if "Microsoft.AspNetCore" in joined_csproj:
+            add("ASP.NET Core", None, "framework")
+        if "Microsoft.EntityFrameworkCore" in joined_csproj:
+            add("Entity Framework Core", None, "database")
+        if "Aspire.Hosting" in joined_csproj or any(
+            "AppHost" in p.stem for p in csproj_files
+        ):
+            add(".NET Aspire", None, "infra")
+        if "Grpc.AspNetCore" in joined_csproj or "Google.Protobuf" in joined_csproj:
+            add("gRPC", None, "framework")
+        if "MAUI" in joined_csproj.upper() or any(
+            "Maui" in p.stem for p in csproj_files
+        ):
+            add(".NET MAUI", None, "framework")
 
     # --- Docker ---
     if (repo_path / "Dockerfile").exists():

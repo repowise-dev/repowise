@@ -22,9 +22,40 @@ from .constants import (
     _DEFAULT_DYNAMIC_PATTERNS,
     _FRAMEWORK_DECORATORS,
     _NEVER_FLAG_PATTERNS,
+    _NEVER_PACKAGE_DIRS,
     _NON_CODE_LANGUAGES,
     _is_fixture_path,
 )
+
+# Symbol kinds that cannot be independently imported by name in any
+# supported language. Flagging them as "unused exports" is a guaranteed
+# false-positive — they're always accessed through an enclosing class /
+# namespace. C# auto-properties land in the graph as ``variable``;
+# fields / enum members / type aliases / namespace anchors share the
+# same property.
+_NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = frozenset({
+    "method",
+    "variable",
+    "field",
+    "property",
+    "enum_member",
+    "constant",
+    "type_alias",
+    "namespace",
+    "module",
+})
+
+# Symbol names that are language-runtime entry points or compiler-implicit
+# anchors — never invoked by user-authored callers, never dead.
+_ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
+    "Main",                # C#, Java, Kotlin, Go, Rust, Swift, Scala
+    "main",                # most others
+    "MauiProgram",         # .NET MAUI
+    "Program",             # C# top-level / classic console
+    "Startup",             # ASP.NET Core legacy
+    "__module__",          # synthetic per-file module anchor
+    "_start",              # C runtime
+})
 from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 
@@ -305,6 +336,20 @@ class DeadCodeAnalyzer:
 
             file_has_importers = self.graph.in_degree(node) > 0
 
+            # Dynamic-use edges (DI registration, reflection, event bus
+            # subscriptions, framework-mediated loading) target a file
+            # as a whole — the runtime resolves the class and reaches
+            # any public member. Treat the whole file as live so we
+            # don't flag e.g. ``BasketService`` (registered via
+            # ``MapGrpcService<BasketService>()``) as an unused export.
+            file_dynamically_loaded = any(
+                self.graph.get_edge_data(pred, node, {}).get("edge_type")
+                in ("dynamic_uses", "dynamic", "framework")
+                for pred in self.graph.predecessors(node)
+            )
+            if file_dynamically_loaded:
+                continue
+
             # Function/method line ranges in this file — used to skip symbols
             # whose definition is nested inside another function (closures,
             # inner helpers).  Such symbols are only reachable from their
@@ -321,13 +366,21 @@ class DeadCodeAnalyzer:
                     continue
                 sym_name = sym.get("name", "")
 
-                # Methods are not independently importable — they're attribute
-                # access on an instance — so flagging them as unused-exports
-                # produces guaranteed false positives.  Same for dunders, which
-                # are invoked by the language runtime, not by name lookup.
-                if sym.get("kind") == "method":
+                # Skip symbol kinds that can't be independently imported
+                # (methods, properties, fields, enum members, namespace
+                # anchors). They're always reached through their enclosing
+                # class / module, so the unused-export pass can't observe
+                # their real usage and would report guaranteed false
+                # positives. C# auto-properties surface here as ``variable``.
+                if sym.get("kind") in _NON_IMPORTABLE_SYMBOL_KINDS:
                     continue
                 if sym_name.startswith("__") and sym_name.endswith("__"):
+                    continue
+                if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
+                    continue
+                # Names that contain a dot are namespace path fragments
+                # (e.g. ``eShop.ClientApp``), not user-visible exports.
+                if "." in sym_name:
                     continue
 
                 # Skip nested defs: a symbol whose start_line falls strictly
@@ -435,6 +488,14 @@ class DeadCodeAnalyzer:
             sym_name = node_data.get("name", "")
             if sym_name.startswith("__") and sym_name.endswith("__"):
                 continue
+            if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
+                continue
+            # Namespace-path fragments (e.g. ``eShop.ClientApp``) and
+            # non-callable kinds bypass the call-edge pass by design.
+            if "." in sym_name:
+                continue
+            if node_data.get("kind") in _NON_IMPORTABLE_SYMBOL_KINDS:
+                continue
             if self._name_matches_dynamic(sym_name, dynamic_patterns):
                 continue
 
@@ -493,6 +554,20 @@ class DeadCodeAnalyzer:
 
         for pkg, files in packages.items():
             if pkg in whitelist:
+                continue
+            # Skip known non-package dirs (.github, .vscode, docs, ...)
+            # and any other dotfile directory at the repo root.
+            if pkg in _NEVER_PACKAGE_DIRS or pkg.startswith("."):
+                continue
+            # A real package contains at least one source-code file. If
+            # every file under the candidate dir is config/data (YAML,
+            # JSON, MD, TOML), it is not a package — it is metadata.
+            has_code_file = any(
+                self.graph.nodes.get(f, {}).get("language", "unknown")
+                not in _NON_CODE_LANGUAGES
+                for f in files
+            )
+            if not has_code_file:
                 continue
 
             has_external_importers = False

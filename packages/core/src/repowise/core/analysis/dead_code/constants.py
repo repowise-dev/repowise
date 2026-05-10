@@ -57,6 +57,46 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/default.tsx",
     # Nuxt route pages
     "*/pages/*.vue",
+    # ---- .NET / C# conventions --------------------------------------
+    # Implicit / generated / framework-loaded files that have no
+    # static importers by design.
+    "*GlobalUsings.cs",          # global usings — file-implicit, never imported by symbol
+    "*.xaml.cs",                 # XAML code-behind, wired by the source generator
+    "*.xaml",
+    "*.razor",
+    "*.razor.cs",                # Blazor code-behind
+    "*.razor.js",                # Blazor JS interop side-files
+    "*.cshtml",
+    "*.cshtml.cs",
+    "*.designer.cs",             # Roslyn designer
+    "*Designer.cs",
+    "*.g.cs",                    # Roslyn-generated
+    "*.g.i.cs",
+    "*.AssemblyInfo.cs",
+    "*MauiProgram.cs",           # MAUI app entry — invoked by host, not imported
+    "*App.xaml.cs",
+    "*AppShell.xaml.cs",
+    # Aspire / ServiceDefaults host wiring is consumed by AppHost project graph,
+    # not by C# `using` directives.
+    "*AppHost*.cs",
+    "*ServiceDefaults*.cs",
+    # Integration events + EF entity configurations are loaded reflectively
+    # by event-bus subscribers and EF model builder respectively.
+    "*IntegrationEvent.cs",
+    "*IntegrationEvents/Events/*.cs",
+    "*EntityConfigurations/*.cs",
+    "*EntityTypeConfiguration.cs",
+    # gRPC generated artifacts.
+    "*.pb.cs",
+    "*Grpc.cs",
+    # Minimal-API endpoint modules — ASP.NET Core convention. These
+    # static classes expose extension methods like ``MapCatalogApi``
+    # that are wired by ``app.MapCatalogApi()`` in ``Program.cs``. The
+    # static call doesn't currently land in the import graph, so without
+    # an explicit pass these read as orphaned every time.
+    "*/Apis/*.cs",
+    "*/Endpoints/*.cs",
+    "*/Routes/*.cs",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
@@ -125,6 +165,40 @@ _DEFAULT_DYNAMIC_PATTERNS: tuple[str, ...] = (
     "*_signal",
     "*_task",
 )
+
+# Top-level directories that are NOT packages — they're configuration,
+# CI, docs, or platform metadata. The zombie-package detector splits paths
+# on the first segment and treats everything as a candidate package; without
+# this guard, dotfile dirs like `.github` get reported as "zombie packages
+# with no importers" on every repo.
+_NEVER_PACKAGE_DIRS: frozenset[str] = frozenset({
+    ".github",
+    ".gitlab",
+    ".vscode",
+    ".idea",
+    ".aspire",
+    ".config",
+    ".devcenter",
+    ".devcontainer",
+    ".husky",
+    ".changeset",
+    ".azure",
+    ".azuredevops",
+    ".circleci",
+    ".buildkite",
+    ".cargo",
+    ".husky",
+    ".yarn",
+    "docs",
+    "doc",
+    "documentation",
+    "examples",
+    "scripts",
+    "assets",
+    "static",
+    "public",
+})
+
 
 # Path segments that indicate test fixture / sample data directories.
 _FIXTURE_PATH_SEGMENTS: tuple[str, ...] = (
