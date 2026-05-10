@@ -4,6 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Trash2 } from "lucide-react";
+import { RoutedToRiskBanner } from "@/components/risk/routed-to-risk-banner";
 import { toast } from "sonner";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { SummaryBar } from "@repowise-dev/ui/dead-code/summary-bar";
@@ -39,6 +40,7 @@ export default function DeadCodePage() {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
+      <RoutedToRiskBanner repoId={id} tab="dead-code" />
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">

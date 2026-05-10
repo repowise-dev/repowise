@@ -2,11 +2,10 @@
 
 import { useState } from "react";
 import useSWR from "swr";
-import { Shield } from "lucide-react";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { OwnershipTreemap } from "@repowise-dev/ui/git/ownership-treemap";
 import { BusFactorPanel } from "@repowise-dev/ui/git/bus-factor-panel";
 import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
+import { HotspotTrendStrip } from "@repowise-dev/ui/git/hotspot-trend-strip";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getOwnership, getGitSummary, getHotspots } from "@/lib/api/git";
@@ -36,38 +35,9 @@ export function HeatmapTab({ repoId }: { repoId: string }) {
   );
 
   const list = entries ?? [];
-  const siloCount = list.filter((e) => e.is_silo).length;
-  const busFactorRiskCount = (hotspots ?? []).filter((h) => h.bus_factor <= 1).length;
 
   return (
     <div className="space-y-6">
-      {summary && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard
-            label="Total Files"
-            value={formatNumber(summary.total_files)}
-            description="with git history"
-          />
-          <StatCard
-            label="Silo Modules"
-            value={siloCount}
-            description="owner >80%"
-            trend={siloCount > 0 ? { value: `${siloCount}`, positive: false } : undefined}
-          />
-          <StatCard
-            label="Contributors"
-            value={summary.top_owners.length}
-            description="unique owners"
-          />
-          <StatCard
-            label="Bus Factor Risk"
-            value={formatNumber(busFactorRiskCount)}
-            description="files with factor ≤ 1"
-            icon={<Shield className="h-4 w-4 text-red-400" />}
-          />
-        </div>
-      )}
-
       {loadingEntries && list.length === 0 ? (
         <Skeleton className="h-72 w-full" />
       ) : list.length > 0 ? (
@@ -102,6 +72,21 @@ export function HeatmapTab({ repoId }: { repoId: string }) {
           </CardContent>
         </Card>
       ) : null}
+
+      {hotspots && hotspots.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Hotspot trend</CardTitle>
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              Top files by churn. Heating arrows mark files where the last 30 days are
+              outpacing the 90-day baseline.
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <HotspotTrendStrip hotspots={hotspots} />
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {hotspots && hotspots.length > 0 && (

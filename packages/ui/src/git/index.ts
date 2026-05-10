@@ -10,3 +10,5 @@ export * from "./hotspot-table.js";
 export * from "./ownership-table.js";
 export * from "./ownership-treemap.js";
 export * from "./risk-distribution-chart.js";
+export * from "./hotspot-trend-strip.js";
+export * from "./churn-vs-bus-factor-scatter.js";

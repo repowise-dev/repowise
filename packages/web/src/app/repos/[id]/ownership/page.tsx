@@ -4,6 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Users, Shield } from "lucide-react";
+import { RoutedToRiskBanner } from "@/components/risk/routed-to-risk-banner";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { OwnershipTable } from "@repowise-dev/ui/git/ownership-table";
 import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
@@ -46,6 +47,7 @@ export default function OwnershipPage() {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
+      <RoutedToRiskBanner repoId={id} tab="heatmap" tabLabel="Heatmap (ownership)" />
       <div>
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
           <Users className="h-5 w-5 text-[var(--color-accent-primary)]" />

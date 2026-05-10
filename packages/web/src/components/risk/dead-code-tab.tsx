@@ -4,20 +4,36 @@ import { useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Button } from "@repowise-dev/ui/ui/button";
-import { SummaryBar } from "@repowise-dev/ui/dead-code/summary-bar";
-import { FindingsTable } from "@/components/dead-code/findings-table";
+import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { getDeadCodeSummary, analyzeDeadCode } from "@/lib/api/dead-code";
-import type { DeadCodeSummaryResponse } from "@/lib/api/types";
+import { SummaryBar } from "@repowise-dev/ui/dead-code/summary-bar";
+import { SafeToDeletePile } from "@repowise-dev/ui/dead-code/safe-to-delete-pile";
+import { OwnerLeaderboard } from "@repowise-dev/ui/dead-code/owner-leaderboard";
+import { FindingsBreakdownGrid } from "@repowise-dev/ui/dead-code/findings-breakdown-grid";
+import { FindingsTable } from "@/components/dead-code/findings-table";
+import { getDeadCodeSummary, listDeadCode, analyzeDeadCode } from "@/lib/api/dead-code";
+import type { DeadCodeFindingResponse, DeadCodeSummaryResponse } from "@/lib/api/types";
 
 export function DeadCodeTab({ repoId }: { repoId: string }) {
   const [analyzing, setAnalyzing] = useState(false);
 
-  const { data: summary, isLoading, error, mutate } = useSWR<DeadCodeSummaryResponse>(
-    `dead-code-summary:${repoId}`,
-    () => getDeadCodeSummary(repoId),
+  const { data: summary, isLoading: loadingSummary, error: summaryError, mutate: mutateSummary } =
+    useSWR<DeadCodeSummaryResponse>(
+      `dead-code-summary:${repoId}`,
+      () => getDeadCodeSummary(repoId),
+      { revalidateOnFocus: false },
+    );
+
+  const { data: findings } = useSWR<DeadCodeFindingResponse[]>(
+    `dead-code-findings:${repoId}:all`,
+    // Pull a wide slice so the leaderboard / pile / matrix have enough data
+    // to be representative without paging.
+    () => listDeadCode(repoId, { limit: 500 }),
     { revalidateOnFocus: false },
   );
+
+  const findingsList = findings ?? [];
+  const safeFindings = findingsList.filter((f) => f.safe_to_delete);
 
   const handleAnalyze = async () => {
     setAnalyzing(true);
@@ -41,7 +57,7 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
         </Button>
       </div>
 
-      {isLoading ? (
+      {loadingSummary ? (
         <div className="grid grid-cols-4 gap-3">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-24 w-full rounded-lg" />
@@ -49,14 +65,44 @@ export function DeadCodeTab({ repoId }: { repoId: string }) {
         </div>
       ) : summary ? (
         <SummaryBar summary={summary} />
-      ) : error ? (
+      ) : summaryError ? (
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
           <span>Couldn&apos;t load summary.</span>
-          <Button size="sm" variant="outline" onClick={() => mutate()}>
+          <Button size="sm" variant="outline" onClick={() => mutateSummary()}>
             Retry
           </Button>
         </div>
       ) : null}
+
+      {findings && safeFindings.length > 0 && (
+        <SafeToDeletePile findings={safeFindings} reclaimableLines={summary?.deletable_lines} />
+      )}
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Owner leaderboard</CardTitle>
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              Reclaimable lines per primary contributor — who has the most cleanup leverage.
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <OwnerLeaderboard findings={findingsList} safeOnly />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Confidence × kind</CardTitle>
+            <p className="text-xs text-[var(--color-text-tertiary)]">
+              Where the findings cluster — start with high-confidence cells.
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <FindingsBreakdownGrid findings={findingsList} />
+          </CardContent>
+        </Card>
+      </div>
 
       <FindingsTable repoId={repoId} />
     </div>

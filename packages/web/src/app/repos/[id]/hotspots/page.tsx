@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Flame, Shield } from "lucide-react";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { RoutedToRiskBanner } from "@/components/risk/routed-to-risk-banner";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
 import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
 import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
@@ -45,6 +46,7 @@ export default async function HotspotsPage({
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
+      <RoutedToRiskBanner repoId={id} tab="hotspots" />
       <div>
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
           <Flame className="h-5 w-5 text-red-500" />

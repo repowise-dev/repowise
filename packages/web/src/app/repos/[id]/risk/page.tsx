@@ -8,6 +8,7 @@ import { HeatmapTab } from "@/components/risk/heatmap-tab";
 import { HotspotsTab } from "@/components/risk/hotspots-tab";
 import { DeadCodeTab } from "@/components/risk/dead-code-tab";
 import { ImpactTab } from "@/components/risk/impact-tab";
+import { RiskSummaryStrip } from "@/components/risk/risk-summary-strip";
 
 const TABS = ["heatmap", "hotspots", "dead-code", "impact"] as const;
 type TabId = (typeof TABS)[number];
@@ -44,6 +45,8 @@ export default function RiskPage() {
           blast radius — in one place.
         </p>
       </div>
+
+      <RiskSummaryStrip repoId={repoId} />
 
       <Tabs value={activeTab} onValueChange={setTab} className="space-y-4">
         <TabsList className="h-auto flex-wrap">

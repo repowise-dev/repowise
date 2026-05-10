@@ -1,13 +1,12 @@
 "use client";
 
 import useSWR from "swr";
-import { Shield } from "lucide-react";
-import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
 import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
 import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
 import { CommitCategoryDonut } from "@repowise-dev/ui/git/commit-category-donut";
 import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
+import { ChurnVsBusFactorScatter } from "@repowise-dev/ui/git/churn-vs-bus-factor-scatter";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getHotspots, getGitSummary } from "@/lib/api/git";
@@ -33,16 +32,10 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
       aggregatedCategories[cat] = (aggregatedCategories[cat] || 0) + (count as number);
     }
   }
-  const busFactorRiskCount = list.filter((h) => h.bus_factor <= 1).length;
 
   if (loadingHotspots && list.length === 0) {
     return (
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 w-full rounded-lg" />
-          ))}
-        </div>
         <Skeleton className="h-72 w-full" />
       </div>
     );
@@ -58,25 +51,6 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
 
   return (
     <div className="space-y-6">
-      {summary && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <StatCard label="Hotspot Files" value={formatNumber(summary.hotspot_count)} description="high-churn files" />
-          <StatCard label="Stable Files" value={formatNumber(summary.stable_count)} description="low-churn files" />
-          <StatCard label="Total Files" value={formatNumber(summary.total_files)} description="with git history" />
-          <StatCard
-            label="Avg Churn"
-            value={`${Math.round(summary.average_churn_percentile)}%`}
-            description="percentile"
-          />
-          <StatCard
-            label="Bus Factor Risk"
-            value={formatNumber(busFactorRiskCount)}
-            description="files with factor ≤ 1"
-            icon={<Shield className="h-4 w-4 text-red-400" />}
-          />
-        </div>
-      )}
-
       {list.length > 0 && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Card className="lg:col-span-2">
@@ -102,17 +76,32 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
       )}
 
       {list.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Risk Distribution</CardTitle>
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              Composite risk score: churn (40%) + bus factor (35%) + trend (25%)
-            </p>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <RiskDistributionChart hotspots={list} />
-          </CardContent>
-        </Card>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Risk Distribution</CardTitle>
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Composite risk score: churn (40%) + bus factor (35%) + trend (25%)
+              </p>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <RiskDistributionChart hotspots={list} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Churn × bus factor</CardTitle>
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Top-right is the danger zone: high churn and a single owner. Bubble size
+                reflects 90-day commit count.
+              </p>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ChurnVsBusFactorScatter hotspots={list} />
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">

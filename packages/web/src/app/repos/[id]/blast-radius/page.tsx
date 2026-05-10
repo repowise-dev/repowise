@@ -4,6 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { Radar, Plus, Flame } from "lucide-react";
+import { RoutedToRiskBanner } from "@/components/risk/routed-to-risk-banner";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
@@ -74,6 +75,7 @@ export default function BlastRadiusPage() {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
+      <RoutedToRiskBanner repoId={repoId} tab="impact" tabLabel="Impact analyzer" />
       {/* Header */}
       <div>
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
