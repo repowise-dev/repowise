@@ -107,6 +107,7 @@
     "react-markdown": "^10.1.0",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
+    "shiki": "^4.0.0",
     "sigma": "^3.0.3",
     "tailwind-merge": "^3.5.0"
   },

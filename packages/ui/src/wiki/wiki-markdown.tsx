@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { MermaidDiagram } from "./mermaid-diagram";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Copy, Check } from "lucide-react";
 import { cn } from "../lib/cn";
 
@@ -17,6 +17,22 @@ function slugify(text: string): string {
 
 function ClientCodeBlock({ code, language }: { code: string; language: string }) {
   const [copied, setCopied] = useState(false);
+  const [html, setHtml] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    import("shiki")
+      .then(({ codeToHtml }) =>
+        codeToHtml(code, { lang: language as never, theme: "vesper" }),
+      )
+      .then((result) => {
+        if (!cancelled) setHtml(result);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [code, language]);
 
   async function copy() {
     await navigator.clipboard.writeText(code);
@@ -53,11 +69,18 @@ function ClientCodeBlock({ code, language }: { code: string; language: string })
           )}
         </button>
       </div>
-      <pre className="overflow-x-auto p-4 bg-[var(--color-bg-inset)]">
-        <code className="text-xs font-mono text-[var(--color-text-primary)]">
-          {code}
-        </code>
-      </pre>
+      {html ? (
+        <div
+          className="overflow-x-auto text-sm [&>pre]:p-4 [&>pre]:m-0 [&>pre]:bg-transparent!"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      ) : (
+        <pre className="overflow-x-auto p-4 bg-[var(--color-bg-inset)]">
+          <code className="text-xs font-mono text-[var(--color-text-primary)]">
+            {code}
+          </code>
+        </pre>
+      )}
     </div>
   );
 }

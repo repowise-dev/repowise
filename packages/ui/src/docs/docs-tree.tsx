@@ -342,7 +342,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
     }
     return dirs;
   });
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilters, setShowFilters] = useState(true);
 
   const tree = useMemo(() => buildTree(pages), [pages]);
   const filteredTree = useMemo(
