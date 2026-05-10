@@ -11,7 +11,7 @@ Four intelligence layers. Seven MCP tools. Multi-repo workspaces. Auto-sync hook
 [![MCP](https://img.shields.io/badge/MCP-compatible-F59520?labelColor=0A0A0A)](https://modelcontextprotocol.io)
 [![Stars](https://img.shields.io/github/stars/repowise-dev/repowise?color=F59520&labelColor=0A0A0A)](https://github.com/repowise-dev/repowise)
 
-[**Explore real codebases →**](https://www.repowise.dev/explore) · [**Hosted for teams →**](https://www.repowise.dev/#contact) · [**Docs**](https://repowise-dev.github.io) · [**Discord**](https://discord.gg/cQVpuDB6rh) · [**Contact**](mailto:hello@repowise.dev)
+[**Explore real codebases →**](https://www.repowise.dev/explore) · [**Hosted for teams →**](https://www.repowise.dev/#contact) · [**Docs**](https://docs.repowise.dev) · [**Discord**](https://discord.gg/cQVpuDB6rh) · [**Contact**](mailto:hello@repowise.dev)
 
 ---
 

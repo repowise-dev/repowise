@@ -1,18 +1,44 @@
 """``repowise augment`` — hook-driven context enrichment for AI coding agents.
 
-Reads a Claude Code hook payload from stdin (JSON), queries the local wiki.db
-for graph context (importers, symbols), and writes enriched context back to
-stdout as the hook response.
+Reads a Claude Code hook payload from stdin (JSON) and writes targeted
+enrichment back as a PostToolUse hook response.
 
-PreToolUse: enriches Grep/Glob calls with up to 3 related files, their key
-symbols, importers, and dependencies.
+Design philosophy: an enrichment hook is only valuable when it tells the
+agent something the raw tool output didn't. Anything else is noise the
+agent has to scroll past. So the hook fires on every Grep/Glob/Bash but
+returns *nothing* most of the time, and only speaks up when there is
+asymmetric, durable value:
 
-PostToolUse: detects git commits and notifies the agent when the wiki is stale.
+  PostToolUse → Grep / Glob
+    * Zero-result rescue: grep returned 0 hits but the wiki has a
+      semantic match (FTS on docs, fuzzy symbol match, decision record
+      mention). Surfaces the closest hit so the agent doesn't burn
+      another round on a synonym.
+    * Triage on flood: grep returned a large unfocused result set
+      (>=_TRIAGE_THRESHOLD lines). Surfaces the top 3 files by
+      PageRank so the agent can prioritise. The raw matches are still
+      visible — this is just a ranking lens.
+    * Skip otherwise: a focused result set means the agent already
+      found what it wanted; further graph context is just noise.
 
-Design goals:
-  - Cold start < 500ms (lazy imports, minimal work)
-  - Graceful failure: any error → exit 0 with empty output
-  - No LLM calls, no network — pure local SQLite queries
+  PostToolUse → Bash
+    * After a successful git commit/merge/rebase/cherry-pick/pull, if
+      the wiki HEAD has drifted from .repowise/state.json's last sync
+      commit AND no `repowise update` is in flight AND we haven't
+      already warned for this HEAD, emit a one-line stale-wiki notice.
+
+There is intentionally NO PreToolUse handling. Earlier versions enriched
+every Grep/Glob unconditionally with importers/dependencies/symbols; in
+practice this added noise on the >70% of searches where the agent had
+already located what it wanted. PostToolUse is strictly more informed —
+it can see the actual result count — and is the only entry point now.
+
+Operational invariants:
+  * No LLM calls, no network. Pure local SQLite + Python.
+  * Cold start budget: well under the 10s hook timeout. Heavy imports
+    (sqlalchemy, asyncio) are deferred until we actually have work.
+  * Graceful failure: any unexpected error exits 0 with empty stdout
+    so a repowise problem never surfaces in the agent transcript.
 """
 
 from __future__ import annotations
@@ -21,6 +47,13 @@ import json
 import sys
 
 import click
+
+# Tunables — fixed thresholds keep the fire pattern predictable across
+# repos. If these ever need to vary, derive them from indexed-row counts
+# rather than exposing knobs (every knob is a way for the hook to drift).
+_TRIAGE_THRESHOLD = 15  # grep result lines before we surface a ranking
+_TRIAGE_TOP_N = 3
+_RESCUE_TOP_N = 2
 
 
 @click.command("augment")
@@ -36,7 +69,7 @@ def augment_command() -> None:
 
 
 def _run_augment() -> None:
-    """Main entry point — reads stdin, dispatches to pre/post handler."""
+    """Main entry point — reads stdin, dispatches to the post handler."""
     raw = sys.stdin.read()
     if not raw.strip():
         return
@@ -47,20 +80,27 @@ def _run_augment() -> None:
         return
 
     event = payload.get("hook_event_name", "")
+    if event != "PostToolUse":
+        return
+
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
+    tool_output = (
+        payload.get("tool_output")
+        or payload.get("tool_response")
+        or {}
+    )
     cwd = payload.get("cwd", "")
 
-    if event == "PreToolUse" and tool_name in ("Grep", "Glob"):
-        result = _handle_pre_tool_use(tool_name, tool_input, cwd)
-        if result:
-            _emit_response(event, result)
+    if tool_name == "Bash":
+        result = _handle_bash_post(tool_input, tool_output, cwd)
+    elif tool_name in ("Grep", "Glob"):
+        result = _handle_search_post(tool_name, tool_input, tool_output, cwd)
+    else:
+        result = None
 
-    elif event == "PostToolUse" and tool_name == "Bash":
-        tool_output = payload.get("tool_output", {})
-        result = _handle_post_tool_use(tool_input, tool_output, cwd)
-        if result:
-            _emit_response(event, result)
+    if result:
+        _emit_response(event, result)
 
 
 def _emit_response(event: str, context: str) -> None:
@@ -76,21 +116,24 @@ def _emit_response(event: str, context: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PreToolUse — enrich search/grep/glob with graph context
+# PostToolUse — Grep / Glob: smart enrichment
 # ---------------------------------------------------------------------------
 
 
-def _extract_search_pattern(tool_name: str, tool_input: dict) -> str | None:
-    """Extract the search pattern from the tool input."""
-    if tool_name in ("Grep", "Glob"):
-        return tool_input.get("pattern")
-    return None
+def _handle_search_post(
+    tool_name: str,
+    tool_input: dict,
+    tool_output: object,
+    cwd: str,
+) -> str | None:
+    """Decide whether to enrich a Grep/Glob result and how."""
+    pattern = tool_input.get("pattern")
+    if not isinstance(pattern, str) or not pattern.strip():
+        return None
 
-
-def _handle_pre_tool_use(tool_name: str, tool_input: dict, cwd: str) -> str | None:
-    """Query the wiki DB for graph context related to the search pattern."""
-    pattern = _extract_search_pattern(tool_name, tool_input)
-    if not pattern:
+    # Path-style lookups don't benefit from semantic enrichment — the agent
+    # is reading literal locations, not exploring a concept.
+    if _looks_like_path_lookup(pattern):
         return None
 
     from pathlib import Path
@@ -99,27 +142,115 @@ def _handle_pre_tool_use(tool_name: str, tool_input: dict, cwd: str) -> str | No
     if repo_path is None:
         return None
 
+    output_text = _extract_output_text(tool_output)
+    result_count = _count_search_results(output_text)
+
+    # Decision tree. The skip case is the most common — that's by design.
+    if result_count == 0:
+        mode = "rescue"
+    elif result_count >= _TRIAGE_THRESHOLD:
+        mode = "triage"
+    else:
+        return None
+
     import asyncio
 
-    return asyncio.run(_query_graph_context(repo_path, pattern))
+    return asyncio.run(_search_enrich(repo_path, pattern, mode, result_count))
 
 
-async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
-    """Multi-signal search + graph enrichment.
+def _looks_like_path_lookup(pattern: str) -> bool:
+    """Heuristic: pattern is a literal file path, not a search concept.
 
-    Phase 1 — find relevant files via three signals (merged, deduped):
-      a) Symbol name match (wiki_symbols.name LIKE pattern)
-      b) File path match (graph_nodes.node_id LIKE pattern)
-      c) FTS on wiki page content (fallback for conceptual queries)
-    Results ranked by how many signals matched, then by PageRank.
+    Path-style queries that should skip enrichment:
+      - Contains a directory separator (``/`` or ``\\``).
+      - Ends with a known source extension (``.py``, ``.ts``, ``.tsx``,
+        ``.js``, ``.jsx``, ``.go``, ``.rs``, ``.java``, ``.kt``, etc.).
+      - Looks like a glob over files (``*.py``, ``**/*.ts``).
 
-    Phase 2 — enrich top 3 files with symbols, importers, dependencies.
+    These are agents looking up specific files; semantic enrichment of
+    such queries duplicates information the result already provides.
     """
+    if "/" in pattern or "\\" in pattern:
+        return True
+    lower = pattern.lower().rstrip()
+    _EXTS = (
+        ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+        ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".rb", ".php",
+        ".cs", ".swift", ".cpp", ".cc", ".c", ".h", ".hpp", ".lua",
+        ".sql", ".yaml", ".yml", ".toml", ".json", ".md",
+    )
+    return lower.endswith(_EXTS)
+
+
+def _extract_output_text(tool_output: object) -> str:
+    """Pull the textual portion of a Claude Code tool_output, defensively.
+
+    Claude Code's hook payload shape varies a little by tool: Bash
+    surfaces ``stdout``/``stderr``, Grep/Glob surface ``output`` or
+    ``tool_response``. We only need a string we can count newlines in,
+    so we accept any of the common shapes.
+    """
+    if isinstance(tool_output, str):
+        return tool_output
+    if not isinstance(tool_output, dict):
+        return ""
+    for key in ("output", "result", "content", "stdout", "text"):
+        val = tool_output.get(key)
+        if isinstance(val, str):
+            return val
+        if isinstance(val, list):
+            # Some shapes wrap content as [{"type": "text", "text": "..."}].
+            parts = []
+            for item in val:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    t = item.get("text") or item.get("content")
+                    if isinstance(t, str):
+                        parts.append(t)
+            if parts:
+                return "\n".join(parts)
+    return ""
+
+
+def _count_search_results(output_text: str) -> int:
+    """Count tool-result lines, treating Grep/Glob 'no match' as zero."""
+    if not output_text or not output_text.strip():
+        return 0
+    stripped = output_text.strip()
+    # Common no-match sentinels emitted by Claude Code's Grep/Glob tool.
+    _ZERO_MARKERS = (
+        "no matches found",
+        "no files found",
+        "no files matched",
+        "found 0 files",
+        "found 0 matches",
+    )
+    head = stripped.lower().splitlines()[0] if stripped else ""
+    if any(marker in head for marker in _ZERO_MARKERS):
+        return 0
+    # Strip a "Found N files\n" / "Found N matches\n" header if present —
+    # the count we want is the actual result lines, not the banner.
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    if lines and lines[0].lower().startswith("found "):
+        lines = lines[1:]
+    return len(lines)
+
+
+async def _search_enrich(
+    repo_path: "object",
+    pattern: str,
+    mode: str,
+    result_count: int,
+) -> str | None:
+    """Run the rescue or triage query against the wiki and format output."""
     import re
+
+    from pathlib import Path
+    from sqlalchemy import select
 
     from repowise.core.persistence import (
         FullTextSearch,
-        GraphEdge,
         GraphNode,
         WikiSymbol,
         create_engine,
@@ -128,8 +259,8 @@ async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
     )
     from repowise.core.persistence.crud import get_repository_by_path
     from repowise.core.persistence.database import resolve_db_url
-    from sqlalchemy import select
 
+    repo_path = Path(repo_path)
     db_path = repo_path / ".repowise" / "wiki.db"
     if not db_path.exists():
         return None
@@ -145,160 +276,206 @@ async def _query_graph_context(repo_path: "Path", pattern: str) -> str | None:
                 return None
             repo_id = repo.id
 
-            # Clean pattern for SQL LIKE — strip regex syntax
-            clean = re.sub(r"[^\w/._-]", "", pattern)
+            clean = re.sub(r"[^\w./_-]", "", pattern).strip("./")
 
-            # Track how many signals each file matched + its PageRank
-            file_scores: dict[str, float] = {}  # path -> score
-            file_ranks: dict[str, float] = {}  # path -> pagerank
-
-            # Signal 1: symbol name match — most precise
-            if clean:
-                sym_stmt = (
-                    select(WikiSymbol.file_path)
-                    .where(
-                        WikiSymbol.repository_id == repo_id,
-                        WikiSymbol.name.like(f"%{clean}%"),
-                    )
-                    .distinct()
-                    .limit(5)
+            if mode == "rescue":
+                return await _rescue(
+                    session, engine, repo_id, pattern, clean
                 )
-                sym_result = await session.execute(sym_stmt)
-                for (fp,) in sym_result.all():
-                    file_scores[fp] = file_scores.get(fp, 0) + 2.0
-
-            # Signal 2: file path match
-            if clean:
-                path_stmt = (
-                    select(GraphNode.node_id, GraphNode.pagerank)
-                    .where(
-                        GraphNode.repository_id == repo_id,
-                        GraphNode.node_type == "file",
-                        GraphNode.node_id.like(f"%{clean}%"),
-                    )
-                    .order_by(GraphNode.pagerank.desc())
-                    .limit(5)
+            if mode == "triage":
+                return await _triage(
+                    session, repo_id, pattern, clean, result_count
                 )
-                path_result = await session.execute(path_stmt)
-                for node_id, pr in path_result.all():
-                    file_scores[node_id] = file_scores.get(node_id, 0) + 1.5
-                    file_ranks[node_id] = pr
-
-            # Signal 3: FTS on wiki content — broadest, lowest weight
-            fts = FullTextSearch(engine)
-            try:
-                fts_results = await fts.search(pattern, limit=5)
-            except Exception:
-                fts_results = []
-
-            for r in fts_results:
-                target = getattr(r, "target_path", None) or ""
-                page_type = getattr(r, "page_type", "")
-                if page_type and page_type not in (
-                    "file", "file_page", "infra_page", "api_contract",
-                ):
-                    continue
-                if "::" in target:
-                    target = target.split("::")[0]
-                if target:
-                    file_scores[target] = file_scores.get(target, 0) + 1.0
-
-            if not file_scores:
-                return None
-
-            # Fetch PageRank for files we don't have it for yet
-            missing_pr = [fp for fp in file_scores if fp not in file_ranks]
-            if missing_pr:
-                pr_stmt = select(GraphNode.node_id, GraphNode.pagerank).where(
-                    GraphNode.repository_id == repo_id,
-                    GraphNode.node_type == "file",
-                    GraphNode.node_id.in_(missing_pr),
-                )
-                pr_result = await session.execute(pr_stmt)
-                for node_id, pr in pr_result.all():
-                    file_ranks[node_id] = pr
-
-            # Rank: primary by signal score, secondary by PageRank
-            ranked = sorted(
-                file_scores.keys(),
-                key=lambda fp: (file_scores[fp], file_ranks.get(fp, 0)),
-                reverse=True,
-            )
-            file_paths = ranked[:3]
-
-            # Phase 2: enrich with symbols, importers, dependencies
-
-            # Importers: who uses these files? (limit 3 per file)
-            importers_stmt = select(GraphEdge).where(
-                GraphEdge.repository_id == repo_id,
-                GraphEdge.target_node_id.in_(file_paths),
-                GraphEdge.edge_type == "imports",
-            )
-            importers_result = await session.execute(importers_stmt)
-            importers_by_file: dict[str, list[str]] = {}
-            for edge in importers_result.scalars().all():
-                lst = importers_by_file.setdefault(edge.target_node_id, [])
-                if len(lst) < 3:
-                    lst.append(edge.source_node_id)
-
-            # Dependencies: what does this file use? (limit 2 per file)
-            deps_stmt = select(GraphEdge).where(
-                GraphEdge.repository_id == repo_id,
-                GraphEdge.source_node_id.in_(file_paths),
-                GraphEdge.edge_type == "imports",
-            )
-            deps_result = await session.execute(deps_stmt)
-            deps_by_file: dict[str, list[str]] = {}
-            for edge in deps_result.scalars().all():
-                lst = deps_by_file.setdefault(edge.source_node_id, [])
-                if len(lst) < 2:
-                    lst.append(edge.target_node_id)
-
-            # Symbols: key symbols (limit 3 per file)
-            symbols_stmt = (
-                select(WikiSymbol)
-                .where(
-                    WikiSymbol.repository_id == repo_id,
-                    WikiSymbol.file_path.in_(file_paths),
-                )
-                .order_by(WikiSymbol.start_line)
-            )
-            symbols_result = await session.execute(symbols_stmt)
-            symbols_by_file: dict[str, list] = {}
-            for sym in symbols_result.scalars().all():
-                lst = symbols_by_file.setdefault(sym.file_path, [])
-                if len(lst) < 3:
-                    lst.append(sym)
-
-        # Phase 3: Format
-        lines = [f"[repowise] {len(file_paths)} related file(s) found:\n"]
-
-        for fp in file_paths:
-            lines.append(f"  {fp}")
-
-            syms = symbols_by_file.get(fp, [])
-            if syms:
-                sym_strs = [f"{s.kind}:{s.name}" for s in syms]
-                lines.append(f"    Symbols: {', '.join(sym_strs)}")
-
-            imps = importers_by_file.get(fp, [])
-            if imps:
-                lines.append(f"    Imported by: {', '.join(imps)}")
-
-            deps = deps_by_file.get(fp, [])
-            if deps:
-                lines.append(f"    Uses: {', '.join(deps)}")
-
-            lines.append("")
-
-        return "\n".join(lines)
-
+            return None
     finally:
         await engine.dispose()
 
 
+async def _rescue(
+    session,
+    engine,
+    repo_id: int,
+    pattern: str,
+    clean: str,
+) -> str | None:
+    """Zero-result rescue: grep missed but the wiki has a semantic hit.
+
+    Looks for the closest match in three places, in priority order:
+
+      1. Fuzzy symbol name match — handles snake_case ↔ camelCase ↔
+         PascalCase drift. ``parse_yaml`` finds ``parseYaml`` /
+         ``ParseYaml`` / ``yaml_parser``.
+      2. FTS on wiki page content — handles conceptual misses where
+         the agent grepped for a synonym ("session" but the codebase
+         calls it "context").
+      3. Skip — if neither signal hits, we have nothing useful to add.
+
+    Output is a single line so it can't be confused with a real result.
+    """
+    from sqlalchemy import or_, select
+
+    from repowise.core.persistence import (
+        FullTextSearch,
+        GraphNode,
+        WikiSymbol,
+    )
+
+    if not clean:
+        return None
+
+    # Build a small set of token variants. Cheap; helps catch case-style
+    # drift without a heavy similarity index.
+    variants = _name_variants(clean)
+    like_clauses = [WikiSymbol.name.ilike(f"%{v}%") for v in variants]
+    sym_stmt = (
+        select(WikiSymbol.name, WikiSymbol.kind, WikiSymbol.file_path, WikiSymbol.start_line)
+        .where(WikiSymbol.repository_id == repo_id, or_(*like_clauses))
+        .limit(_RESCUE_TOP_N)
+    )
+    rows = (await session.execute(sym_stmt)).all()
+    if rows:
+        # Rank: prefer exact-token-equal matches; then shortest name (most
+        # specific). All ties broken by file path lex order for stability.
+        def _rank(row):
+            name = (row[0] or "").lower()
+            exact = name in {v.lower() for v in variants}
+            return (not exact, len(name), row[2] or "")
+
+        rows = sorted(rows, key=_rank)[:_RESCUE_TOP_N]
+        first = rows[0]
+        line = f":{first[3]}" if first[3] else ""
+        extras = ""
+        if len(rows) > 1:
+            extras = f" (+{len(rows) - 1} more)"
+        return (
+            f"[repowise] No literal match for `{pattern}`. Closest indexed symbol: "
+            f"{first[1]} `{first[0]}` in {first[2]}{line}{extras}"
+        )
+
+    # Fall back to FTS on wiki content. Only return if the FTS row actually
+    # points at a code page (file/module/api), not a generic doc page.
+    fts = FullTextSearch(engine)
+    try:
+        fts_rows = await fts.search(pattern, limit=3)
+    except Exception:
+        fts_rows = []
+    for r in fts_rows:
+        target = getattr(r, "target_path", None) or ""
+        page_type = getattr(r, "page_type", "") or ""
+        if "::" in target:
+            target = target.split("::")[0]
+        if target and page_type in ("file", "file_page", "module_page", "api_contract", "infra_page"):
+            return (
+                f"[repowise] No literal match for `{pattern}`. "
+                f"Wiki suggests `{target}` ({page_type})."
+            )
+    return None
+
+
+async def _triage(
+    session,
+    repo_id: int,
+    pattern: str,
+    clean: str,
+    result_count: int,
+) -> str | None:
+    """Big-result triage: surface top files by PageRank.
+
+    The grep result set has too many lines for the agent to scan
+    efficiently. Without overriding the agent's literal results, we
+    point at the top _TRIAGE_TOP_N files (by structural centrality)
+    that contain the pattern in either symbol or path.
+
+    Output is one line plus an enumerated list. Three lines max.
+    """
+    from sqlalchemy import or_, select
+
+    from repowise.core.persistence import GraphNode, WikiSymbol
+
+    if not clean:
+        return None
+
+    # Files that contain a symbol whose name matches, or whose own path
+    # matches. Either way we can rank by PageRank from graph_nodes.
+    sym_files_stmt = (
+        select(WikiSymbol.file_path)
+        .where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.name.ilike(f"%{clean}%"),
+        )
+        .distinct()
+        .limit(50)
+    )
+    sym_files = {r[0] for r in (await session.execute(sym_files_stmt)).all() if r[0]}
+
+    path_stmt = (
+        select(GraphNode.node_id)
+        .where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "file",
+            GraphNode.node_id.ilike(f"%{clean}%"),
+        )
+        .limit(50)
+    )
+    path_files = {r[0] for r in (await session.execute(path_stmt)).all() if r[0]}
+
+    candidates = sym_files | path_files
+    if not candidates:
+        return None
+
+    pr_stmt = select(GraphNode.node_id, GraphNode.pagerank).where(
+        GraphNode.repository_id == repo_id,
+        GraphNode.node_type == "file",
+        GraphNode.node_id.in_(candidates),
+    )
+    pr_rows = (await session.execute(pr_stmt)).all()
+    if not pr_rows:
+        return None
+
+    ranked = sorted(pr_rows, key=lambda r: (r[1] or 0.0), reverse=True)[:_TRIAGE_TOP_N]
+    if not ranked:
+        return None
+
+    header = (
+        f"[repowise] {result_count}+ matches for `{pattern}`. "
+        f"Top files by graph centrality:"
+    )
+    lines = [header] + [f"  {row[0]}" for row in ranked]
+    return "\n".join(lines)
+
+
+def _name_variants(token: str) -> list[str]:
+    """Generate snake_case ↔ camelCase ↔ PascalCase variants for fuzzy match.
+
+    Cheap to compute, and catches the most common naming-drift class
+    that causes literal grep to miss what the wiki has indexed.
+    """
+    import re
+
+    token = token.strip("_-./")
+    if not token:
+        return []
+    seen: list[str] = []
+    candidates = {token, token.lower(), token.upper()}
+    # snake_case → camelCase / PascalCase
+    if "_" in token:
+        parts = [p for p in token.split("_") if p]
+        if parts:
+            candidates.add("".join(p.capitalize() for p in parts))
+            candidates.add(parts[0].lower() + "".join(p.capitalize() for p in parts[1:]))
+    # camelCase / PascalCase → snake_case
+    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", token).lower()
+    if snake != token.lower():
+        candidates.add(snake)
+    # Dedup while preserving insertion order roughly.
+    for c in candidates:
+        if c and c not in seen:
+            seen.append(c)
+    return seen
+
+
 # ---------------------------------------------------------------------------
-# PostToolUse — detect git commits and flag stale wiki
+# PostToolUse — Bash: stale-wiki detection after git commits
 # ---------------------------------------------------------------------------
 
 _GIT_COMMIT_PATTERNS = (
@@ -310,20 +487,23 @@ _GIT_COMMIT_PATTERNS = (
 )
 
 
-def _handle_post_tool_use(tool_input: dict, tool_output: dict, cwd: str) -> str | None:
+def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | None:
     """After a successful git commit, check if the wiki needs updating."""
-    # Only act on successful commands
-    exit_code = tool_output.get("exit_code")
-    if exit_code is None:
-        # Try stdout-based detection (some hook formats differ)
-        stdout = tool_output.get("stdout", "")
-        if "error" in stdout.lower() or "fatal" in stdout.lower():
+    if isinstance(tool_output, dict):
+        exit_code = tool_output.get("exit_code")
+        if exit_code is None:
+            stdout = tool_output.get("stdout", "")
+            if isinstance(stdout, str) and (
+                "error" in stdout.lower() or "fatal" in stdout.lower()
+            ):
+                return None
+        elif exit_code != 0:
             return None
-    elif exit_code != 0:
-        return None
 
     cmd = tool_input.get("command", "")
-    if not any(p in cmd for p in _GIT_COMMIT_PATTERNS):
+    if not isinstance(cmd, str) or not any(
+        p in cmd for p in _GIT_COMMIT_PATTERNS
+    ):
         return None
 
     from pathlib import Path
@@ -345,7 +525,6 @@ def _handle_post_tool_use(tool_input: dict, tool_output: dict, cwd: str) -> str 
     if not last_sync:
         return None
 
-    # Compare HEAD against last sync
     try:
         import subprocess
 
@@ -362,16 +541,9 @@ def _handle_post_tool_use(tool_input: dict, tool_output: dict, cwd: str) -> str 
     if head == last_sync:
         return None
 
-    # Suppress while a `repowise update` is in flight — the post-commit
-    # hook typically kicks one off in the background, and warning the
-    # agent that the wiki is stale right after the commit is just noise.
     if _update_in_flight(repo_path, head):
         return None
 
-    # Once-per-HEAD dedupe: every tool call after a commit would otherwise
-    # repeat the same staleness warning until an update completes (which
-    # may never happen if the user's hook is misconfigured). Cache the
-    # already-warned HEAD so the message fires once per stale state.
     if _already_warned(repo_path, head):
         return None
     _record_warning(repo_path, head)
@@ -385,18 +557,12 @@ def _handle_post_tool_use(tool_input: dict, tool_output: dict, cwd: str) -> str 
     )
 
 
-def _update_in_flight(repo_path: "Path", head: str) -> bool:
-    """Return True if a recent `repowise update` is still running.
-
-    Reads ``.repowise/.update.lock`` written by ``update_command``. A lock
-    is considered live if it was written within the last 30 minutes; older
-    entries are treated as crashed runs and ignored. If the lock's target
-    commit matches HEAD, the update will land us in sync — suppress the
-    warning either way.
-    """
+def _update_in_flight(repo_path: "object", head: str) -> bool:
+    """Return True if a recent ``repowise update`` is still running."""
     import time
+    from pathlib import Path
 
-    lock_path = repo_path / ".repowise" / ".update.lock"
+    lock_path = Path(repo_path) / ".repowise" / ".update.lock"
     if not lock_path.exists():
         return False
     try:
@@ -413,15 +579,13 @@ def _update_in_flight(repo_path: "Path", head: str) -> bool:
     target = payload.get("target_commit")
     if target and target == head:
         return True
-    # Lock is live but for a different (presumably older) commit. The
-    # in-flight update will at least narrow the gap; one more tool call
-    # later will re-evaluate. Suppress for now.
     return True
 
 
-def _already_warned(repo_path: "Path", head: str) -> bool:
-    """Check the per-HEAD warning marker, written by ``_record_warning``."""
-    marker = repo_path / ".repowise" / ".augment-warned"
+def _already_warned(repo_path: "object", head: str) -> bool:
+    from pathlib import Path
+
+    marker = Path(repo_path) / ".repowise" / ".augment-warned"
     if not marker.exists():
         return False
     try:
@@ -430,9 +594,10 @@ def _already_warned(repo_path: "Path", head: str) -> bool:
         return False
 
 
-def _record_warning(repo_path: "Path", head: str) -> None:
-    """Persist that we have warned about staleness at *head*. Best-effort."""
-    marker = repo_path / ".repowise" / ".augment-warned"
+def _record_warning(repo_path: "object", head: str) -> None:
+    from pathlib import Path
+
+    marker = Path(repo_path) / ".repowise" / ".augment-warned"
     try:
         marker.write_text(head, encoding="utf-8")
     except OSError:
@@ -444,12 +609,12 @@ def _record_warning(repo_path: "Path", head: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _find_repo_root(cwd: "Path") -> "Path | None":
-    """Walk up from cwd to find a directory with .repowise/."""
+def _find_repo_root(cwd: "object") -> "object | None":
+    """Walk up from cwd to find a directory with ``.repowise/``."""
     from pathlib import Path
 
     current = Path(cwd).resolve()
-    for _ in range(20):  # safety limit
+    for _ in range(20):
         if (current / ".repowise").is_dir():
             return current
         parent = current.parent
