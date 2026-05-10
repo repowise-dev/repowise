@@ -27,44 +27,44 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
 
   return (
     <div className="my-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-xs overflow-hidden">
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--color-bg-overlay)] transition-colors"
-        onClick={() => !isRunning && setExpanded((e) => !e)}
-      >
-        {isRunning ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent-primary)] shrink-0" />
-        ) : (
-          <CheckCircle2 className="h-3.5 w-3.5 text-green-400 shrink-0" />
-        )}
-        <span className="font-medium text-[var(--color-text-secondary)]">
-          {label}
-        </span>
-        {toolCall.summary && !isRunning && (
-          <span className="text-[var(--color-text-tertiary)] truncate ml-1">
-            — {toolCall.summary}
-          </span>
-        )}
-        <span className="ml-auto flex items-center gap-1">
+      <div className="flex items-center gap-2 px-3 py-2 hover:bg-[var(--color-bg-overlay)] transition-colors">
+        <button
+          type="button"
+          className="flex flex-1 min-w-0 items-center gap-2 text-left"
+          onClick={() => !isRunning && setExpanded((e) => !e)}
+          disabled={isRunning}
+          aria-expanded={expanded}
+        >
+          {isRunning ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent-primary)] shrink-0" />
+          ) : (
+            <CheckCircle2 className="h-3.5 w-3.5 text-green-400 shrink-0" />
+          )}
+          <span className="font-medium text-[var(--color-text-secondary)]">{label}</span>
+          {toolCall.summary && !isRunning && (
+            <span className="text-[var(--color-text-tertiary)] truncate ml-1">
+              — {toolCall.summary}
+            </span>
+          )}
+        </button>
+        <span className="ml-auto flex items-center gap-1 shrink-0">
           {toolCall.artifact && onViewArtifact && !isRunning && (
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onViewArtifact();
-              }}
+              type="button"
+              onClick={onViewArtifact}
               className="text-[var(--color-accent-primary)] hover:underline flex items-center gap-0.5"
             >
               View <ExternalLink className="h-3 w-3" />
             </button>
           )}
-          {!isRunning && (
-            expanded ? (
+          {!isRunning &&
+            (expanded ? (
               <ChevronDown className="h-3 w-3 text-[var(--color-text-tertiary)]" />
             ) : (
               <ChevronRight className="h-3 w-3 text-[var(--color-text-tertiary)]" />
-            )
-          )}
+            ))}
         </span>
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-[var(--color-border-default)] px-3 py-2 space-y-2">
