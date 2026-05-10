@@ -6,7 +6,11 @@ resulting GeneratedPage list and job checkpoint.
 
 from __future__ import annotations
 
+import asyncio
+import time
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,15 +20,134 @@ from repowise.core.generation.models import GenerationConfig
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import (
+    FileInfo,
     PackageInfo,
     ParsedFile,
     RepoStructure,
+    Symbol,
 )
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.traverser import FileTraverser
+from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
 
 SAMPLE_REPO = Path(__file__).parents[1] / "fixtures" / "sample_repo"
+
+
+class _TrackingProvider(MockProvider):
+    def __init__(self, delay: float = 0.01) -> None:
+        super().__init__()
+        self.delay = delay
+        self.file_page_starts: list[float] = []
+
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+        request_id: str | None = None,
+    ) -> GeneratedResponse:
+        if "Required sections: ## Overview, ## Public API" in system_prompt:
+            self.file_page_starts.append(time.perf_counter())
+        await asyncio.sleep(self.delay)
+        return await super().generate(
+            system_prompt,
+            user_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            request_id=request_id,
+        )
+
+
+class _SlowVectorStore:
+    def __init__(self, delay: float = 0.05) -> None:
+        self.delay = delay
+        self.active_embeds = 0
+        self.max_active_embeds = 0
+        self.file_page_embed_finishes: list[float] = []
+
+    async def embed_and_upsert(self, page_id: str, text: str, metadata: dict[str, Any]) -> None:
+        self.active_embeds += 1
+        self.max_active_embeds = max(self.max_active_embeds, self.active_embeds)
+        try:
+            await asyncio.sleep(self.delay)
+            if metadata.get("page_type") == "file_page":
+                self.file_page_embed_finishes.append(time.perf_counter())
+        finally:
+            self.active_embeds -= 1
+
+    async def list_page_ids(self) -> set[str]:
+        return set()
+
+    async def get_page_summary_by_path(self, path: str) -> None:
+        return None
+
+    async def search(self, query: str, limit: int = 3) -> list[Any]:
+        return []
+
+
+def _make_concurrency_fixture() -> tuple[list[ParsedFile], dict[str, bytes], RepoStructure]:
+    parsed_files: list[ParsedFile] = []
+    source_map: dict[str, bytes] = {}
+
+    for index in range(4):
+        path = f"pkg/module_{index}.py"
+        source = f"def function_{index}() -> int:\n    return {index}\n".encode()
+        file_info = FileInfo(
+            path=path,
+            abs_path=f"/repo/{path}",
+            language="python",
+            size_bytes=len(source),
+            git_hash=f"hash-{index}",
+            last_modified=datetime(2026, 1, 1, tzinfo=UTC),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=index == 0,
+        )
+        symbol = Symbol(
+            id=f"{path}::function_{index}",
+            name=f"function_{index}",
+            qualified_name=f"pkg.module_{index}.function_{index}",
+            kind="function",
+            signature=f"def function_{index}() -> int:",
+            start_line=1,
+            end_line=2,
+            docstring=None,
+            visibility="public",
+            language="python",
+        )
+        parsed_files.append(
+            ParsedFile(
+                file_info=file_info,
+                symbols=[symbol],
+                imports=[],
+                exports=[symbol.name],
+                docstring=None,
+                parse_errors=[],
+                content_hash=f"content-{index}",
+            )
+        )
+        source_map[path] = source
+
+    repo_structure = RepoStructure(
+        is_monorepo=False,
+        packages=[
+            PackageInfo(
+                name="pkg",
+                path="pkg",
+                language="python",
+                entry_points=["pkg/module_0.py"],
+                manifest_file="pyproject.toml",
+            )
+        ],
+        root_language_distribution={"python": 1.0},
+        total_files=len(parsed_files),
+        total_loc=sum(len(source.splitlines()) for source in source_map.values()),
+        entry_points=["pkg/module_0.py"],
+    )
+    return parsed_files, source_map, repo_structure
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +227,44 @@ async def pipeline_result(tmp_path_factory):
         "tmp": tmp,
         "parsed_files": parsed_files,
     }
+
+
+async def test_embedding_latency_does_not_gate_llm_concurrency():
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+
+    config = GenerationConfig(
+        max_tokens=256,
+        token_budget=1000,
+        max_concurrency=2,
+        embed_concurrency=1,
+        file_page_top_percentile=1.0,
+        top_symbol_percentile=0.01,
+        max_pages_pct=1.0,
+        cache_enabled=False,
+    )
+    provider = _TrackingProvider()
+    vector_store = _SlowVectorStore()
+    assembler = ContextAssembler(config)
+    generator = PageGenerator(provider, assembler, config, vector_store=vector_store)
+
+    pages = await generator.generate_all(
+        parsed_files,
+        source_map,
+        builder,
+        repo_structure,
+        "concurrency_repo",
+    )
+
+    file_pages = [page for page in pages if page.page_type == "file_page"]
+    assert len(file_pages) == 4
+    assert len(provider.file_page_starts) >= 4
+    assert vector_store.file_page_embed_finishes
+    assert vector_store.max_active_embeds == 1
+    assert provider.file_page_starts[2] < vector_store.file_page_embed_finishes[0]
 
 
 # ---------------------------------------------------------------------------

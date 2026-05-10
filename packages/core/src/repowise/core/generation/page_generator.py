@@ -458,6 +458,7 @@ class PageGenerator:
 
         all_pages: list[GeneratedPage] = []
         semaphore = asyncio.Semaphore(self._config.max_concurrency)
+        embed_semaphore = asyncio.Semaphore(self._config.embed_concurrency or 1)
         # Summaries of completed pages: target_path → brief summary text (for dep context)
         completed_page_summaries: dict[str, str] = {}
 
@@ -497,13 +498,15 @@ class PageGenerator:
                 job_system.update_level(job_id, level)
 
             async def guarded_named(page_id: str, coro: Any) -> Any:
-                async with semaphore:
-                    try:
+                try:
+                    async with semaphore:
                         result = await coro
-                        # Embed page for RAG (B1)
-                        if self._vector_store is not None and isinstance(result, GeneratedPage):
-                            try:
-                                page_summary = _extract_summary(result.content)
+
+                    # Embed page for RAG (B1)
+                    if self._vector_store is not None and isinstance(result, GeneratedPage):
+                        try:
+                            page_summary = _extract_summary(result.content)
+                            async with embed_semaphore:
                                 await self._vector_store.embed_and_upsert(
                                     result.page_id,
                                     result.content,
@@ -514,27 +517,27 @@ class PageGenerator:
                                         "summary": page_summary,
                                     },
                                 )
-                            except Exception as e:
-                                log.debug("rag.embed_failed", page_id=result.page_id, error=str(e))
-                        # Store summary for dependency context (B2)
-                        if isinstance(result, GeneratedPage):
-                            completed_page_summaries[result.target_path] = _extract_summary(
-                                result.content
-                            )
-                            # Report progress immediately (not batched after gather)
-                            if on_page_done is not None:
-                                on_page_done(result.page_type)
-                        return result
-                    except Exception as exc:
-                        if job_system is not None and job_id is not None:
-                            job_system.fail_page(job_id, page_id, str(exc))
-                        log.error(
-                            "page_generation_failed",
-                            page_id=page_id,
-                            level=level,
-                            error=str(exc),
+                        except Exception as e:
+                            log.debug("rag.embed_failed", page_id=result.page_id, error=str(e))
+                    # Store summary for dependency context (B2)
+                    if isinstance(result, GeneratedPage):
+                        completed_page_summaries[result.target_path] = _extract_summary(
+                            result.content
                         )
-                        return exc  # return as value so gather works
+                        # Report progress immediately (not batched after gather)
+                        if on_page_done is not None:
+                            on_page_done(result.page_type)
+                    return result
+                except Exception as exc:
+                    if job_system is not None and job_id is not None:
+                        job_system.fail_page(job_id, page_id, str(exc))
+                    log.error(
+                        "page_generation_failed",
+                        page_id=page_id,
+                        level=level,
+                        error=str(exc),
+                    )
+                    return exc  # return as value so gather works
 
             tasks = [guarded_named(pid, c) for pid, c in named_coros]
             results = await asyncio.gather(*tasks)

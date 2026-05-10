@@ -62,6 +62,8 @@ class GenerationConfig:
         temperature:              Sampling temperature (0.3 for consistent docs).
         token_budget:             Context tokens fed to LLM (not output).
         max_concurrency:          asyncio.Semaphore size for parallel calls.
+        embed_concurrency:        asyncio.Semaphore size for vector-store writes.
+                                  Defaults to max_concurrency.
         cache_enabled:            In-memory SHA256 prompt deduplication.
         staleness_threshold_days: Days before a page is considered stale.
         expiry_threshold_days:    Days before a page is considered expired.
@@ -73,6 +75,7 @@ class GenerationConfig:
     temperature: float = 0.3
     token_budget: int = 48000
     max_concurrency: int = 5
+    embed_concurrency: int | None = None
     cache_enabled: bool = True
     staleness_threshold_days: int = 7
     expiry_threshold_days: int = 30
@@ -83,6 +86,11 @@ class GenerationConfig:
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"
+
+    def __post_init__(self) -> None:
+        if self.embed_concurrency is None:
+            object.__setattr__(self, "embed_concurrency", self.max_concurrency)
+
 
 # ---------------------------------------------------------------------------
 # GeneratedPage
