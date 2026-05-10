@@ -15,22 +15,21 @@ import {
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@repowise-dev/ui/ui/tabs";
+import {
+  CacheHitRatioCard,
+  CostHeatmap,
+  ProviderComparison,
+  OperationBreakdown,
+} from "@repowise-dev/ui/costs";
 import { listCosts, getCostSummary } from "@/lib/api/costs";
 import type { CostGroup, CostSummary } from "@/lib/api/costs";
 import { formatCost, formatNumber, formatTokens } from "@repowise-dev/ui/lib/format";
 
-type GroupBy = "day" | "model" | "operation";
-
-const GROUP_BY_OPTIONS: { label: string; value: GroupBy }[] = [
-  { label: "By Day", value: "day" },
-  { label: "By Model", value: "model" },
-  { label: "By Operation", value: "operation" },
-];
-
 export default function CostsPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
-  const [by, setBy] = useState<GroupBy>("day");
+  const [tab, setTab] = useState("daily");
 
   const { data: summary, isLoading: loadingSummary } = useSWR<CostSummary>(
     `costs-summary:${id}`,
@@ -38,15 +37,26 @@ export default function CostsPage() {
     { revalidateOnFocus: false },
   );
 
-  const { data: groups, isLoading: loadingGroups } = useSWR<CostGroup[]>(
-    `costs-groups:${id}:${by}`,
-    () => listCosts(id, { by }),
+  const { data: dayGroups, isLoading: loadingDay } = useSWR<CostGroup[]>(
+    `costs-groups:${id}:day`,
+    () => listCosts(id, { by: "day" }),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: modelGroups } = useSWR<CostGroup[]>(
+    `costs-groups:${id}:model`,
+    () => listCosts(id, { by: "model" }),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: opGroups } = useSWR<CostGroup[]>(
+    `costs-groups:${id}:operation`,
+    () => listCosts(id, { by: "operation" }),
     { revalidateOnFocus: false },
   );
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
-      {/* Header */}
       <div>
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
           <DollarSign className="h-5 w-5 text-green-500" />
@@ -57,7 +67,6 @@ export default function CostsPage() {
         </p>
       </div>
 
-      {/* Summary stat cards */}
       {loadingSummary ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
@@ -90,154 +99,149 @@ export default function CostsPage() {
         </div>
       ) : null}
 
-      {/* Group-by selector */}
-      <div className="flex items-center gap-2">
-        {GROUP_BY_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => setBy(opt.value)}
-            className={[
-              "px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
-              by === opt.value
-                ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
-                : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
-            ].join(" ")}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
+      <Tabs value={tab} onValueChange={setTab} className="w-full">
+        <TabsList>
+          <TabsTrigger value="daily">Daily</TabsTrigger>
+          <TabsTrigger value="cache">Cache & savings</TabsTrigger>
+          <TabsTrigger value="hotspots">Hotspots</TabsTrigger>
+          <TabsTrigger value="providers">Providers</TabsTrigger>
+          <TabsTrigger value="operations">Operations</TabsTrigger>
+        </TabsList>
 
-      {/* Chart — only when grouping by day */}
-      {by === "day" && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Daily Spend (USD)</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            {loadingGroups ? (
-              <Skeleton className="h-48 w-full" />
-            ) : groups && groups.length > 0 ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart
-                  data={[...groups].sort((a, b) => a.group.localeCompare(b.group))}
-                  margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
-                >
-                  <XAxis
-                    dataKey="group"
-                    tick={{ fill: "var(--color-text-tertiary)", fontSize: 11 }}
-                    axisLine={false}
-                    tickLine={false}
-                    interval="preserveStartEnd"
-                    minTickGap={24}
-                    tickFormatter={(v: string) => {
-                      // ISO date "YYYY-MM-DD" → "M/D"
-                      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
-                      return m ? `${Number(m[2])}/${Number(m[3])}` : v;
-                    }}
-                  />
-                  <YAxis
-                    tick={{ fill: "var(--color-text-tertiary)", fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v: number) => `$${v.toFixed(3)}`}
-                  />
-                  <Tooltip
-                    cursor={{ fill: "var(--color-bg-elevated)" }}
-                    contentStyle={{
-                      background: "var(--color-bg-overlay)",
-                      border: "1px solid var(--color-border-default)",
-                      borderRadius: "6px",
-                      fontSize: "12px",
-                      color: "var(--color-text-primary)",
-                    }}
-                    formatter={(value: number) => [formatCost(value), "Cost"]}
-                    labelFormatter={(label: string) => `Date: ${label}`}
-                  />
-                  <Bar dataKey="cost_usd" fill="var(--color-accent-primary)" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-sm text-[var(--color-text-secondary)] py-8 text-center">
-                No cost data available.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+        <TabsContent value="daily" className="mt-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Daily Spend (USD)</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {loadingDay ? (
+                <Skeleton className="h-48 w-full" />
+              ) : dayGroups && dayGroups.length > 0 ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart
+                    data={[...dayGroups].sort((a, b) => a.group.localeCompare(b.group))}
+                    margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+                  >
+                    <XAxis
+                      dataKey="group"
+                      tick={{ fill: "var(--color-text-tertiary)", fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                      interval="preserveStartEnd"
+                      minTickGap={24}
+                      tickFormatter={(v: string) => {
+                        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+                        return m ? `${Number(m[2])}/${Number(m[3])}` : v;
+                      }}
+                    />
+                    <YAxis
+                      tick={{ fill: "var(--color-text-tertiary)", fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      tickFormatter={(v: number) => `$${v.toFixed(3)}`}
+                    />
+                    <Tooltip
+                      cursor={{ fill: "var(--color-bg-elevated)" }}
+                      contentStyle={{
+                        background: "var(--color-bg-overlay)",
+                        border: "1px solid var(--color-border-default)",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                        color: "var(--color-text-primary)",
+                      }}
+                      formatter={(value: number) => [formatCost(value), "Cost"]}
+                      labelFormatter={(label: string) => `Date: ${label}`}
+                    />
+                    <Bar dataKey="cost_usd" fill="var(--color-accent-primary)" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-sm text-[var(--color-text-secondary)] py-8 text-center">
+                  No cost data available.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-      {/* Table */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">
-            {by === "day" ? "Daily Breakdown" : by === "model" ? "By Model" : "By Operation"}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {loadingGroups ? (
-            <div className="space-y-2">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-8 w-full" />
-              ))}
-            </div>
-          ) : groups && groups.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--color-border-default)] text-left">
-                    <th className="pb-2 pr-4 font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider text-xs">
-                      {by === "day" ? "Date" : by === "model" ? "Model" : "Operation"}
-                    </th>
-                    <th className="pb-2 pr-4 font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider text-xs text-right">
-                      Calls
-                    </th>
-                    <th className="pb-2 pr-4 font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider text-xs text-right">
-                      Input Tokens
-                    </th>
-                    <th className="pb-2 pr-4 font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider text-xs text-right">
-                      Output Tokens
-                    </th>
-                    <th className="pb-2 font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider text-xs text-right">
-                      Cost (USD)
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--color-border-default)]">
-                  {(by === "day"
-                    ? [...groups].sort((a, b) => b.group.localeCompare(a.group))
-                    : groups
-                  ).map((row) => (
-                    <tr
-                      key={row.group}
-                      className="hover:bg-[var(--color-bg-elevated)] transition-colors"
-                    >
-                      <td className="py-2 pr-4 text-[var(--color-text-primary)] font-mono text-xs max-w-[280px]">
-                        <span className="block truncate" title={row.group}>{row.group}</span>
-                      </td>
-                      <td className="py-2 pr-4 text-right text-[var(--color-text-secondary)] tabular-nums">
-                        {formatNumber(row.calls)}
-                      </td>
-                      <td className="py-2 pr-4 text-right text-[var(--color-text-secondary)] tabular-nums">
-                        {formatTokens(row.input_tokens)}
-                      </td>
-                      <td className="py-2 pr-4 text-right text-[var(--color-text-secondary)] tabular-nums">
-                        {formatTokens(row.output_tokens)}
-                      </td>
-                      <td className="py-2 text-right font-medium text-[var(--color-text-primary)] tabular-nums">
-                        {formatCost(row.cost_usd)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        <TabsContent value="cache" className="mt-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <CacheHitRatioCard />
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Token efficiency</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                {summary ? (
+                  <div className="space-y-2 text-xs text-[var(--color-text-secondary)]">
+                    <div className="flex justify-between">
+                      <span>Avg input tokens / call</span>
+                      <span className="tabular-nums text-[var(--color-text-primary)]">
+                        {summary.total_calls > 0
+                          ? Math.round(summary.total_input_tokens / summary.total_calls).toLocaleString()
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Avg output tokens / call</span>
+                      <span className="tabular-nums text-[var(--color-text-primary)]">
+                        {summary.total_calls > 0
+                          ? Math.round(summary.total_output_tokens / summary.total_calls).toLocaleString()
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Avg cost / call</span>
+                      <span className="tabular-nums text-[var(--color-text-primary)]">
+                        {summary.total_calls > 0
+                          ? formatCost(summary.total_cost_usd / summary.total_calls)
+                          : "—"}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <Skeleton className="h-24 w-full" />
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="hotspots" className="mt-4">
+          {opGroups ? (
+            <CostHeatmap
+              groups={opGroups.map((g) => ({ group: g.group, cost_usd: g.cost_usd, calls: g.calls }))}
+              title="Cost concentration by operation"
+              emptyHint="No operation-level data yet."
+            />
           ) : (
-            <p className="text-sm text-[var(--color-text-secondary)] py-8 text-center">
-              No cost data available for this repository.
-            </p>
+            <Skeleton className="h-40 w-full" />
           )}
-        </CardContent>
-      </Card>
+        </TabsContent>
+
+        <TabsContent value="providers" className="mt-4">
+          {modelGroups ? (
+            <ProviderComparison modelGroups={modelGroups} />
+          ) : (
+            <Skeleton className="h-40 w-full" />
+          )}
+        </TabsContent>
+
+        <TabsContent value="operations" className="mt-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Spend by operation</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {opGroups ? (
+                <OperationBreakdown groups={opGroups} />
+              ) : (
+                <Skeleton className="h-40 w-full" />
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
