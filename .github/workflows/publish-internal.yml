@@ -1,7 +1,7 @@
 name: Publish internal prereleases
 
 # Publishes @repowise-dev/types and @repowise-dev/ui to GitHub Packages on
-# every push to `next`, tagged as `0.0.0-internal.<short-sha>`. Downstream
+# every push to `main`, tagged as `0.0.0-internal.<short-sha>`. Downstream
 # consumers (e.g. hosted-frontend) pin to a specific SHA.
 #
 # Source package.json files declare the published names directly
@@ -14,12 +14,11 @@ name: Publish internal prereleases
 #   - push to `next` (auto)
 #   - workflow_dispatch (manual, for re-publishes)
 #
-# Explicitly NOT triggered on push to `main` to avoid surfacing prereleases
-# from main while the package consumption pattern is still being validated.
+# Triggers on push to `main` so merged PRs automatically publish.
 
 on:
   push:
-    branches: [next]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
