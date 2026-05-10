@@ -112,12 +112,22 @@ Start the API server and web UI.
 | `--workers` | Uvicorn workers (default: 1) |
 | `--ui-port` | Web UI port (default: 3000) |
 | `--no-ui` | Start API server only |
+| `--refresh-ui` | Force re-download of the web UI tarball, ignoring any cache |
 
 ```bash
 repowise serve                           # API + Web UI
 repowise serve --no-ui                   # API only
 repowise serve --port 8080 --ui-port 8081
+repowise serve --refresh-ui              # bypass cache, pull latest UI tarball
 ```
+
+**Web UI sources, in order of precedence:**
+
+1. **Local monorepo build** at `packages/web/.next/standalone/...` — used when the CLI is run from inside a checkout. The bundle's mtime is compared against source under `packages/web/`, `packages/ui/src/`, and `packages/types/src/`; if any source is newer the bundle is rebuilt with `npm run build` (or skipped if `npm` is unavailable).
+2. **Cached download** at `~/.repowise/web/`, keyed by the CLI version in `.version`.
+3. **Fresh download** of `repowise-web.tar.gz` from the GitHub release matching the CLI version.
+
+Pass `--refresh-ui` to skip (1) and (2) and force (3).
 
 ---
 
