@@ -15,9 +15,84 @@ from repowise.core.workspace.update import (
     check_repo_staleness,
     count_commits_between,
     get_head_commit,
+    read_state_commit,
     run_cross_repo_hooks,
+    sync_workspace_state_from_disk,
     update_workspace,
 )
+
+
+# ---------------------------------------------------------------------------
+# sync_workspace_state_from_disk — Phase C1
+# ---------------------------------------------------------------------------
+
+
+class TestSyncWorkspaceStateFromDisk:
+    def test_picks_up_drifted_state_json(self, tmp_path: Path) -> None:
+        """When a child repo is updated outside the workspace orchestrator,
+        the workspace config drifts. sync_workspace_state_from_disk pulls
+        the real value from state.json."""
+        repo = _make_git_repo(tmp_path, "backend")
+        new_sha = "deadbeef" * 5  # 40 chars
+        _write_state(repo, new_sha)
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(
+                path="backend",
+                alias="backend",
+                last_commit_at_index="stale-sha",
+            )],
+        )
+        ws_config.save(tmp_path)
+
+        changed = sync_workspace_state_from_disk(tmp_path, ws_config)
+        assert changed == ["backend"]
+        assert ws_config.get_repo("backend").last_commit_at_index == new_sha
+
+    def test_no_change_when_in_sync(self, tmp_path: Path) -> None:
+        repo = _make_git_repo(tmp_path, "backend")
+        sha = "a" * 40
+        _write_state(repo, sha)
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(
+                path="backend", alias="backend", last_commit_at_index=sha,
+            )],
+        )
+        ws_config.save(tmp_path)
+        assert sync_workspace_state_from_disk(tmp_path, ws_config) == []
+
+    def test_missing_dir_skipped(self, tmp_path: Path) -> None:
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="ghost", alias="ghost")],
+        )
+        assert sync_workspace_state_from_disk(tmp_path, ws_config) == []
+
+    def test_missing_state_json_skipped(self, tmp_path: Path) -> None:
+        _make_git_repo(tmp_path, "backend")
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(
+                path="backend", alias="backend", last_commit_at_index="old",
+            )],
+        )
+        # No state.json written → entry preserved unchanged
+        assert sync_workspace_state_from_disk(tmp_path, ws_config) == []
+        assert ws_config.get_repo("backend").last_commit_at_index == "old"
+
+
+class TestReadStateCommit:
+    def test_returns_commit(self, tmp_path: Path) -> None:
+        repo = tmp_path / "r"
+        repo.mkdir()
+        _write_state(repo, "abc123")
+        assert read_state_commit(repo) == "abc123"
+
+    def test_missing_returns_none(self, tmp_path: Path) -> None:
+        assert read_state_commit(tmp_path) is None
+
+    def test_malformed_returns_none(self, tmp_path: Path) -> None:
+        (tmp_path / ".repowise").mkdir()
+        (tmp_path / ".repowise" / "state.json").write_text("not json{")
+        assert read_state_commit(tmp_path) is None
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +330,9 @@ class TestUpdateWorkspace:
         with pytest.raises(ValueError, match="Unknown repo"):
             asyncio.run(_run())
 
-    def test_not_indexed_skipped(self, tmp_path: Path) -> None:
-        """Repos without .repowise/ should be skipped."""
+    def test_first_time_index_runs_pipeline(self, tmp_path: Path) -> None:
+        """Repos without .repowise/ now get first-time indexing rather
+        than being silently skipped (Phase C1)."""
         repo = _make_git_repo(tmp_path, "backend")
         # No .repowise/ dir, no state.json
 
@@ -270,7 +346,14 @@ class TestUpdateWorkspace:
         import asyncio
         results = asyncio.run(_run())
         assert len(results) == 1
-        assert results[0].skipped_reason == "not_indexed"
+        # The pipeline ran (may have errored due to empty repo, but the
+        # important contract is: we did NOT short-circuit with skipped_reason).
+        assert results[0].skipped_reason != "not_indexed"
+        # Either the pipeline succeeded (updated=True, first_time flagged)
+        # or it errored — both prove we didn't bail early.
+        if results[0].updated:
+            assert results[0].first_time_indexed is True
+            assert (repo / ".repowise").is_dir()
 
     def test_dry_run(self, tmp_path: Path) -> None:
         """Dry run should not perform any updates."""

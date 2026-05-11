@@ -448,18 +448,23 @@ def doctor_command(
         _run_repo_checks(target.repo_path, repair)
         return
 
-    # Workspace mode — iterate over every entry, skipping unindexed ones
-    # but reporting them in the summary so the user knows.
+    # Workspace mode — iterate over every entry, run workspace-level
+    # validation, and report a summary table at the end so the user knows
+    # which repos need attention.
     assert target.ws_root is not None and target.ws_config is not None
     ws_root = target.ws_root
     ws_config = target.ws_config
 
+    ws_issues = _run_workspace_checks(ws_root, ws_config, repair=repair)
+
     overall_ok = True
-    skipped: list[str] = []
+    not_indexed: list[str] = []
     for entry in ws_config.repos:
         abs_path = (ws_root / entry.path).resolve()
+        if not abs_path.is_dir():
+            continue
         if not (abs_path / ".repowise").is_dir():
-            skipped.append(entry.alias)
+            not_indexed.append(entry.alias)
             continue
         console.print()
         console.print(
@@ -471,16 +476,168 @@ def doctor_command(
         overall_ok = overall_ok and ok
 
     console.print()
-    if skipped:
+    if not_indexed:
         console.print(
-            f"[yellow]Skipped (not indexed):[/yellow] {', '.join(skipped)}"
+            f"[yellow]Not indexed:[/yellow] {', '.join(not_indexed)}"
         )
         console.print(
             "  Run [bold]repowise update --workspace[/bold] to index them."
         )
-    if overall_ok and not skipped:
+    if ws_issues and not repair:
+        console.print(
+            f"[yellow]{len(ws_issues)} workspace-level issue(s); "
+            f"rerun with [bold]--repair[/bold] to attempt fixes.[/yellow]"
+        )
+
+    workspace_clean = not ws_issues and overall_ok and not not_indexed
+    if workspace_clean:
         console.print("[bold green]Workspace healthy.[/bold green]")
-    elif overall_ok:
+    elif overall_ok and not ws_issues:
         console.print("[bold yellow]All indexed repos healthy; some repos unindexed.[/bold yellow]")
     else:
         console.print("[bold yellow]Some checks failed across the workspace.[/bold yellow]")
+
+
+def _run_workspace_checks(
+    ws_root: _DoctorPath,
+    ws_config,
+    *,
+    repair: bool,
+) -> list[str]:
+    """Run workspace-level validation. Returns a list of issue strings.
+
+    Covers:
+      - Per-entry directory existence & ``.git`` presence.
+      - State drift between ``WorkspaceConfig.last_commit_at_index`` and
+        each repo's ``.repowise/state.json``.
+      - MCP server registration (best-effort detection in claude config).
+      - ``--repair``: rebuild missing ``state.json``, drop dead workspace
+        entries (with a notice).
+    """
+    from repowise.core.workspace.update import (
+        read_state_commit,
+        sync_workspace_state_from_disk,
+    )
+
+    rows: list[tuple[str, str, str]] = []
+    issues: list[str] = []
+
+    dead_entries: list[str] = []
+    for entry in ws_config.repos:
+        abs_path = (ws_root / entry.path).resolve()
+
+        # Dir & git presence
+        if not abs_path.is_dir():
+            rows.append((entry.alias, "[red]MISSING[/red]", f"directory not found: {entry.path}"))
+            dead_entries.append(entry.alias)
+            issues.append(f"{entry.alias}: missing directory")
+            continue
+        if not (abs_path / ".git").exists():
+            rows.append((entry.alias, "[yellow]WARN[/yellow]", "not a git repo"))
+            issues.append(f"{entry.alias}: not a git repo")
+
+        # State drift
+        disk_commit = read_state_commit(abs_path)
+        cfg_commit = entry.last_commit_at_index
+        if disk_commit and cfg_commit and disk_commit != cfg_commit:
+            rows.append((
+                entry.alias,
+                "[yellow]DRIFT[/yellow]",
+                f"config={cfg_commit[:8]}, state.json={disk_commit[:8]}",
+            ))
+            issues.append(f"{entry.alias}: workspace config / state.json drift")
+        elif disk_commit and not cfg_commit:
+            rows.append((
+                entry.alias,
+                "[yellow]DRIFT[/yellow]",
+                f"workspace config missing last_commit_at_index (state.json has {disk_commit[:8]})",
+            ))
+            issues.append(f"{entry.alias}: workspace config missing commit pointer")
+        elif (abs_path / ".repowise").is_dir() and not disk_commit:
+            rows.append((
+                entry.alias, "[yellow]WARN[/yellow]",
+                "state.json missing or empty (run `repowise update`)",
+            ))
+            issues.append(f"{entry.alias}: missing state.json")
+        else:
+            rows.append((entry.alias, "[green]OK[/green]", entry.path))
+
+    table = Table(title="repowise Workspace Doctor")
+    table.add_column("Repo", style="cyan")
+    table.add_column("Status")
+    table.add_column("Detail")
+    for r in rows:
+        table.add_row(*r)
+    console.print(table)
+
+    # MCP server registration — best-effort, advisory only.
+    _check_mcp_registered(ws_root)
+
+    # --repair: sync the workspace config from disk and drop dead entries.
+    if repair:
+        changed = sync_workspace_state_from_disk(ws_root, ws_config)
+        if changed:
+            console.print(
+                f"[green]Repaired workspace config from disk for:[/green] "
+                f"{', '.join(changed)}"
+            )
+        if dead_entries:
+            console.print(
+                f"[yellow]Removing dead workspace entries:[/yellow] "
+                f"{', '.join(dead_entries)}"
+            )
+            for alias in dead_entries:
+                ws_config.remove_repo(alias)
+            ws_config.save(ws_root)
+            console.print("[green]Workspace config updated.[/green]")
+        if not changed and not dead_entries:
+            console.print("[green]No workspace-level repairs needed.[/green]")
+
+    return issues
+
+
+def _check_mcp_registered(ws_root: _DoctorPath) -> None:
+    """Best-effort check that a Claude MCP entry points at this workspace.
+
+    The check is advisory: a missing entry is not an error, since the user
+    may use the HTTP server or a different MCP client. We just print a
+    helpful hint so the workspace can be wired up if the user wants it.
+    """
+    import json as _json
+    import os as _os
+
+    candidates: list[_DoctorPath] = []
+    appdata = _os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(_DoctorPath(appdata) / "Claude" / "claude_desktop_config.json")
+    home = _DoctorPath.home()
+    candidates.extend([
+        home / ".claude" / "claude_desktop_config.json",
+        home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
+        home / ".config" / "Claude" / "claude_desktop_config.json",
+    ])
+
+    found_paths: list[str] = []
+    for cfg in candidates:
+        if not cfg.is_file():
+            continue
+        try:
+            data = _json.loads(cfg.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        servers = data.get("mcpServers", {}) or {}
+        for name, spec in servers.items():
+            args = spec.get("args", []) if isinstance(spec, dict) else []
+            arg_str = " ".join(str(a) for a in args)
+            if str(ws_root) in arg_str or str(ws_root.resolve()) in arg_str:
+                found_paths.append(f"{cfg.name}:{name}")
+
+    if found_paths:
+        console.print(
+            f"  [dim]MCP: registered ({', '.join(found_paths)})[/dim]"
+        )
+    else:
+        console.print(
+            "  [dim]MCP: no claude_desktop_config.json entry found — run "
+            "`repowise hook install` to register.[/dim]"
+        )

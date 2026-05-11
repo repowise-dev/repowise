@@ -29,10 +29,11 @@ class RepoUpdateResult:
 
     alias: str
     updated: bool  # True if an update was performed
-    skipped_reason: str | None = None  # "up_to_date", "not_indexed", etc.
+    skipped_reason: str | None = None  # "up_to_date", "missing_directory", etc.
     file_count: int = 0
     symbol_count: int = 0
     error: str | None = None
+    first_time_indexed: bool = False  # True if this run was a first-time index
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,56 @@ def count_commits_between(repo_path: Path, base: str, head: str) -> int:
     except Exception:
         pass
     return 0
+
+
+def read_state_commit(repo_path: Path) -> str | None:
+    """Return ``last_sync_commit`` from ``<repo>/.repowise/state.json`` or None."""
+    import json as _json
+
+    state_path = repo_path / ".repowise" / "state.json"
+    if not state_path.is_file():
+        return None
+    try:
+        data = _json.loads(state_path.read_text(encoding="utf-8"))
+        sha = data.get("last_sync_commit")
+        return str(sha) if sha else None
+    except Exception:
+        return None
+
+
+def sync_workspace_state_from_disk(
+    workspace_root: Path,
+    ws_config: WorkspaceConfig,
+    *,
+    save_if_changed: bool = True,
+) -> list[str]:
+    """Refresh ``WorkspaceConfig`` entries from each repo's on-disk
+    ``state.json``.
+
+    A child repo can be updated outside the workspace orchestrator (the
+    user runs ``repowise update`` inside the child dir directly), which
+    drifts ``RepoEntry.last_commit_at_index`` away from the actual
+    ``state.json`` value. Call this before any workspace-level decision
+    that reads from ``ws_config`` so we never act on stale info.
+
+    Returns the list of aliases that changed.
+    """
+    changed: list[str] = []
+    for entry in ws_config.repos:
+        abs_path = (workspace_root / entry.path).resolve()
+        if not abs_path.is_dir():
+            continue
+        disk_commit = read_state_commit(abs_path)
+        if disk_commit is not None and disk_commit != entry.last_commit_at_index:
+            entry.last_commit_at_index = disk_commit
+            changed.append(entry.alias)
+    if changed and save_if_changed:
+        try:
+            ws_config.save(workspace_root)
+        except Exception:
+            # Saving is best-effort — the in-memory sync still happened.
+            _log.warning("Could not persist synced workspace config", exc_info=True)
+    return changed
 
 
 def check_repo_staleness(
@@ -200,7 +251,8 @@ async def update_workspace(
         List of :class:`RepoUpdateResult` for each repo.
     """
     results: list[RepoUpdateResult] = []
-    stale_repos: list[tuple[str, Path, str]] = []  # (alias, path, new_head)
+    # (alias, path, new_head, first_time)
+    stale_repos: list[tuple[str, Path, str, bool]] = []
 
     # Step 1: Determine which repos are stale
     entries = ws_config.repos
@@ -210,6 +262,12 @@ async def update_workspace(
             available = ", ".join(ws_config.repo_aliases())
             raise ValueError(f"Unknown repo '{repo_filter}'. Available: {available}")
         entries = [entry]
+
+    # Step 0: Sync ``last_commit_at_index`` from each repo's state.json so
+    # the workspace config doesn't drift when a child repo is updated
+    # outside the workspace orchestrator (e.g. ``repowise update`` run
+    # inside the child dir directly).
+    sync_workspace_state_from_disk(workspace_root, ws_config)
 
     for entry in entries:
         abs_path = (workspace_root / entry.path).resolve()
@@ -240,13 +298,13 @@ async def update_workspace(
             ))
             continue
 
-        if not (abs_path / ".repowise").is_dir():
-            results.append(RepoUpdateResult(
-                alias=entry.alias, updated=False, skipped_reason="not_indexed",
-            ))
-            continue
-
-        stale_repos.append((entry.alias, abs_path, current_head or ""))
+        # First-time indexing path: previously this short-circuited with
+        # ``skipped_reason="not_indexed"``, leaving newly-added workspace
+        # repos in a half-broken state. Now we run the full pipeline; the
+        # `.repowise/` dir is created on demand by ``update_single_repo_index``
+        # (resolve_db_url) and ``state.json`` is written below.
+        first_time = not (abs_path / ".repowise").is_dir()
+        stale_repos.append((entry.alias, abs_path, current_head or "", first_time))
 
     if dry_run or not stale_repos:
         return results
@@ -254,10 +312,16 @@ async def update_workspace(
     # Step 2: Update stale repos (parallel with concurrency limit)
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_UPDATES)
 
-    async def _update_one(alias: str, path: Path, new_head: str) -> RepoUpdateResult:
+    async def _update_one(
+        alias: str, path: Path, new_head: str, first_time: bool
+    ) -> RepoUpdateResult:
         async with semaphore:
             if on_repo_start:
                 on_repo_start(alias)
+
+            # Ensure the .repowise/ dir exists before the pipeline runs so
+            # first-time indexing has a place to put wiki.db and state.json.
+            (path / ".repowise").mkdir(parents=True, exist_ok=True)
 
             result = await update_single_repo_index(
                 path,
@@ -265,6 +329,7 @@ async def update_workspace(
                 exclude_patterns=exclude_patterns,
             )
             result.alias = alias
+            result.first_time_indexed = first_time and result.updated
 
             # Update state.json with new commit
             if result.updated and new_head:
@@ -277,6 +342,15 @@ async def update_workspace(
                     except Exception:
                         pass
                 state["last_sync_commit"] = new_head
+                # Mark first-time so downstream tooling (status, doctor) can
+                # distinguish a never-indexed repo from one that's been
+                # updated at least once.
+                if first_time and "docs_enabled" not in state:
+                    state["docs_enabled"] = False
+                    state["docs_skip_reason"] = (
+                        "first-time index via update; run "
+                        "`repowise update --repo " + alias + " --docs` to generate docs"
+                    )
                 state_path.parent.mkdir(parents=True, exist_ok=True)
                 state_path.write_text(
                     _json.dumps(state, indent=2), encoding="utf-8",
@@ -295,7 +369,10 @@ async def update_workspace(
             return result
 
     update_results = await asyncio.gather(
-        *[_update_one(alias, path, head) for alias, path, head in stale_repos],
+        *[
+            _update_one(alias, path, head, first_time)
+            for alias, path, head, first_time in stale_repos
+        ],
         return_exceptions=True,
     )
 
