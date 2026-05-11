@@ -59,8 +59,12 @@ async def list_repos(
 ) -> list[RepoResponse]:
     """List all registered repositories.
 
-    In workspace mode, aggregates repos from the primary DB and all
-    workspace repo DBs so every indexed repo appears in the sidebar.
+    In workspace mode, aggregates indexed repos from the primary DB and
+    every workspace repo DB, AND includes synthetic entries for
+    workspace repos that haven't been indexed yet (status="needs_index")
+    or whose directory has gone missing (status="missing_dir"). This is
+    what powers the web UI sidebar — silently dropping unindexed repos
+    used to cause the "I only see the primary" Discord report.
     """
     result = await session.execute(select(Repository).order_by(Repository.updated_at.desc()))
     repos = list(result.scalars().all())
@@ -83,9 +87,84 @@ async def list_repos(
         except Exception:
             pass
 
-    # Sort by updated_at descending
+    # Sort indexed repos by updated_at descending
     repos.sort(key=lambda r: r.updated_at or r.created_at, reverse=True)
-    return [RepoResponse.from_orm(r) for r in repos]
+    responses = [RepoResponse.from_orm(r) for r in repos]
+
+    # Augment with workspace metadata. We do this in a second pass (rather
+    # than during from_orm) because the workspace context lives on
+    # app.state, not on the Repository row.
+    ws_config = getattr(request.app.state, "workspace_config", None)
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    if ws_config is None or ws_root is None:
+        return responses
+
+    from pathlib import Path as _P
+    import json as _json
+
+    ws_root_path = _P(ws_root)
+    # Map local_path → alias entry for quick attach on indexed rows.
+    by_path: dict[str, object] = {
+        str((ws_root_path / e.path).resolve()): e for e in ws_config.repos
+    }
+
+    # Attach alias + status + docs status to already-indexed rows.
+    indexed_aliases: set[str] = set()
+    for resp in responses:
+        entry = by_path.get(str(_P(resp.local_path).resolve()))
+        if entry is None:
+            continue
+        resp.workspace_alias = entry.alias
+        resp.is_primary = bool(entry.is_primary)
+        resp.workspace_status = "indexed"
+        indexed_aliases.add(entry.alias)
+
+        # docs_enabled is recorded per-repo in state.json. Read it once
+        # per response — cheap, and never failing.
+        state_path = _P(resp.local_path) / ".repowise" / "state.json"
+        if state_path.is_file():
+            try:
+                state = _json.loads(state_path.read_text(encoding="utf-8"))
+                resp.docs_enabled = bool(state.get("docs_enabled", True))
+                resp.docs_skip_reason = state.get("docs_skip_reason")
+            except Exception:
+                pass
+
+    # Synthesize entries for repos in the workspace that aren't indexed yet.
+    from datetime import datetime, UTC as _UTC
+
+    now = datetime.now(_UTC)
+    for entry in ws_config.repos:
+        if entry.alias in indexed_aliases:
+            continue
+        abs_path = (ws_root_path / entry.path).resolve()
+        if abs_path.is_dir():
+            status = "needs_index"
+        else:
+            status = "missing_dir"
+        # Synthetic, stable, prefixed ID so the frontend can route to a
+        # CTA card without colliding with real repo UUIDs.
+        synthetic_id = f"ws:{entry.alias}"
+        responses.append(
+            RepoResponse(
+                id=synthetic_id,
+                name=entry.alias,
+                url="",
+                local_path=str(abs_path),
+                default_branch="main",
+                head_commit=None,
+                settings={},
+                created_at=now,
+                updated_at=now,
+                workspace_alias=entry.alias,
+                workspace_status=status,
+                is_primary=bool(entry.is_primary),
+                docs_enabled=False,
+                docs_skip_reason="not indexed yet",
+            )
+        )
+
+    return responses
 
 
 @router.get("/{repo_id}", response_model=RepoResponse)

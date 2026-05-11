@@ -50,6 +50,16 @@ class RepoResponse(BaseModel):
     settings: dict
     created_at: datetime
     updated_at: datetime
+    # Workspace context — populated when the server is running in
+    # workspace mode. ``status`` indicates whether the repo has been
+    # indexed yet; the web UI uses it to render "needs index" CTA cards
+    # instead of silently dropping unindexed workspace repos from the
+    # sidebar. Always ``None`` in single-repo mode.
+    workspace_alias: str | None = None
+    workspace_status: str | None = None
+    is_primary: bool | None = None
+    docs_enabled: bool | None = None
+    docs_skip_reason: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> RepoResponse:
@@ -940,6 +950,20 @@ class WorkspaceRepoEntry(BaseModel):
     page_count: int = 0
     doc_coverage_pct: float = 0.0
     hotspot_count: int = 0
+    # Lifecycle status — surfaced so the web UI can render "needs index"
+    # or "missing directory" affordances instead of silently dropping the
+    # repo from the sidebar.
+    #   "indexed"       — has .repowise/wiki.db with at least one Repository row
+    #   "needs_index"   — directory exists but no .repowise/wiki.db yet
+    #   "missing_dir"   — workspace config references a path that no longer exists
+    status: str = "indexed"
+    # Whether docs were generated for this repo. False means a user
+    # action ("repowise update --repo <alias> --docs") is required to
+    # populate the Docs/Overview tabs in the web UI.
+    docs_enabled: bool = True
+    # Optional skip reason captured in state.json — surfaced as a
+    # transparency hint when docs are disabled.
+    docs_skip_reason: str | None = None
 
 
 class WorkspaceCrossRepoSummary(BaseModel):
@@ -962,6 +986,21 @@ class WorkspaceResponse(BaseModel):
     default_repo: str | None = None
     cross_repo_summary: WorkspaceCrossRepoSummary | None = None
     contract_summary: WorkspaceContractSummary | None = None
+
+
+class WorkspaceSyncResult(BaseModel):
+    alias: str
+    job_id: str | None = None
+    repo_id: str | None = None
+    status: str  # "accepted", "skipped", "error"
+    reason: str | None = None
+
+
+class WorkspaceSyncResponse(BaseModel):
+    results: list[WorkspaceSyncResult]
+    accepted: int = 0
+    skipped: int = 0
+    errors: int = 0
 
 
 class WorkspaceContractEntry(BaseModel):

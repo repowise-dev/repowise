@@ -7,6 +7,7 @@ startup from ``.repowise-workspace/`` JSON files) — no DB access needed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from pathlib import Path
@@ -15,7 +16,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from repowise.server.deps import (
     get_cross_repo_enricher,
+    get_db_session,
     get_workspace_config,
+    resolve_session_factory,
     verify_api_key,
 )
 from repowise.server.schemas import (
@@ -79,7 +82,8 @@ def _query_repo_stats(db_path: Path) -> dict:
     """Query basic stats from a repo's wiki.db using raw sqlite3.
 
     Returns a dict with repo_id, file_count, symbol_count, page_count,
-    doc_coverage_pct, hotspot_count.  All values default to 0/None on error.
+    doc_coverage_pct, hotspot_count, status, docs_enabled, and
+    docs_skip_reason.  All values default to sensible neutrals on error.
     """
     result: dict = {
         "repo_id": None,
@@ -88,9 +92,27 @@ def _query_repo_stats(db_path: Path) -> dict:
         "page_count": 0,
         "doc_coverage_pct": 0.0,
         "hotspot_count": 0,
+        "status": "needs_index",
+        "docs_enabled": False,
+        "docs_skip_reason": None,
     }
+    # Surface docs lifecycle from state.json so the UI shows a coherent
+    # picture even when only indexing (no docs) ran.
+    try:
+        import json as _json
+
+        state_path = db_path.parent / "state.json"
+        if state_path.is_file():
+            state = _json.loads(state_path.read_text(encoding="utf-8"))
+            result["docs_enabled"] = bool(state.get("docs_enabled", False))
+            result["docs_skip_reason"] = state.get("docs_skip_reason")
+    except Exception:
+        pass
     if not db_path.exists():
+        if not db_path.parent.parent.is_dir():
+            result["status"] = "missing_dir"
         return result
+    result["status"] = "indexed"
     try:
         conn = sqlite3.connect(str(db_path))
         c = conn.cursor()
@@ -433,3 +455,163 @@ async def get_workspace_graph(
             )
 
     return WorkspaceGraphResponse(nodes=nodes, edges=edges)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/workspace/sync
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sync", status_code=202)
+async def sync_workspace(
+    request: Request,
+    repo_alias: str | None = Query(
+        None,
+        description="If set, only sync this repo alias (still fans through the job system).",
+    ),
+    full_resync: bool = Query(False, description="Trigger a full resync instead of incremental."),
+    ws_config=Depends(get_workspace_config),
+):
+    """Fan out a sync to every (stale or unindexed) repo in the workspace.
+
+    Returns one :class:`WorkspaceSyncResult` per attempted repo with the
+    decision (accepted / skipped / error) so the web UI can render
+    progress without polling for each repo individually.
+
+    Uses the same job machinery as ``POST /api/repos/{id}/sync`` so the
+    scheduler, cost ledger, and live-progress hooks all work without
+    special cases.
+    """
+    from repowise.server.schemas import (
+        WorkspaceSyncResponse,
+        WorkspaceSyncResult,
+    )
+
+    _require_workspace(ws_config)
+
+    from repowise.core.persistence import crud
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import GenerationJob
+    from repowise.server.routers.repos import _launch_job_task
+    from sqlalchemy import select
+
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    if ws_root is None:
+        raise HTTPException(status_code=500, detail="Workspace root missing on app state")
+    ws_root_path = Path(ws_root)
+
+    results: list[WorkspaceSyncResult] = []
+
+    # Resolve aliases → entries to operate on.
+    if repo_alias is not None:
+        entry = ws_config.get_repo(repo_alias)
+        if entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown repo alias '{repo_alias}' in workspace.",
+            )
+        entries = [entry]
+    else:
+        entries = list(ws_config.repos)
+
+    for entry in entries:
+        repo_path = (ws_root_path / entry.path).resolve()
+        db_path = repo_path / ".repowise" / "wiki.db"
+
+        # Not indexed yet → no row to write a job against. Surface this
+        # as "skipped" so the UI can show a clear "run `repowise update
+        # --repo <alias>` from the CLI" hint. (A future enhancement is
+        # to support remote first-time indexing; see Phase C.)
+        if not db_path.exists():
+            results.append(
+                WorkspaceSyncResult(
+                    alias=entry.alias,
+                    status="skipped",
+                    reason="not indexed yet (run `repowise update --repo " + entry.alias + "` from the CLI)",
+                )
+            )
+            continue
+
+        # Discover repo_id from the per-repo DB.
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT id FROM repositories LIMIT 1"
+                ).fetchone()
+        except Exception as exc:
+            results.append(
+                WorkspaceSyncResult(
+                    alias=entry.alias,
+                    status="error",
+                    reason=f"could not read repo id: {exc}",
+                )
+            )
+            continue
+
+        if not row:
+            results.append(
+                WorkspaceSyncResult(
+                    alias=entry.alias,
+                    status="error",
+                    reason="repository row missing in wiki.db",
+                )
+            )
+            continue
+        repo_id = row[0]
+
+        session_factory = resolve_session_factory(request.app.state, repo_id)
+
+        async def _create_job() -> tuple[str | None, str | None]:
+            """Create a pending job row, returning (job_id, error)."""
+            try:
+                async with get_session(session_factory) as session:
+                    # Prevent concurrent runs on the same repo.
+                    active = await session.execute(
+                        select(GenerationJob.id)
+                        .where(GenerationJob.repository_id == repo_id)
+                        .where(GenerationJob.status.in_(["pending", "running"]))
+                        .limit(1)
+                    )
+                    if active.scalar_one_or_none() is not None:
+                        return None, "a sync is already running for this repo"
+
+                    config_data = {"mode": "full_resync"} if full_resync else None
+                    job = await crud.upsert_generation_job(
+                        session,
+                        repository_id=repo_id,
+                        status="pending",
+                        config=config_data,
+                    )
+                    await session.commit()
+                    return job.id, None
+            except Exception as exc:  # noqa: BLE001
+                return None, str(exc)
+
+        job_id, err = await _create_job()
+        if err is not None:
+            results.append(
+                WorkspaceSyncResult(
+                    alias=entry.alias,
+                    repo_id=repo_id,
+                    status="skipped" if "already running" in err else "error",
+                    reason=err,
+                )
+            )
+            continue
+
+        _launch_job_task(request, job_id, repo_id)
+        results.append(
+            WorkspaceSyncResult(
+                alias=entry.alias,
+                repo_id=repo_id,
+                job_id=job_id,
+                status="accepted",
+            )
+        )
+
+    return WorkspaceSyncResponse(
+        results=results,
+        accepted=sum(1 for r in results if r.status == "accepted"),
+        skipped=sum(1 for r in results if r.status == "skipped"),
+        errors=sum(1 for r in results if r.status == "error"),
+    )

@@ -174,6 +174,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.cross_repo_enricher = None
     app.state.workspace_sessions = {}   # repo_id → session_factory
     app.state.workspace_engines = []    # engines to dispose on shutdown
+    # Per-repo FTS instances keyed by repo_id, used by the search router
+    # to fan out across every workspace repo (single-repo FTS lives on
+    # app.state.fts and stays as the primary).
+    app.state.workspace_fts = {}        # repo_id → FullTextSearch
+    # repo_id → vector store (LanceDB-backed) for per-repo semantic search.
+    # Populated lazily by the search router on first use, then cached.
+    app.state.workspace_vector_stores = {}  # repo_id → VectorStore
 
     try:
         from pathlib import Path as _Path
@@ -211,9 +218,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     continue
 
                 # Skip if this is the primary DB we already connected to
-                # (the main engine already serves this repo)
+                # (the main engine already serves this repo) — but still
+                # register the primary's FTS under its repo_id so the
+                # search fan-out can include it.
                 db_url_posix = repo_db.as_posix()
                 if db_url and db_url_posix in db_url.replace("\\", "/"):
+                    app.state.workspace_fts[repo_id] = fts
                     continue
 
                 repo_engine = create_engine(f"sqlite+aiosqlite:///{db_url_posix}")
@@ -221,6 +231,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 repo_sf = create_session_factory(repo_engine)
                 app.state.workspace_sessions[repo_id] = repo_sf
                 app.state.workspace_engines.append(repo_engine)
+
+                # Build a per-repo FTS instance so the search router can
+                # fan out queries across every workspace repo. Without
+                # this, full-text search only ever sees the primary DB.
+                try:
+                    repo_fts = FullTextSearch(repo_engine)
+                    await repo_fts.ensure_index()
+                    app.state.workspace_fts[repo_id] = repo_fts
+                except Exception:
+                    logger.debug(
+                        "workspace_fts_init_failed",
+                        extra={"repo_id": repo_id},
+                        exc_info=True,
+                    )
 
             if app.state.workspace_sessions:
                 logger.info(
@@ -255,6 +279,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     scheduler.shutdown(wait=False)
     await vector_store.close()
+    # Close cached per-repo vector stores (LanceDB connections).
+    try:
+        from repowise.server.search_helpers import close_workspace_vector_stores
+
+        await close_workspace_vector_stores(app)
+    except Exception:
+        logger.debug("workspace_vector_store_close_failed", exc_info=True)
     # Dispose workspace repo engines first
     for ws_engine in getattr(app.state, "workspace_engines", []):
         try:
