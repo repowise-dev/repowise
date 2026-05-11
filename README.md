@@ -159,13 +159,17 @@ repowise init .           # scan, select repos, index each, run cross-repo analy
 
 ```bash
 repowise workspace list                  # show all repos and their status
-repowise workspace add ../new-service    # add a repo to the workspace
+repowise workspace add ../new-service    # add a repo (auto-indexes + docs by default)
 repowise workspace remove api-gateway    # remove a repo (doesn't delete files)
 repowise workspace scan                  # re-scan for new repos
-repowise update --workspace              # update all stale repos + cross-repo analysis
+repowise update --workspace              # update all stale repos + first-time index any new ones
+repowise update --repo backend           # scope to one repo (auto-detected from cwd too)
 repowise watch --workspace               # auto-update all repos on file change
+repowise doctor --workspace --repair     # validate every repo; sync state drift; drop dead entries
 repowise hook install --workspace        # install post-commit hooks for all repos
 ```
+
+Most commands also accept `--no-workspace` to force single-repo mode and `--repo <alias>` to scope to one repo. See [CLI Reference](docs/CLI_REFERENCE.md#workspace-auto-detect-cross-cutting).
 
 Full guide: [docs/WORKSPACES.md](docs/WORKSPACES.md)
 
