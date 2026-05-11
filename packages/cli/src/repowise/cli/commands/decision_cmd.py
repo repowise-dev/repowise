@@ -12,9 +12,29 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_db_url_for_repo,
+    resolve_command_target,
     resolve_repo_path,
     run_async,
 )
+
+
+def _resolve_decision_repo(path: str | None):
+    """Resolve the repo path for decision subcommands.
+
+    Honors workspace auto-detection: in workspace mode without an explicit
+    path, targets the primary repo and prints a transparency notice.
+    """
+    from pathlib import Path
+
+    target = resolve_command_target(path=path)
+    target.notice(console, command="decision")
+    if target.is_workspace:
+        primary = target.primary_path()
+        if primary is None:
+            raise click.ClickException("Workspace has no primary repo configured.")
+        return primary
+    assert target.repo_path is not None
+    return target.repo_path
 
 
 @click.group("decision")
@@ -31,7 +51,7 @@ def decision_group() -> None:
 @click.argument("path", required=False, default=None)
 def decision_add(path: str | None) -> None:
     """Interactively add a new architectural decision."""
-    repo_path = resolve_repo_path(path)
+    repo_path = _resolve_decision_repo(path)
     ensure_repowise_dir(repo_path)
 
     console.print("[bold]Add Architectural Decision[/bold]\n")
@@ -127,7 +147,7 @@ def decision_list(
     stale_only: bool,
 ) -> None:
     """List architectural decision records."""
-    repo_path = resolve_repo_path(path)
+    repo_path = _resolve_decision_repo(path)
 
     async def _query() -> list:
         from repowise.core.persistence import (
@@ -212,7 +232,7 @@ def decision_list(
 @click.argument("path", required=False, default=None)
 def decision_show(decision_id: str, path: str | None) -> None:
     """Show full details of a decision record."""
-    repo_path = resolve_repo_path(path)
+    repo_path = _resolve_decision_repo(path)
 
     async def _query():
         from repowise.core.persistence import (
@@ -291,7 +311,7 @@ def decision_show(decision_id: str, path: str | None) -> None:
 @click.argument("path", required=False, default=None)
 def decision_confirm(decision_id: str, path: str | None) -> None:
     """Confirm a proposed decision (set status to active)."""
-    repo_path = resolve_repo_path(path)
+    repo_path = _resolve_decision_repo(path)
 
     async def _update():
         from repowise.core.persistence import (
@@ -330,7 +350,7 @@ def decision_confirm(decision_id: str, path: str | None) -> None:
 @click.argument("path", required=False, default=None)
 def decision_dismiss(decision_id: str, path: str | None) -> None:
     """Dismiss (delete) a proposed decision."""
-    repo_path = resolve_repo_path(path)
+    repo_path = _resolve_decision_repo(path)
 
     if not click.confirm(f"Delete decision {decision_id[:8]}?"):
         console.print("[yellow]Cancelled.[/yellow]")
@@ -374,7 +394,7 @@ def decision_dismiss(decision_id: str, path: str | None) -> None:
 @click.option("--superseded-by", default=None, help="ID of the decision that replaces this one.")
 def decision_deprecate(decision_id: str, path: str | None, superseded_by: str | None) -> None:
     """Deprecate an active decision."""
-    repo_path = resolve_repo_path(path)
+    repo_path = _resolve_decision_repo(path)
 
     async def _update():
         from repowise.core.persistence import (
@@ -414,7 +434,7 @@ def decision_deprecate(decision_id: str, path: str | None, superseded_by: str | 
 @click.argument("path", required=False, default=None)
 def decision_health(path: str | None) -> None:
     """Show decision health: stale decisions, proposed, ungoverned hotspots."""
-    repo_path = resolve_repo_path(path)
+    repo_path = _resolve_decision_repo(path)
 
     async def _query():
         from repowise.core.persistence import (

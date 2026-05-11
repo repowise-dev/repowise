@@ -128,6 +128,21 @@ docs/LANGUAGE_REMAINING_WORK.md
 
 # Local UI/UX audit notes
 AUDIT_UI_UX.md
+docs/WEB_UI_IMPROVEMENT_PLAN.md
+docs/WORKSPACE_ROBUSTNESS.md
+
+# Local demo scripts (not for distribution)
+demo/
+
+# Local scratch — dead-code analysis & R2 tooling
+_pip_check/
+content_engine/
+analyze_findings.py
+fetch_r2.py
+upload_r2.py
+filter_dead_code.py
+inspect_*.py
+eshop_hosted_dead_code.*
 
 # Local scratch / sibling tools (not for distribution)
 GitNexus/

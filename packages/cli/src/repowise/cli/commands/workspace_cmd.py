@@ -213,16 +213,45 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
 @click.argument("path")
 @click.option("--alias", default=None, help="Short name for the repo (default: directory name).")
 @click.option(
-    "--index",
+    "--index/--no-index",
     "run_index",
-    is_flag=True,
-    default=False,
-    help="Run indexing on the repo after adding it.",
+    default=True,
+    show_default=True,
+    help="Run full indexing on the repo after adding it (graph, git, dead code).",
 )
-def workspace_add(path: str, alias: str | None, run_index: bool) -> None:
-    """Add a repo to the workspace.
+@click.option(
+    "--docs/--no-docs",
+    "run_docs",
+    default=None,
+    help=(
+        "Generate LLM documentation pages after indexing. Defaults to ON when a "
+        "provider is configured (in the primary repo's config or via env), OFF "
+        "otherwise. Skipped silently when --no-index is passed."
+    ),
+)
+@click.option("--provider", "provider_name", default=None, help="LLM provider name (overrides primary's).")
+@click.option("--model", default=None, help="Model identifier (overrides primary's).")
+@click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls during doc generation.")
+def workspace_add(
+    path: str,
+    alias: str | None,
+    run_index: bool,
+    run_docs: bool | None,
+    provider_name: str | None,
+    model: str | None,
+    concurrency: int,
+) -> None:
+    """Add a repo to the workspace and (by default) index + generate docs for it.
 
     PATH is a relative or absolute path to a git repository.
+
+    Defaults are designed so the repo immediately appears with complete
+    intelligence in the web UI and MCP server:
+      - ``--index``  (default ON) runs the full ingestion pipeline
+      - ``--docs``   (auto)        generates wiki pages when a provider is
+                                    available, otherwise skips with a notice
+    Use ``--no-index`` to only register the entry without indexing, or
+    ``--no-docs`` to index without LLM generation.
     """
     from repowise.core.workspace.config import RepoEntry
 
@@ -267,8 +296,87 @@ def workspace_add(path: str, alias: str | None, run_index: bool) -> None:
     ws_config.save(ws_root)
     console.print(f"[green]✓[/green] Added repo '{alias}' ({rel_path}) to workspace.")
 
-    if run_index:
-        _run_index_for_repo(repo_path, alias, ws_root, ws_config)
+    if not run_index:
+        console.print(
+            "[yellow]Skipping index[/yellow] (--no-index). "
+            f"Run [bold]repowise update --repo {alias}[/bold] to index later."
+        )
+        return
+
+    # Resolve whether docs should run.
+    resolved_docs, docs_skip_reason = _resolve_docs_flag(
+        run_docs=run_docs,
+        provider_name=provider_name,
+        ws_root=ws_root,
+        ws_config=ws_config,
+    )
+
+    _run_index_for_repo(
+        repo_path,
+        alias,
+        ws_root,
+        ws_config,
+        generate_docs=resolved_docs,
+        provider_name=provider_name,
+        model=model,
+        concurrency=concurrency,
+        docs_skip_reason=docs_skip_reason,
+    )
+
+
+def _resolve_docs_flag(
+    *,
+    run_docs: bool | None,
+    provider_name: str | None,
+    ws_root: Path,
+    ws_config: "WorkspaceConfig",  # type: ignore[name-defined]
+) -> tuple[bool, str | None]:
+    """Decide whether ``workspace add`` should generate docs by default.
+
+    Priority:
+      1. Explicit ``--docs`` or ``--no-docs``.
+      2. ``--provider`` flag forces docs ON.
+      3. Primary repo's ``.repowise/config.yaml`` has a provider → docs ON,
+         reusing the same provider settings.
+      4. ``REPOWISE_PROVIDER`` env var or detectable API key → docs ON.
+      5. Otherwise docs OFF, with a skip reason for the completion notice.
+    """
+    if run_docs is True:
+        return True, None
+    if run_docs is False:
+        return False, "--no-docs flag"
+    if provider_name is not None:
+        return True, None
+
+    # Check primary repo config
+    from repowise.cli.helpers import load_config
+
+    primary = ws_config.get_primary()
+    if primary is not None:
+        primary_path = (ws_root / primary.path).resolve()
+        cfg = load_config(primary_path)
+        if cfg.get("provider"):
+            return True, None
+
+    # Env-detected provider
+    import os as _os
+
+    env_provider = _os.environ.get("REPOWISE_PROVIDER")
+    if env_provider:
+        return True, None
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OLLAMA_BASE_URL",
+    ):
+        if _os.environ.get(key):
+            return True, None
+
+    return False, "no provider configured"
 
 
 def _run_index_for_repo(
@@ -276,17 +384,78 @@ def _run_index_for_repo(
     alias: str,
     ws_root: Path,
     ws_config: "WorkspaceConfig",  # type: ignore[name-defined]
+    *,
+    generate_docs: bool = False,
+    provider_name: str | None = None,
+    model: str | None = None,
+    concurrency: int = 5,
+    docs_skip_reason: str | None = None,
 ) -> None:
-    """Run the ingestion pipeline on a single repo and update workspace config."""
+    """Run the ingestion pipeline on a single repo, optionally with LLM docs.
+
+    Updates the workspace config entry, persists results to the per-repo
+    DB, writes ``.repowise/state.json`` (so ``repowise update`` knows the
+    base commit), saves provider/model into ``config.yaml`` when docs ran,
+    and re-runs cross-repo hooks so contracts/co-changes are fresh.
+    """
     from datetime import datetime, timezone
 
+    from repowise.cli.helpers import (
+        ensure_repowise_dir,
+        get_head_commit,
+        resolve_provider,
+        save_config,
+        save_state,
+    )
     from repowise.core.pipeline.orchestrator import run_pipeline
     from repowise.core.workspace.update import run_cross_repo_hooks
 
     console.print(f"  Indexing [cyan]{alias}[/cyan]…")
 
-    async def _do_index() -> None:
-        result = await run_pipeline(repo_path, generate_docs=False)
+    # Reuse the primary repo's provider/embedder/exclude settings when the
+    # caller hasn't overridden them.
+    primary = ws_config.get_primary()
+    primary_cfg: dict = {}
+    if primary is not None:
+        from repowise.cli.helpers import load_config as _load_cfg
+
+        primary_cfg = _load_cfg((ws_root / primary.path).resolve())
+
+    effective_provider = provider_name or primary_cfg.get("provider")
+    effective_model = model or primary_cfg.get("model")
+    embedder_name = primary_cfg.get("embedder", "mock")
+    exclude_patterns = list(primary_cfg.get("exclude_patterns") or [])
+    commit_limit = primary_cfg.get("commit_limit", 500)
+
+    # Resolve the provider once. If docs were requested but provider
+    # resolution fails, fall back to index-only with a loud notice instead
+    # of silently producing an empty wiki.
+    provider = None
+    if generate_docs:
+        try:
+            provider = resolve_provider(
+                effective_provider, effective_model, repo_path=repo_path,
+            )
+            console.print(
+                f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
+                f"Model: [cyan]{provider.model_name}[/cyan]"
+            )
+        except Exception as exc:
+            console.print(
+                f"  [yellow]Provider unavailable ({exc}); skipping docs.[/yellow]"
+            )
+            generate_docs = False
+            docs_skip_reason = f"provider failure: {exc}"
+
+    ensure_repowise_dir(repo_path)
+
+    async def _do_index() -> tuple[int, int, int]:
+        result = await run_pipeline(
+            repo_path,
+            commit_depth=int(commit_limit) if commit_limit else 500,
+            exclude_patterns=exclude_patterns or None,
+            generate_docs=False,
+        )
 
         from repowise.core.persistence import (
             create_engine,
@@ -302,30 +471,179 @@ def _run_index_for_repo(
         engine = create_engine(url)
         await init_db(engine)
         sf = create_session_factory(engine)
+        page_count = 0
         async with get_session(sf) as session:
             repo = await upsert_repository(
                 session, name=result.repo_name, local_path=str(repo_path)
             )
             await persist_pipeline_result(result, session, repo.id)
+
         await engine.dispose()
-
-        # Update workspace entry timestamps
-        entry = ws_config.get_repo(alias)
-        if entry is not None:
-            entry.indexed_at = datetime.now(timezone.utc).isoformat()
-            from repowise.cli.helpers import get_head_commit
-
-            entry.last_commit_at_index = get_head_commit(repo_path)
-        ws_config.save(ws_root)
-
-        # Cross-repo hooks
-        await run_cross_repo_hooks(ws_config, ws_root, [alias])
+        return result.file_count, result.symbol_count, page_count
 
     try:
-        run_async(_do_index())
-        console.print(f"[green]✓[/green] Indexed '{alias}' successfully.")
+        file_count, symbol_count, _ = run_async(_do_index())
+        console.print(
+            f"  [green]✓[/green] {file_count} files, {symbol_count:,} symbols"
+        )
     except Exception as exc:
         console.print(f"[yellow]Warning:[/yellow] Indexing failed for '{alias}': {exc}")
+        return
+
+    # Run LLM doc generation through the existing single-repo init pathway
+    # so we get cost gating, cascading, and full parity with `repowise init`.
+    generated_pages = 0
+    if generate_docs and provider is not None:
+        try:
+            generated_pages = _generate_docs_for_added_repo(
+                repo_path=repo_path,
+                provider=provider,
+                embedder_name=embedder_name,
+                concurrency=concurrency,
+                exclude_patterns=exclude_patterns,
+            )
+            console.print(f"  [green]✓[/green] Generated {generated_pages} pages")
+        except Exception as exc:
+            console.print(f"  [yellow]Doc generation failed: {exc}[/yellow]")
+            docs_skip_reason = f"generation error: {exc}"
+
+    # Persist state.json so `repowise update` has a baseline commit.
+    head = get_head_commit(repo_path)
+    state: dict = {
+        "last_sync_commit": head,
+        "total_pages": generated_pages,
+        "docs_enabled": bool(generate_docs and provider is not None),
+    }
+    if generate_docs and provider is not None:
+        state["provider"] = provider.provider_name
+        state["model"] = provider.model_name
+    save_state(repo_path, state)
+
+    # Persist provider settings into the added repo's config.yaml so future
+    # `repowise update` runs don't have to re-prompt.
+    if generate_docs and provider is not None:
+        save_config(
+            repo_path,
+            provider.provider_name,
+            provider.model_name,
+            embedder_name,
+            exclude_patterns=exclude_patterns or None,
+            commit_limit=int(commit_limit) if commit_limit else None,
+        )
+
+    # Update workspace config entry
+    entry = ws_config.get_repo(alias)
+    if entry is not None:
+        entry.indexed_at = datetime.now(timezone.utc).isoformat()
+        entry.last_commit_at_index = head
+    ws_config.save(ws_root)
+
+    # Cross-repo hooks — best effort; never fail the add command.
+    try:
+        run_async(run_cross_repo_hooks(ws_config, ws_root, [alias]))
+    except Exception as exc:
+        console.print(f"[yellow]Cross-repo hook update skipped: {exc}[/yellow]")
+
+    # Honest completion notice — exact remediation command for the
+    # docs-skipped case.
+    if not state["docs_enabled"]:
+        reason = docs_skip_reason or "docs disabled"
+        console.print(
+            f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason})."
+        )
+        console.print(
+            f"  Run [bold]repowise update --repo {alias} --docs[/bold] "
+            "to generate documentation."
+        )
+
+
+def _generate_docs_for_added_repo(
+    *,
+    repo_path: Path,
+    provider: object,
+    embedder_name: str,
+    concurrency: int,
+    exclude_patterns: list[str],
+) -> int:
+    """Generate wiki pages for a newly-added workspace repo.
+
+    Lives in this module (rather than importing from init_cmd) to avoid
+    circular imports — init_cmd is large and pulls in CLI UI helpers that
+    would explode the import graph. Uses the same generation primitives
+    as `repowise init`.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.generation import (
+        ContextAssembler,
+        GenerationConfig,
+        PageGenerator,
+    )
+    from repowise.core.ingestion import (
+        ASTParser,
+        FileTraverser,
+        GraphBuilder,
+    )
+    from repowise.core.persistence import (
+        FullTextSearch,
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_page_from_generated,
+        upsert_repository,
+    )
+
+    # Re-parse files. The pipeline persisted graph data already; for doc
+    # generation we need parsed files in-memory.
+    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
+    file_infos = list(traverser.traverse())
+    repo_structure = traverser.get_repo_structure()
+    parser = ASTParser()
+    graph_builder = GraphBuilder()
+    parsed_files = []
+    source_map: dict = {}
+    for fi in file_infos:
+        try:
+            source = Path(fi.abs_path).read_bytes()
+            parsed = parser.parse_file(fi, source)
+            parsed_files.append(parsed)
+            source_map[fi.path] = source
+            graph_builder.add_file(parsed)
+        except Exception:
+            continue
+    graph_builder.build()
+
+    config = GenerationConfig(max_concurrency=concurrency)
+    assembler = ContextAssembler(config)
+    generator = PageGenerator(provider, assembler, config, language=config.language)
+
+    async def _do() -> int:
+        pages = await generator.generate_all(
+            parsed_files,
+            source_map,
+            graph_builder,
+            repo_structure,
+            repo_path.name,
+        )
+
+        url = get_db_url_for_repo(repo_path)
+        engine = create_engine(url)
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(
+                session, name=repo_path.name, local_path=str(repo_path),
+            )
+            for p in pages:
+                await upsert_page_from_generated(session, p, repo.id)
+        fts = FullTextSearch(engine)
+        await fts.ensure_index()
+        for p in pages:
+            await fts.index(p.page_id, p.title, p.content)
+        await engine.dispose()
+        return len(pages)
+
+    return run_async(_do())
 
 
 # ---------------------------------------------------------------------------

@@ -5,11 +5,14 @@ from __future__ import annotations
 import click
 from rich.table import Table
 
+from pathlib import Path as _DoctorPath
+
 from repowise.cli.helpers import (
     console,
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
+    resolve_command_target,
     resolve_repo_path,
     run_async,
 )
@@ -20,12 +23,13 @@ def _check(name: str, ok: bool, detail: str = "") -> tuple[str, str, str]:
     return (name, status, detail)
 
 
-@click.command("doctor")
-@click.argument("path", required=False, default=None)
-@click.option("--repair", is_flag=True, default=False, help="Attempt to fix detected mismatches.")
-def doctor_command(path: str | None, repair: bool) -> None:
-    """Run health checks on the wiki setup."""
-    repo_path = resolve_repo_path(path)
+def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
+    """Run the standard health checks against one repo. Returns ``True`` if
+    all checks passed.
+
+    Extracted so workspace mode can iterate over every repo without
+    duplicating the full check body.
+    """
     checks: list[tuple[str, str, str]] = []
 
     # 1. Git repository?
@@ -298,7 +302,7 @@ def doctor_command(path: str | None, repair: bool) -> None:
             checks.append(_check("Coordinator drift", True, f"Could not check: {exc}"))
 
     # Display
-    table = Table(title="repowise Doctor")
+    table = Table(title=f"repowise Doctor — {repo_path.name}")
     table.add_column("Check", style="cyan")
     table.add_column("Status")
     table.add_column("Detail")
@@ -400,3 +404,83 @@ def doctor_command(path: str | None, repair: bool) -> None:
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
     elif repair and not has_mismatches:
         console.print("[green]Nothing to repair.[/green]")
+
+    return all_ok
+
+
+@click.command("doctor")
+@click.argument("path", required=False, default=None)
+@click.option("--repair", is_flag=True, default=False, help="Attempt to fix detected mismatches.")
+@click.option(
+    "--workspace",
+    "-w",
+    is_flag=True,
+    default=False,
+    help="Force workspace mode (run checks against every repo in the workspace).",
+)
+@click.option(
+    "--no-workspace",
+    is_flag=True,
+    default=False,
+    help="Force single-repo mode even when invoked from a workspace.",
+)
+def doctor_command(
+    path: str | None,
+    repair: bool,
+    workspace: bool,
+    no_workspace: bool,
+) -> None:
+    """Run health checks on the wiki setup.
+
+    Auto-detects workspace mode when invoked from a workspace root. In
+    workspace mode, runs the full check battery against each indexed repo
+    and prints a per-repo table plus a workspace-level summary.
+    """
+    target = resolve_command_target(
+        path=path,
+        workspace_flag=workspace,
+        no_workspace_flag=no_workspace,
+    )
+    target.notice(console, command="doctor")
+
+    if not target.is_workspace:
+        assert target.repo_path is not None
+        _run_repo_checks(target.repo_path, repair)
+        return
+
+    # Workspace mode — iterate over every entry, skipping unindexed ones
+    # but reporting them in the summary so the user knows.
+    assert target.ws_root is not None and target.ws_config is not None
+    ws_root = target.ws_root
+    ws_config = target.ws_config
+
+    overall_ok = True
+    skipped: list[str] = []
+    for entry in ws_config.repos:
+        abs_path = (ws_root / entry.path).resolve()
+        if not (abs_path / ".repowise").is_dir():
+            skipped.append(entry.alias)
+            continue
+        console.print()
+        console.print(
+            f"[bold]── {entry.alias}[/bold]  "
+            f"[dim]({entry.path})[/dim]"
+            + ("  [bold cyan](primary)[/bold cyan]" if entry.alias == ws_config.default_repo else "")
+        )
+        ok = _run_repo_checks(abs_path, repair)
+        overall_ok = overall_ok and ok
+
+    console.print()
+    if skipped:
+        console.print(
+            f"[yellow]Skipped (not indexed):[/yellow] {', '.join(skipped)}"
+        )
+        console.print(
+            "  Run [bold]repowise update --workspace[/bold] to index them."
+        )
+    if overall_ok and not skipped:
+        console.print("[bold green]Workspace healthy.[/bold green]")
+    elif overall_ok:
+        console.print("[bold yellow]All indexed repos healthy; some repos unindexed.[/bold yellow]")
+    else:
+        console.print("[bold yellow]Some checks failed across the workspace.[/bold yellow]")

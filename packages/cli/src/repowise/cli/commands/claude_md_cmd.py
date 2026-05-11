@@ -8,9 +8,11 @@ from pathlib import Path
 import click
 
 from repowise.cli.helpers import (
+    console,
     ensure_repowise_dir,
     find_workspace_root,
     get_db_url_for_repo,
+    resolve_command_target,
     run_async,
 )
 
@@ -38,15 +40,23 @@ from repowise.cli.helpers import (
     is_flag=True,
     default=False,
     help=(
-        "Generate a workspace-level CLAUDE.md that includes cross-repo contracts, "
-        "co-changes, package dependencies, and per-repo summaries."
+        "Force workspace mode. Generates a workspace-level CLAUDE.md at the "
+        "workspace root with cross-repo contracts, co-changes, and per-repo "
+        "summaries."
     ),
+)
+@click.option(
+    "--no-workspace",
+    is_flag=True,
+    default=False,
+    help="Force single-repo mode even when invoked from a workspace.",
 )
 def claude_md_command(
     path: str | None,
     output_path: str | None,
     to_stdout: bool,
     workspace_mode: bool,
+    no_workspace: bool,
 ) -> None:
     """Generate or update CLAUDE.md with codebase intelligence context.
 
@@ -58,21 +68,28 @@ def claude_md_command(
 
     Run 'repowise init' or 'repowise update' to keep it current automatically.
 
-    Pass --workspace / -w to generate a workspace-level CLAUDE.md at the workspace
-    root instead of a per-repo file.
+    Auto-detects workspace mode when invoked from a workspace root. Use
+    --workspace to force on, --no-workspace to force off.
     """
-    start_path = Path(path).resolve() if path else Path.cwd()
+    target = resolve_command_target(
+        path=path,
+        workspace_flag=workspace_mode,
+        no_workspace_flag=no_workspace,
+    )
+    target.notice(console, command="generate-claude-md")
 
-    if workspace_mode:
+    if target.is_workspace:
+        assert target.ws_root is not None
         try:
-            content = _generate_workspace(start_path, output_path, to_stdout)
+            content = _generate_workspace(target.ws_root, output_path, to_stdout)
         except Exception as exc:
             raise click.ClickException(str(exc)) from exc
         if to_stdout:
             click.echo(content, nl=False)
         return
 
-    repo_path = start_path
+    repo_path = target.repo_path
+    assert repo_path is not None
     ensure_repowise_dir(repo_path)
 
     try:

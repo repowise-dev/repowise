@@ -12,6 +12,7 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     find_workspace_root,
+    resolve_command_target,
     resolve_repo_path,
     run_async,
 )
@@ -244,7 +245,13 @@ def _watch_workspace(
     "-w",
     is_flag=True,
     default=False,
-    help="Watch all repos in the workspace.",
+    help="Force workspace mode (watch all repos in the workspace).",
+)
+@click.option(
+    "--no-workspace",
+    is_flag=True,
+    default=False,
+    help="Force single-repo mode even when invoked from a workspace.",
 )
 def watch_command(
     path: str | None,
@@ -252,17 +259,22 @@ def watch_command(
     model: str | None,
     debounce_ms: int,
     workspace: bool,
+    no_workspace: bool,
 ) -> None:
-    """Watch for file changes and auto-update wiki pages."""
-    repo_path = resolve_repo_path(path)
+    """Watch for file changes and auto-update wiki pages.
 
-    if workspace:
-        ws_root = find_workspace_root(repo_path)
-        if ws_root is None:
-            raise click.ClickException(
-                "No .repowise-workspace.yaml found. "
-                "Run 'repowise init <workspace-dir>' first."
-            )
-        _watch_workspace(ws_root, debounce_ms)
+    Auto-detects workspace mode when invoked from a workspace root.
+    """
+    target = resolve_command_target(
+        path=path,
+        workspace_flag=workspace,
+        no_workspace_flag=no_workspace,
+    )
+    target.notice(console, command="watch")
+
+    if target.is_workspace:
+        assert target.ws_root is not None
+        _watch_workspace(target.ws_root, debounce_ms)
     else:
-        _watch_single_repo(repo_path, provider_name, model, debounce_ms)
+        assert target.repo_path is not None
+        _watch_single_repo(target.repo_path, provider_name, model, debounce_ms)

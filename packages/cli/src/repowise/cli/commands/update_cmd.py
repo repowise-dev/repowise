@@ -8,6 +8,7 @@ import click
 from rich.table import Table
 
 from repowise.cli.helpers import (
+    CommandTarget,
     acquire_update_lock,
     console,
     ensure_repowise_dir,
@@ -16,6 +17,7 @@ from repowise.cli.helpers import (
     load_config,
     load_state,
     release_update_lock,
+    resolve_command_target,
     resolve_provider,
     resolve_repo_path,
     run_async,
@@ -76,24 +78,24 @@ def _resolve_index_only_mode(
 
 
 def _workspace_update(
-    start_path: "Path",
+    target: "CommandTarget",
     *,
-    repo_alias: str | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Update stale repos in a workspace."""
-    from pathlib import Path
+    """Update stale repos in a workspace.
 
-    from repowise.core.workspace import WorkspaceConfig, check_repo_staleness, update_workspace
+    Takes a resolved :class:`CommandTarget` so the caller has full control
+    over how the workspace was located (auto-detected vs explicit flag).
+    """
+    from repowise.core.workspace import check_repo_staleness, update_workspace
 
-    ws_root = find_workspace_root(start_path)
-    if ws_root is None:
-        raise click.ClickException(
-            "No .repowise-workspace.yaml found. "
-            "Run 'repowise init <workspace-dir>' first."
-        )
-
-    ws_config = WorkspaceConfig.load(ws_root)
+    ws_root = target.ws_root
+    ws_config = target.ws_config
+    repo_alias = target.repo_filter
+    if ws_root is None or ws_config is None:
+        # Defensive: callers should always pass a workspace-mode target,
+        # but guard against misuse so the error message is clear.
+        raise click.ClickException("_workspace_update called without a workspace target.")
 
     # Show staleness summary first
     console.print(f"[bold]repowise update[/bold] — workspace: {ws_root.name}")
@@ -185,13 +187,19 @@ def _workspace_update(
     "-w",
     is_flag=True,
     default=False,
-    help="Update all stale repos in the workspace.",
+    help="Force workspace mode (update all stale repos in the workspace).",
+)
+@click.option(
+    "--no-workspace",
+    is_flag=True,
+    default=False,
+    help="Force single-repo mode even when invoked from a workspace.",
 )
 @click.option(
     "--repo",
     "repo_alias",
     default=None,
-    help="Update only this repo alias within the workspace.",
+    help="Update only this repo alias within the workspace (implies --workspace).",
 )
 @click.option(
     "--index-only",
@@ -223,20 +231,36 @@ def update_command(
     cascade_budget: int | None,
     dry_run: bool,
     workspace: bool,
+    no_workspace: bool,
     repo_alias: str | None,
     index_only: bool = False,
     docs_flag: bool | None = None,
     concurrency: int = 5,
 ) -> None:
-    """Incrementally update wiki pages for files changed since last sync."""
-    start = time.monotonic()
-    repo_path = resolve_repo_path(path)
+    """Incrementally update wiki pages for files changed since last sync.
 
-    # --- Workspace mode ---
-    if workspace or repo_alias:
-        _workspace_update(repo_path, repo_alias=repo_alias, dry_run=dry_run)
+    Auto-detects workspace mode when invoked from a workspace root or when a
+    workspace exists upstream of the working directory. Use --no-workspace to
+    force single-repo mode and --workspace to force workspace mode.
+    """
+    start = time.monotonic()
+
+    # --- Resolve target up front (single repo or workspace) ---
+    target = resolve_command_target(
+        path=path,
+        workspace_flag=workspace,
+        no_workspace_flag=no_workspace,
+        repo_alias=repo_alias,
+    )
+    target.notice(console, command="update")
+
+    if target.is_workspace:
+        _workspace_update(target, dry_run=dry_run)
         return
 
+    # --- Single-repo path from here on. ---
+    repo_path = target.repo_path
+    assert repo_path is not None  # single mode always sets repo_path
     ensure_repowise_dir(repo_path)
 
     # Load saved API keys from .repowise/.env (won't overwrite existing env vars)
@@ -249,8 +273,21 @@ def update_command(
     head = get_head_commit(repo_path)
 
     if base_ref is None:
+        # Helpful diagnostic when the user landed here from a workspace
+        # directory that was never indexed as a single repo. The auto-detect
+        # path normally catches this earlier, but --no-workspace or an
+        # explicit path can still route us here.
+        hint = ""
+        upstream_ws = find_workspace_root(repo_path)
+        if upstream_ws is not None:
+            hint = (
+                f"\nA workspace was detected at {upstream_ws}. "
+                "Did you mean: repowise update --workspace?"
+            )
         raise click.ClickException(
-            "No previous sync found. Run 'repowise init' first or pass --since."
+            f"No previous sync found for {repo_path}. "
+            "Run 'repowise init' there first, or pass --since <ref>."
+            + hint
         )
 
     if head and head == base_ref:

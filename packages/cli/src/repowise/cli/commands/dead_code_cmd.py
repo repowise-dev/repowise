@@ -9,6 +9,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    resolve_command_target,
     resolve_repo_path,
     run_async,
 )
@@ -54,6 +55,18 @@ from repowise.cli.helpers import (
     default=False,
     help="Skip detection of unused public exports.",
 )
+@click.option(
+    "--repo",
+    "repo_alias",
+    default=None,
+    help="Workspace repo alias to analyze (implies workspace mode).",
+)
+@click.option(
+    "--no-workspace",
+    is_flag=True,
+    default=False,
+    help="Force single-repo mode even when invoked from a workspace.",
+)
 def dead_code_command(
     path: str | None,
     min_confidence: float,
@@ -64,14 +77,44 @@ def dead_code_command(
     include_zombie_packages: bool,
     no_unreachable: bool,
     no_unused_exports: bool,
+    repo_alias: str | None,
+    no_workspace: bool,
 ) -> None:
-    """Detect dead and unused code."""
+    """Detect dead and unused code.
+
+    In workspace mode, analyzes the primary repo by default; pass
+    --repo <alias> to target a different repo. Cross-repo dead-code
+    detection is not yet supported — run once per repo for now.
+    """
     from pathlib import Path as PathlibPath
 
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
-    repo_path = resolve_repo_path(path)
+    target = resolve_command_target(
+        path=path,
+        no_workspace_flag=no_workspace,
+        repo_alias=repo_alias,
+    )
+    target.notice(console, command="dead-code")
+
+    if target.is_workspace:
+        if target.repo_filter is not None:
+            picked = target.resolve_repo_alias(target.repo_filter)
+            if picked is None:
+                raise click.ClickException(f"Unknown repo alias: {target.repo_filter}")
+            repo_path = picked
+        else:
+            primary = target.primary_path()
+            if primary is None:
+                raise click.ClickException("Workspace has no primary repo configured.")
+            repo_path = primary
+            console.print(
+                "[dim]  (Tip: pass --repo <alias> to analyze a different repo.)[/dim]"
+            )
+    else:
+        assert target.repo_path is not None
+        repo_path = target.repo_path
 
     console.print(f"[bold]repowise dead-code[/bold] — {repo_path}")
 

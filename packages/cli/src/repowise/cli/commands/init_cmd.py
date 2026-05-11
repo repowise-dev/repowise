@@ -620,6 +620,10 @@ def _workspace_init(
     total_symbols = 0
     total_pages = 0
     errors: list[tuple[str, str]] = []
+    # Per-repo docs outcome, surfaced in the completion panel so the user
+    # never has to guess why the web UI is missing pages for some repos.
+    # Maps alias -> (generated_count, skip_reason | None)
+    docs_outcomes: dict[str, tuple[int, str | None]] = {}
 
     for i, repo in enumerate(selected, 1):
         console.print(
@@ -666,9 +670,16 @@ def _workspace_init(
         # Track per-repo whether the user declined cost so state.docs_enabled
         # reflects the actual choice instead of the original init mode.
         repo_docs_enabled = not index_only and provider is not None
+        skip_reason: str | None = None
+        if index_only:
+            skip_reason = "index-only mode"
+        elif provider is None:
+            skip_reason = "no provider configured"
         if not index_only and provider is not None:
             if dry_run:
                 console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
+                skip_reason = "dry run"
+                repo_docs_enabled = False
             else:
                 try:
                     generated_pages = _run_workspace_generation(
@@ -691,10 +702,18 @@ def _workspace_init(
                 except CostGateDeclined:
                     repo_docs_enabled = False
                     result.generated_pages = []
+                    skip_reason = "cost gate declined"
                 except Exception as gen_exc:
                     console.print(f"    [yellow]Generation failed: {gen_exc}[/yellow]\n")
+                    skip_reason = f"generation error: {gen_exc}"
+                    repo_docs_enabled = False
         else:
             console.print()
+
+        docs_outcomes[repo.alias] = (
+            len(result.generated_pages or []),
+            None if repo_docs_enabled else skip_reason,
+        )
 
         # Persist to repo-local DB
         run_async(_persist_result(result, repo.path))
@@ -793,6 +812,35 @@ def _workspace_init(
         build_completion_panel("repowise workspace init complete", metrics, next_steps=next_steps)
     )
     console.print()
+
+    # Honest docs status — print a per-repo summary listing exactly which
+    # repos generated pages and which were skipped, so the user never has
+    # to discover empty Docs/Overview in the web UI on their own.
+    docs_skipped = [
+        (alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason
+    ]
+    docs_generated = [
+        (alias, count) for alias, (count, reason) in docs_outcomes.items() if not reason
+    ]
+    if docs_outcomes:
+        console.print("[bold]Docs status[/bold]")
+        for alias, (count, reason) in docs_outcomes.items():
+            if reason:
+                console.print(
+                    f"  [yellow]✗[/yellow] {alias:<20} [yellow]skipped[/yellow]  [dim]({reason})[/dim]"
+                )
+            else:
+                console.print(
+                    f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]"
+                )
+        if docs_skipped:
+            first = docs_skipped[0][0]
+            console.print()
+            console.print(
+                f"  Run [bold]repowise update --repo {first} --docs[/bold] "
+                "to generate docs for a skipped repo."
+            )
+        console.print()
 
     # Offer to install post-commit hooks
     indexed_repos = [
