@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] — 2026-05-11
+
+### Added
+- **Workspace mode is now first-class across the CLI.** Every relevant command auto-detects whether it's running inside a workspace root and routes accordingly, with a one-line `[workspace] …` notice when it does. New flags `--no-workspace` (force single-repo) and `--repo <alias>` (scope to one repo) on `update`, `status`, `watch`, `doctor`, `costs`, `search`, `dead-code`, `decision`, `generate-claude-md`, `hook install/status/uninstall`. `costs` and `search` also gained `--all` for explicit workspace-wide fan-out. New `Workspace auto-detect` section in [CLI Reference](CLI_REFERENCE.md) (#173).
+- **`repowise update --workspace` now first-time-indexes previously-skipped repos.** Workspace entries without `.repowise/` no longer short-circuit with `"not_indexed"` — the full index pipeline runs (no LLM cost), `state.json` is written with a `docs_skip_reason` marker, and subsequent `update --repo <alias> --docs` cleanly picks up doc generation (#173).
+- **`repowise workspace add` defaults to full index + LLM doc generation** when a provider is configured. Inherits provider, model, embedder, and exclude patterns from the primary repo's `.repowise/config.yaml`. `--no-docs` / `--no-index` opt out. Cost-gate prompt still runs before any tokens are spent (#173).
+- **`repowise doctor --workspace`** validates every workspace entry: directory exists, has `.git/`, state.json ↔ workspace config drift, MCP registration. `--repair` syncs drifted entries from disk and drops dead entries whose directory no longer exists (#173).
+- **Honest completion summaries.** `init` and `status` now print a per-repo Docs status block listing whether docs were generated, the skip reason (`cost gate declined`, `provider failure`, `index-only`, …), and the exact remediation command. No more empty docs pages in the UI without context (#173).
+- **Workspace-aware web UI.** Sidebar now shows every workspace repo including unindexed ones (rendered as disabled `needs index` / `missing` rows linking to the Workspace dashboard). Workspace dashboard has a top-level **Sync workspace** button plus per-repo **Sync** / **Index now** actions wired to the new `POST /api/workspace/sync` endpoint. `RepoCard` surfaces `docs_skip_reason` under each card's stats (#173).
+- **Per-repo search scope toggle** on `/repos/<id>/search` — switch between *this repo* and *workspace*. Synthetic `ws:<alias>` IDs automatically fall back to workspace scope (#173).
+- **`/api/workspace/sync`** endpoint fans out the existing job executor across every workspace repo (or a single one with `repo_alias`). Returns one `{alias, repo_id, status, reason}` per repo so the UI can render granular feedback (#173).
+- **`/api/search` accepts a `repo_id` query param** in workspace mode. Returns `[]` for synthetic `ws:<alias>` IDs (the corresponding repo isn't indexed) and fans out across every loaded FTS / vector store when omitted (#173).
+- **`/api/repos` returns workspace metadata per row** — `workspace_alias`, `workspace_status` (`indexed` | `needs_index` | `missing_dir`), `is_primary`, `docs_enabled`, `docs_skip_reason`. Unindexed entries appear as synthetic rows with `id="ws:<alias>"` so frontends can render a "Needs index" CTA card instead of silently dropping them (#173).
+- **Shiki syntax highlighting** in wiki page code blocks — client-side, lazy-loaded with the Vesper theme, falls back to plain text on failure (#171).
+- **Centrality Leaderboard right-rail** on the graph view (PageRank / Betweenness / Degree) and **Hot Symbols Board** with score-driven intensity bars on the symbols table (#171).
+
+### Changed
+- **Dependency heatmap rewritten** from canvas to CSS Grid — adds hover tooltips, row/column highlighting, a legend, an `external:`-prefix stripper for `displayLabel`, and caps the rendered grid at the 15 most-connected modules (#171).
+- **Docs filter panel defaults to expanded** on first render of the Docs page (#171).
+- **MCP server is workspace-aware** end-to-end. `get_overview(repo="all")` returns a workspace summary with cross-repo topology; `search_codebase(repo="all")` runs Reciprocal Rank Fusion across every repo; tools that can't meaningfully fan out return `_unsupported_repo_all()` with the available aliases. (Pre-existing scaffolding; this release adds tests + audit confirmation.) (#173)
+
+### Fixed
+- **`repowise update` from a workspace root no longer errors with "No previous sync found".** Auto-detection routes the command to workspace mode and prints `[workspace] running across N repos`; the helper performs all detection before `ensure_repowise_dir` is called, so stray `.repowise/` directories no longer get created at the workspace root. Original Discord report that motivated the overhaul (#173).
+- **`repowise serve` in workspace mode no longer drops unindexed repos from the sidebar.** Server lifespan now builds `app.state.workspace_fts: dict[repo_id, FullTextSearch]` (per-repo, includes the primary) and lazily rehydrates each workspace LanceDB store via `resolve_workspace_vector_store()` with an `asyncio.Lock` per repo so concurrent searches don't double-open. Reuses the primary store's embedder so workspaces built with gemini/openai stay embedding-compatible across fan-out (#173).
+- **`.repowise-workspace.yaml` no longer drifts when a child repo is updated outside the orchestrator.** New `sync_workspace_state_from_disk()` reads each repo's `state.json` at the start of every `update_workspace` and refreshes `last_commit_at_index` so workspace-level decisions never operate on stale info (#173).
+
+### Documentation
+- **CLI Reference rewritten** for workspace mode — new cross-cutting auto-detect section, per-command flag tables updated for `update`, `watch`, `search`, `status`, `dead-code`, `costs`, `workspace add`, `doctor` (#173).
+
+### Dependencies
+- **`shiki` ^4.0.0** added as a `packages/ui` dependency for client-side wiki code highlighting (#171).
+
+---
+
 ## [0.7.1] — 2026-05-10
 
 ### Fixed

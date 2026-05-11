@@ -6,4 +6,4 @@ generation engine. This is the heart of repowise — all other packages depend o
 Namespace package: repowise.core is part of the repowise namespace.
 """
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
