@@ -16,10 +16,19 @@ export default function SearchPage() {
   const id = params.id;
   const [query, setQuery] = useState("");
   const [searchType, setSearchType] = useState<SearchType>("semantic");
+  const [scope, setScope] = useState<"repo" | "workspace">("repo");
+
+  // Synthetic ws:<alias> IDs point at unindexed workspace entries — the
+  // backend short-circuits search on those. Skip the repo_id filter and
+  // gently fall back to workspace scope so the user still sees results.
+  const isSynthetic = id?.startsWith("ws:");
+  const effectiveRepoId =
+    scope === "repo" && !isSynthetic ? id : undefined;
 
   const { results, isLoading, isTyping, error } = useSearch(query, {
     search_type: searchType,
     limit: 20,
+    repo_id: effectiveRepoId,
   });
 
   const showResults = query.trim().length >= 2;
@@ -33,7 +42,7 @@ export default function SearchPage() {
           Search
         </h1>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Full-text and semantic search across all wiki pages.
+          Full-text and semantic search across {scope === "repo" ? "this repo" : "the whole workspace"}.
         </p>
       </div>
 
@@ -43,6 +52,36 @@ export default function SearchPage() {
         searchType={searchType}
         onSearchTypeChange={setSearchType}
       />
+
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-[var(--color-text-tertiary)]">Scope:</span>
+        <button
+          type="button"
+          onClick={() => setScope("repo")}
+          disabled={isSynthetic}
+          className={
+            "rounded-md border px-2 py-1 transition-colors " +
+            (scope === "repo" && !isSynthetic
+              ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]/10 text-[var(--color-text-primary)]"
+              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50")
+          }
+          title={isSynthetic ? "This repo isn't indexed yet — workspace scope used." : undefined}
+        >
+          This repo
+        </button>
+        <button
+          type="button"
+          onClick={() => setScope("workspace")}
+          className={
+            "rounded-md border px-2 py-1 transition-colors " +
+            (scope === "workspace" || isSynthetic
+              ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]/10 text-[var(--color-text-primary)]"
+              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]")
+          }
+        >
+          Workspace
+        </button>
+      </div>
 
       {showResults && error && (
         <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-outdated)]">

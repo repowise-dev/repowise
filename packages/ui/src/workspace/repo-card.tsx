@@ -13,6 +13,12 @@ interface RepoCardProps {
   isPrimary: boolean;
   stats: RepoStats | null;
   gitSummary: GitSummary | null;
+  /** Workspace status — undefined in single-repo mode. */
+  status?: "indexed" | "needs_index" | "missing_dir" | null;
+  /** Reason docs were skipped (cost gate, no provider, index-only, etc.). */
+  docsSkipReason?: string | null;
+  /** Slot rendered in the card footer — typically a sync/index button. */
+  actions?: React.ReactNode;
 }
 
 export function RepoCard({
@@ -24,20 +30,34 @@ export function RepoCard({
   isPrimary,
   stats,
   gitSummary,
+  status,
+  docsSkipReason,
+  actions,
 }: RepoCardProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
+  const isUnindexed = status === "needs_index" || status === "missing_dir";
   const card = (
     <Card className={`group transition-colors ${repoId ? "hover:border-[var(--color-accent-primary)]/30 cursor-pointer" : "opacity-60"}`}>
       <CardContent className="p-4">
         <div className="flex items-start justify-between mb-3">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-sm font-semibold text-[var(--color-text-primary)] truncate group-hover:text-[var(--color-accent-primary)] transition-colors">
                 {name}
               </h3>
               {isPrimary && (
                 <Badge variant="accent" className="text-[10px] shrink-0">
                   default
+                </Badge>
+              )}
+              {status === "needs_index" && (
+                <Badge variant="outline" className="text-[10px] shrink-0">
+                  needs index
+                </Badge>
+              )}
+              {status === "missing_dir" && (
+                <Badge variant="outdated" className="text-[10px] shrink-0">
+                  missing
                 </Badge>
               )}
             </div>
@@ -70,11 +90,24 @@ export function RepoCard({
             </span>
           </div>
         </div>
+
+        {docsSkipReason && (
+          <p className="mt-3 text-[11px] text-[var(--color-text-tertiary)] leading-snug">
+            <span className="font-medium">Docs skipped:</span> {docsSkipReason}
+          </p>
+        )}
+
+        {actions && (
+          <div className="mt-3 flex items-center gap-2">{actions}</div>
+        )}
       </CardContent>
     </Card>
   );
 
-  if (!repoId) return card;
+  // Disable the navigation wrapper for synthetic / unindexed repos so the
+  // user lands in workspace flow (sync, fix) instead of a broken
+  // per-repo route.
+  if (!repoId || isUnindexed) return card;
 
   return (
     <a href={`${prefix}/overview`}>

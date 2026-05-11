@@ -1,9 +1,10 @@
-import { apiGet } from "./client";
+import { apiGet, apiPost } from "./client";
 import type {
   WorkspaceResponse,
   WorkspaceContractsResponse,
   WorkspaceCoChangesResponse,
   WorkspaceGraphResponse,
+  WorkspaceSyncResponse,
 } from "./types";
 
 export async function getWorkspace(): Promise<WorkspaceResponse> {
@@ -40,4 +41,24 @@ export async function getWorkspaceCoChanges(opts?: {
 
 export async function getWorkspaceGraph(): Promise<WorkspaceGraphResponse> {
   return apiGet<WorkspaceGraphResponse>("/api/workspace/graph");
+}
+
+/**
+ * Trigger a re-sync (re-index) of the workspace. Pass ``repoAlias`` to
+ * scope to one repo; otherwise the server fans out across every loaded
+ * workspace repo. Returns one result per repo (accepted / skipped / error).
+ */
+export async function syncWorkspace(opts?: {
+  repoAlias?: string;
+  fullResync?: boolean;
+}): Promise<WorkspaceSyncResponse> {
+  const params: Record<string, string> = {};
+  if (opts?.repoAlias) params.repo_alias = opts.repoAlias;
+  if (opts?.fullResync) params.full_resync = "true";
+  return apiPost<WorkspaceSyncResponse>(
+    "/api/workspace/sync",
+    undefined,
+    undefined,
+    params,
+  );
 }

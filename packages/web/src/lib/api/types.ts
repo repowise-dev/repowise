@@ -35,6 +35,14 @@ export interface RepoResponse {
   settings: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  // Workspace mode (optional — only populated when the server runs in
+  // workspace mode). Unindexed repos appear as synthetic rows with
+  // `id="ws:<alias>"` and `workspace_status === "needs_index"`.
+  workspace_alias?: string | null;
+  workspace_status?: "indexed" | "needs_index" | "missing_dir" | null;
+  is_primary?: boolean | null;
+  docs_enabled?: boolean | null;
+  docs_skip_reason?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +652,22 @@ export interface WorkspaceRepoEntry {
   page_count: number;
   doc_coverage_pct: number;
   hotspot_count: number;
+  // Phase B server augmentation
+  status?: "indexed" | "needs_index" | "missing_dir" | null;
+  docs_enabled?: boolean | null;
+  docs_skip_reason?: string | null;
+}
+
+export interface WorkspaceSyncResult {
+  alias: string;
+  repo_id: string | null;
+  status: "accepted" | "skipped" | "error";
+  job_id: string | null;
+  reason: string | null;
+}
+
+export interface WorkspaceSyncResponse {
+  results: WorkspaceSyncResult[];
 }
 
 export interface WorkspaceCrossRepoSummary {

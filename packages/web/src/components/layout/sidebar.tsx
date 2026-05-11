@@ -191,6 +191,55 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                   const isExpanded = expandedRepos.has(repo.id);
                   const isActive = derivedActiveRepoId === repo.id;
                   const navItems = repoNavItems(repo.id);
+                  const needsIndex =
+                    repo.workspace_status === "needs_index" ||
+                    repo.id.startsWith("ws:");
+                  const isMissing = repo.workspace_status === "missing_dir";
+
+                  if (needsIndex || isMissing) {
+                    // Synthetic / unindexed workspace entry — show as a
+                    // disabled row with a status hint. The Index/Sync
+                    // CTA lives in the Workspace dashboard.
+                    if (isIconOnly) {
+                      return (
+                        <Tooltip key={repo.id}>
+                          <TooltipTrigger asChild>
+                            <div
+                              className="flex w-full items-center justify-center rounded-md p-2 text-[var(--color-text-tertiary)] opacity-60"
+                              aria-label={`${repo.name} (${isMissing ? "missing" : "needs index"})`}
+                            >
+                              <Circle className="h-2.5 w-2.5 stroke-current" />
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="right">
+                            {repo.workspace_alias ?? repo.name}
+                            {" — "}
+                            {isMissing ? "directory missing" : "needs indexing"}
+                          </TooltipContent>
+                        </Tooltip>
+                      );
+                    }
+                    return (
+                      <Link
+                        key={repo.id}
+                        href="/workspace"
+                        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)]"
+                        title={
+                          isMissing
+                            ? "Directory missing — open Workspace to remove or fix"
+                            : "Not indexed yet — open Workspace to index"
+                        }
+                      >
+                        <Circle className="h-2 w-2 shrink-0 stroke-current" />
+                        <span className="flex-1 truncate text-left font-medium">
+                          {repo.workspace_alias ?? repo.name}
+                        </span>
+                        <span className="shrink-0 rounded-full bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
+                          {isMissing ? "missing" : "index"}
+                        </span>
+                      </Link>
+                    );
+                  }
 
                   if (isIconOnly) {
                     return (
