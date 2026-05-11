@@ -21,6 +21,7 @@ from repowise.cli.helpers import (
     load_config,
     load_state,
     resolve_provider,
+    resolve_reasoning,
     resolve_repo_path,
     run_async,
     save_config,
@@ -277,7 +278,9 @@ async def _persist_result(
 
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.
-        from datetime import datetime, UTC as _UTC
+        from datetime import UTC as _UTC
+        from datetime import datetime
+
         from repowise.core.persistence.crud import upsert_generation_job
 
         now = datetime.now(_UTC)
@@ -318,6 +321,7 @@ def _run_workspace_generation(
     skip_tests: bool,
     skip_infra: bool,
     test_run: bool,
+    reasoning: str = "auto",
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -326,20 +330,28 @@ def _run_workspace_generation(
     workspace run.
     """
     from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
+    from repowise.cli.helpers import get_db_url_for_repo
     from repowise.cli.ui import BRAND, RichProgressCallback
     from repowise.core.generation import GenerationConfig
     from repowise.core.generation.cost_tracker import CostTracker
-    from repowise.core.persistence.vector_store import InMemoryVectorStore
-    from repowise.core.providers.embedding.base import MockEmbedder
-    from repowise.core.pipeline import run_generation
-    from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import (
         create_engine as _ce,
+    )
+    from repowise.core.persistence import (
         create_session_factory as _csf,
+    )
+    from repowise.core.persistence import (
         get_session as _gs,
+    )
+    from repowise.core.persistence import (
         init_db as _idb,
+    )
+    from repowise.core.persistence import (
         upsert_repository as _ur,
     )
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.pipeline import run_generation
+    from repowise.core.providers.embedding.base import MockEmbedder
 
     # Build embedder
     embedder_impl: Any
@@ -371,7 +383,10 @@ def _run_workspace_generation(
         vector_store = InMemoryVectorStore(embedder_impl)
 
     # Cost estimate
-    gen_config = GenerationConfig(max_concurrency=concurrency)
+    gen_config = GenerationConfig(
+        max_concurrency=concurrency,
+        reasoning=resolve_reasoning(reasoning),
+    )
     plans = build_generation_plan(
         result.parsed_files, result.graph_builder, gen_config, skip_tests, skip_infra
     )
@@ -475,6 +490,7 @@ def _workspace_init(
     skip_infra: bool = False,
     concurrency: int = 5,
     test_run: bool = False,
+    reasoning: str | None = None,
     yes: bool = False,
     dry_run: bool = False,
     resume: bool = False,
@@ -574,6 +590,7 @@ def _workspace_init(
             if adv.get("exclude"):
                 exclude_patterns = list(exclude_patterns) + list(adv["exclude"])
             test_run = adv.get("test_run", test_run)
+            reasoning = adv.get("reasoning") or reasoning
             embedder_name_resolved = _resolve_embedder(adv.get("embedder") or embedder_name)
         elif not index_only:
             # "full" mode
@@ -582,6 +599,8 @@ def _workspace_init(
             )
 
     # Resolve provider once (shared across all repos for generation)
+    primary_cfg = load_config(primary_repo.path)
+    resolved_reasoning = resolve_reasoning(reasoning, primary_cfg)
     provider = None
     if not index_only:
         try:
@@ -591,6 +610,8 @@ def _workspace_init(
                 f"Model: [cyan]{provider.model_name}[/cyan]"
             )
             console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]\n")
+            if resolved_reasoning != "auto":
+                console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]\n")
         except Exception as exc:
             console.print(f"  [yellow]Provider setup failed ({exc}); falling back to index-only.[/yellow]")
             index_only = True
@@ -693,6 +714,7 @@ def _workspace_init(
                         skip_tests=skip_tests,
                         skip_infra=skip_infra,
                         test_run=test_run,
+                        reasoning=resolved_reasoning,
                     )
                     result.generated_pages = generated_pages
                     total_pages += len(generated_pages)
@@ -753,6 +775,7 @@ def _workspace_init(
                 embedder_name_resolved,
                 exclude_patterns=exclude_patterns if exclude_patterns else None,
                 commit_limit=resolved_commit_limit,
+                reasoning=resolved_reasoning,
             )
 
     # Save workspace config with updated timestamps
@@ -867,7 +890,10 @@ def _workspace_init(
     "--provider",
     "provider_name",
     default=None,
-    help="LLM provider name (anthropic, openai, gemini, deepseek, ollama, litellm, mock).",
+    help=(
+        "LLM provider name (anthropic, openai, openrouter, gemini, "
+        "deepseek, ollama, litellm, mock)."
+    ),
 )
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option(
@@ -888,6 +914,12 @@ def _workspace_init(
     "--force", is_flag=True, default=False, help="Regenerate all pages, ignoring existing."
 )
 @click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
+@click.option(
+    "--reasoning",
+    type=click.Choice(["auto", "off", "minimal"]),
+    default=None,
+    help="Reasoning mode for supported providers: auto, off, or minimal. Default: auto.",
+)
 @click.option(
     "--test-run",
     is_flag=True,
@@ -951,6 +983,7 @@ def init_command(
     resume: bool,
     force: bool,
     concurrency: int,
+    reasoning: str | None,
     test_run: bool,
     index_only: bool,
     exclude: tuple[str, ...],
@@ -1012,6 +1045,7 @@ def init_command(
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             concurrency=concurrency,
+            reasoning=reasoning,
             test_run=test_run,
             yes=yes,
             dry_run=dry_run,
@@ -1073,6 +1107,7 @@ def init_command(
             skip_tests = adv["skip_tests"]
             skip_infra = adv["skip_infra"]
             concurrency = adv["concurrency"]
+            reasoning = adv.get("reasoning") or reasoning
             exclude = adv["exclude"]
             test_run = adv["test_run"]
             embedder_name = adv.get("embedder") or embedder_name
@@ -1090,6 +1125,7 @@ def init_command(
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
     language = config.get("language", "en")
+    resolved_reasoning = resolve_reasoning(reasoning, config)
     exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
 
     # Resolve commit limit: CLI flag → config.yaml → default (500)
@@ -1153,13 +1189,22 @@ def init_command(
         console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]")
         if language != "en":
             console.print(f"  Language: [cyan]{language}[/cyan]")
+        if resolved_reasoning != "auto":
+            console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]")
 
         # Validate provider connection
         from repowise.core.providers.llm.base import ProviderError
 
         with console.status("  Verifying provider connection…", spinner="dots"):
             try:
-                run_async(provider.generate("You are a test.", "Reply with OK.", max_tokens=50))
+                run_async(
+                    provider.generate(
+                        "You are a test.",
+                        "Reply with OK.",
+                        max_tokens=50,
+                        reasoning=resolved_reasoning,
+                    )
+                )
             except ProviderError as exc:
                 raise click.ClickException(f"Provider validation failed: {exc}") from exc
         console.print("  [green]✓[/green] Provider connection verified")
@@ -1269,7 +1314,11 @@ def init_command(
 
         # Cost estimation
         from repowise.core.generation import GenerationConfig
-        gen_config = GenerationConfig(max_concurrency=concurrency, language=language)
+        gen_config = GenerationConfig(
+            max_concurrency=concurrency,
+            language=language,
+            reasoning=resolved_reasoning,
+        )
         plans = build_generation_plan(
             result.parsed_files, result.graph_builder, gen_config, skip_tests, skip_infra
         )
@@ -1365,13 +1414,21 @@ def init_command(
                 # is persisted to the llm_costs table.  We need the repo_id from the
                 # database row that was created/upserted during _persist_result
                 # (which has not run yet), so we look it up or fall back to in-memory.
-                from repowise.core.generation.cost_tracker import CostTracker
                 from repowise.cli.helpers import get_db_url_for_repo
+                from repowise.core.generation.cost_tracker import CostTracker
                 from repowise.core.persistence import (
                     create_engine as _create_engine,
+                )
+                from repowise.core.persistence import (
                     create_session_factory as _create_sf,
+                )
+                from repowise.core.persistence import (
                     get_session as _get_session,
+                )
+                from repowise.core.persistence import (
                     init_db as _init_db,
+                )
+                from repowise.core.persistence import (
                     upsert_repository as _upsert_repo,
                 )
 
@@ -1522,6 +1579,7 @@ def init_command(
             embedder_name_resolved,
             exclude_patterns=exclude_patterns if exclude_patterns else None,
             commit_limit=resolved_commit_limit if commit_limit is not None else None,
+            reasoning=resolved_reasoning,
         )
 
     # ---- Completion panel ----

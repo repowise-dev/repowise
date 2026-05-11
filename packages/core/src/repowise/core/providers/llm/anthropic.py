@@ -13,18 +13,19 @@ Recommended models (as of 2026):
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 import structlog
+from anthropic import APIStatusError as _AnthropicAPIStatusError
 from anthropic import AsyncAnthropic
 from anthropic import RateLimitError as _AnthropicRateLimitError
-from anthropic import APIStatusError as _AnthropicAPIStatusError
 from tenacity import (
+    RetryError,
+    before_sleep_log,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential_jitter,
-    before_sleep_log,
-    RetryError,
 )
 
 from repowise.core.providers.llm.base import (
@@ -34,10 +35,10 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     RateLimitError,
+    ensure_reasoning_supported,
 )
-
-from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+from repowise.core.reasoning import ReasoningMode
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
@@ -95,7 +96,9 @@ class AnthropicProvider(BaseProvider):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
     ) -> GeneratedResponse:
+        ensure_reasoning_supported("anthropic", self._model, reasoning)
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 

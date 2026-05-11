@@ -149,9 +149,74 @@ async def test_generate_sends_correct_messages():
     assert kw["model"] == "google/gemini-3.1-flash-lite-preview"
     assert kw["max_tokens"] == 2048
     assert kw["temperature"] == 0.5
+    assert "extra_body" not in kw
     messages = kw["messages"]
     assert messages[0] == {"role": "system", "content": "system msg"}
     assert messages[1] == {"role": "user", "content": "user msg"}
+
+
+async def test_generate_forwards_minimal_reasoning_extra_body():
+    provider = OpenRouterProvider(api_key="sk-or-test", model="openai/gpt-5")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="minimal")
+
+    assert captured_kwargs[0]["extra_body"] == {
+        "reasoning": {"effort": "minimal"}
+    }
+
+
+async def test_generate_forwards_off_reasoning_extra_body():
+    provider = OpenRouterProvider(api_key="sk-or-test", model="x-ai/grok-4")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="off")
+
+    assert captured_kwargs[0]["extra_body"] == {"reasoning": {"effort": "none"}}
+
+
+async def test_generate_rejects_reasoning_for_unsupported_openrouter_model():
+    provider = OpenRouterProvider(
+        api_key="sk-or-test", model="google/gemini-3.1-flash-lite-preview"
+    )
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='minimal' is not supported"):
+            await provider.generate("system msg", "user msg", reasoning="minimal")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["openai/gpt-5.2", "openai/gpt-5-pro", "openai/gpt-5-codex", "openai/gpt-5.4-nano"],
+)
+async def test_generate_rejects_reasoning_for_known_unsupported_openai_route(model):
+    provider = OpenRouterProvider(api_key="sk-or-test", model=model)
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='minimal' is not supported"):
+            await provider.generate("system msg", "user msg", reasoning="minimal")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

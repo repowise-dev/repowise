@@ -746,6 +746,12 @@ def interactive_advanced_config(
         type=int,
     )
 
+    result["reasoning"] = click.prompt(
+        "  Reasoning mode",
+        default="auto",
+        type=click.Choice(["auto", "off", "minimal"]),
+    )
+
     # Embedder selection
     detected_embedder = _resolve_embedder_from_env()
     embedder_choices = ["gemini", "openai", "mock"]
@@ -772,6 +778,7 @@ def interactive_advanced_config(
     summary.add_row("Commit limit", str(result["commit_limit"]))
     summary.add_row("Follow renames", "yes" if result["follow_renames"] else "no")
     summary.add_row("Concurrency", str(result["concurrency"]))
+    summary.add_row("Reasoning", result["reasoning"])
     summary.add_row("Embedder", result["embedder"])
     if patterns:
         if len(patterns) <= 5:

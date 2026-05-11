@@ -36,8 +36,10 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     RateLimitError,
+    ensure_reasoning_supported,
 )
 from repowise.core.rate_limiter import RateLimiter
+from repowise.core.reasoning import ReasoningMode
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
@@ -100,7 +102,9 @@ class DeepSeekProvider(BaseProvider):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
     ) -> GeneratedResponse:
+        ensure_reasoning_supported("deepseek", self._model, reasoning)
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 

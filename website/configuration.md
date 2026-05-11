@@ -46,6 +46,7 @@ The main configuration file. Created after first `init`, updated when you pass `
 provider: anthropic                  # LLM provider
 model: claude-sonnet-4-6             # Model identifier
 embedder: gemini                     # Embedding provider
+reasoning: auto                      # auto | off | minimal
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -55,6 +56,18 @@ follow_renames: false                # Track file renames in git history
 ```
 
 You can edit this file directly. Changes take effect on the next `init`, `update`, or `serve` run.
+
+`reasoning` controls documentation-generation calls for reasoning-capable chat
+models. `auto` preserves provider defaults. `off` disables Qwen3-style thinking
+for OpenAI-compatible vLLM/SGLang endpoints by sending
+`extra_body.chat_template_kwargs.enable_thinking=false`, and maps to
+OpenRouter's `reasoning.effort=none` for effort-capable OpenRouter model
+families. `minimal` requests OpenAI's lowest supported reasoning effort for
+supported OpenAI reasoning models and maps to OpenRouter's
+`reasoning.effort=minimal` for effort-capable OpenRouter model families.
+Providers or models that cannot translate an explicit mode fail before making
+an API call. The interactive `serve` chat streaming path is separate and does
+not currently consume this setting.
 
 ---
 
@@ -91,6 +104,20 @@ export OPENAI_API_KEY="sk-..."
 
 ```bash
 repowise init --provider openai --model gpt-4.1
+```
+
+For an OpenAI-compatible Qwen3 endpoint served by vLLM or SGLang:
+
+```bash
+export OPENAI_BASE_URL="http://localhost:8000/v1"
+repowise init --provider openai --model qwen3 --reasoning off
+```
+
+For OpenRouter:
+
+```bash
+repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
+repowise init --provider openrouter --model x-ai/grok-4 --reasoning off
 ```
 
 ---

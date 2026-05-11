@@ -19,11 +19,11 @@ from repowise.cli.helpers import (
     release_update_lock,
     resolve_command_target,
     resolve_provider,
+    resolve_reasoning,
     resolve_repo_path,
     run_async,
     save_state,
 )
-
 
 # ---------------------------------------------------------------------------
 # Mode resolution
@@ -174,6 +174,12 @@ def _workspace_update(
 @click.option("--since", default=None, help="Base git ref to diff from (overrides state).")
 @click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
 @click.option(
+    "--reasoning",
+    type=click.Choice(["auto", "off", "minimal"]),
+    default=None,
+    help="Reasoning mode for supported providers: auto, off, or minimal.",
+)
+@click.option(
     "--cascade-budget",
     type=int,
     default=None,
@@ -228,6 +234,7 @@ def update_command(
     provider_name: str | None,
     model: str | None,
     since: str | None,
+    reasoning: str | None,
     cascade_budget: int | None,
     dry_run: bool,
     workspace: bool,
@@ -353,7 +360,11 @@ def update_command(
 
     cfg = load_config(repo_path)
     language = cfg.get("language", "en")
-    config = GenerationConfig(max_concurrency=concurrency, language=language)
+    config = GenerationConfig(
+        max_concurrency=concurrency,
+        language=language,
+        reasoning=resolve_reasoning(reasoning, cfg),
+    )
 
     # Read exclude patterns from config (set during init or via web UI)
     exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
@@ -692,7 +703,9 @@ def update_command(
 
         # Record a GenerationJob so the web UI "last synced" timestamp updates
         try:
-            from datetime import datetime, UTC as _UTC
+            from datetime import UTC as _UTC
+            from datetime import datetime
+
             from repowise.core.persistence.crud import upsert_generation_job
 
             async with get_session(sf) as session:

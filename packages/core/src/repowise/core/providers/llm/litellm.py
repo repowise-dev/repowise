@@ -20,13 +20,15 @@ Reference: https://docs.litellm.ai/docs/providers
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
 import structlog
 from tenacity import (
+    RetryError,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential_jitter,
-    RetryError,
 )
 
 from repowise.core.providers.llm.base import (
@@ -36,10 +38,10 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     RateLimitError,
+    ensure_reasoning_supported,
 )
-
-from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+from repowise.core.reasoning import ReasoningMode
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
@@ -98,7 +100,9 @@ class LiteLLMProvider(BaseProvider):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
     ) -> GeneratedResponse:
+        ensure_reasoning_supported("litellm", self._model, reasoning)
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -207,6 +211,7 @@ class LiteLLMProvider(BaseProvider):
         tool_executor: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         import json as _json
+
         import litellm  # type: ignore[import-untyped]
 
         litellm.set_verbose = False

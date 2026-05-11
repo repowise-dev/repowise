@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 from rich.table import Table
@@ -10,9 +11,13 @@ from rich.table import Table
 from repowise.cli.helpers import (
     console,
     find_workspace_root,
+    resolve_reasoning,
     resolve_repo_path,
     run_async,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.config import WorkspaceConfig
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +498,7 @@ def _run_index_for_repo(
     # Run LLM doc generation through the existing single-repo init pathway
     # so we get cost gating, cascading, and full parity with `repowise init`.
     generated_pages = 0
+    resolved_reasoning = resolve_reasoning(config=primary_cfg)
     if generate_docs and provider is not None:
         try:
             generated_pages = _generate_docs_for_added_repo(
@@ -500,6 +506,7 @@ def _run_index_for_repo(
                 provider=provider,
                 embedder_name=embedder_name,
                 concurrency=concurrency,
+                reasoning=resolved_reasoning,
                 exclude_patterns=exclude_patterns,
             )
             console.print(f"  [green]✓[/green] Generated {generated_pages} pages")
@@ -529,6 +536,7 @@ def _run_index_for_repo(
             embedder_name,
             exclude_patterns=exclude_patterns or None,
             commit_limit=int(commit_limit) if commit_limit else None,
+            reasoning=resolved_reasoning,
         )
 
     # Update workspace config entry
@@ -563,6 +571,7 @@ def _generate_docs_for_added_repo(
     provider: object,
     embedder_name: str,
     concurrency: int,
+    reasoning: str,
     exclude_patterns: list[str],
 ) -> int:
     """Generate wiki pages for a newly-added workspace repo.
@@ -613,7 +622,10 @@ def _generate_docs_for_added_repo(
             continue
     graph_builder.build()
 
-    config = GenerationConfig(max_concurrency=concurrency)
+    config = GenerationConfig(
+        max_concurrency=concurrency,
+        reasoning=reasoning,
+    )
     assembler = ContextAssembler(config)
     generator = PageGenerator(provider, assembler, config, language=config.language)
 

@@ -17,6 +17,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
+from repowise.core.reasoning import ReasoningMode, normalize_reasoning
+
 
 @dataclass
 class GeneratedResponse:
@@ -69,6 +71,7 @@ class BaseProvider(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
     ) -> GeneratedResponse:
         """Generate a response from the LLM.
 
@@ -81,6 +84,9 @@ class BaseProvider(ABC):
             temperature:   Sampling temperature. 0.0 is fully deterministic.
                            repowise uses 0.3 for consistent doc style.
             request_id:    Optional trace ID for logging and debugging.
+            reasoning:     Provider-level reasoning intent. ``auto`` preserves
+                           provider defaults; ``off`` and ``minimal`` are
+                           translated by providers that support them.
 
         Returns:
             GeneratedResponse with content and token usage.
@@ -138,6 +144,29 @@ class RateLimitError(ProviderError):
     but RateLimitError signals that backing off longer won't help —
     the operator needs to review rate limits or reduce concurrency.
     """
+
+
+def ensure_reasoning_supported(
+    provider: str,
+    model: str,
+    reasoning: ReasoningMode,
+    supported_modes: tuple[ReasoningMode, ...] = (),
+    *,
+    detail: str | None = None,
+) -> ReasoningMode:
+    """Return normalized reasoning mode or fail before issuing an API call."""
+    mode = normalize_reasoning(reasoning)
+    if mode == "auto" or mode in supported_modes:
+        return mode
+
+    supported = ", ".join(dict.fromkeys(("auto", *supported_modes)))
+    message = (
+        f"reasoning={mode!r} is not supported by provider {provider!r} "
+        f"for model {model!r}. Supported reasoning modes: {supported}."
+    )
+    if detail:
+        message = f"{message} {detail}"
+    raise ProviderError(provider, message)
 
 
 # ---------------------------------------------------------------------------

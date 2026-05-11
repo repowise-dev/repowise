@@ -116,9 +116,84 @@ async def test_generate_sends_correct_messages():
     assert kw["model"] == "gpt-5.4-mini"
     assert kw["max_completion_tokens"] == 2048
     assert kw["temperature"] == 0.5
+    assert "reasoning_effort" not in kw
+    assert "extra_body" not in kw
     messages = kw["messages"]
     assert messages[0] == {"role": "system", "content": "system msg"}
     assert messages[1] == {"role": "user", "content": "user msg"}
+
+
+async def test_generate_forwards_minimal_reasoning_effort():
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5-mini")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="minimal")
+
+    assert captured_kwargs[0]["reasoning_effort"] == "minimal"
+
+
+async def test_generate_forwards_off_reasoning_extra_body():
+    provider = OpenAIProvider(api_key="sk-test", model="qwen3")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="off")
+
+    assert captured_kwargs[0]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+
+
+async def test_generate_rejects_minimal_for_non_reasoning_model():
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='minimal' is not supported"):
+            await provider.generate("system msg", "user msg", reasoning="minimal")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-5.1", "gpt-5.2", "gpt-5-pro", "gpt-5-codex", "gpt-5.4-nano"],
+)
+async def test_generate_rejects_minimal_for_known_unsupported_reasoning_models(model):
+    provider = OpenAIProvider(api_key="sk-test", model=model)
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='minimal' is not supported"):
+            await provider.generate("system msg", "user msg", reasoning="minimal")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
+
+
+async def test_generate_rejects_off_for_non_qwen_model():
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5-mini")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='off' is not supported"):
+            await provider.generate("system msg", "user msg", reasoning="off")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

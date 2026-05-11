@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
+from repowise.core.reasoning import ReasoningMode, normalize_reasoning
+
 # ---------------------------------------------------------------------------
 # PageType and generation levels
 # ---------------------------------------------------------------------------
@@ -64,6 +66,7 @@ class GenerationConfig:
         max_concurrency:          asyncio.Semaphore size for parallel calls.
         embed_concurrency:        asyncio.Semaphore size for vector-store writes.
                                   Defaults to max_concurrency.
+        reasoning:                Provider-level reasoning intent.
         cache_enabled:            In-memory SHA256 prompt deduplication.
         staleness_threshold_days: Days before a page is considered stale.
         expiry_threshold_days:    Days before a page is considered expired.
@@ -76,6 +79,7 @@ class GenerationConfig:
     token_budget: int = 48000
     max_concurrency: int = 5
     embed_concurrency: int | None = None
+    reasoning: ReasoningMode = "auto"
     cache_enabled: bool = True
     staleness_threshold_days: int = 7
     expiry_threshold_days: int = 30
@@ -90,6 +94,7 @@ class GenerationConfig:
     def __post_init__(self) -> None:
         if self.embed_concurrency is None:
             object.__setattr__(self, "embed_concurrency", self.max_concurrency)
+        object.__setattr__(self, "reasoning", normalize_reasoning(self.reasoning))
 
 
 # ---------------------------------------------------------------------------

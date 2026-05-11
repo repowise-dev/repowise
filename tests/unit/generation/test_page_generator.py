@@ -108,6 +108,26 @@ async def test_generate_file_page_increments_call_count(
     assert provider.call_count == 1
 
 
+async def test_generate_file_page_forwards_reasoning_config(
+    sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    provider = MockProvider()
+    config = GenerationConfig(reasoning="off")
+    assembler = ContextAssembler(config)
+    gen = PageGenerator(provider, assembler, config)
+
+    await gen.generate_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+
+    assert provider.calls[0]["reasoning"] == "off"
+
+
 # ---------------------------------------------------------------------------
 # Prompt cache
 # ---------------------------------------------------------------------------

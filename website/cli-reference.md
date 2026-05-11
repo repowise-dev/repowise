@@ -44,7 +44,7 @@ repowise init [PATH] [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `gemini`, `ollama`, `litellm`, `mock` |
+| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `mock` |
 | `--model` | string | — | Model override (e.g., `claude-sonnet-4-6`, `gpt-4.1`) |
 | `--embedder` | choice | auto | Embedding provider: `gemini`, `openai`, `mock` |
 | `--index-only` | flag | false | Skip LLM generation — parse, graph, git, dead code only |
@@ -55,6 +55,7 @@ repowise init [PATH] [OPTIONS]
 | `--exclude` / `-x` | string | — | Gitignore-style exclude pattern (repeatable: `-x vendor/ -x "*.gen.*"`) |
 | `--include-submodules` | flag | false | Include git submodule directories (excluded by default) |
 | `--concurrency` | int | 5 | Max concurrent LLM calls |
+| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`, or `minimal` |
 | `--resume` | flag | false | Resume from last checkpoint after an interruption |
 | `--force` | flag | false | Regenerate all pages even if up to date |
 | `--commit-limit` | int | 500 | Max commits per file for git analysis (max 5000, saved to config) |
@@ -70,6 +71,12 @@ repowise init
 
 # Non-interactive, specific provider
 repowise init --provider anthropic --yes
+
+# OpenAI-compatible Qwen3 endpoint with thinking disabled
+repowise init --provider openai --model qwen3 --reasoning off
+
+# OpenRouter with minimal reasoning effort
+repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
 
 # Analysis only — free, no API key needed
 repowise init --index-only
@@ -121,6 +128,7 @@ repowise update [PATH] [OPTIONS]
 | `--provider` | string | — | Override LLM provider |
 | `--model` | string | — | Override model |
 | `--since` | string | — | Git ref to diff from (overrides saved `state.json`) |
+| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`, or `minimal` |
 | `--cascade-budget` | int | auto | Max pages to regenerate from cascading changes |
 | `--dry-run` | flag | false | Show affected pages without regenerating |
 
@@ -129,6 +137,7 @@ repowise update [PATH] [OPTIONS]
 ```bash
 repowise update                      # Sync since last indexed commit
 repowise update --since HEAD~10      # Re-sync last 10 commits
+repowise update --reasoning off      # One-off supported-provider thinking-off run
 repowise update --dry-run            # Preview what would change
 repowise update --cascade-budget 20  # Limit cascade regeneration
 ```

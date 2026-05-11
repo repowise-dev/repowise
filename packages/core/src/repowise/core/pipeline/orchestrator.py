@@ -166,6 +166,7 @@ async def run_pipeline(
     resume: bool = False,
     progress: ProgressCallback | None = None,
     cost_tracker: Any | None = None,
+    generation_config: Any | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -200,6 +201,10 @@ async def run_pipeline(
         Limit generation to top 10 files by PageRank (for quick validation).
     progress:
         Optional callback for progress reporting. Pass None for silent operation.
+    generation_config:
+        Optional ``GenerationConfig`` used for page generation. When omitted,
+        generation uses repo-local config such as ``reasoning`` from
+        ``.repowise/config.yaml`` and ``REPOWISE_REASONING``.
 
     Returns
     -------
@@ -322,6 +327,17 @@ async def run_pipeline(
         if progress:
             progress.on_message("info", "Phase 3: Generation")
 
+        resolved_generation_config = generation_config
+        if resolved_generation_config is None:
+            from repowise.core.generation import GenerationConfig
+            from repowise.core.reasoning import resolve_reasoning
+            from repowise.core.repo_config import load_repo_config
+
+            resolved_generation_config = GenerationConfig(
+                max_concurrency=concurrency,
+                reasoning=resolve_reasoning(config=load_repo_config(repo_path))
+            )
+
         generated_pages = await run_generation(
             repo_path=repo_path,
             parsed_files=parsed_files,
@@ -335,6 +351,7 @@ async def run_pipeline(
             concurrency=concurrency,
             progress=progress,
             resume=resume,
+            generation_config=resolved_generation_config,
         )
 
     # ---- Execution flow tracing -----------------------------------------------

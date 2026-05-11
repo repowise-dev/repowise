@@ -50,7 +50,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 
 | Flag | Description |
 |------|-------------|
-| `--provider` | LLM provider: `anthropic`, `openai`, `gemini`, `ollama`, `mock` |
+| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock` |
 | `--index-only` | Skip LLM generation. Only parse, build graph, and index git. Free. |
@@ -61,6 +61,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--exclude / -x` | Gitignore-style exclusion patterns. Repeatable. |
 | `--include-submodules` | Include git submodule directories. |
 | `--concurrency` | Max concurrent LLM calls (default: 5). |
+| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal` (default: `auto`). |
 | `--resume` | Resume from the last checkpoint if interrupted. |
 | `--force` | Regenerate all pages even if they exist. |
 | `--commit-limit` | Max commits to analyze per file (default: 500). |
@@ -76,6 +77,8 @@ repowise init --provider anthropic --yes              # automated
 repowise init --index-only                            # free, no LLM
 repowise init --dry-run                               # preview cost
 repowise init --test-run                              # quick test (10 files)
+repowise init --provider openai --model qwen3 --reasoning off
+repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
 repowise init -x vendor/ -x "*.gen.go"               # exclude patterns
 repowise init --include-submodules                    # include submodules
 repowise init .                                       # workspace mode
@@ -95,6 +98,7 @@ Incrementally update wiki pages for files changed since the last sync.
 | `--provider` | Override LLM provider for this run |
 | `--model` | Override model |
 | `--since` | Git ref to diff from (overrides `state.json`) |
+| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal` |
 | `--cascade-budget` | Max pages to regenerate (default: auto) |
 | `--dry-run` | Show what would be updated without regenerating |
 | `--workspace` | Update all stale repos in the workspace + cross-repo analysis |
@@ -109,6 +113,7 @@ Incrementally update wiki pages for files changed since the last sync.
 repowise update                        # diff since last sync
 repowise update --dry-run              # preview
 repowise update --since v1.0.0         # diff from a tag
+repowise update --reasoning off        # one-off supported-provider thinking-off run
 repowise update --workspace            # all workspace repos (incl. first-time indexing)
 repowise update --repo backend         # specific workspace repo
 repowise update --no-workspace         # force single-repo mode in a workspace root

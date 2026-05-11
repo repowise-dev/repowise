@@ -14,17 +14,18 @@ Popular models:
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 import structlog
+from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
 from openai import RateLimitError as _OpenAIRateLimitError
-from openai import APIStatusError as _OpenAIAPIStatusError
 from tenacity import (
+    RetryError,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential_jitter,
-    RetryError,
 )
 
 from repowise.core.providers.llm.base import (
@@ -34,10 +35,10 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     RateLimitError,
+    ensure_reasoning_supported,
 )
-
-from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
@@ -47,6 +48,62 @@ log = structlog.get_logger(__name__)
 _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
 _MAX_WAIT = 4.0
+_OPENROUTER_OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4")
+_OPENROUTER_OPENAI_GPT5_EXACT_MODELS = ("gpt-5", "gpt-5-mini", "gpt-5-nano")
+_OPENROUTER_OPENAI_GPT5_PREFIXES = ("gpt-5-mini-", "gpt-5-nano-")
+
+
+def _model_leaf(model: str) -> str:
+    return model.rsplit("/", 1)[-1].lower()
+
+
+def _openrouter_supports_reasoning_effort(model: str) -> bool:
+    normalized = model.lower()
+    leaf = _model_leaf(model)
+    if normalized.startswith(("x-ai/grok", "xai/grok")):
+        return True
+    if normalized.startswith("openai/"):
+        if leaf.startswith(_OPENROUTER_OPENAI_REASONING_PREFIXES):
+            return True
+        if leaf in _OPENROUTER_OPENAI_GPT5_EXACT_MODELS:
+            return True
+        if leaf.startswith(_OPENROUTER_OPENAI_GPT5_PREFIXES):
+            return True
+    return False
+
+
+def _resolve_openrouter_reasoning_mode(
+    reasoning: ReasoningMode, *, model: str
+) -> ReasoningMode:
+    """Validate OpenRouter reasoning support before retry handling."""
+    supported_modes: tuple[ReasoningMode, ...] = (
+        ("off", "minimal") if _openrouter_supports_reasoning_effort(model) else ()
+    )
+    return ensure_reasoning_supported(
+        "openrouter",
+        model,
+        normalize_reasoning(reasoning),
+        supported_modes,
+        detail=(
+            "OpenRouter maps reasoning.effort for OpenAI reasoning and Grok "
+            "model families with known effort support. Unknown, dotted, and "
+            "pro GPT-5 routes fail fast until explicitly mapped."
+        ),
+    )
+
+
+def _openrouter_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
+    """Translate a validated repowise reasoning intent to OpenRouter kwargs."""
+    mode = normalize_reasoning(reasoning)
+    if mode == "auto":
+        return {}
+    return {
+        "extra_body": {
+            "reasoning": {
+                "effort": "none" if mode == "off" else "minimal",
+            }
+        }
+    }
 
 
 class OpenRouterProvider(BaseProvider):
@@ -112,7 +169,11 @@ class OpenRouterProvider(BaseProvider):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
     ) -> GeneratedResponse:
+        reasoning_mode = _resolve_openrouter_reasoning_mode(
+            reasoning, model=self._model
+        )
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -130,6 +191,7 @@ class OpenRouterProvider(BaseProvider):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 request_id=request_id,
+                reasoning=reasoning_mode,
             )
         except RetryError as exc:
             raise ProviderError(
@@ -150,17 +212,20 @@ class OpenRouterProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
         request_id: str | None,
+        reasoning: ReasoningMode,
     ) -> GeneratedResponse:
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                messages=[
+            kwargs: dict[str, Any] = {
+                "model": self._model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-            )
+            }
+            kwargs.update(_openrouter_reasoning_kwargs(reasoning))
+            response = await self._client.chat.completions.create(**kwargs)
         except _OpenAIRateLimitError as exc:
             raise RateLimitError("openrouter", str(exc), status_code=429) from exc
         except _OpenAIAPIStatusError as exc:

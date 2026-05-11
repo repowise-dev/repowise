@@ -461,10 +461,14 @@ async def _incremental_page_regen(
         affected_source = {p: s for p, s in result.source_map.items() if p in regen_set}
 
         from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
+        from repowise.core.reasoning import resolve_reasoning
+        from repowise.core.repo_config import load_repo_config
 
-        config = GenerationConfig()
-        assembler = ContextAssembler(config)
-        generator = PageGenerator(llm_client, assembler, config)
+        generation_config = GenerationConfig(
+            reasoning=resolve_reasoning(config=load_repo_config(repo_path))
+        )
+        assembler = ContextAssembler(generation_config)
+        generator = PageGenerator(llm_client, assembler, generation_config)
 
         pages = await generator.generate_all(
             affected_parsed,

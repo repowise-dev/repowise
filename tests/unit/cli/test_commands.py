@@ -37,11 +37,13 @@ class TestCliBasics:
         assert "--provider" in result.output
         assert "--dry-run" in result.output
         assert "--skip-tests" in result.output
+        assert "--reasoning" in result.output
 
     def test_update_help(self, runner):
         result = runner.invoke(cli, ["update", "--help"])
         assert result.exit_code == 0
         assert "--since" in result.output
+        assert "--reasoning" in result.output
 
     def test_search_help(self, runner):
         result = runner.invoke(cli, ["search", "--help"])

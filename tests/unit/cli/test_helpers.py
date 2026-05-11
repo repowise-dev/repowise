@@ -8,13 +8,14 @@ from typing import Any
 import pytest
 
 from repowise.cli.helpers import (
-    ensure_repowise_dir,
     CONFIG_FILENAME,
+    ensure_repowise_dir,
     get_db_url_for_repo,
     get_head_commit,
     get_repowise_dir,
     load_state,
     resolve_provider,
+    resolve_reasoning,
     resolve_repo_path,
     run_async,
     save_state,
@@ -98,6 +99,20 @@ class TestDbUrl:
         expected_path = (tmp_path / ".repowise" / "wiki.db").as_posix()
         assert url == f"sqlite+aiosqlite:///{expected_path}"
         assert (tmp_path / ".repowise").exists()
+
+
+class TestResolveReasoning:
+    def test_flag_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("REPOWISE_REASONING", "minimal")
+        assert resolve_reasoning("off", {"reasoning": "auto"}) == "off"
+
+    def test_env_wins_over_config(self, monkeypatch):
+        monkeypatch.setenv("REPOWISE_REASONING", "minimal")
+        assert resolve_reasoning(config={"reasoning": "off"}) == "minimal"
+
+    def test_config_wins_over_default(self, monkeypatch):
+        monkeypatch.delenv("REPOWISE_REASONING", raising=False)
+        assert resolve_reasoning(config={"reasoning": "off"}) == "off"
 
 
 # ---------------------------------------------------------------------------

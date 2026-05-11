@@ -13,7 +13,13 @@ from typing import Any, Literal, TypeVar
 import click
 from rich.console import Console
 
-CONFIG_FILENAME = "config.yaml"
+from repowise.core.reasoning import (
+    ReasoningMode,
+)
+from repowise.core.reasoning import (
+    resolve_reasoning as resolve_core_reasoning,
+)
+from repowise.core.repo_config import CONFIG_FILENAME, load_repo_config
 
 T = TypeVar("T")
 
@@ -223,22 +229,18 @@ def get_head_commit(repo_path: Path) -> str | None:
 
 def load_config(repo_path: Path) -> dict[str, Any]:
     """Load ``.repowise/config.yaml`` or return an empty dict if absent."""
-    config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
-    if not config_path.exists():
-        return {}
-    text = config_path.read_text(encoding="utf-8")
-    try:
-        import yaml  # type: ignore[import-untyped]
+    return load_repo_config(repo_path)
 
-        return yaml.safe_load(text) or {}
-    except ImportError:
-        # Simple line-by-line parser for the flat key: value format we write
-        result: dict[str, Any] = {}
-        for line in text.splitlines():
-            if ":" in line:
-                k, _, v = line.partition(":")
-                result[k.strip()] = v.strip()
-        return result
+
+def resolve_reasoning(
+    reasoning: str | None = None,
+    config: dict[str, Any] | None = None,
+) -> ReasoningMode:
+    """Resolve generation reasoning from CLI flag, env, config, then default."""
+    try:
+        return resolve_core_reasoning(reasoning, config)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def save_config(
@@ -249,6 +251,7 @@ def save_config(
     *,
     exclude_patterns: list[str] | None = None,
     commit_limit: int | None = None,
+    reasoning: str | None = None,
 ) -> None:
     """Write provider/model/embedder (and optionally exclude_patterns) to ``.repowise/config.yaml``.
 
@@ -266,6 +269,8 @@ def save_config(
         existing["exclude_patterns"] = exclude_patterns
     if commit_limit is not None:
         existing["commit_limit"] = commit_limit
+    if reasoning is not None:
+        existing["reasoning"] = resolve_reasoning(reasoning)
 
     try:
         import yaml  # type: ignore[import-untyped]
@@ -277,6 +282,8 @@ def save_config(
     except ImportError:
         # Fallback: write simple key-value format (lists not supported)
         lines = [f"provider: {provider}", f"model: {model}", f"embedder: {embedder}"]
+        if reasoning is not None:
+            lines.append(f"reasoning: {resolve_reasoning(reasoning)}")
         config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

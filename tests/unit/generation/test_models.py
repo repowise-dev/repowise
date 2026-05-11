@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from repowise.core.generation.models import (
     ConfidenceDecayResult,
     GeneratedPage,
@@ -152,8 +154,19 @@ def test_generation_config_defaults():
     assert config.expiry_threshold_days == 30
     assert config.top_symbol_percentile == 0.10
     assert config.large_file_source_pct == 0.4
+    assert config.reasoning == "auto"
 
 
 def test_generation_config_embed_concurrency_defaults_to_max_concurrency():
     config = GenerationConfig(max_concurrency=3)
     assert config.embed_concurrency == 3
+
+
+def test_generation_config_normalizes_reasoning():
+    config = GenerationConfig(reasoning="OFF")
+    assert config.reasoning == "off"
+
+
+def test_generation_config_rejects_invalid_reasoning():
+    with pytest.raises(ValueError):
+        GenerationConfig(reasoning="verbose")

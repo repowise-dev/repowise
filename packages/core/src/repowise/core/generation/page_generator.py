@@ -968,6 +968,7 @@ class PageGenerator:
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
             request_id=request_id,
+            reasoning=self._config.reasoning,
         )
 
         if self._config.cache_enabled:

@@ -13,17 +13,18 @@ Recommended models (as of 2026):
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 import structlog
+from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
 from openai import RateLimitError as _OpenAIRateLimitError
-from openai import APIStatusError as _OpenAIAPIStatusError
 from tenacity import (
+    RetryError,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential_jitter,
-    RetryError,
 )
 
 from repowise.core.providers.llm.base import (
@@ -33,10 +34,10 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     RateLimitError,
+    ensure_reasoning_supported,
 )
-
-from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
@@ -46,6 +47,70 @@ log = structlog.get_logger(__name__)
 _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
 _MAX_WAIT = 4.0
+_QWEN_THINKING_MODEL_MARKERS = ("qwen", "qwq")
+_OPENAI_MINIMAL_REASONING_EXACT_MODELS = ("gpt-5", "gpt-5-mini", "gpt-5-nano")
+_OPENAI_MINIMAL_REASONING_PREFIXES = ("gpt-5-mini-", "gpt-5-nano-")
+
+
+def _model_leaf(model: str) -> str:
+    return model.rsplit("/", 1)[-1].lower()
+
+
+def _supports_openai_reasoning_effort(model: str) -> bool:
+    leaf = _model_leaf(model)
+    # Keep this conservative: dotted, pro, codex, and future aliases do not all
+    # accept the same Chat Completions reasoning_effort values.
+    return leaf in _OPENAI_MINIMAL_REASONING_EXACT_MODELS or leaf.startswith(
+        _OPENAI_MINIMAL_REASONING_PREFIXES
+    )
+
+
+def _supports_chat_template_thinking_toggle(model: str) -> bool:
+    leaf = _model_leaf(model)
+    return any(marker in leaf for marker in _QWEN_THINKING_MODEL_MARKERS)
+
+
+def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
+    modes: list[ReasoningMode] = []
+    if _supports_openai_reasoning_effort(model):
+        modes.append("minimal")
+    if _supports_chat_template_thinking_toggle(model):
+        modes.append("off")
+    return tuple(modes)
+
+
+def _resolve_openai_reasoning_mode(
+    reasoning: ReasoningMode, *, model: str
+) -> ReasoningMode:
+    """Validate OpenAI-compatible reasoning support before retry handling."""
+    return ensure_reasoning_supported(
+        "openai",
+        model,
+        normalize_reasoning(reasoning),
+        _openai_supported_reasoning_modes(model),
+        detail=(
+            "OpenAIProvider maps minimal to OpenAI reasoning_effort only for "
+            "known compatible OpenAI model ids (gpt-5, gpt-5-mini, "
+            "gpt-5-nano, and mini/nano snapshot ids), and maps off to "
+            "Qwen/QwQ chat_template_kwargs for OpenAI-compatible endpoints."
+        ),
+    )
+
+
+def _openai_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
+    """Translate a validated repowise reasoning intent to OpenAI kwargs."""
+    mode = normalize_reasoning(reasoning)
+    if mode == "auto":
+        return {}
+    if mode == "minimal":
+        return {"reasoning_effort": "minimal"}
+    return {
+        "extra_body": {
+            "chat_template_kwargs": {
+                "enable_thinking": False,
+            },
+        },
+    }
 
 
 class OpenAIProvider(BaseProvider):
@@ -93,7 +158,11 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
     ) -> GeneratedResponse:
+        reasoning_mode = _resolve_openai_reasoning_mode(
+            reasoning, model=self._model
+        )
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -111,6 +180,7 @@ class OpenAIProvider(BaseProvider):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 request_id=request_id,
+                reasoning=reasoning_mode,
             )
         except RetryError as exc:
             raise ProviderError(
@@ -131,16 +201,21 @@ class OpenAIProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
         request_id: str | None,
+        reasoning: ReasoningMode,
     ) -> GeneratedResponse:
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                max_completion_tokens=max_tokens,
-                temperature=temperature,
-                messages=[
+            kwargs: dict[str, Any] = {
+                "model": self._model,
+                "max_completion_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+            }
+            kwargs.update(_openai_reasoning_kwargs(reasoning))
+            response = await self._client.chat.completions.create(
+                **kwargs,
             )
         except _OpenAIRateLimitError as exc:
             raise RateLimitError("openai", str(exc), status_code=429) from exc

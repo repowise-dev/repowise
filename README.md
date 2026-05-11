@@ -577,9 +577,10 @@ repowise reindex                  # rebuild vector store (no LLM calls)
 `repowise init` generates `.repowise/config.yaml`. Key options:
 
 ```yaml
-provider: anthropic               # anthropic | openai | ollama | litellm
+provider: anthropic               # anthropic | openai | openrouter | gemini | deepseek | ollama | litellm | mock
 model: claude-sonnet-4-5
 embedding_model: voyage-3
+reasoning: auto                   # auto | off | minimal
 
 git:
   co_change_commit_limit: 500
@@ -593,6 +594,10 @@ maintenance:
   cascade_budget: 30              # max pages fully regenerated per commit
   background_regen_schedule: "0 2 * * *"
 ```
+
+`reasoning` applies to documentation generation. `auto` preserves provider
+defaults; explicit `off` / `minimal` modes are translated only by providers and
+models that support them, otherwise repowise fails before making an API call.
 
 Full configuration reference: [docs/CONFIG.md](docs/CONFIG.md)
 

@@ -11,7 +11,11 @@ import pytest
 
 pytest.importorskip("openai", reason="openai SDK not installed")
 
-from repowise.core.providers.llm.base import ChatStreamEvent, GeneratedResponse, ProviderError, RateLimitError
+from repowise.core.providers.llm.base import (
+    GeneratedResponse,
+    ProviderError,
+    RateLimitError,
+)
 from repowise.core.providers.llm.deepseek import DeepSeekProvider
 
 
@@ -125,6 +129,17 @@ async def test_generate_uses_correct_model_name():
         mock_client.return_value.chat.completions.create.assert_called_once()
         kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
         assert kwargs["model"] == "deepseek-v4-flash"
+
+
+async def test_generate_rejects_unsupported_reasoning_mode():
+    provider = DeepSeekProvider(api_key="sk-test")
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        provider._client = mock_client.return_value
+        with pytest.raises(ProviderError, match="reasoning='off' is not supported"):
+            await provider.generate("system", "user", reasoning="off")
+
+    mock_client.return_value.chat.completions.create.assert_not_called()
 
 
 async def test_generate_rate_limit_retry():

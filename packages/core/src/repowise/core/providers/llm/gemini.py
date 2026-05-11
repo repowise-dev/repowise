@@ -19,6 +19,8 @@ import structlog
 # Suppress "Both GOOGLE_API_KEY and GEMINI_API_KEY are set" from google-genai SDK.
 # We resolve and pass the key explicitly, so the env-var conflict warning is noise.
 logging.getLogger("google_genai._api_client").setLevel(logging.ERROR)
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
 from tenacity import (
     RetryError,
     retry,
@@ -34,10 +36,10 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     RateLimitError,
+    ensure_reasoning_supported,
 )
-
-from typing import TYPE_CHECKING, Any, AsyncIterator
 from repowise.core.rate_limiter import RateLimiter
+from repowise.core.reasoning import ReasoningMode
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
@@ -99,7 +101,9 @@ class GeminiProvider(BaseProvider):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
     ) -> GeneratedResponse:
+        ensure_reasoning_supported("gemini", self._model, reasoning)
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -392,8 +396,9 @@ def _to_gemini_contents(messages: list[dict[str, Any]]) -> list:
     round-trips use native Gemini Content objects (preserving thought
     signatures).
     """
-    from google.genai import types as genai_types  # type: ignore[import-untyped]
     import json as _json
+
+    from google.genai import types as genai_types  # type: ignore[import-untyped]
 
     contents = []
     for msg in messages:
