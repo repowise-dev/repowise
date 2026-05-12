@@ -17,6 +17,7 @@ from .ruby import RubyDynamicHints
 from .scala import ScalaDynamicHints
 from .spring import SpringDynamicHints
 from .swift import SwiftDynamicHints
+from .xaml import XamlDynamicHints
 
 log = structlog.get_logger(__name__)
 
@@ -28,6 +29,7 @@ class HintRegistry:
             PytestDynamicHints(),
             NodeDynamicHints(),
             DotNetDynamicHints(),
+            XamlDynamicHints(),
             SpringDynamicHints(),
             RubyDynamicHints(),
             PhpDynamicHints(),
