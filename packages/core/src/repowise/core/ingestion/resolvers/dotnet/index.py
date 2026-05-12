@@ -30,6 +30,13 @@ class DotNetProjectIndex:
     namespace_map: dict[str, list[Path]] = field(default_factory=dict)
     """Maps a fully-qualified namespace to the set of .cs files declaring it."""
 
+    type_map: dict[str, list[Path]] = field(default_factory=dict)
+    """Maps an unqualified type name (e.g. ``IBasketService``) to defining files.
+
+    A type name can appear in multiple files (partial types, distinct types
+    with the same simple name in different namespaces). Callers rank the
+    candidates by project enclosure — see ``rank_type_candidates`` below."""
+
     project_globals: dict[Path, set[str]] = field(default_factory=dict)
     """Maps a project's directory → global+implicit using namespaces."""
 
@@ -59,6 +66,50 @@ class DotNetProjectIndex:
 
     def files_for_namespace(self, ns: str) -> list[Path]:
         return self.namespace_map.get(ns, [])
+
+    def files_for_type(self, type_name: str) -> list[Path]:
+        return self.type_map.get(type_name, [])
+
+    def rank_type_candidates(
+        self,
+        type_name: str,
+        from_file: Path,
+    ) -> list[Path]:
+        """Return defining files for *type_name*, ranked by project enclosure.
+
+        Ranking matches ``resolve_csharp_import`` for namespace lookups:
+            1. Same project as *from_file*
+            2. Projects referenced by from_file's project (transitive=1)
+            3. Anywhere else in the workspace
+
+        Same-named partial-type fragments collapse: each unique file
+        appears once. ``from_file`` is excluded so a class that only
+        names its own types doesn't get a self-edge.
+        """
+        candidates = self.type_map.get(type_name)
+        if not candidates:
+            return []
+
+        from_resolved = from_file.resolve()
+        from_proj = self.file_to_project.get(from_resolved)
+        ref_projs = self.project_refs_by_proj.get(from_proj, set()) if from_proj else set()
+
+        same_proj: list[Path] = []
+        ref_proj: list[Path] = []
+        repo_wide: list[Path] = []
+        seen: set[Path] = set()
+        for cand in candidates:
+            if cand in seen or cand == from_resolved:
+                continue
+            seen.add(cand)
+            cand_proj = self.file_to_project.get(cand)
+            if cand_proj is not None and cand_proj == from_proj:
+                same_proj.append(cand)
+            elif cand_proj is not None and cand_proj in ref_projs:
+                ref_proj.append(cand)
+            else:
+                repo_wide.append(cand)
+        return same_proj + ref_proj + repo_wide
 
     def globals_for_project(self, csproj: Path) -> set[str]:
         proj = self.projects.get(csproj)
@@ -116,7 +167,7 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
         all_cs_files.extend(proj_files)
         for f in proj_files:
             index.file_to_project[f] = proj.path
-    index.namespace_map = build_namespace_map(all_cs_files)
+    index.namespace_map, index.type_map = build_namespace_map(all_cs_files)
 
     # ---- 4. Compute per-project global+implicit usings ----
     for proj in index.projects.values():
@@ -137,6 +188,7 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
         repo=str(repo_path),
         projects=len(index.projects),
         namespaces=len(index.namespace_map),
+        types=len(index.type_map),
         sln=len(index.sln_paths),
     )
     return index

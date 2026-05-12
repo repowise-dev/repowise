@@ -33,18 +33,7 @@ from .constants import (
 # namespace. C# auto-properties land in the graph as ``variable``;
 # fields / enum members / type aliases / namespace anchors share the
 # same property.
-#
-# ``interface`` is included here because in practice interfaces are
-# resolved through indirections the import-name analyser cannot see —
-# DI container registration, generic type constraints, type assertions
-# / casts, and (in C# / Java / Kotlin / Scala) namespace-level
-# ``using`` / ``import`` directives that don't name the interface
-# individually. Treating every public interface with no named-import
-# edge as dead produced 100s of false positives on DI-heavy codebases
-# (every ``IRepository<T>``, every ``IService``). The cost of missing
-# a genuinely dead public interface is low (it'll surface elsewhere
-# the moment its single implementation file is flagged dead).
-_NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = frozenset({
+_UNIVERSAL_NON_IMPORTABLE: frozenset[str] = frozenset({
     "method",
     "variable",
     "field",
@@ -54,8 +43,44 @@ _NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = frozenset({
     "type_alias",
     "namespace",
     "module",
-    "interface",
 })
+
+# Additional kinds skipped only for languages where the graph cannot yet
+# observe interface usage. In practice these are DI-heavy languages
+# whose canonical interface-consumption path is constructor injection —
+# resolved by the type-use edge pass (see
+# ``ingestion/type_ref_resolution.py``). Once a language emits
+# ``via=type_use`` edges, its entry here can be removed.
+#
+# C# already has type-use coverage (ctor + method + delegate +
+# primary-ctor param.type captures), so ``interface`` is *not* skipped
+# for C# — a genuinely unused C# interface is now observable.
+#
+# TS / Python / JS interfaces were always imported by name and never
+# needed the skip; treating them uniformly produced false negatives.
+_LANGUAGE_NON_IMPORTABLE: dict[str, frozenset[str]] = {
+    "java": frozenset({"interface"}),
+    "kotlin": frozenset({"interface"}),
+    "scala": frozenset({"interface"}),
+}
+
+
+def _non_importable_kinds(language: str) -> frozenset[str]:
+    """Per-language set of symbol kinds excluded from unused-export passes.
+
+    Returns the union of the universal set and any language-specific
+    additions. Cheap to call — short lookup, no per-call allocation
+    when the language has no additions.
+    """
+    extra = _LANGUAGE_NON_IMPORTABLE.get(language)
+    if extra is None:
+        return _UNIVERSAL_NON_IMPORTABLE
+    return _UNIVERSAL_NON_IMPORTABLE | extra
+
+
+# Preserved for tests / external callers that imported the old name.
+# New code should prefer ``_non_importable_kinds(language)``.
+_NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = _UNIVERSAL_NON_IMPORTABLE | frozenset({"interface"})
 
 # Symbol names that are language-runtime entry points or compiler-implicit
 # anchors — never invoked by user-authored callers, never dead.
@@ -384,7 +409,7 @@ class DeadCodeAnalyzer:
                 # class / module, so the unused-export pass can't observe
                 # their real usage and would report guaranteed false
                 # positives. C# auto-properties surface here as ``variable``.
-                if sym.get("kind") in _NON_IMPORTABLE_SYMBOL_KINDS:
+                if sym.get("kind") in _non_importable_kinds(sym.get("language", "unknown")):
                     continue
                 if sym_name.startswith("__") and sym_name.endswith("__"):
                     continue
@@ -506,7 +531,7 @@ class DeadCodeAnalyzer:
             # non-callable kinds bypass the call-edge pass by design.
             if "." in sym_name:
                 continue
-            if node_data.get("kind") in _NON_IMPORTABLE_SYMBOL_KINDS:
+            if node_data.get("kind") in _non_importable_kinds(node_data.get("language", "unknown")):
                 continue
             if self._name_matches_dynamic(sym_name, dynamic_patterns):
                 continue

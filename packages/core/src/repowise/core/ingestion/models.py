@@ -236,6 +236,21 @@ EdgeType = Literal[
 
 
 @dataclass
+class TypeReference:
+    """A non-import type reference extracted from a source file.
+
+    Captures usages like constructor parameter types and method parameter
+    types where the referenced type is named but not imported through a
+    statement the resolver already handles. Resolved to file-level
+    ``imports`` edges by the graph builder.
+    """
+
+    type_name: str  # head identifier (e.g. "IBasketService" from "IBasketService<T>")
+    line: int  # 1-indexed source line
+    origin: Literal["ctor_param", "method_param", "delegate_param"] = "ctor_param"
+
+
+@dataclass
 class ParsedFile:
     """Full result of parsing a single source file."""
 
@@ -248,6 +263,7 @@ class ParsedFile:
     docstring: str | None = None  # module/file-level docstring
     parse_errors: list[str] = field(default_factory=list)  # non-fatal parser warnings/errors
     content_hash: str = ""  # SHA-256 hex of raw file bytes
+    type_refs: list[TypeReference] = field(default_factory=list)
 
 
 def compute_content_hash(source: bytes) -> str:
