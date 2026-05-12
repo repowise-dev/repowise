@@ -76,8 +76,23 @@ _DECISION_SIGNAL_WORDS: frozenset[str] = frozenset(
 _SKIP_AUTHORS = ("dependabot", "renovate", "github-actions")
 _MIN_MESSAGE_LEN = 12
 
-# Default per-file and co-change commit history depth.
+# Default per-file commit history depth.
 _DEFAULT_COMMIT_LIMIT: int = 500
+
+# Co-change pair extraction widens the window because individual files
+# may only co-change a handful of times in 500 commits — well below the
+# ``min_count`` threshold. On low-churn repos the 500-commit window
+# produced 0 co-change pairs every run; 2000 commits captures enough
+# history for the decay-weighted score to clear the bar without
+# meaningfully blowing up wall-clock time (single `git log` call).
+_DEFAULT_CO_CHANGE_COMMIT_LIMIT: int = 2000
+
+# Minimum decay-weighted co-occurrence weight for a pair to be recorded.
+# Was 3 historically; on repos with sparse change history (libraries,
+# stable services) that produced empty co-change tables. Two recent
+# co-changes is enough signal to surface in the UI, and the dashboard
+# already sorts partners by weight so the ranking is unaffected.
+_DEFAULT_CO_CHANGE_MIN_COUNT: int = 2
 
 # Commit message classification regexes (Phase 2.2).
 _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
@@ -298,13 +313,18 @@ class GitIndexer:
         file_tasks = [index_one(fp) for fp in indexable_files]
 
         async def _co_change_task() -> dict[str, list[dict]]:
+            # Co-change uses a wider window than per-file history (set
+            # by ``self.commit_limit``) so low-churn repos surface
+            # any pairs at all. Defaults live in module constants so
+            # tests and re-index paths can override without touching
+            # this call site.
             return await loop.run_in_executor(
                 executor,
                 self._compute_co_changes,
                 repo,
                 set(tracked_files),
-                self.commit_limit,
-                3,
+                max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
+                _DEFAULT_CO_CHANGE_MIN_COUNT,
                 on_commit_done,
                 on_co_change_start,
             )
@@ -808,8 +828,8 @@ class GitIndexer:
         self,
         repo: Any,
         all_files: set[str],
-        commit_limit: int = 500,
-        min_count: int = 3,
+        commit_limit: int = _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
+        min_count: int = _DEFAULT_CO_CHANGE_MIN_COUNT,
         on_commit_done: Callable[[], None] | None = None,
         on_co_change_start: Callable[[int], None] | None = None,
     ) -> dict[str, list[dict]]:
@@ -910,6 +930,20 @@ class GitIndexer:
         # Sort partners by score descending
         for fp in result:
             result[fp].sort(key=lambda x: x["co_change_count"], reverse=True)
+
+        # Lightweight observability: every audit so far has had to
+        # answer "why are co-change tables empty?" by guessing. Logging
+        # the filter funnel lets future debugging look at one log line.
+        logger.debug(
+            "co_change_computed",
+            commits=actual_commits,
+            tracked_files=len(all_files),
+            pairs_considered=len(pair_scores),
+            pairs_above_threshold=sum(1 for s in pair_scores.values() if s >= min_count),
+            files_with_partners=len(result),
+            min_count=min_count,
+            commit_limit=commit_limit,
+        )
 
         return dict(result)
 
