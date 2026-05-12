@@ -467,6 +467,18 @@ class DeadCodeAnalyzer:
                 else:
                     confidence = 0.7
 
+                # Interfaces / protocols are reached almost exclusively
+                # through their implementors. Implementor detection is
+                # heuristic — its absence is "evidence missing", not
+                # "evidence of absence". Cap confidence below the
+                # safe-to-delete threshold when the file containing the
+                # interface has no incoming ``implements``-class edges,
+                # so the demo doesn't ship public-API interfaces as
+                # confident dead code. Generic across all languages
+                # (C#, Java, Kotlin, Scala, Swift protocols, TS).
+                if sym.get("kind") == "interface" and not self._file_has_implementors(node):
+                    confidence = min(confidence, 0.4)
+
                 safe = confidence >= 0.7
 
                 git_meta = self.git_meta_map.get(str(node), {})
@@ -686,6 +698,34 @@ class DeadCodeAnalyzer:
 
     def _is_api_contract(self, node_data: dict) -> bool:
         return node_data.get("is_api_contract", False)
+
+    def _file_has_implementors(self, file_node: Any) -> bool:
+        """Return True iff any ``implements`` / ``method_implements`` /
+        ``extends`` edge terminates at *file_node* or at a symbol it
+        defines.
+
+        Implementor detection drives the confidence cap on
+        ``interface``-kind unused-export findings. Resolution quality
+        varies by language (C# DI containers, Java reflection, Swift
+        protocol extensions etc.), so an interface with zero observed
+        implementors should be treated as "missing signal", not
+        "confirmed dead".
+        """
+        implementor_edges = ("implements", "method_implements", "extends")
+        # File-level incoming edges (XAML bindings, framework edges)
+        for pred in self.graph.predecessors(file_node):
+            if self.graph[pred][file_node].get("edge_type") in implementor_edges:
+                return True
+        # Symbol-level incoming edges — interfaces typically receive
+        # ``implements`` edges on the type symbol, not on the file.
+        for succ in self.graph.successors(file_node):
+            succ_data = self.graph.nodes.get(succ, {})
+            if succ_data.get("node_type") != "symbol":
+                continue
+            for pred in self.graph.predecessors(succ):
+                if self.graph[pred][succ].get("edge_type") in implementor_edges:
+                    return True
+        return False
 
     def _matches_dynamic_patterns(self, path: str, patterns: tuple[str, ...]) -> bool:
         name = Path(path).stem

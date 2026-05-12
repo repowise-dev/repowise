@@ -272,11 +272,23 @@ class GraphBuilder:
         # edges feed into heritage's import_targets propagation if a
         # future language emits them, and so dead-code reachability
         # sees every edge before any analysis pass runs.
+        if progress:
+            progress.on_phase_start("graph.type_refs", len(self._parsed_files))
         type_use_counts = resolve_type_refs(self._parsed_files, ctx, self._graph)
         for path in self._parsed_files:
             for _, target, data in self._graph.out_edges(path, data=True):
-                if data.get("edge_type") == "imports":
+                # Treat both real ``using`` imports and synthesised
+                # type-use edges as import-like for downstream heritage
+                # / call resolution. Without this, type-use edges would
+                # only contribute to file-reachability — not to
+                # ``import_targets`` which gates cross-file call /
+                # heritage lookups.
+                if data.get("edge_type") in ("imports", "type_use"):
                     import_targets.setdefault(path, set()).add(target)
+        if progress:
+            _phase_done = getattr(progress, "on_phase_done", None)
+            if _phase_done is not None:
+                _phase_done("graph.type_refs")
         del type_use_counts  # used only for logging inside resolve_type_refs
 
         # --- Phase 2: Resolve heritage (extends/implements) ---

@@ -62,6 +62,8 @@ def declared_type_names(cs_text: str) -> list[str]:
 
 def build_namespace_map(
     cs_files: list[Path],
+    *,
+    texts: dict[Path, str] | None = None,
 ) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
     """Return ``(namespace_map, type_map)`` for every .cs file given.
 
@@ -71,15 +73,24 @@ def build_namespace_map(
       same-named types in different namespaces) — callers disambiguate
       by project enclosure.
 
-    Files that fail to read or declare nothing are skipped silently.
+    When *texts* is provided, file contents are read from the dict
+    rather than the filesystem — this is the hot path used by
+    ``DotNetProjectIndex.build_index`` to share one read with the
+    global-usings collector. Files missing from *texts* (or that fail
+    to read when ``texts`` is None) are skipped silently.
     """
     namespaces: dict[str, list[Path]] = {}
     types: dict[str, list[Path]] = {}
     for path in cs_files:
-        try:
-            text = path.read_text(encoding="utf-8-sig", errors="replace")
-        except OSError:
-            continue
+        if texts is not None:
+            text = texts.get(path)
+            if text is None:
+                continue
+        else:
+            try:
+                text = path.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                continue
         seen_ns: set[str] = set()
         for ns in declared_namespaces(text):
             if ns in seen_ns:

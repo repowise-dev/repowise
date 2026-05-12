@@ -199,6 +199,51 @@ def test_unused_export_detected():
     assert "helper_func" in sym_names
 
 
+def test_interface_without_implementor_demoted_below_safe_threshold():
+    """Public interfaces with no incoming ``implements`` edges have
+    their unused-export confidence clamped below 0.7 so the demo
+    doesn't ship them as confident dead code. Implementor detection
+    is heuristic — absence is missing-signal, not evidence-of-absence.
+    """
+    g = _build_graph(
+        nodes={
+            "src/IBasketService.cs": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "IBasketService",
+                        "kind": "interface",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 5,
+                        "complexity_estimate": 1,
+                        "language": "csharp",
+                    },
+                ],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze({
+        "detect_unreachable_files": False,
+        "detect_zombie_packages": False,
+        "min_confidence": 0.0,
+    })
+    interface_findings = [
+        f for f in report.findings
+        if f.kind == DeadCodeKind.UNUSED_EXPORT and f.symbol_name == "IBasketService"
+    ]
+    # The finding may still surface, but never at safe-to-delete confidence.
+    for f in interface_findings:
+        assert f.confidence <= 0.4, f"interface flagged at unsafe confidence {f.confidence}"
+        assert f.safe_to_delete is False
+
+
 # ---------------------------------------------------------------------------
 # 5. test_framework_decorator_excluded
 # ---------------------------------------------------------------------------

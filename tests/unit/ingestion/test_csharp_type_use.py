@@ -267,9 +267,9 @@ class TestGraphEdgeEmission:
         dst = "src/Domain/IUserRepo.cs"
         assert graph.has_edge(src, dst)
         data = graph[src][dst]
-        assert data["edge_type"] == "imports"
-        assert data["via"] == "type_use"
+        assert data["edge_type"] == "type_use"
         assert "IUserRepo" in data["type_uses"]
+        assert "IUserRepo" in data["imported_names"]
 
 
 # ---------------------------------------------------------------------------

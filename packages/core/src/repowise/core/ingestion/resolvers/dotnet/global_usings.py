@@ -53,7 +53,11 @@ def scan_global_usings(cs_text: str) -> list[str]:
 
 
 def collect_project_global_usings(
-    project_dir: Path, implicit_usings: bool, sdk_is_web: bool = False
+    project_dir: Path,
+    implicit_usings: bool,
+    sdk_is_web: bool = False,
+    *,
+    project_texts: dict[Path, str] | None = None,
 ) -> set[str]:
     """Walk *project_dir* for global using sources and return the merged set.
 
@@ -62,12 +66,24 @@ def collect_project_global_usings(
     - Web SDK extras (when ``sdk_is_web`` is True)
     - Every ``global using`` directive found in any .cs file under the project
     - Project usings declared in the .csproj are added by the caller
+
+    When *project_texts* is provided (the hot path used by
+    ``DotNetProjectIndex.build_index``), the per-project rglob and
+    per-file ``read_text`` are skipped — the caller has already done a
+    single repo-wide walk and read each file once. The dict should
+    contain only files that belong to this project (longest-prefix
+    matched), keyed by resolved absolute path.
     """
     result: set[str] = set()
     if implicit_usings:
         result.update(_DEFAULT_IMPLICIT_USINGS)
         if sdk_is_web:
             result.update(_WEB_IMPLICIT_USINGS)
+
+    if project_texts is not None:
+        for text in project_texts.values():
+            result.update(scan_global_usings(text))
+        return result
 
     skip = {"bin", "obj", ".vs", "node_modules"}
     for cs_path in project_dir.rglob("*.cs"):

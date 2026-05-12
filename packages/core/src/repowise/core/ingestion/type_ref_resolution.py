@@ -170,29 +170,39 @@ def _add_or_merge_type_use_edge(
     type_name: str,
     origin: str,
 ) -> None:
-    """Add a ``type_use``-flavoured ``imports`` edge, merging on conflict.
+    """Add a ``type_use`` edge between two files, merging on conflict.
 
-    The edge re-uses the ``imports`` edge type so existing analyses
-    (dead-code reachability, PageRank, blast-radius) pick it up for
-    free. The ``via`` attribute distinguishes it from a real ``using``
-    directive for observability and downstream weighting.
+    The edge is persisted as its own ``edge_type='type_use'`` row so it
+    is observable in ``graph_edges`` (the SQLite layer drops ad-hoc
+    NetworkX attributes like ``via`` and ``origin``, so encoding the
+    provenance in the edge type itself is the only round-tripping way
+    to surface it). All file-reachability analyses
+    (dead-code's ``in_degree`` check, PageRank, blast-radius) operate
+    across edge types and still pick it up.
 
-    If a regular ``using`` edge already connects the same files, we
-    leave it alone — the directive is strictly stronger evidence than
-    a type-name match — and only record the type name in the
-    ``type_uses`` attribute for traceability.
+    If a stronger ``imports`` edge from a real ``using`` directive
+    already connects the same files, leave it alone — the directive is
+    strictly stronger evidence — and just record the type name in
+    ``type_uses`` for traceability. Likewise, parallel type_use edges
+    between the same pair of files are merged into one row with the
+    full list of referenced types in ``imported_names``.
     """
     if graph.has_edge(src, dst):
         data = graph[src][dst]
         type_uses = data.setdefault("type_uses", [])
         if type_name not in type_uses:
             type_uses.append(type_name)
+        # Keep imported_names in sync so the unused-export analyzer can
+        # see the referenced type name as evidence of import-like usage.
+        if data.get("edge_type") == "type_use":
+            names = data.setdefault("imported_names", [])
+            if type_name not in names:
+                names.append(type_name)
         return
     graph.add_edge(
         src,
         dst,
-        edge_type="imports",
-        via="type_use",
+        edge_type="type_use",
         origin=origin,
         confidence=_TYPE_USE_CONFIDENCE,
         type_uses=[type_name],

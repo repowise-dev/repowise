@@ -46,6 +46,7 @@ LanguageTag = Literal[
     "markdown",
     "sql",
     "openapi",
+    "xaml",
     "unknown",
 ]
 
@@ -232,6 +233,12 @@ EdgeType = Literal[
     "co_changes",
     "framework",
     "dynamic",
+    # Synthesised file-to-file edge emitted from constructor / method /
+    # delegate / record parameter type references in statically-typed
+    # languages (currently C#; see type_ref_resolution.py). Distinct
+    # from ``imports`` so analyses can weight it lower and so the
+    # persistence layer can surface provenance for these edges.
+    "type_use",
 ]
 
 

@@ -142,6 +142,12 @@ class PipelineResult:
     traversal_stats: Any | None = None
     """``TraversalStats`` from the file traverser, or None."""
 
+    # Detected tech stack (languages, frameworks, databases, infra).
+    # Stored as plain dicts (``{"name", "version", "category"}``) so the
+    # persistence layer can serialise without importing the editor_files
+    # data module. Populated post-traversal during the graph build phase.
+    tech_stack: list[dict] = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -255,6 +261,7 @@ async def run_pipeline(
             source_map,
             graph_builder,
             traversal_stats,
+            tech_items,
         ),
         (
             git_summary,
@@ -388,6 +395,10 @@ async def run_pipeline(
         symbol_count=symbol_count,
         languages=languages,
         elapsed_seconds=elapsed,
+        tech_stack=[
+            {"name": t.name, "version": t.version, "category": t.category}
+            for t in tech_items
+        ],
     )
 
 
@@ -407,7 +418,8 @@ async def _run_ingestion(
 ) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any, Any]:
     """Traverse, parse, and build the dependency graph.
 
-    Returns (parsed_files, file_infos, repo_structure, source_map, graph_builder, traversal_stats).
+    Returns (parsed_files, file_infos, repo_structure, source_map,
+    graph_builder, traversal_stats, tech_items).
     """
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
@@ -555,6 +567,7 @@ async def _run_ingestion(
     await asyncio.to_thread(graph_builder.build, progress)
 
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
+    tech_items: list = []
     try:
         from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
 
@@ -643,7 +656,7 @@ async def _run_ingestion(
                 lang_str += f", other {rest_count:,}"
             progress.on_message("info", f"  Languages: {lang_str}")
 
-    return parsed_files, file_infos, repo_structure, source_map, graph_builder, stats
+    return parsed_files, file_infos, repo_structure, source_map, graph_builder, stats, tech_items
 
 
 async def _run_git_indexing(

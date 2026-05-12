@@ -96,3 +96,27 @@ class TestEndToEnd:
             '<Page xmlns:vm="using:Foo" x:DataType="vm:Bar"/>'
         )
         assert XamlDynamicHints().extract(tmp_path) == []
+
+
+class TestLanguageRegistration:
+    """``.xaml``/``.axaml`` must surface as their own LanguageTag so
+    the traverser produces file nodes the dynamic edges can attach to.
+
+    Regression guard: before this branch, the extractor emitted edges
+    correctly but ``GraphBuilder.add_dynamic_edges`` dropped them
+    because ``.xaml`` files were never added as graph nodes.
+    """
+
+    def test_xaml_extension_resolves_to_xaml_tag(self) -> None:
+        from repowise.core.ingestion.languages.registry import REGISTRY
+
+        assert REGISTRY.from_extension(".xaml") == "xaml"
+        assert REGISTRY.from_extension(".axaml") == "xaml"
+
+    def test_xaml_is_passthrough_not_code(self) -> None:
+        from repowise.core.ingestion.languages.registry import REGISTRY
+
+        spec = REGISTRY.get("xaml")
+        assert spec is not None
+        assert spec.is_passthrough is True
+        assert spec.is_code is False

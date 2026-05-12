@@ -274,6 +274,22 @@ async def _persist_result(
             name=result.repo_name,
             local_path=str(repo_path),
         )
+        # Persist the detected tech stack into the repository's settings
+        # blob. Merge into any pre-existing settings so we don't clobber
+        # unrelated state (workspace flags, etc.). Done here rather than
+        # in upsert_repository so the persistence helper stays
+        # signature-stable.
+        if getattr(result, "tech_stack", None):
+            import json as _json
+
+            try:
+                existing = _json.loads(repo.settings_json or "{}")
+                if not isinstance(existing, dict):
+                    existing = {}
+            except Exception:
+                existing = {}
+            existing["tech_stack"] = result.tech_stack
+            repo.settings_json = _json.dumps(existing)
         await persist_pipeline_result(result, session, repo.id)
 
         # Record a completed GenerationJob so the web UI can show

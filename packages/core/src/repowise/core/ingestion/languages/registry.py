@@ -981,6 +981,18 @@ _SPECS: tuple[LanguageSpec, ...] = (
         is_passthrough=True,
         is_api_contract=True,
     ),
+    # XAML / AXAML markup for WPF, WinUI 3, UWP, MAUI, Avalonia, Uno.
+    # No AST grammar — handled by the XamlDynamicHints extractor which
+    # emits ``dynamic_uses`` edges to bound C# types. Registered here so
+    # that the traverser surfaces a file node these edges can attach to.
+    LanguageSpec(
+        tag="xaml",
+        display_name="XAML",
+        extensions=frozenset({".xaml", ".axaml"}),
+        is_code=False,
+        is_passthrough=True,
+        color_hex="#0C479C",
+    ),
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though
