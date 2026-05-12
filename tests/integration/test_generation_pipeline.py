@@ -30,6 +30,7 @@ from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.traverser import FileTraverser
 from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
+from repowise.core.reasoning import ReasoningMode
 
 SAMPLE_REPO = Path(__file__).parents[1] / "fixtures" / "sample_repo"
 
@@ -47,6 +48,7 @@ class _TrackingProvider(MockProvider):
         max_tokens: int = 4096,
         temperature: float = 0.3,
         request_id: str | None = None,
+        reasoning: ReasoningMode = "auto",
     ) -> GeneratedResponse:
         if "Required sections: ## Overview, ## Public API" in system_prompt:
             self.file_page_starts.append(time.perf_counter())
@@ -57,6 +59,7 @@ class _TrackingProvider(MockProvider):
             max_tokens=max_tokens,
             temperature=temperature,
             request_id=request_id,
+            reasoning=reasoning,
         )
 
 
