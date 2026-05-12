@@ -160,3 +160,6 @@ docs/HOSTED_PRODUCT_UPGRADE_PLAN.md
 docs/HOSTED_IMPLEMENTATION_GUIDE.md
 docs/HOSTED_PROGRESS.md
 scripts/md_to_docx.py
+# dotnet Build results
+[Bb]in/
+[Oo]bj/

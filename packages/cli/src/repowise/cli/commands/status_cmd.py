@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
-from typing import Any
 
 import click
 from rich.table import Table
@@ -11,15 +11,12 @@ from rich.table import Table
 from repowise.cli.helpers import (
     CommandTarget,
     console,
-    find_workspace_root,
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
-
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -134,12 +131,12 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
     if not iso_timestamp:
         return "-"
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         dt = datetime.fromisoformat(iso_timestamp)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         delta = now - dt
         seconds = int(delta.total_seconds())
         if seconds < 60:
@@ -153,7 +150,7 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
         return iso_timestamp[:10] if len(iso_timestamp) >= 10 else iso_timestamp
 
 
-def _workspace_status(target: "CommandTarget") -> None:
+def _workspace_status(target: CommandTarget) -> None:
     """Show status for all repos in a workspace."""
     from repowise.core.workspace import check_repo_staleness
 

@@ -277,9 +277,7 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
                 changed = True
         # Widen matcher on entries that only carry a repowise hook.
         matcher = entry.get("matcher", "")
-        only_repowise = entry.get("hooks") and all(
-            _is_repowise_hook(h) for h in entry["hooks"]
-        )
+        only_repowise = entry.get("hooks") and all(_is_repowise_hook(h) for h in entry["hooks"])
         if only_repowise and matcher == "Bash":
             entry["matcher"] = "Bash|Grep|Glob"
             changed = True
@@ -344,9 +342,7 @@ def migrate_claude_code_hooks() -> bool:
         return False
 
     try:
-        settings_path.write_text(
-            json.dumps(existing, indent=2) + "\n", encoding="utf-8"
-        )
+        settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     except OSError:
         return False
     return True

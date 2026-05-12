@@ -10,7 +10,6 @@ from rich.table import Table
 from repowise.cli.helpers import (
     console,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
 
@@ -109,9 +108,7 @@ def dead_code_command(
             if primary is None:
                 raise click.ClickException("Workspace has no primary repo configured.")
             repo_path = primary
-            console.print(
-                "[dim]  (Tip: pass --repo <alias> to analyze a different repo.)[/dim]"
-            )
+            console.print("[dim]  (Tip: pass --repo <alias> to analyze a different repo.)[/dim]")
     else:
         assert target.repo_path is not None
         repo_path = target.repo_path

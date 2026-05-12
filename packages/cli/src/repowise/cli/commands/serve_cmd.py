@@ -36,12 +36,18 @@ def _setup_embedder() -> None:
         # Restore API key if saved alongside the config.
         if cfg.get("embedder_api_key"):
             _set_api_key_env(saved_embedder, cfg["embedder_api_key"])
+        # Restore base URL for openai_compatible
+        if saved_embedder == "openai_compatible" and cfg.get("embedder_base_url"):
+            os.environ.setdefault("OPENAI_COMPATIBLE_BASE_URL", cfg["embedder_base_url"])
         return
 
     # Detect which providers already have keys in the environment.
     has_gemini = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
     has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
+    has_compatible_url = bool(
+        os.environ.get("OPENAI_COMPATIBLE_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+    )
 
     console.print(
         "\n[bold]Chat & search require an embedder.[/bold] "
@@ -52,24 +58,30 @@ def _setup_embedder() -> None:
     labels = []
     if has_gemini:
         options.append("gemini")
-        labels.append("[1] gemini      [green]✓ key set[/green]")
+        labels.append("[1] gemini                [green]✓ key set[/green]")
     else:
         options.append("gemini")
-        labels.append("[1] gemini      [dim]needs GEMINI_API_KEY / GOOGLE_API_KEY[/dim]")
+        labels.append("[1] gemini                [dim]needs GEMINI_API_KEY / GOOGLE_API_KEY[/dim]")
     if has_openai:
         options.append("openai")
-        labels.append("[2] openai      [green]✓ key set[/green]")
+        labels.append("[2] openai                [green]✓ key set[/green]")
     else:
         options.append("openai")
-        labels.append("[2] openai      [dim]needs OPENAI_API_KEY[/dim]")
+        labels.append("[2] openai                [dim]needs OPENAI_API_KEY[/dim]")
     if has_openrouter:
         options.append("openrouter")
-        labels.append("[3] openrouter  [green]✓ key set[/green]")
+        labels.append("[3] openrouter            [green]✓ key set[/green]")
     else:
         options.append("openrouter")
-        labels.append("[3] openrouter  [dim]needs OPENROUTER_API_KEY[/dim]")
+        labels.append("[3] openrouter            [dim]needs OPENROUTER_API_KEY[/dim]")
+    if has_compatible_url:
+        options.append("openai_compatible")
+        labels.append("[4] openai_compatible     [green]✓ base URL set[/green]")
+    else:
+        options.append("openai_compatible")
+        labels.append("[4] openai_compatible     [dim]needs base URL[/dim]")
     options.append("skip")
-    labels.append(f"[{len(options)}] skip        [dim]no chat/search[/dim]")
+    labels.append(f"[{len(options)}] skip                  [dim]no chat/search[/dim]")
 
     for label in labels:
         console.print(f"  {label}")
@@ -91,13 +103,26 @@ def _setup_embedder() -> None:
 
     os.environ["REPOWISE_EMBEDDER"] = choice
 
+    # For openai_compatible, also prompt for base URL if not set
+    base_url = ""
+    if choice == "openai_compatible":
+        existing_url = os.environ.get("OPENAI_COMPATIBLE_BASE_URL") or os.environ.get(
+            "OPENAI_BASE_URL"
+        )
+        if not existing_url:
+            base_url = click.prompt("  Base URL (e.g. http://localhost:11434/v1)").strip()
+            if base_url:
+                os.environ["OPENAI_COMPATIBLE_BASE_URL"] = base_url
+        else:
+            base_url = existing_url
+
     # Ensure the API key is present; prompt if missing.
     api_key = _get_or_prompt_api_key(choice)
     if api_key:
         _set_api_key_env(choice, api_key)
 
     # Save choice (and key) to ~/.repowise/config.yaml for future runs.
-    _save_global_embedder(choice, api_key)
+    _save_global_embedder(choice, api_key, base_url)
     console.print()
 
 
@@ -118,6 +143,13 @@ def _get_or_prompt_api_key(embedder: str) -> str:
         if key:
             return key
         return click.prompt("  OPENROUTER_API_KEY", default="", show_default=False).strip()
+    if embedder == "openai_compatible":
+        key = os.environ.get("OPENAI_COMPATIBLE_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+        if key:
+            return key
+        return click.prompt(
+            "  API key (leave blank if not required)", default="", show_default=False
+        ).strip()
     return ""
 
 
@@ -130,9 +162,11 @@ def _set_api_key_env(embedder: str, key: str) -> None:
         os.environ.setdefault("OPENAI_API_KEY", key)
     elif embedder == "openrouter":
         os.environ.setdefault("OPENROUTER_API_KEY", key)
+    elif embedder == "openai_compatible":
+        os.environ.setdefault("OPENAI_COMPATIBLE_API_KEY", key)
 
 
-def _save_global_embedder(embedder: str, api_key: str) -> None:
+def _save_global_embedder(embedder: str, api_key: str, base_url: str = "") -> None:
     """Persist embedder choice to ~/.repowise/config.yaml."""
     _GLOBAL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config_path = _GLOBAL_CONFIG_DIR / "config.yaml"
@@ -145,6 +179,8 @@ def _save_global_embedder(embedder: str, api_key: str) -> None:
         existing["embedder"] = embedder
         if api_key:
             existing["embedder_api_key"] = api_key
+        if base_url:
+            existing["embedder_base_url"] = base_url
         import yaml  # type: ignore[import-untyped]
 
         config_path.write_text(

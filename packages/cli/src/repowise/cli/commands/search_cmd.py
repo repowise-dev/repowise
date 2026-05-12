@@ -10,7 +10,6 @@ from repowise.cli.helpers import (
     ensure_repowise_dir,
     get_db_url_for_repo,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
 
@@ -71,9 +70,7 @@ def search_command(
     if target.is_workspace:
         assert target.ws_root is not None and target.ws_config is not None
         if search_all:
-            repo_paths = [
-                (target.ws_root / e.path).resolve() for e in target.ws_config.repos
-            ]
+            repo_paths = [(target.ws_root / e.path).resolve() for e in target.ws_config.repos]
         elif target.repo_filter is not None:
             picked = target.resolve_repo_alias(target.repo_filter)
             if picked is None:

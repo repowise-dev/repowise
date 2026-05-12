@@ -11,12 +11,9 @@ import click
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
-    find_workspace_root,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
-
 
 # ---------------------------------------------------------------------------
 # Single-repo watch (existing behavior)
@@ -142,9 +139,7 @@ def _watch_workspace(
             if not paths:
                 return
 
-            console.print(
-                f"[cyan]{alias}: {len(paths)} changed file(s), updating...[/cyan]"
-            )
+            console.print(f"[cyan]{alias}: {len(paths)} changed file(s), updating...[/cyan]")
             try:
                 # Reload config in case it was updated
                 current_config = WorkspaceConfig.load(ws_root)
@@ -195,7 +190,8 @@ def _watch_workspace(
                 if old_timer is not None:
                     old_timer.cancel()
                 new_timer = threading.Timer(
-                    debounce_ms / 1000.0, _make_trigger(alias),
+                    debounce_ms / 1000.0,
+                    _make_trigger(alias),
                 )
                 new_timer.daemon = True
                 new_timer.start()
@@ -219,7 +215,9 @@ def _watch_workspace(
     observer.start()
 
     repo_list = ", ".join(e.alias for e in ws_config.repos)
-    console.print(f"[bold]Watching workspace ({scheduled} repos: {repo_list})... Ctrl+C to stop[/bold]")
+    console.print(
+        f"[bold]Watching workspace ({scheduled} repos: {repo_list})... Ctrl+C to stop[/bold]"
+    )
 
     try:
         while True:

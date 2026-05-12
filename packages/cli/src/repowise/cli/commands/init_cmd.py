@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -97,9 +97,7 @@ def _offer_hook_install(
             result = install(rp)
             console_obj.print(f"  [green]✓[/green] {label}: {result}")
         else:
-            console_obj.print(
-                "  [dim]Skipped. Run 'repowise hook install' later to set up.[/dim]"
-            )
+            console_obj.print("  [dim]Skipped. Run 'repowise hook install' later to set up.[/dim]")
     else:
         # Workspace: show checkboxes-style selection
         console_obj.print("  Select repos (enter numbers, comma-separated, or 'all'):")
@@ -141,6 +139,8 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
         return embedder_flag
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
+    if os.environ.get("OPENAI_COMPATIBLE_BASE_URL") or os.environ.get("OPENAI_BASE_URL"):
+        return "openai_compatible"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
     if os.environ.get("OPENROUTER_API_KEY"):
@@ -167,7 +167,7 @@ def _register_mcp_with_claude(console_obj: Any, repo_path: Path) -> None:
     hooks = install_claude_code_hooks()
     if hooks:
         console_obj.print(
-            f"  [green]✓[/green] Claude Code hooks registered (PreToolUse + PostToolUse)"
+            "  [green]✓[/green] Claude Code hooks registered (PreToolUse + PostToolUse)"
         )
 
 
@@ -331,7 +331,7 @@ def _run_workspace_generation(
     """
     from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
     from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.cli.ui import BRAND, RichProgressCallback
+    from repowise.cli.ui import RichProgressCallback
     from repowise.core.generation import GenerationConfig
     from repowise.core.generation.cost_tracker import CostTracker
     from repowise.core.persistence import (
@@ -369,6 +369,22 @@ def _run_workspace_generation(
             embedder_impl = OpenAIEmbedder()
         except Exception:
             embedder_impl = MockEmbedder()
+    elif embedder_name_resolved == "openai_compatible":
+        try:
+            from repowise.core.providers.embedding.openai_compatible import (
+                OpenAICompatibleEmbedder,
+            )
+
+            embedder_impl = OpenAICompatibleEmbedder()
+        except Exception:
+            embedder_impl = MockEmbedder()
+    elif embedder_name_resolved == "openrouter":
+        try:
+            from repowise.core.providers.embedding.openrouter import OpenRouterEmbedder
+
+            embedder_impl = OpenRouterEmbedder()
+        except Exception:
+            embedder_impl = MockEmbedder()
     else:
         embedder_impl = MockEmbedder()
 
@@ -400,9 +416,7 @@ def _run_workspace_generation(
     if (
         est.estimated_cost_usd > 2.00
         and not yes
-        and not _confirm_cost_gate(
-            f"    Cost for {repo_path.name} exceeds $2.00. Continue?"
-        )
+        and not _confirm_cost_gate(f"    Cost for {repo_path.name} exceeds $2.00. Continue?")
     ):
         console.print(
             "    [yellow]Skipped.[/yellow] "
@@ -613,7 +627,9 @@ def _workspace_init(
             if resolved_reasoning != "auto":
                 console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]\n")
         except Exception as exc:
-            console.print(f"  [yellow]Provider setup failed ({exc}); falling back to index-only.[/yellow]")
+            console.print(
+                f"  [yellow]Provider setup failed ({exc}); falling back to index-only.[/yellow]"
+            )
             index_only = True
             provider = None
 
@@ -754,11 +770,11 @@ def _workspace_init(
         save_state(repo.path, state)
 
         # Update workspace config with indexing metadata
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         entry = ws_config.get_repo(repo.alias)
         if entry is not None:
-            entry.indexed_at = datetime.now(timezone.utc).isoformat()
+            entry.indexed_at = datetime.now(UTC).isoformat()
             entry.last_commit_at_index = head
 
         # MCP config + CLAUDE.md per repo
@@ -782,10 +798,7 @@ def _workspace_init(
     ws_config.save(root)
 
     # Step 5: Cross-repo analysis (co-changes, package deps, contracts)
-    indexed_aliases = [
-        repo.alias for repo in selected
-        if repo.alias not in [e[0] for e in errors]
-    ]
+    indexed_aliases = [repo.alias for repo in selected if repo.alias not in [e[0] for e in errors]]
     if len(indexed_aliases) >= 2:
         console.print("  Running cross-repo analysis...")
         try:
@@ -839,9 +852,7 @@ def _workspace_init(
     # Honest docs status — print a per-repo summary listing exactly which
     # repos generated pages and which were skipped, so the user never has
     # to discover empty Docs/Overview in the web UI on their own.
-    docs_skipped = [
-        (alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason
-    ]
+    docs_skipped = [(alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason]
     docs_generated = [
         (alias, count) for alias, (count, reason) in docs_outcomes.items() if not reason
     ]
@@ -853,9 +864,7 @@ def _workspace_init(
                     f"  [yellow]✗[/yellow] {alias:<20} [yellow]skipped[/yellow]  [dim]({reason})[/dim]"
                 )
             else:
-                console.print(
-                    f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]"
-                )
+                console.print(f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]")
         if docs_skipped:
             first = docs_skipped[0][0]
             console.print()
@@ -866,10 +875,7 @@ def _workspace_init(
         console.print()
 
     # Offer to install post-commit hooks
-    indexed_repos = [
-        repo for repo in selected
-        if repo.alias not in [e[0] for e in errors]
-    ]
+    indexed_repos = [repo for repo in selected if repo.alias not in [e[0] for e in errors]]
     if indexed_repos:
         _offer_hook_install(
             console,
@@ -900,8 +906,8 @@ def _workspace_init(
     "--embedder",
     "embedder_name",
     default=None,
-    type=click.Choice(["gemini", "openai", "mock"]),
-    help="Embedder for RAG: gemini | openai | mock (default: auto-detect).",
+    type=click.Choice(["gemini", "openai", "openai_compatible", "openrouter", "mock"]),
+    help="Embedder for RAG: gemini | openai | openai_compatible | openrouter | mock (default: auto-detect).",
 )
 @click.option("--skip-tests", is_flag=True, default=False, help="Skip test files.")
 @click.option("--skip-infra", is_flag=True, default=False, help="Skip infrastructure files.")
@@ -1314,6 +1320,7 @@ def init_command(
 
         # Cost estimation
         from repowise.core.generation import GenerationConfig
+
         gen_config = GenerationConfig(
             max_concurrency=concurrency,
             language=language,
@@ -1382,6 +1389,22 @@ def init_command(
                     from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
                     embedder_impl = OpenAIEmbedder()
+                except Exception:
+                    embedder_impl = MockEmbedder()
+            elif embedder_name_resolved == "openai_compatible":
+                try:
+                    from repowise.core.providers.embedding.openai_compatible import (
+                        OpenAICompatibleEmbedder,
+                    )
+
+                    embedder_impl = OpenAICompatibleEmbedder()
+                except Exception:
+                    embedder_impl = MockEmbedder()
+            elif embedder_name_resolved == "openrouter":
+                try:
+                    from repowise.core.providers.embedding.openrouter import OpenRouterEmbedder
+
+                    embedder_impl = OpenRouterEmbedder()
                 except Exception:
                     embedder_impl = MockEmbedder()
             else:

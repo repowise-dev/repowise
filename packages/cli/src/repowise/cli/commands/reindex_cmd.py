@@ -18,7 +18,7 @@ from repowise.cli.helpers import (
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "auto"]),
+    type=click.Choice(["gemini", "openai", "openai_compatible", "openrouter", "auto"]),
     default="auto",
     help="Embedder to use. 'auto' detects from env vars / config.",
 )
@@ -66,9 +66,22 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
         embedder_impl = OpenAIEmbedder()
         console.print("[green]Using OpenAI embedder[/green]")
+    elif embedder_name == "openai_compatible":
+        from repowise.core.providers.embedding.openai_compatible import (
+            OpenAICompatibleEmbedder,
+        )
+
+        embedder_impl = OpenAICompatibleEmbedder()
+        console.print("[green]Using OpenAI-compatible embedder[/green]")
+    elif embedder_name == "openrouter":
+        from repowise.core.providers.embedding.openrouter import OpenRouterEmbedder
+
+        embedder_impl = OpenRouterEmbedder()
+        console.print("[green]Using OpenRouter embedder[/green]")
     else:
         console.print(
-            "[red]No real embedder available. Set GEMINI_API_KEY or OPENAI_API_KEY.[/red]"
+            "[red]No real embedder available. Set GEMINI_API_KEY, OPENAI_API_KEY, "
+            "OPENROUTER_API_KEY, or OPENAI_COMPATIBLE_BASE_URL.[/red]"
         )
         raise click.Abort()
 

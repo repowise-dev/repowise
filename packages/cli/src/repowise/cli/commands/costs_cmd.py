@@ -13,7 +13,6 @@ from repowise.cli.helpers import (
     console,
     get_db_url_for_repo,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
 
@@ -106,9 +105,7 @@ def costs_command(
     if target.is_workspace:
         assert target.ws_root is not None and target.ws_config is not None
         if show_all:
-            repo_paths = [
-                (target.ws_root / e.path).resolve() for e in target.ws_config.repos
-            ]
+            repo_paths = [(target.ws_root / e.path).resolve() for e in target.ws_config.repos]
         elif target.repo_filter is not None:
             picked = target.resolve_repo_alias(target.repo_filter)
             if picked is None:
@@ -127,13 +124,13 @@ def costs_command(
     # would just return an empty result and confuse the user.
     valid_paths = [p for p in repo_paths if (p / ".repowise").is_dir()]
     if not valid_paths:
-        console.print("[yellow]No indexed .repowise/ directory found. Run 'repowise init' first.[/yellow]")
+        console.print(
+            "[yellow]No indexed .repowise/ directory found. Run 'repowise init' first.[/yellow]"
+        )
         return
     if len(valid_paths) < len(repo_paths):
         missing = [p.name for p in repo_paths if p not in valid_paths]
-        console.print(
-            f"[yellow]Skipping unindexed repos: {', '.join(missing)}[/yellow]"
-        )
+        console.print(f"[yellow]Skipping unindexed repos: {', '.join(missing)}[/yellow]")
 
     since_dt = _parse_date(since)
 

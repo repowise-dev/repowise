@@ -9,9 +9,10 @@ registry to instantiate an embedder by name.
     vectors = await embedder.embed(["text to embed"])
 
 Built-in embedders:
-    openai  — text-embedding-3-small (1536d), text-embedding-3-large (3072d)
-    gemini  — gemini-embedding-001 (768d, up to 3072d)
-    mock    — deterministic 8d vectors (zero deps, testing only)
+    openai             — text-embedding-3-small (1536d), text-embedding-3-large (3072d)
+    openai_compatible  — OpenAI-compatible local servers (Ollama, LocalAI, etc.)
+    gemini             — gemini-embedding-001 (768d, up to 3072d)
+    mock               — deterministic 8d vectors (zero deps, testing only)
 """
 
 from repowise.core.providers.embedding.base import Embedder, MockEmbedder

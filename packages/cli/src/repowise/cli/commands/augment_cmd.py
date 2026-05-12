@@ -85,11 +85,7 @@ def _run_augment() -> None:
 
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
-    tool_output = (
-        payload.get("tool_output")
-        or payload.get("tool_response")
-        or {}
-    )
+    tool_output = payload.get("tool_output") or payload.get("tool_response") or {}
     cwd = payload.get("cwd", "")
 
     if tool_name == "Bash":
@@ -174,10 +170,36 @@ def _looks_like_path_lookup(pattern: str) -> bool:
         return True
     lower = pattern.lower().rstrip()
     _EXTS = (
-        ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-        ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".rb", ".php",
-        ".cs", ".swift", ".cpp", ".cc", ".c", ".h", ".hpp", ".lua",
-        ".sql", ".yaml", ".yml", ".toml", ".json", ".md",
+        ".py",
+        ".pyi",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".go",
+        ".rs",
+        ".java",
+        ".kt",
+        ".kts",
+        ".scala",
+        ".rb",
+        ".php",
+        ".cs",
+        ".swift",
+        ".cpp",
+        ".cc",
+        ".c",
+        ".h",
+        ".hpp",
+        ".lua",
+        ".sql",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".json",
+        ".md",
     )
     return lower.endswith(_EXTS)
 
@@ -238,21 +260,16 @@ def _count_search_results(output_text: str) -> int:
 
 
 async def _search_enrich(
-    repo_path: "object",
+    repo_path: object,
     pattern: str,
     mode: str,
     result_count: int,
 ) -> str | None:
     """Run the rescue or triage query against the wiki and format output."""
     import re
-
     from pathlib import Path
-    from sqlalchemy import select
 
     from repowise.core.persistence import (
-        FullTextSearch,
-        GraphNode,
-        WikiSymbol,
         create_engine,
         create_session_factory,
         get_session,
@@ -279,13 +296,9 @@ async def _search_enrich(
             clean = re.sub(r"[^\w./_-]", "", pattern).strip("./")
 
             if mode == "rescue":
-                return await _rescue(
-                    session, engine, repo_id, pattern, clean
-                )
+                return await _rescue(session, engine, repo_id, pattern, clean)
             if mode == "triage":
-                return await _triage(
-                    session, repo_id, pattern, clean, result_count
-                )
+                return await _triage(session, repo_id, pattern, clean, result_count)
             return None
     finally:
         await engine.dispose()
@@ -316,7 +329,6 @@ async def _rescue(
 
     from repowise.core.persistence import (
         FullTextSearch,
-        GraphNode,
         WikiSymbol,
     )
 
@@ -364,7 +376,13 @@ async def _rescue(
         page_type = getattr(r, "page_type", "") or ""
         if "::" in target:
             target = target.split("::")[0]
-        if target and page_type in ("file", "file_page", "module_page", "api_contract", "infra_page"):
+        if target and page_type in (
+            "file",
+            "file_page",
+            "module_page",
+            "api_contract",
+            "infra_page",
+        ):
             return (
                 f"[repowise] No literal match for `{pattern}`. "
                 f"Wiki suggests `{target}` ({page_type})."
@@ -388,7 +406,7 @@ async def _triage(
 
     Output is one line plus an enumerated list. Three lines max.
     """
-    from sqlalchemy import or_, select
+    from sqlalchemy import select
 
     from repowise.core.persistence import GraphNode, WikiSymbol
 
@@ -432,14 +450,11 @@ async def _triage(
     if not pr_rows:
         return None
 
-    ranked = sorted(pr_rows, key=lambda r: (r[1] or 0.0), reverse=True)[:_TRIAGE_TOP_N]
+    ranked = sorted(pr_rows, key=lambda r: r[1] or 0.0, reverse=True)[:_TRIAGE_TOP_N]
     if not ranked:
         return None
 
-    header = (
-        f"[repowise] {result_count}+ matches for `{pattern}`. "
-        f"Top files by graph centrality:"
-    )
+    header = f"[repowise] {result_count}+ matches for `{pattern}`. Top files by graph centrality:"
     lines = [header] + [f"  {row[0]}" for row in ranked]
     return "\n".join(lines)
 
@@ -493,17 +508,13 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
         exit_code = tool_output.get("exit_code")
         if exit_code is None:
             stdout = tool_output.get("stdout", "")
-            if isinstance(stdout, str) and (
-                "error" in stdout.lower() or "fatal" in stdout.lower()
-            ):
+            if isinstance(stdout, str) and ("error" in stdout.lower() or "fatal" in stdout.lower()):
                 return None
         elif exit_code != 0:
             return None
 
     cmd = tool_input.get("command", "")
-    if not isinstance(cmd, str) or not any(
-        p in cmd for p in _GIT_COMMIT_PATTERNS
-    ):
+    if not isinstance(cmd, str) or not any(p in cmd for p in _GIT_COMMIT_PATTERNS):
         return None
 
     from pathlib import Path
@@ -557,7 +568,7 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
     )
 
 
-def _update_in_flight(repo_path: "object", head: str) -> bool:
+def _update_in_flight(repo_path: object, head: str) -> bool:
     """Return True if a recent ``repowise update`` is still running."""
     import time
     from pathlib import Path
@@ -582,7 +593,7 @@ def _update_in_flight(repo_path: "object", head: str) -> bool:
     return True
 
 
-def _already_warned(repo_path: "object", head: str) -> bool:
+def _already_warned(repo_path: object, head: str) -> bool:
     from pathlib import Path
 
     marker = Path(repo_path) / ".repowise" / ".augment-warned"
@@ -594,7 +605,7 @@ def _already_warned(repo_path: "object", head: str) -> bool:
         return False
 
 
-def _record_warning(repo_path: "object", head: str) -> None:
+def _record_warning(repo_path: object, head: str) -> None:
     from pathlib import Path
 
     marker = Path(repo_path) / ".repowise" / ".augment-warned"
@@ -609,7 +620,7 @@ def _record_warning(repo_path: "object", head: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _find_repo_root(cwd: "object") -> "object | None":
+def _find_repo_root(cwd: object) -> object | None:
     """Walk up from cwd to find a directory with ``.repowise/``."""
     from pathlib import Path
 

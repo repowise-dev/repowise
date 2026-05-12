@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 
 import click
-from rich.table import Table
 
 from repowise.cli.helpers import (
     CommandTarget,
@@ -20,7 +19,6 @@ from repowise.cli.helpers import (
     resolve_command_target,
     resolve_provider,
     resolve_reasoning,
-    resolve_repo_path,
     run_async,
     save_state,
 )
@@ -78,7 +76,7 @@ def _resolve_index_only_mode(
 
 
 def _workspace_update(
-    target: "CommandTarget",
+    target: CommandTarget,
     *,
     dry_run: bool = False,
 ) -> None:
@@ -108,7 +106,9 @@ def _workspace_update(
         abs_path = (ws_root / entry.path).resolve()
         stored = entry.last_commit_at_index
         is_stale, head, behind = check_repo_staleness(abs_path, stored)
-        status = f"[yellow]{behind} new commit(s)[/yellow]" if is_stale else "[green]up to date[/green]"
+        status = (
+            f"[yellow]{behind} new commit(s)[/yellow]" if is_stale else "[green]up to date[/green]"
+        )
         if not (abs_path / ".repowise").is_dir():
             status = "[dim]not indexed[/dim]"
         console.print(f"  {entry.alias:<20} {status}")
@@ -129,7 +129,7 @@ def _workspace_update(
     def _on_start(alias: str) -> None:
         console.print(f"  Updating [bold]{alias}[/bold]...")
 
-    def _on_done(result: "RepoUpdateResult") -> None:
+    def _on_done(result: RepoUpdateResult) -> None:
         if result.error:
             console.print(f"    [red]\u2717 {result.alias}: {result.error}[/red]")
         elif result.updated:
@@ -293,8 +293,7 @@ def update_command(
             )
         raise click.ClickException(
             f"No previous sync found for {repo_path}. "
-            "Run 'repowise init' there first, or pass --since <ref>."
-            + hint
+            "Run 'repowise init' there first, or pass --since <ref>." + hint
         )
 
     if head and head == base_ref:
@@ -318,9 +317,7 @@ def update_command(
         save_state(repo_path, state)
 
     # --- Resolve effective mode (index-only vs full LLM regen) ---
-    index_only = _resolve_index_only_mode(
-        index_only=index_only, docs_flag=docs_flag, state=state
-    )
+    index_only = _resolve_index_only_mode(index_only=index_only, docs_flag=docs_flag, state=state)
 
     # --- Acquire update lock so the augment hook can suppress its
     # stale-wiki warning while this run is in flight (typical case: the
@@ -499,13 +496,9 @@ def update_command(
                             save_dead_code_findings,
                         )
 
-                        await save_dead_code_findings(
-                            session, repo_id, dead_code_report.findings
-                        )
+                        await save_dead_code_findings(session, repo_id, dead_code_report.findings)
                     except Exception as exc:
-                        console.print(
-                            f"[yellow]Dead-code persist skipped: {exc}[/yellow]"
-                        )
+                        console.print(f"[yellow]Dead-code persist skipped: {exc}[/yellow]")
 
                 # Re-persist graph_nodes so symbol-level PageRank /
                 # betweenness / community ids stay in sync with the
@@ -518,9 +511,7 @@ def update_command(
 
                     await persist_graph_nodes(session, repo_id, graph_builder)
                 except Exception as exc:
-                    console.print(
-                        f"[yellow]Graph nodes persist skipped: {exc}[/yellow]"
-                    )
+                    console.print(f"[yellow]Graph nodes persist skipped: {exc}[/yellow]")
 
         run_async(_persist_index_only())
         save_state(repo_path, {**state, "last_sync_commit": head})
@@ -784,7 +775,6 @@ def update_command(
 
             ws_config = WorkspaceConfig.load(ws_root)
             # Find this repo's alias in the workspace config
-            from pathlib import Path as _P
             repo_abs = repo_path.resolve()
             alias = None
             for entry in ws_config.repos:

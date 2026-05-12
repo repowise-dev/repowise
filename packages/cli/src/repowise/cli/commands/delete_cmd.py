@@ -129,10 +129,7 @@ def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
 
             await delete_repository(session, rid)
 
-        console.print(
-            f"[bold green]Deleted[/bold green] {name} — "
-            f"{len(page_ids)} pages removed."
-        )
+        console.print(f"[bold green]Deleted[/bold green] {name} — {len(page_ids)} pages removed.")
 
         await engine.dispose()
 

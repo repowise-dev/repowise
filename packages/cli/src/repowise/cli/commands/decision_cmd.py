@@ -13,7 +13,6 @@ from repowise.cli.helpers import (
     ensure_repowise_dir,
     get_db_url_for_repo,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
 
@@ -24,7 +23,6 @@ def _resolve_decision_repo(path: str | None):
     Honors workspace auto-detection: in workspace mode without an explicit
     path, targets the primary repo and prints a transparency notice.
     """
-    from pathlib import Path
 
     target = resolve_command_target(path=path)
     target.notice(console, command="decision")

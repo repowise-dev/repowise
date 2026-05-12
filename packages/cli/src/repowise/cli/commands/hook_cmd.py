@@ -6,9 +6,7 @@ import click
 
 from repowise.cli.helpers import (
     console,
-    find_workspace_root,
     resolve_command_target,
-    resolve_repo_path,
 )
 
 

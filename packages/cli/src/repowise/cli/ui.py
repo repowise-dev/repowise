@@ -227,15 +227,10 @@ def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     ingest_min = max(1, round(src_files / 500))
     ingest_max = max(2, round(src_files / 250))
     eta_line = (
-        f"~{ingest_min}-{ingest_max} min ingestion"
-        " · LLM generation depends on model + page count"
+        f"~{ingest_min}-{ingest_max} min ingestion · LLM generation depends on model + page count"
     )
 
-    body = (
-        f"  {header_line}\n"
-        f"  [dim]{lang_line}[/dim]\n"
-        f"  [dim]{eta_line}[/dim]"
-    )
+    body = f"  {header_line}\n  [dim]{lang_line}[/dim]\n  [dim]{eta_line}[/dim]"
 
     console.print(
         Panel(
@@ -325,7 +320,7 @@ def load_dotenv(repo_path: Path) -> None:
             continue
         # Support `export KEY=value`
         if line.startswith("export "):
-            line = line[len("export "):].lstrip()
+            line = line[len("export ") :].lstrip()
         if "=" not in line:
             continue
         key, _, raw_value = line.partition("=")
@@ -557,8 +552,15 @@ def interactive_provider_select(
 
 
 _FLAGSHIP_MODEL_TOKENS = (
-    "opus", "gpt-4o", "gpt-5", "-pro", "sonnet-4-7", "sonnet-4-6",
-    "ultra", "o1", "o3",
+    "opus",
+    "gpt-4o",
+    "gpt-5",
+    "-pro",
+    "sonnet-4-7",
+    "sonnet-4-6",
+    "ultra",
+    "o1",
+    "o3",
 )
 
 
@@ -754,7 +756,7 @@ def interactive_advanced_config(
 
     # Embedder selection
     detected_embedder = _resolve_embedder_from_env()
-    embedder_choices = ["gemini", "openai", "mock"]
+    embedder_choices = ["gemini", "openai", "openai_compatible", "mock"]
     result["embedder"] = click.prompt(
         "  Embedder for RAG",
         default=detected_embedder,
@@ -821,6 +823,8 @@ def _resolve_embedder_from_env() -> str:
     """Auto-detect embedder from env vars (for advanced config default)."""
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
+    if os.environ.get("OPENAI_COMPATIBLE_BASE_URL") or os.environ.get("OPENAI_BASE_URL"):
+        return "openai_compatible"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
     return "mock"
@@ -1215,9 +1219,7 @@ class RichProgressCallback:
         if task_id is None:
             return
         try:
-            task = next(
-                (t for t in self._progress.tasks if t.id == task_id), None
-            )
+            task = next((t for t in self._progress.tasks if t.id == task_id), None)
             if task is not None and task.total is not None:
                 self._progress.update(task_id, completed=task.total, visible=False)
             else:

@@ -87,9 +87,7 @@ def export_command(
 
                 # Decisions
                 dr = await session.execute(
-                    select(DecisionRecord).where(
-                        DecisionRecord.repository_id == repo.id
-                    )
+                    select(DecisionRecord).where(DecisionRecord.repository_id == repo.id)
                 )
                 extra_data["decisions"] = [
                     {
@@ -108,9 +106,7 @@ def export_command(
 
                 # Dead code findings
                 dc = await session.execute(
-                    select(DeadCodeFinding).where(
-                        DeadCodeFinding.repository_id == repo.id
-                    )
+                    select(DeadCodeFinding).where(DeadCodeFinding.repository_id == repo.id)
                 )
                 extra_data["dead_code"] = [
                     {

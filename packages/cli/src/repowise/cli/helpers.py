@@ -684,7 +684,9 @@ def resolve_command_target(
         raise click.UsageError("--workspace and --no-workspace are mutually exclusive.")
 
     if repo_alias is not None and no_workspace_flag:
-        raise click.UsageError("--repo <alias> implies workspace mode, but --no-workspace was passed.")
+        raise click.UsageError(
+            "--repo <alias> implies workspace mode, but --no-workspace was passed."
+        )
 
     explicit_path = path is not None
     base_path = resolve_repo_path(path)
@@ -723,14 +725,12 @@ def resolve_command_target(
         ws_config = _load_ws(ws_root)
         if ws_config is None:
             raise WorkspaceNotFound(
-                f"Found workspace config at {ws_root} but couldn't load it. "
-                "Is it valid YAML?"
+                f"Found workspace config at {ws_root} but couldn't load it. Is it valid YAML?"
             )
         if repo_alias is not None and ws_config.get_repo(repo_alias) is None:
             available = ", ".join(ws_config.repo_aliases()) or "(none)"
             raise click.UsageError(
-                f"Unknown repo alias '{repo_alias}' in workspace. "
-                f"Available: {available}"
+                f"Unknown repo alias '{repo_alias}' in workspace. Available: {available}"
             )
         reason = "via --workspace flag" if workspace_flag else f"via --repo {repo_alias}"
         return CommandTarget(

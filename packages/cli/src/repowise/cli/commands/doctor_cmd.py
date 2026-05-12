@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path as _DoctorPath
+
 import click
 from rich.table import Table
-
-from pathlib import Path as _DoctorPath
 
 from repowise.cli.helpers import (
     console,
@@ -13,7 +13,6 @@ from repowise.cli.helpers import (
     get_repowise_dir,
     load_state,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
 
@@ -291,7 +290,11 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
             else:
                 drift_color = "red"
 
-            vec_display = str(coord_vector_count) if coord_vector_count != -1 and coord_vector_count is not None else "unknown"
+            vec_display = (
+                str(coord_vector_count)
+                if coord_vector_count != -1 and coord_vector_count is not None
+                else "unknown"
+            )
             drift_detail = (
                 f"SQL={coord_sql_pages}, Vector={vec_display}, "
                 f"Drift=[{drift_color}]{drift_pct}[/{drift_color}]"
@@ -470,19 +473,19 @@ def doctor_command(
         console.print(
             f"[bold]── {entry.alias}[/bold]  "
             f"[dim]({entry.path})[/dim]"
-            + ("  [bold cyan](primary)[/bold cyan]" if entry.alias == ws_config.default_repo else "")
+            + (
+                "  [bold cyan](primary)[/bold cyan]"
+                if entry.alias == ws_config.default_repo
+                else ""
+            )
         )
         ok = _run_repo_checks(abs_path, repair)
         overall_ok = overall_ok and ok
 
     console.print()
     if not_indexed:
-        console.print(
-            f"[yellow]Not indexed:[/yellow] {', '.join(not_indexed)}"
-        )
-        console.print(
-            "  Run [bold]repowise update --workspace[/bold] to index them."
-        )
+        console.print(f"[yellow]Not indexed:[/yellow] {', '.join(not_indexed)}")
+        console.print("  Run [bold]repowise update --workspace[/bold] to index them.")
     if ws_issues and not repair:
         console.print(
             f"[yellow]{len(ws_issues)} workspace-level issue(s); "
@@ -540,24 +543,31 @@ def _run_workspace_checks(
         disk_commit = read_state_commit(abs_path)
         cfg_commit = entry.last_commit_at_index
         if disk_commit and cfg_commit and disk_commit != cfg_commit:
-            rows.append((
-                entry.alias,
-                "[yellow]DRIFT[/yellow]",
-                f"config={cfg_commit[:8]}, state.json={disk_commit[:8]}",
-            ))
+            rows.append(
+                (
+                    entry.alias,
+                    "[yellow]DRIFT[/yellow]",
+                    f"config={cfg_commit[:8]}, state.json={disk_commit[:8]}",
+                )
+            )
             issues.append(f"{entry.alias}: workspace config / state.json drift")
         elif disk_commit and not cfg_commit:
-            rows.append((
-                entry.alias,
-                "[yellow]DRIFT[/yellow]",
-                f"workspace config missing last_commit_at_index (state.json has {disk_commit[:8]})",
-            ))
+            rows.append(
+                (
+                    entry.alias,
+                    "[yellow]DRIFT[/yellow]",
+                    f"workspace config missing last_commit_at_index (state.json has {disk_commit[:8]})",
+                )
+            )
             issues.append(f"{entry.alias}: workspace config missing commit pointer")
         elif (abs_path / ".repowise").is_dir() and not disk_commit:
-            rows.append((
-                entry.alias, "[yellow]WARN[/yellow]",
-                "state.json missing or empty (run `repowise update`)",
-            ))
+            rows.append(
+                (
+                    entry.alias,
+                    "[yellow]WARN[/yellow]",
+                    "state.json missing or empty (run `repowise update`)",
+                )
+            )
             issues.append(f"{entry.alias}: missing state.json")
         else:
             rows.append((entry.alias, "[green]OK[/green]", entry.path))
@@ -578,13 +588,11 @@ def _run_workspace_checks(
         changed = sync_workspace_state_from_disk(ws_root, ws_config)
         if changed:
             console.print(
-                f"[green]Repaired workspace config from disk for:[/green] "
-                f"{', '.join(changed)}"
+                f"[green]Repaired workspace config from disk for:[/green] {', '.join(changed)}"
             )
         if dead_entries:
             console.print(
-                f"[yellow]Removing dead workspace entries:[/yellow] "
-                f"{', '.join(dead_entries)}"
+                f"[yellow]Removing dead workspace entries:[/yellow] {', '.join(dead_entries)}"
             )
             for alias in dead_entries:
                 ws_config.remove_repo(alias)
@@ -611,11 +619,13 @@ def _check_mcp_registered(ws_root: _DoctorPath) -> None:
     if appdata:
         candidates.append(_DoctorPath(appdata) / "Claude" / "claude_desktop_config.json")
     home = _DoctorPath.home()
-    candidates.extend([
-        home / ".claude" / "claude_desktop_config.json",
-        home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
-        home / ".config" / "Claude" / "claude_desktop_config.json",
-    ])
+    candidates.extend(
+        [
+            home / ".claude" / "claude_desktop_config.json",
+            home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
+            home / ".config" / "Claude" / "claude_desktop_config.json",
+        ]
+    )
 
     found_paths: list[str] = []
     for cfg in candidates:
@@ -633,9 +643,7 @@ def _check_mcp_registered(ws_root: _DoctorPath) -> None:
                 found_paths.append(f"{cfg.name}:{name}")
 
     if found_paths:
-        console.print(
-            f"  [dim]MCP: registered ({', '.join(found_paths)})[/dim]"
-        )
+        console.print(f"  [dim]MCP: registered ({', '.join(found_paths)})[/dim]")
     else:
         console.print(
             "  [dim]MCP: no claude_desktop_config.json entry found — run "

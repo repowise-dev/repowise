@@ -174,14 +174,13 @@ def _generate_workspace(
         WORKSPACE_DATA_DIR,
         WorkspaceConfig,
     )
-    from repowise.core.workspace.cross_repo import CROSS_REPO_EDGES_FILENAME
     from repowise.core.workspace.contracts import CONTRACTS_FILENAME
+    from repowise.core.workspace.cross_repo import CROSS_REPO_EDGES_FILENAME
 
     ws_root = find_workspace_root(start_path)
     if ws_root is None:
         raise click.ClickException(
-            "No .repowise-workspace.yaml found. "
-            "Run 'repowise init <workspace-dir>' first."
+            "No .repowise-workspace.yaml found. Run 'repowise init <workspace-dir>' first."
         )
 
     ws_config = WorkspaceConfig.load(ws_root)

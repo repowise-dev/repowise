@@ -9,10 +9,8 @@ in the same file (e.g. lint hooks, graphify hooks).
 
 from __future__ import annotations
 
-import os
 import re
 import stat
-import sys
 from pathlib import Path
 
 _HOOK_MARKER = "# repowise-hook-start"
@@ -85,9 +83,7 @@ def _strip_legacy_block(content: str) -> tuple[str, bool]:
             start = i
             for j in range(i - 1, -1, -1):
                 stripped = lines[j].strip()
-                if stripped.startswith("# post-commit hook") or stripped.startswith(
-                    "# Auto-syncs"
-                ):
+                if stripped.startswith("# post-commit hook") or stripped.startswith("# Auto-syncs"):
                     start = j
                     break
                 if not stripped or stripped.startswith("#!"):
@@ -104,7 +100,7 @@ def _strip_legacy_block(content: str) -> tuple[str, bool]:
             break
         end = k
 
-    cleaned = "\n".join(lines[:start] + lines[end + 1:]).rstrip() + "\n"
+    cleaned = "\n".join(lines[:start] + lines[end + 1 :]).rstrip() + "\n"
     return cleaned, True
 
 

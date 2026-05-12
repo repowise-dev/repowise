@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _require_workspace(start: Path | None = None) -> tuple[Path, "WorkspaceConfig"]:  # type: ignore[name-defined]
+def _require_workspace(start: Path | None = None) -> tuple[Path, WorkspaceConfig]:  # type: ignore[name-defined]
     """Load the workspace config or abort with a helpful message.
 
     Returns ``(ws_root, ws_config)``.
@@ -190,12 +191,12 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
     if not iso_timestamp:
         return "-"
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         dt = datetime.fromisoformat(iso_timestamp)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         delta = now - dt
         seconds = int(delta.total_seconds())
         if seconds < 60:
@@ -234,9 +235,13 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
         "otherwise. Skipped silently when --no-index is passed."
     ),
 )
-@click.option("--provider", "provider_name", default=None, help="LLM provider name (overrides primary's).")
+@click.option(
+    "--provider", "provider_name", default=None, help="LLM provider name (overrides primary's)."
+)
 @click.option("--model", default=None, help="Model identifier (overrides primary's).")
-@click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls during doc generation.")
+@click.option(
+    "--concurrency", type=int, default=5, help="Max concurrent LLM calls during doc generation."
+)
 def workspace_add(
     path: str,
     alias: str | None,
@@ -269,9 +274,7 @@ def workspace_add(
 
     # Validate it is a git repo
     if not (repo_path / ".git").exists():
-        raise click.ClickException(
-            f"Not a git repository (no .git found): {repo_path}"
-        )
+        raise click.ClickException(f"Not a git repository (no .git found): {repo_path}")
 
     # Default alias to directory name
     if alias is None:
@@ -334,7 +337,7 @@ def _resolve_docs_flag(
     run_docs: bool | None,
     provider_name: str | None,
     ws_root: Path,
-    ws_config: "WorkspaceConfig",  # type: ignore[name-defined]
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
 ) -> tuple[bool, str | None]:
     """Decide whether ``workspace add`` should generate docs by default.
 
@@ -388,7 +391,7 @@ def _run_index_for_repo(
     repo_path: Path,
     alias: str,
     ws_root: Path,
-    ws_config: "WorkspaceConfig",  # type: ignore[name-defined]
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
     *,
     generate_docs: bool = False,
     provider_name: str | None = None,
@@ -403,7 +406,7 @@ def _run_index_for_repo(
     base commit), saves provider/model into ``config.yaml`` when docs ran,
     and re-runs cross-repo hooks so contracts/co-changes are fresh.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from repowise.cli.helpers import (
         ensure_repowise_dir,
@@ -439,16 +442,16 @@ def _run_index_for_repo(
     if generate_docs:
         try:
             provider = resolve_provider(
-                effective_provider, effective_model, repo_path=repo_path,
+                effective_provider,
+                effective_model,
+                repo_path=repo_path,
             )
             console.print(
                 f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
                 f"Model: [cyan]{provider.model_name}[/cyan]"
             )
         except Exception as exc:
-            console.print(
-                f"  [yellow]Provider unavailable ({exc}); skipping docs.[/yellow]"
-            )
+            console.print(f"  [yellow]Provider unavailable ({exc}); skipping docs.[/yellow]")
             generate_docs = False
             docs_skip_reason = f"provider failure: {exc}"
 
@@ -488,9 +491,7 @@ def _run_index_for_repo(
 
     try:
         file_count, symbol_count, _ = run_async(_do_index())
-        console.print(
-            f"  [green]✓[/green] {file_count} files, {symbol_count:,} symbols"
-        )
+        console.print(f"  [green]✓[/green] {file_count} files, {symbol_count:,} symbols")
     except Exception as exc:
         console.print(f"[yellow]Warning:[/yellow] Indexing failed for '{alias}': {exc}")
         return
@@ -542,7 +543,7 @@ def _run_index_for_repo(
     # Update workspace config entry
     entry = ws_config.get_repo(alias)
     if entry is not None:
-        entry.indexed_at = datetime.now(timezone.utc).isoformat()
+        entry.indexed_at = datetime.now(UTC).isoformat()
         entry.last_commit_at_index = head
     ws_config.save(ws_root)
 
@@ -556,12 +557,9 @@ def _run_index_for_repo(
     # docs-skipped case.
     if not state["docs_enabled"]:
         reason = docs_skip_reason or "docs disabled"
+        console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
         console.print(
-            f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason})."
-        )
-        console.print(
-            f"  Run [bold]repowise update --repo {alias} --docs[/bold] "
-            "to generate documentation."
+            f"  Run [bold]repowise update --repo {alias} --docs[/bold] to generate documentation."
         )
 
 
@@ -644,7 +642,9 @@ def _generate_docs_for_added_repo(
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             repo = await upsert_repository(
-                session, name=repo_path.name, local_path=str(repo_path),
+                session,
+                name=repo_path.name,
+                local_path=str(repo_path),
             )
             for p in pages:
                 await upsert_page_from_generated(session, p, repo.id)
@@ -676,9 +676,7 @@ def workspace_remove(alias: str) -> None:
     entry = ws_config.get_repo(alias)
     if entry is None:
         available = ", ".join(ws_config.repo_aliases()) or "(none)"
-        raise click.ClickException(
-            f"No repo with alias '{alias}' found. Available: {available}"
-        )
+        raise click.ClickException(f"No repo with alias '{alias}' found. Available: {available}")
 
     is_default = alias == ws_config.default_repo
 
@@ -696,13 +694,9 @@ def workspace_remove(alias: str) -> None:
             f"New default is '{new_default}'."
         )
     elif is_default:
-        console.print(
-            "[yellow]Note:[/yellow] Workspace now has no repos and no default."
-        )
+        console.print("[yellow]Note:[/yellow] Workspace now has no repos and no default.")
 
-    console.print(
-        f"  (Indexed data at {removed.path}/.repowise/ was [bold]not[/bold] deleted.)"
-    )
+    console.print(f"  (Indexed data at {removed.path}/.repowise/ was [bold]not[/bold] deleted.)")
 
 
 # ---------------------------------------------------------------------------
@@ -731,15 +725,12 @@ def workspace_scan(path: str | None, yes: bool) -> None:
     scan_result = scan_for_repos(ws_root)
 
     existing_aliases = set(ws_config.repo_aliases())
-    existing_paths = {
-        (ws_root / e.path).resolve().as_posix()
-        for e in ws_config.repos
-    }
+    existing_paths = {(ws_root / e.path).resolve().as_posix() for e in ws_config.repos}
 
     new_repos = [
-        r for r in scan_result.repos
-        if r.path.as_posix() not in existing_paths
-        and r.alias not in existing_aliases
+        r
+        for r in scan_result.repos
+        if r.path.as_posix() not in existing_paths and r.alias not in existing_aliases
     ]
 
     if not new_repos:
@@ -801,9 +792,7 @@ def workspace_set_default(alias: str) -> None:
     entry = ws_config.get_repo(alias)
     if entry is None:
         available = ", ".join(ws_config.repo_aliases()) or "(none)"
-        raise click.ClickException(
-            f"No repo with alias '{alias}' found. Available: {available}"
-        )
+        raise click.ClickException(f"No repo with alias '{alias}' found. Available: {available}")
 
     previous_default = ws_config.default_repo
 
