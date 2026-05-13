@@ -33,6 +33,8 @@ def _create_test_app():
         graph,
         health,
         jobs,
+        modules,
+        owners,
         pages,
         repos,
         search,
@@ -70,6 +72,8 @@ def _create_test_app():
     app.include_router(webhooks.router)
     app.include_router(git.router)
     app.include_router(dead_code.router)
+    app.include_router(owners.router)
+    app.include_router(modules.router)
 
     return app
 

@@ -50,10 +50,10 @@ export function SymbolGitPanelWrapper({ symbol, repoId }: Props) {
 
   // Decisions governing the module containing this file. Module-scope
   // matches the existing decision `affected_modules_json` convention.
-  const module = filePath.split("/", 2)[0];
+  const modulePath = filePath.split("/", 2)[0];
   const { data: decisions } = useSWR(
-    module ? `decisions:${repoId}:${module}` : null,
-    () => listDecisions(repoId, { module, limit: 25 }),
+    modulePath ? `decisions:${repoId}:${modulePath}` : null,
+    () => listDecisions(repoId, { module: modulePath, limit: 25 }),
     { revalidateOnFocus: false },
   );
 
