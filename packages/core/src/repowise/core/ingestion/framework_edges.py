@@ -374,6 +374,18 @@ def _add_aspnet_edges(
             if target and target in path_set and _add_edge_if_new(graph, db_path, target):
                 count += 1
 
+    # ---- 6. Host-builder extension-method calls ----
+    # ``app.MapCatalogApi()`` / ``services.AddCatalogServices()`` bind to
+    # extension methods declared on ``IEndpointRouteBuilder`` /
+    # ``IServiceCollection`` / etc. Without this pass the defining file
+    # has no static importer and reads as orphaned. Lives in its own
+    # module so the regex set and host-type allowlist stay testable in
+    # isolation.
+    from .aspnet_extensions import add_extension_method_edges, collect_csharp_texts
+
+    cs_texts = collect_csharp_texts(parsed_files, path_set)
+    count += add_extension_method_edges(graph, cs_texts, path_set)
+
     return count
 
 

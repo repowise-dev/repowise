@@ -26,6 +26,7 @@ from .constants import (
     _NON_CODE_LANGUAGES,
     _is_fixture_path,
 )
+from .contract_methods import is_contract_method
 
 # Symbol kinds that cannot be independently imported by name in any
 # supported language. Flagging them as "unused exports" is a guaranteed
@@ -479,6 +480,17 @@ class DeadCodeAnalyzer:
                 if sym.get("kind") == "interface" and not self._file_has_implementors(node):
                     confidence = min(confidence, 0.4)
 
+                # COM / IUnknown / IDispatch contract methods
+                # (``QueryInterface``, ``AddRef``, ``Release``, …) are
+                # dispatched through native vtables — no static caller
+                # edge will ever land in the graph. Clamp below the
+                # safe-to-delete threshold so we never ship them as
+                # confident dead code on Windows / COM-heavy C++ repos.
+                if is_contract_method(
+                    sym_name, sym.get("kind"), sym.get("language", "unknown")
+                ):
+                    confidence = min(confidence, 0.4)
+
                 safe = confidence >= 0.7
 
                 git_meta = self.git_meta_map.get(str(node), {})
@@ -544,6 +556,10 @@ class DeadCodeAnalyzer:
             if "." in sym_name:
                 continue
             if node_data.get("kind") in _non_importable_kinds(node_data.get("language", "unknown")):
+                continue
+            if is_contract_method(
+                sym_name, node_data.get("kind"), node_data.get("language", "unknown")
+            ):
                 continue
             if self._name_matches_dynamic(sym_name, dynamic_patterns):
                 continue

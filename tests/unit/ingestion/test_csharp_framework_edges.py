@@ -126,6 +126,65 @@ public class AppDbContext : DbContext {
         add_framework_edges(graph, parsed, ctx, tech_stack=[])
         assert graph.has_edge("Infra/AppDbContext.cs", "Domain/User.cs")
 
+    def test_map_extension_method_resolves_to_definition(self, tmp_path: Path) -> None:
+        """``app.MapCatalogApi()`` should link Program.cs to the file declaring
+        ``public static IEndpointRouteBuilder MapCatalogApi(this IEndpointRouteBuilder app)``.
+        """
+        (tmp_path / "Program.cs").write_text(
+            """using Microsoft.AspNetCore.Builder;
+var app = WebApplication.CreateBuilder(args).Build();
+app.MapCatalogApi();
+app.Run();
+"""
+        )
+        (tmp_path / "Apis").mkdir()
+        (tmp_path / "Apis" / "CatalogApi.cs").write_text(
+            """using Microsoft.AspNetCore.Routing;
+namespace Acme.Api;
+public static class CatalogApi {
+    public static IEndpointRouteBuilder MapCatalogApi(this IEndpointRouteBuilder app)
+    {
+        return app;
+    }
+}
+"""
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+
+        add_framework_edges(graph, parsed, ctx, tech_stack=["aspnet"])
+        assert graph.has_edge("Program.cs", "Apis/CatalogApi.cs")
+        assert graph["Program.cs"]["Apis/CatalogApi.cs"]["edge_type"] == "framework"
+
+    def test_add_extension_on_non_aspnet_host_is_ignored(self, tmp_path: Path) -> None:
+        """Generic ``.Map(...)`` on a non-allowlisted host (e.g. ``List``) must
+        not bind to an unrelated extension method definition.
+        """
+        (tmp_path / "Program.cs").write_text(
+            """using Microsoft.AspNetCore.Builder;
+var items = new List<int>();
+items.MapSomething();
+"""
+        )
+        (tmp_path / "Other.cs").write_text(
+            """namespace Acme;
+public static class Helpers {
+    public static List<int> MapSomething(this List<int> xs) => xs;
+}
+"""
+        )
+        parsed = _build_parsed_files(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["aspnet"])
+        # ``List<int>`` is not in the host allowlist → no edge.
+        assert not graph.has_edge("Program.cs", "Other.cs")
+
     def test_no_edges_when_no_aspnet_signal(self, tmp_path: Path) -> None:
         (tmp_path / "Plain.cs").write_text(
             "namespace Plain;\npublic class Foo {}\n"

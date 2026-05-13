@@ -554,7 +554,7 @@ def _workspace_init(
         load_dotenv,
         print_banner,
     )
-    from repowise.core.pipeline import run_pipeline
+    from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.workspace import RepoEntry, WorkspaceConfig
 
     start = time.monotonic()
@@ -677,7 +677,7 @@ def _workspace_init(
                 TimeElapsedColumn(),
                 console=console,
             ) as progress_bar:
-                callback = RichProgressCallback(progress_bar, console)
+                callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
 
                 result = run_async(
                     run_pipeline(
@@ -690,6 +690,7 @@ def _workspace_init(
                         progress=callback,
                     )
                 )
+            repo_phase_timings: dict[str, float] = callback.timings
 
             total_files += result.file_count
             total_symbols += result.symbol_count
@@ -767,6 +768,8 @@ def _workspace_init(
         if repo_docs_enabled and provider is not None:
             state["provider"] = provider.provider_name
             state["model"] = provider.model_name
+        if repo_phase_timings:
+            state["phase_timings"] = repo_phase_timings
         save_state(repo.path, state)
 
         # Update workspace config with indexing metadata
@@ -1234,7 +1237,7 @@ def init_command(
     cost_declined = False
     llm_client = provider if not index_only else decision_provider
 
-    from repowise.core.pipeline import run_pipeline
+    from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
 
     with Progress(
         SpinnerColumn(),
@@ -1245,7 +1248,11 @@ def init_command(
         TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
         console=console,
     ) as progress_bar:
-        callback = RichProgressCallback(progress_bar, console)
+        rich_callback = RichProgressCallback(progress_bar, console)
+        # Wrap the Rich callback so we can record per-phase wall-clock
+        # durations without changing the pipeline API. Timings get
+        # persisted to state.json below.
+        callback = PhaseTimingRecorder(rich_callback)
 
         # Always run ingestion + analysis first (generate_docs=False).
         # Generation happens separately after cost confirmation.
@@ -1265,6 +1272,11 @@ def init_command(
                 progress=callback,
             )
         )
+
+    # Surface per-phase timing data to the caller — both for the
+    # state.json persistence below and for any future "profile" tooling
+    # that wants to introspect a run.
+    phase_timings: dict[str, float] = callback.timings
 
     # ---- Analysis summary (shown between analysis and generation) ----
     _graph = result.graph_builder.graph()
@@ -1543,6 +1555,8 @@ def init_command(
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
     base_state["docs_enabled"] = not effective_index_only and provider is not None
+    if phase_timings:
+        base_state["phase_timings"] = phase_timings
     if effective_index_only or provider is None:
         save_state(repo_path, base_state)
 
@@ -1586,6 +1600,8 @@ def init_command(
         state["docs_enabled"] = True
         total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
         state["total_tokens"] = total_tokens
+        if phase_timings:
+            state["phase_timings"] = phase_timings
         save_state(repo_path, state)
 
         save_config(
