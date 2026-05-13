@@ -235,12 +235,29 @@ class GraphBuilder:
             parsed_files=self._parsed_files,
         )
 
+        # --- Phase 1 prelude: language-specific warmups ---
+        # Some languages need an expensive one-time index built before any
+        # per-file import resolution can run. Doing it here, under a dedicated
+        # phase event, keeps the cost out of ``graph.imports`` and surfaces
+        # a meaningful progress label instead of a stuck per-file bar.
+        from .graph_warmups import run_warmups
+
+        run_warmups(self._parsed_files, ctx, progress=progress)
+
         # --- Phase 1: Resolve file-level imports ---
         import_targets: dict[str, set[str]] = {}  # file → set of imported files
+
+        # Per-language import-resolution timing — surfaces which language is
+        # actually dominating the import loop on multi-language repos
+        # (audit #30). Persisted to state.json for after-the-fact analysis.
+        import time as _t
+        lang_import_time: dict[str, float] = {}
 
         if progress:
             progress.on_phase_start("graph.imports", len(self._parsed_files))
         for path, parsed in self._parsed_files.items():
+            _lang = parsed.file_info.language
+            _t0 = _t.monotonic()
             file_imports: set[str] = set()
             for imp in parsed.imports:
                 target = resolve_import(imp.module_path, path, parsed.file_info.language, ctx)
@@ -260,12 +277,18 @@ class GraphBuilder:
                             imported_names=list(imp.imported_names),
                         )
             import_targets[path] = file_imports
+            lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
             if progress:
                 progress.on_item_done("graph.imports")
         if progress:
             _phase_done = getattr(progress, "on_phase_done", None)
             if _phase_done is not None:
                 _phase_done("graph.imports")
+        if lang_import_time:
+            log.info(
+                "import_resolution_per_language",
+                seconds={k: round(v, 2) for k, v in lang_import_time.items()},
+            )
 
         # --- Phase 1b: Resolve non-import type references (e.g. C# ctor params) ---
         # Lives between import resolution and heritage so the type-use
@@ -290,6 +313,12 @@ class GraphBuilder:
             if _phase_done is not None:
                 _phase_done("graph.type_refs")
         del type_use_counts  # used only for logging inside resolve_type_refs
+
+        # --- Phase 1c: Resolve C# member-access reads ---
+        # Bind `var x = new T(...); ... x.Prop` style property reads
+        # to T's defining file. Cuts the largest single bucket of C#
+        # unused_export false positives (audit #23).
+        self._resolve_member_reads(progress=progress)
 
         # --- Phase 2: Resolve heritage (extends/implements) ---
         self._resolve_heritage(import_targets, progress=progress)
@@ -361,6 +390,42 @@ class GraphBuilder:
             if _phase_done is not None:
                 _phase_done("graph.heritage")
         log.info("Heritage edges resolved", total=total_resolved)
+
+    def _resolve_member_reads(self, progress: Any | None = None) -> None:
+        """Phase 1c: emit ``reads`` edges for C# property / member access.
+
+        Runs after type-use resolution so the dead-code analyser sees
+        member access as evidence of reachability. The pass is C#-only
+        today (the lever is largest there); the helper module is set
+        up to receive other languages via additional strategies.
+        """
+        from .languages.csharp_member_reads import (
+            build_csharp_type_to_file,
+            collect_csharp_source_texts,
+            resolve_csharp_member_reads,
+        )
+
+        has_csharp = any(
+            pf.file_info.language == "csharp" for pf in self._parsed_files.values()
+        )
+        if not has_csharp:
+            return
+
+        phase = "graph.member_reads"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            cs_texts = collect_csharp_source_texts(self._parsed_files)
+            type_to_file = build_csharp_type_to_file(self._parsed_files)
+            added = resolve_csharp_member_reads(self._graph, cs_texts, type_to_file)
+            log.info("member_read_edges", language="csharp", added=added)
+        except Exception as exc:
+            log.warning("member_reads_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
 
     def _resolve_calls(
         self,

@@ -55,6 +55,14 @@ def add_framework_edges(
     if aspnet_in_stack or _has_aspnet_imports(parsed_files):
         count += _add_aspnet_edges(graph, parsed_files, path_set)
 
+    # Host-builder extension-method calls (``app.MapCatalogApi()`` etc.)
+    # run on ANY C# repo — desktop .NET (WPF/WinUI) defines its own
+    # extension methods on ``IServiceCollection`` / module hosts even
+    # when ASP.NET Core is absent. The host-type allowlist inside
+    # ``aspnet_extensions`` keeps this safe to run unconditionally.
+    if _has_csharp_files(parsed_files):
+        count += _add_csharp_extension_edges(graph, parsed_files, path_set)
+
     if "rails" in stack_lower or "config/application.rb" in path_set:
         count += _add_rails_edges(graph, parsed_files, ctx, path_set)
 
@@ -374,19 +382,35 @@ def _add_aspnet_edges(
             if target and target in path_set and _add_edge_if_new(graph, db_path, target):
                 count += 1
 
-    # ---- 6. Host-builder extension-method calls ----
-    # ``app.MapCatalogApi()`` / ``services.AddCatalogServices()`` bind to
-    # extension methods declared on ``IEndpointRouteBuilder`` /
-    # ``IServiceCollection`` / etc. Without this pass the defining file
-    # has no static importer and reads as orphaned. Lives in its own
-    # module so the regex set and host-type allowlist stay testable in
-    # isolation.
+    # NOTE: host-builder extension-method scanning (``app.MapCatalogApi()``)
+    # moved to ``_add_csharp_extension_edges`` so it fires on desktop .NET
+    # (WPF/WinUI) too, not just ASP.NET — see audit item #28.
+
+    return count
+
+
+def _has_csharp_files(parsed_files: dict[str, Any]) -> bool:
+    return any(p.file_info.language == "csharp" for p in parsed_files.values())
+
+
+def _add_csharp_extension_edges(
+    graph: nx.DiGraph,
+    parsed_files: dict[str, Any],
+    path_set: set[str],
+) -> int:
+    """Run the host-builder extension-method scan on any C# repo.
+
+    Lifted out of ``_add_aspnet_edges`` so it also fires on desktop .NET
+    (WPF / WinUI / WinForms) where ``Microsoft.AspNetCore.*`` is never
+    imported but ``IServiceCollection`` / ``IModuleHost`` extension
+    methods are still common. The host-type allowlist inside
+    ``aspnet_extensions`` keeps false positives from generic ``Map(...)``
+    LINQ calls at bay.
+    """
     from .aspnet_extensions import add_extension_method_edges, collect_csharp_texts
 
     cs_texts = collect_csharp_texts(parsed_files, path_set)
-    count += add_extension_method_edges(graph, cs_texts, path_set)
-
-    return count
+    return add_extension_method_edges(graph, cs_texts, path_set)
 
 
 # ---------------------------------------------------------------------------

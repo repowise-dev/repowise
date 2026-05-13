@@ -94,6 +94,16 @@ _DEFAULT_CO_CHANGE_COMMIT_LIMIT: int = 2000
 # already sorts partners by weight so the ranking is unaffected.
 _DEFAULT_CO_CHANGE_MIN_COUNT: int = 2
 
+# Commits that touch a very large number of files (mass renames,
+# copyright header sweeps, code-mod runs) produce O(N^2) pairs and
+# contribute no useful co-change signal. Skip pair generation for any
+# commit above this threshold. The decay-weighted score already
+# de-prioritises mass-edit commits, but the pairs are materialised
+# first — for a worst-case 500 files/commit × 2000 commits run that's
+# 250M pairs ≈ 16 GB RAM. The cap is a memory safeguard, not a
+# correctness change: typical commits sit well under 20 files.
+_MAX_FILES_PER_COMMIT_FOR_COCHANGE: int = 200
+
 # Commit message classification regexes (Phase 2.2).
 _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     "feature": re.compile(
@@ -229,6 +239,7 @@ class GitIndexer:
         on_file_done: Callable[[], None] | None = None,
         on_commit_done: Callable[[], None] | None = None,
         on_co_change_start: Callable[[int], None] | None = None,
+        on_co_change_done: Callable[[], None] | None = None,
     ) -> tuple[GitIndexSummary, list[dict]]:
         """Full index of all tracked files. Returns summary + list of metadata dicts
         ready for bulk upsert.
@@ -241,6 +252,11 @@ class GitIndexer:
                                        co-change analysis
           on_commit_done()   — fired after each commit is processed during
                                co-change analysis
+          on_co_change_done() — fired the moment co-change accumulation
+                                completes (BEFORE per-file git indexing
+                                finishes). Lets callers stop a co_change
+                                phase timer without including the wallclock
+                                cost of the still-running per-file walk.
         """
         start = time.monotonic()
         repo = self._get_repo()
@@ -267,6 +283,19 @@ class GitIndexer:
         semaphore = asyncio.Semaphore(20)
         loop = asyncio.get_event_loop()
 
+        # Build a repo-wide commit index in ONE git log subprocess when
+        # rename-tracking is off (the default). Each per-file worker then
+        # reads its commits from this shared dict instead of spawning its
+        # own ``git log -- <file>`` — turning O(files) process spawns
+        # into O(1) on large repos.
+        commit_index: dict[str, list[_CommitRec]] = {}
+        if not self.follow_renames:
+            from .git_commit_index import load_commit_index
+
+            commit_index = load_commit_index(
+                repo, self.commit_limit, set(indexable_files)
+            )
+
         def _index_one_sync(file_path: str) -> dict:
             """Use a per-thread Repo to avoid shared-handle issues on Windows."""
             try:
@@ -277,7 +306,12 @@ class GitIndexer:
                     search_parent_directories=True,
                 )
                 try:
-                    return self._index_file(file_path, thread_repo)
+                    precomputed = (
+                        commit_index.get(file_path) if commit_index else None
+                    )
+                    return self._index_file(
+                        file_path, thread_repo, precomputed_commits=precomputed
+                    )
                 finally:
                     thread_repo.close()
             except Exception:
@@ -318,7 +352,7 @@ class GitIndexer:
             # any pairs at all. Defaults live in module constants so
             # tests and re-index paths can override without touching
             # this call site.
-            return await loop.run_in_executor(
+            result = await loop.run_in_executor(
                 executor,
                 self._compute_co_changes,
                 repo,
@@ -328,6 +362,16 @@ class GitIndexer:
                 on_commit_done,
                 on_co_change_start,
             )
+            # Fire the done callback the instant accumulation finishes so
+            # any co_change phase timer stops here, NOT after the parallel
+            # per-file git walk also completes (it can run for many more
+            # minutes on large repos).
+            if on_co_change_done is not None:
+                try:
+                    on_co_change_done()
+                except Exception:
+                    pass
+            return result
 
         metadata_list, co_changes = await asyncio.gather(
             asyncio.gather(*file_tasks, return_exceptions=True),
@@ -459,13 +503,23 @@ class GitIndexer:
             logger.warning("Failed to list tracked files", error=str(exc))
             return []
 
-    def _index_file(self, file_path: str, repo: Any) -> dict:
+    def _index_file(
+        self,
+        file_path: str,
+        repo: Any,
+        precomputed_commits: list[_CommitRec] | None = None,
+    ) -> dict:
         """Index a single file's git history. Runs in executor.
 
         Uses a single ``git log --numstat`` call to collect commit metadata,
         line-churn stats, and merge-commit flag in one subprocess instead of
         the previous three separate calls (_get_commits, _get_line_stats,
         _get_merge_commit_count).
+
+        When *precomputed_commits* is provided (the default when called
+        from the batched full-repo path), the per-file ``git log``
+        subprocess is skipped entirely — eliminating the dominant
+        process-spawn cost on large repos.
         """
         now = datetime.now(UTC)
         ninety_days_ago = now - timedelta(days=90)
@@ -507,90 +561,93 @@ class GitIndexer:
             "temporal_hotspot_score": 0.0,
         }
 
-        try:
-            # Single git log call: header line + optional numstat lines per commit.
-            # Format: NUL-delimited record per commit so we can split reliably.
-            # Fields: sha, author name, author email, unix timestamp, parent SHAs, subject
-            log_args: list[str] = []
-            if self.follow_renames:
-                log_args.append("--follow")
-            log_args += [
-                f"-{self.commit_limit}",
-                "--numstat",
-                "--format=%x00%H%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%s",
-                "--",
-                file_path,
-            ]
-            raw = repo.git.log(*log_args)
-        except Exception:
-            return meta
-
-        if not raw.strip():
-            return meta
-
-        # Parse records — each starts with a \x00 marker line followed by
-        # zero-or-more numstat lines (added\tdeleted\tpath).
-        # When --follow is active, older commits may reference previous file
-        # names so we track all names seen via rename markers ("{old => new}").
-        known_paths: set[str] = {file_path}
-        # When --follow is active, seed known_paths with the original path
-        # so that numstat lines referencing the old name (without a rename
-        # marker in the log window) are still counted.
         orig_path: str | None = None
-        if self.follow_renames:
-            orig_path = self._detect_original_path(file_path, repo)
-            if orig_path:
-                known_paths.add(orig_path)
-        commits: list[_CommitRec] = []
-        current: _CommitRec | None = None
+        if precomputed_commits is not None:
+            commits: list[_CommitRec] = precomputed_commits
+        else:
+            try:
+                # Single git log call: header line + optional numstat lines per commit.
+                # Format: NUL-delimited record per commit so we can split reliably.
+                # Fields: sha, author name, author email, unix timestamp, parent SHAs, subject
+                log_args: list[str] = []
+                if self.follow_renames:
+                    log_args.append("--follow")
+                log_args += [
+                    f"-{self.commit_limit}",
+                    "--numstat",
+                    "--format=%x00%H%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%s",
+                    "--",
+                    file_path,
+                ]
+                raw = repo.git.log(*log_args)
+            except Exception:
+                return meta
 
-        for line in raw.splitlines():
-            if line.startswith("\x00"):
-                parts = line.lstrip("\x00").split("\x1f")
-                if len(parts) >= 6:
-                    sha, an, ae, ct, parents, subj = (
-                        parts[0],
-                        parts[1],
-                        parts[2],
-                        parts[3],
-                        parts[4],
-                        parts[5],
-                    )
-                    try:
-                        ts = int(ct)
-                    except ValueError:
-                        ts = 0
-                    current = _CommitRec(
-                        sha=sha,
-                        author_name=an or "unknown",
-                        author_email=ae,
-                        ts=ts,
-                        is_merge=len(parents.split()) > 1,
-                        subject=subj,
-                    )
-                    commits.append(current)
-            elif current is not None and line.strip():
-                # numstat line: added\tdeleted\tpath — only count the target file.
-                # With --follow, git may emit rename lines like
-                # "10\t5\t{old_dir => new_dir}/file.py" or just the old path.
-                numstat_parts = line.split("\t")
-                if len(numstat_parts) >= 3:
-                    stat_path = numstat_parts[2]
-                    # Track renamed paths so we can match them in older commits.
-                    # For rename lines the raw stat_path (with {old => new}) won't
-                    # match known_paths directly — check the expanded new path instead.
-                    match_path = stat_path
-                    if "=>" in stat_path:
-                        _old, _new = _extract_rename_paths(stat_path, known_paths)
-                        match_path = _new or stat_path
-                    if match_path in known_paths or match_path == file_path:
+            if not raw.strip():
+                return meta
+
+            # Parse records — each starts with a \x00 marker line followed by
+            # zero-or-more numstat lines (added\tdeleted\tpath).
+            # When --follow is active, older commits may reference previous file
+            # names so we track all names seen via rename markers ("{old => new}").
+            known_paths: set[str] = {file_path}
+            # When --follow is active, seed known_paths with the original path
+            # so that numstat lines referencing the old name (without a rename
+            # marker in the log window) are still counted.
+            if self.follow_renames:
+                orig_path = self._detect_original_path(file_path, repo)
+                if orig_path:
+                    known_paths.add(orig_path)
+            commits = []
+            current: _CommitRec | None = None
+
+            for line in raw.splitlines():
+                if line.startswith("\x00"):
+                    parts = line.lstrip("\x00").split("\x1f")
+                    if len(parts) >= 6:
+                        sha, an, ae, ct, parents, subj = (
+                            parts[0],
+                            parts[1],
+                            parts[2],
+                            parts[3],
+                            parts[4],
+                            parts[5],
+                        )
                         try:
-                            current.added += int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
-                            current.deleted += (
-                                int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
-                            )
+                            ts = int(ct)
                         except ValueError:
-                            pass
+                            ts = 0
+                        current = _CommitRec(
+                            sha=sha,
+                            author_name=an or "unknown",
+                            author_email=ae,
+                            ts=ts,
+                            is_merge=len(parents.split()) > 1,
+                            subject=subj,
+                        )
+                        commits.append(current)
+                elif current is not None and line.strip():
+                    # numstat line: added\tdeleted\tpath — only count the target file.
+                    # With --follow, git may emit rename lines like
+                    # "10\t5\t{old_dir => new_dir}/file.py" or just the old path.
+                    numstat_parts = line.split("\t")
+                    if len(numstat_parts) >= 3:
+                        stat_path = numstat_parts[2]
+                        # Track renamed paths so we can match them in older commits.
+                        # For rename lines the raw stat_path (with {old => new}) won't
+                        # match known_paths directly — check the expanded new path instead.
+                        match_path = stat_path
+                        if "=>" in stat_path:
+                            _old, _new = _extract_rename_paths(stat_path, known_paths)
+                            match_path = _new or stat_path
+                        if match_path in known_paths or match_path == file_path:
+                            try:
+                                current.added += int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
+                                current.deleted += (
+                                    int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
+                                )
+                            except ValueError:
+                                pass
 
         if not commits:
             return meta
@@ -871,6 +928,15 @@ class GitIndexer:
 
         def _flush_commit() -> None:
             if len(current) < 2:
+                return
+            if len(current) > _MAX_FILES_PER_COMMIT_FOR_COCHANGE:
+                # Mass-edit commit — skip pair generation entirely (see
+                # constant docstring). Logged at debug for traceability.
+                logger.debug(
+                    "co_change_skip_oversized_commit",
+                    files_in_commit=len(current),
+                    threshold=_MAX_FILES_PER_COMMIT_FOR_COCHANGE,
+                )
                 return
             age_days = max((now_ts - current_ts) / 86400.0, 0.0)
             weight = math.exp(-age_days / _CO_CHANGE_DECAY_TAU)

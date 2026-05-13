@@ -52,7 +52,7 @@ All eight languages support:
 - Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen, XML doc)
 - Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection; ASP.NET controllers / minimal API / EF Core DbContext for C#; Spring Boot DI + `@Bean` factories for Java/Kotlin; Rails routes + ActiveRecord relationships; Laravel routes + service providers + Eloquent; TYPO3 convention files (`ext_localconf.php`, `Configuration/TCA/*`, `JavaScriptModules.php` registrations) for PHP; Express `app.use(router)` + NestJS `@Module` arrays; Gin/Echo/Chi router → handler files for Go; Axum/Actix `.route` → handler files for Rust)
 - Per-language dynamic-hint extractors (Django/Pytest/Node for Python+JS/TS; .NET DI/Activator/InternalsVisibleTo for C#; Spring `getBean`/`@Bean` factories for Java/Kotlin; Ruby `send`/`const_get`/`define_method`/`delegate`; PHP `call_user_func`/`ReflectionClass`/container `get`; Scala `Class.forName`/`given`/`implicit val`; Swift `NSClassFromString`/`Selector`/`#selector`/KVC; C function-pointer assignment + `dlopen`/`dlsym`; Luau `game:GetService`/`setmetatable __index`; Go `reflect.TypeOf`/`plugin.Open`/`plugin.Lookup`)
-- For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace → file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection
+- For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace → file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection, host-builder extension method resolution (`app.MapCatalogApi()` / `services.AddCatalogServices()` on any C# repo, not just ASP.NET), `nameof(Type)` references resolved as dynamic uses, and local `var x = new T()` property reads bound to the defining file
 
 ### Good
 
@@ -278,6 +278,21 @@ repowise init /path/to/mylang-project
 No changes are needed to `traverser.py`, `dead_code.py`,
 `page_generator.py`, `cost_estimator.py`, or any other consumer file ---
 they all derive their language sets from the registry automatically.
+
+### Optional language-specific passes
+
+Three pluggable hooks let a language opt into deeper resolution
+without touching the shared pipeline files:
+
+- `graph_warmups.py` --- register a one-time pre-import warmup (e.g.
+  building a project index) so its cost shows up as its own phase
+  instead of inflating `graph.imports`.
+- `type_ref_resolution._STRATEGIES` --- register a strategy that
+  resolves parameter-type captures (`@param.type` in the language's
+  `.scm`) to file-level type-use edges. Drives DI-aware analysis.
+- `languages/<lang>_member_reads.py` --- emit `reads` edges for
+  property / member access. Used today for C# `var x = new T()`
+  locals; the same shape applies to any statically-typed language.
 
 ---
 
