@@ -142,6 +142,12 @@ class PipelineResult:
     traversal_stats: Any | None = None
     """``TraversalStats`` from the file traverser, or None."""
 
+    # Detected tech stack (languages, frameworks, databases, infra).
+    # Stored as plain dicts (``{"name", "version", "category"}``) so the
+    # persistence layer can serialise without importing the editor_files
+    # data module. Populated post-traversal during the graph build phase.
+    tech_stack: list[dict] = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -255,6 +261,7 @@ async def run_pipeline(
             source_map,
             graph_builder,
             traversal_stats,
+            tech_items,
         ),
         (
             git_summary,
@@ -388,6 +395,10 @@ async def run_pipeline(
         symbol_count=symbol_count,
         languages=languages,
         elapsed_seconds=elapsed,
+        tech_stack=[
+            {"name": t.name, "version": t.version, "category": t.category}
+            for t in tech_items
+        ],
     )
 
 
@@ -407,7 +418,8 @@ async def _run_ingestion(
 ) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any, Any]:
     """Traverse, parse, and build the dependency graph.
 
-    Returns (parsed_files, file_infos, repo_structure, source_map, graph_builder, traversal_stats).
+    Returns (parsed_files, file_infos, repo_structure, source_map,
+    graph_builder, traversal_stats, tech_items).
     """
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
@@ -488,9 +500,17 @@ async def _run_ingestion(
     try:
         with ProcessPoolExecutor(max_workers=workers) as pool:
             tasks = [loop.run_in_executor(pool, _parse_one, item) for item in fi_and_bytes]
-            # Use as_completed via asyncio.as_completed to report per-file progress.
-            # We need to preserve (task → fi_and_bytes index) for source_map so we
-            # wrap tasks in a list and drain with gather instead.
+            # Tick the parse-progress bar as each worker finishes —
+            # ``asyncio.gather`` would otherwise hold every event back
+            # until the last file is done, which on PowerToys-scale
+            # repos looked like a hang at ``0/N`` for many minutes.
+            # Per-task done-callbacks fire on the event loop thread and
+            # preserve gather's ordered results, so the aggregation
+            # loop below still indexes ``fi_and_bytes`` correctly.
+            if progress is not None:
+                _parse_tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
+                for fut in tasks:
+                    fut.add_done_callback(_parse_tick)
             parse_results = await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as pool_exc:
         logger.warning(
@@ -523,9 +543,9 @@ async def _run_ingestion(
             parsed_files.append(result)
             source_map[fi.path] = source
             graph_builder.add_file(result)
-        # Report per-file progress if we used the process pool (fallback already reported above).
-        if _use_process_pool and progress:
-            progress.on_item_done("parse")
+        # Process-pool path already ticked per-file via the done-callback
+        # attached above; only the fallback path ticks here (handled in
+        # its own loop). No tick needed in aggregation.
 
     _phase_done(progress, "parse")
 
@@ -555,6 +575,7 @@ async def _run_ingestion(
     await asyncio.to_thread(graph_builder.build, progress)
 
     # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
+    tech_items: list = []
     try:
         from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
 
@@ -643,7 +664,7 @@ async def _run_ingestion(
                 lang_str += f", other {rest_count:,}"
             progress.on_message("info", f"  Languages: {lang_str}")
 
-    return parsed_files, file_infos, repo_structure, source_map, graph_builder, stats
+    return parsed_files, file_infos, repo_structure, source_map, graph_builder, stats, tech_items
 
 
 async def _run_git_indexing(
@@ -682,15 +703,26 @@ async def _run_git_indexing(
             if progress:
                 progress.on_item_done("co_change")
 
+        def _on_co_change_done() -> None:
+            # Stop the co_change timer the moment accumulation finishes;
+            # otherwise the recorded duration also includes the parallel
+            # per-file git walk that keeps running afterwards (audit #29).
+            _phase_done(progress, "co_change")
+
         git_summary, git_metadata_list = await git_indexer.index_repo(
             "",
             on_start=_on_start,
             on_file_done=_on_file_done,
             on_co_change_start=_on_co_change_start,
             on_commit_done=_on_commit_done,
+            on_co_change_done=_on_co_change_done,
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
         _phase_done(progress, "git")
+        # co_change phase already closed inside the done-callback above;
+        # call again only as a safety-net in case the callback was never
+        # invoked (e.g. co-change skipped early). PhaseTimingRecorder
+        # ignores done-without-start so this is a no-op in the happy path.
         _phase_done(progress, "co_change")
         return git_summary, git_metadata_list, git_meta_map
     except Exception as exc:

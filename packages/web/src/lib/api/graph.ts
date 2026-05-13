@@ -1,5 +1,6 @@
 import { apiGet } from "./client";
 import type {
+  ArchitectureGraphResponse,
   CallersCalleesResponse,
   CommunityDetailResponse,
   CommunitySummaryItem,
@@ -48,6 +49,21 @@ export async function searchNodes(
 
 export async function getArchitectureGraph(repoId: string): Promise<GraphExportResponse> {
   return apiGet<GraphExportResponse>(`/api/graph/${repoId}/entry-points`);
+}
+
+/**
+ * Community super-node view: one node per detected community, with
+ * cross-community edges. Endpoint introduced in Phase A of the graph
+ * UX overhaul; rendering surface is incremental and the legacy
+ * entry-point view above remains the default until adapter support lands.
+ */
+export async function getArchitectureCommunityGraph(
+  repoId: string,
+  minMembers = 2,
+): Promise<ArchitectureGraphResponse> {
+  return apiGet<ArchitectureGraphResponse>(`/api/graph/${repoId}/architecture`, {
+    min_members: minMembers,
+  });
 }
 
 export async function getDeadCodeGraph(repoId: string): Promise<DeadCodeGraphResponse> {

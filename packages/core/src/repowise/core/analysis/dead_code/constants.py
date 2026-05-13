@@ -96,6 +96,29 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/Apis/*.cs",
     "*/Endpoints/*.cs",
     "*/Routes/*.cs",
+    # ---- Generic .NET / Win32 conventions ----------------------------
+    # Source-generator output directories. Many SDKs (CommunityToolkit
+    # MVVM, AOT, EF Core compiled-models, gRPC) emit generated files
+    # into a `Generated/` sibling next to the source. They get wired in
+    # at build time, never imported by name.
+    "*/Generated/*.cs",
+    "*/generated/*.cs",
+    # Win32 P/Invoke surfaces. NativeMethods / SafeNativeMethods are a
+    # decades-old .NET FX convention; they are reached only via
+    # `[DllImport]`-mediated calls, never via a `using` directive that
+    # names the type.
+    "*NativeMethods.cs",
+    "*SafeNativeMethods.cs",
+    "*UnsafeNativeMethods.cs",
+    # ETW / EventSource event-class folders. The runtime reflects on
+    # these at registration time; static graph rarely sees the import.
+    "*/Telemetry/Events/*.cs",
+    "*/Diagnostics/Events/*.cs",
+    # XAML resource dictionaries and merged styles. WPF / WinUI load
+    # these via `<ResourceDictionary Source="..."/>` not `using`.
+    "*/Themes/*.xaml",
+    "*/Styles/*.xaml",
+    "*/Resources/*.xaml",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)

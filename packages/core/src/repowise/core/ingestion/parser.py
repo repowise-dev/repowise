@@ -63,6 +63,7 @@ from .models import (
     Import,
     ParsedFile,
     Symbol,
+    TypeReference,
 )
 
 log = structlog.get_logger(__name__)
@@ -549,6 +550,7 @@ class ASTParser:
         heritage = extract_heritage(tree, query, config, file_info, src, run_query=_run_query)
         exports = self._derive_exports(symbols, config, src)
         docstring = extract_module_docstring(root, src, lang)
+        type_refs = self._extract_type_refs(tree, query, src)
 
         return ParsedFile(
             file_info=file_info,
@@ -559,6 +561,7 @@ class ASTParser:
             heritage=heritage,
             docstring=docstring,
             parse_errors=parse_errors,
+            type_refs=type_refs,
         )
 
     # ------------------------------------------------------------------
@@ -845,6 +848,53 @@ class ASTParser:
             return [s.name for s in symbols if s.visibility == "public" and s.parent_name is None]
         return [s.name for s in symbols if s.visibility == "public" and s.parent_name is None]
 
+    # ------------------------------------------------------------------
+    # Type reference extraction (non-import positions)
+    # ------------------------------------------------------------------
+
+    def _extract_type_refs(
+        self,
+        tree: object,
+        query: object,
+        src: str,
+    ) -> list[TypeReference]:
+        """Collect ``@param.type`` captures into TypeReference records.
+
+        Currently only the C# query emits these captures (constructor /
+        method / delegate / primary-ctor parameter types). The graph
+        builder resolves each reference to a defining file via the
+        language-specific resolver index and emits a file-level edge.
+
+        Capture origin is inferred from the parameter's enclosing node:
+        ``constructor_declaration`` → ``ctor_param`` (highest signal:
+        canonical DI vector), ``method_declaration`` → ``method_param``,
+        ``delegate_declaration`` → ``delegate_param``. Primary
+        constructors on records / classes also resolve to ``ctor_param``.
+        """
+        if query is None:
+            return []
+
+        refs: list[TypeReference] = []
+        seen: set[tuple[str, int]] = set()
+
+        for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+            type_nodes = capture_dict.get("param.type", [])
+            if not type_nodes:
+                continue
+            for type_node in type_nodes:
+                head = _head_type_identifier(type_node, src)
+                if not head:
+                    continue
+                line = type_node.start_point[0] + 1
+                key = (head, line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                origin = _classify_param_origin(type_node)
+                refs.append(TypeReference(type_name=head, line=line, origin=origin))
+
+        return refs
+
 
 # ---------------------------------------------------------------------------
 # Convenience function
@@ -913,6 +963,138 @@ def _build_qualified_name(file_path: str, parent_name: str | None, name: str) ->
     if parent_name:
         return f"{module}.{parent_name}.{name}"
     return f"{module}.{name}"
+
+
+# ---------------------------------------------------------------------------
+# Type reference helpers (used by _extract_type_refs)
+# ---------------------------------------------------------------------------
+
+# Type expressions that never resolve to a user-defined .NET type. Skipping
+# these here avoids polluting the resolver with hopeless lookups. Generic
+# args inside `IList<T>` are stripped before this check is applied.
+_BUILTIN_CSHARP_TYPES: frozenset[str] = frozenset({
+    "void", "bool", "byte", "sbyte", "char", "short", "ushort", "int",
+    "uint", "long", "ulong", "float", "double", "decimal", "string",
+    "object", "nint", "nuint", "dynamic", "var",
+    # Frequently appearing BCL types that are always external — listing
+    # them here is purely a performance optimisation (one dict miss
+    # avoided per occurrence).
+    "Task", "ValueTask", "CancellationToken", "Action", "Func",
+    "Type", "Exception", "DateTime", "DateTimeOffset", "TimeSpan",
+    "Guid", "Uri", "Stream",
+})
+
+_PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
+    "constructor_declaration": "ctor_param",
+    "method_declaration": "method_param",
+    "delegate_declaration": "delegate_param",
+    "record_declaration": "ctor_param",
+    "class_declaration": "ctor_param",
+    "struct_declaration": "ctor_param",
+}
+
+
+def _head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head identifier of a C# type expression, or None.
+
+    Examples:
+        ``IBasketService``                  → "IBasketService"
+        ``IList<Basket>``                   → "IList"
+        ``Acme.Catalog.IRepository<T>``     → "IRepository"
+        ``ref readonly Span<byte>``         → "Span"
+        ``string``                          → None (built-in)
+        ``int?``                            → None
+        ``T``                               → None (likely a generic param)
+
+    The point of returning the head identifier is that the
+    DotNetProjectIndex type-name lookup is keyed by unqualified type
+    name. Generic-arg recursion is intentionally NOT done here — each
+    generic arg is captured in its own ``@param.type`` if it's a real
+    parameter type, and the resolver doesn't currently track generic
+    instantiation graphs.
+    """
+    head_node: Node | None = type_node
+
+    # Unwrap modifier wrappers: nullable_type, ref_type, pointer_type,
+    # array_type, tuple_type. tree-sitter-c-sharp puts the inner type
+    # at field "type" or as the first non-trivia child.
+    for _ in range(6):
+        if head_node is None:
+            return None
+        if head_node.type in ("nullable_type", "ref_type", "pointer_type", "array_type"):
+            inner = head_node.child_by_field_name("type")
+            if inner is None:
+                # Fall back to first identifier-bearing child
+                inner = next(
+                    (c for c in head_node.children if c.type not in (",", "?", "*", "&", "ref", "out", "in", "[", "]")),
+                    None,
+                )
+            head_node = inner
+            continue
+        break
+
+    if head_node is None:
+        return None
+
+    if head_node.type == "identifier":
+        text = _node_text(head_node, src)
+    elif head_node.type == "predefined_type":
+        text = _node_text(head_node, src)
+    elif head_node.type == "generic_name":
+        name_child = head_node.child_by_field_name("name") or next(
+            (c for c in head_node.children if c.type == "identifier"), None,
+        )
+        text = _node_text(name_child, src) if name_child else ""
+    elif head_node.type == "qualified_name":
+        # `Foo.Bar.Baz` — take the rightmost identifier
+        idents = [c for c in head_node.children if c.type == "identifier"]
+        text = _node_text(idents[-1], src) if idents else ""
+    elif head_node.type == "tuple_type":
+        return None  # Tuple elements aren't single types
+    else:
+        # Unknown shape — fall back to first identifier in the subtree
+        ident = _first_descendant(head_node, "identifier")
+        text = _node_text(ident, src) if ident else ""
+
+    if not text or not text[0].isalpha() and text[0] != "_":
+        return None
+    if text in _BUILTIN_CSHARP_TYPES:
+        return None
+    # Single-uppercase-letter heads are overwhelmingly generic params (T, K, V).
+    # Skipping them avoids spurious lookups against a type-name index that
+    # would never contain them.
+    if len(text) == 1 and text.isupper():
+        return None
+    return text
+
+
+def _first_descendant(node: Node, type_name: str) -> Node | None:
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.type == type_name:
+            return current
+        stack.extend(current.children)
+    return None
+
+
+def _classify_param_origin(type_node: Node) -> str:
+    """Walk up to find the enclosing declaration and map to an origin tag.
+
+    The walk stops at the first matching ancestor or after a small depth
+    cap. Falling off the cap means the capture was outside a recognised
+    declaration shape (shouldn't happen given the query patterns, but
+    guards against grammar drift); we tag those ``method_param``.
+    """
+    cur: Node | None = type_node
+    for _ in range(8):
+        if cur is None:
+            break
+        origin = _PARAM_ORIGIN_BY_ANCESTOR.get(cur.type)
+        if origin is not None:
+            return origin
+        cur = cur.parent
+    return "method_param"
 
 
 # ---------------------------------------------------------------------------

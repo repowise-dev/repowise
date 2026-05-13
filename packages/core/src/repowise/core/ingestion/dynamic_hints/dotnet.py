@@ -67,6 +67,16 @@ _INTERNALS_VISIBLE_RE = re.compile(
     r"\[\s*assembly\s*:\s*InternalsVisibleTo\s*\(\s*[\"']([^\"']+)[\"']"
 )
 
+# ``nameof(TypeName)`` — used heavily for DI key strings (e.g.
+# ``services.Configure<T>(nameof(T))``), options binding, and route /
+# policy names that never appear as a `using` import. We only match
+# arguments that look like a *type* (PascalCase identifier) so we
+# don't bind to property / method names — those produce noise and
+# resolve to internal members that the analyser already credits via
+# the parent class file. The dotted form (``nameof(NS.Type)``) also
+# resolves: ``_files_for`` strips the namespace.
+_NAMEOF_TYPE_RE = re.compile(r"\bnameof\s*\(\s*([A-Z][\w.]*)\s*\)")
+
 
 class DotNetDynamicHints(DynamicHintExtractor):
     """Discover DI registrations, reflection, and assembly-level hints in .NET."""
@@ -247,6 +257,19 @@ class DotNetDynamicHints(DynamicHintExtractor):
                                 target=target,
                                 edge_type="dynamic_uses",
                                 hint_source=f"{self.name}:type_gettype",
+                            )
+                        )
+
+            # ---- nameof(TypeName) — DI keys, options, policies ----
+            for match in _NAMEOF_TYPE_RE.finditer(text):
+                for target in _files_for(match.group(1)):
+                    if target != rel:
+                        edges.append(
+                            DynamicEdge(
+                                source=rel,
+                                target=target,
+                                edge_type="dynamic_uses",
+                                hint_source=f"{self.name}:nameof",
                             )
                         )
 

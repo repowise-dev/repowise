@@ -2,10 +2,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { FileText, Folder, ArrowRight, X, Zap, FlaskConical, BookOpen, Code2 } from "lucide-react";
+import { FileText, Folder, ArrowRight, X, BookOpen, Code2 } from "lucide-react";
 import { formatNumber } from "../lib/format";
 import { languageColor } from "../lib/confidence";
 import type { FileNodeData, ModuleNodeData } from "./elk-layout";
+import { NodeBadges } from "./node-badges";
 
 interface GraphTooltipProps {
   nodeId: string;
@@ -168,28 +169,18 @@ export function GraphTooltip({
                 </div>
               )}
 
-              {/* Badges row */}
-              <div className="flex items-center gap-1.5 pt-1 flex-wrap">
-                {d.isEntryPoint && (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-[var(--color-accent-graph)]/10 text-[var(--color-accent-graph)] px-1.5 py-0.5 text-[10px] font-medium">
-                    <Zap className="w-2.5 h-2.5" /> Entry Point
-                  </span>
-                )}
-                {d.isTest && (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-purple-500/10 text-purple-400 px-1.5 py-0.5 text-[10px] font-medium">
-                    <FlaskConical className="w-2.5 h-2.5" /> Test
-                  </span>
-                )}
-                {d.hasDoc ? (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-green-500/10 text-green-400 px-1.5 py-0.5 text-[10px] font-medium">
-                    <BookOpen className="w-2.5 h-2.5" /> Documented
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-slate-500/10 text-slate-400 px-1.5 py-0.5 text-[10px] font-medium">
-                    <BookOpen className="w-2.5 h-2.5" /> No docs
-                  </span>
-                )}
-              </div>
+              {/* Badges row — single shared component used by tooltip + drawer */}
+              <NodeBadges
+                className="pt-1"
+                signals={{
+                  isEntryPoint: d.isEntryPoint,
+                  isTest: d.isTest,
+                  hasDoc: d.hasDoc,
+                  isHotspot: (d as { isHotspot?: boolean }).isHotspot,
+                  isDead: (d as { isDead?: boolean }).isDead,
+                  hasDecision: (d as { hasDecision?: boolean }).hasDecision,
+                }}
+              />
             </>
           );
         })()}

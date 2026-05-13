@@ -30,6 +30,13 @@ class DotNetProjectIndex:
     namespace_map: dict[str, list[Path]] = field(default_factory=dict)
     """Maps a fully-qualified namespace to the set of .cs files declaring it."""
 
+    type_map: dict[str, list[Path]] = field(default_factory=dict)
+    """Maps an unqualified type name (e.g. ``IBasketService``) to defining files.
+
+    A type name can appear in multiple files (partial types, distinct types
+    with the same simple name in different namespaces). Callers rank the
+    candidates by project enclosure — see ``rank_type_candidates`` below."""
+
     project_globals: dict[Path, set[str]] = field(default_factory=dict)
     """Maps a project's directory → global+implicit using namespaces."""
 
@@ -60,6 +67,50 @@ class DotNetProjectIndex:
     def files_for_namespace(self, ns: str) -> list[Path]:
         return self.namespace_map.get(ns, [])
 
+    def files_for_type(self, type_name: str) -> list[Path]:
+        return self.type_map.get(type_name, [])
+
+    def rank_type_candidates(
+        self,
+        type_name: str,
+        from_file: Path,
+    ) -> list[Path]:
+        """Return defining files for *type_name*, ranked by project enclosure.
+
+        Ranking matches ``resolve_csharp_import`` for namespace lookups:
+            1. Same project as *from_file*
+            2. Projects referenced by from_file's project (transitive=1)
+            3. Anywhere else in the workspace
+
+        Same-named partial-type fragments collapse: each unique file
+        appears once. ``from_file`` is excluded so a class that only
+        names its own types doesn't get a self-edge.
+        """
+        candidates = self.type_map.get(type_name)
+        if not candidates:
+            return []
+
+        from_resolved = from_file.resolve()
+        from_proj = self.file_to_project.get(from_resolved)
+        ref_projs = self.project_refs_by_proj.get(from_proj, set()) if from_proj else set()
+
+        same_proj: list[Path] = []
+        ref_proj: list[Path] = []
+        repo_wide: list[Path] = []
+        seen: set[Path] = set()
+        for cand in candidates:
+            if cand in seen or cand == from_resolved:
+                continue
+            seen.add(cand)
+            cand_proj = self.file_to_project.get(cand)
+            if cand_proj is not None and cand_proj == from_proj:
+                same_proj.append(cand)
+            elif cand_proj is not None and cand_proj in ref_projs:
+                ref_proj.append(cand)
+            else:
+                repo_wide.append(cand)
+        return same_proj + ref_proj + repo_wide
+
     def globals_for_project(self, csproj: Path) -> set[str]:
         proj = self.projects.get(csproj)
         if not proj:
@@ -70,19 +121,67 @@ class DotNetProjectIndex:
         return package_id in self.package_refs.get(csproj, set())
 
 
-def _gather_project_files(project_dir: Path) -> list[Path]:
-    """Return every .cs file under *project_dir*, ignoring build outputs."""
-    skip = {"bin", "obj", ".vs", "node_modules"}
+_CS_WALK_SKIP_DIRS = frozenset({"bin", "obj", ".vs", "node_modules", ".git", "packages"})
+
+
+def _walk_repo_cs_files(repo_path: Path) -> list[Path]:
+    """Single repo-wide rglob for ``*.cs`` files, dedup by resolved path.
+
+    Lives at module scope (not nested inside ``build_index``) so it's
+    independently testable and so the skip-list is shared with the
+    XAML extractor's walk above.
+    """
+    seen: set[Path] = set()
     out: list[Path] = []
-    for cs in project_dir.rglob("*.cs"):
-        if any(part in skip for part in cs.parts):
+    for cs in repo_path.rglob("*.cs"):
+        if any(part in _CS_WALK_SKIP_DIRS for part in cs.parts):
             continue
-        out.append(cs.resolve())
+        try:
+            resolved = cs.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(resolved)
+    return out
+
+
+def _bucket_files_by_project(
+    cs_files: list[Path],
+    project_dirs: list[tuple[Path, Path]],
+) -> dict[Path, Path]:
+    """Map each resolved .cs file → enclosing csproj path via longest-prefix.
+
+    *project_dirs* is a list of ``(project_dir_resolved, csproj_path)``
+    pairs sorted by descending path-component depth so the most
+    specific project wins for nested project layouts (e.g. a test
+    project nested under its production project's directory).
+    """
+    out: dict[Path, Path] = {}
+    for f in cs_files:
+        parents = set(f.parents)
+        for proj_dir, csproj in project_dirs:
+            if proj_dir in parents or proj_dir == f.parent:
+                out[f] = csproj
+                break
     return out
 
 
 def build_index(repo_path: Path) -> DotNetProjectIndex:
-    """Walk *repo_path* and construct a fully-populated DotNetProjectIndex."""
+    """Walk *repo_path* and construct a fully-populated DotNetProjectIndex.
+
+    Performance note: a previous version of this function walked the
+    ``*.cs`` tree three times — once for ``_gather_project_files``,
+    once inside ``build_namespace_map`` (per-file ``read_text``), and a
+    third time inside ``collect_project_global_usings`` (rglob +
+    read_text per project, with heavy overlap on shared parent dirs).
+    On NTFS with Defender that pattern dominates indexing time
+    (40+ minutes on PowerToys-scale repos). The current shape does
+    ONE master walk, reads each file ONCE, and dispatches the cached
+    texts to both the namespace-map pass and per-project global-usings
+    collection. No data-quality loss — same regexes, same outputs.
+    """
     repo_path = repo_path.resolve()
     index = DotNetProjectIndex(repo_path=repo_path)
 
@@ -109,16 +208,39 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
                     )
                     index.package_refs.setdefault(proj.path, set()).update(proj.package_references)
 
-    # ---- 3. Build namespace map across every .cs file in every project ----
-    all_cs_files: list[Path] = []
-    for proj in index.projects.values():
-        proj_files = _gather_project_files(proj.project_dir)
-        all_cs_files.extend(proj_files)
-        for f in proj_files:
-            index.file_to_project[f] = proj.path
-    index.namespace_map = build_namespace_map(all_cs_files)
+    # ---- 3. Single master walk: enumerate .cs files & read each once ----
+    all_cs_files = _walk_repo_cs_files(repo_path)
+    cs_texts: dict[Path, str] = {}
+    for f in all_cs_files:
+        try:
+            cs_texts[f] = f.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
 
-    # ---- 4. Compute per-project global+implicit usings ----
+    # Build the file → project map by longest-prefix match. Sort by
+    # descending parent-depth so nested projects (e.g. a test project
+    # whose directory sits under its prod project's tree) bind first.
+    project_dirs: list[tuple[Path, Path]] = sorted(
+        ((proj.project_dir.resolve(), proj.path) for proj in index.projects.values()),
+        key=lambda t: -len(t[0].parts),
+    )
+    index.file_to_project = _bucket_files_by_project(all_cs_files, project_dirs)
+
+    # ---- 4. Namespace + type map from cached texts ----
+    index.namespace_map, index.type_map = build_namespace_map(
+        all_cs_files, texts=cs_texts
+    )
+
+    # ---- 5. Per-project global+implicit usings from cached texts ----
+    # Bucket the cached texts by project once so each project's call to
+    # ``collect_project_global_usings`` is O(files in that project).
+    texts_by_proj: dict[Path, dict[Path, str]] = {}
+    for f, csproj in index.file_to_project.items():
+        text = cs_texts.get(f)
+        if text is None:
+            continue
+        texts_by_proj.setdefault(csproj, {})[f] = text
+
     for proj in index.projects.values():
         # Heuristic: presence of any AspNetCore PackageReference flags the
         # web SDK's expanded implicit-using set.
@@ -126,7 +248,10 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
             pkg.startswith("Microsoft.AspNetCore") for pkg in proj.package_references
         )
         globals_set = collect_project_global_usings(
-            proj.project_dir, proj.implicit_usings, sdk_is_web=sdk_is_web
+            proj.project_dir,
+            proj.implicit_usings,
+            sdk_is_web=sdk_is_web,
+            project_texts=texts_by_proj.get(proj.path, {}),
         )
         # Honour <Using Include="X"/> ItemGroup entries on top of file scans.
         globals_set.update(proj.project_usings)
@@ -136,7 +261,9 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
         "DotNetProjectIndex built",
         repo=str(repo_path),
         projects=len(index.projects),
+        cs_files=len(all_cs_files),
         namespaces=len(index.namespace_map),
+        types=len(index.type_map),
         sln=len(index.sln_paths),
     )
     return index

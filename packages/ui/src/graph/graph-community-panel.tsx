@@ -24,7 +24,7 @@ export function GraphCommunityPanel({
   onClose,
 }: GraphCommunityPanelProps) {
   return (
-    <div className="absolute right-0 top-0 bottom-0 w-full sm:w-[360px] border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-10 flex flex-col shadow-lg shadow-black/20">
+    <div className="absolute right-0 top-0 bottom-0 w-full sm:w-[360px] border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-20 flex flex-col shadow-lg shadow-black/20">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-default)]">
         <div className="min-w-0">

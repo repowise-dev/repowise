@@ -12,7 +12,7 @@ and cached on the ``ResolverContext`` for the lifetime of one
 
 from __future__ import annotations
 
-from .index import DotNetProjectIndex, get_or_build_index
+from .index import DotNetProjectIndex, build_index, get_or_build_index
 from .msbuild import MSBuildProject, parse_csproj
 from .namespace_map import build_namespace_map
 from .solution import SolutionEntry, parse_sln
@@ -21,6 +21,7 @@ __all__ = [
     "DotNetProjectIndex",
     "MSBuildProject",
     "SolutionEntry",
+    "build_index",
     "build_namespace_map",
     "get_or_build_index",
     "parse_csproj",

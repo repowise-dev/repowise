@@ -12,10 +12,12 @@ Usage::
 
 from .orchestrator import PipelineResult, run_generation, run_pipeline
 from .persist import persist_pipeline_result
+from .phase_timing import PhaseTimingRecorder
 from .progress import LoggingProgressCallback, ProgressCallback
 
 __all__ = [
     "LoggingProgressCallback",
+    "PhaseTimingRecorder",
     "PipelineResult",
     "ProgressCallback",
     "persist_pipeline_result",

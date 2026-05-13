@@ -53,6 +53,60 @@ _PYTHON_FRAMEWORKS: dict[str, tuple[str, str]] = {
 }
 
 
+# Maximum directory depth from the repo root to scan for .NET project
+# files. Five levels covers every observed .NET monorepo layout in the
+# wild (e.g. `src/<area>/<module>/<Project>/<Project>.csproj` is depth
+# 4; `services/<svc>/src/<Project>/<Project>.csproj` is depth 5).
+# Setting this higher would only add noise from samples / tests buried
+# inside generated SDK folders.
+_DOTNET_MAX_DEPTH = 5
+
+# Hard cap on returned .csproj count. Repos like dotnet/runtime have
+# thousands of project files; we only need a representative sample to
+# infer the tech stack.
+_DOTNET_MAX_PROJECTS = 200
+
+# Directory names to prune from the scan. These never host real
+# project source and bloat the walk on Windows where `bin/obj`
+# contains thousands of intermediate files per project.
+_DOTNET_PRUNE = frozenset({
+    "bin", "obj", ".vs", "node_modules", ".git", "packages",
+    ".idea", "artifacts", ".build", "TestResults",
+})
+
+
+def _find_dotnet_projects(repo_path: Path) -> list[Path]:
+    """Return up to ``_DOTNET_MAX_PROJECTS`` .csproj files under *repo_path*.
+
+    Bounded depth-first walk that prunes build-output and tooling
+    directories. Order is depth-first but stable across runs (sorted
+    children at each level) so caching downstream is deterministic.
+    """
+    found: list[Path] = []
+
+    def _walk(current: Path, depth: int) -> None:
+        if len(found) >= _DOTNET_MAX_PROJECTS:
+            return
+        if depth > _DOTNET_MAX_DEPTH:
+            return
+        try:
+            entries = sorted(current.iterdir(), key=lambda p: p.name.lower())
+        except (OSError, PermissionError):
+            return
+        for entry in entries:
+            if len(found) >= _DOTNET_MAX_PROJECTS:
+                return
+            if entry.is_dir():
+                if entry.name in _DOTNET_PRUNE or entry.name.startswith("."):
+                    continue
+                _walk(entry, depth + 1)
+            elif entry.is_file() and entry.suffix == ".csproj":
+                found.append(entry)
+
+    _walk(repo_path, 0)
+    return found
+
+
 def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
     """Detect languages, frameworks, and infra tools from manifest files.
 
@@ -168,9 +222,12 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
                 add("Laravel", None, "framework")
 
     # --- .NET / C# (.csproj / .sln / Directory.Build.props) ---
-    # Walk one level deep so multi-project solutions like eShop register.
-    csproj_files = list(repo_path.glob("*.csproj")) + list(repo_path.glob("*/*.csproj"))
-    sln_files = list(repo_path.glob("*.sln"))
+    # Walk the tree (bounded) so monorepos whose projects live under
+    # `src/modules/<module>/<Module>.csproj` or `services/foo/foo.csproj`
+    # still register. A shallow glob misses every real-world .NET
+    # monorepo layout — eShop, Aspire samples, PowerToys, Roslyn etc.
+    csproj_files = _find_dotnet_projects(repo_path)
+    sln_files = list(repo_path.glob("*.sln")) + list(repo_path.glob("*/*.sln"))
     has_directory_build = (repo_path / "Directory.Build.props").exists() or (
         repo_path / "Directory.Packages.props"
     ).exists()
@@ -179,7 +236,7 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
         # net8.0, etc. Best-effort regex; the .csproj XML is small so a
         # full parser would be overkill.
         target_fw: str | None = None
-        for csproj in csproj_files[:3]:
+        for csproj in csproj_files[:10]:
             try:
                 ctext = csproj.read_text(encoding="utf-8", errors="ignore")
             except OSError:
@@ -192,9 +249,12 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
                 break
         add("C#", target_fw, "language")
         add(".NET", target_fw, "framework")
-        # Common .NET stack indicators read from any .csproj text.
+        # Common .NET stack indicators read from any .csproj text. The
+        # cap is per-file, not per-byte — small projects with many
+        # csprojs (PowerToys ~140, Roslyn ~300) need a generous limit
+        # before they look like an unflavoured .NET repo.
         joined_csproj = ""
-        for csproj in csproj_files[:20]:
+        for csproj in csproj_files[:80]:
             try:
                 joined_csproj += csproj.read_text(encoding="utf-8", errors="ignore")
             except OSError:
@@ -213,6 +273,12 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
             "Maui" in p.stem for p in csproj_files
         ):
             add(".NET MAUI", None, "framework")
+        if "Microsoft.WindowsAppSDK" in joined_csproj or "Microsoft.UI.Xaml" in joined_csproj:
+            add("WinUI 3", None, "framework")
+        if "Microsoft.NET.Sdk.WindowsDesktop" in joined_csproj or "<UseWPF>true" in joined_csproj:
+            add("WPF", None, "framework")
+        if "Microsoft.NET.Sdk.WindowsDesktop" in joined_csproj and "<UseWindowsForms>true" in joined_csproj:
+            add("Windows Forms", None, "framework")
 
     # --- Docker ---
     if (repo_path / "Dockerfile").exists():
