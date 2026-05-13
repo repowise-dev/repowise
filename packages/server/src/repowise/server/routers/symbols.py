@@ -96,6 +96,9 @@ async def search_symbols(
     kind: str | None = Query(None, description="Filter by symbol kind"),
     language: str | None = Query(None, description="Filter by language"),
     visibility: str | None = Query(None, description="Filter by visibility"),
+    file_path: str | None = Query(
+        None, description="Filter by exact source file path (for hotspot drill-down)"
+    ),
     in_hot_files: bool = Query(False, description="Only symbols whose file is a hotspot"),
     in_entry_points: bool = Query(False, description="Only symbols in entry-point files"),
     sort: SortKey = Query("importance", description="Sort key"),
@@ -120,6 +123,8 @@ async def search_symbols(
         base = base.where(WikiSymbol.language == language)
     if visibility:
         base = base.where(WikiSymbol.visibility == visibility)
+    if file_path:
+        base = base.where(WikiSymbol.file_path == file_path)
 
     # Optional file-level filters require resolving file paths up front.
     if in_hot_files or in_entry_points:

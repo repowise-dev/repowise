@@ -3,7 +3,9 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { useFileCardHost } from "@/components/shared/file-card-host";
-import type { HotspotResponse as HotspotRowType, Paginated } from "@/lib/api/types";
+import { HotspotTopSymbolsHost } from "@/components/symbols/hotspot-top-symbols-host";
+import { SymbolDrawerWrapper } from "@/components/symbols/symbol-drawer-wrapper";
+import type { HotspotResponse as HotspotRowType, Paginated, SymbolResponse } from "@/lib/api/types";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
 import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
@@ -36,6 +38,7 @@ function hotspotToFileCard(h: HotspotRowType): FileCardData {
 export function HotspotsTab({ repoId }: { repoId: string }) {
   const { showFile, dialog } = useFileCardHost(repoId);
   const [pageLimit, setPageLimit] = useState(PAGE_SIZE);
+  const [drawerSymbol, setDrawerSymbol] = useState<SymbolResponse | null>(null);
   const {
     data: hotspotsPage,
     isLoading: loadingHotspots,
@@ -142,8 +145,20 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
         hasMore={hasMore}
         loadingMore={validatingHotspots && !loadingHotspots}
         onLoadMore={() => setPageLimit((n) => Math.min(n + PAGE_SIZE, 500))}
+        renderExpandedRow={(h) => (
+          <HotspotTopSymbolsHost
+            repoId={repoId}
+            filePath={h.file_path}
+            onSelectSymbol={setDrawerSymbol}
+          />
+        )}
       />
       {dialog}
+      <SymbolDrawerWrapper
+        symbol={drawerSymbol}
+        repoId={repoId}
+        onClose={() => setDrawerSymbol(null)}
+      />
     </div>
   );
 }

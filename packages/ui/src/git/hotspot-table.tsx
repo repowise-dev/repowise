@@ -1,7 +1,8 @@
 "use client";
 
+import * as React from "react";
 import { useState, useMemo } from "react";
-import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown, GitBranch, BookOpen, Radius } from "lucide-react";
+import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDown, GitBranch, BookOpen, Radius, ChevronRight, ChevronDown } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
@@ -33,6 +34,12 @@ interface HotspotTableProps {
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
+  /**
+   * When provided, each row shows a chevron toggle that expands an inline
+   * panel below it — used for hotspot → "top symbols in this file" drill-down.
+   * The host owns data-fetching and renders the panel body.
+   */
+  renderExpandedRow?: (hotspot: Hotspot) => React.ReactNode;
 }
 
 type Filter = "all" | "hot" | "risk" | "accelerating";
@@ -60,7 +67,18 @@ export function HotspotTable({
   hasMore,
   loadingMore,
   onLoadMore,
+  renderExpandedRow,
 }: HotspotTableProps) {
+  const expandable = !!renderExpandedRow;
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const toggleExpand = (filePath: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(filePath)) next.delete(filePath);
+      else next.add(filePath);
+      return next;
+    });
+  };
   const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -169,6 +187,7 @@ export function HotspotTable({
           <table className="w-full min-w-[760px] text-sm">
             <thead className="sticky top-0 z-10 bg-[var(--color-bg-elevated)]">
               <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]">
+                {expandable && <th className="w-6 px-1" aria-hidden="true" />}
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider w-8">
                   #
                 </th>
@@ -216,15 +235,39 @@ export function HotspotTable({
               {filtered.map((h, i) => {
                 const accelerating = h.commit_count_30d * 3 > h.commit_count_90d;
                 const trendScore = h.temporal_hotspot_score;
+                const isExpanded = expanded.has(h.file_path);
                 return (
+                  <React.Fragment key={h.file_path}>
                   <tr
-                    key={h.file_path}
                     onClick={onSelect ? () => onSelect(h) : undefined}
                     className={cn(
-                      "border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0",
+                      "border-b border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] transition-colors",
+                      !isExpanded && "last:border-0",
                       onSelect && "cursor-pointer",
                     )}
                   >
+                    {expandable && (
+                      <td
+                        className="px-1 py-2.5 align-middle"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleExpand(h.file_path);
+                        }}
+                      >
+                        <button
+                          type="button"
+                          aria-label={isExpanded ? "Collapse symbols" : "Expand symbols"}
+                          aria-expanded={isExpanded}
+                          className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+                        >
+                          {isExpanded ? (
+                            <ChevronDown className="h-3.5 w-3.5" />
+                          ) : (
+                            <ChevronRight className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      </td>
+                    )}
                     <td className="px-3 py-2.5 text-[var(--color-text-tertiary)] tabular-nums text-xs">
                       {i + 1}
                     </td>
@@ -302,6 +345,15 @@ export function HotspotTable({
                       </div>
                     </td>
                   </tr>
+                  {expandable && isExpanded && (
+                    <tr className="border-b border-[var(--color-border-default)] bg-[var(--color-bg-subtle)] last:border-0">
+                      <td className="px-1" />
+                      <td colSpan={9} className="px-3 py-3">
+                        {renderExpandedRow!(h)}
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </tbody>

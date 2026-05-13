@@ -124,18 +124,43 @@ async def patch_decision(
     body: DecisionStatusUpdate,
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DecisionRecordResponse:
-    """Update the status of a decision record (confirm, deprecate, supersede)."""
-    try:
-        rec = await crud.update_decision_status(
+    """Update a decision record.
+
+    Accepts status transitions (confirm / deprecate / supersede) and / or
+    governance edits (``affected_modules``, ``affected_files``). Any field
+    left as ``None`` in the body is preserved.
+    """
+    rec = await crud.get_decision(session, decision_id)
+    if rec is None or rec.repository_id != repo_id:
+        raise HTTPException(status_code=404, detail="Decision not found")
+
+    if body.status is not None:
+        try:
+            rec = await crud.update_decision_status(
+                session,
+                decision_id,
+                body.status,
+                superseded_by=body.superseded_by,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Decision not found")
+    elif body.superseded_by is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="superseded_by requires status='superseded'",
+        )
+
+    if body.affected_modules is not None or body.affected_files is not None:
+        rec = await crud.update_decision_metadata(
             session,
             decision_id,
-            body.status,
-            superseded_by=body.superseded_by,
+            affected_modules=body.affected_modules,
+            affected_files=body.affected_files,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if rec is None:
-        raise HTTPException(status_code=404, detail="Decision not found")
-    if rec.repository_id != repo_id:
-        raise HTTPException(status_code=404, detail="Decision not found")
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Decision not found")
+
+    assert rec is not None
     return DecisionRecordResponse.from_orm(rec)

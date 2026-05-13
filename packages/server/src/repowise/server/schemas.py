@@ -941,8 +941,17 @@ class DecisionCreate(BaseModel):
 
 
 class DecisionStatusUpdate(BaseModel):
-    status: str
+    """PATCH body for /decisions/{id}.
+
+    All fields are optional — clients can update status alone (the historical
+    contract), the linked modules / files alone (governance editor), or both
+    in a single request. Fields left at ``None`` are preserved.
+    """
+
+    status: str | None = None
     superseded_by: str | None = None
+    affected_modules: list[str] | None = None
+    affected_files: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------

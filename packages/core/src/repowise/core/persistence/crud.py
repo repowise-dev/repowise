@@ -1054,6 +1054,30 @@ async def list_decisions(
     return list(result.scalars().all())
 
 
+async def update_decision_metadata(
+    session: AsyncSession,
+    decision_id: str,
+    *,
+    affected_modules: list[str] | None = None,
+    affected_files: list[str] | None = None,
+) -> DecisionRecord | None:
+    """Patch the module/file linkage on a decision record.
+
+    Each argument left as ``None`` is preserved. Pass an empty list to clear.
+    Returns the updated record, or ``None`` if the id was not found.
+    """
+    rec = await session.get(DecisionRecord, decision_id)
+    if rec is None:
+        return None
+    if affected_modules is not None:
+        rec.affected_modules_json = json.dumps(affected_modules)
+    if affected_files is not None:
+        rec.affected_files_json = json.dumps(affected_files)
+    rec.updated_at = _now_utc()
+    await session.flush()
+    return rec
+
+
 async def update_decision_status(
     session: AsyncSession,
     decision_id: str,

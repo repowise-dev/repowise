@@ -3,12 +3,15 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import useSWR from "swr";
 import { toast } from "sonner";
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
+import { ModuleLinkEditor } from "@repowise-dev/ui/decisions/module-link-editor";
 import { patchDecision } from "@/lib/api/decisions";
+import { listModuleHealth } from "@/lib/api/modules";
 import type { DecisionRecordResponse } from "@/lib/api/types";
 
 const STATUS_VARIANT: Record<string, "default" | "fresh" | "stale" | "outdated" | "outline" | "accent"> = {
@@ -42,6 +45,63 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
   const [status, setStatus] = React.useState(decision.status);
   const [loading, setLoading] = React.useState(false);
   const [pendingStatus, setPendingStatus] = React.useState<string | null>(null);
+  const [linkedModules, setLinkedModules] = React.useState(decision.affected_modules);
+  const [linkedFiles, setLinkedFiles] = React.useState(decision.affected_files);
+  const [linkageSaving, setLinkageSaving] = React.useState(false);
+
+  // Suggestions for the module autocomplete — top-level modules indexed for
+  // this repo. Loaded once; cheap to cache.
+  const { data: moduleHealth } = useSWR(
+    `module-health-suggestions:${repoId}`,
+    () => listModuleHealth(repoId, { sort: "file_count", limit: 500 }),
+    { revalidateOnFocus: false },
+  );
+  const moduleSuggestions = React.useMemo(
+    () => (moduleHealth?.items ?? []).map((m) => m.module_path),
+    [moduleHealth],
+  );
+
+  const saveLinkage = async (next: { modules: string[]; files: string[] }) => {
+    const previousModules = linkedModules;
+    const previousFiles = linkedFiles;
+    setLinkageSaving(true);
+    try {
+      await patchDecision(repoId, decision.id, {
+        affected_modules: next.modules,
+        affected_files: next.files,
+      });
+      setLinkedModules(next.modules);
+      setLinkedFiles(next.files);
+      toast.success("Decision linkage updated", {
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            try {
+              await patchDecision(repoId, decision.id, {
+                affected_modules: previousModules,
+                affected_files: previousFiles,
+              });
+              setLinkedModules(previousModules);
+              setLinkedFiles(previousFiles);
+            } catch (err) {
+              toast.error(
+                err instanceof Error ? `Couldn't undo: ${err.message}` : "Couldn't undo",
+              );
+            }
+          },
+        },
+        duration: 6000,
+      });
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? `Couldn't save linkage: ${err.message}`
+          : "Couldn't save linkage",
+      );
+    } finally {
+      setLinkageSaving(false);
+    }
+  };
 
   const applyStatusChange = async (newStatus: string) => {
     const previous = status;
@@ -142,23 +202,15 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
         )}
       </div>
 
-      {/* Metadata */}
+      {/* Governance linkage — writable editor + evidence card */}
       <div className="grid gap-4 sm:grid-cols-2">
-        {decision.affected_files.length > 0 && (
-          <div className="rounded-lg border border-[var(--color-border-default)] p-4">
-            <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">
-              Affected Files ({decision.affected_files.length})
-            </h3>
-            <ul className="space-y-1 text-sm text-[var(--color-text-tertiary)]">
-              {decision.affected_files.slice(0, 10).map((f) => (
-                <li key={f} className="truncate font-mono text-xs" title={f}>{f}</li>
-              ))}
-              {decision.affected_files.length > 10 && (
-                <li className="text-xs">...and {decision.affected_files.length - 10} more</li>
-              )}
-            </ul>
-          </div>
-        )}
+        <ModuleLinkEditor
+          modules={linkedModules}
+          files={linkedFiles}
+          suggestions={moduleSuggestions}
+          saving={linkageSaving}
+          onSave={saveLinkage}
+        />
 
         <div className="rounded-lg border border-[var(--color-border-default)] p-4">
           <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">Evidence</h3>

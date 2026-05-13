@@ -592,8 +592,10 @@ export interface DecisionCreate {
 }
 
 export interface DecisionStatusUpdate {
-  status: string;
+  status?: string;
   superseded_by?: string;
+  affected_modules?: string[];
+  affected_files?: string[];
 }
 
 export interface DecisionHealthResponse {

@@ -9,6 +9,7 @@ export interface SymbolListParams {
   kind?: string;
   language?: string;
   visibility?: string;
+  file_path?: string;
   in_hot_files?: boolean;
   in_entry_points?: boolean;
   sort?: SymbolSortKey;

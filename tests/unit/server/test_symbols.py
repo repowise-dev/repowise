@@ -83,6 +83,36 @@ async def test_search_symbols_by_kind(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_symbols_by_file_path(client: AsyncClient, app) -> None:
+    """The ``file_path`` filter scopes results to a single source file —
+    powers the hotspot-row → top-symbols drill-down."""
+    repo = await create_test_repo(client)
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="alpha",
+        symbol_id="src/a.py::alpha",
+        file_path="src/a.py",
+    )
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="beta",
+        symbol_id="src/b.py::beta",
+        file_path="src/b.py",
+    )
+
+    resp = await client.get(
+        "/api/symbols",
+        params={"repo_id": repo["id"], "file_path": "src/a.py"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["name"] == "alpha"
+
+
+@pytest.mark.asyncio
 async def test_lookup_by_name_exact(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_symbol(app.state.session_factory, repo["id"])

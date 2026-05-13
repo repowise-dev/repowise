@@ -29,6 +29,7 @@ def _create_test_app():
     from fastapi import FastAPI
     from repowise.server.routers import (
         dead_code,
+        decisions,
         git,
         graph,
         health,
@@ -74,6 +75,7 @@ def _create_test_app():
     app.include_router(dead_code.router)
     app.include_router(owners.router)
     app.include_router(modules.router)
+    app.include_router(decisions.router)
 
     return app
 

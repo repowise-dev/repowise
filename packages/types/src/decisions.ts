@@ -56,9 +56,15 @@ export interface DecisionCreateInput {
   tags?: string[];
 }
 
+/**
+ * PATCH body for /api/repos/{id}/decisions/{decision_id}. All fields are
+ * optional — clients can update just the status, just the linkage, or both.
+ */
 export interface DecisionStatusUpdate {
-  status: DecisionStatus;
+  status?: DecisionStatus;
   superseded_by?: string;
+  affected_modules?: string[];
+  affected_files?: string[];
 }
 
 export interface DecisionHealth {
