@@ -441,7 +441,8 @@ class GitMetadataResponse(BaseModel):
             co_change_partners=json.loads(obj.co_change_partners_json),  # type: ignore[attr-defined]
             is_hotspot=obj.is_hotspot,  # type: ignore[attr-defined]
             is_stable=obj.is_stable,  # type: ignore[attr-defined]
-            churn_percentile=obj.churn_percentile,  # type: ignore[attr-defined]
+            # Normalize 0–1 → 0–100 to match the rest of the HTTP API.
+            churn_percentile=(obj.churn_percentile or 0.0) * 100.0,  # type: ignore[attr-defined]
             age_days=obj.age_days,  # type: ignore[attr-defined]
             bus_factor=obj.bus_factor or 0,  # type: ignore[attr-defined]
             contributor_count=obj.contributor_count or 0,  # type: ignore[attr-defined]

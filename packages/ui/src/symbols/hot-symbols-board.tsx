@@ -1,6 +1,7 @@
 "use client";
 
-import { Flame, ArrowRight } from "lucide-react";
+import { useState } from "react";
+import { ArrowRight, ChevronDown, ChevronRight, Flame } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { cn } from "../lib/cn";
@@ -19,9 +20,23 @@ export interface HotSymbolsBoardProps {
   limit?: number;
   onSelect?: (sym: CodeSymbol) => void;
   className?: string;
+  /**
+   * When true (default) the board starts collapsed — header only, content
+   * hidden behind an expand toggle. The table below it is the primary
+   * surface; this board is a secondary preview, so keeping it folded by
+   * default avoids stealing top-of-page real estate.
+   */
+  defaultCollapsed?: boolean;
 }
 
-export function HotSymbolsBoard({ items, limit = 8, onSelect, className }: HotSymbolsBoardProps) {
+export function HotSymbolsBoard({
+  items,
+  limit = 8,
+  onSelect,
+  className,
+  defaultCollapsed = true,
+}: HotSymbolsBoardProps) {
+  const [open, setOpen] = useState(!defaultCollapsed);
   const top = items.slice(0, limit);
   if (top.length === 0) {
     return null;
@@ -31,14 +46,30 @@ export function HotSymbolsBoard({ items, limit = 8, onSelect, className }: HotSy
   return (
     <Card className={className}>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <Flame className="h-4 w-4 text-orange-500" />
-          Hot symbols
-          <span className="text-[10px] font-normal text-[var(--color-text-tertiary)] uppercase tracking-wider">
-            churn × centrality × complexity
-          </span>
-        </CardTitle>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="w-full text-left -my-1 -mx-1 rounded px-1 py-1 hover:bg-[var(--color-bg-elevated)] transition-colors"
+        >
+          <CardTitle className="text-sm flex items-center gap-2">
+            {open ? (
+              <ChevronDown className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+            )}
+            <Flame className="h-4 w-4 text-orange-500" />
+            Hot symbols
+            <span className="text-[10px] font-normal text-[var(--color-text-tertiary)] uppercase tracking-wider">
+              churn × centrality × complexity
+            </span>
+            <span className="ml-auto text-[10px] font-normal text-[var(--color-text-tertiary)] tabular-nums">
+              {top.length}
+            </span>
+          </CardTitle>
+        </button>
       </CardHeader>
+      {open && (
       <CardContent className="pt-0">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {top.map(({ symbol, score }) => {
@@ -84,6 +115,7 @@ export function HotSymbolsBoard({ items, limit = 8, onSelect, className }: HotSy
           })}
         </div>
       </CardContent>
+      )}
     </Card>
   );
 }

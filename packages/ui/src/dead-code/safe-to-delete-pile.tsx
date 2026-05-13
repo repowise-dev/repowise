@@ -42,10 +42,39 @@ export function SafeToDeletePile({
     findings.reduce((sum, f) => sum + (Number.isFinite(f.lines) ? f.lines : 0), 0);
   const files = new Set(findings.map((f) => f.file_path)).size;
 
-  const top = React.useMemo(
-    () => [...findings].sort((a, b) => b.lines - a.lines).slice(0, 5),
-    [findings],
-  );
+  // Roll findings up by file so the preview list shows distinct files
+  // instead of repeating the same path once per finding. Each group keeps
+  // a pointer back to its largest finding so onSelect still opens
+  // something meaningful in the context drawer.
+  type FileGroup = {
+    file_path: string;
+    lines: number;
+    finding_count: number;
+    representative: SafeToDeletePileFinding;
+  };
+  const groups: FileGroup[] = React.useMemo(() => {
+    const byFile = new Map<string, FileGroup>();
+    for (const f of findings) {
+      const existing = byFile.get(f.file_path);
+      if (existing) {
+        existing.lines += Number.isFinite(f.lines) ? f.lines : 0;
+        existing.finding_count += 1;
+        if ((f.lines ?? 0) > (existing.representative.lines ?? 0)) {
+          existing.representative = f;
+        }
+      } else {
+        byFile.set(f.file_path, {
+          file_path: f.file_path,
+          lines: Number.isFinite(f.lines) ? f.lines : 0,
+          finding_count: 1,
+          representative: f,
+        });
+      }
+    }
+    return [...byFile.values()].sort((a, b) => b.lines - a.lines);
+  }, [findings]);
+  const top = groups.slice(0, 5);
+  const moreFiles = Math.max(0, groups.length - top.length);
 
   return (
     <div
@@ -88,13 +117,13 @@ export function SafeToDeletePile({
 
       {top.length > 0 && (
         <ul className="mt-4 grid gap-1.5">
-          {top.map((f) => {
+          {top.map((g) => {
             const Tag = onSelect ? "button" : "div";
             return (
-              <li key={f.id}>
+              <li key={g.file_path}>
                 <Tag
                   type={onSelect ? "button" : undefined}
-                  onClick={onSelect ? () => onSelect(f) : undefined}
+                  onClick={onSelect ? () => onSelect(g.representative) : undefined}
                   className={cn(
                     "flex w-full items-center justify-between gap-3 rounded-md border border-transparent px-2 py-1.5",
                     "text-left text-xs transition",
@@ -103,21 +132,29 @@ export function SafeToDeletePile({
                 >
                   <span
                     className="font-mono text-[11px] text-[var(--color-text-secondary)] truncate"
-                    title={f.symbol_name ? `${f.file_path} :: ${f.symbol_name}` : f.file_path}
+                    title={g.file_path}
                   >
-                    {f.file_path}
-                    {f.symbol_name ? (
-                      <span className="text-[var(--color-text-tertiary)]"> :: {f.symbol_name}</span>
-                    ) : null}
+                    {g.file_path}
+                    {g.finding_count > 1 && (
+                      <span className="ml-1.5 text-[var(--color-text-tertiary)]">
+                        ({g.finding_count} findings)
+                      </span>
+                    )}
                   </span>
                   <span className="shrink-0 font-mono tabular-nums text-[var(--color-text-tertiary)]">
-                    {f.lines.toLocaleString()} lines
+                    {g.lines.toLocaleString()} lines
                     {onSelect && <ArrowRight className="ml-1 inline h-3 w-3" />}
                   </span>
                 </Tag>
               </li>
             );
           })}
+          {moreFiles > 0 && (
+            <li className="px-2 pt-0.5 text-[11px] text-[var(--color-text-tertiary)]">
+              +{moreFiles.toLocaleString()} more file{moreFiles === 1 ? "" : "s"} —
+              {" "}see findings table below.
+            </li>
+          )}
         </ul>
       )}
     </div>

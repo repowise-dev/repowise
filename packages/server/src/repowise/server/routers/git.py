@@ -34,12 +34,17 @@ router = APIRouter(
 
 
 def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
+    # churn_percentile is stored on a 0–1 scale (rank / total) but every UI
+    # consumer treats it as a percentile rank in 0–100. Normalize here so
+    # the API contract is unambiguous and the dashboard ChurnBar / scatter
+    # / hotspots-mini render correctly without per-component hacks.
+    churn_pct = (r.churn_percentile or 0.0) * 100.0
     return HotspotResponse(
         file_path=r.file_path,
         commit_count_total=r.commit_count_total or 0,
         commit_count_90d=r.commit_count_90d,
         commit_count_30d=r.commit_count_30d,
-        churn_percentile=r.churn_percentile,
+        churn_percentile=churn_pct,
         temporal_hotspot_score=r.temporal_hotspot_score,
         primary_owner=r.primary_owner_name,
         primary_owner_commit_pct=r.primary_owner_commit_pct,
@@ -220,7 +225,12 @@ async def get_git_summary(
 
     hotspot_count = sum(1 for m in all_meta if m.is_hotspot)
     stable_count = sum(1 for m in all_meta if m.is_stable)
-    avg_churn = sum(m.churn_percentile for m in all_meta) / len(all_meta) if all_meta else 0.0
+    # Normalize to 0–100 to match the rest of the HTTP API contract.
+    avg_churn = (
+        sum(m.churn_percentile for m in all_meta) / len(all_meta) * 100.0
+        if all_meta
+        else 0.0
+    )
 
     owners: dict[str, int] = {}
     for m in all_meta:

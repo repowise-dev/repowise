@@ -6,16 +6,14 @@ import { useFileCardHost } from "@/components/shared/file-card-host";
 import type { HotspotResponse as HotspotRowType, Paginated } from "@/lib/api/types";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
-import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
 import { ChurnHistogram } from "@repowise-dev/ui/git/churn-histogram";
 import { CommitCategoryDonut } from "@repowise-dev/ui/git/commit-category-donut";
 import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
 import { ChurnVsBusFactorScatter } from "@repowise-dev/ui/git/churn-vs-bus-factor-scatter";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { getHotspotsPage, getGitSummary } from "@/lib/api/git";
-import { formatNumber } from "@repowise-dev/ui/lib/format";
-import type { GitSummaryResponse, HotspotResponse } from "@/lib/api/types";
+import { getHotspotsPage } from "@/lib/api/git";
+import type { HotspotResponse } from "@/lib/api/types";
 
 const PAGE_SIZE = 100;
 
@@ -48,12 +46,6 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
     () => getHotspotsPage(repoId, { limit: pageLimit }),
     { revalidateOnFocus: false, keepPreviousData: true },
   );
-  const { data: summary } = useSWR<GitSummaryResponse>(
-    `git-summary:${repoId}`,
-    () => getGitSummary(repoId),
-    { revalidateOnFocus: false },
-  );
-
   const list = hotspotsPage?.items ?? [];
   const total = hotspotsPage?.total ?? list.length;
   const hasMore = hotspotsPage?.has_more ?? false;
@@ -129,51 +121,28 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
               </p>
             </CardHeader>
             <CardContent className="pt-0">
-              <ChurnVsBusFactorScatter hotspots={list} />
+              <ChurnVsBusFactorScatter
+                hotspots={list}
+                onSelect={(path) => {
+                  const hit = list.find((h) => h.file_path === path);
+                  if (hit) showFile(hotspotToFileCard(hit));
+                }}
+              />
             </CardContent>
           </Card>
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
-        <div className="xl:col-span-3">
-          <HotspotTable
-            hotspots={list}
-            repoId={repoId}
-            onSelect={(h) => showFile(hotspotToFileCard(h))}
-            total={total}
-            hasMore={hasMore}
-            loadingMore={validatingHotspots && !loadingHotspots}
-            onLoadMore={() => setPageLimit((n) => Math.min(n + PAGE_SIZE, 500))}
-          />
-        </div>
-
-        {summary && summary.top_owners.length > 0 && (
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Top Owners</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <ContributorBar owners={summary.top_owners} />
-              <div className="mt-3 space-y-1.5">
-                {summary.top_owners.slice(0, 5).map((o, i) => (
-                  <div key={o.email || `owner-${i}`} className="flex items-center justify-between text-xs">
-                    <span
-                      className="text-[var(--color-text-secondary)] truncate"
-                      title={o.email ? `${o.name} <${o.email}>` : o.name}
-                    >
-                      {o.name}
-                    </span>
-                    <span className="text-[var(--color-text-tertiary)] tabular-nums ml-2">
-                      {formatNumber(o.file_count)} files ({Math.round(o.pct * 100)}%)
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </div>
+      {/* Top contributors lives on the Heatmap tab; not duplicated here. */}
+      <HotspotTable
+        hotspots={list}
+        repoId={repoId}
+        onSelect={(h) => showFile(hotspotToFileCard(h))}
+        total={total}
+        hasMore={hasMore}
+        loadingMore={validatingHotspots && !loadingHotspots}
+        onLoadMore={() => setPageLimit((n) => Math.min(n + PAGE_SIZE, 500))}
+      />
       {dialog}
     </div>
   );

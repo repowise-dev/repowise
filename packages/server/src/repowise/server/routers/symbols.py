@@ -79,8 +79,11 @@ async def _file_signals(
         )
     )
     churn_map: dict[str, tuple[float | None, bool | None]] = {
-        row.file_path: (float(row.churn_percentile) if row.churn_percentile is not None else None,
-                         bool(row.is_hotspot))
+        # 0–1 stored → 0–100 exposed (matches HotspotResponse contract).
+        row.file_path: (
+            float(row.churn_percentile) * 100.0 if row.churn_percentile is not None else None,
+            bool(row.is_hotspot),
+        )
         for row in churn_rows
     }
     return pagerank_map, churn_map
