@@ -68,7 +68,7 @@ repowise runs once, builds everything, then keeps it in sync on every commit.
 tree-sitter parses every file across 14 languages into a two-tier dependency graph — file nodes and symbol nodes (functions, classes, methods). A 3-tier call resolver with confidence scoring handles import aliases, barrel re-exports, and namespace imports. Heritage extraction covers extends, implements, trait impls, derive macros, mixins, and extension conformance. Leiden community detection finds logical modules even when your directory structure doesn't reflect them. PageRank, betweenness centrality, SCC analysis, and execution flow tracing from entry points identify your most central, most coupled, and most traversed code.
 
 ### ◈ Git Intelligence
-500 commits of history turned into signals: hotspot files (high churn × high complexity), ownership percentages per engineer, co-change pairs (files that change together without an import link — hidden coupling), and significant commit messages that explain *why* code evolved.
+500 commits of history turned into signals: hotspot files (high churn × high complexity), ownership percentages per engineer, co-change pairs (files that change together without an import link — hidden coupling), and significant commit messages that explain *why* code evolved. Rolled up into engineering-leader views — **contributor profiles** (per-engineer module rollups, top files, co-authors, silo modules, dead-code burden), **module health scorecards** (composite score over churn × ownership × docs × dead code × bus factor), and **reviewer suggestions** for any PR file list, weighted by direct authorship, co-change history, and recency.
 
 ### ◈ Documentation Intelligence
 An LLM-generated wiki for every module and file, rebuilt incrementally on every commit. Coverage tracking. Freshness scoring per page. Semantic search via RAG. Confidence scores show how current each page is relative to the underlying code.
@@ -256,14 +256,17 @@ This is what happens when an AI agent has real codebase intelligence.
 | **Docs** | AI-generated wiki with syntax highlighting, Mermaid diagrams, and a graph intelligence sidebar showing PageRank/betweenness percentiles, community membership, and degree |
 | **Graph** | Interactive dependency graph — handles 2,000+ nodes. Community color mode with real labels, community detail panel on click, path finder |
 | **Search** | Full-text and semantic search with global command palette (Ctrl+K) |
-| **Symbols** | Searchable index of every function, class, and method. Click any symbol for graph metrics, callers/callees, and class heritage |
+| **Symbols** | Searchable index of every function, class, and method, server-ranked by importance (PageRank × visibility × complexity × kind × entry-point). Filter facets for public-only, language, kind, in-hotspot-files, and in-entry-point-files. Click any symbol for graph metrics, callers/callees, class heritage, and a git panel with governing decisions |
 | **Coverage** | Doc freshness per file with one-click regeneration |
-| **Ownership** | Contributor attribution and bus factor risk |
-| **Hotspots** | Ranked by trend-weighted score (180-day decay) and churn |
-| **Dead Code** | Unused code with confidence scores and bulk actions |
-| **Decisions** | Architectural decisions with staleness monitoring |
+| **Risk** | One page, six tabs: Hotspots (with inline drill-down to the top importance-ranked symbols in each file), Heatmap (ownership treemap with bus-factor borders and silo overlay), Module Health, Dead Code, Impact (blast radius), and the always-visible risk strip linking to each |
+| **Contributors** | Paginated contributor directory and per-engineer profile pages — modules they own, top files, co-authors, commit category mix, silo modules, bus-factor risk files, and dead-code burden. Click any owner anywhere in the dashboard to drill in |
+| **Module Health** | Engineering-leader rollup per top-level module: composite health score (churn / ownership / docs / dead code / bus factor) with sortable list and a per-module detail page showing owners, top hotspots, and governing decisions |
+| **Hotspots** | Ranked by trend-weighted score (180-day decay) and churn. Paginated load-more; each row expands inline to the most important symbols in that file |
+| **Dead Code** | Unused code with confidence scores, owner leaderboard, and bulk actions |
+| **Decisions** | Architectural decisions with staleness monitoring. Decision detail has a writable module-linkage editor so a decision's governance scope can be edited and shows up on the linked module's health page |
 | **Costs** | LLM spend by day, model, or operation, with running session totals |
-| **Blast Radius** | Paste a PR file list, see transitive impact, reviewers, and test gaps |
+| **Blast Radius** | Paste a PR file list, see transitive impact, test gaps, and a ranked reviewer-suggestions panel weighted by direct authorship, co-change history, and recency |
+| **Security** | Local regex-based scan for dangerous patterns — `eval`/`exec`/`pickle.loads`/`shell=True`/`os.system`, hardcoded secrets, f-string and concat SQL, `verify=False`, weak hashes — surfaced with severity and grouped by directory. Runs in seconds, no LLM, no network |
 | **Knowledge Map** | Top owners, bus-factor silos, and onboarding targets on the dashboard |
 | **Graph Intelligence** | Architecture communities with expandable detail, execution flows with call traces, community coupling analysis — all on the overview dashboard |
 | **Workspace Dashboard** | Aggregate stats across repos, repo cards, cross-repo intelligence summary (workspace mode) |
@@ -388,6 +391,12 @@ repowise mines your last 500 commits (configurable) to produce signals no static
 
 **Significant commits** — the last 10 meaningful commit messages per file (filtered: no merges, no dependency bumps, no lint) are included in generation prompts. The LLM explains *why* code is structured the way it is.
 
+**Contributor profiles** — every engineer with commits gets a profile page: modules they own, top files, co-authors, commit category mix (feat / fix / refactor / docs / test / chore / perf), silo modules they're solely on, bus-factor risk files, and dead-code burden. Surfaced via `/repos/<id>/owners` in the dashboard and linked from every owner reference.
+
+**Module health** — composite 0–100 score per top-level module derived from silo penalty, hotspot density, dead-code percentage, average churn, doc coverage, and median bus factor. Surfaced on the Risk page and the new per-module detail page, with cross-links to owners, hotspots, and governing decisions.
+
+**Reviewer suggestions** — paste a PR file list into Blast Radius and get a ranked list of likely reviewers, scored by direct authorship (×1.0), co-change partners (×0.5), and recency (×0.4), capped at the 5 strongest co-change signals per file.
+
 ---
 
 ## Dead code detection
@@ -478,7 +487,7 @@ We use it on our own codebase — see the live snapshot of repowise indexing its
 **What you get on top of self-hosting:**
 - **Zero ops** — managed deploys, managed webhooks, auto re-index on every commit, no infrastructure
 - **Hosted MCP endpoint** — point Claude Code (or any MCP client) at one URL, no local server to run
-- **Security scanning layer** — CVE-aware vulnerability detection, dependency risk surfacing, and security anti-pattern analysis across your repositories
+- **CVE-aware security layer** — on top of the local pattern scan, the hosted version adds CVE-aware vulnerability detection, dependency risk surfacing, and cross-repo security anti-pattern analysis
 - **Cross-repo intelligence at scale** — federated hotspots, dead code, and ownership across all your repos in one dashboard
 - **Integrations** *(rolling out)* — Slack alerts, Jira/Linear decision linking, Confluence/Notion doc sync, PagerDuty escalation
 
