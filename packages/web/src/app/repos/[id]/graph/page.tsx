@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { GraphFlow } from "@/components/graph/graph-flow";
 import { GraphDocPanel } from "@/components/graph/graph-doc-panel";
 import { CentralityLeaderboard, type CentralityNode } from "@repowise-dev/ui/graph/centrality-leaderboard";
+import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-banner";
 import { getGraph } from "@/lib/api/graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 
@@ -79,6 +80,22 @@ export default function GraphPage({
           Explore dependencies and trace paths between files
         </p>
       </div>
+
+      {/* Truncation banner — shown when the server capped the full graph */}
+      {graphData?.truncated && graphData.total_node_count != null && (
+        <div className="shrink-0 px-4 sm:px-6 pt-3">
+          <GraphTruncationBanner
+            shown={graphData.nodes.length}
+            total={graphData.total_node_count}
+            onSwitchToArchitecture={() => {
+              const url = new URL(window.location.href);
+              url.searchParams.set("viewMode", "architecture");
+              window.history.replaceState({}, "", url.toString());
+              window.location.reload();
+            }}
+          />
+        </div>
+      )}
 
       {/* Graph area */}
       <div className="flex-1 overflow-hidden p-3">

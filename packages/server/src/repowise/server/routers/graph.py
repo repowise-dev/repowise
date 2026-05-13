@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DeadCodeFinding,
+    DecisionRecord,
     GitMetadata,
     GraphEdge,
     GraphNode,
@@ -27,6 +28,9 @@ from repowise.server.mcp_server._graph_utils import (
     resolve_trace_communities,
 )
 from repowise.server.schemas import (
+    ArchitectureEdgeResponse,
+    ArchitectureGraphResponse,
+    ArchitectureNodeResponse,
     CallerCalleeEntry,
     CallersCalleesResponse,
     CommunityDetailResponse,
@@ -51,6 +55,10 @@ from repowise.server.schemas import (
     NodeSearchResult,
     SymbolNodeSummary,
 )
+
+# Cap on full-graph export; above this we return top-N by PageRank with truncated=True.
+# Sized to fit a modern client-side force layout without hitching.
+_FULL_GRAPH_NODE_CAP = 5000
 
 router = APIRouter(
     prefix="/api/graph",
@@ -78,6 +86,135 @@ async def _get_documented_paths(session: AsyncSession, repo_id: str) -> set[str]
     """Return the set of node_ids (file paths) that have a wiki page."""
     result = await session.execute(select(Page.target_path).where(Page.repository_id == repo_id))
     return {row.target_path for row in result.all() if row.target_path}
+
+
+# ---------------------------------------------------------------------------
+# Cross-link signal collection — single reusable join layer
+# ---------------------------------------------------------------------------
+
+
+class NodeSignals:
+    """Per-node cross-link signals (git, dead-code, decisions, docs)."""
+
+    __slots__ = (
+        "is_hotspot",
+        "churn_percentile",
+        "is_dead",
+        "dead_confidence",
+        "has_decision",
+        "primary_owner",
+        "has_doc",
+    )
+
+    def __init__(self) -> None:
+        self.is_hotspot: bool = False
+        self.churn_percentile: float | None = None
+        self.is_dead: bool = False
+        self.dead_confidence: float | None = None
+        self.has_decision: bool = False
+        self.primary_owner: str | None = None
+        self.has_doc: bool = False
+
+
+_EMPTY_SIGNALS = NodeSignals()
+
+
+async def _collect_node_signals(
+    session: AsyncSession,
+    repo_id: str,
+    node_ids: list[str] | None = None,
+) -> dict[str, NodeSignals]:
+    """Join git metadata, dead-code findings, decisions, and docs into one map.
+
+    When *node_ids* is provided, queries are scoped to that subset; otherwise
+    we fetch repo-wide. Returns ``{node_id: NodeSignals}``. Missing keys imply
+    default (all-false) signals.
+    """
+    signals: dict[str, NodeSignals] = {}
+
+    def _entry(path: str) -> NodeSignals:
+        existing = signals.get(path)
+        if existing is None:
+            existing = NodeSignals()
+            signals[path] = existing
+        return existing
+
+    # Git metadata: hotspot + churn + owner
+    git_q = select(GitMetadata).where(GitMetadata.repository_id == repo_id)
+    if node_ids is not None:
+        git_q = git_q.where(GitMetadata.file_path.in_(node_ids))
+    for gm in (await session.execute(git_q)).scalars():
+        s = _entry(gm.file_path)
+        s.is_hotspot = bool(gm.is_hotspot)
+        s.churn_percentile = gm.churn_percentile
+        s.primary_owner = gm.primary_owner_name
+
+    # Dead-code findings (only open, unreachable_file)
+    dead_q = select(DeadCodeFinding).where(
+        DeadCodeFinding.repository_id == repo_id,
+        DeadCodeFinding.status == "open",
+        DeadCodeFinding.kind == "unreachable_file",
+    )
+    if node_ids is not None:
+        dead_q = dead_q.where(DeadCodeFinding.file_path.in_(node_ids))
+    for f in (await session.execute(dead_q)).scalars():
+        s = _entry(f.file_path)
+        s.is_dead = True
+        s.dead_confidence = f.confidence
+
+    # Decisions: each decision lists affected files in JSON
+    dec_q = select(DecisionRecord.affected_files_json).where(
+        DecisionRecord.repository_id == repo_id,
+        DecisionRecord.status.in_(("active", "proposed")),
+    )
+    decision_paths: set[str] = set()
+    for (raw,) in (await session.execute(dec_q)).all():
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(parsed, list):
+            for p in parsed:
+                if isinstance(p, str):
+                    decision_paths.add(p)
+    if node_ids is not None:
+        decision_paths &= set(node_ids)
+    for p in decision_paths:
+        _entry(p).has_decision = True
+
+    # Docs (Page.target_path)
+    doc_q = select(Page.target_path).where(Page.repository_id == repo_id)
+    if node_ids is not None:
+        doc_q = doc_q.where(Page.target_path.in_(node_ids))
+    for (path,) in (await session.execute(doc_q)).all():
+        if path:
+            _entry(path).has_doc = True
+
+    return signals
+
+
+def _to_graph_node(n: GraphNode, signals: NodeSignals) -> GraphNodeResponse:
+    """Build a GraphNodeResponse from a GraphNode + its collected signals."""
+    return GraphNodeResponse(
+        node_id=n.node_id,
+        node_type=n.node_type,
+        language=n.language,
+        symbol_count=n.symbol_count,
+        pagerank=n.pagerank,
+        betweenness=n.betweenness,
+        community_id=n.community_id,
+        is_test=n.is_test,
+        is_entry_point=n.is_entry_point,
+        has_doc=signals.has_doc,
+        is_hotspot=signals.is_hotspot,
+        churn_percentile=signals.churn_percentile,
+        is_dead=signals.is_dead,
+        dead_confidence=signals.dead_confidence,
+        has_decision=signals.has_decision,
+        primary_owner=signals.primary_owner,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +269,10 @@ async def module_graph(
     )
     page_coverage: dict[str, float] = {row.target_path: row.confidence for row in page_result.all()}
 
+    # Collect signals once for all file nodes; aggregate per module below.
+    all_node_ids = [n.node_id for n in nodes]
+    signals = await _collect_node_signals(session, repo_id, all_node_ids)
+
     node_to_module: dict[str, str] = {}
     module_nodes: list[ModuleNodeResponse] = []
     for module_id, module_file_nodes in modules.items():
@@ -140,6 +281,22 @@ async def module_graph(
         avg_pagerank = sum(n.pagerank for n in module_file_nodes) / max(file_count, 1)
         covered = sum(1 for n in module_file_nodes if page_coverage.get(n.node_id, 0.0) >= 0.7)
         doc_coverage_pct = covered / max(file_count, 1)
+
+        hotspot_count = 0
+        dead_count = 0
+        has_decision = False
+        owner_tally: dict[str, int] = {}
+        for n in module_file_nodes:
+            sig = signals.get(n.node_id, _EMPTY_SIGNALS)
+            if sig.is_hotspot:
+                hotspot_count += 1
+            if sig.is_dead:
+                dead_count += 1
+            if sig.has_decision:
+                has_decision = True
+            if sig.primary_owner:
+                owner_tally[sig.primary_owner] = owner_tally.get(sig.primary_owner, 0) + 1
+        primary_owner = max(owner_tally, key=owner_tally.get) if owner_tally else None
 
         for n in module_file_nodes:
             node_to_module[n.node_id] = module_id
@@ -151,6 +308,10 @@ async def module_graph(
                 symbol_count=symbol_count,
                 avg_pagerank=avg_pagerank,
                 doc_coverage_pct=doc_coverage_pct,
+                hotspot_count=hotspot_count,
+                dead_count=dead_count,
+                has_decision=has_decision,
+                primary_owner=primary_owner,
             )
         )
 
@@ -247,23 +408,9 @@ async def ego_graph(
     git_row = git_result.scalar_one_or_none()
     git_meta = GitMetadataResponse.from_orm(git_row) if git_row else None
 
-    documented = await _get_documented_paths(session, repo_id)
+    signals = await _collect_node_signals(session, repo_id, list(ego_node_ids))
 
-    node_responses = [
-        GraphNodeResponse(
-            node_id=n.node_id,
-            node_type=n.node_type,
-            language=n.language,
-            symbol_count=n.symbol_count,
-            pagerank=n.pagerank,
-            betweenness=n.betweenness,
-            community_id=n.community_id,
-            is_test=n.is_test,
-            is_entry_point=n.is_entry_point,
-            has_doc=n.node_id in documented,
-        )
-        for n in node_rows
-    ]
+    node_responses = [_to_graph_node(n, signals.get(n.node_id, _EMPTY_SIGNALS)) for n in node_rows]
 
     return EgoGraphResponse(
         nodes=node_responses,
@@ -328,23 +475,9 @@ async def entry_points_graph(
     )
     nodes = node_result.scalars().all()
 
-    documented = await _get_documented_paths(session, repo_id)
+    signals = await _collect_node_signals(session, repo_id, list(reachable))
 
-    node_responses = [
-        GraphNodeResponse(
-            node_id=n.node_id,
-            node_type=n.node_type,
-            language=n.language,
-            symbol_count=n.symbol_count,
-            pagerank=n.pagerank,
-            betweenness=n.betweenness,
-            community_id=n.community_id,
-            is_test=n.is_test,
-            is_entry_point=n.is_entry_point,
-            has_doc=n.node_id in documented,
-        )
-        for n in nodes
-    ]
+    node_responses = [_to_graph_node(n, signals.get(n.node_id, _EMPTY_SIGNALS)) for n in nodes]
 
     link_responses = [
         GraphEdgeResponse(
@@ -356,7 +489,116 @@ async def entry_points_graph(
         if e.source_node_id in reachable and e.target_node_id in reachable
     ]
 
-    return GraphExportResponse(nodes=node_responses, links=link_responses)
+    return GraphExportResponse(
+        nodes=node_responses,
+        links=link_responses,
+        total_node_count=len(node_responses),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Architecture graph — community super-nodes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{repo_id}/architecture", response_model=ArchitectureGraphResponse)
+async def architecture_graph(
+    repo_id: str,
+    min_members: int = Query(
+        2, ge=1, description="Drop communities smaller than this from the view."
+    ),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> ArchitectureGraphResponse:
+    """High-level architecture view: one node per detected community.
+
+    Edges between communities are weighted by the number of underlying file
+    edges that cross the boundary. Each super-node also carries signal counts
+    (hotspots, dead files, decisions, doc coverage) so the architecture view
+    surfaces health at a glance.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    all_nodes = await crud.get_all_file_metrics(session, repo_id)
+    if not all_nodes:
+        return ArchitectureGraphResponse(nodes=[], edges=[])
+
+    # Group file nodes by community
+    buckets: dict[int, list[GraphNode]] = {}
+    node_to_community: dict[str, int] = {}
+    for n in all_nodes:
+        cid = n.community_id if n.community_id is not None else 0
+        buckets.setdefault(cid, []).append(n)
+        node_to_community[n.node_id] = cid
+
+    # Pull cross-link signals once for the whole repo so super-nodes can
+    # aggregate hotspot/dead/decision counts without N round-trips.
+    signals = await _collect_node_signals(session, repo_id, [n.node_id for n in all_nodes])
+
+    arch_nodes: list[ArchitectureNodeResponse] = []
+    for cid, members in buckets.items():
+        if len(members) < min_members:
+            continue
+        top = max(members, key=lambda m: m.pagerank or 0.0)
+        hotspot_count = 0
+        dead_count = 0
+        has_decision = False
+        doc_hits = 0
+        langs: dict[str, int] = {}
+        for m in members:
+            sig = signals.get(m.node_id, _EMPTY_SIGNALS)
+            if sig.is_hotspot:
+                hotspot_count += 1
+            if sig.is_dead:
+                dead_count += 1
+            if sig.has_decision:
+                has_decision = True
+            if sig.has_doc:
+                doc_hits += 1
+            if m.language:
+                langs[m.language] = langs.get(m.language, 0) + 1
+        top_langs = [lang for lang, _ in sorted(langs.items(), key=lambda kv: -kv[1])[:3]]
+        avg_pr = sum(m.pagerank or 0.0 for m in members) / max(len(members), 1)
+
+        arch_nodes.append(
+            ArchitectureNodeResponse(
+                community_id=cid,
+                label=community_label(top),
+                cohesion=community_cohesion(top),
+                member_count=len(members),
+                top_file=top.node_id,
+                avg_pagerank=avg_pr,
+                hotspot_count=hotspot_count,
+                dead_count=dead_count,
+                has_decision=has_decision,
+                doc_coverage_pct=doc_hits / max(len(members), 1),
+                languages=top_langs,
+            )
+        )
+
+    arch_nodes.sort(key=lambda a: -a.member_count)
+    kept_communities = {a.community_id for a in arch_nodes}
+
+    # Collapse cross-community edges
+    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    edge_counts: dict[tuple[int, int], int] = {}
+    for e in edge_result.scalars():
+        src_c = node_to_community.get(e.source_node_id)
+        tgt_c = node_to_community.get(e.target_node_id)
+        if src_c is None or tgt_c is None or src_c == tgt_c:
+            continue
+        if src_c not in kept_communities or tgt_c not in kept_communities:
+            continue
+        key = (src_c, tgt_c)
+        edge_counts[key] = edge_counts.get(key, 0) + 1
+
+    arch_edges = [
+        ArchitectureEdgeResponse(source=s, target=t, edge_count=c)
+        for (s, t), c in edge_counts.items()
+    ]
+
+    return ArchitectureGraphResponse(nodes=arch_nodes, edges=arch_edges)
 
 
 # ---------------------------------------------------------------------------
@@ -461,9 +703,10 @@ async def dead_code_graph(
         neighbor_nodes = []
 
     all_node_ids = dead_node_ids | neighbor_ids
-    documented = await _get_documented_paths(session, repo_id)
+    signals = await _collect_node_signals(session, repo_id, list(all_node_ids))
 
     def _to_dead_node(n: GraphNode, confidence_group: str) -> DeadCodeGraphNodeResponse:
+        sig = signals.get(n.node_id, _EMPTY_SIGNALS)
         return DeadCodeGraphNodeResponse(
             node_id=n.node_id,
             node_type=n.node_type,
@@ -474,7 +717,13 @@ async def dead_code_graph(
             community_id=n.community_id,
             is_test=n.is_test,
             is_entry_point=n.is_entry_point,
-            has_doc=n.node_id in documented,
+            has_doc=sig.has_doc,
+            is_hotspot=sig.is_hotspot,
+            churn_percentile=sig.churn_percentile,
+            is_dead=sig.is_dead,
+            dead_confidence=sig.dead_confidence,
+            has_decision=sig.has_decision,
+            primary_owner=sig.primary_owner,
             confidence_group=confidence_group,
         )
 
@@ -573,9 +822,10 @@ async def hot_files_graph(
         neighbor_nodes = []
 
     all_node_ids = hot_node_ids | neighbor_ids
-    documented = await _get_documented_paths(session, repo_id)
+    signals = await _collect_node_signals(session, repo_id, list(all_node_ids))
 
     def _to_hot_node(n: GraphNode, commit_count: int) -> HotFilesNodeResponse:
+        sig = signals.get(n.node_id, _EMPTY_SIGNALS)
         return HotFilesNodeResponse(
             node_id=n.node_id,
             node_type=n.node_type,
@@ -586,7 +836,13 @@ async def hot_files_graph(
             community_id=n.community_id,
             is_test=n.is_test,
             is_entry_point=n.is_entry_point,
-            has_doc=n.node_id in documented,
+            has_doc=sig.has_doc,
+            is_hotspot=sig.is_hotspot,
+            churn_percentile=sig.churn_percentile,
+            is_dead=sig.is_dead,
+            dead_confidence=sig.dead_confidence,
+            has_decision=sig.has_decision,
+            primary_owner=sig.primary_owner,
             commit_count=commit_count,
         )
 
@@ -648,36 +904,40 @@ async def search_nodes(
 @router.get("/{repo_id}", response_model=GraphExportResponse)
 async def export_graph(
     repo_id: str,
+    limit: int = Query(
+        _FULL_GRAPH_NODE_CAP,
+        ge=1,
+        le=100_000,
+        description="Maximum nodes to return (top-N by PageRank). Set very high to fetch all.",
+    ),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> GraphExportResponse:
-    """Export the full dependency graph in D3 force-directed format."""
+    """Export the full dependency graph in D3 force-directed format.
+
+    Large repos are capped to top-N nodes by PageRank with ``truncated=True``;
+    clients should surface a banner and let the user request unrestricted load.
+    """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
-    node_result = await session.execute(select(GraphNode).where(GraphNode.repository_id == repo_id))
-    nodes = node_result.scalars().all()
+    node_result = await session.execute(
+        select(GraphNode)
+        .where(GraphNode.repository_id == repo_id)
+        .order_by(GraphNode.pagerank.desc())
+    )
+    all_nodes = node_result.scalars().all()
+    total_node_count = len(all_nodes)
+    truncated = total_node_count > limit
+    nodes = all_nodes[:limit] if truncated else all_nodes
+    kept_ids = {n.node_id for n in nodes}
 
     edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     edges = edge_result.scalars().all()
 
-    documented = await _get_documented_paths(session, repo_id)
+    signals = await _collect_node_signals(session, repo_id, list(kept_ids) if truncated else None)
 
-    node_responses = [
-        GraphNodeResponse(
-            node_id=n.node_id,
-            node_type=n.node_type,
-            language=n.language,
-            symbol_count=n.symbol_count,
-            pagerank=n.pagerank,
-            betweenness=n.betweenness,
-            community_id=n.community_id,
-            is_test=n.is_test,
-            is_entry_point=n.is_entry_point,
-            has_doc=n.node_id in documented,
-        )
-        for n in nodes
-    ]
+    node_responses = [_to_graph_node(n, signals.get(n.node_id, _EMPTY_SIGNALS)) for n in nodes]
 
     link_responses = [
         GraphEdgeResponse(
@@ -686,9 +946,15 @@ async def export_graph(
             imported_names=_parse_imported_names(e.imported_names_json),
         )
         for e in edges
+        if e.source_node_id in kept_ids and e.target_node_id in kept_ids
     ]
 
-    return GraphExportResponse(nodes=node_responses, links=link_responses)
+    return GraphExportResponse(
+        nodes=node_responses,
+        links=link_responses,
+        truncated=truncated,
+        total_node_count=total_node_count,
+    )
 
 
 # ---------------------------------------------------------------------------

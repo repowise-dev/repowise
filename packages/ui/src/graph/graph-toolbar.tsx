@@ -12,7 +12,6 @@ import {
   Skull,
   Flame,
   LayoutGrid,
-  Layers,
   Workflow,
   Search,
   X,
@@ -28,6 +27,46 @@ export type ColorMode = "language" | "community" | "risk";
 export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
 export type LayoutMode = "hierarchical" | "force";
 export type GraphTheme = "light" | "dark";
+
+/**
+ * Orthogonal model:
+ *   Scope ("which subset of nodes do we render?")
+ *     × Overlays ("which signals do we highlight on top?")
+ *
+ * The legacy ViewMode is preserved as the wire/state format so existing
+ * callers and query-param routing keep working. The helpers below convert
+ * freely in both directions.
+ */
+export type Scope = "architecture" | "modules" | "full";
+export type Overlay = "dead" | "hot";
+
+export function scopeOverlaysToViewMode(scope: Scope, overlays: ReadonlySet<Overlay>): ViewMode {
+  const hasDead = overlays.has("dead");
+  const hasHot = overlays.has("hot");
+  if (hasDead && hasHot) return "unified";
+  if (hasDead) return "dead";
+  if (hasHot) return "hotfiles";
+  if (scope === "modules") return "module";
+  return scope; // "architecture" | "full"
+}
+
+export function viewModeToScopeOverlays(view: ViewMode): { scope: Scope; overlays: Set<Overlay> } {
+  switch (view) {
+    case "module":
+      return { scope: "modules", overlays: new Set() };
+    case "architecture":
+      return { scope: "architecture", overlays: new Set() };
+    case "dead":
+      return { scope: "full", overlays: new Set(["dead"]) };
+    case "hotfiles":
+      return { scope: "full", overlays: new Set(["hot"]) };
+    case "unified":
+      return { scope: "full", overlays: new Set(["dead", "hot"]) };
+    case "full":
+    default:
+      return { scope: "full", overlays: new Set() };
+  }
+}
 
 interface GraphToolbarProps {
   viewMode: ViewMode;
@@ -52,13 +91,17 @@ interface GraphToolbarProps {
   onGraphThemeChange: (theme: GraphTheme) => void;
 }
 
-const VIEW_MODES: { id: ViewMode; icon: typeof Boxes; label: string }[] = [
-  { id: "module", icon: Boxes, label: "Modules" },
-  { id: "full", icon: LayoutGrid, label: "Full Graph" },
-  { id: "architecture", icon: GitFork, label: "Architecture" },
-  { id: "dead", icon: Skull, label: "Dead Code" },
-  { id: "hotfiles", icon: Flame, label: "Hot Files" },
-  { id: "unified", icon: Layers, label: "Unified" },
+// Scope = which subset of nodes are drawn. Mutually exclusive.
+const SCOPES: { id: Scope; icon: typeof Boxes; label: string; hint: string }[] = [
+  { id: "architecture", icon: GitFork, label: "Architecture", hint: "Detected communities" },
+  { id: "modules", icon: Boxes, label: "Modules", hint: "Folder / package rollup" },
+  { id: "full", icon: LayoutGrid, label: "Full", hint: "All files and symbols" },
+];
+
+// Overlays = additive signal highlights that compose with any scope.
+const OVERLAYS: { id: Overlay; icon: typeof Skull; label: string }[] = [
+  { id: "dead", icon: Skull, label: "Dead" },
+  { id: "hot", icon: Flame, label: "Hot" },
 ];
 
 const COLOR_MODES: { id: ColorMode; icon: typeof Palette; label: string }[] = [
@@ -94,27 +137,69 @@ export const GraphToolbar = memo(function GraphToolbar({
   graphTheme,
   onGraphThemeChange,
 }: GraphToolbarProps) {
+  // Derive scope + overlays from the legacy ViewMode so this component remains
+  // the single source of truth — callers can continue to round-trip the
+  // wire-format ``viewMode`` value through query params without translation.
+  const { scope: activeScope, overlays: activeOverlays } = viewModeToScopeOverlays(viewMode);
+
+  const setScope = (next: Scope) => {
+    onViewChange(scopeOverlaysToViewMode(next, activeOverlays));
+  };
+
+  const toggleOverlay = (id: Overlay) => {
+    const next = new Set(activeOverlays);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onViewChange(scopeOverlaysToViewMode(activeScope, next));
+  };
+
   return (
     <div className="flex flex-col gap-1.5 items-end">
+      {/* Scope (mutually exclusive) */}
       <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
-        {VIEW_MODES.map((m) => {
+        {SCOPES.map((m) => {
           const Icon = m.icon;
-          const isActive = viewMode === m.id;
+          const isActive = activeScope === m.id;
           return (
             <button
               key={m.id}
-              onClick={() => onViewChange(m.id)}
+              onClick={() => setScope(m.id)}
               className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[10px] font-medium transition-all ${
                 isActive
                   ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
               }`}
-              title={m.label}
+              title={m.hint}
               aria-label={m.label}
               aria-pressed={isActive}
             >
               <Icon className="w-3 h-3" />
               <span className="hidden lg:inline">{m.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Overlays (additive signal chips) */}
+      <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
+        {OVERLAYS.map((o) => {
+          const Icon = o.icon;
+          const isActive = activeOverlays.has(o.id);
+          return (
+            <button
+              key={o.id}
+              onClick={() => toggleOverlay(o.id)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                isActive
+                  ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
+                  : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
+              }`}
+              title={`Overlay: ${o.label}`}
+              aria-label={`Overlay: ${o.label}`}
+              aria-pressed={isActive}
+            >
+              <Icon className="w-3 h-3" />
+              <span className="hidden lg:inline">{o.label}</span>
             </button>
           );
         })}

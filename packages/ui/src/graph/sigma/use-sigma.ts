@@ -183,6 +183,9 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         }
         if (attrs.isDead) color = desaturateColor(color, 0.6);
         if (attrs.isHotspot) color = tintColor(color, "#f97316", 0.4);
+        // Decision-anchored files get a subtle amber tint so they're
+        // discoverable on the canvas without dominating it.
+        if (attrs.hasDecision) color = tintColor(color, "#f59e0b", 0.25);
         if (attrs.color === color) return attrs;
         return { ...attrs, color };
       },

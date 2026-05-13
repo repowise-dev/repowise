@@ -187,6 +187,13 @@ export interface GraphNodeResponse {
   is_test: boolean;
   is_entry_point: boolean;
   has_doc: boolean;
+  // Phase A: cross-link signals (all optional for back-compat)
+  is_hotspot?: boolean;
+  churn_percentile?: number | null;
+  is_dead?: boolean;
+  dead_confidence?: number | null;
+  has_decision?: boolean;
+  primary_owner?: string | null;
 }
 
 export interface GraphEdgeResponse {
@@ -198,6 +205,35 @@ export interface GraphEdgeResponse {
 export interface GraphExportResponse {
   nodes: GraphNodeResponse[];
   links: GraphEdgeResponse[];
+  /** Server set this true when the response was capped to top-N by PageRank. */
+  truncated?: boolean;
+  total_node_count?: number;
+}
+
+// Architecture super-node graph (Phase A)
+export interface ArchitectureNodeResponse {
+  community_id: number;
+  label: string;
+  cohesion: number;
+  member_count: number;
+  top_file: string;
+  avg_pagerank: number;
+  hotspot_count: number;
+  dead_count: number;
+  has_decision: boolean;
+  doc_coverage_pct: number;
+  languages: string[];
+}
+
+export interface ArchitectureEdgeResponse {
+  source: number;
+  target: number;
+  edge_count: number;
+}
+
+export interface ArchitectureGraphResponse {
+  nodes: ArchitectureNodeResponse[];
+  edges: ArchitectureEdgeResponse[];
 }
 
 export interface GraphPathResponse {

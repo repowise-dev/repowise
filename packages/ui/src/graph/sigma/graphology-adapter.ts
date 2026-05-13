@@ -159,12 +159,25 @@ export function fileGraphToGraphology(
         originalColor: color,
       };
 
-      if (options?.signals?.hotNodeIds?.has(node.node_id)) {
+      // Signal data may come from two sources: explicit overlay sets
+      // (legacy unified-graph flow) or enriched node payloads from Phase A.
+      // We OR them so adapters work with both backends.
+      if (
+        node.is_hotspot ||
+        options?.signals?.hotNodeIds?.has(node.node_id)
+      ) {
         attrs.isHotspot = true;
       }
-      if (options?.signals?.deadNodeIds?.has(node.node_id)) {
+      if (
+        node.is_dead ||
+        options?.signals?.deadNodeIds?.has(node.node_id)
+      ) {
         attrs.isDead = true;
       }
+      attrs.churnPercentile = node.churn_percentile ?? null;
+      attrs.deadConfidence = node.dead_confidence ?? null;
+      attrs.hasDecision = node.has_decision ?? false;
+      attrs.primaryOwner = node.primary_owner ?? null;
 
       result.addNode(node.node_id, attrs);
     }

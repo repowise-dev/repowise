@@ -41,6 +41,12 @@ export interface SigmaNodeAttributes {
   isDead?: boolean | undefined;
   commitCount?: number | undefined;
 
+  // Cross-link signals from enriched backend payloads
+  churnPercentile?: number | null | undefined;
+  deadConfidence?: number | null | undefined;
+  hasDecision?: boolean | undefined;
+  primaryOwner?: string | null | undefined;
+
   // Interaction state (mutated by reducers at render time)
   hidden?: boolean | undefined;
   zIndex?: number | undefined;

@@ -288,6 +288,13 @@ class GraphNodeResponse(BaseModel):
     is_test: bool = False
     is_entry_point: bool = False
     has_doc: bool = False
+    # Cross-link signals (populated by _collect_node_signals)
+    is_hotspot: bool = False
+    churn_percentile: float | None = None
+    is_dead: bool = False
+    dead_confidence: float | None = None
+    has_decision: bool = False
+    primary_owner: str | None = None
 
 
 class GraphEdgeResponse(BaseModel):
@@ -299,6 +306,36 @@ class GraphEdgeResponse(BaseModel):
 class GraphExportResponse(BaseModel):
     nodes: list[GraphNodeResponse]
     links: list[GraphEdgeResponse]
+    # When the graph is too large to return in full, the server caps the response
+    # to top-N nodes by PageRank. Clients should surface a banner.
+    truncated: bool = False
+    total_node_count: int | None = None
+
+
+# Architecture / community super-node graph
+class ArchitectureNodeResponse(BaseModel):
+    community_id: int
+    label: str
+    cohesion: float
+    member_count: int
+    top_file: str
+    avg_pagerank: float
+    hotspot_count: int = 0
+    dead_count: int = 0
+    has_decision: bool = False
+    doc_coverage_pct: float = 0.0
+    languages: list[str] = []
+
+
+class ArchitectureEdgeResponse(BaseModel):
+    source: int
+    target: int
+    edge_count: int
+
+
+class ArchitectureGraphResponse(BaseModel):
+    nodes: list[ArchitectureNodeResponse]
+    edges: list[ArchitectureEdgeResponse]
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +536,10 @@ class ModuleNodeResponse(BaseModel):
     symbol_count: int
     avg_pagerank: float
     doc_coverage_pct: float
+    hotspot_count: int = 0
+    dead_count: int = 0
+    has_decision: bool = False
+    primary_owner: str | None = None
 
 
 class ModuleEdgeResponse(BaseModel):
@@ -548,7 +589,13 @@ class DeadCodeGraphNodeResponse(BaseModel):
     is_test: bool = False
     is_entry_point: bool = False
     has_doc: bool = False
-    confidence_group: str  # "certain" | "likely"
+    is_hotspot: bool = False
+    churn_percentile: float | None = None
+    is_dead: bool = False
+    dead_confidence: float | None = None
+    has_decision: bool = False
+    primary_owner: str | None = None
+    confidence_group: str  # "certain" | "likely" | "neighbor"
 
 
 class DeadCodeGraphResponse(BaseModel):
@@ -572,6 +619,12 @@ class HotFilesNodeResponse(BaseModel):
     is_test: bool = False
     is_entry_point: bool = False
     has_doc: bool = False
+    is_hotspot: bool = False
+    churn_percentile: float | None = None
+    is_dead: bool = False
+    dead_confidence: float | None = None
+    has_decision: bool = False
+    primary_owner: str | None = None
     commit_count: int
 
 

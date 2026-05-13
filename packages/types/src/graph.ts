@@ -26,6 +26,14 @@ export interface GraphNode {
   is_test: boolean;
   is_entry_point: boolean;
   has_doc: boolean;
+  /** Cross-link signals — added in Phase A enrichment. All optional for
+   *  back-compat with older backends; consumers should default to false/null. */
+  is_hotspot?: boolean;
+  churn_percentile?: number | null;
+  is_dead?: boolean;
+  dead_confidence?: number | null;
+  has_decision?: boolean;
+  primary_owner?: string | null;
 }
 
 export interface GraphLink {
@@ -41,6 +49,38 @@ export interface GraphLink {
 export interface GraphExport {
   nodes: GraphNode[];
   links: GraphLink[];
+  /** Server flagged response as capped (top-N by PageRank). UI should banner. */
+  truncated?: boolean;
+  total_node_count?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Architecture (community super-node) graph
+// ---------------------------------------------------------------------------
+
+export interface ArchitectureNode {
+  community_id: number;
+  label: string;
+  cohesion: number;
+  member_count: number;
+  top_file: string;
+  avg_pagerank: number;
+  hotspot_count: number;
+  dead_count: number;
+  has_decision: boolean;
+  doc_coverage_pct: number;
+  languages: string[];
+}
+
+export interface ArchitectureEdge {
+  source: number;
+  target: number;
+  edge_count: number;
+}
+
+export interface ArchitectureGraph {
+  nodes: ArchitectureNode[];
+  edges: ArchitectureEdge[];
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +142,10 @@ export interface ModuleNode {
   symbol_count: number;
   avg_pagerank: number;
   doc_coverage_pct: number;
+  hotspot_count?: number;
+  dead_count?: number;
+  has_decision?: boolean;
+  primary_owner?: string | null;
 }
 
 export interface ModuleEdge {
