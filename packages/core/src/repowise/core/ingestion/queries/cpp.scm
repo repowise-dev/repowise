@@ -17,6 +17,15 @@
   )
 ) @symbol.def
 
+; Inline method definition inside a class body: void method(args) { ... }
+; The name is a ``field_identifier`` in this case, not a plain identifier.
+(function_definition
+  declarator: (function_declarator
+    declarator: (field_identifier) @symbol.name
+    parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
 ; Qualified function definition: ReturnType ClassName::method(params) { }
 (function_definition
   declarator: (function_declarator

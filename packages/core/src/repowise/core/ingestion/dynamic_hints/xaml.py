@@ -68,6 +68,14 @@ _XTYPE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# <ResourceDictionary Source="..."/> — both standalone and inside a
+# <ResourceDictionary.MergedDictionaries> block. Match attribute order
+# agnostically; only the Source value is needed.
+_RESOURCE_DICT_SOURCE_RE = re.compile(
+    r"""<ResourceDictionary\b[^>]*?\bSource\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE,
+)
+
 
 class XamlDynamicHints(DynamicHintExtractor):
     """Emit ``dynamic_uses`` edges from XAML files to the C# types they bind to."""
@@ -85,11 +93,18 @@ class XamlDynamicHints(DynamicHintExtractor):
         # here keeps XAML resolution cross-project / cross-repo
         # consistent with how `using` directives resolve.
         type_map = _load_type_map(repo_root)
-        if not type_map:
-            return []
+        # Even without a .NET project we can still resolve xaml→xaml
+        # ResourceDictionary references, so don't early-exit on an empty
+        # type_map — only the C# binding pass is gated on it.
 
         edges: list[DynamicEdge] = []
         repo_root_resolved = repo_root.resolve()
+
+        # Build a {basename → [rel_paths]} index of every XAML in the
+        # repo for absolute-source / pack-URI lookups. The relative-source
+        # path resolves against the parent of the consuming XAML, so it
+        # doesn't need the index.
+        xaml_by_basename = _index_xaml_by_basename(xaml_files, repo_root_resolved)
 
         for xaml_path in xaml_files:
             try:
@@ -101,28 +116,43 @@ class XamlDynamicHints(DynamicHintExtractor):
             except OSError:
                 continue
 
-            prefix_to_namespace = _collect_prefix_namespaces(text)
-            type_refs = _extract_type_references(text, prefix_to_namespace)
-
-            for type_name in type_refs:
-                targets = type_map.get(type_name)
-                if not targets:
-                    continue
-                for target_abs in targets:
-                    try:
-                        target_rel = target_abs.resolve().relative_to(repo_root_resolved).as_posix()
-                    except ValueError:
+            if type_map:
+                prefix_to_namespace = _collect_prefix_namespaces(text)
+                type_refs = _extract_type_references(text, prefix_to_namespace)
+                for type_name in type_refs:
+                    targets = type_map.get(type_name)
+                    if not targets:
                         continue
-                    if target_rel == rel:
-                        continue
-                    edges.append(
-                        DynamicEdge(
-                            source=rel,
-                            target=target_rel,
-                            edge_type="dynamic_uses",
-                            hint_source=f"{self.name}:binding",
+                    for target_abs in targets:
+                        try:
+                            target_rel = target_abs.resolve().relative_to(repo_root_resolved).as_posix()
+                        except ValueError:
+                            continue
+                        if target_rel == rel:
+                            continue
+                        edges.append(
+                            DynamicEdge(
+                                source=rel,
+                                target=target_rel,
+                                edge_type="dynamic_uses",
+                                hint_source=f"{self.name}:binding",
+                            )
                         )
+
+            # ResourceDictionary cross-references — pure xaml→xaml.
+            for target_rel in _resolve_resource_dictionary_sources(
+                text, rel, xaml_by_basename
+            ):
+                if target_rel == rel:
+                    continue
+                edges.append(
+                    DynamicEdge(
+                        source=rel,
+                        target=target_rel,
+                        edge_type="dynamic_uses",
+                        hint_source=f"{self.name}:resource_dictionary",
                     )
+                )
 
         return edges
 
@@ -176,6 +206,106 @@ def _extract_type_references(text: str, prefix_to_ns: dict[str, str]) -> set[str
     # finer attribute is present.
     _ = prefix_to_ns
     return names
+
+
+def _index_xaml_by_basename(
+    xaml_files: list[Path], repo_root_resolved: Path
+) -> dict[str, list[str]]:
+    """Return a ``{basename.lower(): [repo-relative paths]}`` index."""
+    out: dict[str, list[str]] = {}
+    for path in xaml_files:
+        try:
+            rel = path.resolve().relative_to(repo_root_resolved).as_posix()
+        except ValueError:
+            continue
+        out.setdefault(path.name.lower(), []).append(rel)
+    return out
+
+
+# Strip leading pack URI / WinUI prefixes from a Source attribute value.
+# Returns a path that's either repo-relative (leading "/") or
+# source-file-relative. Returns ``None`` if the URI is opaque
+# (HTTP/HTTPS or unrecognised scheme).
+_PACK_URI_PREFIX_RE = re.compile(
+    r"""^pack://application:,,,/(?:[^/]+;component/)?""", re.IGNORECASE
+)
+_MS_APPX_PREFIX_RE = re.compile(r"""^ms-appx:///?""", re.IGNORECASE)
+
+
+def _normalise_source_uri(raw: str) -> str | None:
+    """Reduce a XAML ``Source`` URI to a plain path.
+
+    Recognised forms (case-insensitive):
+
+      * ``pack://application:,,,/Assembly;component/Themes/Light.xaml`` → ``Themes/Light.xaml``
+      * ``pack://application:,,,/Themes/Light.xaml`` → ``Themes/Light.xaml``
+      * ``ms-appx:///Themes/Light.xaml`` → ``Themes/Light.xaml``
+      * ``/Themes/Light.xaml`` → ``Themes/Light.xaml`` (treated as repo-rooted)
+      * ``Themes/Light.xaml`` → ``Themes/Light.xaml`` (relative to caller)
+
+    Returns ``None`` for HTTP-style absolute URIs.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+    lower = raw.lower()
+    if lower.startswith(("http://", "https://")):
+        return None
+    raw = _PACK_URI_PREFIX_RE.sub("", raw)
+    raw = _MS_APPX_PREFIX_RE.sub("", raw)
+    return raw.lstrip("/")
+
+
+def _resolve_resource_dictionary_sources(
+    text: str, source_rel: str, xaml_by_basename: dict[str, list[str]]
+) -> list[str]:
+    """Return the list of XAML files referenced from *source_rel*.
+
+    Resolution order, per source:
+      1. Treat as a path relative to the parent directory of *source_rel*.
+         If a XAML file exists there, use it.
+      2. Fall back to basename matching across the repo's XAML index.
+         When multiple files share a basename we emit edges to all of
+         them — over-emit beats under-emit for the dead-code use case.
+    """
+    if "<ResourceDictionary" not in text and "<ResourceDictionary" not in text.lower():
+        return []
+    results: list[str] = []
+    seen: set[str] = set()
+    parent_dir = source_rel.rsplit("/", 1)[0] if "/" in source_rel else ""
+    for match in _RESOURCE_DICT_SOURCE_RE.finditer(text):
+        raw = match.group(1)
+        normalised = _normalise_source_uri(raw)
+        if not normalised:
+            continue
+        candidate_rel = (
+            f"{parent_dir}/{normalised}" if parent_dir and not raw.startswith("/") else normalised
+        )
+        candidate_rel = _normpath(candidate_rel)
+        basename = candidate_rel.rsplit("/", 1)[-1].lower()
+        # Repo-wide basename index — accept any match. When the relative
+        # path happens to land on an actual file the index will contain
+        # it; otherwise we still attach to same-named files elsewhere.
+        for hit in xaml_by_basename.get(basename, ()):
+            if hit not in seen:
+                seen.add(hit)
+                results.append(hit)
+    return results
+
+
+def _normpath(path: str) -> str:
+    """Collapse ``..`` segments without touching the filesystem."""
+    parts: list[str] = []
+    for part in path.split("/"):
+        if part in ("", "."):
+            continue
+        if part == ".." and parts:
+            parts.pop()
+            continue
+        if part == "..":
+            continue
+        parts.append(part)
+    return "/".join(parts)
 
 
 def _load_type_map(repo_root: Path) -> dict[str, list[Path]]:

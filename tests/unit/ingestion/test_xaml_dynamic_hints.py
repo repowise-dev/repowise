@@ -88,14 +88,76 @@ class TestEndToEnd:
             "App/ViewModels/GeneralViewModel.cs",
         ) in sources
 
-    def test_no_csproj_emits_nothing(self, tmp_path: Path) -> None:
+    def test_no_csproj_emits_no_type_binding_edges(self, tmp_path: Path) -> None:
         # A repo with XAML but no .csproj has no .NET type index to
-        # bind against; the extractor should silently produce nothing
-        # rather than spuriously create external edges.
+        # bind against; type-binding edges silently produce nothing.
+        # ResourceDictionary edges remain xaml→xaml and don't need the
+        # type map — they're tested separately.
         (tmp_path / "View.xaml").write_text(
             '<Page xmlns:vm="using:Foo" x:DataType="vm:Bar"/>'
         )
-        assert XamlDynamicHints().extract(tmp_path) == []
+        edges = XamlDynamicHints().extract(tmp_path)
+        # No binding edges should fire — and with no other xaml in the
+        # tree the list is empty.
+        assert edges == []
+
+
+class TestResourceDictionaryEdges:
+    """``<ResourceDictionary Source="..."/>`` cross-references between XAML files."""
+
+    def test_relative_source_resolves_to_sibling_xaml(self, tmp_path: Path) -> None:
+        (tmp_path / "Themes").mkdir()
+        (tmp_path / "Themes" / "Light.xaml").write_text(
+            '<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"/>'
+        )
+        (tmp_path / "Themes" / "App.xaml").write_text(
+            '<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">\n'
+            '  <ResourceDictionary.MergedDictionaries>\n'
+            '    <ResourceDictionary Source="Light.xaml"/>\n'
+            '  </ResourceDictionary.MergedDictionaries>\n'
+            '</ResourceDictionary>\n'
+        )
+        edges = {(e.source, e.target) for e in XamlDynamicHints().extract(tmp_path)}
+        assert ("Themes/App.xaml", "Themes/Light.xaml") in edges
+
+    def test_pack_uri_strips_assembly_prefix(self, tmp_path: Path) -> None:
+        (tmp_path / "Themes").mkdir()
+        (tmp_path / "Themes" / "Dark.xaml").write_text(
+            '<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"/>'
+        )
+        (tmp_path / "Themes" / "Generic.xaml").write_text(
+            '<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+            '  Source="pack://application:,,,/Acme.UI;component/Themes/Dark.xaml"/>\n'
+        )
+        edges = {(e.source, e.target) for e in XamlDynamicHints().extract(tmp_path)}
+        assert ("Themes/Generic.xaml", "Themes/Dark.xaml") in edges
+
+    def test_ms_appx_uri_resolves(self, tmp_path: Path) -> None:
+        (tmp_path / "Styles").mkdir()
+        (tmp_path / "Styles" / "Buttons.xaml").write_text("<ResourceDictionary/>")
+        (tmp_path / "App.xaml").write_text(
+            '<ResourceDictionary>\n'
+            '  <ResourceDictionary Source="ms-appx:///Styles/Buttons.xaml"/>\n'
+            '</ResourceDictionary>'
+        )
+        edges = {(e.source, e.target) for e in XamlDynamicHints().extract(tmp_path)}
+        assert ("App.xaml", "Styles/Buttons.xaml") in edges
+
+    def test_self_reference_dropped(self, tmp_path: Path) -> None:
+        (tmp_path / "Self.xaml").write_text(
+            '<ResourceDictionary>\n'
+            '  <ResourceDictionary Source="Self.xaml"/>\n'
+            '</ResourceDictionary>'
+        )
+        edges = XamlDynamicHints().extract(tmp_path)
+        assert edges == []
+
+    def test_no_resource_dictionary_no_edges(self, tmp_path: Path) -> None:
+        (tmp_path / "Plain.xaml").write_text(
+            '<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"/>'
+        )
+        edges = XamlDynamicHints().extract(tmp_path)
+        assert edges == []
 
 
 class TestLanguageRegistration:

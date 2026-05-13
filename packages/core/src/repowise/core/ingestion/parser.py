@@ -43,6 +43,7 @@ from .extractors import (
     refine_go_type_kind,
     refine_kotlin_class_kind,
 )
+from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
     csharp_visibility,
     go_visibility,
@@ -51,6 +52,7 @@ from .extractors.visibility import (
     php_visibility,
     public_by_default,
     py_visibility,
+    refine_cpp_visibility,
     rust_visibility,
     scala_visibility,
     swift_visibility,
@@ -67,6 +69,13 @@ from .models import (
 )
 
 log = structlog.get_logger(__name__)
+
+# Any single file emitting more than this many symbols is almost
+# certainly machine-generated (large gRPC service contracts, OpenAPI
+# bindings, SQL schema bindings). Warn rather than truncate — operators
+# can decide whether to add the file to ``_NEVER_FLAG_PATTERNS`` or to
+# exclude it via traversal.
+_SYMBOL_COUNT_WARN_THRESHOLD = 500
 
 QUERIES_DIR = Path(__file__).parent / "queries"
 
@@ -542,12 +551,29 @@ class ASTParser:
         query = self._get_query(lang, language)
 
         symbols = self._extract_symbols(tree, query, config, file_info, src)
+        # Per-language synthetic-symbol pass — recognises source-generator
+        # attributes (e.g. CommunityToolkit.Mvvm) and adds the symbols the
+        # generator would emit at compile time. No-op for languages
+        # without a registered extractor.
+        synthetic = extract_synthetic_symbols(root, src, file_info)
+        if synthetic:
+            existing_ids = {s.id for s in symbols}
+            symbols.extend(s for s in synthetic if s.id not in existing_ids)
         imports = self._extract_imports(tree, query, config, file_info, src)
         calls = self._extract_calls(tree, query, config, file_info, src, symbols)
         heritage = extract_heritage(tree, query, config, file_info, src, run_query=_run_query)
         exports = self._derive_exports(symbols, config, src)
         docstring = extract_module_docstring(root, src, lang)
         type_refs = self._extract_type_refs(tree, query, src)
+
+        if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
+            log.warning(
+                "parser.symbol_bloat",
+                path=file_info.path,
+                language=lang,
+                symbol_count=len(symbols),
+                threshold=_SYMBOL_COUNT_WARN_THRESHOLD,
+            )
 
         return ParsedFile(
             file_info=file_info,
@@ -632,6 +658,14 @@ class ASTParser:
                     if sibling.type == "decorator":
                         modifier_texts.append(_node_text(sibling, src))
             visibility = config.visibility_fn(name, modifier_texts)
+            is_exported_symbol = False
+            # C/C++ visibility is dictated by AST context (access
+            # specifiers / storage class / export attributes), not by
+            # modifier text. Refine after the generic fn ran.
+            if file_info.language in ("cpp", "c"):
+                visibility, is_exported_symbol = refine_cpp_visibility(
+                    def_node, visibility, src
+                )
 
             # Parent class detection
             parent_name = self._find_parent(def_node, config, receiver_nodes, src)
@@ -671,6 +705,7 @@ class ASTParser:
                     is_async=is_async,
                     language=file_info.language,
                     parent_name=parent_name,
+                    is_exported_symbol=is_exported_symbol,
                 )
             )
 

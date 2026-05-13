@@ -52,7 +52,9 @@ All eight languages support:
 - Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen, XML doc)
 - Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection; ASP.NET controllers / minimal API / EF Core DbContext for C#; Spring Boot DI + `@Bean` factories for Java/Kotlin; Rails routes + ActiveRecord relationships; Laravel routes + service providers + Eloquent; TYPO3 convention files (`ext_localconf.php`, `Configuration/TCA/*`, `JavaScriptModules.php` registrations) for PHP; Express `app.use(router)` + NestJS `@Module` arrays; Gin/Echo/Chi router → handler files for Go; Axum/Actix `.route` → handler files for Rust)
 - Per-language dynamic-hint extractors (Django/Pytest/Node for Python+JS/TS; .NET DI/Activator/InternalsVisibleTo for C#; Spring `getBean`/`@Bean` factories for Java/Kotlin; Ruby `send`/`const_get`/`define_method`/`delegate`; PHP `call_user_func`/`ReflectionClass`/container `get`; Scala `Class.forName`/`given`/`implicit val`; Swift `NSClassFromString`/`Selector`/`#selector`/KVC; C function-pointer assignment + `dlopen`/`dlsym`; Luau `game:GetService`/`setmetatable __index`; Go `reflect.TypeOf`/`plugin.Open`/`plugin.Lookup`)
-- For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace → file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection, host-builder extension method resolution (`app.MapCatalogApi()` / `services.AddCatalogServices()` on any C# repo, not just ASP.NET), `nameof(Type)` references resolved as dynamic uses, and local `var x = new T()` property reads bound to the defining file
+- For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace → file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection, host-builder extension method resolution (`app.MapCatalogApi()` / `services.AddCatalogServices()` on any C# repo, not just ASP.NET), `nameof(Type)` references resolved as dynamic uses, local `var x = new T()` property reads bound to the defining file, and CommunityToolkit MVVM source-generator synthesis (`[ObservableProperty]` fields → PascalCase property, `[RelayCommand]` methods → `<Name>Command`)
+- For C/C++ only: visibility tracked from access specifiers (`public:` / `private:` / `protected:`), `static` file-scope storage class, and export attributes (`__declspec(dllexport)`, `__attribute__((visibility("default")))`); COM / I-prefixed bases emit `implements` edges (rest are `extends`); Windows DLL entry points (`DllMain`, `DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, `DllUnregisterServer`, `DllGetActivationFactory`) are never flagged as dead
+- For XAML only: `<ResourceDictionary Source="..."/>` and `MergedDictionaries` entries resolve across `pack://application:,,,/`, `ms-appx:///`, repo-rooted and relative URIs, emitting xaml→xaml `dynamic_uses` edges
 
 ### Good
 
@@ -293,6 +295,15 @@ without touching the shared pipeline files:
 - `languages/<lang>_member_reads.py` --- emit `reads` edges for
   property / member access. Used today for C# `var x = new T()`
   locals; the same shape applies to any statically-typed language.
+- `extractors/synthetic_symbols.py` --- recognise source-generator
+  attributes and emit the symbols the generator would produce
+  at compile time. Used today for CommunityToolkit MVVM
+  (`[ObservableProperty]`, `[RelayCommand]`); the same shape fits
+  Java Lombok, Kotlin `@Parcelize`, etc.
+- `extractors/visibility.py::refine_<lang>_visibility` --- node-aware
+  visibility refinement for languages where access is dictated by AST
+  context (C/C++ access specifiers, storage class, export attributes)
+  rather than modifier text alone.
 
 ---
 

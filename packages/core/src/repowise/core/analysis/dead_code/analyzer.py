@@ -93,6 +93,15 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
     "Startup",             # ASP.NET Core legacy
     "__module__",          # synthetic per-file module anchor
     "_start",              # C runtime
+    # ---- Windows DLL / COM entry points -----------------------------
+    # Invoked by the Windows loader or COM runtime; never referenced
+    # statically from user code.
+    "DllMain",
+    "DllGetClassObject",
+    "DllCanUnloadNow",
+    "DllRegisterServer",
+    "DllUnregisterServer",
+    "DllGetActivationFactory",
 })
 from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
@@ -415,6 +424,12 @@ class DeadCodeAnalyzer:
                 if sym_name.startswith("__") and sym_name.endswith("__"):
                     continue
                 if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
+                    continue
+                # Explicit language-level export markers (C/C++
+                # ``__declspec(dllexport)``, GCC ``visibility("default")``)
+                # signal "called from outside this translation unit /
+                # binary" — never observable in the static graph.
+                if sym.get("is_exported_symbol"):
                     continue
                 # Names that contain a dot are namespace path fragments
                 # (e.g. ``eShop.ClientApp``), not user-visible exports.

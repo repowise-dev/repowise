@@ -154,6 +154,7 @@ class GraphBuilder:
                 parent_name=sym.parent_name,
                 signature=sym.signature,
                 decorators=sym.decorators,
+                is_exported_symbol=sym.is_exported_symbol,
             )
 
             # DEFINES edge: file → symbol

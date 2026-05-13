@@ -155,6 +155,10 @@ class Symbol:
     complexity_estimate: int = 1  # cyclomatic complexity
     language: str = ""
     parent_name: str | None = None  # for methods: the containing class name
+    # True when a language-level export marker is present (e.g. C/C++
+    # ``__declspec(dllexport)`` / ``__attribute__((visibility("default")))``).
+    # Used by dead-code analysis to whitelist exported entry points.
+    is_exported_symbol: bool = False
 
 
 @dataclass
