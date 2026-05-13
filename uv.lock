@@ -3040,7 +3040,7 @@ wheels = [
 
 [[package]]
 name = "repowise"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

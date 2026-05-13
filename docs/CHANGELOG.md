@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.1] — 2026-05-13
+
+### Fixed
+- **`repowise serve` 404 on the web tarball for v0.9.0.** The v0.9.0 publish workflow failed during the web build: two `packages/ui` components introduced this release (`attention-panel.tsx`, `co-change-list.tsx`) imported `useState` without a `"use client"` directive, so Next.js' RSC compiler rejected them when `packages/web` pulled them transitively via the overview page and wiki git-history panel. The Python wheel published to PyPI but no `repowise-web.tar.gz` was attached to the v0.9.0 GitHub release, so end-user `repowise serve` falls through to "API only". v0.9.1 adds the missing `"use client"` directive at the top of both files. **Anyone who installed 0.9.0 should upgrade to 0.9.1** to get a working web UI from `repowise serve`.
+
+---
+
 ## [0.9.0] — 2026-05-13
 
 ### Added
