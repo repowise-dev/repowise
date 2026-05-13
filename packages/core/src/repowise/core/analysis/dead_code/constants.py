@@ -138,10 +138,37 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.UITests/*.cs",
     "*UITest/*.cs",
     "*UITestAutomation/*.cs",
+    # Singular forms used by PowerToys / Wox / etc.
+    "*UnitTest/*.cs",
+    "*.UnitTest/*.cs",
+    "*.Test/*.cs",
+    "*/Wox.Test/*.cs",
+    # MSTest convention of ``UnitTests-<Subject>`` / ``UITest-<Subject>``
+    # directories (PowerToys preview handler / per-module test projects).
+    "*/UnitTests-*/*.cs",
+    "*/UITest-*/*.cs",
+    "*/UnitTests-*/*.cpp",
+    "*/UnitTests-*/*.h",
     "*/unittests/*.cpp",
     "*/unittests/*.h",
+    # File-suffix conventions for tests dropped outside a test project.
     "*Tests.cs",
     "*UnitTests.cs",
+    "*Test.cs",
+    "*Test.cpp",
+    "*Tests.cpp",
+    # ---- Precompiled headers and COM ClassFactory shims --------------
+    # ``pch.h`` / ``pch.cpp`` (and the older ``stdafx.*``) are MSVC
+    # precompiled-header anchors — referenced by build settings, never
+    # by user code. ``*ClassFactory.cpp`` is the COM ``IClassFactory``
+    # implementation; the type is registered via DllGetClassObject and
+    # activated by Windows, so it has no static caller.
+    "*/pch.h",
+    "*/pch.cpp",
+    "*/stdafx.h",
+    "*/stdafx.cpp",
+    "*ClassFactory.cpp",
+    "*ClassFactory.h",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)

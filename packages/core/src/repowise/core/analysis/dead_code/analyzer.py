@@ -102,6 +102,28 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
     "DllRegisterServer",
     "DllUnregisterServer",
     "DllGetActivationFactory",
+    "DllInstall",          # legacy MSI custom-action entry
+    # ---- Win32 GUI / console entry points ---------------------------
+    "wWinMain",            # Unicode WinMain
+    "WinMain",             # ANSI WinMain
+    "wmain",               # Unicode console main
+    "ServiceMain",         # Win32 service entry
+    # ---- Windows hook / ETW callbacks invoked by macros / runtime ----
+    "LowLevelKeyboardProc",
+    "LowLevelMouseProc",
+    "RegisterProvider",    # ETW provider registration (macro-invoked)
+    # ---- MSTest unit-test macro --------------------------------------
+    # ``TEST_METHOD(Name)`` expands into a public static function with
+    # ``TEST_METHOD`` as the captured symbol name; the runner finds it
+    # by attribute reflection. Same shape on every C++ unit test file.
+    "TEST_METHOD",
+    "TEST_CLASS",
+    "TEST_METHOD_INITIALIZE",
+    "TEST_METHOD_CLEANUP",
+    "TEST_CLASS_INITIALIZE",
+    "TEST_CLASS_CLEANUP",
+    "BEGIN_TEST_METHOD_PROPERTIES",
+    "END_TEST_METHOD_PROPERTIES",
 })
 from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport

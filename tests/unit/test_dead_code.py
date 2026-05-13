@@ -199,6 +199,49 @@ def test_unused_export_detected():
     assert "helper_func" in sym_names
 
 
+def test_entry_point_names_never_flagged():
+    """Runtime entry points (wWinMain, TEST_METHOD, DllInstall…) are
+    never flagged regardless of incoming-edge counts. The Win32 / COM /
+    MSTest runners reach them by mechanism, not by a `using` import."""
+    g = _build_graph(
+        nodes={
+            "src/main.cpp": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 3,
+                "language": "cpp",
+                "symbols": [
+                    {
+                        "name": "wWinMain",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1, "end_line": 10,
+                        "complexity_estimate": 1,
+                    },
+                    {
+                        "name": "TEST_METHOD",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 12, "end_line": 20,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {"detect_unreachable_files": False, "detect_zombie_packages": False}
+    )
+    names = [f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
+    assert "wWinMain" not in names
+    assert "TEST_METHOD" not in names
+
+
 def test_unused_export_skipped_when_symbol_has_incoming_calls():
     """A public symbol with no file-level importers but at least one
     incoming ``calls`` edge on the symbol itself is still in use —
