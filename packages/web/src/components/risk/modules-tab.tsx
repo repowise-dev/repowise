@@ -79,7 +79,7 @@ export function ModulesTab({ repoId }: { repoId: string }) {
         loadingMore={isValidating && !isLoading}
         onLoadMore={() => setSize(size + 1)}
         onSelect={(m) =>
-          router.push(`/repos/${repoId}/ownership?module=${encodeURIComponent(m.module_path)}`)
+          router.push(`/repos/${repoId}/modules/${encodeURIComponent(m.module_path)}`)
         }
       />
     </div>

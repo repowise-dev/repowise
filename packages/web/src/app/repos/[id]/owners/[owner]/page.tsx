@@ -58,7 +58,7 @@ export default function OwnerProfilePage() {
           onSelectFile={(path) =>
             router.push(`/repos/${id}/wiki/${encodeURIComponent(path)}`)
           }
-          onSelectModule={(mod) => router.push(`/repos/${id}/ownership?module=${encodeURIComponent(mod)}`)}
+          onSelectModule={(mod) => router.push(`/repos/${id}/modules/${encodeURIComponent(mod)}`)}
           onSelectCoAuthor={(c) => {
             const k = c.email ?? `name:${c.name}`;
             router.push(`/repos/${id}/owners/${encodeURIComponent(k)}`);

@@ -93,7 +93,7 @@ export function HeatmapTab({ repoId }: { repoId: string }) {
               busFactorByModule={granularity === "module" ? busFactorByModule : undefined}
               onSelect={(e) =>
                 router.push(
-                  `/repos/${repoId}/ownership?module=${encodeURIComponent(e.module_path)}`,
+                  `/repos/${repoId}/modules/${encodeURIComponent(e.module_path)}`,
                 )
               }
             />
