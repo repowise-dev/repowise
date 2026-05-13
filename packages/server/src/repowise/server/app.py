@@ -39,6 +39,8 @@ from repowise.server.routers import (
     health,
     jobs,
     knowledge_map,
+    modules,
+    owners,
     pages,
     providers,
     repos,
@@ -343,5 +345,7 @@ def create_app() -> FastAPI:
     app.include_router(blast_radius.router)
     app.include_router(knowledge_map.router)
     app.include_router(workspace.router)
+    app.include_router(owners.router)
+    app.include_router(modules.router)
 
     return app

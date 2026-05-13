@@ -6,6 +6,27 @@ import type { OwnershipEntry } from "@repowise-dev/types/git";
 
 interface OwnershipTreemapProps {
   entries: OwnershipEntry[];
+  /**
+   * Optional bus-factor lookup keyed by `module_path`. When provided, the
+   * tile border is colored: red for ≤1 (single-owner), amber for 2, green
+   * for ≥3. Silo dashing still wins over the green case so high-share
+   * modules still scream visually.
+   */
+  busFactorByModule?: Record<string, number>;
+  /** Optional click handler — useful for routing to module health detail. */
+  onSelect?: (entry: OwnershipEntry) => void;
+}
+
+function busFactorStroke(bf: number | undefined, isSilo: boolean): {
+  stroke: string;
+  width: number;
+  dash: string;
+} {
+  if (isSilo) return { stroke: "#f59520", width: 2, dash: "4 2" };
+  if (bf === undefined) return { stroke: "none", width: 0, dash: "none" };
+  if (bf <= 1) return { stroke: "#ef4444", width: 2, dash: "none" };
+  if (bf === 2) return { stroke: "#f59520", width: 1.5, dash: "none" };
+  return { stroke: "#22c55e", width: 1, dash: "none" };
 }
 
 const OWNER_COLORS = [
@@ -31,9 +52,10 @@ interface TooltipData {
   fileCount: number;
   pct: number | null;
   isSilo: boolean;
+  busFactor: number | null;
 }
 
-export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
+export function OwnershipTreemap({ entries, busFactorByModule, onSelect }: OwnershipTreemapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState({ width: 600, height: 320 });
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
@@ -52,7 +74,7 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
   }, []);
 
   const handleMouseMove = useCallback(
-    (e: React.MouseEvent, d: { name: string; owner: string | null; fileCount: number; pct: number | null; isSilo: boolean }) => {
+    (e: React.MouseEvent, d: { name: string; owner: string | null; fileCount: number; pct: number | null; isSilo: boolean; busFactor: number | null }) => {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       setTooltip({
@@ -111,6 +133,9 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
           const h = leaf.y1 - y0;
           const showLabel = w > 50 && h > 28;
 
+          const bf = busFactorByModule?.[d.name];
+          const stroke = busFactorStroke(bf, d.isSilo ?? false);
+          const entry = entries.find((e) => e.module_path === d.name);
           return (
             <g
               key={d.name}
@@ -121,9 +146,12 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
                   fileCount: leaf.value || 0,
                   pct: d.pct ?? null,
                   isSilo: d.isSilo ?? false,
+                  busFactor: bf ?? null,
                 })
               }
               onMouseLeave={() => setTooltip(null)}
+              onClick={() => entry && onSelect?.(entry)}
+              className={onSelect ? "cursor-pointer" : undefined}
             >
               <rect
                 x={x0}
@@ -133,9 +161,9 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
                 fill={ownerColor(d.owner ?? null)}
                 opacity={0.8}
                 rx={3}
-                stroke={d.isSilo ? "#f59520" : "none"}
-                strokeWidth={d.isSilo ? 2 : 0}
-                strokeDasharray={d.isSilo ? "4 2" : "none"}
+                stroke={stroke.stroke}
+                strokeWidth={stroke.width}
+                strokeDasharray={stroke.dash}
                 className="transition-opacity hover:opacity-100"
               />
               {showLabel && (
@@ -181,9 +209,46 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
             {tooltip.pct != null && ` (${Math.round(tooltip.pct * 100)}%)`}
           </p>
           <p className="text-[var(--color-text-secondary)]">{tooltip.fileCount} files</p>
+          {tooltip.busFactor != null && (
+            <p
+              className={
+                tooltip.busFactor <= 1
+                  ? "text-red-400 font-medium mt-0.5"
+                  : tooltip.busFactor === 2
+                    ? "text-amber-300 font-medium mt-0.5"
+                    : "text-emerald-300 mt-0.5"
+              }
+            >
+              Bus factor: {tooltip.busFactor}
+            </p>
+          )}
           {tooltip.isSilo && (
             <p className="text-yellow-400 font-medium mt-0.5">Silo risk</p>
           )}
+        </div>
+      )}
+
+      {busFactorByModule && (
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-[var(--color-text-tertiary)]">
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "#ef4444" }} />
+            bus ≤ 1
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "#f59520" }} />
+            bus = 2
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "#22c55e" }} />
+            bus ≥ 3
+          </span>
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block h-2 w-3 rounded-sm border-2"
+              style={{ borderColor: "#f59520", borderStyle: "dashed" }}
+            />
+            silo (&gt;80% owner)
+          </span>
         </div>
       )}
     </div>

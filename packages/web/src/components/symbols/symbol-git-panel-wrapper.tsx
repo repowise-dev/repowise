@@ -6,6 +6,7 @@ import useSWR from "swr";
 import { SymbolGitPanel } from "@repowise-dev/ui/symbols/symbol-git-panel";
 import { getCoChanges, getGitMetadata } from "@/lib/api/git";
 import { listDeadCode } from "@/lib/api/dead-code";
+import { listDecisions } from "@/lib/api/decisions";
 import type { SymbolResponse } from "@/lib/api/types";
 
 interface Props {
@@ -44,6 +45,15 @@ export function SymbolGitPanelWrapper({ symbol, repoId }: Props) {
   const { data: deadFindings } = useSWR(
     `dead-code:${repoId}`,
     () => listDeadCode(repoId, { limit: 500 }),
+    { revalidateOnFocus: false },
+  );
+
+  // Decisions governing the module containing this file. Module-scope
+  // matches the existing decision `affected_modules_json` convention.
+  const module = filePath.split("/", 2)[0];
+  const { data: decisions } = useSWR(
+    module ? `decisions:${repoId}:${module}` : null,
+    () => listDecisions(repoId, { module, limit: 25 }),
     { revalidateOnFocus: false },
   );
 
@@ -90,6 +100,18 @@ export function SymbolGitPanelWrapper({ symbol, repoId }: Props) {
         lines: f.lines,
         safe_to_delete: f.safe_to_delete,
       }))}
+      governingDecisions={(decisions ?? []).map((d) => ({
+        id: d.id,
+        title: d.title,
+        status: d.status,
+      }))}
+      onSelectOwner={(name, email) => {
+        const key = email ?? `name:${name}`;
+        router.push(`/repos/${repoId}/owners/${encodeURIComponent(key)}`);
+      }}
+      onSelectDecision={(id) =>
+        router.push(`/repos/${repoId}/decisions/${encodeURIComponent(id)}`)
+      }
       onOpenBlastRadius={() =>
         router.push(`/repos/${repoId}/blast-radius?file=${encodeURIComponent(filePath)}`)
       }

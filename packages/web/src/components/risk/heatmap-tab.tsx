@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import { OwnershipTreemap } from "@repowise-dev/ui/git/ownership-treemap";
+import { listModuleHealth } from "@/lib/api/modules";
+import type { ModuleHealthSummary } from "@/lib/api/types";
 import { BusFactorPanel } from "@repowise-dev/ui/git/bus-factor-panel";
 import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
 import { HotspotTrendStrip } from "@repowise-dev/ui/git/hotspot-trend-strip";
@@ -16,6 +19,7 @@ import type { OwnershipEntry, GitSummaryResponse, HotspotResponse } from "@/lib/
 type Granularity = "module" | "file";
 
 export function HeatmapTab({ repoId }: { repoId: string }) {
+  const router = useRouter();
   const [granularity, setGranularity] = useState<Granularity>("module");
 
   const { data: entries, isLoading: loadingEntries } = useSWR<OwnershipEntry[]>(
@@ -33,6 +37,21 @@ export function HeatmapTab({ repoId }: { repoId: string }) {
     () => getHotspots(repoId, 100),
     { revalidateOnFocus: false },
   );
+  // Module-level bus-factor overlay for the treemap. Only needed at module
+  // granularity — file mode uses its own per-row bus factor in tooltips.
+  const { data: moduleHealth } = useSWR(
+    granularity === "module" ? `module-health:${repoId}:all` : null,
+    () => listModuleHealth(repoId, { sort: "file_count", limit: 500 }),
+    { revalidateOnFocus: false },
+  );
+
+  const busFactorByModule = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const m of (moduleHealth?.items ?? []) as ModuleHealthSummary[]) {
+      map[m.module_path] = Math.round(m.median_bus_factor);
+    }
+    return map;
+  }, [moduleHealth]);
 
   const list = entries ?? [];
 
@@ -63,12 +82,21 @@ export function HeatmapTab({ repoId }: { repoId: string }) {
               </div>
             </div>
             <p className="text-xs text-[var(--color-text-tertiary)] pt-1">
-              Tile size = code volume. Color = ownership concentration; red tiles are silos
-              (single owner &gt; 80%).
+              Tile size = code volume. Color = primary owner. Border = bus factor —
+              red ≤1, amber 2, green ≥3. Dashed amber outline marks silo modules
+              (one owner &gt;80%).
             </p>
           </CardHeader>
           <CardContent className="pt-0">
-            <OwnershipTreemap entries={list} />
+            <OwnershipTreemap
+              entries={list}
+              busFactorByModule={granularity === "module" ? busFactorByModule : undefined}
+              onSelect={(e) =>
+                router.push(
+                  `/repos/${repoId}/ownership?module=${encodeURIComponent(e.module_path)}`,
+                )
+              }
+            />
           </CardContent>
         </Card>
       ) : null}
@@ -108,14 +136,23 @@ export function HeatmapTab({ repoId }: { repoId: string }) {
             <CardContent className="pt-0">
               <ContributorBar owners={summary.top_owners} />
               <div className="mt-3 space-y-1.5">
-                {summary.top_owners.slice(0, 10).map((o, i) => (
-                  <div key={o.email || `owner-${i}`} className="flex items-center justify-between text-xs">
-                    <span className="text-[var(--color-text-secondary)] truncate">{o.name}</span>
-                    <span className="text-[var(--color-text-tertiary)] tabular-nums ml-2">
-                      {Math.round((o.pct ?? 0) * 100)}%
-                    </span>
-                  </div>
-                ))}
+                {summary.top_owners.slice(0, 10).map((o, i) => {
+                  const key = o.email ?? `name:${o.name}`;
+                  return (
+                    <button
+                      key={o.email || `owner-${i}`}
+                      onClick={() =>
+                        router.push(`/repos/${repoId}/owners/${encodeURIComponent(key)}`)
+                      }
+                      className="flex w-full items-center justify-between rounded-md px-2 py-1 text-xs hover:bg-[var(--color-bg-elevated)]"
+                    >
+                      <span className="text-[var(--color-text-secondary)] truncate text-left">{o.name}</span>
+                      <span className="text-[var(--color-text-tertiary)] tabular-nums ml-2">
+                        {Math.round((o.pct ?? 0) * 100)}%
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </CardContent>
           </Card>

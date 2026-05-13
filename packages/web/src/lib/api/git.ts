@@ -5,6 +5,7 @@ import type {
   HotspotResponse,
   OwnershipEntry,
   Paginated,
+  ReviewerSuggestionsResponse,
 } from "./types";
 
 export async function getGitMetadata(
@@ -80,6 +81,21 @@ export async function getCoChanges(
     file_path: filePath,
     min_count: minCount,
   });
+}
+
+export async function getReviewerSuggestions(
+  repoId: string,
+  paths: string[],
+  limit = 10,
+): Promise<ReviewerSuggestionsResponse> {
+  // FastAPI repeats `?paths=` per entry; URLSearchParams handles that for
+  // us when we hand it tuples.
+  const sp = new URLSearchParams();
+  for (const p of paths) sp.append("paths", p);
+  sp.append("limit", String(limit));
+  return apiGet<ReviewerSuggestionsResponse>(
+    `/api/repos/${repoId}/reviewer-suggestions?${sp.toString()}`,
+  );
 }
 
 export async function getGitSummary(

@@ -1,0 +1,502 @@
+"use client";
+
+import { useMemo } from "react";
+import {
+  Flame,
+  ShieldAlert,
+  Trash2,
+  GitCommit,
+  Calendar,
+  Users,
+  Folder,
+  TrendingUp,
+} from "lucide-react";
+import type {
+  OwnerProfile,
+  OwnerFileEntry,
+  OwnerModuleRollup,
+  OwnerCoAuthor,
+} from "@repowise-dev/types/owners";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Badge } from "../ui/badge";
+import { cn } from "../lib/cn";
+import { truncatePath } from "../lib/format";
+import { OwnerAvatar } from "./owner-avatar";
+
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(iso);
+  return Number.isNaN(t.getTime()) ? "—" : dateFormatter.format(t);
+}
+
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return n.toLocaleString();
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return "never";
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  if (Number.isNaN(d) || d < 0) return "never";
+  if (d < 1) return "today";
+  if (d < 30) return `${d}d ago`;
+  if (d < 365) return `${Math.floor(d / 30)}mo ago`;
+  return `${Math.floor(d / 365)}y ago`;
+}
+
+export interface OwnerProfileViewProps {
+  owner: OwnerProfile;
+  onSelectFile?: (filePath: string) => void;
+  onSelectModule?: (modulePath: string) => void;
+  onSelectCoAuthor?: (coAuthor: OwnerCoAuthor) => void;
+  /** Optional renderer for the embedded blast-radius / activity preview. */
+  rightRail?: React.ReactNode;
+}
+
+/**
+ * Engineering-leader contributor profile. All data comes from the
+ * /api/repos/{id}/owners/{key} endpoint — no client-side aggregation.
+ *
+ * Layout:
+ *  - Header: avatar, headline metrics, time-on-codebase line
+ *  - Risk strip: silos / bus-factor / dead-code / hotspots, color-coded
+ *  - Two-column body: top files + modules (left), co-authors + categories (right)
+ */
+export function OwnerProfileView({
+  owner,
+  onSelectFile,
+  onSelectModule,
+  onSelectCoAuthor,
+  rightRail,
+}: OwnerProfileViewProps) {
+  const tenureDays = useMemo(() => {
+    if (!owner.first_commit_at) return null;
+    const start = new Date(owner.first_commit_at).getTime();
+    if (Number.isNaN(start)) return null;
+    return Math.max(0, Math.floor((Date.now() - start) / 86_400_000));
+  }, [owner.first_commit_at]);
+
+  const categories = useMemo(
+    () =>
+      Object.entries(owner.commit_categories || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6),
+    [owner.commit_categories],
+  );
+  const categoryTotal = categories.reduce((s, [, n]) => s + n, 0) || 1;
+
+  return (
+    <div className="space-y-6">
+      {/* ---------- Header ---------- */}
+      <Card>
+        <CardContent className="p-5">
+          <div className="flex flex-wrap items-start gap-5">
+            <OwnerAvatar name={owner.name} email={owner.email} size="lg" />
+            <div className="flex-1 min-w-0">
+              <h1 className="text-2xl font-bold text-[var(--color-text-primary)]">
+                {owner.name}
+              </h1>
+              {owner.email && (
+                <a
+                  href={`mailto:${owner.email}`}
+                  className="text-sm text-[var(--color-text-secondary)] hover:underline"
+                >
+                  {owner.email}
+                </a>
+              )}
+              <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+                <Calendar className="inline h-3 w-3 mr-1" />
+                {tenureDays !== null
+                  ? `${tenureDays.toLocaleString()} days on this repo`
+                  : "tenure unknown"}{" "}
+                · first commit {fmtDate(owner.first_commit_at)} · last touched{" "}
+                {timeAgo(owner.last_commit_at)}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+            <Headline label="Files owned" value={owner.files_owned} />
+            <Headline label="Modules" value={owner.modules.length} />
+            <Headline
+              label="Commits / 90d"
+              value={owner.commit_count_90d}
+              icon={<GitCommit className="h-3.5 w-3.5" />}
+            />
+            <Headline
+              label="Lines added (est)"
+              value={fmtCompact(owner.lines_added_90d_est)}
+              tone="add"
+            />
+            <Headline
+              label="Lines deleted (est)"
+              value={fmtCompact(owner.lines_deleted_90d_est)}
+              tone="del"
+            />
+            <Headline label="Co-authors" value={owner.co_authors.length} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ---------- Risk strip ---------- */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <RiskTile
+          icon={<Users className="h-4 w-4 text-amber-400" />}
+          label="Silo modules"
+          value={owner.silo_modules}
+          help="modules where this person owns >80% of files"
+          tone={owner.silo_modules > 0 ? "warn" : "ok"}
+        />
+        <RiskTile
+          icon={<ShieldAlert className="h-4 w-4 text-red-400" />}
+          label="Bus-factor risk"
+          value={owner.bus_factor_risk_files}
+          help="files with bus_factor ≤ 1 that they own"
+          tone={owner.bus_factor_risk_files > 0 ? "danger" : "ok"}
+        />
+        <RiskTile
+          icon={<Flame className="h-4 w-4 text-orange-400" />}
+          label="Hotspots owned"
+          value={owner.hotspots_owned}
+          help="high-churn files where they are primary owner"
+          tone={owner.hotspots_owned > 0 ? "warn" : "ok"}
+        />
+        <RiskTile
+          icon={<Trash2 className="h-4 w-4 text-rose-400" />}
+          label="Dead-code burden"
+          value={`${owner.dead_code_files_owned} files · ${fmtCompact(owner.dead_code_lines_owned)} lines`}
+          help="dead code findings whose primary owner is this person"
+          tone={owner.dead_code_files_owned > 0 ? "muted" : "ok"}
+        />
+      </div>
+
+      {/* ---------- Body ---------- */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="space-y-4 lg:col-span-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-1.5">
+                <Folder className="h-4 w-4" /> Modules
+              </CardTitle>
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Where this person spends their time. Bars show their share of the module.
+              </p>
+            </CardHeader>
+            <CardContent className="pt-0 space-y-1.5">
+              {owner.modules.slice(0, 12).map((m) => (
+                <ModuleRow key={m.module_path} mod={m} onClick={() => onSelectModule?.(m.module_path)} />
+              ))}
+              {owner.modules.length === 0 && (
+                <p className="py-6 text-center text-xs text-[var(--color-text-tertiary)]">
+                  No module attribution yet.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-1.5">
+                <TrendingUp className="h-4 w-4" /> Top files
+              </CardTitle>
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Files this person touches most, ordered by attributed commit count.
+              </p>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <FileTable files={owner.top_files} onSelectFile={onSelectFile} />
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-1.5">
+                <Users className="h-4 w-4" /> Co-authors
+              </CardTitle>
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                People who edit the same files. Strong overlap = natural reviewer.
+              </p>
+            </CardHeader>
+            <CardContent className="pt-0 space-y-1.5">
+              {owner.co_authors.slice(0, 10).map((c) => (
+                <button
+                  key={c.email ?? c.name}
+                  onClick={() => onSelectCoAuthor?.(c)}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)]"
+                >
+                  <OwnerAvatar name={c.name} email={c.email} size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium text-[var(--color-text-primary)]">
+                      {c.name}
+                    </div>
+                    <div className="text-[10px] text-[var(--color-text-tertiary)]">
+                      {c.shared_files} shared {c.shared_files === 1 ? "file" : "files"} ·{" "}
+                      {(c.co_change_strength * 100).toFixed(0)}% overlap
+                    </div>
+                  </div>
+                  <div className="h-1 w-12 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
+                    <div
+                      className="h-full bg-[var(--color-accent-primary)]"
+                      style={{ width: `${Math.min(100, c.co_change_strength * 100)}%` }}
+                    />
+                  </div>
+                </button>
+              ))}
+              {owner.co_authors.length === 0 && (
+                <p className="py-4 text-center text-xs text-[var(--color-text-tertiary)]">
+                  No co-authors detected.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Commit mix</CardTitle>
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Classification of commits across files this person touches.
+              </p>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {categories.length === 0 ? (
+                <p className="py-4 text-center text-xs text-[var(--color-text-tertiary)]">
+                  No category data.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {categories.map(([cat, n]) => (
+                    <div key={cat}>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="capitalize text-[var(--color-text-secondary)]">
+                          {cat}
+                        </span>
+                        <span className="tabular-nums text-[var(--color-text-tertiary)]">
+                          {n}
+                        </span>
+                      </div>
+                      <div className="mt-1 h-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
+                        <div
+                          className={cn("h-full", categoryColor(cat))}
+                          style={{ width: `${(n / categoryTotal) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {rightRail}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Building blocks
+// ---------------------------------------------------------------------------
+
+function Headline({
+  label,
+  value,
+  tone,
+  icon,
+}: {
+  label: string;
+  value: string | number;
+  tone?: "add" | "del";
+  icon?: React.ReactNode;
+}) {
+  const color =
+    tone === "add"
+      ? "text-emerald-300"
+      : tone === "del"
+        ? "text-rose-300"
+        : "text-[var(--color-text-primary)]";
+  return (
+    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-3 py-2">
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        {icon}
+        {label}
+      </div>
+      <div className={`mt-1 text-xl font-bold tabular-nums ${color}`}>{value}</div>
+    </div>
+  );
+}
+
+function RiskTile({
+  icon,
+  label,
+  value,
+  help,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number | string;
+  help: string;
+  tone: "ok" | "warn" | "danger" | "muted";
+}) {
+  const border =
+    tone === "danger"
+      ? "border-red-500/40 bg-red-500/5"
+      : tone === "warn"
+        ? "border-amber-500/40 bg-amber-500/5"
+        : tone === "muted"
+          ? "border-rose-500/30 bg-rose-500/5"
+          : "border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]";
+  return (
+    <div className={cn("rounded-lg border p-3", border)}>
+      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-1.5 text-lg font-semibold text-[var(--color-text-primary)]">
+        {value}
+      </div>
+      <p className="mt-1 text-[10px] text-[var(--color-text-tertiary)]">{help}</p>
+    </div>
+  );
+}
+
+function ModuleRow({
+  mod,
+  onClick,
+}: {
+  mod: OwnerModuleRollup;
+  onClick: () => void;
+}) {
+  const share = Math.min(100, Math.max(0, mod.dominant_pct * 100));
+  return (
+    <button
+      onClick={onClick}
+      className="group flex w-full items-center gap-3 rounded-md px-2 py-1.5 hover:bg-[var(--color-bg-elevated)]"
+    >
+      <span className="flex-1 truncate text-left text-xs font-medium text-[var(--color-text-primary)]">
+        {mod.module_path}
+      </span>
+      {mod.hotspot_count > 0 && (
+        <Badge variant="outdated" className="text-[10px]">
+          <Flame className="mr-0.5 h-3 w-3" />
+          {mod.hotspot_count}
+        </Badge>
+      )}
+      <span className="w-12 text-right text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+        {mod.file_count} files
+      </span>
+      <div className="h-1.5 w-24 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
+        <div
+          className={cn(
+            "h-full",
+            share > 80 ? "bg-amber-500" : "bg-[var(--color-accent-primary)]",
+          )}
+          style={{ width: `${share}%` }}
+        />
+      </div>
+      <span className="w-10 text-right text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+        {share.toFixed(0)}%
+      </span>
+    </button>
+  );
+}
+
+function FileTable({
+  files,
+  onSelectFile,
+}: {
+  files: OwnerFileEntry[];
+  onSelectFile?: ((path: string) => void) | undefined;
+}) {
+  if (files.length === 0) {
+    return (
+      <p className="py-4 text-center text-xs text-[var(--color-text-tertiary)]">
+        No file attribution.
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+          <tr>
+            <th className="py-1.5 px-2 text-left font-medium">File</th>
+            <th className="py-1.5 px-2 text-right font-medium">Commits / 90d</th>
+            <th className="py-1.5 px-2 text-right font-medium">Churn</th>
+            <th className="py-1.5 px-2 text-right font-medium">Bus</th>
+            <th className="py-1.5 px-2 text-right font-medium">Touched</th>
+          </tr>
+        </thead>
+        <tbody>
+          {files.slice(0, 20).map((f) => (
+            <tr
+              key={f.file_path}
+              onClick={() => onSelectFile?.(f.file_path)}
+              className={cn(
+                "border-t border-[var(--color-border-default)]/40",
+                onSelectFile && "cursor-pointer hover:bg-[var(--color-bg-elevated)]",
+              )}
+            >
+              <td className="py-1.5 px-2 max-w-[320px]">
+                <span className="flex items-center gap-1.5 truncate font-mono text-[11px] text-[var(--color-text-primary)]">
+                  {f.is_hotspot && <Flame className="h-3 w-3 shrink-0 text-orange-400" />}
+                  {truncatePath(f.file_path, 48)}
+                </span>
+              </td>
+              <td className="py-1.5 px-2 text-right tabular-nums">{f.commit_count_90d}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums">
+                <ChurnPill value={f.churn_percentile} />
+              </td>
+              <td className="py-1.5 px-2 text-right tabular-nums">
+                <BusBadge bf={f.bus_factor} />
+              </td>
+              <td className="py-1.5 px-2 text-right text-[10px] text-[var(--color-text-tertiary)]">
+                {timeAgo(f.last_commit_at)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ChurnPill({ value }: { value: number }) {
+  const v = Math.round(value);
+  const color =
+    v >= 80 ? "bg-red-500/20 text-red-300" : v >= 50 ? "bg-amber-500/20 text-amber-300" : "bg-[var(--color-bg-inset)] text-[var(--color-text-tertiary)]";
+  return (
+    <span className={cn("inline-block rounded px-1.5 py-0.5 text-[10px] tabular-nums", color)}>
+      {v}
+    </span>
+  );
+}
+
+function BusBadge({ bf }: { bf: number }) {
+  const color =
+    bf <= 1 ? "text-red-400" : bf === 2 ? "text-amber-300" : "text-emerald-300";
+  return <span className={cn("font-semibold", color)}>{bf}</span>;
+}
+
+function categoryColor(category: string): string {
+  const map: Record<string, string> = {
+    feat: "bg-emerald-400",
+    fix: "bg-rose-400",
+    refactor: "bg-sky-400",
+    docs: "bg-indigo-400",
+    test: "bg-violet-400",
+    chore: "bg-zinc-400",
+    perf: "bg-amber-400",
+  };
+  return map[category] ?? "bg-[var(--color-accent-primary)]";
+}

@@ -9,6 +9,8 @@ import { getDeadCodeSummary } from "@/lib/api/dead-code";
 import { getDecisionHealth } from "@/lib/api/decisions";
 import { listSecurityFindings } from "@/lib/api/security";
 
+const RISK_BASE = (repoId: string) => `/repos/${repoId}/risk`;
+
 /**
  * Always-visible 5-card strip atop /repos/[id]/risk. Pulls cached SWR data
  * shared with the tab bodies, so switching tabs doesn't trigger refetches.
@@ -49,24 +51,28 @@ export function RiskSummaryStrip({ repoId }: { repoId: string }) {
         value={formatNumber(gitSummary?.hotspot_count ?? 0)}
         description="high-churn files"
         icon={<Flame className="h-4 w-4 text-orange-400" />}
+        href={`${RISK_BASE(repoId)}?tab=hotspots`}
       />
       <StatCard
         label="Silos"
         value={formatNumber(siloCount)}
         description="single-owner modules"
         icon={<Users className="h-4 w-4 text-amber-400" />}
+        href={`${RISK_BASE(repoId)}?tab=heatmap`}
       />
       <StatCard
         label="Reclaimable"
         value={formatNumber(reclaimable)}
         description="lines safe to delete"
         icon={<Trash2 className="h-4 w-4 text-rose-400" />}
+        href={`${RISK_BASE(repoId)}?tab=dead-code`}
       />
       <StatCard
         label="Stale Decisions"
         value={formatNumber(staleDecisions)}
         description="needing review"
         icon={<Lightbulb className="h-4 w-4 text-yellow-400" />}
+        href={`/repos/${repoId}/decisions`}
       />
       <StatCard
         label="Security"
@@ -77,6 +83,7 @@ export function RiskSummaryStrip({ repoId }: { repoId: string }) {
             : "scan not run"
         }
         icon={<ShieldAlert className="h-4 w-4 text-red-400" />}
+        href={`/repos/${repoId}/security`}
       />
     </div>
   );

@@ -9,9 +9,11 @@ import { Button } from "@repowise-dev/ui/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { BlastRadiusResults } from "@repowise-dev/ui/blast-radius";
+import { ReviewerSuggestions } from "@repowise-dev/ui/git/reviewer-suggestions";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import { analyzeBlastRadius } from "@/lib/api/blast-radius";
-import { getHotspots } from "@/lib/api/git";
+import { getHotspots, getReviewerSuggestions } from "@/lib/api/git";
+import { useRouter } from "next/navigation";
 
 export default function BlastRadiusPage() {
   const params = useParams<{ id: string }>();
@@ -22,6 +24,19 @@ export default function BlastRadiusPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BlastRadiusResponse | null>(null);
+  const [analyzedPaths, setAnalyzedPaths] = useState<string[]>([]);
+  const router = useRouter();
+
+  // Reviewer suggestions key off the *most recently analyzed* paths so the
+  // panel updates the moment the analyze button is hit.
+  const reviewerKey = analyzedPaths.length
+    ? `reviewer-suggestions:${repoId}:${analyzedPaths.join(",")}`
+    : null;
+  const { data: reviewerResp, isLoading: reviewerLoading } = useSWR(
+    reviewerKey,
+    () => getReviewerSuggestions(repoId, analyzedPaths),
+    { revalidateOnFocus: false },
+  );
 
   // Suggestions: top 8 hotspots so users can prefill with one click instead
   // of remembering paths. Falls back gracefully if the call fails.
@@ -66,6 +81,7 @@ export default function BlastRadiusPage() {
         max_depth: maxDepth,
       });
       setResult(data);
+      setAnalyzedPaths(changedFiles);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed.");
     } finally {
@@ -172,7 +188,24 @@ export default function BlastRadiusPage() {
         </CardContent>
       </Card>
 
-      {result && <BlastRadiusResults result={result} />}
+      {result && (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="lg:col-span-2 space-y-4">
+            <BlastRadiusResults result={result} />
+          </div>
+          <div className="space-y-4">
+            <ReviewerSuggestions
+              suggestions={reviewerResp?.suggestions ?? []}
+              isLoading={reviewerLoading}
+              subtitle={`Based on git history of ${analyzedPaths.length} touched ${analyzedPaths.length === 1 ? "path" : "paths"}.`}
+              onSelect={(s) => {
+                const k = s.email ?? `name:${s.name}`;
+                router.push(`/repos/${repoId}/owners/${encodeURIComponent(k)}`);
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

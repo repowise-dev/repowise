@@ -18,7 +18,9 @@ from repowise.server.schemas import (
     HotspotResponse,
     OwnershipEntry,
     Paginated,
+    ReviewerSuggestionsResponse,
 )
+from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
 router = APIRouter(
     prefix="/api/repos",
@@ -205,6 +207,26 @@ async def get_co_changes(
         "co_change_partners": filtered,
         "total": len(filtered),
     }
+
+
+@router.get(
+    "/{repo_id}/reviewer-suggestions",
+    response_model=ReviewerSuggestionsResponse,
+)
+async def get_reviewer_suggestions(
+    repo_id: str,
+    paths: list[str] = Query(..., description="Repeat ?paths= for each changed file"),
+    limit: int = Query(10, ge=1, le=50),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> ReviewerSuggestionsResponse:
+    """Suggest reviewers for a PR touching the given file paths.
+
+    Composes signals already produced by the indexer (top authors,
+    co-change partners, 90-day commit counts) — no live git inspection.
+    """
+
+    suggestions = await suggest_reviewers(session, repo_id, paths, limit=limit)
+    return ReviewerSuggestionsResponse(paths=paths, suggestions=suggestions)
 
 
 @router.get("/{repo_id}/git-summary", response_model=GitSummaryResponse)

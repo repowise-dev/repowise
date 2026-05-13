@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Flame,
   GitBranch,
+  Lightbulb,
   Radius,
   Skull,
   Users,
@@ -52,8 +53,14 @@ export interface SymbolGitPanelProps {
   coChanges?: SymbolGitPanelCoChange[];
   /** Dead-code findings whose line range overlaps the symbol. */
   deadCode?: SymbolGitPanelDeadFinding[];
+  /** Decision records governing this file / module. Optional. */
+  governingDecisions?: Array<{ id: string; title: string; status: string }>;
   /** Optional callback for the "View blast radius" CTA. */
   onOpenBlastRadius?: () => void;
+  /** Click handler when an owner name is selected. */
+  onSelectOwner?: (name: string, email?: string | null) => void;
+  /** Click handler for governing decision rows. */
+  onSelectDecision?: (id: string) => void;
 }
 
 /**
@@ -68,7 +75,10 @@ export function SymbolGitPanel({
   git,
   coChanges,
   deadCode,
+  governingDecisions,
   onOpenBlastRadius,
+  onSelectOwner,
+  onSelectDecision,
 }: SymbolGitPanelProps) {
   const hasDead = (deadCode?.length ?? 0) > 0;
   const visibleCoChanges = (coChanges ?? []).slice(0, 6);
@@ -95,14 +105,25 @@ export function SymbolGitPanel({
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <Users className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-            <span className="text-[var(--color-text-secondary)]">
-              {git.primary_owner_name ?? "—"}
-              {git.primary_owner_commit_pct != null && (
-                <span className="ml-1 text-[var(--color-text-tertiary)] tabular-nums">
-                  ({Math.round(git.primary_owner_commit_pct * 100)}%)
-                </span>
-              )}
-            </span>
+            {git.primary_owner_name ? (
+              <button
+                onClick={() => onSelectOwner?.(git.primary_owner_name!, null)}
+                disabled={!onSelectOwner}
+                className={cn(
+                  "text-[var(--color-text-secondary)] text-left",
+                  onSelectOwner && "hover:underline hover:text-[var(--color-accent-primary)]",
+                )}
+              >
+                {git.primary_owner_name}
+                {git.primary_owner_commit_pct != null && (
+                  <span className="ml-1 text-[var(--color-text-tertiary)] tabular-nums">
+                    ({Math.round(git.primary_owner_commit_pct * 100)}%)
+                  </span>
+                )}
+              </button>
+            ) : (
+              <span className="text-[var(--color-text-secondary)]">—</span>
+            )}
           </div>
           {git.recent_owner_name && git.recent_owner_name !== git.primary_owner_name && (
             <p className="text-[var(--color-text-tertiary)] pl-5">
@@ -185,6 +206,30 @@ export function SymbolGitPanel({
                     — {f.reason} ({f.lines} lines)
                   </span>
                 </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {governingDecisions && governingDecisions.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider flex items-center gap-1">
+            <Lightbulb className="h-3 w-3" />
+            Governing decisions
+          </p>
+          <ul className="space-y-1">
+            {governingDecisions.slice(0, 5).map((d) => (
+              <li key={d.id}>
+                <button
+                  onClick={() => onSelectDecision?.(d.id)}
+                  className="flex w-full items-center justify-between gap-2 rounded px-1 py-0.5 text-left text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+                >
+                  <span className="truncate">{d.title}</span>
+                  <span className="text-[10px] text-[var(--color-text-tertiary)] uppercase">
+                    {d.status}
+                  </span>
+                </button>
               </li>
             ))}
           </ul>
