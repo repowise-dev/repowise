@@ -2,6 +2,7 @@
 
 import { SymbolDrawer } from "@repowise-dev/ui/symbols/symbol-drawer";
 import { SymbolGraphPanelWrapper } from "./symbol-graph-panel-wrapper";
+import { SymbolGitPanelWrapper } from "./symbol-git-panel-wrapper";
 import type { SymbolResponse } from "@/lib/api/types";
 
 interface Props {
@@ -16,6 +17,7 @@ export function SymbolDrawerWrapper({ symbol, repoId, onClose }: Props) {
       symbol={symbol}
       onClose={onClose}
       graphPanel={symbol ? <SymbolGraphPanelWrapper repoId={repoId} symbol={symbol} /> : null}
+      gitPanel={symbol ? <SymbolGitPanelWrapper repoId={repoId} symbol={symbol} /> : null}
     />
   );
 }

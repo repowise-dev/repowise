@@ -5,6 +5,7 @@ import { TrendingUp, TrendingDown, Search, Flame, ArrowUpDown, ArrowUp, ArrowDow
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
+import { ResultsFooter } from "../shared/results-footer";
 import { RowActions } from "../shared/row-actions";
 import { ChurnBar } from "./churn-bar";
 import { formatLOC } from "../lib/format";
@@ -22,6 +23,16 @@ interface HotspotTableProps {
    * clickable independently — they stop propagation.
    */
   onSelect?: (hotspot: Hotspot) => void;
+  /**
+   * Pagination signals. When `total` is provided, the table renders a
+   * "Showing N of M / Load more" footer so the user can see whether the
+   * data was truncated. `onLoadMore` is wired to the parent's fetch — the
+   * table itself stays presentational.
+   */
+  total?: number;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 type Filter = "all" | "hot" | "risk" | "accelerating";
@@ -40,7 +51,16 @@ function ariaSortFor(column: SortKey, sortKey: SortKey, sortDir: SortDir): "none
   return sortDir === "asc" ? "ascending" : "descending";
 }
 
-export function HotspotTable({ hotspots, repoId, linkPrefix, onSelect }: HotspotTableProps) {
+export function HotspotTable({
+  hotspots,
+  repoId,
+  linkPrefix,
+  onSelect,
+  total,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+}: HotspotTableProps) {
   const prefix = linkPrefix ?? (repoId ? `/repos/${repoId}` : undefined);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -286,6 +306,16 @@ export function HotspotTable({ hotspots, repoId, linkPrefix, onSelect }: Hotspot
               })}
             </tbody>
           </table>
+          {total != null && (
+            <ResultsFooter
+              shown={filtered.length}
+              total={total}
+              hasMore={!!hasMore}
+              loading={loadingMore}
+              onLoadMore={onLoadMore}
+              noun="hotspots"
+            />
+          )}
         </div>
       )}
     </div>

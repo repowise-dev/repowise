@@ -1,8 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import useSWR from "swr";
 import { useFileCardHost } from "@/components/shared/file-card-host";
-import type { HotspotResponse as HotspotRowType } from "@/lib/api/types";
+import type { HotspotResponse as HotspotRowType, Paginated } from "@/lib/api/types";
 import type { FileCardData } from "@repowise-dev/ui/shared/file-card";
 import { HotspotTable } from "@repowise-dev/ui/git/hotspot-table";
 import { ContributorBar } from "@repowise-dev/ui/git/contributor-bar";
@@ -12,9 +13,11 @@ import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-ch
 import { ChurnVsBusFactorScatter } from "@repowise-dev/ui/git/churn-vs-bus-factor-scatter";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
-import { getHotspots, getGitSummary } from "@/lib/api/git";
+import { getHotspotsPage, getGitSummary } from "@/lib/api/git";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type { GitSummaryResponse, HotspotResponse } from "@/lib/api/types";
+
+const PAGE_SIZE = 100;
 
 function hotspotToFileCard(h: HotspotRowType): FileCardData {
   return {
@@ -34,10 +37,16 @@ function hotspotToFileCard(h: HotspotRowType): FileCardData {
 
 export function HotspotsTab({ repoId }: { repoId: string }) {
   const { showFile, dialog } = useFileCardHost(repoId);
-  const { data: hotspots, isLoading: loadingHotspots, error: hotspotsError } = useSWR<HotspotResponse[]>(
-    `risk-hotspots:${repoId}`,
-    () => getHotspots(repoId, 100),
-    { revalidateOnFocus: false },
+  const [pageLimit, setPageLimit] = useState(PAGE_SIZE);
+  const {
+    data: hotspotsPage,
+    isLoading: loadingHotspots,
+    isValidating: validatingHotspots,
+    error: hotspotsError,
+  } = useSWR<Paginated<HotspotResponse>>(
+    `risk-hotspots:${repoId}:${pageLimit}`,
+    () => getHotspotsPage(repoId, { limit: pageLimit }),
+    { revalidateOnFocus: false, keepPreviousData: true },
   );
   const { data: summary } = useSWR<GitSummaryResponse>(
     `git-summary:${repoId}`,
@@ -45,7 +54,9 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
     { revalidateOnFocus: false },
   );
 
-  const list = hotspots ?? [];
+  const list = hotspotsPage?.items ?? [];
+  const total = hotspotsPage?.total ?? list.length;
+  const hasMore = hotspotsPage?.has_more ?? false;
   const aggregatedCategories: Record<string, number> = {};
   for (const h of list) {
     for (const [cat, count] of Object.entries(h.commit_categories || {})) {
@@ -126,7 +137,15 @@ export function HotspotsTab({ repoId }: { repoId: string }) {
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
         <div className="xl:col-span-3">
-          <HotspotTable hotspots={list} repoId={repoId} onSelect={(h) => showFile(hotspotToFileCard(h))} />
+          <HotspotTable
+            hotspots={list}
+            repoId={repoId}
+            onSelect={(h) => showFile(hotspotToFileCard(h))}
+            total={total}
+            hasMore={hasMore}
+            loadingMore={validatingHotspots && !loadingHotspots}
+            onLoadMore={() => setPageLimit((n) => Math.min(n + PAGE_SIZE, 500))}
+          />
         </div>
 
         {summary && summary.top_owners.length > 0 && (

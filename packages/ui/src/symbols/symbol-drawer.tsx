@@ -21,9 +21,15 @@ interface SymbolDrawerProps {
    * `<SymbolGraphPanelWrapper>` here; pass `null` to hide the column.
    */
   graphPanel?: ReactNode;
+  /**
+   * Additional right-column slot for file-level git context (owner, bus
+   * factor, co-changes, overlapping dead code). Rendered below the graph
+   * panel when both are present.
+   */
+  gitPanel?: ReactNode;
 }
 
-export function SymbolDrawer({ symbol, onClose, graphPanel }: SymbolDrawerProps) {
+export function SymbolDrawer({ symbol, onClose, graphPanel, gitPanel }: SymbolDrawerProps) {
   return (
     <Dialog open={symbol !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-[95vw] w-[1000px] max-h-[88vh] overflow-hidden p-0">
@@ -79,9 +85,13 @@ export function SymbolDrawer({ symbol, onClose, graphPanel }: SymbolDrawerProps)
                 </div>
               </ScrollArea>
 
-              {graphPanel && (
+              {(graphPanel || gitPanel) && (
                 <div className="hidden md:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-[340px] shrink-0 overflow-hidden">
-                  {graphPanel}
+                  <ScrollArea className="flex-1 min-h-0">
+                    {graphPanel}
+                    {graphPanel && gitPanel && <Separator />}
+                    {gitPanel}
+                  </ScrollArea>
                 </div>
               )}
             </div>

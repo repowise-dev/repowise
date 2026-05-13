@@ -8,6 +8,15 @@ interface HotspotsMiniProps {
   hotspots: Hotspot[];
   repoId: string;
   linkPrefix?: string;
+  /**
+   * Total hotspot count (from the paginated envelope). When provided the
+   * header shows "Top 5 of N" so the user understands the mini card is a
+   * preview, not the full set. Without this, the "View all" link is the
+   * only signal that more exists.
+   */
+  total?: number;
+  /** Preview window — defaults to 5; cap at 10 for a glance card. */
+  previewCount?: number;
 }
 
 function getChurnColor(percentile: number): string {
@@ -16,9 +25,19 @@ function getChurnColor(percentile: number): string {
   return "var(--color-accent-primary)";
 }
 
-export function HotspotsMini({ hotspots, repoId, linkPrefix }: HotspotsMiniProps) {
+export function HotspotsMini({
+  hotspots,
+  repoId,
+  linkPrefix,
+  total,
+  previewCount = 5,
+}: HotspotsMiniProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
-  const top = hotspots.slice(0, 5);
+  const top = hotspots.slice(0, Math.min(previewCount, 10));
+  // Authoritative total is the server-reported figure when present; fall
+  // back to the array length so this widget still works when callers
+  // haven't migrated to the paginated fetch yet.
+  const fullCount = total ?? hotspots.length;
 
   if (top.length === 0) {
     return (
@@ -41,6 +60,9 @@ export function HotspotsMini({ hotspots, repoId, linkPrefix }: HotspotsMiniProps
           <span className="flex items-center gap-2">
             <Flame className="h-4 w-4 text-red-500" />
             Top Hotspots
+            <span className="text-[10px] font-normal text-[var(--color-text-tertiary)] tabular-nums">
+              {top.length} of {fullCount.toLocaleString()}
+            </span>
           </span>
           <a
             href={`${prefix}/hotspots`}

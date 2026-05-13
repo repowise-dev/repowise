@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   BarChart,
   Bar,
@@ -14,9 +15,12 @@ import type { Hotspot } from "@repowise-dev/types/git";
 
 interface BusFactorPanelProps {
   hotspots: Hotspot[];
+  /** Number of risk files shown before the "show more" toggle. */
+  riskPreviewCount?: number;
 }
 
-export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
+export function BusFactorPanel({ hotspots, riskPreviewCount = 5 }: BusFactorPanelProps) {
+  const [showAllRisk, setShowAllRisk] = useState(false);
   if (!hotspots || hotspots.length === 0) {
     return (
       <EmptyState
@@ -34,10 +38,13 @@ export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
 
   const data = [{ high, medium, low }];
 
-  const riskFiles = hotspots
+  const allRiskFiles = hotspots
     .filter((h) => h.bus_factor <= 1)
-    .sort((a, b) => b.commit_count_90d - a.commit_count_90d)
-    .slice(0, 5);
+    .sort((a, b) => b.commit_count_90d - a.commit_count_90d);
+  const riskFiles = showAllRisk
+    ? allRiskFiles
+    : allRiskFiles.slice(0, riskPreviewCount);
+  const hiddenRisk = allRiskFiles.length - riskFiles.length;
 
   return (
     <div className="space-y-4">
@@ -84,8 +91,11 @@ export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
 
       {riskFiles.length > 0 && (
         <div>
-          <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
-            Highest Risk Files
+          <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2 flex items-center justify-between">
+            <span>Highest Risk Files</span>
+            <span className="font-normal normal-case tracking-normal text-[10px]">
+              {riskFiles.length} of {allRiskFiles.length}
+            </span>
           </p>
           <div className="space-y-1.5">
             {riskFiles.map((f) => (
@@ -102,6 +112,15 @@ export function BusFactorPanel({ hotspots }: BusFactorPanelProps) {
               </div>
             ))}
           </div>
+          {(hiddenRisk > 0 || showAllRisk) && (
+            <button
+              type="button"
+              onClick={() => setShowAllRisk((v) => !v)}
+              className="mt-2 text-[10px] text-[var(--color-accent-primary)] hover:underline"
+            >
+              {showAllRisk ? "Show fewer" : `Show ${hiddenRisk} more`}
+            </button>
+          )}
         </div>
       )}
     </div>

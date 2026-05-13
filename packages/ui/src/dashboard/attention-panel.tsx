@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   AlertTriangle,
   Trash2,
@@ -50,6 +51,8 @@ interface AttentionPanelProps {
   items: AttentionItem[];
   repoId: string;
   linkPrefix?: string;
+  /** Initial preview window; expanding the panel reveals all items. */
+  previewCount?: number;
 }
 
 function getDefaultHref(item: AttentionItem, prefix: string): string {
@@ -68,8 +71,15 @@ function getDefaultHref(item: AttentionItem, prefix: string): string {
   }
 }
 
-export function AttentionPanel({ items, repoId, linkPrefix }: AttentionPanelProps) {
+export function AttentionPanel({
+  items,
+  repoId,
+  linkPrefix,
+  previewCount = 8,
+}: AttentionPanelProps) {
   const prefix = linkPrefix ?? `/repos/${repoId}`;
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? items : items.slice(0, previewCount);
   if (items.length === 0) {
     return (
       <Card>
@@ -97,7 +107,7 @@ export function AttentionPanel({ items, repoId, linkPrefix }: AttentionPanelProp
       </CardHeader>
       <CardContent className="pt-0">
         <div className="space-y-1">
-          {items.slice(0, 8).map((item) => {
+          {visible.map((item) => {
             const Icon = ICON_MAP[item.type];
             const href = item.href ?? getDefaultHref(item, prefix);
             return (
@@ -125,10 +135,16 @@ export function AttentionPanel({ items, repoId, linkPrefix }: AttentionPanelProp
               </a>
             );
           })}
-          {items.length > 8 && (
-            <p className="text-[11px] text-[var(--color-text-tertiary)] text-center pt-1">
-              +{items.length - 8} more items
-            </p>
+          {items.length > previewCount && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="block w-full text-[11px] text-[var(--color-accent-primary)] hover:underline text-center pt-1"
+            >
+              {expanded
+                ? "Show fewer"
+                : `+${items.length - previewCount} more items — show all`}
+            </button>
           )}
         </div>
       </CardContent>

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { SymbolTable } from "../../src/symbols/symbol-table.js";
+import { SymbolTable, type SymbolFilters } from "../../src/symbols/symbol-table.js";
 import type { CodeSymbol } from "@repowise-dev/types/symbols";
 
 const sym = (overrides: Partial<CodeSymbol> = {}): CodeSymbol => ({
@@ -20,24 +20,31 @@ const sym = (overrides: Partial<CodeSymbol> = {}): CodeSymbol => ({
   complexity_estimate: 3,
   language: "typescript",
   parent_name: null,
+  importance_score: 0.9,
   ...overrides,
 });
+
+const defaultFilters: SymbolFilters = {
+  q: "",
+  kind: "all",
+  language: "all",
+  visibility: "all",
+  inHotFiles: false,
+  inEntryPoints: false,
+  sort: "importance",
+};
 
 describe("SymbolTable", () => {
   it("renders the empty state when no items", () => {
     render(
       <SymbolTable
         items={[]}
-        importanceScores={new Map()}
         isLoading={false}
         isValidating={false}
         hasMore={false}
-        q=""
-        onQChange={vi.fn()}
-        kind="all"
-        onKindChange={vi.fn()}
-        language="all"
-        onLanguageChange={vi.fn()}
+        total={0}
+        filters={defaultFilters}
+        onFiltersChange={vi.fn()}
         onLoadMore={vi.fn()}
         onSelect={vi.fn()}
       />,
@@ -48,23 +55,20 @@ describe("SymbolTable", () => {
   it("renders rows for loaded symbols", () => {
     render(
       <SymbolTable
-        items={[sym(), sym({ id: "s2", name: "baz", file_path: "src/baz.ts" })]}
-        importanceScores={new Map([["s1", 0.9], ["s2", 0.3]])}
+        items={[sym(), sym({ id: "s2", name: "baz", file_path: "src/baz.ts", importance_score: 0.3 })]}
         isLoading={false}
         isValidating={false}
         hasMore={false}
-        q=""
-        onQChange={vi.fn()}
-        kind="all"
-        onKindChange={vi.fn()}
-        language="all"
-        onLanguageChange={vi.fn()}
+        total={2}
+        filters={defaultFilters}
+        onFiltersChange={vi.fn()}
         onLoadMore={vi.fn()}
         onSelect={vi.fn()}
       />,
     );
     expect(screen.getByText("bar")).toBeTruthy();
     expect(screen.getByText("baz")).toBeTruthy();
-    expect(screen.getByText("2 symbols")).toBeTruthy();
+    // ResultsFooter renders "Showing 2 of 2 symbols"
+    expect(screen.getByText(/Showing/)).toBeTruthy();
   });
 });

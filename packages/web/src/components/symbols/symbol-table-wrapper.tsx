@@ -1,15 +1,13 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import useSWR from "swr";
+import { useMemo, useState } from "react";
 import useSWRInfinite from "swr/infinite";
-import { SymbolTable } from "@repowise-dev/ui/symbols/symbol-table";
+import { SymbolTable, type SymbolFilters } from "@repowise-dev/ui/symbols/symbol-table";
 import { HotSymbolsBoard, type HotSymbol } from "@repowise-dev/ui/symbols/hot-symbols-board";
 import { SymbolDrawerWrapper } from "./symbol-drawer-wrapper";
-import { listSymbols } from "@/lib/api/symbols";
-import { getGraph } from "@/lib/api/graph";
+import { listSymbolsPage, type SymbolSortKey } from "@/lib/api/symbols";
 import { useDebounce } from "@/lib/hooks/use-debounce";
-import type { SymbolResponse, GraphExportResponse } from "@/lib/api/types";
+import type { Paginated, SymbolResponse } from "@/lib/api/types";
 
 const LIMIT = 50;
 
@@ -18,37 +16,44 @@ interface Props {
 }
 
 export function SymbolTableWrapper({ repoId }: Props) {
-  const [q, setQ] = useState("");
-  const debouncedQ = useDebounce(q, 300);
-  const [kind, setKind] = useState("all");
-  const [language, setLanguage] = useState("all");
+  const [filters, setFilters] = useState<SymbolFilters>({
+    q: "",
+    kind: "all",
+    language: "all",
+    visibility: "all",
+    inHotFiles: false,
+    inEntryPoints: false,
+    sort: "importance",
+  });
+  const debouncedQ = useDebounce(filters.q, 300);
   const [selected, setSelected] = useState<SymbolResponse | null>(null);
 
-  const { data: graphData } = useSWR<GraphExportResponse>(
-    `graph:${repoId}`,
-    () => getGraph(repoId),
-    { revalidateOnFocus: false, revalidateOnReconnect: false },
+  // The fetch key changes whenever any filter does — SWR will fall back to
+  // page 0 cleanly without us having to reset infinite state by hand.
+  const keyPayload = useMemo(
+    () => ({ ...filters, q: debouncedQ }),
+    [filters, debouncedQ],
   );
 
-  const pagerankMap = useMemo(() => {
-    if (!graphData) return new Map<string, number>();
-    const m = new Map<string, number>();
-    for (const n of graphData.nodes) m.set(n.node_id, n.pagerank);
-    return m;
-  }, [graphData]);
-
-  const { data, size, setSize, isLoading, isValidating } = useSWRInfinite<SymbolResponse[]>(
+  const { data, size, setSize, isLoading, isValidating } = useSWRInfinite<
+    Paginated<SymbolResponse>
+  >(
     (pageIndex, previousPageData) => {
-      if (previousPageData && previousPageData.length < LIMIT) return null;
-      return `symbols:${repoId}:${debouncedQ}:${kind}:${language}:${pageIndex}`;
+      if (previousPageData && !previousPageData.has_more) return null;
+      return `symbols:${repoId}:${JSON.stringify(keyPayload)}:${pageIndex}`;
     },
     (key) => {
       const pageIndex = parseInt(key.split(":").pop()!, 10);
-      return listSymbols({
+      return listSymbolsPage({
         repo_id: repoId,
-        q: debouncedQ || undefined,
-        kind: kind !== "all" ? kind : undefined,
-        language: language !== "all" ? language : undefined,
+        q: keyPayload.q || undefined,
+        kind: keyPayload.kind !== "all" ? keyPayload.kind : undefined,
+        language: keyPayload.language !== "all" ? keyPayload.language : undefined,
+        visibility:
+          keyPayload.visibility !== "all" ? keyPayload.visibility : undefined,
+        in_hot_files: keyPayload.inHotFiles || undefined,
+        in_entry_points: keyPayload.inEntryPoints || undefined,
+        sort: keyPayload.sort,
         limit: LIMIT,
         offset: pageIndex * LIMIT,
       });
@@ -56,34 +61,26 @@ export function SymbolTableWrapper({ repoId }: Props) {
     { revalidateOnFocus: false, revalidateFirstPage: false },
   );
 
-  const items = useMemo(() => (data ? data.flat() : []), [data]);
+  const items = useMemo(
+    () => (data ? data.flatMap((p) => p.items) : []),
+    [data],
+  );
+  const total = data && data.length > 0 ? data[0].total : 0;
+  const hasMore = data ? data[data.length - 1].has_more : false;
 
-  const importanceScores = useMemo(() => {
-    const scores = new Map<string, number>();
-    for (const sym of items) {
-      const fileRank = pagerankMap.get(sym.file_path) ?? 0;
-      const complexity = Math.max(1, sym.complexity_estimate);
-      scores.set(sym.id, fileRank * (1 + Math.log(complexity)));
-    }
-    const max = Math.max(...scores.values(), 0.0001);
-    for (const [k, v] of scores) scores.set(k, v / max);
-    return scores;
-  }, [items, pagerankMap]);
-
-  const lastPage = data ? data[data.length - 1] : undefined;
-  const hasMore = lastPage?.length === LIMIT;
-
+  // Hot symbols board — uses the same server-ranked stream so it matches
+  // the table's order. We just take the top of the first page.
   const hotSymbols: HotSymbol[] = useMemo(() => {
-    return [...items]
-      .map((s) => {
-        const pr = pagerankMap.get(s.file_path) ?? 0;
-        const cx = Math.max(1, s.complexity_estimate);
-        return { symbol: s, score: pr * (1 + Math.log(cx)), pagerank: pr };
-      })
-      .sort((a, b) => b.score - a.score)
-      .filter((h) => h.score > 0)
-      .slice(0, 8);
-  }, [items, pagerankMap]);
+    const firstPage = data && data.length > 0 ? data[0].items : [];
+    return firstPage
+      .filter((s) => (s.importance_score ?? 0) > 0)
+      .slice(0, 8)
+      .map((s) => ({
+        symbol: s,
+        score: s.importance_score ?? 0,
+        pagerank: s.file_pagerank ?? 0,
+      }));
+  }, [data]);
 
   return (
     <div className="space-y-6">
@@ -91,28 +88,24 @@ export function SymbolTableWrapper({ repoId }: Props) {
         <HotSymbolsBoard items={hotSymbols} onSelect={setSelected} />
       )}
       <SymbolTable
-      items={items}
-      importanceScores={importanceScores}
-      repoId={repoId}
-      isLoading={isLoading}
-      isValidating={isValidating}
-      hasMore={hasMore}
-      q={q}
-      onQChange={setQ}
-      kind={kind}
-      onKindChange={setKind}
-      language={language}
-      onLanguageChange={setLanguage}
-      onLoadMore={() => setSize(size + 1)}
-      onSelect={setSelected}
-      drawer={
-        <SymbolDrawerWrapper
-          symbol={selected}
-          repoId={repoId}
-          onClose={() => setSelected(null)}
-        />
-      }
-    />
+        items={items}
+        repoId={repoId}
+        isLoading={isLoading}
+        isValidating={isValidating}
+        hasMore={hasMore}
+        total={total}
+        filters={filters}
+        onFiltersChange={setFilters}
+        onLoadMore={() => setSize(size + 1)}
+        onSelect={setSelected}
+        drawer={
+          <SymbolDrawerWrapper
+            symbol={selected}
+            repoId={repoId}
+            onClose={() => setSelected(null)}
+          />
+        }
+      />
     </div>
   );
 }

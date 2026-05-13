@@ -15,6 +15,12 @@ import type { Hotspot } from "@repowise-dev/types/git";
 
 interface RiskDistributionChartProps {
   hotspots: Hotspot[];
+  /**
+   * Maximum bars to render before the chart becomes illegible. The count
+   * is surfaced to the user via the caller — this prop only controls the
+   * visual cap, not what data the parent fetched.
+   */
+  maxBars?: number;
 }
 
 function computeRiskScore(h: Hotspot): number {
@@ -31,7 +37,7 @@ function riskColor(score: number): string {
   return "#22c55e";
 }
 
-export function RiskDistributionChart({ hotspots }: RiskDistributionChartProps) {
+export function RiskDistributionChart({ hotspots, maxBars = 30 }: RiskDistributionChartProps) {
   const data = useMemo(() => {
     return hotspots
       .map((h) => ({
@@ -42,15 +48,21 @@ export function RiskDistributionChart({ hotspots }: RiskDistributionChartProps) 
         busFactor: h.bus_factor,
       }))
       .sort((a, b) => b.risk - a.risk)
-      .slice(0, 30);
-  }, [hotspots]);
+      .slice(0, maxBars);
+  }, [hotspots, maxBars]);
 
   if (data.length === 0) return null;
 
   const avgRisk = Math.round(data.reduce((s, d) => s + d.risk, 0) / data.length);
+  const truncated = hotspots.length > data.length;
 
   return (
     <div className="w-full">
+      {truncated && (
+        <p className="text-[10px] text-[var(--color-text-tertiary)] mb-1 text-right tabular-nums">
+          Showing top {data.length} of {hotspots.length.toLocaleString()} by risk score
+        </p>
+      )}
       <ResponsiveContainer width="100%" height={Math.max(200, data.length * 22 + 40)}>
         <BarChart
           data={data}
