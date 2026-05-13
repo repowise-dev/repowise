@@ -10,15 +10,15 @@ interface ResultsFooterProps {
   /** True when more pages are available. */
   hasMore: boolean;
   /** Disables the load-more button while the next page is in flight. */
-  loading?: boolean;
+  loading?: boolean | undefined;
   /**
    * Called when the user requests more rows. The parent decides the page
    * size; this primitive only owns the affordance and the count surface.
    */
-  onLoadMore?: () => void;
+  onLoadMore?: (() => void) | undefined;
   /** Optional label tweak — defaults to "results". */
-  noun?: string;
-  className?: string;
+  noun?: string | undefined;
+  className?: string | undefined;
 }
 
 /**
