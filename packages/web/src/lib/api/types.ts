@@ -3,6 +3,17 @@
  * Source of truth: packages/server/src/repowise/server/schemas.py
  */
 
+/**
+ * Pagination envelope returned by list endpoints. Mirrors
+ * ``repowise.server.schemas.Paginated[T]``.
+ */
+export interface Paginated<T> {
+  items: T[];
+  total: number;
+  has_more: boolean;
+  next_offset: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Repository
 // ---------------------------------------------------------------------------
@@ -153,6 +164,14 @@ export interface SearchResultResponse {
 // Symbols
 // ---------------------------------------------------------------------------
 
+export interface SymbolImportanceComponents {
+  file_pagerank: number;
+  visibility_factor: number;
+  complexity_norm: number;
+  kind_boost: number;
+  is_entry_point: boolean;
+}
+
 export interface SymbolResponse {
   id: string;
   repository_id: string;
@@ -170,6 +189,12 @@ export interface SymbolResponse {
   complexity_estimate: number;
   language: string;
   parent_name: string | null;
+  importance_score?: number | null;
+  importance_components?: SymbolImportanceComponents | null;
+  file_pagerank?: number | null;
+  is_entry_point?: boolean | null;
+  file_churn_percentile?: number | null;
+  file_is_hotspot?: boolean | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -454,11 +479,15 @@ export interface GitMetadataResponse {
 
 export interface HotspotResponse {
   file_path: string;
+  commit_count_total?: number;
   commit_count_90d: number;
   commit_count_30d: number;
   churn_percentile: number;
   temporal_hotspot_score?: number | null;
   primary_owner: string | null;
+  primary_owner_commit_pct?: number | null;
+  recent_owner_name?: string | null;
+  recent_owner_commit_pct?: number | null;
   is_hotspot: boolean;
   is_stable: boolean;
   bus_factor: number;
@@ -467,6 +496,10 @@ export interface HotspotResponse {
   lines_deleted_90d: number;
   avg_commit_size: number;
   commit_categories: Record<string, number>;
+  merge_commit_count_90d?: number;
+  commit_count_capped?: boolean;
+  age_days?: number;
+  last_commit_at?: string | null;
 }
 
 export interface OwnershipEntry {

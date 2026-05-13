@@ -59,11 +59,17 @@ export interface GitMetadata {
 
 export interface Hotspot {
   file_path: string;
+  commit_count_total?: number;
   commit_count_90d: number;
   commit_count_30d: number;
   churn_percentile: number;
   temporal_hotspot_score?: number | null;
   primary_owner: string | null;
+  /** Share of all-time commits attributable to the primary owner, 0–1. */
+  primary_owner_commit_pct?: number | null;
+  /** Top author in the last 90 days; may differ from primary_owner on legacy code. */
+  recent_owner_name?: string | null;
+  recent_owner_commit_pct?: number | null;
   is_hotspot: boolean;
   is_stable: boolean;
   bus_factor: number;
@@ -72,6 +78,11 @@ export interface Hotspot {
   lines_deleted_90d: number;
   avg_commit_size: number;
   commit_categories: Record<string, number>;
+  merge_commit_count_90d?: number;
+  /** True when the per-file commit-history cap was hit during indexing — i.e. older history exists but was not analysed. */
+  commit_count_capped?: boolean;
+  age_days?: number;
+  last_commit_at?: string | null;
 }
 
 export interface OwnershipEntry {

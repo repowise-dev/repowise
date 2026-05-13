@@ -1,18 +1,37 @@
 import { apiGet } from "./client";
-import type { SymbolResponse } from "./types";
+import type { Paginated, SymbolResponse } from "./types";
+
+export type SymbolSortKey = "importance" | "name" | "complexity" | "kind";
 
 export interface SymbolListParams {
   repo_id: string;
   q?: string;
   kind?: string;
   language?: string;
+  visibility?: string;
+  in_hot_files?: boolean;
+  in_entry_points?: boolean;
+  sort?: SymbolSortKey;
   limit?: number;
   offset?: number;
 }
 
-export async function listSymbols(params: SymbolListParams): Promise<SymbolResponse[]> {
+/** Paginated symbol search — preferred entry point. */
+export async function listSymbolsPage(
+  params: SymbolListParams,
+): Promise<Paginated<SymbolResponse>> {
   const p: Record<string, string | number | boolean | undefined> = { ...params };
-  return apiGet<SymbolResponse[]>("/api/symbols", p);
+  return apiGet<Paginated<SymbolResponse>>("/api/symbols", p);
+}
+
+/**
+ * Back-compat: returns just the items array. Existing callers that don't
+ * (yet) render pagination keep working but get importance-ranked output
+ * by default.
+ */
+export async function listSymbols(params: SymbolListParams): Promise<SymbolResponse[]> {
+  const page = await listSymbolsPage(params);
+  return page.items;
 }
 
 export async function lookupSymbolByName(

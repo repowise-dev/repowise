@@ -21,6 +21,19 @@ export type SymbolKind =
 
 export type SymbolVisibility = "public" | "private" | "protected" | (string & {});
 
+/**
+ * Transparent breakdown of the composite importance score. Mirrors the
+ * server's ``SymbolImportanceComponents``; lets the UI explain *why* a
+ * symbol ranks where it does (tooltip on the score chip).
+ */
+export interface SymbolImportanceComponents {
+  file_pagerank: number;
+  visibility_factor: number;
+  complexity_norm: number;
+  kind_boost: number;
+  is_entry_point: boolean;
+}
+
 /** Renamed `CodeSymbol` to avoid shadowing the global `Symbol`. */
 export interface CodeSymbol {
   id: string;
@@ -39,6 +52,14 @@ export interface CodeSymbol {
   complexity_estimate: number;
   language: string;
   parent_name: string | null;
+  /** Composite importance score (0–1ish). Populated by the list endpoint. */
+  importance_score?: number | null;
+  importance_components?: SymbolImportanceComponents | null;
+  /** File-level signals — populated by the list endpoint via JOINs. */
+  file_pagerank?: number | null;
+  is_entry_point?: boolean | null;
+  file_churn_percentile?: number | null;
+  file_is_hotspot?: boolean | null;
 }
 
 export interface SymbolList {

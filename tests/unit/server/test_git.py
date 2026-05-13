@@ -86,8 +86,11 @@ async def test_get_hotspots(client: AsyncClient, app) -> None:
 
     resp = await client.get(f"/api/repos/{repo['id']}/hotspots")
     assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 1  # Only main.py is a hotspot
+    payload = resp.json()
+    assert payload["total"] == 1  # Only main.py is a hotspot
+    assert payload["has_more"] is False
+    data = payload["items"]
+    assert len(data) == 1
     assert data[0]["file_path"] == "src/main.py"
     assert data[0]["is_hotspot"] is True
 
@@ -99,7 +102,9 @@ async def test_get_ownership(client: AsyncClient, app) -> None:
 
     resp = await client.get(f"/api/repos/{repo['id']}/ownership")
     assert resp.status_code == 200
-    data = resp.json()
+    payload = resp.json()
+    data = payload["items"]
+    assert payload["total"] == len(data)
     assert len(data) >= 1
     # Both files are under "src" module
     src_entry = next((e for e in data if e["module_path"] == "src"), None)

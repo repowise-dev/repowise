@@ -5,8 +5,29 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel, Field, field_validator
+
+# ---------------------------------------------------------------------------
+# Pagination envelope — shared across list endpoints (git, symbols, etc.)
+# ---------------------------------------------------------------------------
+
+T = TypeVar("T")
+
+
+class Paginated(BaseModel, Generic[T]):
+    """Stable envelope for paginated list endpoints.
+
+    Lets the UI show "Showing N of M / Load more" without guessing whether
+    a list was truncated by the server. `next_offset` is null when there
+    are no further pages.
+    """
+
+    items: list[T]
+    total: int
+    has_more: bool
+    next_offset: int | None = None
 
 # ---------------------------------------------------------------------------
 # Repository
@@ -232,6 +253,18 @@ class SearchResultResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SymbolImportanceComponents(BaseModel):
+    """Transparent breakdown of the composite importance score so the UI can
+    explain *why* a symbol ranks where it does. All fields are normalized to
+    [0, 1] except booleans."""
+
+    file_pagerank: float = 0.0
+    visibility_factor: float = 0.5
+    complexity_norm: float = 0.0
+    kind_boost: float = 1.0
+    is_entry_point: bool = False
+
+
 class SymbolResponse(BaseModel):
     id: str
     repository_id: str
@@ -249,6 +282,14 @@ class SymbolResponse(BaseModel):
     complexity_estimate: int
     language: str
     parent_name: str | None
+    # Importance signals (populated when the list endpoint joins GraphNode /
+    # GitMetadata; nullable so single-symbol lookups remain lightweight).
+    importance_score: float | None = None
+    importance_components: SymbolImportanceComponents | None = None
+    file_pagerank: float | None = None
+    is_entry_point: bool | None = None
+    file_churn_percentile: float | None = None
+    file_is_hotspot: bool | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> SymbolResponse:
@@ -416,11 +457,15 @@ class GitMetadataResponse(BaseModel):
 
 class HotspotResponse(BaseModel):
     file_path: str
+    commit_count_total: int = 0
     commit_count_90d: int
     commit_count_30d: int
     churn_percentile: float
     temporal_hotspot_score: float | None = None
     primary_owner: str | None
+    primary_owner_commit_pct: float | None = None
+    recent_owner_name: str | None = None
+    recent_owner_commit_pct: float | None = None
     is_hotspot: bool
     is_stable: bool
     bus_factor: int
@@ -429,6 +474,10 @@ class HotspotResponse(BaseModel):
     lines_deleted_90d: int
     avg_commit_size: float
     commit_categories: dict
+    merge_commit_count_90d: int = 0
+    commit_count_capped: bool = False
+    age_days: int = 0
+    last_commit_at: datetime | None = None
 
 
 class OwnershipEntry(BaseModel):

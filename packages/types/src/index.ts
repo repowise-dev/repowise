@@ -7,6 +7,7 @@
  * are also supported via the `exports` map in package.json.
  */
 
+export * from "./pagination.js";
 export * from "./graph.js";
 export * from "./git.js";
 export * from "./docs.js";

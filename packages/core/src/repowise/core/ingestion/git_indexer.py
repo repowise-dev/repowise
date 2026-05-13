@@ -79,6 +79,13 @@ _MIN_MESSAGE_LEN = 12
 # Default per-file commit history depth.
 _DEFAULT_COMMIT_LIMIT: int = 500
 
+# Per-file persisted contributor / commit fan-out. Previously hard-coded
+# to 5 / 10 inline, which silently hid co-owners and meaningful history on
+# multi-team modules. 50 is generous enough that any realistic UI surface
+# can render the full list while keeping the JSON blob bounded.
+_MAX_TOP_AUTHORS: int = 50
+_MAX_SIGNIFICANT_COMMITS: int = 50
+
 # Co-change pair extraction widens the window because individual files
 # may only co-change a handful of times in 500 commits — well below the
 # ``min_count`` threshold. On low-churn repos the 500-commit window
@@ -714,9 +721,11 @@ class GitIndexer:
                         break
                 meta["bus_factor"] = bus
 
-            # Top authors
+            # Top authors — keep a generous slice (50) so the API can show
+            # the full contributor surface for a file; the old top-5 cap
+            # silently hid co-owners on multi-team modules.
             top_authors = []
-            for name, count in author_counts.most_common(5):
+            for name, count in author_counts.most_common(_MAX_TOP_AUTHORS):
                 top_authors.append(
                     {
                         "name": name,
@@ -775,7 +784,7 @@ class GitIndexer:
                         pr_num = pr_match.group(1) or pr_match.group(2) or pr_match.group(3)
                         entry["pr_number"] = int(pr_num)
                     sig_commits.append(entry)
-                    if len(sig_commits) >= 10:
+                    if len(sig_commits) >= _MAX_SIGNIFICANT_COMMITS:
                         sig_full = True
                 # Classify ALL commits for accurate category ratios
                 for cat, pattern in _COMMIT_CATEGORIES.items():
