@@ -500,9 +500,17 @@ async def _run_ingestion(
     try:
         with ProcessPoolExecutor(max_workers=workers) as pool:
             tasks = [loop.run_in_executor(pool, _parse_one, item) for item in fi_and_bytes]
-            # Use as_completed via asyncio.as_completed to report per-file progress.
-            # We need to preserve (task → fi_and_bytes index) for source_map so we
-            # wrap tasks in a list and drain with gather instead.
+            # Tick the parse-progress bar as each worker finishes —
+            # ``asyncio.gather`` would otherwise hold every event back
+            # until the last file is done, which on PowerToys-scale
+            # repos looked like a hang at ``0/N`` for many minutes.
+            # Per-task done-callbacks fire on the event loop thread and
+            # preserve gather's ordered results, so the aggregation
+            # loop below still indexes ``fi_and_bytes`` correctly.
+            if progress is not None:
+                _parse_tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
+                for fut in tasks:
+                    fut.add_done_callback(_parse_tick)
             parse_results = await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as pool_exc:
         logger.warning(
@@ -535,9 +543,9 @@ async def _run_ingestion(
             parsed_files.append(result)
             source_map[fi.path] = source
             graph_builder.add_file(result)
-        # Report per-file progress if we used the process pool (fallback already reported above).
-        if _use_process_pool and progress:
-            progress.on_item_done("parse")
+        # Process-pool path already ticked per-file via the done-callback
+        # attached above; only the fallback path ticks here (handled in
+        # its own loop). No tick needed in aggregation.
 
     _phase_done(progress, "parse")
 
