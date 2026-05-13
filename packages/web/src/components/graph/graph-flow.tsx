@@ -31,9 +31,20 @@ export interface GraphFlowProps {
   initialSelectedNode?: string | null;
   onNodeClick?: GraphFlowShellProps["onNodeClick"];
   onNodeViewDocs?: GraphFlowShellProps["onNodeViewDocs"];
+  /** Fired when the community detail panel opens (legend click).
+   *  Page uses this to dismiss the doc panel so the right rail stays
+   *  to a single surface. */
+  onCommunityPanelOpen?: (communityId: number) => void;
 }
 
-export function GraphFlow({ repoId, initialViewMode, initialSelectedNode, onNodeClick, onNodeViewDocs }: GraphFlowProps) {
+export function GraphFlow({
+  repoId,
+  initialViewMode,
+  initialSelectedNode,
+  onNodeClick,
+  onNodeViewDocs,
+  onCommunityPanelOpen,
+}: GraphFlowProps) {
   const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "module");
   const [modulePath, setModulePath] = useState<string[]>([]);
   const [hasExpandedModules, setHasExpandedModules] = useState(false);
@@ -83,6 +94,7 @@ export function GraphFlow({ repoId, initialViewMode, initialSelectedNode, onNode
       onExpandedModulesChange={(expanded) => setHasExpandedModules(expanded.size > 0)}
       onNodeClick={onNodeClick}
       onNodeViewDocs={onNodeViewDocs}
+      onCommunityPanelOpen={onCommunityPanelOpen}
       renderPathFinder={(props) => (
         <PathFinderPanel
           repoId={repoId}

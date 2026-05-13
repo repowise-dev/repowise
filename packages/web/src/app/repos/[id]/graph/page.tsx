@@ -1,12 +1,11 @@
 "use client";
 
-import { use, useCallback, useMemo, useState } from "react";
+import { use, useCallback, useState } from "react";
 import useSWR from "swr";
 import { useQueryState } from "nuqs";
 import { useSearchParams } from "next/navigation";
 import { GraphFlow } from "@/components/graph/graph-flow";
 import { GraphDocPanel } from "@/components/graph/graph-doc-panel";
-import { CentralityLeaderboard, type CentralityNode } from "@repowise-dev/ui/graph/centrality-leaderboard";
 import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-banner";
 import { getGraph } from "@/lib/api/graph";
 import type { GraphExportResponse } from "@/lib/api/types";
@@ -36,17 +35,6 @@ export default function GraphPage({
     { revalidateOnFocus: false, revalidateOnReconnect: false },
   );
 
-  const centralityNodes: CentralityNode[] = useMemo(() => {
-    if (!graphData) return [];
-    return graphData.nodes.map((n) => ({
-      node_id: n.node_id,
-      label: n.node_id.split("/").slice(-1)[0],
-      pagerank: n.pagerank,
-      betweenness: n.betweenness,
-      language: n.language,
-    }));
-  }, [graphData]);
-
   // Click a file node → open doc panel
   const handleNodeClick = useCallback(
     (nodeId: string, nodeType: string) => {
@@ -68,6 +56,12 @@ export default function GraphPage({
     },
     [setSelectedNode],
   );
+
+  // When the community panel opens from the legend, dismiss the doc panel
+  // so the two never stack on the right rail. Single-sidebar UX.
+  const handleCommunityPanelOpen = useCallback(() => {
+    setDocNodeId(null);
+  }, []);
 
   return (
     <div className="flex flex-col h-full">
@@ -106,28 +100,16 @@ export default function GraphPage({
             initialSelectedNode={initialNode}
             onNodeClick={handleNodeClick}
             onNodeViewDocs={handleNodeViewDocs}
+            onCommunityPanelOpen={handleCommunityPanelOpen}
           />
 
-          {/* Doc panel — shows on file click */}
+          {/* Doc panel — shows on file click. Single right-rail surface. */}
           {docNodeId && (
             <GraphDocPanel
               repoId={repoId}
               nodeId={docNodeId}
               onClose={() => setDocNodeId(null)}
             />
-          )}
-
-          {/* Centrality leaderboard — collapsible right rail */}
-          {centralityNodes.length > 0 && !docNodeId && (
-            <div className="absolute top-3 right-3 z-10 max-h-[calc(100%-1.5rem)] flex">
-              <CentralityLeaderboard
-                nodes={centralityNodes}
-                onSelect={(n) => {
-                  setDocNodeId(n.node_id);
-                  void setSelectedNode(n.node_id);
-                }}
-              />
-            </div>
           )}
         </div>
       </div>

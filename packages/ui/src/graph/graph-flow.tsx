@@ -73,6 +73,10 @@ export interface GraphFlowProps {
     communityId: number;
     onClose: () => void;
   }) => ReactNode;
+  /** Fired when the community detail panel transitions to open. Lets the
+   *  hosting page dismiss any competing right-rail panel (doc panel etc.)
+   *  so the right side is a single sidebar. */
+  onCommunityPanelOpen?: (communityId: number) => void;
 }
 
 export function GraphFlow(props: GraphFlowProps) {
@@ -98,6 +102,7 @@ export function GraphFlow(props: GraphFlowProps) {
     onNodeViewDocs,
     renderPathFinder,
     renderCommunityPanel,
+    onCommunityPanelOpen,
   } = props;
 
   const sigmaRef = useRef<SigmaCanvasHandle>(null);
@@ -181,6 +186,17 @@ export function GraphFlow(props: GraphFlowProps) {
   // Community panel & filtering
   const [communityPanelId, setCommunityPanelId] = useState<number | null>(null);
   const [activeCommunities, setActiveCommunities] = useState<Set<number> | null>(null);
+
+  // Wrap the setter so legend-driven opens notify the host page; this lets
+  // the page dismiss competing right-rail panels (doc panel) and keep the
+  // right side a single coordinated surface.
+  const openCommunityPanel = useCallback(
+    (cid: number) => {
+      setCommunityPanelId(cid);
+      onCommunityPanelOpen?.(cid);
+    },
+    [onCommunityPanelOpen],
+  );
 
   // ---- Derived state ----
   const isModuleView = viewMode === "module";
@@ -1044,7 +1060,7 @@ export function GraphFlow(props: GraphFlowProps) {
             colorMode={colorMode}
             viewMode={viewMode}
             {...(communityLabels ? { communityLabels } : {})}
-            onCommunityClick={setCommunityPanelId}
+            onCommunityClick={openCommunityPanel}
             activeCommunities={activeCommunities ?? undefined}
             onCommunityToggle={handleCommunityToggle}
             onToggleAllCommunities={handleToggleAllCommunities}
