@@ -670,6 +670,18 @@ class ASTParser:
             # Parent class detection
             parent_name = self._find_parent(def_node, config, receiver_nodes, src)
 
+            # C/C++ qualified definitions: ``void Foo::method() { … }``
+            # carries the class as the scope of a ``qualified_identifier``
+            # parent of the name node. Without this resolution, every
+            # ``Class::method`` lands as a free function and bloats the
+            # unused_export pass with thousands of method symbols.
+            if (
+                parent_name is None
+                and file_info.language in ("cpp", "c")
+                and name_nodes
+            ):
+                parent_name = _qualified_cpp_parent(name_nodes[0], src)
+
             # Upgrade function → method when a parent class is detected
             if parent_name and kind == "function":
                 kind = "method"
@@ -988,6 +1000,33 @@ def _collect_error_nodes(root: Node) -> list[str]:
 
 def _is_async_node(node: Node, src: str) -> bool:
     return node.type == "async_function_definition" or any(c.type == "async" for c in node.children)
+
+
+def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
+    """Return the parent class for a C/C++ ``Class::method`` definition.
+
+    The captured ``@symbol.name`` for a qualified function definition
+    is the bare ``method`` identifier whose parent is a
+    ``qualified_identifier`` carrying the class / namespace as its
+    ``scope`` field. For multi-level qualifications (``NS::Foo::method``)
+    the relevant parent is still the innermost qualifier — namespaces
+    above it are not the symbol's containing type. Tree-sitter-cpp
+    represents this by nesting ``qualified_identifier`` left-recursively,
+    so the immediate parent's ``scope`` is always the right answer.
+
+    Returns ``None`` when the name node is not inside a qualified
+    identifier (i.e. plain free function).
+    """
+    parent = name_node.parent
+    if parent is None or parent.type != "qualified_identifier":
+        return None
+    scope = parent.child_by_field_name("scope")
+    if scope is None:
+        return None
+    text = src[scope.start_byte : scope.end_byte].strip()
+    # ``scope`` may itself be a qualified path (``NS::Foo``); take the
+    # last component — that's the immediate enclosing type.
+    return text.rsplit("::", 1)[-1] or None
 
 
 def _build_qualified_name(file_path: str, parent_name: str | None, name: str) -> str:

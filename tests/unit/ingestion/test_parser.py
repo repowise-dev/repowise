@@ -582,9 +582,11 @@ class TestCppParser:
     def test_finds_functions_in_source(self, parser: ASTParser) -> None:
         fi = _make_file_info("cpp_pkg/calculator.cpp", "cpp")
         result = parser.parse_file(fi, CPP_SOURCE)
-        fns = [s for s in result.symbols if s.kind == "function"]
-        # Qualified definitions like Calculator::add should be caught
-        assert len(fns) >= 1
+        # ``Calculator::add`` style qualified definitions now resolve to
+        # ``kind=method`` with ``parent_name=Calculator``; free functions
+        # stay ``kind=function``. Either way we expect symbols to land.
+        callable_symbols = [s for s in result.symbols if s.kind in ("function", "method")]
+        assert len(callable_symbols) >= 1
 
     def test_parses_includes(self, parser: ASTParser) -> None:
         fi = _make_file_info("cpp_pkg/calculator.cpp", "cpp")

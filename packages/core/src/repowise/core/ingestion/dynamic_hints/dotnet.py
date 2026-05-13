@@ -77,6 +77,12 @@ _INTERNALS_VISIBLE_RE = re.compile(
 # resolves: ``_files_for`` strips the namespace.
 _NAMEOF_TYPE_RE = re.compile(r"\bnameof\s*\(\s*([A-Z][\w.]*)\s*\)")
 
+# ``typeof(TypeName)`` — used heavily in ``[JsonConverter(typeof(X))]``,
+# ``[TypeConverter(typeof(X))]``, ``DataTemplate.DataType = typeof(X)``,
+# ``services.AddSingleton(typeof(IFoo), typeof(FooImpl))``, route
+# constraints, etc. Same shape and PascalCase guard as ``nameof``.
+_TYPEOF_TYPE_RE = re.compile(r"\btypeof\s*\(\s*([A-Z][\w.]*)\s*\)")
+
 
 class DotNetDynamicHints(DynamicHintExtractor):
     """Discover DI registrations, reflection, and assembly-level hints in .NET."""
@@ -270,6 +276,20 @@ class DotNetDynamicHints(DynamicHintExtractor):
                                 target=target,
                                 edge_type="dynamic_uses",
                                 hint_source=f"{self.name}:nameof",
+                            )
+                        )
+
+            # ---- typeof(TypeName) — JsonConverter/TypeConverter attrs,
+            # DataTemplate.DataType, manual DI registration, etc. ----
+            for match in _TYPEOF_TYPE_RE.finditer(text):
+                for target in _files_for(match.group(1)):
+                    if target != rel:
+                        edges.append(
+                            DynamicEdge(
+                                source=rel,
+                                target=target,
+                                edge_type="dynamic_uses",
+                                hint_source=f"{self.name}:typeof",
                             )
                         )
 

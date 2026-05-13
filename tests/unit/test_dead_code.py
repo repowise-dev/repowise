@@ -199,6 +199,59 @@ def test_unused_export_detected():
     assert "helper_func" in sym_names
 
 
+def test_unused_export_skipped_when_symbol_has_incoming_calls():
+    """A public symbol with no file-level importers but at least one
+    incoming ``calls`` edge on the symbol itself is still in use —
+    typical for C++ intra-file helpers and ``Foo::method`` qualified
+    definitions reached via call resolution rather than headers."""
+    g = _build_graph(
+        nodes={
+            "pkg/utils.cpp": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "language": "cpp",
+                "symbols": [
+                    {
+                        "name": "helper",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1,
+                        "end_line": 10,
+                        "complexity_estimate": 1,
+                    },
+                    {
+                        "name": "caller",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 12,
+                        "end_line": 20,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[
+            ("pkg/utils.cpp::caller", "pkg/utils.cpp::helper", {"edge_type": "calls"}),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_zombie_packages": False,
+        }
+    )
+    sym_names = [f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT]
+    # ``helper`` is called by ``caller`` — must not be flagged.
+    assert "helper" not in sym_names
+    # ``caller`` has no callers — still flagged.
+    assert "caller" in sym_names
+
+
 def test_interface_without_implementor_demoted_below_safe_threshold():
     """Public interfaces with no incoming ``implements`` edges have
     their unused-export confidence clamped below 0.7 so the demo

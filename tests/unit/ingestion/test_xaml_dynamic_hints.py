@@ -59,6 +59,25 @@ class TestTypeReferenceExtraction:
         refs = _extract_type_references(text, {"vm": "Acme.ViewModels"})
         assert "SettingsViewModel" in refs
 
+    def test_element_tag_with_prefix_extracted(self) -> None:
+        """``<converters:BoolToVisibilityConverter />`` registers ``BoolToVisibilityConverter``."""
+        text = '<Page><converters:BoolToVisibilityConverter x:Key="b2v"/></Page>'
+        refs = _extract_type_references(text, {"converters": "Acme.Converters"})
+        assert "BoolToVisibilityConverter" in refs
+
+    def test_element_tag_property_syntax_skipped(self) -> None:
+        """``<Grid.Resources>`` is property-element syntax, not a type reference."""
+        text = '<Grid><Grid.Resources/></Grid>'
+        refs = _extract_type_references(text, {})
+        assert "Resources" not in refs
+
+    def test_bare_xaml_element_not_a_type_reference(self) -> None:
+        """Built-in XAML elements (``<Grid>``, ``<TextBlock>``) must not bind."""
+        text = '<Page><Grid><TextBlock/></Grid></Page>'
+        refs = _extract_type_references(text, {})
+        assert "Grid" not in refs
+        assert "TextBlock" not in refs
+
     def test_lowercase_attribute_value_skipped(self) -> None:
         # Attribute values that don't start with an uppercase letter
         # (e.g. property names accidentally captured) are skipped.

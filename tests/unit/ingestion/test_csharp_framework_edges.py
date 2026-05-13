@@ -306,6 +306,40 @@ public class Bootstrap {
             for e in edges
         )
 
+    def test_typeof_type_emits_dynamic_uses(self, tmp_path: Path) -> None:
+        """``typeof(MyConverter)`` references must surface as dynamic edges.
+
+        Critical for ``[JsonConverter(typeof(X))]``,
+        ``[TypeConverter(typeof(X))]``, ``DataTemplate.DataType =
+        typeof(X)`` and manual DI registration.
+        """
+        (tmp_path / "BoolConverter.cs").write_text(
+            "namespace Acme;\npublic class BoolConverter { }\n"
+        )
+        (tmp_path / "Settings.cs").write_text(
+            """namespace Acme;
+public class Settings {
+    [JsonConverter(typeof(BoolConverter))]
+    public bool Flag { get; set; }
+}
+"""
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert any(
+            e.source == "Settings.cs"
+            and e.target == "BoolConverter.cs"
+            and e.hint_source.endswith(":typeof")
+            for e in edges
+        )
+
+    def test_typeof_lowercase_local_ignored(self, tmp_path: Path) -> None:
+        """``typeof(int)`` and lowercase identifiers must not bind."""
+        (tmp_path / "Foo.cs").write_text(
+            "namespace Acme;\npublic class Foo { void Go() { var t = typeof(int); } }\n"
+        )
+        edges = DotNetDynamicHints().extract(tmp_path)
+        assert not any(e.hint_source.endswith(":typeof") for e in edges)
+
     def test_nameof_lowercase_member_ignored(self, tmp_path: Path) -> None:
         """``nameof(someLocal)`` must NOT bind — only type-looking
         identifiers are scanned to keep noise out.

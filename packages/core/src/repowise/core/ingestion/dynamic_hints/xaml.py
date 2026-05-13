@@ -68,6 +68,17 @@ _XTYPE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ``<prefix:TypeName ...>`` element-tag references. WPF / WinUI / MAUI
+# instantiate controls, converters and templates by writing them as
+# XAML elements; the consumer code never says ``using`` for those
+# types. We require the namespace prefix to avoid over-matching XAML's
+# built-in elements (``<Grid>``, ``<TextBlock>``…), and to keep noise
+# out we skip property-element syntax (``<Grid.Resources>``) by
+# rejecting tags whose name contains a dot.
+_ELEMENT_TAG_RE = re.compile(
+    r"""<(\w+):([A-Z][\w]*)(?=[\s/>])""",
+)
+
 # <ResourceDictionary Source="..."/> — both standalone and inside a
 # <ResourceDictionary.MergedDictionaries> block. Match attribute order
 # agnostically; only the Source value is needed.
@@ -199,6 +210,14 @@ def _extract_type_references(text: str, prefix_to_ns: dict[str, str]) -> set[str
     for match in _XTYPE_RE.finditer(text):
         type_name = match.group(2)
         if type_name and type_name[0].isupper():
+            names.add(type_name)
+    # Element-tag references like ``<converters:BoolToVisibilityConverter ...>``.
+    # The leading-uppercase guard is in the regex; we additionally skip
+    # the ``ResourceDictionary`` tag because that's handled separately
+    # and binding it to the C# type map would just produce noise.
+    for match in _ELEMENT_TAG_RE.finditer(text):
+        type_name = match.group(2)
+        if type_name and type_name != "ResourceDictionary":
             names.add(type_name)
     # The xmlns prefixes themselves never name a type, but their target
     # namespaces are a useful signal — left here as a hook for future

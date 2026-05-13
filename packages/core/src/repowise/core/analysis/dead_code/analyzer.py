@@ -372,14 +372,17 @@ class DeadCodeAnalyzer:
             if self._should_never_flag(str(node), whitelist):
                 continue
 
-            symbols = [
-                self.graph.nodes[succ]
+            # Pair each symbol's data with its node id so we can check
+            # incoming ``calls`` edges on the symbol itself further down.
+            symbol_pairs = [
+                (succ, self.graph.nodes[succ])
                 for succ in self.graph.successors(node)
                 if self.graph.nodes[succ].get("node_type") == "symbol"
                 and self.graph.get_edge_data(node, succ, {}).get("edge_type") == "defines"
             ]
-            if not symbols:
+            if not symbol_pairs:
                 continue
+            symbols = [sym for _, sym in symbol_pairs]
 
             file_has_importers = self.graph.in_degree(node) > 0
 
@@ -408,7 +411,7 @@ class DeadCodeAnalyzer:
                 and sym.get("end_line", 0) > sym.get("start_line", 0)
             ]
 
-            for sym in symbols:
+            for sym_id, sym in symbol_pairs:
                 if sym.get("visibility") != "public":
                     continue
                 sym_name = sym.get("name", "")
@@ -474,6 +477,20 @@ class DeadCodeAnalyzer:
                         break
 
                 if has_importers:
+                    continue
+
+                # Symbol-level usage signal: any incoming ``calls`` /
+                # ``method_implements`` / ``reads`` edge means somewhere
+                # in the codebase actually uses this symbol — even if
+                # the file-level ``imported_names`` machinery missed it
+                # (intra-file C++ helpers, ``Foo::method`` qualified
+                # definitions linked by call resolution but never named
+                # in a header, Razor/XAML code-behind dispatches).
+                if self.graph.has_node(sym_id) and any(
+                    self.graph[pred][sym_id].get("edge_type")
+                    in ("calls", "method_implements", "reads")
+                    for pred in self.graph.predecessors(sym_id)
+                ):
                     continue
 
                 if is_deprecated:

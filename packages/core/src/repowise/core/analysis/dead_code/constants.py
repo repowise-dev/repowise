@@ -120,6 +120,28 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/Themes/*.xaml",
     "*/Styles/*.xaml",
     "*/Resources/*.xaml",
+    # ---- Test infrastructure conventions -----------------------------
+    # Test classes are loaded by the test runner via reflection on
+    # ``[Test]`` / ``[TestMethod]`` / ``[Fact]`` attributes — they
+    # never appear in a `using` import that names the class. Match
+    # both the file location *and* the standard suffix patterns so we
+    # catch tests dropped at arbitrary paths.
+    "*Tests/*.cs",
+    "*.Tests/*.cs",
+    "*UnitTests/*.cs",
+    "*.UnitTests/*.cs",
+    "*IntegrationTests/*.cs",
+    "*.IntegrationTests/*.cs",
+    "*FuzzTests/*.cs",
+    "*.FuzzTests/*.cs",
+    "*UITests/*.cs",
+    "*.UITests/*.cs",
+    "*UITest/*.cs",
+    "*UITestAutomation/*.cs",
+    "*/unittests/*.cpp",
+    "*/unittests/*.h",
+    "*Tests.cs",
+    "*UnitTests.cs",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)

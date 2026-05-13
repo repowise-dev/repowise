@@ -103,6 +103,24 @@ private:
         assert by_name["Visible"].visibility == "public"
         assert by_name["Hidden"].visibility == "private"
 
+    def test_qualified_definition_binds_to_class(self, parser: ASTParser) -> None:
+        """``void Foo::method() { … }`` extracts as a method with parent=Foo."""
+        src = b"""\
+void Foo::DoOne(int x) { }
+void NS::Bar::DoTwo(int y) { }
+void Free() { }
+"""
+        result = parser.parse_file(_file(), src)
+        by_name = {s.name: s for s in result.symbols}
+        assert by_name["DoOne"].kind == "method"
+        assert by_name["DoOne"].parent_name == "Foo"
+        assert by_name["DoTwo"].kind == "method"
+        # Two-level NS::Bar::DoTwo → parent is the innermost qualifier, Bar.
+        assert by_name["DoTwo"].parent_name == "Bar"
+        # Free function unaffected.
+        assert by_name["Free"].kind == "function"
+        assert by_name["Free"].parent_name is None
+
     def test_dllexport_marks_exported_symbol(self, parser: ASTParser) -> None:
         src = b"""\
 extern "C" __declspec(dllexport) HRESULT DllRegisterServer(void) { return 0; }
