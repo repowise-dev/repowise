@@ -1,7 +1,7 @@
 <div align="center">
 
 <img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
-**Codebase intelligence for AI-assisted engineering teams.**
+**Codebase intelligence for AI-assisted development — for solo devs and engineering teams alike.**
 
 Four intelligence layers. Seven MCP tools. Multi-repo workspaces. Auto-sync hooks. One `pip install`.
 
@@ -21,7 +21,7 @@ Four intelligence layers. Seven MCP tools. Multi-repo workspaces. Auto-sync hook
 
 </div>
 
-Your AI coding agent reads files. It does not know who owns them, which ones change together, which ones are dead, or why they were built the way they were. It has the source code and zero institutional knowledge.
+Your AI coding agent reads files. It doesn't know which ones change together, which ones are dead, or why they were built the way they were. On a solo project it has zero memory of *your* past decisions. On a team codebase it has zero institutional knowledge. Either way, it's working from raw source with no map.
 
 repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through seven precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
 
@@ -68,7 +68,7 @@ repowise runs once, builds everything, then keeps it in sync on every commit.
 tree-sitter parses every file across 14 languages into a two-tier dependency graph — file nodes and symbol nodes (functions, classes, methods). A 3-tier call resolver with confidence scoring handles import aliases, barrel re-exports, and namespace imports. Heritage extraction covers extends, implements, trait impls, derive macros, mixins, and extension conformance. Leiden community detection finds logical modules even when your directory structure doesn't reflect them. PageRank, betweenness centrality, SCC analysis, and execution flow tracing from entry points identify your most central, most coupled, and most traversed code.
 
 ### ◈ Git Intelligence
-500 commits of history turned into signals: hotspot files (high churn × high complexity), ownership percentages per engineer, co-change pairs (files that change together without an import link — hidden coupling), and significant commit messages that explain *why* code evolved. Rolled up into engineering-leader views — **contributor profiles** (per-engineer module rollups, top files, co-authors, silo modules, dead-code burden), **module health scorecards** (composite score over churn × ownership × docs × dead code × bus factor), and **reviewer suggestions** for any PR file list, weighted by direct authorship, co-change history, and recency.
+Your git history turned into signals: hotspot files (high churn × high complexity), ownership percentages per author, co-change pairs (files that change together without an import link — hidden coupling), and significant commit messages that explain *why* code evolved. Solo devs get a map of their own hotspots and the files they keep coming back to; teams get **contributor profiles** (per-author module rollups, top files, co-authors, silo modules, dead-code burden), **module health scorecards** (composite score over churn × ownership × docs × dead code × bus factor), and **reviewer suggestions** for any PR file list, weighted by direct authorship, co-change history, and recency.
 
 ### ◈ Documentation Intelligence
 An LLM-generated wiki for every module and file, rebuilt incrementally on every commit. Coverage tracking. Freshness scoring per page. Semantic search via RAG. Confidence scores show how current each page is relative to the underlying code.
@@ -129,7 +129,7 @@ To manually add the MCP server to another editor:
 }
 ```
 
-> **Note on init time:** Initial indexing analyzes your entire codebase — AST parsing, 500-commit git history, LLM doc generation, embedding indexing, and decision archaeology. This is a one-time cost (~25 minutes for a 3,000-file project). Every subsequent update after a commit takes under 30 seconds and only regenerates the few pages affected by your changes.
+> **Note on init time:** Initial indexing analyzes your entire codebase — AST parsing, git-history mining, LLM doc generation, embedding indexing, and decision archaeology. This is a one-time cost (~25 minutes for a 3,000-file project). Every subsequent update after a commit takes under 30 seconds and only regenerates the few pages affected by your changes.
 
 > **Full docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Workspaces](docs/WORKSPACES.md) · [Computed Glossary](docs/COMPUTED_GLOSSARY.md) · [Auto-Sync](docs/AUTO_SYNC.md)
 
@@ -259,8 +259,8 @@ This is what happens when an AI agent has real codebase intelligence.
 | **Symbols** | Searchable index of every function, class, and method, server-ranked by importance (PageRank × visibility × complexity × kind × entry-point). Filter facets for public-only, language, kind, in-hotspot-files, and in-entry-point-files. Click any symbol for graph metrics, callers/callees, class heritage, and a git panel with governing decisions |
 | **Coverage** | Doc freshness per file with one-click regeneration |
 | **Risk** | One page, six tabs: Hotspots (with inline drill-down to the top importance-ranked symbols in each file), Heatmap (ownership treemap with bus-factor borders and silo overlay), Module Health, Dead Code, Impact (blast radius), and the always-visible risk strip linking to each |
-| **Contributors** | Paginated contributor directory and per-engineer profile pages — modules they own, top files, co-authors, commit category mix, silo modules, bus-factor risk files, and dead-code burden. Click any owner anywhere in the dashboard to drill in |
-| **Module Health** | Engineering-leader rollup per top-level module: composite health score (churn / ownership / docs / dead code / bus factor) with sortable list and a per-module detail page showing owners, top hotspots, and governing decisions |
+| **Contributors** | Paginated contributor directory and per-author profile pages — modules they own, top files, co-authors, commit category mix, silo modules, bus-factor risk files, and dead-code burden. Click any owner anywhere in the dashboard to drill in |
+| **Module Health** | Per-module rollup with a composite health score (churn / ownership / docs / dead code / bus factor), sortable list, and a per-module detail page showing owners, top hotspots, and governing decisions |
 | **Hotspots** | Ranked by trend-weighted score (180-day decay) and churn. Paginated load-more; each row expands inline to the most important symbols in that file |
 | **Dead Code** | Unused code with confidence scores, owner leaderboard, and bulk actions |
 | **Decisions** | Architectural decisions with staleness monitoring. Decision detail has a writable module-linkage editor so a decision's governance scope can be edited and shows up on the linked module's health page |
@@ -371,7 +371,7 @@ Monorepo with 4 packages. Entry points: api/server.ts, cli/index.ts.
 - CircuitBreaker on all external calls — after payment provider outages in Q3 2024
 
 ## Hidden coupling (no import link, but change together)
-- auth.ts ↔ middleware/session.ts — co-changed 31 times in last 500 commits
+- auth.ts ↔ middleware/session.ts — co-changed 31 times
 <!-- REPOWISE:END -->
 ```
 
@@ -379,21 +379,21 @@ Monorepo with 4 packages. Entry points: api/server.ts, cli/index.ts.
 
 ## Git intelligence
 
-repowise mines your last 500 commits (configurable) to produce signals no static analysis can find.
+repowise mines your git history (per-file, configurable depth) to produce signals no static analysis can find.
 
-**Hotspots** — files in the top 25% of both churn and complexity. These are where bugs live. Flagged in the dashboard, in CLAUDE.md, and surfaced by `get_risk()` before Claude Code touches them.
+**Hotspots** — files in the top 25% of both churn and complexity. These are where bugs live. Flagged in the dashboard, in CLAUDE.md, and surfaced by `get_risk()` before Claude Code touches them. Useful solo (these are your own bug-prone files) or on a team (everyone's bug-prone files, ranked).
 
-**Ownership** — `git blame` aggregated into ownership percentages per engineer. Know who to ping. Know where knowledge silos exist.
+**Ownership** — `git blame` aggregated into ownership percentages per author. Solo repos still benefit — see which sub-areas you've concentrated time on. On a team: know who to ping, know where knowledge silos exist.
 
 **Co-change pairs** — files that change together in the same commit without an import link. Hidden coupling that AST parsing cannot detect. `get_context()` surfaces co-change partners alongside direct dependencies.
 
-**Bus factor** — files owned >80% by a single engineer. Shown in the ownership view. Surfaced in CLAUDE.md as knowledge risk.
+**Bus factor** — files owned >80% by a single author. Shown in the ownership view. On a team it's knowledge-silo risk; on a solo repo it's a quick map of which areas you've concentrated time on. Surfaced in CLAUDE.md.
 
 **Significant commits** — the last 10 meaningful commit messages per file (filtered: no merges, no dependency bumps, no lint) are included in generation prompts. The LLM explains *why* code is structured the way it is.
 
-**Contributor profiles** — every engineer with commits gets a profile page: modules they own, top files, co-authors, commit category mix (feat / fix / refactor / docs / test / chore / perf), silo modules they're solely on, bus-factor risk files, and dead-code burden. Surfaced via `/repos/<id>/owners` in the dashboard and linked from every owner reference.
+**Contributor profiles** — every author with commits gets a profile page: modules they own, top files, co-authors, commit category mix (feat / fix / refactor / docs / test / chore / perf), silo modules they're solely on, bus-factor risk files, and dead-code burden. On a solo repo this is just your own profile — still useful for spotting where your time has gone. On a team, surfaced via `/repos/<id>/owners` and linked from every owner reference.
 
-**Module health** — composite 0–100 score per top-level module derived from silo penalty, hotspot density, dead-code percentage, average churn, doc coverage, and median bus factor. Surfaced on the Risk page and the new per-module detail page, with cross-links to owners, hotspots, and governing decisions.
+**Module health** — composite 0–100 score per top-level module derived from silo penalty, hotspot density, dead-code percentage, average churn, doc coverage, and median bus factor. Surfaced on the Risk page and the per-module detail page, with cross-links to owners, hotspots, and governing decisions.
 
 **Reviewer suggestions** — paste a PR file list into Blast Radius and get a ranked list of likely reviewers, scored by direct authorship (×1.0), co-change partners (×0.5), and recency (×0.4), capped at the 5 strongest co-change signals per file.
 
@@ -443,7 +443,7 @@ repowise decision health
 
 Decisions are linked to graph nodes, tracked for staleness as code evolves, and surfaced by `get_why()` whenever Claude Code touches governed files.
 
-When a senior engineer leaves, the "why" usually leaves with them. Decision intelligence keeps it in the codebase.
+When a senior teammate leaves — or when you come back to your own side project six months later — the "why" usually leaves with them. Decision intelligence keeps it in the codebase.
 
 ---
 
