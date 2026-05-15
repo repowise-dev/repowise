@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
@@ -14,6 +13,10 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Table
 
 from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
+from repowise.cli.editor_setup import (
+    register_editor_clients,
+    write_editor_project_files,
+)
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -148,92 +151,6 @@ def _resolve_embedder(embedder_flag: str | None) -> str:
     return "mock"
 
 
-def _register_mcp_with_claude(console_obj: Any, repo_path: Path) -> None:
-    """Register the repowise MCP server and hooks with Claude Desktop and Claude Code."""
-    from repowise.cli.mcp_config import (
-        install_claude_code_hooks,
-        register_with_claude_code,
-        register_with_claude_desktop,
-    )
-
-    desktop = register_with_claude_desktop(repo_path)
-    if desktop:
-        console_obj.print(f"  [green]✓[/green] Claude Desktop MCP registered ({desktop})")
-
-    code = register_with_claude_code(repo_path)
-    if code:
-        console_obj.print(f"  [green]✓[/green] Claude Code MCP registered ({code})")
-
-    hooks = install_claude_code_hooks()
-    if hooks:
-        console_obj.print(
-            f"  [green]✓[/green] Claude Code hooks registered (PreToolUse + PostToolUse)"
-        )
-
-
-def _maybe_generate_claude_md(
-    console_obj: Any,
-    repo_path: Path,
-    *,
-    no_claude_md: bool = False,
-) -> None:
-    """Generate CLAUDE.md if enabled in config and not opted out."""
-    cfg = load_config(repo_path)
-    enabled = cfg.get("editor_files", {}).get("claude_md", True)
-    if no_claude_md:
-        # Persist opt-out so 'repowise update' respects it
-        ef_cfg = dict(cfg.get("editor_files", {}))
-        ef_cfg["claude_md"] = False
-        cfg["editor_files"] = ef_cfg
-        try:
-            import yaml  # type: ignore[import-untyped]
-
-            cfg_path = repo_path / ".repowise" / "config.yaml"
-            cfg_path.write_text(
-                yaml.dump(cfg, default_flow_style=False, sort_keys=False),
-                encoding="utf-8",
-            )
-        except ImportError:
-            pass
-        return
-    if not enabled:
-        return
-    try:
-        with console_obj.status("  Generating .claude/CLAUDE.md…", spinner="dots"):
-            run_async(_write_claude_md_async(repo_path))
-        console_obj.print("  [green]✓[/green] .claude/CLAUDE.md updated")
-    except Exception as exc:
-        console_obj.print(f"  [yellow].claude/CLAUDE.md skipped: {exc}[/yellow]")
-
-
-async def _write_claude_md_async(repo_path: Path) -> None:
-    """Fetch data from DB and write CLAUDE.md (async helper)."""
-    from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.core.generation.editor_files import ClaudeMdGenerator, EditorFileDataFetcher
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        get_session,
-        init_db,
-    )
-    from repowise.core.persistence.crud import get_repository_by_path
-
-    url = get_db_url_for_repo(repo_path)
-    engine = create_engine(url)
-    await init_db(engine)
-    sf = create_session_factory(engine)
-    try:
-        async with get_session(sf) as session:
-            repo = await get_repository_by_path(session, str(repo_path))
-            if repo is None:
-                return  # Not indexed yet — skip silently
-            fetcher = EditorFileDataFetcher(session, repo.id, repo_path)
-            data = await fetcher.fetch()
-    finally:
-        await engine.dispose()
-    ClaudeMdGenerator().write(repo_path, data)
-
-
 # ---------------------------------------------------------------------------
 # Persistence — saves PipelineResult to SQLite
 # ---------------------------------------------------------------------------
@@ -347,7 +264,7 @@ def _run_workspace_generation(
     """
     from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
     from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.cli.ui import BRAND, RichProgressCallback
+    from repowise.cli.ui import RichProgressCallback
     from repowise.core.generation import GenerationConfig
     from repowise.core.generation.cost_tracker import CostTracker
     from repowise.core.persistence import (
@@ -540,7 +457,6 @@ def _workspace_init(
 
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
-    from repowise.cli.mcp_config import save_mcp_config, save_root_mcp_config
     from repowise.cli.ui import (
         BRAND,
         RichProgressCallback,
@@ -780,10 +696,12 @@ def _workspace_init(
             entry.indexed_at = datetime.now(timezone.utc).isoformat()
             entry.last_commit_at_index = head
 
-        # MCP config + CLAUDE.md per repo
-        save_mcp_config(repo.path)
-        save_root_mcp_config(repo.path)
-        _maybe_generate_claude_md(console, repo.path, no_claude_md=no_claude_md)
+        # MCP config + editor setup files per repo
+        write_editor_project_files(
+            console,
+            repo.path,
+            disabled_project_files={"claude_md"} if no_claude_md else None,
+        )
 
         # Persist provider/model config per-repo when doing full generation
         if not index_only and provider is not None:
@@ -815,11 +733,11 @@ def _workspace_init(
         except Exception as exc:
             console.print(f"  [yellow]⚠ Cross-repo analysis failed: {exc}[/yellow]")
 
-    # Step 6: Register MCP for primary repo with Claude
+    # Step 6: Register primary repo with configured editor clients
     primary_entry = ws_config.get_primary()
     if primary_entry:
         primary_path = (root / primary_entry.path).resolve()
-        _register_mcp_with_claude(console, primary_path)
+        register_editor_clients(console, primary_path)
 
     # Step 7: Completion summary
     elapsed = time.monotonic() - start
@@ -1538,13 +1456,12 @@ def init_command(
         except ImportError:
             pass
 
-    from repowise.cli.mcp_config import save_mcp_config, save_root_mcp_config
-
-    save_mcp_config(repo_path)
-    save_root_mcp_config(repo_path)
-    _register_mcp_with_claude(console, repo_path)
-
-    _maybe_generate_claude_md(console, repo_path, no_claude_md=no_claude_md)
+    write_editor_project_files(
+        console,
+        repo_path,
+        disabled_project_files={"claude_md"} if no_claude_md else None,
+    )
+    register_editor_clients(console, repo_path)
 
     # ---- State (always) ----
     # Even in index-only mode we persist `last_sync_commit` so that a

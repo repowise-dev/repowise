@@ -18,7 +18,9 @@ from unittest.mock import patch
 from click.testing import CliRunner
 from rich.console import Console
 
-from repowise.cli.commands.init_cmd import _maybe_generate_claude_md
+from repowise.cli.editor_integrations.claude import (
+    maybe_generate_claude_md as _maybe_generate_claude_md,
+)
 from repowise.cli.ui import interactive_claude_md_prompt
 
 
@@ -77,7 +79,7 @@ def test_maybe_generate_skips_write_when_config_disabled(tmp_path: Path) -> None
 
     # Patch the writer to detect any unexpected call.
     with patch(
-        "repowise.cli.commands.init_cmd._write_claude_md_async"
+        "repowise.cli.editor_integrations.claude._write_claude_md_async"
     ) as fake_write:
         _maybe_generate_claude_md(_silent_console(), tmp_path, no_claude_md=False)
 
