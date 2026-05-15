@@ -13,8 +13,10 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Table
 
 from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
+from repowise.cli.editor_integrations.defaults import get_default_disabled_project_files
 from repowise.cli.editor_setup import (
     register_editor_clients,
+    resolve_editor_setup_options,
     write_editor_project_files,
 )
 from repowise.cli.helpers import (
@@ -577,6 +579,12 @@ def _workspace_init(
     # never has to guess why the web UI is missing pages for some repos.
     # Maps alias -> (generated_count, skip_reason | None)
     docs_outcomes: dict[str, tuple[int, str | None]] = {}
+    editor_options = resolve_editor_setup_options(
+        console,
+        disabled_project_files=get_default_disabled_project_files(
+            no_claude_md=no_claude_md,
+        ),
+    )
 
     for i, repo in enumerate(selected, 1):
         console.print(
@@ -700,7 +708,7 @@ def _workspace_init(
         write_editor_project_files(
             console,
             repo.path,
-            disabled_project_files={"claude_md"} if no_claude_md else None,
+            options=editor_options,
         )
 
         # Persist provider/model config per-repo when doing full generation
@@ -943,7 +951,6 @@ def init_command(
         build_contextual_next_steps,
         format_elapsed,
         interactive_advanced_config,
-        interactive_claude_md_prompt,
         interactive_mode_select,
         interactive_provider_select,
         load_dotenv,
@@ -1052,12 +1059,13 @@ def init_command(
         else:
             provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
 
-        # Ask about CLAUDE.md once, after mode selection, so full and advanced
-        # modes both honour the user's choice (issue #81). Skip when --no-claude-md
-        # was already passed on the CLI (the user has already opted out) and when
-        # the user picked index-only mode (no LLM generation runs anyway).
-        if not no_claude_md and not index_only:
-            no_claude_md = interactive_claude_md_prompt(console)
+    editor_options = resolve_editor_setup_options(
+        console,
+        disabled_project_files=get_default_disabled_project_files(
+            no_claude_md=no_claude_md,
+        ),
+        prompt_for_project_files=is_interactive and not index_only,
+    )
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
@@ -1441,7 +1449,7 @@ def init_command(
         run_async(_persist_result(result, repo_path))
     console.print("  [green]✓[/green] Database updated")
 
-    # ---- Post-run: config, state, MCP, CLAUDE.md ----
+    # ---- Post-run: config, state, MCP, editor project files ----
     if commit_limit is not None:
         cfg = load_config(repo_path)
         cfg["commit_limit"] = resolved_commit_limit
@@ -1459,7 +1467,7 @@ def init_command(
     write_editor_project_files(
         console,
         repo_path,
-        disabled_project_files={"claude_md"} if no_claude_md else None,
+        options=editor_options,
     )
     register_editor_clients(console, repo_path)
 

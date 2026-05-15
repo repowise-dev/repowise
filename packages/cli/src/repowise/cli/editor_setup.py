@@ -19,10 +19,27 @@ class EditorSetupOptions:
     """Options shared across editor setup integrations."""
 
     disabled_project_files: frozenset[str] = field(default_factory=frozenset)
+    prompt_for_project_files: bool = False
+
+    def with_disabled_project_file(self, project_file_id: str) -> EditorSetupOptions:
+        """Return options with one managed project file disabled."""
+
+        return EditorSetupOptions(
+            disabled_project_files=self.disabled_project_files | {project_file_id},
+            prompt_for_project_files=self.prompt_for_project_files,
+        )
 
 
 class EditorSetupIntegration(Protocol):
     """Setup hooks implemented by each AI editor integration."""
+
+    def configure_options(
+        self,
+        console_obj: Any,
+        options: EditorSetupOptions,
+    ) -> EditorSetupOptions:
+        """Let the integration prompt or adjust setup options before writing files."""
+        ...
 
     def write_project_files(
         self,
@@ -37,6 +54,15 @@ class EditorSetupIntegration(Protocol):
         """Register global or user-level client configuration for this editor."""
         ...
 
+    def refresh_project_files(
+        self,
+        console_obj: Any,
+        repo_path: Path,
+        options: EditorSetupOptions,
+    ) -> None:
+        """Refresh managed project files after repository content changes."""
+        ...
+
 
 def _resolve_integrations(
     integrations: tuple[EditorSetupIntegration, ...] | None,
@@ -48,10 +74,29 @@ def _resolve_integrations(
     return get_default_editor_integrations()
 
 
+def resolve_editor_setup_options(
+    console_obj: Any,
+    *,
+    disabled_project_files: Iterable[str] | None = None,
+    prompt_for_project_files: bool = False,
+    integrations: tuple[EditorSetupIntegration, ...] | None = None,
+) -> EditorSetupOptions:
+    """Build setup options, allowing integrations to own their prompts."""
+
+    options = EditorSetupOptions(
+        disabled_project_files=frozenset(disabled_project_files or ()),
+        prompt_for_project_files=prompt_for_project_files,
+    )
+    for integration in _resolve_integrations(integrations):
+        options = integration.configure_options(console_obj, options)
+    return options
+
+
 def write_editor_project_files(
     console_obj: Any,
     repo_path: Path,
     *,
+    options: EditorSetupOptions | None = None,
     disabled_project_files: Iterable[str] | None = None,
     integrations: tuple[EditorSetupIntegration, ...] | None = None,
 ) -> None:
@@ -60,11 +105,11 @@ def write_editor_project_files(
     from repowise.cli.mcp_config import save_mcp_config
 
     save_mcp_config(repo_path)
-    options = EditorSetupOptions(
+    resolved_options = options or EditorSetupOptions(
         disabled_project_files=frozenset(disabled_project_files or ()),
     )
     for integration in _resolve_integrations(integrations):
-        integration.write_project_files(console_obj, repo_path, options)
+        integration.write_project_files(console_obj, repo_path, resolved_options)
 
 
 def register_editor_clients(
@@ -77,3 +122,17 @@ def register_editor_clients(
 
     for integration in _resolve_integrations(integrations):
         integration.register_client(console_obj, repo_path)
+
+
+def refresh_editor_project_files(
+    console_obj: Any,
+    repo_path: Path,
+    *,
+    options: EditorSetupOptions | None = None,
+    integrations: tuple[EditorSetupIntegration, ...] | None = None,
+) -> None:
+    """Refresh editor-managed project files without rewriting common MCP config."""
+
+    resolved_options = options or EditorSetupOptions()
+    for integration in _resolve_integrations(integrations):
+        integration.refresh_project_files(console_obj, repo_path, resolved_options)

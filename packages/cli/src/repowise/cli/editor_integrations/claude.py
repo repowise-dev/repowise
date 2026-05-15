@@ -5,12 +5,30 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import click
+
 from repowise.cli.editor_setup import EditorSetupOptions
 from repowise.cli.helpers import get_db_url_for_repo, load_config, run_async
 
 
 class ClaudeCodeSetup:
     """Claude Code/Desktop setup integration preserving existing init behavior."""
+
+    project_file_id = "claude_md"
+
+    def configure_options(
+        self,
+        console_obj: Any,
+        options: EditorSetupOptions,
+    ) -> EditorSetupOptions:
+        if (
+            not options.prompt_for_project_files
+            or self.project_file_id in options.disabled_project_files
+        ):
+            return options
+        if _prompt_claude_md_enabled(console_obj):
+            return options
+        return options.with_disabled_project_file(self.project_file_id)
 
     def write_project_files(
         self,
@@ -24,7 +42,7 @@ class ClaudeCodeSetup:
         maybe_generate_claude_md(
             console_obj,
             repo_path,
-            no_claude_md="claude_md" in options.disabled_project_files,
+            no_claude_md=self.project_file_id in options.disabled_project_files,
         )
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:
@@ -48,6 +66,37 @@ class ClaudeCodeSetup:
                 "  [green]✓[/green] Claude Code hooks registered (PreToolUse + PostToolUse)"
             )
 
+    def refresh_project_files(
+        self,
+        console_obj: Any,
+        repo_path: Path,
+        options: EditorSetupOptions,
+    ) -> None:
+        if self.project_file_id in options.disabled_project_files:
+            return
+        if not _claude_md_enabled(repo_path):
+            return
+        run_async(_write_claude_md_async(repo_path))
+
+
+def _prompt_claude_md_enabled(console_obj: Any) -> bool:
+    """Ask whether the Claude project instruction file should be generated."""
+
+    from repowise.cli.ui import BRAND
+
+    console_obj.print()
+    console_obj.print(f"  [{BRAND}]Editor Integration[/]")
+    console_obj.print()
+    return click.confirm(
+        "  Generate .claude/CLAUDE.md?",
+        default=True,
+    )
+
+
+def _claude_md_enabled(repo_path: Path) -> bool:
+    cfg = load_config(repo_path)
+    return bool(cfg.get("editor_files", {}).get("claude_md", True))
+
 
 def maybe_generate_claude_md(
     console_obj: Any,
@@ -58,7 +107,6 @@ def maybe_generate_claude_md(
     """Generate CLAUDE.md if enabled in config and not opted out."""
 
     cfg = load_config(repo_path)
-    enabled = cfg.get("editor_files", {}).get("claude_md", True)
     if no_claude_md:
         # Persist opt-out so 'repowise update' respects it.
         ef_cfg = dict(cfg.get("editor_files", {}))
@@ -75,7 +123,7 @@ def maybe_generate_claude_md(
         except ImportError:
             pass
         return
-    if not enabled:
+    if not _claude_md_enabled(repo_path):
         return
     try:
         with console_obj.status("  Generating .claude/CLAUDE.md…", spinner="dots"):

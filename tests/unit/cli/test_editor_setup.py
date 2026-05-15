@@ -12,12 +12,44 @@ from repowise.cli.editor_integrations import claude_config
 from repowise.cli.editor_integrations.claude import ClaudeCodeSetup
 from repowise.cli.editor_setup import (
     EditorSetupOptions,
+    refresh_editor_project_files,
+    resolve_editor_setup_options,
     write_editor_project_files,
 )
 
 
 def _silent_console() -> Console:
     return Console(file=StringIO(), force_terminal=False)
+
+
+def test_resolve_editor_setup_options_delegates_to_integrations() -> None:
+    calls: list[tuple[str, frozenset[str], bool]] = []
+
+    class FakeIntegration:
+        def configure_options(
+            self,
+            console_obj: object,
+            options: EditorSetupOptions,
+        ) -> EditorSetupOptions:
+            calls.append(
+                (
+                    "configure",
+                    options.disabled_project_files,
+                    options.prompt_for_project_files,
+                )
+            )
+            return options.with_disabled_project_file("fake_instructions")
+
+    options = resolve_editor_setup_options(
+        _silent_console(),
+        disabled_project_files={"cli_disabled"},
+        prompt_for_project_files=True,
+        integrations=(FakeIntegration(),),  # type: ignore[arg-type]
+    )
+
+    assert calls == [("configure", frozenset({"cli_disabled"}), True)]
+    assert options.disabled_project_files == frozenset({"cli_disabled", "fake_instructions"})
+    assert options.prompt_for_project_files is True
 
 
 def test_write_editor_project_files_saves_common_mcp_before_integrations(
@@ -92,6 +124,28 @@ def test_claude_project_setup_writes_root_mcp_and_claude_md(
         ("root-mcp", tmp_path, None),
         ("claude-md", tmp_path, True),
     ]
+
+
+def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) -> None:
+    calls: list[tuple[str, Path, frozenset[str]]] = []
+
+    class FakeIntegration:
+        def refresh_project_files(
+            self,
+            console_obj: object,
+            repo_path: Path,
+            options: EditorSetupOptions,
+        ) -> None:
+            calls.append(("refresh", repo_path, options.disabled_project_files))
+
+    refresh_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        options=EditorSetupOptions(disabled_project_files=frozenset({"skip"})),
+        integrations=(FakeIntegration(),),  # type: ignore[arg-type]
+    )
+
+    assert calls == [("refresh", tmp_path, frozenset({"skip"}))]
 
 
 def test_claude_client_registration_uses_existing_claude_setup(

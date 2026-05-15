@@ -627,9 +627,9 @@ def interactive_advanced_config(
     ``concurrency``, ``exclude``, ``test_run``, ``embedder``,
     ``include_submodules``.
 
-    The CLAUDE.md prompt is intentionally not asked here so that full and
-    advanced modes stay aligned: the caller asks once via
-    :func:`interactive_claude_md_prompt` after mode selection.
+    Editor integration prompts are intentionally not asked here so that full and
+    advanced modes stay aligned. Editor setup owns those prompts after mode
+    selection.
     """
     console.print()
     console.print(
@@ -798,23 +798,6 @@ def interactive_advanced_config(
     )
     console.print()
     return result
-
-
-def interactive_claude_md_prompt(console: Console) -> bool:
-    """Ask the user whether to generate ``.claude/CLAUDE.md``.
-
-    Returns ``True`` when the user opts out (i.e. the value to assign to
-    ``no_claude_md``). Asked once after mode selection so that full mode and
-    advanced mode behave the same way and a user who answers ``n`` always has
-    that answer honoured (issue #81).
-    """
-    console.print()
-    console.print(f"  [{BRAND}]Editor Integration[/]")
-    console.print()
-    return not click.confirm(
-        "  Generate .claude/CLAUDE.md?",
-        default=True,
-    )
 
 
 def _resolve_embedder_from_env() -> str:

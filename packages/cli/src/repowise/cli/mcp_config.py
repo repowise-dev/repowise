@@ -110,7 +110,7 @@ def format_setup_instructions(repo_path: Path) -> str:
 MCP Server Configuration
 ========================
 
-Claude Code: automatically configured via .mcp.json (no manual steps needed).
+Project .mcp.json: automatically written for MCP clients that support repo-local discovery.
 
 Cursor (.cursor/mcp.json):
   {server_block}

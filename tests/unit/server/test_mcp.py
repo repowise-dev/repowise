@@ -1217,7 +1217,7 @@ def test_format_setup_instructions():
     from repowise.cli.mcp_config import format_setup_instructions
 
     instructions = format_setup_instructions(Path("/tmp/test-repo"))
-    assert "Claude Code" in instructions
+    assert "Project .mcp.json" in instructions
     assert "Cursor" in instructions
     assert "Cline" in instructions
     assert "repowise" in instructions
