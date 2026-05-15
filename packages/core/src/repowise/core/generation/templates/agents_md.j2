@@ -1,0 +1,50 @@
+## Repowise Codebase Context For {{ data.repo_name }}
+
+This repository is indexed by Repowise. Use the Repowise MCP tools for codebase orientation, discovery, implementation context, modification risk, design rationale, and cleanup planning. MCP data reflects the last index run; verify against source files before editing.
+
+Last indexed: {{ data.indexed_at }}{% if data.indexed_commit %} (commit {{ data.indexed_commit }}){% endif %}{% if data.avg_confidence %}. Confidence: {{ (data.avg_confidence * 100) | int }}%.{% endif %}
+
+{% if data.architecture_summary %}
+### Architecture
+{{ data.architecture_summary }}
+{% endif %}
+{% if data.key_modules %}
+### Key Modules
+| Module | Purpose | Owner |
+|--------|---------|-------|
+{% for mod in data.key_modules %}
+| `{{ mod.name }}` | {{ mod.purpose or "-" }} | {{ mod.owner or "-" }} |
+{% endfor %}
+{% endif %}
+{% if data.entry_points %}
+### Entry Points
+{% for ep in data.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+{% if data.hotspots %}
+### Risk Hotspots
+| File | Churn | 90d Commits | Owner |
+|------|-------|-------------|-------|
+{% for h in data.hotspots %}
+| `{{ h.path }}` | {{ h.churn_percentile }}th percentile | {{ h.commit_count_90d }} | {{ h.owner or "-" }} |
+{% endfor %}
+{% endif %}
+
+### Repowise MCP Workflow
+
+- Overview: call `get_overview()` at the start of an unfamiliar task to orient on architecture, modules, entry points, and tech stack.
+- Search: call `search_codebase(query="...")` when locating where a concept, symbol, feature, or behavior is implemented.
+- Context: call `get_context(targets=["path/or/symbol", "..."])` for enriched docs, ownership, decisions, callers, and related files before relying on raw source alone.
+- Risk: call `get_risk(targets=["path/to/file.py"])` before modifying shared utilities, public APIs, hotspots, high-coupling modules, or files with unknown dependents.
+- Why: call `get_why(query="...")` before architectural changes or when the user asks why code is structured a certain way.
+- Dead code: call `get_dead_code(safe_only=true)` before cleanup or removal work; treat lower-confidence findings as candidates to investigate.
+- Connections: call `get_dependency_path(source="...", target="...")` when tracing how modules connect.
+- Diagrams: call `get_architecture_diagram(scope="...")` when a visual structure would clarify the change.
+{% if data.build_commands %}
+
+### Commands
+{% for label, cmd in data.build_commands.items() %}
+- {{ label | capitalize }}: `{{ cmd }}`
+{% endfor %}
+{% endif %}

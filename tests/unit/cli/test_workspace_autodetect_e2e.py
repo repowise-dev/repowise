@@ -52,9 +52,10 @@ def test_update_from_workspace_root_does_not_create_stray_repowise(
     # spawn a real pipeline, so we intercept _workspace_update.
     called = {}
 
-    def _fake_workspace_update(target, *, dry_run):
+    def _fake_workspace_update(target, *, dry_run, agents_md=None):
         called["target"] = target
         called["dry_run"] = dry_run
+        called["agents_md"] = agents_md
 
     monkeypatch.setattr(
         "repowise.cli.commands.update_cmd._workspace_update",

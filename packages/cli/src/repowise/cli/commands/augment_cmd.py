@@ -1,7 +1,7 @@
 """``repowise augment`` — hook-driven context enrichment for AI coding agents.
 
-Reads a Claude Code hook payload from stdin (JSON) and writes targeted
-enrichment back as a PostToolUse hook response.
+Reads Claude Code or Codex hook payloads from stdin (JSON) and writes
+targeted enrichment back as a hook response.
 
 Design philosophy: an enrichment hook is only valuable when it tells the
 agent something the raw tool output didn't. Anything else is noise the
@@ -21,11 +21,17 @@ asymmetric, durable value:
     * Skip otherwise: a focused result set means the agent already
       found what it wanted; further graph context is just noise.
 
+Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
+
   PostToolUse → Bash
     * After a successful git commit/merge/rebase/cherry-pick/pull, if
       the wiki HEAD has drifted from .repowise/state.json's last sync
       commit AND no `repowise update` is in flight AND we haven't
       already warned for this HEAD, emit a one-line stale-wiki notice.
+
+  PostToolUse → edit tools
+    * After file edits, emit a short reminder that the indexed context may
+      be stale.
 
 There is intentionally NO PreToolUse handling. Earlier versions enriched
 every Grep/Glob unconditionally with importers/dependencies/symbols; in
@@ -43,8 +49,10 @@ Operational invariants:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
+from pathlib import Path
 
 import click
 
@@ -57,10 +65,16 @@ _RESCUE_TOP_N = 2
 
 
 @click.command("augment")
-def augment_command() -> None:
+@click.option(
+    "--client",
+    type=click.Choice(["codex"]),
+    default=None,
+    help="Hook client marker. Codex lifecycle hooks pass this explicitly.",
+)
+def augment_command(client: str | None = None) -> None:
     """Enrich AI agent tool calls with codebase graph context (hook mode)."""
     try:
-        _run_augment()
+        _run_augment(client=client)
     except (SystemExit, KeyboardInterrupt):
         raise
     except Exception:
@@ -68,8 +82,8 @@ def augment_command() -> None:
         sys.exit(0)
 
 
-def _run_augment() -> None:
-    """Main entry point — reads stdin, dispatches to the post handler."""
+def _run_augment(*, client: str | None = None) -> None:
+    """Main entry point — reads stdin, dispatches to hook handlers."""
     raw = sys.stdin.read()
     if not raw.strip():
         return
@@ -80,25 +94,21 @@ def _run_augment() -> None:
         return
 
     event = payload.get("hook_event_name", "")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {})
+    cwd = payload.get("cwd", "")
+
+    if client == "codex" and event in ("SessionStart", "UserPromptSubmit"):
+        result = _handle_codex_context_event(event, cwd)
+        if result:
+            _emit_response(event, result)
+        return
+
     if event != "PostToolUse":
         return
 
-    tool_name = payload.get("tool_name", "")
-    tool_input = payload.get("tool_input", {})
-    tool_output = (
-        payload.get("tool_output")
-        or payload.get("tool_response")
-        or {}
-    )
-    cwd = payload.get("cwd", "")
-
-    if tool_name == "Bash":
-        result = _handle_bash_post(tool_input, tool_output, cwd)
-    elif tool_name in ("Grep", "Glob"):
-        result = _handle_search_post(tool_name, tool_input, tool_output, cwd)
-    else:
-        result = None
-
+    tool_output = payload.get("tool_response", payload.get("tool_output", {}))
+    result = _handle_post_tool_use(tool_name, tool_input, tool_output, cwd)
     if result:
         _emit_response(event, result)
 
@@ -113,6 +123,29 @@ def _emit_response(event: str, context: str) -> None:
     }
     sys.stdout.write(json.dumps(response))
     sys.stdout.flush()
+
+
+# ---------------------------------------------------------------------------
+# Codex SessionStart/UserPromptSubmit — lightweight MCP guidance
+# ---------------------------------------------------------------------------
+
+
+def _handle_codex_context_event(event: str, cwd: str) -> str | None:
+    """Return short Codex developer context when repowise is initialized."""
+    if event not in ("SessionStart", "UserPromptSubmit"):
+        return None
+
+    repo_path = _find_repo_root(Path(cwd))
+    if repo_path is None:
+        return None
+
+    return (
+        "[repowise] This repository has a local codebase wiki and graph index. "
+        "Use the repowise MCP tools for architecture overview, semantic search, "
+        "implementation context, risk/hotspot checks, decision history, and "
+        "dead-code analysis. After meaningful edits or git operations, run "
+        "`repowise update` when refreshed context is needed."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +168,6 @@ def _handle_search_post(
     # is reading literal locations, not exploring a concept.
     if _looks_like_path_lookup(pattern):
         return None
-
-    from pathlib import Path
 
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
@@ -173,13 +204,39 @@ def _looks_like_path_lookup(pattern: str) -> bool:
     if "/" in pattern or "\\" in pattern:
         return True
     lower = pattern.lower().rstrip()
-    _EXTS = (
-        ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-        ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".rb", ".php",
-        ".cs", ".swift", ".cpp", ".cc", ".c", ".h", ".hpp", ".lua",
-        ".sql", ".yaml", ".yml", ".toml", ".json", ".md",
+    exts = (
+        ".py",
+        ".pyi",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".go",
+        ".rs",
+        ".java",
+        ".kt",
+        ".kts",
+        ".scala",
+        ".rb",
+        ".php",
+        ".cs",
+        ".swift",
+        ".cpp",
+        ".cc",
+        ".c",
+        ".h",
+        ".hpp",
+        ".lua",
+        ".sql",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".json",
+        ".md",
     )
-    return lower.endswith(_EXTS)
+    return lower.endswith(exts)
 
 
 def _extract_output_text(tool_output: object) -> str:
@@ -219,7 +276,7 @@ def _count_search_results(output_text: str) -> int:
         return 0
     stripped = output_text.strip()
     # Common no-match sentinels emitted by Claude Code's Grep/Glob tool.
-    _ZERO_MARKERS = (
+    zero_markers = (
         "no matches found",
         "no files found",
         "no files matched",
@@ -227,7 +284,7 @@ def _count_search_results(output_text: str) -> int:
         "found 0 matches",
     )
     head = stripped.lower().splitlines()[0] if stripped else ""
-    if any(marker in head for marker in _ZERO_MARKERS):
+    if any(marker in head for marker in zero_markers):
         return 0
     # Strip a "Found N files\n" / "Found N matches\n" header if present —
     # the count we want is the actual result lines, not the banner.
@@ -238,7 +295,7 @@ def _count_search_results(output_text: str) -> int:
 
 
 async def _search_enrich(
-    repo_path: "object",
+    repo_path: object,
     pattern: str,
     mode: str,
     result_count: int,
@@ -246,13 +303,7 @@ async def _search_enrich(
     """Run the rescue or triage query against the wiki and format output."""
     import re
 
-    from pathlib import Path
-    from sqlalchemy import select
-
     from repowise.core.persistence import (
-        FullTextSearch,
-        GraphNode,
-        WikiSymbol,
         create_engine,
         create_session_factory,
         get_session,
@@ -279,13 +330,9 @@ async def _search_enrich(
             clean = re.sub(r"[^\w./_-]", "", pattern).strip("./")
 
             if mode == "rescue":
-                return await _rescue(
-                    session, engine, repo_id, pattern, clean
-                )
+                return await _rescue(session, engine, repo_id, pattern, clean)
             if mode == "triage":
-                return await _triage(
-                    session, repo_id, pattern, clean, result_count
-                )
+                return await _triage(session, repo_id, pattern, clean, result_count)
             return None
     finally:
         await engine.dispose()
@@ -316,7 +363,6 @@ async def _rescue(
 
     from repowise.core.persistence import (
         FullTextSearch,
-        GraphNode,
         WikiSymbol,
     )
 
@@ -364,7 +410,13 @@ async def _rescue(
         page_type = getattr(r, "page_type", "") or ""
         if "::" in target:
             target = target.split("::")[0]
-        if target and page_type in ("file", "file_page", "module_page", "api_contract", "infra_page"):
+        if target and page_type in (
+            "file",
+            "file_page",
+            "module_page",
+            "api_contract",
+            "infra_page",
+        ):
             return (
                 f"[repowise] No literal match for `{pattern}`. "
                 f"Wiki suggests `{target}` ({page_type})."
@@ -388,7 +440,7 @@ async def _triage(
 
     Output is one line plus an enumerated list. Three lines max.
     """
-    from sqlalchemy import or_, select
+    from sqlalchemy import select
 
     from repowise.core.persistence import GraphNode, WikiSymbol
 
@@ -432,14 +484,11 @@ async def _triage(
     if not pr_rows:
         return None
 
-    ranked = sorted(pr_rows, key=lambda r: (r[1] or 0.0), reverse=True)[:_TRIAGE_TOP_N]
+    ranked = sorted(pr_rows, key=lambda r: r[1] or 0.0, reverse=True)[:_TRIAGE_TOP_N]
     if not ranked:
         return None
 
-    header = (
-        f"[repowise] {result_count}+ matches for `{pattern}`. "
-        f"Top files by graph centrality:"
-    )
+    header = f"[repowise] {result_count}+ matches for `{pattern}`. Top files by graph centrality:"
     lines = [header] + [f"  {row[0]}" for row in ranked]
     return "\n".join(lines)
 
@@ -486,6 +535,41 @@ _GIT_COMMIT_PATTERNS = (
     "git pull",
 )
 
+_EDIT_TOOL_NAMES = {"apply_patch", "Edit", "Write"}
+
+
+def _handle_post_tool_use(
+    tool_name: str,
+    tool_input: dict,
+    tool_output: dict | str,
+    cwd: str,
+) -> str | None:
+    """Dispatch PostToolUse events from Claude or Codex."""
+    if tool_name in _EDIT_TOOL_NAMES:
+        return _handle_post_edit_use(cwd)
+    if tool_name == "Bash":
+        return _handle_bash_post(tool_input, tool_output, cwd)
+    if tool_name in ("Grep", "Glob"):
+        return _handle_search_post(tool_name, tool_input, tool_output, cwd)
+    return None
+
+
+def _handle_post_edit_use(cwd: str) -> str | None:
+    """After a Codex edit tool completes, flag that indexed context may be stale."""
+    repo_path = _find_repo_root(Path(cwd))
+    if repo_path is None:
+        return None
+
+    state_path = repo_path / ".repowise" / "state.json"
+    if not state_path.exists():
+        return None
+
+    return (
+        "[repowise] Files were edited after the last indexed snapshot. "
+        "Run `repowise update` before relying on refreshed docs, graph context, "
+        "risk checks, or dead-code results."
+    )
+
 
 def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | None:
     """After a successful git commit, check if the wiki needs updating.
@@ -506,24 +590,20 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
          once per HEAD as before, so the user knows the wiki is genuinely
          out of sync.
     """
-    if isinstance(tool_output, dict):
-        exit_code = tool_output.get("exit_code")
-        if exit_code is None:
-            stdout = tool_output.get("stdout", "")
-            if isinstance(stdout, str) and (
-                "error" in stdout.lower() or "fatal" in stdout.lower()
-            ):
-                return None
-        elif exit_code != 0:
+    output = tool_output if isinstance(tool_output, dict) else {"stdout": str(tool_output)}
+    exit_code = _extract_exit_code(output)
+    if exit_code is None:
+        stdout = output.get("stdout", "")
+        stderr = output.get("stderr", "")
+        combined = f"{stdout}\n{stderr}".lower()
+        if "error" in combined or "fatal" in combined:
             return None
-
-    cmd = tool_input.get("command", "")
-    if not isinstance(cmd, str) or not any(
-        p in cmd for p in _GIT_COMMIT_PATTERNS
-    ):
+    elif exit_code != 0:
         return None
 
-    from pathlib import Path
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or not any(p in cmd for p in _GIT_COMMIT_PATTERNS):
+        return None
 
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
@@ -638,7 +718,7 @@ def _read_in_flight_marker(repo_path: "object") -> dict | None:
     return None
 
 
-def _already_warned(repo_path: "object", head: str) -> bool:
+def _already_warned(repo_path: object, head: str) -> bool:
     from pathlib import Path
 
     marker = Path(repo_path) / ".repowise" / ".augment-warned"
@@ -650,14 +730,25 @@ def _already_warned(repo_path: "object", head: str) -> bool:
         return False
 
 
-def _record_warning(repo_path: "object", head: str) -> None:
+def _record_warning(repo_path: object, head: str) -> None:
     from pathlib import Path
 
     marker = Path(repo_path) / ".repowise" / ".augment-warned"
-    try:
+    with contextlib.suppress(OSError):
         marker.write_text(head, encoding="utf-8")
-    except OSError:
-        pass
+
+
+def _extract_exit_code(tool_output: dict) -> int | None:
+    """Extract a process exit code from known hook output shapes."""
+    for key in ("exit_code", "exitCode", "status"):
+        value = tool_output.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -665,10 +756,8 @@ def _record_warning(repo_path: "object", head: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _find_repo_root(cwd: "object") -> "object | None":
-    """Walk up from cwd to find a directory with ``.repowise/``."""
-    from pathlib import Path
-
+def _find_repo_root(cwd: Path) -> Path | None:
+    """Walk up from cwd to find a directory with .repowise/."""
     current = Path(cwd).resolve()
     for _ in range(20):
         if (current / ".repowise").is_dir():

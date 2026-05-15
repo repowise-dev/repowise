@@ -1,6 +1,9 @@
 import json
 import re
+import subprocess
+import tomllib
 from pathlib import Path
+from typing import Any
 
 import click
 import pytest
@@ -11,6 +14,208 @@ from repowise.cli.editor_integrations import claude_config
 
 def _repowise_entry(repo_path: Path) -> dict:
     return mcp_config.generate_mcp_config(repo_path)["mcpServers"]
+
+
+# ---------------------------------------------------------------------------
+# Codex project config
+# ---------------------------------------------------------------------------
+
+
+def test_generate_codex_mcp_server_config_uses_no_path_mcp(tmp_path: Path) -> None:
+    server = mcp_config.generate_codex_mcp_server_config(tmp_path)
+
+    assert server["command"] == "repowise"
+    assert server["args"] == ["mcp"]
+    assert server["cwd"] == str(tmp_path.resolve())
+
+
+def test_save_codex_mcp_config_creates_project_config(tmp_path: Path) -> None:
+    config_path = mcp_config.save_codex_mcp_config(tmp_path)
+
+    assert config_path == tmp_path / ".codex" / "config.toml"
+    saved = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["mcp_servers"]["repowise"]["command"] == "repowise"
+    assert saved["mcp_servers"]["repowise"]["args"] == ["mcp"]
+    assert saved["mcp_servers"]["repowise"]["cwd"] == str(tmp_path.resolve())
+
+
+def test_save_codex_mcp_config_merges_valid_existing_file(tmp_path: Path) -> None:
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        'model = "gpt-5.5"\n\n[mcp_servers.other]\ncommand = "other"\n',
+        encoding="utf-8",
+    )
+
+    mcp_config.save_codex_mcp_config(tmp_path)
+
+    saved = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["model"] == "gpt-5.5"
+    assert saved["mcp_servers"]["other"]["command"] == "other"
+    assert saved["mcp_servers"]["repowise"]["command"] == "repowise"
+
+
+def test_save_codex_mcp_config_rejects_invalid_existing_file(tmp_path: Path) -> None:
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    original = 'model = "gpt-5.5"\nmodel = "duplicate"\n'
+    config_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(click.ClickException, match=re.escape(str(config_path))):
+        mcp_config.save_codex_mcp_config(tmp_path)
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_generate_codex_hooks_config_uses_supported_events_only() -> None:
+    config = mcp_config.generate_codex_hooks_config()
+    hooks = config["hooks"]
+
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse"}
+    assert hooks["SessionStart"][0]["matcher"] == "startup|resume|clear"
+    assert hooks["PostToolUse"][0]["matcher"] == "Bash"
+    assert hooks["PostToolUse"][1]["matcher"] == "apply_patch|Edit|Write"
+    assert [
+        hook["timeout"]
+        for entries in hooks.values()
+        for entry in entries
+        for hook in entry["hooks"]
+    ] == [30] * 4
+
+
+def test_save_codex_hooks_config_creates_hooks_json_and_feature_flag(
+    tmp_path: Path,
+) -> None:
+    hooks_path = mcp_config.save_codex_hooks_config(tmp_path)
+
+    assert hooks_path == tmp_path / ".codex" / "hooks.json"
+    saved_hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+    assert "PreToolUse" not in saved_hooks["hooks"]
+    assert saved_hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == (
+        "repowise-augment --client codex"
+    )
+
+    saved_config = tomllib.loads((tmp_path / ".codex" / "config.toml").read_text())
+    assert saved_config["features"]["hooks"] is True
+    assert "hooks" not in saved_config
+
+
+def test_save_codex_hooks_config_merges_without_duplicates(tmp_path: Path) -> None:
+    hooks_path = tmp_path / ".codex" / "hooks.json"
+    hooks_path.parent.mkdir(parents=True)
+    hooks_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "matcher": "startup",
+                            "hooks": [{"type": "command", "command": "echo existing"}],
+                        }
+                    ]
+                },
+                "custom": {"preserved": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.write_text("[features]\nfoo = true\n", encoding="utf-8")
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved_hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+    assert saved_hooks["custom"] == {"preserved": True}
+    assert saved_hooks["hooks"]["SessionStart"][0]["matcher"] == "startup"
+    repowise_commands = [
+        hook["command"]
+        for entries in saved_hooks["hooks"].values()
+        for entry in entries
+        for hook in entry["hooks"]
+        if hook["command"] == "repowise-augment --client codex"
+    ]
+    assert len(repowise_commands) == 4
+
+    saved_config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_config["features"]["foo"] is True
+    assert saved_config["features"]["hooks"] is True
+
+
+def test_save_codex_hooks_config_rejects_invalid_existing_file(tmp_path: Path) -> None:
+    hooks_path = tmp_path / ".codex" / "hooks.json"
+    hooks_path.parent.mkdir(parents=True)
+    original = '{\n  "hooks": {},\n}\n'
+    hooks_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(click.ClickException, match=re.escape(str(hooks_path))):
+        mcp_config.save_codex_hooks_config(tmp_path)
+
+    assert hooks_path.read_text(encoding="utf-8") == original
+
+
+def test_codex_detection_requires_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+
+    assert not mcp_config.is_codex_cli_installed()
+    assert not mcp_config.is_codex_logged_in()
+
+
+def test_codex_detection_uses_resolved_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+    codex_cmd = str(Path("tmp") / "codex.CMD")
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        if args == [codex_cmd, "--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="codex-cli 0.130.0", stderr="")
+        if args == [codex_cmd, "login", "status"]:
+            return subprocess.CompletedProcess(args, 0, stdout="Authenticated", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr("shutil.which", lambda cmd: codex_cmd if cmd == "codex" else None)
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert mcp_config.is_codex_cli_installed()
+    assert mcp_config.is_codex_logged_in()
+    assert [codex_cmd, "--version"] in calls
+    assert [codex_cmd, "login", "status"] in calls
+
+
+def test_codex_login_detection_uses_exit_code_not_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_cmd = "codex"
+    monkeypatch.setattr("shutil.which", lambda cmd: codex_cmd if cmd == "codex" else None)
+
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args == [codex_cmd, "--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="codex-cli 0.130.0", stderr="")
+        if args == [codex_cmd, "login", "status"]:
+            return subprocess.CompletedProcess(args, 0, stdout="Authenticated", stderr="")
+        raise AssertionError(f"Unexpected args: {args}")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert mcp_config.is_codex_logged_in()
+
+
+def test_codex_login_detection_fails_on_nonzero_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_cmd = "codex"
+    monkeypatch.setattr("shutil.which", lambda cmd: codex_cmd if cmd == "codex" else None)
+
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args == [codex_cmd, "--version"]:
+            return subprocess.CompletedProcess(args, 0, stdout="codex-cli 0.130.0", stderr="")
+        if args == [codex_cmd, "login", "status"]:
+            return subprocess.CompletedProcess(args, 1, stdout="Logged in cached text", stderr="")
+        raise AssertionError(f"Unexpected args: {args}")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert not mcp_config.is_codex_logged_in()
 
 
 # ---------------------------------------------------------------------------
@@ -183,17 +388,13 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
                     "PreToolUse": [
                         {
                             "matcher": "Grep|Glob",
-                            "hooks": [
-                                {"type": "command", "command": "repowise augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise augment"}],
                         }
                     ],
                     "PostToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [
-                                {"type": "command", "command": "repowise augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise augment"}],
                         }
                     ],
                 }
@@ -225,17 +426,13 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
                     "PreToolUse": [
                         {
                             "matcher": "Grep|Glob",
-                            "hooks": [
-                                {"type": "command", "command": "repowise-augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise-augment"}],
                         }
                     ],
                     "PostToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [
-                                {"type": "command", "command": "repowise-augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise-augment"}],
                         }
                     ],
                 }
@@ -283,17 +480,13 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
                     "PreToolUse": [
                         {
                             "matcher": "Grep|Glob",
-                            "hooks": [
-                                {"type": "command", "command": "repowise augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise augment"}],
                         }
                     ],
                     "PostToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [
-                                {"type": "command", "command": "repowise augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise augment"}],
                         }
                     ],
                 }

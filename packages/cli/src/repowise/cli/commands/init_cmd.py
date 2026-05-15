@@ -13,7 +13,11 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Table
 
 from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
-from repowise.cli.editor_integrations.defaults import get_default_disabled_project_files
+from repowise.cli.editor_integrations.defaults import (
+    get_default_disabled_project_files,
+    get_default_integration_overrides,
+    get_default_project_file_overrides,
+)
 from repowise.cli.editor_setup import (
     register_editor_clients,
     resolve_editor_setup_options,
@@ -464,6 +468,14 @@ def _run_workspace_generation(
     return generated_pages
 
 
+def _workspace_generation_provider_for_repo(provider: Any, repo_path: Path) -> Any:
+    """Return a generation provider bound to the current workspace repo."""
+
+    if getattr(provider, "provider_name", None) != "codex_cli":
+        return provider
+    return resolve_provider("codex_cli", getattr(provider, "model_name", None), repo_path)
+
+
 # ---------------------------------------------------------------------------
 # Workspace init — multi-repo flow
 # ---------------------------------------------------------------------------
@@ -477,6 +489,8 @@ def _workspace_init(
     commit_limit: int | None,
     follow_renames: bool,
     no_claude_md: bool,
+    agents_md: bool | None,
+    codex_setup: bool | None,
     include_submodules: bool,
     # Generation params (passed through from init_command)
     provider_name: str | None = None,
@@ -653,6 +667,12 @@ def _workspace_init(
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
         ),
+        project_file_overrides=get_default_project_file_overrides(
+            agents_md=agents_md,
+        ),
+        integration_overrides=get_default_integration_overrides(
+            codex_setup=codex_setup,
+        ),
     )
 
     for i, repo in enumerate(selected, 1):
@@ -713,10 +733,11 @@ def _workspace_init(
                 repo_docs_enabled = False
             else:
                 try:
+                    repo_provider = _workspace_generation_provider_for_repo(provider, repo.path)
                     generated_pages = _run_workspace_generation(
                         repo_path=repo.path,
                         result=result,
-                        provider=provider,
+                        provider=repo_provider,
                         embedder_name_resolved=embedder_name_resolved,
                         concurrency=concurrency,
                         yes=yes,
@@ -908,7 +929,7 @@ def _workspace_init(
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, ollama, litellm, mock)."
+        "deepseek, ollama, litellm, codex_cli, mock)."
     ),
 )
 @click.option("--model", default=None, help="Model identifier override.")
@@ -986,6 +1007,18 @@ def _workspace_init(
     help="Skip generating CLAUDE.md. Saves 'editor_files.claude_md: false' to config.",
 )
 @click.option(
+    "--agents/--no-agents",
+    "agents_md",
+    default=None,
+    help="Generate managed AGENTS.md (default: config or enabled).",
+)
+@click.option(
+    "--codex/--no-codex",
+    "codex_setup",
+    default=None,
+    help="Generate or skip project-local Codex MCP config and hooks.",
+)
+@click.option(
     "--include-submodules",
     is_flag=True,
     default=False,
@@ -1041,6 +1074,8 @@ def init_command(
     commit_limit: int | None,
     follow_renames: bool,
     no_claude_md: bool,
+    agents_md: bool | None,
+    codex_setup: bool | None,
     include_submodules: bool,
     init_all: bool,
     onboarding: bool,
@@ -1097,6 +1132,8 @@ def init_command(
             commit_limit=commit_limit,
             follow_renames=follow_renames,
             no_claude_md=no_claude_md,
+            agents_md=agents_md,
+            codex_setup=codex_setup,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -1207,6 +1244,12 @@ def init_command(
         console,
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
+        ),
+        project_file_overrides=get_default_project_file_overrides(
+            agents_md=agents_md,
+        ),
+        integration_overrides=get_default_integration_overrides(
+            codex_setup=codex_setup,
         ),
         prompt_for_project_files=is_interactive and not index_only,
     )

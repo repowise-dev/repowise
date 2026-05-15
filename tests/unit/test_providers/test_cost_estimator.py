@@ -30,6 +30,8 @@ from repowise.cli.cost_estimator.heuristics import heuristic_tokens
         # Free/local models
         ("mock", 0.0, 0.0),
         ("llama3", 0.0, 0.0),
+        ("codex_cli/default", 0.0, 0.0),
+        ("codex_cli/gpt-5.5", 0.0, 0.0),
     ],
 )
 def test_lookup_cost(model, expected_input, expected_output):

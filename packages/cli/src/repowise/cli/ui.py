@@ -227,15 +227,10 @@ def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     ingest_min = max(1, round(src_files / 500))
     ingest_max = max(2, round(src_files / 250))
     eta_line = (
-        f"~{ingest_min}-{ingest_max} min ingestion"
-        " · LLM generation depends on model + page count"
+        f"~{ingest_min}-{ingest_max} min ingestion · LLM generation depends on model + page count"
     )
 
-    body = (
-        f"  {header_line}\n"
-        f"  [dim]{lang_line}[/dim]\n"
-        f"  [dim]{eta_line}[/dim]"
-    )
+    body = f"  {header_line}\n  [dim]{lang_line}[/dim]\n  [dim]{eta_line}[/dim]"
 
     console.print(
         Panel(
@@ -281,6 +276,7 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "openai": "gpt-5.4-nano",
     "anthropic": "claude-sonnet-4-6",
     "deepseek": "deepseek-v4-flash",
+    "codex_cli": "codex_cli/default",
     "ollama": "llama3.2",
     "openrouter": "anthropic/claude-sonnet-4.6",
     "litellm": "groq/llama-3.1-70b-versatile",
@@ -291,6 +287,7 @@ _PROVIDER_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "codex_cli": "__CODEX_CLI__",
     "ollama": "OLLAMA_BASE_URL",
     "openrouter": "OPENROUTER_API_KEY",
 }
@@ -300,6 +297,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
+    "codex_cli": "https://developers.openai.com/codex/cli",
     "ollama": "https://ollama.com/download",
     "openrouter": "https://openrouter.ai/keys",
 }
@@ -325,7 +323,7 @@ def load_dotenv(repo_path: Path) -> None:
             continue
         # Support `export KEY=value`
         if line.startswith("export "):
-            line = line[len("export "):].lstrip()
+            line = line[len("export ") :].lstrip()
         if "=" not in line:
             continue
         key, _, raw_value = line.partition("=")
@@ -500,14 +498,28 @@ def interactive_mode_select(console: Console) -> str:
 
 def _detect_provider_status() -> dict[str, str]:
     """Return {provider: env_var_name} for providers whose key is set."""
+
     status: dict[str, str] = {}
     for prov, env_var in _PROVIDER_ENV.items():
         if prov == "gemini":
             if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
                 status[prov] = env_var
+        elif prov == "codex_cli":
+            installed, logged_in = _detect_codex_cli_status()
+            if installed and logged_in:
+                status[prov] = "codex CLI"
         elif os.environ.get(env_var):
             status[prov] = env_var
     return status
+
+
+def _detect_codex_cli_status() -> tuple[bool, bool]:
+    """Return ``(installed, logged_in)`` for the local Codex CLI."""
+
+    from repowise.cli.mcp_config import is_codex_cli_installed, is_codex_logged_in
+
+    installed = is_codex_cli_installed()
+    return installed, is_codex_logged_in() if installed else False
 
 
 def interactive_provider_select(
@@ -537,12 +549,23 @@ def interactive_provider_select(
     table.add_column("Default Model", style="dim")
 
     for idx, prov in enumerate(providers, 1):
-        status_text = f"[{OK}]✓ API key set[/]" if prov in detected else "[dim]✗ no key[/dim]"
+        if prov == "codex_cli":
+            codex_installed, codex_logged_in = _detect_codex_cli_status()
+            if codex_logged_in:
+                status_text = f"[{OK}]✓ codex CLI logged in[/]"
+            elif codex_installed:
+                status_text = "[yellow]✗ codex login required[/yellow]"
+            else:
+                status_text = "[dim]✗ codex CLI not found[/dim]"
+        else:
+            status_text = f"[{OK}]✓ API key set[/]" if prov in detected else "[dim]✗ no key[/dim]"
         default_model = _PROVIDER_DEFAULTS.get(prov, "")
         # Mark gemini as recommended
         label = prov
         if prov == "gemini":
             label = f"{prov} [dim](recommended)[/dim]"
+        elif prov == "codex_cli":
+            label = f"{prov} [dim](uses Codex CLI auth)[/dim]"
         table.add_row(f"[{idx}]", label, status_text, default_model)
 
     console.print()
@@ -568,6 +591,25 @@ def interactive_provider_select(
 
     # --- inline API key entry if missing ---
     if chosen not in detected:
+        if chosen == "codex_cli":
+            codex_installed, codex_logged_in = _detect_codex_cli_status()
+            console.print()
+            console.print(
+                "  [bold]codex_cli[/bold] requires the Codex CLI on PATH "
+                "and an authenticated Codex session."
+            )
+            console.print(f"  Install CLI: [{BRAND}]npm install -g @openai/codex[/]")
+            console.print(f"  Authenticate: [{BRAND}]codex login[/]")
+            console.print()
+            if not codex_installed:
+                console.print(
+                    f"  [{WARN}]Codex CLI not detected. Please install and retry, or select another provider.[/]"
+                )
+            elif not codex_logged_in:
+                console.print(
+                    f"  [{WARN}]Codex CLI is not logged in. Run 'codex login' and retry, or select another provider.[/]"
+                )
+            return interactive_provider_select(console, model_flag, repo_path=repo_path)
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")
         console.print()
@@ -603,8 +645,15 @@ def interactive_provider_select(
 
 
 _FLAGSHIP_MODEL_TOKENS = (
-    "opus", "gpt-4o", "gpt-5", "-pro", "sonnet-4-7", "sonnet-4-6",
-    "ultra", "o1", "o3",
+    "opus",
+    "gpt-4o",
+    "gpt-5",
+    "-pro",
+    "sonnet-4-7",
+    "sonnet-4-6",
+    "ultra",
+    "o1",
+    "o3",
 )
 
 
@@ -1300,9 +1349,7 @@ class RichProgressCallback:
         if task_id is None:
             return
         try:
-            task = next(
-                (t for t in self._progress.tasks if t.id == task_id), None
-            )
+            task = next((t for t in self._progress.tasks if t.id == task_id), None)
             if task is not None and task.total is not None:
                 self._progress.update(task_id, completed=task.total, visible=False)
             else:

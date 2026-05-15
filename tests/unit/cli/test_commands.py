@@ -38,6 +38,8 @@ class TestCliBasics:
         assert "--dry-run" in result.output
         assert "--skip-tests" in result.output
         assert "--reasoning" in result.output
+        assert "--codex" in result.output
+        assert "--agents" in result.output
 
     def test_update_help(self, runner):
         result = runner.invoke(cli, ["update", "--help"])

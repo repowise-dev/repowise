@@ -1,0 +1,53 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "repowise-augment --client codex",
+            "timeout": 30,
+            "statusMessage": "Loading repowise context..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "repowise-augment --client codex",
+            "timeout": 30,
+            "statusMessage": "Loading repowise context..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "repowise-augment --client codex",
+            "timeout": 30,
+            "statusMessage": "Checking repowise freshness..."
+          }
+        ]
+      },
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "repowise-augment --client codex",
+            "timeout": 30,
+            "statusMessage": "Checking repowise freshness..."
+          }
+        ]
+      }
+    ]
+  }
+}
