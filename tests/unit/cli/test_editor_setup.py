@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -7,9 +8,11 @@ from typing import Any
 from rich.console import Console
 
 from repowise.cli import mcp_config
+from repowise.cli.commands import init_cmd, update_cmd
 from repowise.cli.editor_integrations import claude as claude_integration
 from repowise.cli.editor_integrations import claude_config
 from repowise.cli.editor_integrations.claude import ClaudeCodeSetup
+from repowise.cli.editor_integrations.defaults import get_default_disabled_project_files
 from repowise.cli.editor_setup import (
     EditorSetupOptions,
     refresh_editor_project_files,
@@ -52,6 +55,11 @@ def test_resolve_editor_setup_options_delegates_to_integrations() -> None:
     assert options.prompt_for_project_files is True
 
 
+def test_default_disabled_project_files_maps_legacy_no_claude_flag() -> None:
+    assert get_default_disabled_project_files() == ()
+    assert get_default_disabled_project_files(no_claude_md=True) == ("claude_md",)
+
+
 def test_write_editor_project_files_saves_common_mcp_before_integrations(
     tmp_path: Path,
     monkeypatch: Any,
@@ -86,6 +94,45 @@ def test_write_editor_project_files_saves_common_mcp_before_integrations(
     assert calls == [
         ("mcp", tmp_path, None),
         ("fake-project", tmp_path, frozenset({"fake_instructions"})),
+    ]
+
+
+def test_write_editor_project_files_uses_pre_resolved_options(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, Path, EditorSetupOptions]] = []
+    options = EditorSetupOptions(
+        disabled_project_files=frozenset({"resolved"}),
+        prompt_for_project_files=True,
+    )
+
+    def fake_save_mcp_config(repo_path: Path) -> Path:
+        calls.append(("mcp", repo_path, options))
+        return repo_path / ".repowise" / "mcp.json"
+
+    class FakeIntegration:
+        def write_project_files(
+            self,
+            console_obj: object,
+            repo_path: Path,
+            received_options: EditorSetupOptions,
+        ) -> None:
+            calls.append(("fake-project", repo_path, received_options))
+
+    monkeypatch.setattr(mcp_config, "save_mcp_config", fake_save_mcp_config)
+
+    write_editor_project_files(
+        _silent_console(),
+        tmp_path,
+        options=options,
+        disabled_project_files={"ignored"},
+        integrations=(FakeIntegration(),),  # type: ignore[arg-type]
+    )
+
+    assert calls == [
+        ("mcp", tmp_path, options),
+        ("fake-project", tmp_path, options),
     ]
 
 
@@ -146,6 +193,103 @@ def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) 
     )
 
     assert calls == [("refresh", tmp_path, frozenset({"skip"}))]
+
+
+def test_claude_refresh_project_files_writes_when_enabled(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[Path] = []
+
+    async def fake_write_claude_md(repo_path: Path) -> None:
+        calls.append(repo_path)
+
+    monkeypatch.setattr(
+        claude_integration,
+        "_write_claude_md_async",
+        fake_write_claude_md,
+    )
+
+    ClaudeCodeSetup().refresh_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(),
+    )
+
+    assert calls == [tmp_path]
+
+
+def test_claude_refresh_project_files_skips_when_config_disabled(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[Path] = []
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "editor_files:\n  claude_md: false\n",
+        encoding="utf-8",
+    )
+
+    async def fake_write_claude_md(repo_path: Path) -> None:
+        calls.append(repo_path)
+
+    monkeypatch.setattr(
+        claude_integration,
+        "_write_claude_md_async",
+        fake_write_claude_md,
+    )
+
+    ClaudeCodeSetup().refresh_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(),
+    )
+
+    assert calls == []
+
+
+def test_claude_refresh_project_files_skips_when_options_disable_file(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[Path] = []
+
+    async def fake_write_claude_md(repo_path: Path) -> None:
+        calls.append(repo_path)
+
+    monkeypatch.setattr(
+        claude_integration,
+        "_write_claude_md_async",
+        fake_write_claude_md,
+    )
+
+    ClaudeCodeSetup().refresh_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(disabled_project_files=frozenset({"claude_md"})),
+    )
+
+    assert calls == []
+
+
+def test_update_command_uses_editor_refresh_abstraction() -> None:
+    source = inspect.getsource(update_cmd.update_command.callback)
+
+    assert "refresh_editor_project_files" in source
+    assert "ClaudeMdGenerator" not in source
+    assert "EditorFileDataFetcher" not in source
+    assert "claude_md" not in source
+
+
+def test_init_command_uses_editor_option_abstraction() -> None:
+    source = inspect.getsource(init_cmd.init_command.callback) + inspect.getsource(
+        init_cmd._workspace_init
+    )
+
+    assert "resolve_editor_setup_options" in source
+    assert "write_editor_project_files" in source
+    assert "interactive_claude_md_prompt" not in source
+    assert 'disabled_project_files={"claude_md"}' not in source
 
 
 def test_claude_client_registration_uses_existing_claude_setup(

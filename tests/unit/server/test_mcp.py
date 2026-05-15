@@ -1218,6 +1218,7 @@ def test_format_setup_instructions():
 
     instructions = format_setup_instructions(Path("/tmp/test-repo"))
     assert "Project .mcp.json" in instructions
+    assert "Claude Code" not in instructions
     assert "Cursor" in instructions
     assert "Cline" in instructions
     assert "repowise" in instructions
