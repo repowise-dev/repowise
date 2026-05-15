@@ -23,7 +23,7 @@ Five intelligence layers. Nine MCP tools. Multi-repo workspaces. Auto-sync hooks
 
 Your AI coding agent reads files. It doesn't know which ones change together, which ones are dead, or why they were built the way they were. It has the source code and no memory of how the codebase got there.
 
-repowise fixes that. It indexes your codebase into five intelligence layers — dependency graph, git history, auto-generated documentation, architectural decisions, and code health — and exposes them to Claude Code (and any MCP-compatible AI agent) through nine precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **The result: fewer tool calls, fewer file reads, and lower cost per query — at comparable answer quality.**
+repowise fixes that. It indexes your codebase into five intelligence layers — dependency graph, git history, auto-generated documentation, architectural decisions, and code health — and exposes them to Claude Code, Codex, and any MCP-compatible AI agent through nine precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **The result: fewer tool calls, fewer file reads, and lower cost per query — at comparable answer quality.**
 
 The result: your agent answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
@@ -57,7 +57,7 @@ The layer nobody else has. Architectural decisions captured from git history, in
 # TRADEOFF: Accepted eventual consistency in preferences for write throughput
 ```
 
-These become structured decision records, queryable by Claude Code via `get_why()`.
+These become structured decision records, queryable by AI agents via `get_why()`.
 
 ### ◈ Code Health Intelligence
 Fifteen deterministic biomarkers compute a 1–10 health score per file — McCabe complexity, deep nesting, brain methods, native Rabin–Karp duplication detection, untested hotspots, primitive obsession, developer congestion, knowledge loss, blame-based function hotspots, code-age volatility, and more. **Zero LLM calls, zero new runtime dependencies** — pure Python over tree-sitter and git data, designed to finish in under 30 seconds on a 3 000-file repo.
@@ -104,7 +104,7 @@ repowise init .      # scans for git repos, indexes each, runs cross-repo analys
 repowise serve       # workspace dashboard + per-repo pages
 ```
 
-That's it. `repowise init` automatically registers the MCP server, installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and offers to install a post-commit git hook that keeps everything in sync after every commit. See [Auto-Sync](docs/AUTO_SYNC.md) for all sync methods (hooks, file watcher, GitHub/GitLab webhooks, polling).
+That's it. `repowise init` automatically registers the MCP server for Claude Code, installs Claude Code hooks in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and offers to install a post-commit git hook that keeps everything in sync after every commit. If the Codex CLI is installed and logged in, interactive runs offer to write project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`; non-interactive runs require `--codex`. Skip Codex setup with `--no-codex`; force or skip `AGENTS.md` with `--agents` / `--no-agents`. See [Auto-Sync](docs/AUTO_SYNC.md) for all sync methods (hooks, file watcher, GitHub/GitLab webhooks, polling).
 
 To manually add the MCP server to another editor:
 
@@ -121,7 +121,7 @@ To manually add the MCP server to another editor:
 
 > **Note on init time:** The graph, git, dead-code, and code-health layers build in minutes with **zero LLM calls** — run `repowise init --index-only` and you have a queryable index almost immediately. The one-time cost is the documentation layer: LLM-generated wiki pages, which scale with repo size and run once (and can run in the background). After that, every update following a commit takes **under 30 seconds** and only regenerates the few pages your change touched.
 
-> **Full docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Workspaces](docs/WORKSPACES.md) · [Computed Glossary](docs/COMPUTED_GLOSSARY.md) · [Auto-Sync](docs/AUTO_SYNC.md)
+> **Full docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Workspaces](docs/WORKSPACES.md) · [Computed Glossary](docs/COMPUTED_GLOSSARY.md) · [Auto-Sync](docs/AUTO_SYNC.md)
 
 ---
 
@@ -259,11 +259,11 @@ This is what happens when an AI agent has real codebase intelligence.
 
 ## Proactive context enrichment — hooks
 
-Most MCP tools are passive — the agent has to know to call them. repowise hooks are **active**. They inject graph context into every search automatically, so agents are smarter even when they don't explicitly ask for help.
+Most MCP tools are passive — the agent has to know to call them. repowise hooks are **active**. Claude Code hooks add graph context when search results need rescue or triage. Codex hooks add Repowise MCP workflow guidance at session/prompt time and remind the agent after edits or git operations.
 
-### PreToolUse — every search gets graph context
+### Claude search hooks — graph context for broad searches
 
-When your AI agent runs `Grep` or `Glob`, repowise intercepts the call and enriches it with the top 3 related files — found via multi-signal search (symbol name match, file path match, and full-text search on wiki content), ranked by relevance then PageRank:
+When your AI agent runs a broad or zero-result `Grep` or `Glob`, repowise can enrich the result with the top related files — found via multi-signal search (symbol name match, file path match, and full-text search on wiki content), ranked by relevance then PageRank:
 
 - **Symbols** — top functions, classes, and methods in each file
 - **Imported by** — who depends on this file
@@ -294,6 +294,10 @@ Run `repowise update` to refresh documentation and graph context.
 ```
 
 Hooks are installed automatically during `repowise init`. No manual configuration needed. Full details: [docs/AUTO_SYNC.md](docs/AUTO_SYNC.md)
+
+### Codex lifecycle hooks
+
+Codex setup writes `.codex/hooks.json` with `SessionStart`, `UserPromptSubmit`, and `PostToolUse` hooks. The hooks are project-local and focus on lifecycle guidance plus freshness checks. Full details: [docs/CODEX.md](docs/CODEX.md).
 
 ---
 
@@ -328,7 +332,7 @@ A typical single-commit update touches 3–10 pages and completes in under 30 se
 
 ---
 
-## Auto-generated CLAUDE.md
+## Auto-generated AI instructions
 
 After every `repowise init` and `repowise update`, repowise regenerates your `CLAUDE.md` from actual codebase intelligence — not a template. No LLM calls. Under 5 seconds.
 
@@ -337,6 +341,8 @@ repowise generate-claude-md
 ```
 
 The generated section includes: architecture summary, module map, hotspot warnings, ownership map, hidden coupling pairs, active architectural decisions, and dead code candidates. A user-owned section at the top is never touched.
+
+Codex setup also creates managed `AGENTS.md`. Its Repowise section is bounded by managed markers, preserves user content outside the markers, and gives Codex MCP workflows for overview, search, context, risk, why, dependency tracing, diagrams, and dead-code cleanup.
 
 ```markdown
 <!-- REPOWISE:START — managed automatically, do not edit -->
@@ -450,8 +456,8 @@ The "why" usually walks out the door — when a teammate leaves, or when you reo
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Multi-repo workspace intelligence | ✅ co-changes, contracts, federated MCP | ❌ | ❌ | ❌ | ❌ |
 | MCP server for AI agents | ✅ 9 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
-| Proactive agent hooks | ✅ PreToolUse + PostToolUse | ❌ | ❌ | ❌ | ❌ |
-| Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Proactive agent hooks | ✅ Claude/Codex hooks | ❌ | ❌ | ❌ | ❌ |
+| Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Doc freshness scoring | ✅ | ❌ | ❌ | ⚠️ staleness only | ❌ |
 | Incremental updates on commit | ✅ <30s | ✅ | ❌ | ✅ | ✅ |
 | Local dashboard / frontend | ✅ | ❌ | ❌ | ❌ IDE only | ✅ |
@@ -493,6 +499,8 @@ Full breakdown of what's GA, in development, and planned — plus on-prem topolo
 ```bash
 # Core
 repowise init [PATH]              # index codebase (one-time, offers hook setup)
+repowise init --provider codex_cli --codex  # use authenticated Codex CLI subscription
+repowise init --no-codex --no-agents        # skip Codex project files and AGENTS.md
 repowise init --index-only        # graph + git + dead code, no LLM, no cost
 repowise init -x vendor/ -x proto/  # exclude patterns (gitignore syntax)
 repowise init --include-submodules   # include git submodule directories
@@ -542,6 +550,7 @@ repowise decision health          # stale, conflicts, ungoverned hotspots
 
 # Editor files
 repowise generate-claude-md       # regenerate CLAUDE.md
+repowise init --agents            # generate managed AGENTS.md for Codex
 
 # Proactive hooks (auto-installed by init — not called manually)
 repowise augment                  # enriches agent tool calls with graph context
@@ -585,10 +594,14 @@ repowise reindex                  # rebuild vector store (no LLM calls)
 `repowise init` generates `.repowise/config.yaml`. Key options:
 
 ```yaml
-provider: anthropic               # anthropic | openai | openrouter | gemini | deepseek | ollama | litellm | mock
+provider: anthropic               # anthropic | openai | openrouter | gemini | deepseek | ollama | litellm | codex_cli | mock
 model: claude-sonnet-4-5
 embedding_model: voyage-3
 reasoning: auto                   # auto | off | minimal
+
+editor_files:
+  claude_md: true
+  agents_md: true
 
 git:
   co_change_commit_limit: 500

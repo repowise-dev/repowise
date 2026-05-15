@@ -42,7 +42,7 @@ repowise init .
 1. **Ingestion** — walks every file, parses AST with tree-sitter, builds a two-tier dependency graph (file + symbol nodes), indexes git history (churn, hotspots, ownership, bus factor)
 2. **Analysis** — detects dead code, extracts architectural decisions from inline markers, READMEs, and git history. Runs Leiden community detection and execution flow tracing.
 3. **Generation** — sends structured prompts to the LLM, generates file-level, module-level, and repo-level wiki pages
-4. **Persistence** — stores everything in `.repowise/wiki.db`, builds search indexes, generates `CLAUDE.md`, registers MCP server and Claude Code hooks
+4. **Persistence** — stores everything in `.repowise/wiki.db`, builds search indexes, generates editor instruction files, registers MCP server and hooks
 
 In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (co-changes, contracts, package deps), workspace CLAUDE.md generation.
 
@@ -50,7 +50,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 
 | Flag | Description |
 |------|-------------|
-| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `mock` |
+| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock` |
 | `--index-only` | Skip LLM generation. Only parse, build graph, and index git. Free. |
@@ -67,6 +67,8 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--commit-limit` | Max commits to analyze per file (default: 500). |
 | `--follow-renames` | Track file renames in git history. |
 | `--no-claude-md` | Don't generate `CLAUDE.md`. |
+| `--agents / --no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
+| `--codex / --no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
 | `--yes / -y` | Skip confirmation prompts. |
 
 **Examples:**
@@ -74,6 +76,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 ```bash
 repowise init                                         # interactive
 repowise init --provider anthropic --yes              # automated
+repowise init --provider codex_cli --codex --yes       # use authenticated Codex CLI
 repowise init --index-only                            # free, no LLM
 repowise init --dry-run                               # preview cost
 repowise init --test-run                              # quick test (10 files)
@@ -81,6 +84,7 @@ repowise init --provider openai --model qwen3 --reasoning off
 repowise init --provider openrouter --model openai/gpt-5 --reasoning minimal
 repowise init -x vendor/ -x "*.gen.go"               # exclude patterns
 repowise init --include-submodules                    # include submodules
+repowise init --no-codex --no-agents                  # skip Codex project files
 repowise init .                                       # workspace mode
 repowise init . --index-only -x "node_modules/"      # workspace, no LLM
 ```
@@ -105,6 +109,7 @@ Incrementally update wiki pages for files changed since the last sync.
 | `--no-workspace` | Force single-repo mode (handy when running from a workspace root) |
 | `--repo` | Update a specific workspace repo by alias |
 | `--full` | Upgrade a fast (`--mode fast`) index to a full one — see below. Single-repo only. |
+| `--agents / --no-agents` | Generate or skip managed `AGENTS.md` after update. Persists the preference. |
 
 **First-time indexing:** as of v0.8, `update --workspace` now runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only — no LLM cost — and writes a state.json marker so `repowise update --repo <alias> --docs` later picks up doc generation cleanly.
 
@@ -426,6 +431,8 @@ See [Auto-Sync](AUTO_SYNC.md) for all sync methods (hooks, file watcher, webhook
 
 Start the MCP server for AI editor integration.
 
+If `PATH` is omitted, `repowise mcp` first walks upward from the current directory to the nearest initialized `.repowise` repository. This lets project-local Codex config use `args = ["mcp"]` with `cwd` set to the repo root.
+
 **Options:**
 
 | Flag | Description |
@@ -434,7 +441,7 @@ Start the MCP server for AI editor integration.
 | `--port` | Port for SSE transport (default: 7338) |
 
 ```bash
-repowise mcp --transport stdio           # for Claude Code, Cursor, etc.
+repowise mcp --transport stdio           # for Claude Code, Codex, Cursor, etc.
 repowise mcp --transport sse --port 7338 # for web clients
 ```
 
@@ -451,6 +458,12 @@ repowise generate-claude-md
 repowise generate-claude-md -o custom-path.md
 repowise generate-claude-md --stdout
 ```
+
+---
+
+### `AGENTS.md`
+
+`repowise init --codex` generates managed `AGENTS.md` for Codex. `repowise update` refreshes it when `editor_files.agents_md` is enabled in config, or when `--agents` is passed. User content outside the Repowise managed markers is preserved.
 
 ---
 
@@ -505,4 +518,4 @@ repowise doctor --workspace --repair     # also drop dead entries / sync drift
 
 ### `repowise augment`
 
-Hook-driven context enrichment engine. Not meant to be called manually — invoked by Claude Code hooks installed during `repowise init`.
+Hook-driven context enrichment engine. Not meant to be called manually — invoked by Claude Code and Codex hooks installed during `repowise init`. Claude Code uses it for search-result enrichment and stale-wiki checks; Codex uses it for `SessionStart`, `UserPromptSubmit`, and `PostToolUse` lifecycle guidance.

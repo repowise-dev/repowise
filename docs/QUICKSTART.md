@@ -14,6 +14,14 @@ pip install "repowise[anthropic]"
 
 Or substitute `openai`, `gemini`, `litellm`, or `all` depending on your LLM provider.
 
+For the Codex CLI subscription flow, no provider SDK or API key is required:
+
+```bash
+pip install repowise
+npm install -g @openai/codex
+codex login
+```
+
 **Requirements:** Python 3.11+, Git.
 
 ## 2. Set Your API Key
@@ -23,6 +31,12 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
 Or `OPENAI_API_KEY`, `GEMINI_API_KEY` — whichever provider you installed.
+
+If you use Codex as the LLM provider, authenticate the Codex CLI instead:
+
+```bash
+codex login status
+```
 
 On Windows PowerShell:
 
@@ -38,6 +52,12 @@ repowise init
 ```
 
 Repowise will walk you through an interactive setup — choose a provider, review the cost estimate, and confirm. It parses every file, builds a dependency graph, indexes git history, and generates wiki pages.
+
+Codex users can force project-local MCP/hooks setup and use the Codex CLI provider in one command:
+
+```bash
+repowise init --codex --provider codex_cli --yes
+```
 
 A typical run on a ~500-file codebase takes 5-15 minutes.
 
@@ -67,13 +87,15 @@ repowise serve
 
 If Node.js 20+ is installed, the web UI starts automatically. Otherwise, use Docker (see below).
 
-**Connect to your AI editor (Claude Code, Cursor, Cline, Windsurf):**
+**Connect to your AI editor (Claude Code, Codex, Cursor, Cline, Windsurf):**
 
 ```bash
 repowise mcp --transport stdio
 ```
 
-> **Automatic for Claude Code:** `repowise init` already registers the MCP server and installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`. Every `Grep`/`Glob` call is automatically enriched with graph context (importers, dependencies, symbols, git signals). After git commits, the agent is notified when the wiki is stale.
+> **Automatic for Claude Code:** `repowise init` already registers the MCP server and installs PostToolUse hooks in `~/.claude/settings.json`. Broad or zero-result `Grep`/`Glob` searches can receive graph context, and git operations can notify the agent when the wiki is stale.
+
+> **Automatic for Codex:** run `repowise init --codex` to write project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. See [Codex Integration](CODEX.md).
 
 ## 5. Keep It in Sync
 

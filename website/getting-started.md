@@ -28,7 +28,8 @@ There are three ways to set up repowise. Pick the one that fits how you work.
 |------|----------|------|
 | [Claude Code Plugin](#path-1-claude-code-plugin) | Claude Code users | ~30 seconds |
 | [pip + Claude Code](#path-2-pip--claude-code) | Manual control + Claude Code | ~2 minutes |
-| [Standalone CLI](#path-3-standalone-cli) | No Claude Code, or CI use | ~2 minutes |
+| [pip + Codex](#path-3-pip--codex) | Codex CLI users | ~2 minutes |
+| [Standalone CLI](#path-4-standalone-cli) | No AI editor, or CI use | ~2 minutes |
 
 ---
 
@@ -145,7 +146,39 @@ To verify the MCP server is connected:
 
 ---
 
-## Path 3: Standalone CLI
+## Path 3: pip + Codex
+
+Use the local Codex CLI auth/subscription flow and project-local MCP/hooks config.
+
+### Step 1: Install repowise and Codex
+
+```bash
+pip install repowise
+npm install -g @openai/codex
+codex login
+codex login status
+```
+
+### Step 2: Index your repo
+
+```bash
+cd /path/to/your-repo
+repowise init --codex --provider codex_cli --yes
+```
+
+This writes `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md` in the repository. It does not edit global `~/.codex/config.toml`.
+
+### Step 3: Start Codex
+
+```bash
+codex
+```
+
+Codex reads `AGENTS.md`, starts the Repowise MCP server from project config, and receives lightweight lifecycle/freshness hooks. See [Codex Integration](codex).
+
+---
+
+## Path 4: Standalone CLI
 
 Use repowise without Claude Code — with the web dashboard, REST API, or any MCP-compatible editor.
 
@@ -173,7 +206,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser. You'll see 
 
 ### Step 4: Start the MCP server (optional)
 
-To connect any MCP-compatible editor (Cursor, Cline, Windsurf):
+To connect any MCP-compatible editor (Codex, Cursor, Cline, Windsurf):
 
 ```bash
 repowise mcp
