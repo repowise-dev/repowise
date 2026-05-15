@@ -6,6 +6,7 @@ import click
 import pytest
 
 from repowise.cli import mcp_config
+from repowise.cli.editor_integrations import claude_config
 
 
 def _repowise_entry(repo_path: Path) -> dict:
@@ -58,7 +59,7 @@ def test_save_root_mcp_config_rejects_invalid_existing_file(tmp_path: Path) -> N
 def test_merge_mcp_entry_creates_missing_file(tmp_path: Path) -> None:
     config_path = tmp_path / "settings.json"
 
-    assert mcp_config._merge_mcp_entry(config_path, _repowise_entry(tmp_path))
+    assert mcp_config.merge_mcp_entry(config_path, _repowise_entry(tmp_path))
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert "repowise" in saved["mcpServers"]
@@ -76,7 +77,7 @@ def test_merge_mcp_entry_merges_valid_existing_file(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert mcp_config._merge_mcp_entry(config_path, _repowise_entry(tmp_path))
+    assert mcp_config.merge_mcp_entry(config_path, _repowise_entry(tmp_path))
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["mcpServers"]["existing"] == {"command": "existing"}
@@ -90,7 +91,7 @@ def test_merge_mcp_entry_rejects_invalid_existing_file(tmp_path: Path) -> None:
     config_path.write_text(original, encoding="utf-8")
 
     with pytest.raises(click.ClickException, match=re.escape(str(config_path))):
-        mcp_config._merge_mcp_entry(config_path, _repowise_entry(tmp_path))
+        mcp_config.merge_mcp_entry(config_path, _repowise_entry(tmp_path))
 
     assert config_path.read_text(encoding="utf-8") == original
 
@@ -117,7 +118,7 @@ def test_install_claude_code_hooks_creates_missing_file(
     intentionally absent because it can't see actual result counts."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    settings_path = mcp_config.install_claude_code_hooks()
+    settings_path = claude_config.install_claude_code_hooks()
 
     assert settings_path == tmp_path / ".claude" / "settings.json"
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -149,7 +150,7 @@ def test_install_claude_code_hooks_preserves_user_pretool_hooks(
         encoding="utf-8",
     )
 
-    assert mcp_config.install_claude_code_hooks() == settings_path
+    assert claude_config.install_claude_code_hooks() == settings_path
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert saved["permissions"] == {"allow": ["Bash(git status:*)"]}
@@ -201,7 +202,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
         encoding="utf-8",
     )
 
-    assert mcp_config.install_claude_code_hooks() == settings_path
+    assert claude_config.install_claude_code_hooks() == settings_path
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
@@ -243,7 +244,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
         encoding="utf-8",
     )
 
-    assert mcp_config.install_claude_code_hooks() == settings_path
+    assert claude_config.install_claude_code_hooks() == settings_path
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
@@ -255,9 +256,9 @@ def test_install_claude_code_hooks_idempotent_on_current_shape(
 ) -> None:
     """Running install twice should leave settings.json in the same shape."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    mcp_config.install_claude_code_hooks()
+    claude_config.install_claude_code_hooks()
     first = (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8")
-    mcp_config.install_claude_code_hooks()
+    claude_config.install_claude_code_hooks()
     second = (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8")
     assert first == second
 
@@ -301,14 +302,14 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
         encoding="utf-8",
     )
 
-    assert mcp_config.migrate_claude_code_hooks() is True
+    assert claude_config.migrate_claude_code_hooks() is True
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [("Bash|Grep|Glob", "repowise-augment")]
 
     # Idempotent: a second run finds nothing to do.
-    assert mcp_config.migrate_claude_code_hooks() is False
+    assert claude_config.migrate_claude_code_hooks() is False
 
 
 def test_migrate_claude_code_hooks_preserves_user_sibling_hook(
@@ -338,7 +339,7 @@ def test_migrate_claude_code_hooks_preserves_user_sibling_hook(
         encoding="utf-8",
     )
 
-    assert mcp_config.migrate_claude_code_hooks() is True
+    assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     pre = saved["hooks"]["PreToolUse"]
     assert len(pre) == 1
@@ -366,7 +367,7 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
     settings_path.write_text(original, encoding="utf-8")
     mtime_before = settings_path.stat().st_mtime_ns
 
-    assert mcp_config.migrate_claude_code_hooks() is False
+    assert claude_config.migrate_claude_code_hooks() is False
     assert settings_path.read_text(encoding="utf-8") == original
     assert settings_path.stat().st_mtime_ns == mtime_before
 
@@ -375,7 +376,7 @@ def test_migrate_claude_code_hooks_silent_when_settings_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    assert mcp_config.migrate_claude_code_hooks() is False
+    assert claude_config.migrate_claude_code_hooks() is False
 
 
 def test_migrate_claude_code_hooks_silent_on_malformed_json(
@@ -386,7 +387,7 @@ def test_migrate_claude_code_hooks_silent_on_malformed_json(
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text("{ not json", encoding="utf-8")
 
-    assert mcp_config.migrate_claude_code_hooks() is False
+    assert claude_config.migrate_claude_code_hooks() is False
 
 
 def test_install_claude_code_hooks_rejects_invalid_existing_file(
@@ -399,6 +400,6 @@ def test_install_claude_code_hooks_rejects_invalid_existing_file(
     settings_path.write_text(original, encoding="utf-8")
 
     with pytest.raises(click.ClickException, match=re.escape(str(settings_path))):
-        mcp_config.install_claude_code_hooks()
+        claude_config.install_claude_code_hooks()
 
     assert settings_path.read_text(encoding="utf-8") == original

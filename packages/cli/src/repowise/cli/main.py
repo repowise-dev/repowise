@@ -9,8 +9,8 @@ from repowise.cli.commands.augment_cmd import augment_command
 from repowise.cli.commands.claude_md_cmd import claude_md_command
 from repowise.cli.commands.costs_cmd import costs_command
 from repowise.cli.commands.dead_code_cmd import dead_code_command
-from repowise.cli.commands.delete_cmd import delete_command
 from repowise.cli.commands.decision_cmd import decision_group
+from repowise.cli.commands.delete_cmd import delete_command
 from repowise.cli.commands.doctor_cmd import doctor_command
 from repowise.cli.commands.export_cmd import export_command
 from repowise.cli.commands.hook_cmd import hook_group
@@ -37,7 +37,7 @@ def cli(ctx: click.Context) -> None:
     # every Grep/Glob/Bash) — `augment_hook.main` handles that case.
     if ctx.invoked_subcommand != "augment":
         try:
-            from repowise.cli.mcp_config import migrate_claude_code_hooks
+            from repowise.cli.editor_integrations.claude_config import migrate_claude_code_hooks
 
             migrate_claude_code_hooks()
         except Exception:

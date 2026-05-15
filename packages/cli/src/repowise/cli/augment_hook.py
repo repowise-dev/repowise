@@ -43,7 +43,7 @@ def main() -> None:
     # no-op on every subsequent fire. Wrapped so a write failure never
     # propagates back to the agent.
     try:
-        from repowise.cli.mcp_config import migrate_claude_code_hooks
+        from repowise.cli.editor_integrations.claude_config import migrate_claude_code_hooks
 
         migrate_claude_code_hooks()
     except BaseException:

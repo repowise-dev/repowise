@@ -12,9 +12,6 @@ from repowise.cli.helpers import get_db_url_for_repo, load_config, run_async
 class ClaudeCodeSetup:
     """Claude Code/Desktop setup integration preserving existing init behavior."""
 
-    id = "claude_code"
-    display_name = "Claude Code"
-
     def write_project_files(
         self,
         console_obj: Any,
@@ -31,7 +28,7 @@ class ClaudeCodeSetup:
         )
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:
-        from repowise.cli.mcp_config import (
+        from repowise.cli.editor_integrations.claude_config import (
             install_claude_code_hooks,
             register_with_claude_code,
             register_with_claude_desktop,

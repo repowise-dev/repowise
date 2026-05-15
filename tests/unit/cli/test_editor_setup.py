@@ -8,6 +8,7 @@ from rich.console import Console
 
 from repowise.cli import mcp_config
 from repowise.cli.editor_integrations import claude as claude_integration
+from repowise.cli.editor_integrations import claude_config
 from repowise.cli.editor_integrations.claude import ClaudeCodeSetup
 from repowise.cli.editor_setup import (
     EditorSetupOptions,
@@ -30,9 +31,6 @@ def test_write_editor_project_files_saves_common_mcp_before_integrations(
         return repo_path / ".repowise" / "mcp.json"
 
     class FakeIntegration:
-        id = "fake"
-        display_name = "Fake"
-
         def write_project_files(
             self,
             console_obj: object,
@@ -114,9 +112,9 @@ def test_claude_client_registration_uses_existing_claude_setup(
         calls.append(("hooks", tmp_path))
         return tmp_path / ".claude" / "settings.json"
 
-    monkeypatch.setattr(mcp_config, "register_with_claude_desktop", fake_desktop)
-    monkeypatch.setattr(mcp_config, "register_with_claude_code", fake_code)
-    monkeypatch.setattr(mcp_config, "install_claude_code_hooks", fake_hooks)
+    monkeypatch.setattr(claude_config, "register_with_claude_desktop", fake_desktop)
+    monkeypatch.setattr(claude_config, "register_with_claude_code", fake_code)
+    monkeypatch.setattr(claude_config, "install_claude_code_hooks", fake_hooks)
 
     output = StringIO()
     console = Console(file=output, force_terminal=False)

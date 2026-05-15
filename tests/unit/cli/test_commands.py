@@ -102,9 +102,12 @@ class TestErrorCases:
         """init with no provider configured should error."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
         monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code != 0

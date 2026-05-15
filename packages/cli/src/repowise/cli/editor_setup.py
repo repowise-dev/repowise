@@ -24,9 +24,6 @@ class EditorSetupOptions:
 class EditorSetupIntegration(Protocol):
     """Setup hooks implemented by each AI editor integration."""
 
-    id: str
-    display_name: str
-
     def write_project_files(
         self,
         console_obj: Any,
@@ -41,9 +38,11 @@ class EditorSetupIntegration(Protocol):
         ...
 
 
-def default_editor_integrations() -> tuple[EditorSetupIntegration, ...]:
-    """Return the editor integrations enabled by default today."""
-
+def _resolve_integrations(
+    integrations: tuple[EditorSetupIntegration, ...] | None,
+) -> tuple[EditorSetupIntegration, ...]:
+    if integrations is not None:
+        return integrations
     from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
 
     return get_default_editor_integrations()
@@ -64,7 +63,7 @@ def write_editor_project_files(
     options = EditorSetupOptions(
         disabled_project_files=frozenset(disabled_project_files or ()),
     )
-    for integration in integrations or default_editor_integrations():
+    for integration in _resolve_integrations(integrations):
         integration.write_project_files(console_obj, repo_path, options)
 
 
@@ -76,5 +75,5 @@ def register_editor_clients(
 ) -> None:
     """Register editor clients with repowise MCP and hooks where supported."""
 
-    for integration in integrations or default_editor_integrations():
+    for integration in _resolve_integrations(integrations):
         integration.register_client(console_obj, repo_path)
