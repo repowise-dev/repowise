@@ -5,6 +5,7 @@ Dialects: T-SQL (primary), PostgreSQL, MySQL (via sqlglot)
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import sqlglot
@@ -151,8 +152,7 @@ def _extract_from_index_node(statement) -> str | None:
     index = statement.this
     if hasattr(index, "this"):
         # Index is an Identifier, get the name
-        name = index.this if hasattr(index, "this") else None
-        return name
+        return index.this
     return None
 
 
@@ -168,11 +168,9 @@ def _extract_from_regex(sql: str, kind: str) -> str | None:
     Returns:
         Extracted name or None
     """
-    import re
-
     # Pattern to match: CREATE {kind} [schema.]name
     patterns = [
-        (rf"CREATE\s+(?:VIEW|FUNCTION|TRIGGER)\s+\[?(\[?\w+\]?\.\[?\w+\]?\[?\w+\]?)", "symbol"),
+        (r"CREATE\s+(?:VIEW|FUNCTION|TRIGGER)\s+\[?(\w+(?:\]\.\[\w+)*)\[?", "symbol"),
     ]
 
     for pattern, extract_type in patterns:
@@ -203,8 +201,6 @@ def _extract_symbols(ast, source: str, file_info: FileInfo) -> list[Symbol]:
     Returns:
         List of Symbol objects
     """
-    import re
-
     symbols = []
 
     # Iterate through CREATE statements
