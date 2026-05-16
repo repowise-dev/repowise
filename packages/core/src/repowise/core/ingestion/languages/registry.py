@@ -971,8 +971,8 @@ _SPECS: tuple[LanguageSpec, ...] = (
         tag="sql",
         display_name="SQL",
         extensions=frozenset({".sql"}),
-        is_code=False,
-        is_passthrough=True,
+        is_code=True,
+        is_passthrough=False,
     ),
     LanguageSpec(
         tag="openapi",
