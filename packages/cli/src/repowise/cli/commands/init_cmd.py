@@ -854,7 +854,12 @@ def _workspace_init(
     "--dry-run", is_flag=True, default=False, help="Show generation plan without running."
 )
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip cost confirmation prompt.")
-@click.option("--resume", is_flag=True, default=False, help="Resume from last checkpoint.")
+@click.option(
+    "--resume",
+    is_flag=True,
+    default=False,
+    help="Skip pages already generated in the vector store and continue from where a previous run stopped. Safe no-op on a fully indexed repo."
+)
 @click.option(
     "--force", is_flag=True, default=False, help="Regenerate all pages, ignoring existing."
 )
