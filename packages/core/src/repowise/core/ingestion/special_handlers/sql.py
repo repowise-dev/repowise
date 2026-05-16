@@ -221,7 +221,7 @@ def _extract_symbols(ast, source: str, file_info: FileInfo) -> list[Symbol]:
             name = _extract_from_index_node(statement)
         else:
             # Regex fallback for VIEW, FUNCTION, TRIGGER
-            name = _extract_from_regex(statement.sql, kind)
+            name = _extract_from_regex(statement.sql(), kind)
 
         if name:
             # Apply transformations
