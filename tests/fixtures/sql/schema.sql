@@ -61,10 +61,14 @@ RETURN
 SELECT PostId, Content, Published FROM dbo.Posts WHERE UserId = @UserId;
 
 -- CREATE TRIGGER (simplified for sqlglot compatibility)
-CREATE TRIGGER [dbo].[trg_Users_Audit] ON [dbo].[Users] AFTER INSERT AS PRINT 'Users table modified';
+CREATE TRIGGER [dbo].[trg_Users_Audit]
+ON [dbo].[Users]
+AFTER INSERT
+AS
+SELECT 1;
 
 -- CREATE INDEX
-CREATE INDEX [IX_Posts_Email] ON [dbo].[Posts]([Email]);
+CREATE INDEX [IX_Posts_UserId] ON [dbo].[Posts]([UserId]);
 
 -- Schemaless table (no brackets, implicit dbo schema)
 CREATE TABLE Tags (
