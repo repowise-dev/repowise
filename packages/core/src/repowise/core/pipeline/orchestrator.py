@@ -417,6 +417,21 @@ async def run_pipeline(
                 reasoning=resolve_reasoning(config=load_repo_config(repo_path))
             )
 
+        # Phase 2 enrichment: flag framework-defined HTTP surfaces (FastAPI,
+        # ASP.NET controllers, …) as api_contract so they route through the
+        # api_contract template instead of generic file_page. Lives in the
+        # generation package so language-specific heuristics stay co-located
+        # with the templates that consume them.
+        from repowise.core.generation import detect_code_api_contracts as _detect_apis
+        try:
+            flipped = _detect_apis(parsed_files)
+            if flipped and progress:
+                progress.on_message(
+                    "info", f"→ Detected {flipped} additional API contract file(s)"
+                )
+        except Exception as _api_err:
+            logger.warning("api_contract_detection_failed", error=str(_api_err))
+
         generated_pages = await run_generation(
             repo_path=repo_path,
             parsed_files=parsed_files,
@@ -431,6 +446,9 @@ async def run_pipeline(
             progress=progress,
             resume=resume,
             generation_config=resolved_generation_config,
+            dead_code_report=dead_code_report,
+            decision_report=decision_report,
+            external_systems=external_systems,
         )
 
     # ---- Execution flow tracing -----------------------------------------------
@@ -940,6 +958,9 @@ async def run_generation(
     resume: bool = False,
     cost_tracker: Any | None = None,
     generation_config: Any | None = None,
+    dead_code_report: Any | None = None,
+    decision_report: Any | None = None,
+    external_systems: list[dict] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -1018,6 +1039,9 @@ async def run_generation(
         git_meta_map=git_meta_map if git_meta_map else None,
         resume=resume,
         repo_path=repo_path,
+        dead_code_report=dead_code_report,
+        decision_report=decision_report,
+        external_systems=external_systems,
     )
 
     if progress:

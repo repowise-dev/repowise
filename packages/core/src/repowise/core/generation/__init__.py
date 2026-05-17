@@ -43,6 +43,7 @@ from .models import (
     compute_source_hash,
     decay_confidence,
 )
+from .api_contract_detector import detect_code_api_contracts
 from .page_generator import SYSTEM_PROMPTS, PageGenerator
 
 __all__ = [
@@ -80,4 +81,5 @@ __all__ = [
     "compute_page_id",
     "compute_source_hash",
     "decay_confidence",
+    "detect_code_api_contracts",
 ]

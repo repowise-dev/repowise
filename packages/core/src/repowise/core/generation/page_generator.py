@@ -253,6 +253,12 @@ class PageGenerator:
         graph: Any,
         git_meta_map: dict[str, dict] | None = None,
         page_summaries: dict[str, str] | None = None,
+        decision_records: list[dict] | None = None,
+        dead_code_findings: list[dict] | None = None,
+        external_systems: list[dict] | None = None,
+        community_label: str | None = None,
+        community_cohesion: float | None = None,
+        target_path: str | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
             module_path,
@@ -260,6 +266,12 @@ class PageGenerator:
             file_contexts,
             graph,
             page_summaries=page_summaries,
+            git_meta_map=git_meta_map,
+            decision_records=decision_records,
+            dead_code_findings=dead_code_findings,
+            external_systems=external_systems,
+            community_label=community_label,
+            community_cohesion=community_cohesion,
         )
         module_git_summary = None
         if git_meta_map:
@@ -280,12 +292,13 @@ class PageGenerator:
                     "most_active_commits_90d": most_active.get("commit_count_90d", 0),
                 }
         user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
+        page_target = target_path or module_path
         response = await self._call_provider(
-            "module_page", user_prompt, str(uuid.uuid4()), target_path=module_path
+            "module_page", user_prompt, str(uuid.uuid4()), target_path=page_target
         )
         return self._build_generated_page(
             "module_page",
-            module_path,
+            page_target,
             f"Module: {module_path}",
             response,
             compute_source_hash(user_prompt),
@@ -321,6 +334,8 @@ class PageGenerator:
         git_meta_map: dict[str, dict] | None = None,
         graph_builder: Any | None = None,
         repo_name: str | None = None,
+        external_systems: list[dict] | None = None,
+        decision_records: list[dict] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
@@ -328,6 +343,8 @@ class PageGenerator:
             sccs,
             community,
             graph_builder=graph_builder,
+            external_systems=external_systems,
+            decision_records=decision_records,
         )
         repo_git_summary = None
         if git_meta_map:
@@ -439,6 +456,9 @@ class PageGenerator:
         git_meta_map: dict[str, dict] | None = None,
         resume: bool = False,
         repo_path: Path | str | None = None,
+        dead_code_report: Any | None = None,
+        decision_report: Any | None = None,
+        external_systems: list[dict] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -464,6 +484,39 @@ class PageGenerator:
         betweenness = graph_builder.betweenness_centrality()
         community = graph_builder.community_detection()
         sccs = graph_builder.strongly_connected_components()
+
+        # ---- Build per-file lookup maps from phase-2 signals ----
+        dead_code_by_file: dict[str, list[dict]] = {}
+        if dead_code_report is not None and getattr(dead_code_report, "findings", None):
+            for f in dead_code_report.findings:
+                dead_code_by_file.setdefault(f.file_path, []).append(
+                    {
+                        "symbol_name": f.symbol_name,
+                        "symbol_kind": f.symbol_kind,
+                        "kind": str(f.kind),
+                        "reason": f.reason,
+                        "confidence": f.confidence,
+                        "safe_to_delete": f.safe_to_delete,
+                    }
+                )
+
+        decisions_by_file: dict[str, list[dict]] = {}
+        decisions_all: list[dict] = []
+        if decision_report is not None and getattr(decision_report, "decisions", None):
+            for d in decision_report.decisions:
+                payload = {
+                    "title": d.title,
+                    "decision": d.decision,
+                    "rationale": d.rationale,
+                    "source": d.source,
+                    "confidence": d.confidence,
+                    "evidence_file": d.evidence_file,
+                }
+                decisions_all.append(payload)
+                for fp in d.affected_files or []:
+                    decisions_by_file.setdefault(fp, []).append(payload)
+
+        external_systems = external_systems or []
 
         all_pages: list[GeneratedPage] = []
         semaphore = asyncio.Semaphore(self._config.max_concurrency)
@@ -603,11 +656,17 @@ class PageGenerator:
         ]
 
         budget = max(50, int(len(parsed_files) * self._config.max_pages_pct))
-        # Estimate fixed overhead (api, scc, module, repo_overview, arch_diagram)
-        _fixed_overhead = (
-            sum(1 for p in parsed_files if p.file_info.is_api_contract)
-            + sum(1 for scc in sccs if len(scc) > 1)
-            + len(
+        # Estimate module-page count using whichever grouping is configured.
+        _min_module_size = max(1, getattr(self._config, "min_module_size", 3))
+        if getattr(self._config, "module_grouping", "community") == "community":
+            from collections import Counter as _Counter
+            _cid_counts = _Counter(
+                community.get(p.file_info.path) for p in code_files
+                if community.get(p.file_info.path) is not None
+            )
+            _module_count = sum(1 for n in _cid_counts.values() if n >= _min_module_size)
+        else:
+            _module_count = len(
                 {
                     (
                         Path(p.file_info.path).parts[0]
@@ -617,6 +676,11 @@ class PageGenerator:
                     for p in code_files
                 }
             )
+        # Estimate fixed overhead (api, scc, module, repo_overview, arch_diagram)
+        _fixed_overhead = (
+            sum(1 for p in parsed_files if p.file_info.is_api_contract)
+            + sum(1 for scc in sccs if len(scc) > 1)
+            + _module_count
             + 2  # repo_overview + architecture_diagram
         )
         _remaining = max(0, budget - _fixed_overhead)
@@ -654,16 +718,7 @@ class PageGenerator:
             + _n_sym_cap
             + _actual_file_page_count
             + sum(1 for scc in sccs if len(scc) > 1)
-            + len(
-                {
-                    (
-                        Path(p.file_info.path).parts[0]
-                        if len(Path(p.file_info.path).parts) > 1
-                        else "root"
-                    )
-                    for p in code_files
-                }
-            )
+            + _module_count
             + 2  # repo_overview + arch_diagram
             + sum(1 for p in parsed_files if _is_infra_file(p))
         )
@@ -784,6 +839,8 @@ class PageGenerator:
                 source_map.get(p.file_info.path, b""),
                 git_meta=git_meta_map.get(p.file_info.path) if git_meta_map else None,
                 page_summaries=completed_page_summaries,
+                dead_code_findings=dead_code_by_file.get(p.file_info.path),
+                decision_records=decisions_by_file.get(p.file_info.path),
             )
             file_page_contexts[p.file_info.path] = ctx
             pid = compute_page_id("file_page", p.file_info.path)
@@ -810,32 +867,86 @@ class PageGenerator:
         level3_pages = await run_level(scc_coros, 3)
         all_pages.extend(level3_pages)
 
-        # ---- Level 4: module_page (grouped by top-level directory) ----
+        # ---- Level 4: module_page ----
+        # Default grouping is by graph community (post Phase 2); legacy
+        # top-directory grouping is preserved behind module_grouping="top_dir".
         module_groups: dict[str, list[FilePageContext]] = {}
         module_languages: dict[str, str] = {}
-        for p in code_files:
-            parts = Path(p.file_info.path).parts
-            module = parts[0] if len(parts) > 1 else "root"
-            fc = file_page_contexts.get(p.file_info.path)
-            if fc is not None:
+        module_display: dict[str, str] = {}
+        module_meta: dict[str, dict] = {}
+
+        use_communities = getattr(self._config, "module_grouping", "community") == "community"
+        community_info_map: dict[int, Any] = {}
+        if use_communities:
+            try:
+                community_info_map = graph_builder.community_info() or {}
+            except Exception:
+                community_info_map = {}
+
+        if use_communities and community_info_map:
+            for p in code_files:
+                path_ = p.file_info.path
+                fc = file_page_contexts.get(path_)
+                if fc is None:
+                    continue
+                cid = community.get(path_)
+                if cid is None:
+                    continue
+                key = f"community-{cid}"
+                module_groups.setdefault(key, []).append(fc)
+                # Pick the most common language inside the community
+                module_languages.setdefault(key, p.file_info.language)
+                ci = community_info_map.get(cid)
+                if ci is not None and key not in module_display:
+                    label = getattr(ci, "label", "") or f"cluster_{cid}"
+                    module_display[key] = label
+                    module_meta[key] = {
+                        "label": label,
+                        "cohesion": float(getattr(ci, "cohesion", 0.0) or 0.0),
+                    }
+        else:
+            # Fallback: top-level directory grouping.
+            for p in code_files:
+                parts = Path(p.file_info.path).parts
+                module = parts[0] if len(parts) > 1 else "root"
+                fc = file_page_contexts.get(p.file_info.path)
+                if fc is None:
+                    continue
                 module_groups.setdefault(module, []).append(fc)
                 module_languages[module] = p.file_info.language
+                module_display.setdefault(module, module)
 
-        level4_coros: list[tuple[str, Any]] = [
-            (
-                compute_page_id("module_page", module),
-                self.generate_module_page(
-                    module,
-                    module_languages.get(module, "unknown"),
-                    fcs,
-                    graph,
-                    git_meta_map=git_meta_map,
-                    page_summaries=completed_page_summaries,
-                ),
+        min_size = max(1, getattr(self._config, "min_module_size", 3))
+        level4_coros: list[tuple[str, Any]] = []
+        for module_key, fcs in module_groups.items():
+            if len(fcs) < min_size:
+                continue
+            page_id = compute_page_id("module_page", module_key)
+            if page_id in completed_ids:
+                continue
+            display = module_display.get(module_key, module_key)
+            meta = module_meta.get(module_key, {})
+            level4_coros.append(
+                (
+                    page_id,
+                    self.generate_module_page(
+                        display,
+                        module_languages.get(module_key, "unknown"),
+                        fcs,
+                        graph,
+                        git_meta_map=git_meta_map,
+                        page_summaries=completed_page_summaries,
+                        decision_records=decisions_all,
+                        dead_code_findings=[
+                            d for fc in fcs for d in dead_code_by_file.get(fc.file_path, [])
+                        ],
+                        external_systems=external_systems,
+                        community_label=meta.get("label"),
+                        community_cohesion=meta.get("cohesion"),
+                        target_path=module_key,
+                    ),
+                )
             )
-            for module, fcs in module_groups.items()
-            if compute_page_id("module_page", module) not in completed_ids
-        ]
         level4_pages = await run_level(level4_coros, 4)
         all_pages.extend(level4_pages)
 
@@ -853,6 +964,8 @@ class PageGenerator:
                         git_meta_map=git_meta_map,
                         graph_builder=graph_builder,
                         repo_name=repo_name,
+                        external_systems=external_systems,
+                        decision_records=decisions_all[:10],
                     ),
                 )
             )

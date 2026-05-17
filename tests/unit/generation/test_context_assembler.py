@@ -288,6 +288,76 @@ def test_assemble_repo_overview_circular_dep_count(
 # ---------------------------------------------------------------------------
 
 
+def test_assemble_file_page_threads_decision_records(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    decisions = [{"title": "Use SQLAlchemy", "decision": "ORM", "rationale": "type-safe"}]
+    ctx = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+        decision_records=decisions,
+    )
+    assert ctx.decision_records == decisions
+
+
+def test_assemble_module_page_threads_phase2_signals(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    assembler = ContextAssembler(sample_config)
+    fc = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    decisions = [{"title": "X", "decision": "Y", "rationale": ""}]
+    dead = [{"symbol_name": "foo", "reason": "no callers", "confidence": 0.9, "safe_to_delete": True}]
+    externals = [{"name": "fastapi", "category": "framework", "ecosystem": "pypi"}]
+    ctx = assembler.assemble_module_page(
+        "auth/login",
+        "python",
+        [fc],
+        sample_graph,
+        decision_records=decisions,
+        dead_code_findings=dead,
+        external_systems=externals,
+        community_label="auth/login",
+        community_cohesion=0.72,
+    )
+    assert ctx.decision_records == decisions
+    assert ctx.dead_code_findings == dead
+    assert ctx.external_systems == externals
+    assert ctx.community_label == "auth/login"
+    assert ctx.community_cohesion == 0.72
+    # key_files derives from the file contexts we passed in
+    assert ctx.key_files and ctx.key_files[0]["path"] == fc.file_path
+
+
+def test_assemble_repo_overview_threads_external_systems_and_decisions(
+    sample_config, sample_graph, sample_repo_structure
+):
+    assembler = ContextAssembler(sample_config)
+    externals = [{"name": "redis", "category": "datastore", "ecosystem": "pypi"}]
+    decisions = [{"title": "Adopt Redis", "decision": "session cache", "rationale": "low latency"}]
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure,
+        {},
+        [],
+        {},
+        external_systems=externals,
+        decision_records=decisions,
+    )
+    assert ctx.external_systems == externals
+    assert ctx.decision_records == decisions
+
+
 def test_assemble_api_contract_raw_content_budgeted(sample_config, sample_parsed_file):
     assembler = ContextAssembler(sample_config)
     huge_bytes = b"x" * 100_000

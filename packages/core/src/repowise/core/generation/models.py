@@ -70,7 +70,7 @@ class GenerationConfig:
         jobs_dir:                 Directory for job checkpoint JSON files.
     """
 
-    max_tokens: int = 16000
+    max_tokens: int = 20000
     temperature: float = 0.3
     token_budget: int = 48000
     max_concurrency: int = 12
@@ -79,12 +79,17 @@ class GenerationConfig:
     cache_enabled: bool = True
     staleness_threshold_days: int = 7
     expiry_threshold_days: int = 30
-    top_symbol_percentile: float = 0.10  # top N% public symbols by PageRank → symbol_spotlight
+    top_symbol_percentile: float = 0.20  # top N% public symbols by PageRank → symbol_spotlight
     file_page_top_percentile: float = 0.10  # top N% code files by PageRank → file_page
     file_page_min_symbols: int = 1  # files with fewer symbols are skipped for file_page
     max_pages_pct: float = 0.10  # hard cap: total pages ≤ max(50, N_files * this)
     skip_trivial_files: bool = True  # skip tiny low-symbol files unless entry/hub
     dedupe_near_clones: bool = True  # collapse 3+ identical-shape siblings to one page
+    # Phase 2: switch module_page grouping from top-directory to graph
+    # communities. min_module_size is the floor below which a community
+    # doesn't get its own page (its files still appear under file_page).
+    module_grouping: Literal["community", "top_dir"] = "community"
+    min_module_size: int = 3
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"

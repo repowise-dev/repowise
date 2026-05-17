@@ -43,6 +43,22 @@ The codebase organizes into these architectural clusters (detected via dependenc
 {% endfor %}
 {% endif %}
 
+{% if ctx.external_systems %}
+## External Systems
+Third-party libraries, services, and tools the repository depends on:
+{% for sys in ctx.external_systems[:25] %}
+- `{{ sys.name }}`{% if sys.category and sys.category != 'library' %} *({{ sys.category }})*{% endif %}{% if sys.ecosystem %} — {{ sys.ecosystem }}{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.decision_records %}
+## Key Architectural Decisions
+Use these to ground the "why" of the project — do not invent rationale beyond what is listed.
+{% for dr in ctx.decision_records[:8] %}
+- **{{ dr.title }}** — {{ dr.decision }}{% if dr.rationale %} *(Why: {{ dr.rationale }})*{% endif %}
+{% endfor %}
+{% endif %}
+
 {% if ctx.execution_flows %}
 ## Primary Execution Flows
 Key entry points and their execution paths:

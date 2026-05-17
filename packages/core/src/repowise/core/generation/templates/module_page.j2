@@ -1,57 +1,87 @@
-You are documenting the module at `{{ ctx.module_path }}` (language: {{ ctx.language }}).
+You are documenting the module **{{ ctx.module_path }}** (language: {{ ctx.language }}).
 
 ## Module Overview
-- **Path**: `{{ ctx.module_path }}`
+- **Label**: {{ ctx.module_path }}
 - **Language**: {{ ctx.language }}
-- **Total symbols**: {{ ctx.total_symbols }}
-- **Public symbols**: {{ ctx.public_symbols }}
+- **Files in module**: {{ ctx.files | length }}
+- **Total symbols**: {{ ctx.total_symbols }} ({{ ctx.public_symbols }} public)
 - **Mean PageRank**: {{ "%.4f"|format(ctx.pagerank_mean) }}
+{% if ctx.community_label %}
+- **Community label**: {{ ctx.community_label }}{% if ctx.community_cohesion > 0 %} (cohesion {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}
+{% endif %}
 
+{% if ctx.entry_points %}
 ## Entry Points
 {% for ep in ctx.entry_points %}
 - `{{ ep }}`
 {% endfor %}
+{% endif %}
 
+{% if ctx.key_files %}
+## Key Files
+The highest-PageRank files in this module — the ones to read first when learning the area.
+{% for kf in ctx.key_files %}
+- `{{ kf.path }}`{% if kf.is_entry_point %} *(entry point)*{% endif %}{% if kf.summary %} — {{ kf.summary }}{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.decision_records %}
+## Architectural decisions
+Use these to explain *why* the module is shaped the way it is. Do not invent rationale beyond what is listed.
+{% for dr in ctx.decision_records[:5] %}
+- **{{ dr.title }}** — {{ dr.decision }}{% if dr.rationale %} *(Why: {{ dr.rationale }})*{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.dependencies %}
 ## Dependencies (modules this imports)
-{% for dep in ctx.dependencies %}
+{% for dep in ctx.dependencies[:25] %}
 - `{{ dep }}`
 {% endfor %}
+{% endif %}
 
+{% if ctx.dependents %}
 ## Dependents (modules that import this)
-{% for dep in ctx.dependents %}
+{% for dep in ctx.dependents[:25] %}
 - `{{ dep }}`
 {% endfor %}
-
-{% if ctx.community_label %}
-## Architectural Community
-This module belongs to the **{{ ctx.community_label }}** cluster{% if ctx.community_cohesion > 0 %} (cohesion: {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}.
 {% endif %}
 
-## Files in Module
-{% for f in ctx.files %}
-{% set summary = ctx.file_summaries.get(f, '') %}
-{% if summary %}
-- `{{ f }}` — {{ summary }}
-{% else %}
-- `{{ f }}`
-{% endif %}
+{% if ctx.external_systems %}
+## External systems used
+{% for sys in ctx.external_systems[:15] %}
+- `{{ sys.name }}`{% if sys.category and sys.category != 'library' %} *({{ sys.category }})*{% endif %}{% if sys.ecosystem %} — {{ sys.ecosystem }}{% endif %}
 {% endfor %}
+{% endif %}
+
+{% if ctx.top_owners %}
+## Ownership
+{% for o in ctx.top_owners %}
+- **{{ o.name }}** — primary maintainer of {{ o.file_count }} file(s)
+{% endfor %}
+{% endif %}
 
 {% if ctx.key_classes %}
 ## Class Hierarchy
 {% for h in ctx.key_classes %}
 - `{{ h.child }}` {{ h.kind }} `{{ h.parent }}`{% if h.parent_file is defined and h.parent_file %} (in `{{ h.parent_file }}`){% endif %}
+{% endfor %}
+{% endif %}
 
+{% if ctx.dead_code_findings %}
+## Potentially unused code in this module
+{% for finding in ctx.dead_code_findings[:10] %}
+- `{{ finding.symbol_name or '?' }}` — {{ finding.reason }} ({{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, safe to remove{% endif %})
 {% endfor %}
 {% endif %}
 
 {% if module_git_summary is defined and module_git_summary %}
-## Team ownership
-{% for pkg_owner in module_git_summary.top_owners %}
-- **{{ pkg_owner.file_count }} files** primarily maintained by {{ pkg_owner.name }}
-{% endfor %}
-Most active recently: `{{ module_git_summary.most_active_file }}`
+## Recent activity
+Most active file: `{{ module_git_summary.most_active_file }}`
 ({{ module_git_summary.most_active_commits_90d }} commits in 90 days)
 {% endif %}
 
-Generate a complete wiki page following the sections above.
+Generate a complete wiki page following the sections above. Required sections in the
+output: ## Overview, ## Public API Summary, ## Architecture Notes. Use the supplied
+key files, decisions, and external systems to ground the narrative; do not fabricate
+modules, files, or rationale that are not listed here.

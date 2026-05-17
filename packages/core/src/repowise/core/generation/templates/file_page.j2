@@ -143,6 +143,14 @@ This file belongs to the **{{ ctx.community_label }}** community{% if ctx.commun
 Use this to explain the file's role within its architectural cluster.
 {% endif %}
 
+{% if ctx.decision_records %}
+## Architectural decisions affecting this file
+Use these as the source of truth for the "why" when explaining design choices below.
+{% for dr in ctx.decision_records[:5] %}
+- **{{ dr.title }}** — {{ dr.decision }}{% if dr.rationale %} *(Why: {{ dr.rationale }})*{% endif %}
+{% endfor %}
+{% endif %}
+
 {% if ctx.dead_code_findings %}
 ## Potentially unused code
 {% for finding in ctx.dead_code_findings %}
