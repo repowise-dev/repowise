@@ -39,7 +39,9 @@ export {
   C4Breadcrumb,
   C4Legend,
   C4NodeInspector,
+  C4DetailPanel,
 } from "./panels";
+export type { C4DetailPanelProps, C4Health, C4DocSummary } from "./panels";
 
 export type {
   C4Level,

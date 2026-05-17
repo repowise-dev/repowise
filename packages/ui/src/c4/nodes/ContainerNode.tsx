@@ -8,11 +8,12 @@ import type { C4Container } from "../types";
 
 export interface ContainerNodeProps {
   container: C4Container;
+  hasDocs?: boolean;
 }
 
 function ContainerNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: ContainerNodeProps };
-  const { container } = data;
+  const { container, hasDocs } = data;
   const chips: ReactNode[] = [
     <span key="files" style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
       <Files size={11} aria-hidden /> {container.file_count}
@@ -39,6 +40,7 @@ function ContainerNodeImpl(props: NodeProps) {
       title={container.name}
       subtitle={container.path !== container.name ? container.path : undefined}
       selected={selected}
+      hasDocs={hasDocs}
       footer={<div style={{ display: "flex", gap: 10 }}>{chips}</div>}
     />
   );

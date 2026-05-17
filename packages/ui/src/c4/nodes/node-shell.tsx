@@ -8,6 +8,7 @@
  */
 
 import * as React from "react";
+import { BookOpen } from "lucide-react";
 import { Handle, Position } from "@xyflow/react";
 
 export type NodeTone =
@@ -34,6 +35,7 @@ export interface NodeShellProps {
   selected?: boolean | undefined;
   width?: number | undefined;
   height?: number | undefined;
+  hasDocs?: boolean | undefined;
 }
 
 export function NodeShell({
@@ -45,6 +47,7 @@ export function NodeShell({
   selected,
   width,
   height,
+  hasDocs,
 }: NodeShellProps) {
   const s = TONE_STYLES[tone];
   return (
@@ -74,9 +77,22 @@ export function NodeShell({
           letterSpacing: 0.6,
           textTransform: "uppercase",
           opacity: 0.85,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 6,
         }}
       >
-        {kindLabel}
+        <span>{kindLabel}</span>
+        {hasDocs && (
+          <span
+            title="Documentation available"
+            aria-label="Documentation available"
+            style={{ display: "inline-flex", alignItems: "center", opacity: 0.95 }}
+          >
+            <BookOpen size={10} aria-hidden />
+          </span>
+        )}
       </div>
       <div style={{ padding: "8px 10px", flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
         <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.25, wordBreak: "break-word" }}>

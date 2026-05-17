@@ -8,11 +8,12 @@ import type { C4Component } from "../types";
 
 export interface ComponentNodeProps {
   component: C4Component;
+  hasDocs?: boolean;
 }
 
 function ComponentNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: ComponentNodeProps };
-  const { component } = data;
+  const { component, hasDocs } = data;
   return (
     <NodeShell
       tone="component"
@@ -20,6 +21,7 @@ function ComponentNodeImpl(props: NodeProps) {
       title={component.name === "_root" ? "(root)" : component.name}
       subtitle={component.path !== component.name ? component.path : undefined}
       selected={selected}
+      hasDocs={hasDocs}
       footer={
         <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
           <Files size={11} aria-hidden /> {component.file_count} files · {component.symbol_count} symbols

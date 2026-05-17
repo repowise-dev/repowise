@@ -9,7 +9,7 @@
  * either lifted from the host via props OR managed locally via `useC4Store`.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   Background,
   Controls,
@@ -50,6 +50,20 @@ export interface C4DiagramProps {
   loading?: boolean;
   error?: Error | null;
 
+  /** Paths with a generated wiki page; flags a docs badge on matching nodes. */
+  docsPathSet?: ReadonlySet<string>;
+
+  /**
+   * Render the right-rail panel for the currently selected node. If omitted,
+   * the basic <C4NodeInspector> is used. Hosts pass this to inject docs,
+   * git activity, health, etc.
+   */
+  renderInspector?: (args: {
+    data: C4NodeData;
+    onClose: () => void;
+    onDrillIn?: ((containerId: string) => void) | undefined;
+  }) => ReactNode;
+
   onLevelChange: (level: C4Level) => void;
   onDrillInto: (containerId: string) => void;
   onDrillOut: () => void;
@@ -72,12 +86,15 @@ function C4DiagramInner({
   l3View,
   loading,
   error,
+  docsPathSet,
+  renderInspector,
   onLevelChange,
   onDrillInto,
   onDrillOut,
 }: C4DiagramProps) {
   const view = level === 1 ? l1View : level === 2 ? l2View : l3View;
-  const { nodes, edges, loading: layoutLoading } = useC4Layout(level, view);
+  const layoutOpts = useMemo(() => (docsPathSet ? { docsPathSet } : {}), [docsPathSet]);
+  const { nodes, edges, loading: layoutLoading } = useC4Layout(level, view, layoutOpts);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const selectedNode = useMemo(
@@ -187,11 +204,19 @@ function C4DiagramInner({
           <MiniMap pannable zoomable maskColor="rgba(11,18,32,0.85)" />
         </ReactFlow>
 
-        <C4NodeInspector
-          data={selectedData}
-          onClose={() => setSelectedNodeId(null)}
-          {...(selectedData?.kind === "container" ? { onDrillIn: onDrillInto } : {})}
-        />
+        {selectedData && renderInspector
+          ? renderInspector({
+              data: selectedData,
+              onClose: () => setSelectedNodeId(null),
+              onDrillIn: selectedData.kind === "container" ? onDrillInto : undefined,
+            })
+          : (
+            <C4NodeInspector
+              data={selectedData}
+              onClose={() => setSelectedNodeId(null)}
+              {...(selectedData?.kind === "container" ? { onDrillIn: onDrillInto } : {})}
+            />
+          )}
       </div>
     </div>
   );

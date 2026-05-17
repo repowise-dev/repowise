@@ -58,13 +58,17 @@ function buildL1(view: C4L1): BuiltInputs {
   };
 }
 
-function buildL2(view: C4L2): BuiltInputs {
+function buildL2(view: C4L2, docsPathSet?: ReadonlySet<string>): BuiltInputs {
   return {
     nodes: [
       ...view.containers.map((c) => ({
         id: c.id,
         type: "container" as const,
-        data: { kind: "container" as const, container: c },
+        data: {
+          kind: "container" as const,
+          container: c,
+          hasDocs: docsPathSet?.has(c.path) ?? false,
+        },
       })),
       ...view.external_systems.map((e) => ({
         id: e.id,
@@ -81,13 +85,17 @@ function buildL2(view: C4L2): BuiltInputs {
   };
 }
 
-function buildL3(view: C4L3): BuiltInputs {
+function buildL3(view: C4L3, docsPathSet?: ReadonlySet<string>): BuiltInputs {
   return {
     nodes: [
       ...view.components.map((c) => ({
         id: c.id,
         type: "component" as const,
-        data: { kind: "component" as const, component: c },
+        data: {
+          kind: "component" as const,
+          component: c,
+          hasDocs: docsPathSet?.has(c.path) ?? false,
+        },
       })),
       ...view.external_systems.map((e) => ({
         id: e.id,
@@ -110,10 +118,17 @@ export interface C4LayoutResult {
   loading: boolean;
 }
 
+export interface UseC4LayoutOptions {
+  /** Paths (container.path / component.path) that have a wiki page. */
+  docsPathSet?: ReadonlySet<string>;
+}
+
 export function useC4Layout(
   level: C4Level,
   view: C4L1 | C4L2 | C4L3 | null,
+  options: UseC4LayoutOptions = {},
 ): C4LayoutResult {
+  const { docsPathSet } = options;
   const [result, setResult] = useState<C4LayoutResult>({ nodes: [], edges: [], loading: false });
 
   useEffect(() => {
@@ -128,8 +143,8 @@ export function useC4Layout(
       level === 1
         ? buildL1(view as C4L1)
         : level === 2
-        ? buildL2(view as C4L2)
-        : buildL3(view as C4L3);
+        ? buildL2(view as C4L2, docsPathSet)
+        : buildL3(view as C4L3, docsPathSet);
 
     const layoutNodes: C4LayoutNode[] = built.nodes.map((n) => ({
       id: n.id,
@@ -164,7 +179,7 @@ export function useC4Layout(
     return () => {
       cancelled = true;
     };
-  }, [level, view]);
+  }, [level, view, docsPathSet]);
 
   return result;
 }
