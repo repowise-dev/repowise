@@ -43,7 +43,7 @@ export interface C4DetailPanelProps {
 
   doc?: C4DocSummary | null;
   health?: C4Health | null;
-  contributors?: { name: string; commits: number }[];
+  contributors?: { name: string; files: number; pct?: number }[];
 
   /** Render rich docs (markdown) inline instead of the excerpt. Optional. */
   renderDoc?: (content: string) => ReactNode;
@@ -215,7 +215,10 @@ function ContainerOrComponentBody(props: C4DetailPanelProps) {
                 }}
               >
                 <span style={{ opacity: 0.9 }}>{c.name}</span>
-                <span style={{ opacity: 0.6 }}>{c.commits} commits</span>
+                <span style={{ opacity: 0.6 }}>
+                  {c.files} files
+                  {c.pct != null && ` · ${Math.round(c.pct * 100)}%`}
+                </span>
               </li>
             ))}
           </ul>

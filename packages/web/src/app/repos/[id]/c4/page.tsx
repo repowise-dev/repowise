@@ -12,7 +12,9 @@ import { use, useCallback } from "react";
 import { useQueryState, parseAsInteger, parseAsString } from "nuqs";
 import { C4Diagram, type C4Level } from "@repowise-dev/ui/c4";
 import { useC4L1, useC4L2, useC4L3 } from "@/lib/hooks/use-c4";
+import { useC4DocsPathSet } from "@/lib/hooks/use-c4-context";
 import { useRepo } from "@/lib/hooks/use-repo";
+import { C4DetailPanelHost } from "@/components/c4/c4-detail-panel-host";
 
 function clampLevel(n: number | null): C4Level {
   return n === 1 ? 1 : n === 3 ? 3 : 2;
@@ -71,6 +73,8 @@ export default function C4Page({ params }: { params: Promise<{ id: string }> }) 
   const error =
     level === 1 ? l1Err : level === 2 ? l2Err : l3Err;
 
+  const { pathSet: docsPathSet, pageIdByPath } = useC4DocsPathSet(repoId);
+
   return (
     <div className="flex flex-col h-full">
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
@@ -94,6 +98,16 @@ export default function C4Page({ params }: { params: Promise<{ id: string }> }) 
           onLevelChange={setLevel}
           onDrillInto={drillInto}
           onDrillOut={drillOut}
+          docsPathSet={docsPathSet}
+          renderInspector={({ data, onClose, onDrillIn }) => (
+            <C4DetailPanelHost
+              repoId={repoId}
+              data={data}
+              pageIdByPath={pageIdByPath}
+              onClose={onClose}
+              onDrillIn={onDrillIn}
+            />
+          )}
         />
       </div>
     </div>
