@@ -43,6 +43,39 @@ def _phase_done(progress: ProgressCallback | None, phase: str) -> None:
             pass
 
 
+async def _timed_step(
+    label: str,
+    fn: Any,
+    progress: ProgressCallback | None,
+) -> Any:
+    """Run *fn* in a worker thread and emit a per-step completion line.
+
+    Used to make ``asyncio.gather`` of multiple graph-algorithm calls
+    legible: without this, four concurrent thread-bound computations
+    (e.g. PageRank + betweenness + symbol PageRank + symbol betweenness)
+    appear in the CLI as one opaque several-minute spinner, so the user
+    has no signal as to which step is the bottleneck. With it, each algo
+    prints `  ↳ <label> ✓ (Xs)` as it finishes — completion order
+    surfaces the relative cost without changing the underlying execution.
+    """
+    t0 = time.monotonic()
+    try:
+        result = await asyncio.to_thread(fn)
+    except Exception as exc:
+        if progress is not None:
+            progress.on_message(
+                "warning",
+                f"  ↳ {label} failed after {time.monotonic() - t0:.1f}s: {exc}",
+            )
+        raise
+    if progress is not None:
+        progress.on_message(
+            "info",
+            f"  ↳ {label} ✓ ({time.monotonic() - t0:.1f}s)",
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Process-pool worker (module-level — must be picklable)
 # ---------------------------------------------------------------------------
@@ -286,6 +319,8 @@ async def run_pipeline(
     # Parse repo manifests for declared third-party dependencies. Failure here
     # must not break the pipeline — log and continue with an empty list.
     external_systems: list[dict] = []
+    if progress:
+        progress.on_phase_start("external_systems", None)
     try:
         from repowise.core.ingestion.external_systems import extract_external_systems
 
@@ -309,6 +344,7 @@ async def run_pipeline(
             )
     except Exception as _ext_err:  # noqa: BLE001
         logger.warning("external_systems_extraction_failed", error=str(_ext_err))
+    _phase_done(progress, "external_systems")
 
     # Emit rich insight summary for the ingestion phase
     if progress:
@@ -589,14 +625,20 @@ async def _run_ingestion(
     _phase_done(progress, "parse")
 
     # ---- tsconfig path-alias resolver (before graph build) ------------------
+    # Only runs when the repo has TS/JS files. On large TS monorepos the
+    # resolver indexes hundreds of tsconfig files up-front; without a phase
+    # label this shows up as a silent gap right after parsing.
     try:
         from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
 
         _ts_langs = {"typescript", "javascript"}
         if any(pf.file_info.language in _ts_langs for pf in parsed_files):
+            if progress:
+                progress.on_phase_start("tsconfig", None)
             _path_set = set(graph_builder._parsed_files.keys())
             _resolver = TsconfigResolver(repo_path=repo_path, path_set=_path_set)
             graph_builder.set_tsconfig_resolver(_resolver)
+            _phase_done(progress, "tsconfig")
     except Exception as _resolver_exc:
         logger.warning("tsconfig_resolver_init_failed", error=str(_resolver_exc))
 
@@ -624,6 +666,8 @@ async def _run_ingestion(
         pass  # framework edge detection is best-effort
 
     # ---- Dynamic hints wiring (after static graph is fully built) ----------
+    if progress:
+        progress.on_phase_start("dynamic_hints", None)
     try:
         from repowise.core.ingestion.dynamic_hints import HintRegistry
 
@@ -633,6 +677,7 @@ async def _run_ingestion(
         logger.info("dynamic_hints_added", count=len(dynamic_edges))
     except Exception as hints_exc:
         logger.warning("dynamic_hints_failed", error=str(hints_exc))
+    _phase_done(progress, "dynamic_hints")
 
     # ---- Graph metrics: prime caches with live progress ---------------------
     # pagerank/betweenness/community/symbol_communities/execution_flows are
@@ -641,21 +686,27 @@ async def _run_ingestion(
     # visible sub-phase, and fan the within-phase work out via
     # asyncio.gather so betweenness (the dominant cost) overlaps with
     # PageRank / community detection rather than running serially.
+    #
+    # Each algorithm is wrapped in ``_timed_step`` so we emit a per-algo
+    # completion line (`  ↳ PageRank ✓ (Xs)`) as it finishes. Without these,
+    # the whole gather looks like one opaque several-minute void where
+    # betweenness centrality dominates — splitting the timing makes it
+    # obvious which step is the bottleneck on a given repo.
     if progress:
         progress.on_phase_start("graph.metrics", None)
     await asyncio.gather(
-        asyncio.to_thread(graph_builder.pagerank),
-        asyncio.to_thread(graph_builder.betweenness_centrality),
-        asyncio.to_thread(graph_builder.symbol_pagerank),
-        asyncio.to_thread(graph_builder.symbol_betweenness_centrality),
+        _timed_step("PageRank", graph_builder.pagerank, progress),
+        _timed_step("betweenness centrality", graph_builder.betweenness_centrality, progress),
+        _timed_step("symbol PageRank", graph_builder.symbol_pagerank, progress),
+        _timed_step("symbol betweenness", graph_builder.symbol_betweenness_centrality, progress),
     )
     _phase_done(progress, "graph.metrics")
 
     if progress:
         progress.on_phase_start("graph.communities", None)
     await asyncio.gather(
-        asyncio.to_thread(graph_builder.community_detection),
-        asyncio.to_thread(graph_builder.symbol_communities),
+        _timed_step("community detection", graph_builder.community_detection, progress),
+        _timed_step("symbol communities", graph_builder.symbol_communities, progress),
     )
     _phase_done(progress, "graph.communities")
 
