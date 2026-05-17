@@ -24,7 +24,8 @@ def parse_sql_file(file_info: FileInfo, source: bytes) -> ParsedFile:
     Returns:
         ParsedFile with extracted symbols
     """
-    source_str = source.decode("utf-8", errors="replace")
+    # Use utf-8-sig to automatically remove BOM (Byte Order Mark) if present
+    source_str = source.decode("utf-8-sig", errors="replace")
 
     try:
         # Parse SQL with T-SQL dialect
