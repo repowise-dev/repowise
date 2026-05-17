@@ -307,5 +307,6 @@ def test_base_includes_all_models():
         "llm_costs",
         "security_findings",
         "answer_cache",
+        "external_systems",
     }
     assert expected == table_names
