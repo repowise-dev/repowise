@@ -23,6 +23,7 @@ import {
   Link2,
   GitMerge,
   Users,
+  Boxes,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
@@ -56,6 +57,7 @@ function repoNavItems(repoId: string): NavItem[] {
     { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare, exact: true },
     { label: "Risk", href: `/repos/${repoId}/risk`, icon: ShieldAlert },
     { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
+    { label: "C4 Diagram", href: `/repos/${repoId}/c4`, icon: Boxes },
     { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
     { label: "Contributors", href: `/repos/${repoId}/owners`, icon: Users },
     { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },
