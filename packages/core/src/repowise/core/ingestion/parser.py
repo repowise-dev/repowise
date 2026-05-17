@@ -103,6 +103,13 @@ def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | 
         return None
 
     scm_text = scm_path.read_text(encoding="utf-8")
+    # Grammar-variant-specific additions (e.g. JSX node captures that are
+    # only valid against the ``tsx`` grammar but not the plain ``typescript``
+    # one). Appended to the base SCM only when the variant scm file exists.
+    if grammar_tag and grammar_tag != lang:
+        extra_scm = QUERIES_DIR / f"{grammar_tag}.scm"
+        if extra_scm.exists():
+            scm_text = scm_text + "\n" + extra_scm.read_text(encoding="utf-8")
     try:
         from tree_sitter import Query  # type: ignore[attr-defined]
 

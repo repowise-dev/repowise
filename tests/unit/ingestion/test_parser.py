@@ -425,6 +425,55 @@ export function Card({ title }: { title: string }) {
         assert "Card" in names
         assert "handleClick" not in names
 
+    def test_jsx_element_registers_as_call_target(self, parser: ASTParser) -> None:
+        # Regression: ``<StatRow ... />`` inside the same file as the
+        # ``StatRow`` component definition was not registering as a call,
+        # so same-file-only sub-components surfaced as unused public
+        # exports at confidence 1.0. The tsx-specific JSX captures now
+        # emit a CallSite for both self-closing and paired elements.
+        src = b"""
+export function StatRow({ value }: { value: number }) {
+  return <span>{value}</span>;
+}
+
+export function Section({ title }: { title: string }) {
+  return <h2>{title}</h2>;
+}
+
+export function Card() {
+  return (
+    <div>
+      <Section title="x" />
+      <StatRow value={1}></StatRow>
+    </div>
+  );
+}
+"""
+        fi = _make_file_info("ui/src/card.tsx", "typescript")
+        result = parser.parse_file(fi, src)
+        targets = {c.target_name for c in result.calls}
+        assert "StatRow" in targets
+        assert "Section" in targets
+
+    def test_jsx_element_call_works_for_jsx_grammar(
+        self, parser: ASTParser
+    ) -> None:
+        # Same behaviour for .jsx (plain JavaScript grammar already
+        # supports JSX node types natively).
+        src = b"""
+export function StatRow({ value }) {
+  return <span>{value}</span>;
+}
+
+export function Card() {
+  return <StatRow value={1} />;
+}
+"""
+        fi = _make_file_info("ui/src/card.jsx", "javascript")
+        result = parser.parse_file(fi, src)
+        targets = {c.target_name for c in result.calls}
+        assert "StatRow" in targets
+
     def test_class_methods_still_extracted(self, parser: ASTParser) -> None:
         # Negative for D5: methods inside class bodies must still be
         # extracted — only function/method *bodies* count as nesting.
