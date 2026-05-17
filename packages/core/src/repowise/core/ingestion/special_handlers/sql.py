@@ -110,20 +110,9 @@ def _extract_from_table_node(statement) -> str | None:
     else:
         name_str = None
 
-    # Filter out temporary tables (start with #)
-    if name_str and name_str.startswith('#'):
-        return None
-
     if schema_str and name_str:
-        full_name = f"{schema_str}.{name_str}"
-        # Double-check for temp tables with schema prefix
-        if '#' in full_name:
-            return None
-        return full_name
+        return f"{schema_str}.{name_str}"
     elif name_str:
-        # Check if name contains # (edge case)
-        if '#' in name_str:
-            return None
         return name_str
     return None
 
@@ -217,6 +206,29 @@ def _extract_from_regex(sql: str, kind: str) -> str | None:
     return None
 
 
+def _is_temp_table(statement_sql: str) -> bool:
+    """Check if SQL statement creates a temporary table.
+
+    sqlglot converts #tmp to TEMPORARY TABLE tmp and ##global to TABLE global.
+    We check for both patterns in the sqlglot output.
+
+    Args:
+        statement_sql: SQL statement text from statement.sql()
+
+    Returns:
+        True if this is a temp table CREATE statement
+    """
+    # Local temp tables: #tmp → TEMPORARY TABLE tmp
+    if "TEMPORARY TABLE" in statement_sql.upper():
+        return True
+    
+    # Global temp tables: ##global → TABLE global (loses temp indicator!)
+    # We use common naming heuristics since sqlglot strips ## prefix
+    temp_patterns = ['TMP_', 'TEMP_', '#TMP', '#TEMP', 'GLOBAL_TEMP', 'GLOBAL_TMP']
+    upper_sql = statement_sql.upper()
+    return any(pattern in upper_sql for pattern in temp_patterns)
+
+
 def _extract_symbols(ast, source: str, file_info: FileInfo) -> list[Symbol]:
     """Extract symbols from sqlglot AST.
 
@@ -277,15 +289,13 @@ def _extract_symbols(ast, source: str, file_info: FileInfo) -> list[Symbol]:
         name = None
         params = ""
 
-        # Filter out temporary tables before extraction
-        # sqlglot converts '#' to TEMPORARY TABLE during parsing
-        statement_sql = statement.sql() if hasattr(statement, 'sql') else ""
-        if kind == "TABLE" and "TEMPORARY TABLE" in statement_sql.upper():
-            continue
-
         # AST-based extraction for clean parses
         if kind == "TABLE":
             name = _extract_from_table_node(statement)
+            # Filter temp tables by checking original source text
+            statement_sql = statement.sql() if hasattr(statement, 'sql') else ""
+            if name and _is_temp_table(statement_sql):
+                name = None
         elif kind == "PROCEDURE":
             name = _extract_from_procedure_node(statement)
         elif kind == "INDEX":
