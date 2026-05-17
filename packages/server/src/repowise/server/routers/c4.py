@@ -15,6 +15,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
     C4ComponentResponse,
@@ -28,6 +29,11 @@ from repowise.server.schemas import (
     C4SystemResponse,
 )
 from repowise.server.services import c4_builder
+from repowise.server.services.c4_builder.mermaid import (
+    to_mermaid_l1,
+    to_mermaid_l2,
+    to_mermaid_l3,
+)
 from repowise.server.services.c4_builder.models import (
     Component,
     Container,
@@ -86,6 +92,41 @@ async def get_c4_l3(
         external_systems=[_external(e) for e in view.external_systems],
         relations=[_relation(r) for r in view.relations],
     )
+
+
+@router.get(
+    "/{repo_id}/c4/mermaid",
+    response_class=PlainTextResponse,
+    responses={200: {"content": {"text/plain": {}}}},
+)
+async def get_c4_mermaid(
+    repo_id: str,
+    level: int = Query(2, ge=1, le=3, description="C4 level: 1, 2, or 3"),
+    container_id: str | None = Query(None, description="Required when level=3"),
+    session: AsyncSession = Depends(get_db_session),
+) -> PlainTextResponse:
+    """Mermaid C4 source for the requested level — paste into mermaid.live or
+    embed in markdown. Same data source as the JSON endpoints, so what you
+    see in the diagram view matches what you export.
+    """
+    if level == 1:
+        view_l1 = await c4_builder.build_l1(session, repo_id)
+        return PlainTextResponse(to_mermaid_l1(view_l1))
+
+    if level == 2:
+        view_l2 = await c4_builder.build_l2(session, repo_id)
+        repo = await c4_builder._load_repo(session, repo_id)
+        system_name = repo.name if repo is not None else repo_id
+        return PlainTextResponse(to_mermaid_l2(view_l2, system_name=system_name))
+
+    if not container_id:
+        raise HTTPException(status_code=400, detail="container_id is required for level=3")
+    view_l3 = await c4_builder.build_l3(session, repo_id, container_id)
+    if view_l3 is None:
+        raise HTTPException(status_code=404, detail=f"container not found: {container_id}")
+    repo = await c4_builder._load_repo(session, repo_id)
+    system_name = repo.name if repo is not None else repo_id
+    return PlainTextResponse(to_mermaid_l3(view_l3, system_name=system_name))
 
 
 # ---------------------------------------------------------------------------
