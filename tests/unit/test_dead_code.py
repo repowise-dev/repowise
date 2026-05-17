@@ -1447,6 +1447,169 @@ def test_unused_internal_skipped_when_imported_by_name():
     assert "_extract_python" not in names
 
 
+def test_unused_export_skipped_when_file_imported_as_namespace():
+    """A public symbol in a file that is imported by its module name
+    (``from . import cargo``) is a dispatch-table candidate — the
+    importer holds a binding to the module and can call any public
+    attribute via ``cargo.<attr>(...)``. We cannot tell statically
+    which attribute is used, so every public symbol in the file must
+    be treated as live."""
+    g = _build_graph(
+        nodes={
+            "pkg/external_systems/cargo.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "parse",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1, "end_line": 12,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+            "pkg/external_systems/__init__.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 0,
+                "symbols": [],
+            },
+        },
+        edges=[
+            (
+                "pkg/external_systems/__init__.py",
+                "pkg/external_systems/cargo.py",
+                {"edge_type": "imports", "imported_names": ["cargo"]},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "parse" not in names
+
+
+def test_unused_export_still_flagged_when_namespace_name_differs():
+    """Negative test for the namespace-import rescue: if the importer
+    pulls a *different* sibling module, the public symbol's file is
+    still effectively orphan and the symbol must be flagged."""
+    g = _build_graph(
+        nodes={
+            "pkg/external_systems/cargo.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "parse",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1, "end_line": 12,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+            "pkg/external_systems/__init__.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 0,
+                "symbols": [],
+            },
+        },
+        edges=[
+            # importer pulled "npm" only — does NOT mention "cargo"
+            (
+                "pkg/external_systems/__init__.py",
+                "pkg/external_systems/cargo.py",
+                {"edge_type": "imports", "imported_names": ["npm"]},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "parse" in names
+
+
+def test_unused_export_not_rescued_for_index_stem():
+    """``index.ts`` is the barrel filename in JS/TS package layouts —
+    every workspace package's source root has one, and most imports of
+    a package land on it. We must not over-rescue every public export
+    of every ``index.ts`` just because a downstream importer happens
+    to use the literal name ``index``. Same applies to Python
+    ``__init__`` (already covered by the global never-flag list)."""
+    g = _build_graph(
+        nodes={
+            "pkg/ui/src/index.ts": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "language": "typescript",
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "stranded_export",
+                        "kind": "function",
+                        "visibility": "public",
+                        "language": "typescript",
+                        "decorators": [],
+                        "start_line": 1, "end_line": 5,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+            "pkg/web/src/page.ts": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "language": "typescript",
+                "symbol_count": 0,
+                "symbols": [],
+            },
+        },
+        edges=[
+            (
+                "pkg/web/src/page.ts",
+                "pkg/ui/src/index.ts",
+                {"edge_type": "imports", "imported_names": ["index"]},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "stranded_export" in names
+
+
 def test_unused_internal_still_flagged_when_imports_dont_carry_name():
     """Sanity check: an ``imports`` edge that does NOT list the private
     symbol's name (e.g. the importer pulls a different sibling symbol)

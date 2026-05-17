@@ -427,6 +427,25 @@ class DeadCodeAnalyzer:
 
             file_has_importers = self.graph.in_degree(node) > 0
 
+            # Dispatch-table / namespace-import rescue at the file level:
+            # if any importer pulled this file by its module name
+            # (``from . import cargo``, ``import * as cargo from
+            # "./cargo"``), every public symbol in the file is reachable
+            # via ``cargo.<attr>`` and we cannot tell statically which
+            # attribute is being called. Treat all public symbols as live.
+            # Generic across Python and TS/JS — no repo-specific assumptions.
+            file_stem = Path(str(node)).stem
+            file_imported_as_namespace = False
+            if file_stem and file_stem not in ("__init__", "index"):
+                for pred in self.graph.predecessors(node):
+                    edge = self.graph.get_edge_data(pred, node, {})
+                    if edge.get("edge_type") != "imports":
+                        continue
+                    imported = edge.get("imported_names", [])
+                    if file_stem in imported:
+                        file_imported_as_namespace = True
+                        break
+
             # Dynamic-use edges (DI registration, reflection, event bus
             # subscriptions, framework-mediated loading) target a file
             # as a whole — the runtime resolves the class and reaches
@@ -533,6 +552,13 @@ class DeadCodeAnalyzer:
                         break
 
                 if has_importers:
+                    continue
+
+                # Namespace-import rescue: see ``file_imported_as_namespace``
+                # computation above. Any public symbol in a file pulled by
+                # module name could be the dispatch target for
+                # ``<modname>.<attr>(...)``.
+                if file_imported_as_namespace:
                     continue
 
                 # Symbol-level usage signal: any incoming ``calls`` /
