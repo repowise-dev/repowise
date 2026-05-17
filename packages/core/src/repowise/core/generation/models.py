@@ -26,11 +26,9 @@ PageType = Literal[
     "file_page",
     "scc_page",
     "module_page",
-    "cross_package",
     "repo_overview",
     "architecture_diagram",
     "infra_page",
-    "diff_summary",
 ]
 
 # Maps PageType → generation level (0 = first, 7 = last)
@@ -40,11 +38,9 @@ GENERATION_LEVELS: dict[str, int] = {
     "file_page": 2,
     "scc_page": 3,
     "module_page": 4,
-    "cross_package": 5,
     "repo_overview": 6,
     "architecture_diagram": 6,
     "infra_page": 7,
-    "diff_summary": 7,
 }
 
 FreshnessStatus = Literal["fresh", "stale", "expired", "unknown"]
@@ -77,7 +73,7 @@ class GenerationConfig:
     max_tokens: int = 16000
     temperature: float = 0.3
     token_budget: int = 48000
-    max_concurrency: int = 5
+    max_concurrency: int = 12
     embed_concurrency: int | None = None
     reasoning: ReasoningMode = "auto"
     cache_enabled: bool = True
@@ -87,6 +83,8 @@ class GenerationConfig:
     file_page_top_percentile: float = 0.10  # top N% code files by PageRank → file_page
     file_page_min_symbols: int = 1  # files with fewer symbols are skipped for file_page
     max_pages_pct: float = 0.10  # hard cap: total pages ≤ max(50, N_files * this)
+    skip_trivial_files: bool = True  # skip tiny low-symbol files unless entry/hub
+    dedupe_near_clones: bool = True  # collapse 3+ identical-shape siblings to one page
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"

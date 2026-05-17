@@ -10,7 +10,6 @@ import pytest
 from repowise.core.generation.context_assembler import (
     ApiContractContext,
     ArchitectureDiagramContext,
-    DiffSummaryContext,
     FilePageContext,
     InfraPageContext,
     ModulePageContext,
@@ -342,35 +341,3 @@ def test_scc_page_contains_cycle_description(jinja_env, scc_page_ctx):
     assert scc_page_ctx.cycle_description in result
 
 
-# ---------------------------------------------------------------------------
-# diff_summary.j2
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def diff_summary_ctx() -> DiffSummaryContext:
-    return DiffSummaryContext(
-        from_ref="HEAD~1",
-        to_ref="HEAD",
-        added_files=["new_file.py"],
-        deleted_files=[],
-        modified_files=["changed.py"],
-        symbol_diffs=[],
-        affected_page_ids=["file_page:changed.py"],
-    )
-
-
-def test_diff_summary_renders_without_error(jinja_env, diff_summary_ctx):
-    result = render(jinja_env, "diff_summary.j2", diff_summary_ctx)
-    assert result
-
-
-def test_diff_summary_has_heading(jinja_env, diff_summary_ctx):
-    result = render(jinja_env, "diff_summary.j2", diff_summary_ctx)
-    assert "##" in result
-
-
-def test_diff_summary_contains_refs(jinja_env, diff_summary_ctx):
-    result = render(jinja_env, "diff_summary.j2", diff_summary_ctx)
-    assert diff_summary_ctx.from_ref in result
-    assert diff_summary_ctx.to_ref in result

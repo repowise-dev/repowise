@@ -72,7 +72,6 @@ _TOKEN_HEURISTICS: dict[str, tuple[int, int]] = {
     "file_page": (4000, 2500),
     "scc_page": (3000, 2000),
     "module_page": (4000, 2500),
-    "cross_package": (3000, 2000),
     "repo_overview": (5000, 3000),
     "architecture_diagram": (4000, 2500),
     "infra_page": (2000, 1500),
@@ -208,26 +207,6 @@ def build_generation_plan(
     if not skip_infra:
         infra_count = sum(1 for p in files if _is_infra_file(p))
 
-    # Cross-package count (monorepo only — estimate from inter-module edges)
-    cross_package_count = 0
-    try:
-        # Check if monorepo structure exists
-        if len(modules) > 1:
-            # Count distinct cross-module import pairs
-            seen_pairs: set[tuple[str, str]] = set()
-            for u, v in graph.edges():
-                u_parts = Path(u).parts
-                v_parts = Path(v).parts
-                u_mod = u_parts[0] if len(u_parts) > 1 else "root"
-                v_mod = v_parts[0] if len(v_parts) > 1 else "root"
-                if u_mod != v_mod:
-                    pair = (u_mod, v_mod)
-                    if pair not in seen_pairs:
-                        seen_pairs.add(pair)
-            cross_package_count = len(seen_pairs)
-    except Exception:
-        pass
-
     # Build plan list
     if api_count:
         plans.append(PageTypePlan("api_contract", api_count, 0))
@@ -239,8 +218,6 @@ def build_generation_plan(
         plans.append(PageTypePlan("scc_page", scc_count, 3))
     if module_count:
         plans.append(PageTypePlan("module_page", module_count, 4))
-    if cross_package_count:
-        plans.append(PageTypePlan("cross_package", cross_package_count, 5))
     plans.append(PageTypePlan("repo_overview", 1, 6))
     plans.append(PageTypePlan("architecture_diagram", 1, 6))
     if infra_count:

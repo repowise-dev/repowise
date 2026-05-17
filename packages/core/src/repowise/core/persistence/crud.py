@@ -332,6 +332,37 @@ async def upsert_page(
         return page
 
 
+async def load_prior_pages(
+    session: AsyncSession,
+    repository_id: str,
+) -> dict[str, Any]:
+    """Return a ``page_id → PriorPage`` map for cross-run cache reuse.
+
+    Loads every existing wiki page for the repository so the generator can
+    short-circuit the LLM call when the freshly rendered prompt produces a
+    matching ``source_hash`` under the same model. Returns an empty dict if
+    nothing has been generated yet.
+    """
+    # Import lazily — keeps persistence independent of generation models at
+    # module-load time.
+    from repowise.core.generation.page_generator import PriorPage
+
+    result = await session.execute(
+        select(Page).where(Page.repository_id == repository_id)
+    )
+    prior: dict[str, Any] = {}
+    for row in result.scalars():
+        prior[row.id] = PriorPage(
+            source_hash=row.source_hash,
+            model_name=row.model_name,
+            content=row.content,
+            input_tokens=row.input_tokens,
+            output_tokens=row.output_tokens,
+            cached_tokens=row.cached_tokens,
+        )
+    return prior
+
+
 async def upsert_page_from_generated(
     session: AsyncSession,
     generated_page: object,  # repowise.core.generation.models.GeneratedPage

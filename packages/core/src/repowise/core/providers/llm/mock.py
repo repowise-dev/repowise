@@ -110,6 +110,7 @@ class MockProvider(BaseProvider):
         temperature: float = 0.3,
         request_id: str | None = None,
         reasoning: ReasoningMode = "auto",
+        cache_hints: tuple = (),
     ) -> GeneratedResponse:
         """Return a fixture response without calling any external API."""
         self._calls.append(

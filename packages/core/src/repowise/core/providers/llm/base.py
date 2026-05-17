@@ -15,9 +15,34 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Literal, Protocol, runtime_checkable
 
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
+
+
+CacheSegment = Literal["system", "user_prefix"]
+
+
+@dataclass(frozen=True)
+class CacheHint:
+    """Caller-provided hint that a prompt segment is reusable across calls.
+
+    Providers that support server-side prompt caching (Anthropic) use these
+    hints to mark cache breakpoints. Providers without an explicit caching
+    primitive (OpenAI auto-caches stable prefixes, Ollama is local) ignore
+    them — the contract is advisory, never required.
+
+    Attributes:
+        segment: Which part of the prompt the hint applies to.
+                 - ``system``: the system_prompt argument.
+                 - ``user_prefix``: a leading portion of the user_prompt;
+                   ``prefix_chars`` specifies how many chars are stable.
+        prefix_chars: For ``user_prefix`` hints, the number of leading
+                      characters that are reusable. Ignored for ``system``.
+    """
+
+    segment: CacheSegment
+    prefix_chars: int = 0
 
 
 @dataclass
@@ -33,7 +58,7 @@ class GeneratedResponse:
         input_tokens:  Tokens consumed by the prompt (system + user).
         output_tokens: Tokens produced in the response.
         cached_tokens: Tokens served from the provider's prompt cache (if any).
-                       Currently only Anthropic reports this natively.
+                       Normalised across providers by the adapter.
         usage:         Provider-specific usage dict (stored as-is for auditing).
     """
 
@@ -72,6 +97,7 @@ class BaseProvider(ABC):
         temperature: float = 0.3,
         request_id: str | None = None,
         reasoning: ReasoningMode = "auto",
+        cache_hints: tuple[CacheHint, ...] = (),
     ) -> GeneratedResponse:
         """Generate a response from the LLM.
 
@@ -87,6 +113,10 @@ class BaseProvider(ABC):
             reasoning:     Provider-level reasoning intent. ``auto`` preserves
                            provider defaults; ``off`` and ``minimal`` are
                            translated by providers that support them.
+            cache_hints:   Optional hints that one or more prompt segments are
+                           reusable across calls. Providers with an explicit
+                           caching primitive (Anthropic) use them; others
+                           ignore them safely.
 
         Returns:
             GeneratedResponse with content and token usage.

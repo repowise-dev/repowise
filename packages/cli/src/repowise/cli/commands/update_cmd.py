@@ -593,9 +593,37 @@ def update_command(
     affected_parsed = [pf for pf in parsed_files if pf.file_info.path in regen_set]
     affected_source = {p: s for p, s in source_map.items() if p in regen_set}
 
+    # Load prior pages so the generator can skip the LLM call for any affected
+    # file whose freshly rendered prompt still hashes to the persisted value.
+    async def _load_prior() -> dict[str, object]:
+        from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            load_prior_pages,
+            upsert_repository,
+        )
+
+        url = get_db_url_for_repo(repo_path)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(
+                session, name=repo_path.name, local_path=str(repo_path)
+            )
+            return await load_prior_pages(session, repo.id)
+
+    try:
+        prior_pages = run_async(_load_prior())
+    except Exception:
+        prior_pages = {}
+
     # Generate affected pages
     assembler = ContextAssembler(config)
-    generator = PageGenerator(provider, assembler, config, language=config.language)
+    generator = PageGenerator(
+        provider, assembler, config, language=config.language, prior_pages=prior_pages
+    )
     repo_name = repo_path.name
 
     generated_pages = run_async(

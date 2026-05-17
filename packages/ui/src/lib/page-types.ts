@@ -7,9 +7,7 @@ import {
   FileText,
   FileCode,
   RefreshCw,
-  ArrowLeftRight,
   Server,
-  GitCommit,
 } from "lucide-react";
 
 export interface PageTypeConfig {
@@ -25,9 +23,7 @@ export const PAGE_TYPE_CONFIG: Record<string, PageTypeConfig> = {
   file_page: { label: "File", icon: FileText },
   api_contract: { label: "API Contract", icon: FileCode },
   scc_page: { label: "SCC", icon: RefreshCw },
-  cross_package: { label: "Cross-Package", icon: ArrowLeftRight },
   infra_page: { label: "Infra", icon: Server },
-  diff_summary: { label: "Diff Summary", icon: GitCommit },
 };
 
 export const ALL_PAGE_TYPES = Object.keys(PAGE_TYPE_CONFIG);

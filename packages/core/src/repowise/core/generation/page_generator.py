@@ -18,6 +18,7 @@ import hashlib
 import re
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
-from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
+from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
 from .context_assembler import ContextAssembler, FilePageContext
 from .models import (
@@ -39,6 +40,23 @@ from .models import (
 )
 
 log = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class PriorPage:
+    """Snapshot of a previously-generated page used for cross-run reuse.
+
+    Lives in :class:`PageGenerator` keyed by ``page_id``. When the freshly
+    rendered prompt produces a matching ``source_hash`` under the same
+    ``model_name``, the LLM call is skipped and ``content`` is reused.
+    """
+
+    source_hash: str
+    model_name: str
+    content: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
 
 _LANGUAGE_NAMES = {
     "en": "English",
@@ -112,18 +130,6 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Output markdown only. "
         "Required sections: ## Purpose, ## Key Targets/Stages, ## Configuration, ## Operational Notes."
     ),
-    "diff_summary": (
-        "You are repowise, an expert technical documentation generator. "
-        "Summarise the changes between two git refs and their documentation impact. "
-        "Output markdown only. "
-        "Required sections: ## Summary, ## Changed Files, ## Symbol Changes, ## Affected Documentation."
-    ),
-    "cross_package": (
-        "You are repowise, an expert technical documentation generator. "
-        "Document the cross-package boundary and integration points. "
-        "Output markdown only. "
-        "Required sections: ## Overview, ## Package Boundaries, ## Integration Points."
-    ),
 }
 
 _INFRA_LANGUAGES = _LANG_REGISTRY.infra_languages()
@@ -155,6 +161,7 @@ class PageGenerator:
         jinja_env: jinja2.Environment | None = None,
         vector_store: Any | None = None,
         language: str = "en",
+        prior_pages: dict[str, "PriorPage"] | None = None,
     ) -> None:
         self._provider = provider
         self._assembler = assembler
@@ -162,6 +169,13 @@ class PageGenerator:
         self._vector_store = vector_store
         self._language = language
         self._cache: dict[str, GeneratedResponse] = {}
+        # Map of page_id → PriorPage from previous generation runs. When the
+        # rendered prompt's source_hash matches the prior page's hash AND the
+        # model is the same, the LLM call is skipped and the prior content is
+        # reused. Wired by the orchestrator from the persisted wiki_pages
+        # table.
+        self._prior_pages: dict[str, PriorPage] = prior_pages or {}
+        self._reuse_count: int = 0
 
         if jinja_env is None:
             templates_dir = Path(__file__).parent / "templates"
@@ -190,7 +204,9 @@ class PageGenerator:
             parsed, graph, pagerank, betweenness, community, source_bytes
         )
         user_prompt = self._render("file_page.j2", ctx=ctx)
-        response = await self._call_provider("file_page", user_prompt, str(uuid.uuid4()))
+        response = await self._call_provider(
+            "file_page", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
+        )
         return self._build_generated_page(
             "file_page",
             parsed.file_info.path,
@@ -216,7 +232,10 @@ class PageGenerator:
             source_bytes=(source_map or {}).get(parsed.file_info.path, b""),
         )
         user_prompt = self._render("symbol_spotlight.j2", ctx=ctx)
-        response = await self._call_provider("symbol_spotlight", user_prompt, str(uuid.uuid4()))
+        target = f"{parsed.file_info.path}::{symbol.name}"
+        response = await self._call_provider(
+            "symbol_spotlight", user_prompt, str(uuid.uuid4()), target_path=target
+        )
         return self._build_generated_page(
             "symbol_spotlight",
             f"{parsed.file_info.path}::{symbol.name}",
@@ -261,7 +280,9 @@ class PageGenerator:
                     "most_active_commits_90d": most_active.get("commit_count_90d", 0),
                 }
         user_prompt = self._render("module_page.j2", ctx=ctx, module_git_summary=module_git_summary)
-        response = await self._call_provider("module_page", user_prompt, str(uuid.uuid4()))
+        response = await self._call_provider(
+            "module_page", user_prompt, str(uuid.uuid4()), target_path=module_path
+        )
         return self._build_generated_page(
             "module_page",
             module_path,
@@ -279,7 +300,9 @@ class PageGenerator:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_scc_page(scc_id, scc_files, file_contexts)
         user_prompt = self._render("scc_page.j2", ctx=ctx)
-        response = await self._call_provider("scc_page", user_prompt, str(uuid.uuid4()))
+        response = await self._call_provider(
+            "scc_page", user_prompt, str(uuid.uuid4()), target_path=scc_id
+        )
         return self._build_generated_page(
             "scc_page",
             scc_id,
@@ -322,10 +345,12 @@ class PageGenerator:
                 "oldest_file": oldest.get("file_path", "") if oldest else "",
                 "oldest_file_age_days": oldest.get("age_days", 0) if oldest else 0,
             }
-        user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
-        response = await self._call_provider("repo_overview", user_prompt, str(uuid.uuid4()))
         if not repo_name:
             repo_name = getattr(repo_structure, "name", None) or "repo"
+        user_prompt = self._render("repo_overview.j2", ctx=ctx, repo_git_summary=repo_git_summary)
+        response = await self._call_provider(
+            "repo_overview", user_prompt, str(uuid.uuid4()), target_path=repo_name
+        )
         return self._build_generated_page(
             "repo_overview",
             repo_name,
@@ -347,7 +372,9 @@ class PageGenerator:
             graph, pagerank, community, sccs, repo_name
         )
         user_prompt = self._render("architecture_diagram.j2", ctx=ctx)
-        response = await self._call_provider("architecture_diagram", user_prompt, str(uuid.uuid4()))
+        response = await self._call_provider(
+            "architecture_diagram", user_prompt, str(uuid.uuid4()), target_path=repo_name
+        )
         return self._build_generated_page(
             "architecture_diagram",
             repo_name,
@@ -364,7 +391,9 @@ class PageGenerator:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_api_contract(parsed, source_bytes)
         user_prompt = self._render("api_contract.j2", ctx=ctx)
-        response = await self._call_provider("api_contract", user_prompt, str(uuid.uuid4()))
+        response = await self._call_provider(
+            "api_contract", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
+        )
         return self._build_generated_page(
             "api_contract",
             parsed.file_info.path,
@@ -381,7 +410,9 @@ class PageGenerator:
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_infra_page(parsed, source_bytes)
         user_prompt = self._render("infra_page.j2", ctx=ctx)
-        response = await self._call_provider("infra_page", user_prompt, str(uuid.uuid4()))
+        response = await self._call_provider(
+            "infra_page", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
+        )
         return self._build_generated_page(
             "infra_page",
             parsed.file_info.path,
@@ -389,28 +420,6 @@ class PageGenerator:
             response,
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["infra_page"],
-        )
-
-    async def generate_cross_package(
-        self,
-        source_pkg: str,
-        target_pkg: str,
-        source_fcs: list[FilePageContext],
-        target_fcs: list[FilePageContext],
-        graph: Any,
-    ) -> GeneratedPage:
-        ctx = self._assembler.assemble_cross_package(
-            source_pkg, target_pkg, source_fcs, target_fcs, graph
-        )
-        user_prompt = self._render("cross_package.j2", ctx=ctx)
-        response = await self._call_provider("cross_package", user_prompt, str(uuid.uuid4()))
-        return self._build_generated_page(
-            "cross_package",
-            f"{source_pkg}->{target_pkg}",
-            f"Cross-Package: {source_pkg} → {target_pkg}",
-            response,
-            compute_source_hash(user_prompt),
-            GENERATION_LEVELS["cross_package"],
         )
 
     # ------------------------------------------------------------------
@@ -574,6 +583,16 @@ class PageGenerator:
                     -pagerank.get(p.file_info.path, 0.0),
                 ),
             )
+
+        # Near-clone dedupe: when 3+ files in the same directory share an
+        # identical symbol shape (same kinds + names — e.g. Messages/*.cs
+        # one-class-per-file boilerplate), keep only the highest-PageRank
+        # representative. Entry points never get dropped.
+        if getattr(self._config, "dedupe_near_clones", True):
+            drop_paths = _select_clone_representatives(code_files, pagerank)
+            if drop_paths:
+                log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
+                code_files = [p for p in code_files if p.file_info.path not in drop_paths]
 
         code_pr_scores = sorted(
             [pagerank.get(p.file_info.path, 0.0) for p in code_files],
@@ -820,36 +839,6 @@ class PageGenerator:
         level4_pages = await run_level(level4_coros, 4)
         all_pages.extend(level4_pages)
 
-        # ---- Level 5: cross_package (only if monorepo) ----
-        if repo_structure.is_monorepo:
-            seen_pairs: set[tuple[str, str]] = set()
-            cross_coros: list[tuple[str, Any]] = []
-            for src_pkg, src_fcs in module_groups.items():
-                for fc in src_fcs:
-                    for dep in fc.dependencies:
-                        dep_parts = Path(dep).parts
-                        dep_pkg = dep_parts[0] if len(dep_parts) > 1 else "root"
-                        pair = (src_pkg, dep_pkg)
-                        if dep_pkg != src_pkg and pair not in seen_pairs:
-                            seen_pairs.add(pair)
-                            dep_fcs = module_groups.get(dep_pkg, [])
-                            ctx_xpkg = self._assembler.assemble_cross_package(
-                                src_pkg, dep_pkg, src_fcs, dep_fcs, graph
-                            )
-                            if ctx_xpkg.coupling_strength >= 2:
-                                pid = compute_page_id("cross_package", f"{src_pkg}->{dep_pkg}")
-                                if pid not in completed_ids:
-                                    cross_coros.append(
-                                        (
-                                            pid,
-                                            self.generate_cross_package(
-                                                src_pkg, dep_pkg, src_fcs, dep_fcs, graph
-                                            ),
-                                        )
-                                    )
-            level5_pages = await run_level(cross_coros, 5)
-            all_pages.extend(level5_pages)
-
         # ---- Level 6: repo_overview + architecture_diagram ----
         level6_coros: list[tuple[str, Any]] = []
         if compute_page_id("repo_overview", repo_name) not in completed_ids:
@@ -927,7 +916,9 @@ class PageGenerator:
                 except Exception as e:
                     log.debug("rag.search_failed", path=parsed.file_info.path, error=str(e))
         user_prompt = self._render("file_page.j2", ctx=ctx)
-        response = await self._call_provider("file_page", user_prompt, str(uuid.uuid4()))
+        response = await self._call_provider(
+            "file_page", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
+        )
         page = self._build_generated_page(
             "file_page",
             parsed.file_info.path,
@@ -953,14 +944,45 @@ class PageGenerator:
         page_type: str,
         user_prompt: str,
         request_id: str,
+        target_path: str | None = None,
     ) -> GeneratedResponse:
         """Call the provider with caching, optionally prefixing a language instruction."""
+        # Persistent cross-run cache: if the page exists from a prior run, was
+        # produced by the same model, and the prompt's source_hash matches,
+        # reuse the stored content without an LLM call.
+        if self._config.cache_enabled and target_path is not None:
+            page_id = compute_page_id(page_type, target_path)
+            prior = self._prior_pages.get(page_id)
+            if prior is not None and prior.model_name == self._provider.model_name:
+                current_hash = compute_source_hash(user_prompt)
+                if prior.source_hash == current_hash:
+                    self._reuse_count += 1
+                    log.debug(
+                        "page_cache.persistent_hit",
+                        page_type=page_type,
+                        target_path=target_path,
+                    )
+                    return GeneratedResponse(
+                        content=prior.content,
+                        input_tokens=0,
+                        output_tokens=0,
+                        cached_tokens=0,
+                        usage={"reused_from_prior_run": True},
+                    )
+
         key = self._compute_cache_key(page_type, user_prompt)
         if self._config.cache_enabled and key in self._cache:
             log.debug("Cache hit", page_type=page_type, key=key[:8])
             return self._cache[key]
 
         system_prompt = self._build_system_prompt(page_type)
+
+        # The same system prompt is reused for every page of a given type, so
+        # mark it as cacheable. Providers without server-side prompt caching
+        # ignore the hint safely.
+        cache_hints: tuple[CacheHint, ...] = (
+            (CacheHint(segment="system"),) if self._config.cache_enabled else ()
+        )
 
         response = await self._provider.generate(
             system_prompt,
@@ -969,6 +991,7 @@ class PageGenerator:
             temperature=self._config.temperature,
             request_id=request_id,
             reasoning=self._config.reasoning,
+            cache_hints=cache_hints,
         )
 
         if self._config.cache_enabled:
@@ -1126,6 +1149,18 @@ def _is_significant_file(
     if not (is_entry or pr >= pr_threshold or bet > 0.0):
         return False
 
+    # Trivial-file gate: small files with almost no symbols (data classes,
+    # marker classes, single-message wrappers like Messages/*.cs) produce
+    # low-value pages. Entry points and graph hubs (high PageRank) bypass.
+    if (
+        getattr(config, "skip_trivial_files", True)
+        and not is_entry
+        and pr < pr_threshold * 2
+        and len(parsed.symbols) <= 2
+        and parsed.file_info.size_bytes < 1500
+    ):
+        return False
+
     # Waive the symbol-count requirement for graph-connected files that have
     # no original definitions of their own (e.g. state/config modules that
     # are imported by many files but mostly re-export or assemble values).
@@ -1133,6 +1168,42 @@ def _is_significant_file(
         return is_entry or pr >= pr_threshold
 
     return True
+
+
+def _select_clone_representatives(
+    code_files: list[ParsedFile],
+    pagerank: dict[str, float],
+    *,
+    min_cluster_size: int = 3,
+) -> set[str]:
+    """Return paths of files to *drop* because they are near-clones.
+
+    Groups files by (parent_directory, signature shape), where the shape is the
+    sorted tuple of ``(symbol_kind, symbol_name)`` pairs from the parser. When
+    a cluster has at least ``min_cluster_size`` members, the highest-PageRank
+    member is kept and the rest are dropped. Entry points are never dropped.
+
+    Language-agnostic: works for any language whose symbols carry a kind+name,
+    which the parser guarantees.
+    """
+    from collections import defaultdict
+
+    clusters: dict[tuple[str, tuple[tuple[str, str], ...]], list[ParsedFile]] = defaultdict(list)
+    for p in code_files:
+        if p.file_info.is_entry_point or not p.symbols:
+            continue
+        parent = str(Path(p.file_info.path).parent.as_posix())
+        shape = tuple(sorted((str(s.kind), s.name) for s in p.symbols))
+        clusters[(parent, shape)].append(p)
+
+    drop: set[str] = set()
+    for members in clusters.values():
+        if len(members) < min_cluster_size:
+            continue
+        members.sort(key=lambda p: pagerank.get(p.file_info.path, 0.0), reverse=True)
+        for loser in members[1:]:
+            drop.add(loser.file_info.path)
+    return drop
 
 
 # ---------------------------------------------------------------------------

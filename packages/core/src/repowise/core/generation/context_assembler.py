@@ -164,32 +164,6 @@ class InfraPageContext:
     targets: list[str]
 
 
-@dataclass
-class DiffSummaryContext:
-    from_ref: str
-    to_ref: str
-    added_files: list[str]
-    deleted_files: list[str]
-    modified_files: list[str]
-    symbol_diffs: list[Any]
-    affected_page_ids: list[str]
-    trigger_commit_sha: str | None = None
-    trigger_commit_message: str | None = None
-    trigger_commit_author: str | None = None
-    diff_text: str | None = None
-
-
-@dataclass
-class CrossPackageContext:
-    source_package: str
-    target_package: str
-    coupling_strength: int  # number of boundary files
-    used_symbols: list[str]  # public symbols from target used by source
-    boundary_files: list[str]  # files in source that import from target
-    source_pagerank_mean: float
-    target_pagerank_mean: float
-
-
 # ---------------------------------------------------------------------------
 # ContextAssembler
 # ---------------------------------------------------------------------------
@@ -676,88 +650,6 @@ class ContextAssembler:
             language=parsed.file_info.language,
             raw_content=raw_content,
             targets=targets,
-        )
-
-    # ------------------------------------------------------------------
-    # Diff summary
-    # ------------------------------------------------------------------
-
-    def assemble_diff_summary(
-        self,
-        file_diffs: list[Any],  # list[FileDiff]
-        affected_pages: Any,  # AffectedPages
-        from_ref: str,
-        to_ref: str,
-    ) -> DiffSummaryContext:
-        """Assemble context for the diff_summary template."""
-        added_files = [d.path for d in file_diffs if d.status == "added"]
-        deleted_files = [d.path for d in file_diffs if d.status == "deleted"]
-        modified_files = [d.path for d in file_diffs if d.status == "modified"]
-
-        symbol_diffs = [d.symbol_diff for d in file_diffs if d.symbol_diff is not None]
-
-        affected_page_ids = list(affected_pages.regenerate) if affected_pages else []
-
-        # Extract trigger commit from first diff that has it
-        trigger_sha = None
-        trigger_msg = None
-        trigger_author = None
-        diff_text = None
-        for d in file_diffs:
-            if getattr(d, "trigger_commit_sha", None):
-                trigger_sha = d.trigger_commit_sha
-                trigger_msg = d.trigger_commit_message
-                trigger_author = d.trigger_commit_author
-                diff_text = d.diff_text
-                break
-
-        return DiffSummaryContext(
-            from_ref=from_ref,
-            to_ref=to_ref,
-            added_files=added_files,
-            deleted_files=deleted_files,
-            modified_files=modified_files,
-            symbol_diffs=symbol_diffs,
-            affected_page_ids=affected_page_ids,
-            trigger_commit_sha=trigger_sha,
-            trigger_commit_message=trigger_msg,
-            trigger_commit_author=trigger_author,
-            diff_text=diff_text,
-        )
-
-    # ------------------------------------------------------------------
-    # Cross-package context (Phase 9 C2)
-    # ------------------------------------------------------------------
-
-    def assemble_cross_package(
-        self,
-        source_pkg: str,
-        target_pkg: str,
-        source_fcs: list[FilePageContext],
-        target_fcs: list[FilePageContext],
-        graph: Any,
-    ) -> CrossPackageContext:
-        """Assemble context for cross-package dependency page."""
-        target_paths = {fc.file_path for fc in target_fcs}
-        boundary = [fc for fc in source_fcs if any(d in target_paths for d in fc.dependencies)]
-        used_syms = sorted(
-            {
-                sym["name"]
-                for fc in target_fcs
-                for sym in fc.symbols
-                if sym.get("visibility") == "public"
-            }
-        )[:20]
-        return CrossPackageContext(
-            source_package=source_pkg,
-            target_package=target_pkg,
-            coupling_strength=len(boundary),
-            used_symbols=used_syms,
-            boundary_files=[fc.file_path for fc in boundary],
-            source_pagerank_mean=sum(fc.pagerank_score for fc in source_fcs)
-            / max(len(source_fcs), 1),
-            target_pagerank_mean=sum(fc.pagerank_score for fc in target_fcs)
-            / max(len(target_fcs), 1),
         )
 
     # ------------------------------------------------------------------

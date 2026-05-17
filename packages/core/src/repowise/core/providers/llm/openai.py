@@ -29,6 +29,7 @@ from tenacity import (
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
+    CacheHint,
     ChatStreamEvent,
     ChatToolCall,
     GeneratedResponse,
@@ -159,7 +160,11 @@ class OpenAIProvider(BaseProvider):
         temperature: float = 0.3,
         request_id: str | None = None,
         reasoning: ReasoningMode = "auto",
+        cache_hints: tuple[CacheHint, ...] = (),
     ) -> GeneratedResponse:
+        # OpenAI auto-caches stable prompt prefixes >= 1024 tokens; hints are
+        # informational only, so we accept and discard them.
+        del cache_hints
         reasoning_mode = _resolve_openai_reasoning_mode(
             reasoning, model=self._model
         )
@@ -225,15 +230,21 @@ class OpenAIProvider(BaseProvider):
             ) from exc
 
         usage = response.usage
+        cached = 0
+        if usage is not None:
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details is not None:
+                cached = getattr(details, "cached_tokens", 0) or 0
         result = GeneratedResponse(
             content=response.choices[0].message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
-            cached_tokens=0,
+            cached_tokens=cached,
             usage={
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
                 "total_tokens": usage.total_tokens if usage else 0,
+                "cached_tokens": cached,
             },
         )
         log.debug(

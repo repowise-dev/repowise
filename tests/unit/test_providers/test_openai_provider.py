@@ -61,6 +61,7 @@ def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
     usage.prompt_tokens = 120
     usage.completion_tokens = 60
     usage.total_tokens = 180
+    usage.prompt_tokens_details = MagicMock(cached_tokens=0)
 
     choice = MagicMock()
     choice.message.content = text

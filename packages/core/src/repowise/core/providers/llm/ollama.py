@@ -103,6 +103,7 @@ class OllamaProvider(BaseProvider):
         temperature: float = 0.3,
         request_id: str | None = None,
         reasoning: ReasoningMode = "auto",
+        cache_hints: tuple = (),
     ) -> GeneratedResponse:
         ensure_reasoning_supported("ollama", self._model, reasoning)
         if self._rate_limiter:

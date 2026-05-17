@@ -147,8 +147,8 @@ def test_generation_config_defaults():
     assert config.max_tokens == 16000
     assert config.temperature == 0.3
     assert config.token_budget == 48000
-    assert config.max_concurrency == 5
-    assert config.embed_concurrency == 5
+    assert config.max_concurrency == 12
+    assert config.embed_concurrency == 12
     assert config.cache_enabled is True
     assert config.staleness_threshold_days == 7
     assert config.expiry_threshold_days == 30

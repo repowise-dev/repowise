@@ -28,7 +28,6 @@ EXPECTED_PAGE_TYPES = [
     "architecture_diagram",
     "api_contract",
     "infra_page",
-    "diff_summary",
 ]
 
 
