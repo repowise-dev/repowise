@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tree_sitter import Node
 
-from ...models import NamedBinding
+from ...models import Import, NamedBinding
 from ..helpers import node_text
 
 
@@ -75,3 +75,51 @@ def extract_python_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[
                 )
 
     return names, bindings
+
+
+def expand_bare_relative_imports(imports: list[Import]) -> list[Import]:
+    """Split ``from . import a, b`` into one Import per imported submodule.
+
+    Tree-sitter captures the module as a lone ``relative_import`` (``.`` or
+    ``..``) with no module suffix, so the resolver receives ``module_path=".".``
+    The relative-import branch of :func:`resolve_python_import` requires a
+    non-empty module name and bails out — silently dropping every plugin /
+    registry barrel that uses bare-submodule imports (``from . import npm,
+    pypi, cargo, go, nuget`` in ``external_systems/__init__.py`` is the
+    canonical example).
+
+    Rewriting each name into its own ``.<name>`` (or ``..<name>``) Import lets
+    the existing resolver locate the sibling submodule without any new
+    language branches downstream.
+    """
+    out: list[Import] = []
+    for imp in imports:
+        stripped = imp.module_path.strip(".")
+        is_bare = (
+            imp.is_relative
+            and stripped == ""
+            and imp.module_path  # not the empty string
+            and imp.imported_names
+            and imp.imported_names != ["*"]
+        )
+        if not is_bare:
+            out.append(imp)
+            continue
+
+        dots = imp.module_path  # e.g. ".", ".."
+        bindings_by_name = {b.local_name: b for b in imp.bindings}
+        for name in imp.imported_names:
+            binding = bindings_by_name.get(name) or NamedBinding(
+                local_name=name, exported_name=None, source_file=None, is_module_alias=True
+            )
+            out.append(
+                Import(
+                    raw_statement=imp.raw_statement,
+                    module_path=f"{dots}{name}",
+                    imported_names=[name],
+                    is_relative=True,
+                    resolved_file=None,
+                    bindings=[binding],
+                )
+            )
+    return out

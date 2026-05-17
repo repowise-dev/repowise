@@ -43,6 +43,7 @@ from .extractors import (
     refine_go_type_kind,
     refine_kotlin_class_kind,
 )
+from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.synthetic_symbols import extract_synthetic_symbols
 from .extractors.visibility import (
     csharp_visibility,
@@ -81,14 +82,18 @@ QUERIES_DIR = Path(__file__).parent / "queries"
 
 
 @lru_cache(maxsize=None)
-def _load_compiled_query(lang: str) -> object | None:
-    """Process-wide cache of compiled tree-sitter Query objects by language tag.
+def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | None:
+    """Process-wide cache of compiled tree-sitter Query objects.
 
     Compiling `.scm` queries is non-trivial; in process-pool parsing each worker
-    would otherwise recompile per file. Keyed by lang because `_get_language`
-    returns a stable Language singleton per tag within a process.
+    would otherwise recompile per file. ``grammar_tag`` may differ from
+    ``lang`` when a language reuses another's grammar at a different
+    variant — e.g. ``.tsx`` files reuse ``typescript.scm`` but must bind
+    to the JSX-aware ``tsx`` grammar so React components don't drown in
+    ERROR nodes.
     """
-    language = _get_language(lang)
+    grammar = grammar_tag or lang
+    language = _get_language(grammar)
     if language is None:
         return None
 
@@ -518,7 +523,12 @@ class ASTParser:
         """Parse *source* bytes and return a fully populated ParsedFile."""
         lang = file_info.language
         config = LANGUAGE_CONFIGS.get(lang)
-        language = _get_language(lang)
+        # .tsx files need the JSX-aware grammar; tree-sitter-typescript's
+        # default `language_typescript` errors out on every `<Component />`
+        # and the resulting ERROR-node recovery hoists nested helpers
+        # (handlers defined inside component bodies) to the top level.
+        grammar_tag = "tsx" if lang == "typescript" and file_info.path.endswith(".tsx") else lang
+        language = _get_language(grammar_tag)
 
         if config is None or language is None:
             if config is not None and language is None:
@@ -548,7 +558,7 @@ class ASTParser:
         root = tree.root_node
 
         parse_errors = _collect_error_nodes(root)
-        query = self._get_query(lang, language)
+        query = self._get_query(lang, language, grammar_tag)
 
         symbols = self._extract_symbols(tree, query, config, file_info, src)
         # Per-language synthetic-symbol pass — recognises source-generator
@@ -591,9 +601,9 @@ class ASTParser:
     # Query loading
     # ------------------------------------------------------------------
 
-    def _get_query(self, lang: str, language: Language) -> object | None:
+    def _get_query(self, lang: str, language: Language, grammar_tag: str | None = None) -> object | None:
         """Load and cache the compiled tree-sitter Query for *lang*."""
-        return _load_compiled_query(lang)
+        return _load_compiled_query(lang, grammar_tag)
 
     # ------------------------------------------------------------------
     # Symbol extraction
@@ -638,6 +648,17 @@ class ASTParser:
             node_type = def_node.type
             kind = config.symbol_node_types.get(node_type)
             if kind is None:
+                continue
+
+            # Skip symbols nested inside another function/method body. The
+            # Tree-sitter query is recursive, so helpers defined inside a
+            # React component or an async orchestrator method get hoisted
+            # to the top-level symbol list and read as unused public
+            # exports. Filtering by callable ancestor restricts extraction
+            # to module-top-level + class-body members. Class bodies don't
+            # match (``class_definition`` is not callable), so methods are
+            # preserved.
+            if _has_callable_ancestor(def_node, config.symbol_node_types):
                 continue
 
             # Refine "struct" kind for Go type_spec (check if struct or interface body)
@@ -801,6 +822,9 @@ class ASTParser:
                     bindings=bindings,
                 )
             )
+
+        if file_info.language == "python":
+            imports = expand_bare_relative_imports(imports)
 
         return imports
 
@@ -1000,6 +1024,25 @@ def _collect_error_nodes(root: Node) -> list[str]:
 
 def _is_async_node(node: Node, src: str) -> bool:
     return node.type == "async_function_definition" or any(c.type == "async" for c in node.children)
+
+
+_CALLABLE_KINDS: frozenset[str] = frozenset({"function", "method"})
+
+
+def _has_callable_ancestor(node: Node, symbol_kinds: dict[str, str]) -> bool:
+    """True if ``node`` has any function/method ancestor in the AST.
+
+    Used to filter out helpers defined inside another function's body
+    (React event handlers, async-method-local coroutines, JS closures)
+    from the top-level symbol list. Class bodies don't count — methods
+    inside classes have only a ``class`` ancestor before the module root.
+    """
+    ancestor = node.parent
+    while ancestor is not None:
+        if symbol_kinds.get(ancestor.type) in _CALLABLE_KINDS:
+            return True
+        ancestor = ancestor.parent
+    return False
 
 
 def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:

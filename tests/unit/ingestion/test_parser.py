@@ -158,6 +158,41 @@ class TestPythonParser:
         rel_import = next(i for i in result.imports if "change_detector" in i.module_path)
         assert rel_import.imported_names == ["AffectedPages", "ChangeDetector", "FileDiff"]
 
+    def test_bare_relative_import_expands_to_one_per_submodule(
+        self, parser: ASTParser
+    ) -> None:
+        # Regression (D2): ``from . import a, b`` produced one Import with
+        # ``module_path="."`` which the resolver dropped on the floor, so
+        # every plugin-registry barrel silently lost its sibling-submodule
+        # edges. Expansion rewrites each name into ``.a``/``.b`` so the
+        # existing relative-resolver can locate the submodule.
+        fi = _make_file_info("pkg/__init__.py", "python")
+        result = parser.parse_file(
+            fi, b"from . import cargo, go, npm, nuget, pypi\n"
+        )
+        paths = sorted(i.module_path for i in result.imports if i.is_relative)
+        assert paths == [".cargo", ".go", ".npm", ".nuget", ".pypi"]
+        for imp in result.imports:
+            if imp.module_path.startswith(".") and imp.module_path != ".":
+                assert len(imp.imported_names) == 1
+                assert imp.imported_names[0] == imp.module_path.lstrip(".")
+
+    def test_bare_double_dot_relative_import_expands(self, parser: ASTParser) -> None:
+        # ``from .. import x`` must also expand, preserving dot depth.
+        fi = _make_file_info("pkg/sub/mod.py", "python")
+        result = parser.parse_file(fi, b"from .. import sibling, other\n")
+        paths = sorted(i.module_path for i in result.imports if i.is_relative)
+        assert paths == ["..other", "..sibling"]
+
+    def test_named_relative_import_is_not_split(self, parser: ASTParser) -> None:
+        # Negative: ``from .pkg import a, b`` must stay as a single Import —
+        # only the bare-dots case is rewritten.
+        fi = _make_file_info("pkg/use.py", "python")
+        result = parser.parse_file(fi, b"from .pkg import a, b\n")
+        rel = [i for i in result.imports if i.module_path == ".pkg"]
+        assert len(rel) == 1
+        assert sorted(rel[0].imported_names) == ["a", "b"]
+
     def test_absolute_from_import_skips_module_keeps_first_name(
         self, parser: ASTParser
     ) -> None:
@@ -169,6 +204,43 @@ class TestPythonParser:
         )
         imp = next(i for i in result.imports if i.module_path == "python_pkg.models")
         assert imp.imported_names == ["Operation", "Result"]
+
+    def test_nested_function_not_extracted_as_top_level(self, parser: ASTParser) -> None:
+        # Regression (D8): orchestrator-style helpers defined inside an
+        # async method (e.g. ``_on_start``, ``_on_done``, ``_step``) were
+        # flattened to the top-level symbol list and read as unused public
+        # exports. Only module-top-level + class-body members should appear.
+        src = (
+            b"async def run():\n"
+            b"    def _on_start():\n"
+            b"        pass\n"
+            b"    async def _step():\n"
+            b"        pass\n"
+            b"\n"
+            b"class Worker:\n"
+            b"    async def perform(self):\n"
+            b"        def _on_done():\n"
+            b"            pass\n"
+            b"        return _on_done\n"
+        )
+        fi = _make_file_info("pkg/orchestrator.py", "python")
+        result = parser.parse_file(fi, src)
+        names = {s.name for s in result.symbols}
+        assert names == {"run", "Worker", "perform"}
+        assert "_on_start" not in names
+        assert "_step" not in names
+        assert "_on_done" not in names
+
+    def test_nested_class_inside_function_not_extracted(self, parser: ASTParser) -> None:
+        src = (
+            b"def make():\n"
+            b"    class Helper:\n"
+            b"        def m(self): pass\n"
+        )
+        fi = _make_file_info("pkg/factories.py", "python")
+        result = parser.parse_file(fi, src)
+        names = {s.name for s in result.symbols}
+        assert names == {"make"}
 
     def test_function_docstring(self, parser: ASTParser) -> None:
         fi = _make_file_info("pkg/calc.py", "python")
@@ -305,6 +377,67 @@ class TestTypeScriptParser:
         fi = _make_file_info("typescript_pkg/src/client.ts", "typescript")
         result = parser.parse_file(fi, TS_SOURCE)
         assert result.parse_errors == []
+
+    def test_nested_helpers_inside_component_not_extracted(
+        self, parser: ASTParser
+    ) -> None:
+        # Regression (D5): React component bodies contain helper function
+        # declarations and arrow-const handlers (``handleSave``,
+        # ``handleKeyDown``, ``Section``) that were being flattened to
+        # top-level public symbols and surfacing as ``unused_export``
+        # findings with confidence 1.0.
+        src = b"""
+export function GeneralForm({ onSave }: Props) {
+  function addPattern(p: string) { return p; }
+  async function handleSave() { onSave(); }
+  const Section = ({ title }: { title: string }) => <div>{title}</div>;
+  const handleKeyDown = (e: KeyboardEvent) => { e.preventDefault(); };
+  return <Section title="x" />;
+}
+
+export const Wrapper = () => {
+  const inner = () => 42;
+  return inner();
+};
+"""
+        fi = _make_file_info("ui/src/general-form.tsx", "typescript")
+        result = parser.parse_file(fi, src)
+        names = {s.name for s in result.symbols}
+        assert "GeneralForm" in names
+        assert "Wrapper" in names
+        for hidden in ("addPattern", "handleSave", "Section", "handleKeyDown", "inner"):
+            assert hidden not in names, f"nested helper {hidden} leaked to top level"
+
+    def test_tsx_file_uses_jsx_grammar(self, parser: ASTParser) -> None:
+        # .tsx files require the JSX-aware grammar variant; the default
+        # typescript grammar errors out on ``<Component />`` and recovers
+        # by hoisting nested helpers out of the broken component body.
+        src = b"""
+export function Card({ title }: { title: string }) {
+  function handleClick() { console.log("clicked"); }
+  return <div onClick={handleClick}>{title}</div>;
+}
+"""
+        fi = _make_file_info("ui/src/card.tsx", "typescript")
+        result = parser.parse_file(fi, src)
+        assert result.parse_errors == []
+        names = {s.name for s in result.symbols}
+        assert "Card" in names
+        assert "handleClick" not in names
+
+    def test_class_methods_still_extracted(self, parser: ASTParser) -> None:
+        # Negative for D5: methods inside class bodies must still be
+        # extracted — only function/method *bodies* count as nesting.
+        src = b"""
+export class Service {
+  run() { return 1; }
+  private helper() { return 2; }
+}
+"""
+        fi = _make_file_info("ui/src/service.ts", "typescript")
+        result = parser.parse_file(fi, src)
+        method_names = {s.name for s in result.symbols if s.kind == "method"}
+        assert {"run", "helper"} <= method_names
 
 
 # ---------------------------------------------------------------------------
