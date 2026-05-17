@@ -176,11 +176,47 @@ class GraphNode(Base):
     visibility: Mapped[str | None] = mapped_column(String(16), nullable=True)
     signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     parent_symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set when this node represents an `external:*` import that we resolved to
+    # a known third-party dependency declared in a manifest. Powers C4 L1.
+    external_system_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("external_systems.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
     __table_args__ = (UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),)
+
+
+class ExternalSystem(Base):
+    """A third-party dependency declared in a repo manifest (package.json,
+    pyproject.toml, Cargo.toml, go.mod, .csproj).
+
+    Populated during ingestion by repowise.core.ingestion.external_systems.
+    Consumed by the C4 builder service to render L1 (System Context) and the
+    external boundary of L2/L3.
+    """
+
+    __tablename__ = "external_systems"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    ecosystem: Mapped[str] = mapped_column(String(32), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="library")
+    version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    declared_in: Mapped[str] = mapped_column(Text, nullable=False)
+    is_dev_dep: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("repository_id", "name", "declared_in", name="uq_external_system"),
+    )
 
 
 class GraphEdge(Base):
