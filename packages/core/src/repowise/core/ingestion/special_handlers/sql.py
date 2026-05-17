@@ -28,10 +28,25 @@ def parse_sql_file(file_info: FileInfo, source: bytes) -> ParsedFile:
 
     try:
         # Parse SQL with T-SQL dialect
-        ast = sqlglot.parse(source_str, dialect=TSQL)
+        # Split by semicolons to handle multi-statement files better
+        statements = []
+        for statement in source_str.split(";"):
+            statement = statement.strip()
+            # Skip empty statements and pure comments
+            if statement:
+                # Check if statement contains actual SQL (not just comments)
+                has_sql = any(line.strip() and not line.strip().startswith("--")
+                             for line in statement.splitlines())
+                if has_sql:
+                    try:
+                        ast = sqlglot.parse(statement, dialect=TSQL)
+                        statements.extend(ast)
+                    except Exception:
+                        # Skip statements that fail to parse
+                        pass
 
         # Extract symbols
-        symbols = _extract_symbols(ast, source_str, file_info)
+        symbols = _extract_symbols(statements, source_str, file_info)
 
         # TODO: Implement parse_errors collection
         parse_errors = []
@@ -81,9 +96,11 @@ def _extract_from_table_node(statement) -> str | None:
     schema = table.db if hasattr(table, "db") else None
     name = table.this
 
-    # Extract string from Identifier nodes
+    # Extract string from Identifier nodes or use as-is
     if schema and hasattr(schema, "this"):
         schema_str = schema.this
+    elif isinstance(schema, str):
+        schema_str = schema
     else:
         schema_str = None
 
@@ -119,9 +136,11 @@ def _extract_from_procedure_node(statement) -> str | None:
     schema = procedure.db if hasattr(procedure, "db") else None
     name = procedure.this
 
-    # Extract string from Identifier nodes
+    # Extract string from Identifier nodes or use as-is
     if schema and hasattr(schema, "this"):
         schema_str = schema.this
+    elif isinstance(schema, str):
+        schema_str = schema
     else:
         schema_str = None
 
@@ -169,18 +188,19 @@ def _extract_from_regex(sql: str, kind: str) -> str | None:
         Extracted name or None
     """
     # Pattern to match: CREATE {kind} [schema.]name
-    patterns = [
-        (r"CREATE\s+(?:VIEW|FUNCTION|TRIGGER)\s+\[?(\w+(?:\]\.\[\w+)*)\[?", "symbol"),
-    ]
+    # Handles both [schema].[name] and "schema"."name" and schema.name
+    pattern = r'CREATE\s+(?:VIEW|FUNCTION|TRIGGER)\s+([\[\]"\'\w\.]+)'
 
-    for pattern, extract_type in patterns:
-        match = re.search(pattern, sql, re.IGNORECASE)
-        if match:
-            identifier = match.group(1)
-            # Strip brackets and trailing parens
-            identifier = identifier.replace("[", "").replace("]", "")
-            identifier = re.sub(r"\(.*", "", identifier)
-            return identifier
+    match = re.search(pattern, sql, re.IGNORECASE)
+    if match:
+        identifier = match.group(1)
+        # Strip brackets and quotes
+        identifier = identifier.replace("[", "").replace("]", "").replace('"', '').replace("'", "")
+        # Strip trailing parens for FUNCTION declarations
+        identifier = re.sub(r"\(.*", "", identifier)
+        # Clean up any trailing whitespace
+        identifier = identifier.strip()
+        return identifier
 
     return None
 
@@ -206,6 +226,39 @@ def _extract_symbols(ast, source: str, file_info: FileInfo) -> list[Symbol]:
     # Iterate through CREATE statements
     for statement in ast:
         if not hasattr(statement, "kind"):
+            # Fallback: Try regex extraction for statements without kind (e.g., TRIGGER parsed as Command)
+            sql_text = statement.sql() if hasattr(statement, "sql") else ""
+            name = _extract_from_regex(sql_text, "") if sql_text else None
+
+            if name:
+                # Apply transformations
+                name = _strip_brackets(name)
+                name = _default_schema(name, dialect="tsql")
+
+                # Try to infer kind from regex match
+                kind = "TRIGGER" if "TRIGGER" in sql_text.upper() else None
+                symbol_kind = _map_to_symbol_kind(kind) if kind else None
+
+                if symbol_kind:
+                    # Extract line number
+                    line = statement.meta.get("start_line", 0) if hasattr(statement, "meta") else 0
+
+                    symbols.append(Symbol(
+                        id=f"{file_info.path}::{name}",
+                        name=name,
+                        qualified_name=f"{file_info.path}.{name}",
+                        kind=symbol_kind,
+                        signature="",
+                        start_line=line + 1,
+                        end_line=line + 1,
+                        docstring=None,
+                        decorators=[],
+                        visibility="public",
+                        is_async=False,
+                        language="sql",
+                        parent_name=None,
+                        is_exported_symbol=False,
+                    ))
             continue
 
         kind = statement.kind
@@ -260,6 +313,8 @@ def _strip_brackets(name: str) -> str:
     MySQL: `dbo`.`Users` → dbo.Users
     PostgreSQL: "dbo"."Users" → dbo.Users
     """
+    if not isinstance(name, str):
+        name = str(name)
     return name.replace("[", "").replace("]", "").replace("`", "").replace('"', "")
 
 
