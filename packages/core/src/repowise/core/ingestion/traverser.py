@@ -57,6 +57,7 @@ class TraversalStats:
     skipped_unknown_language: int = 0
     skipped_dir_ignore: int = 0
     skipped_submodule: int = 0
+    skipped_nested_repo: int = 0
     lang_counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -186,6 +187,15 @@ class FileTraverser:
             (from CLI ``--exclude`` flags or ``repo.settings["exclude_patterns"]``).
         include_submodules: When False (default), directories listed in
             ``.gitmodules`` are skipped during traversal.
+        include_nested_repos: When False (default), any subdirectory that is
+            itself a git repository (contains a ``.git`` directory or file)
+            is treated as a hard traversal boundary and skipped.  This
+            matches the workspace scanner's behaviour: nested git repos are
+            independent units, not part of the parent repo's working tree.
+            Without this, a parent repo that physically contains sibling
+            repos (common when a workspace root is itself versioned) would
+            be walked end-to-end, pulling in hundreds of thousands of files
+            that belong to the nested repos.
     """
 
     def __init__(
@@ -196,6 +206,7 @@ class FileTraverser:
         extra_ignore_filename: str = ".repowiseIgnore",
         extra_exclude_patterns: list[str] | None = None,
         include_submodules: bool = False,
+        include_nested_repos: bool = False,
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.max_file_size_bytes = max_file_size_kb * 1024
@@ -215,6 +226,7 @@ class FileTraverser:
         self._submodule_paths: frozenset[str] = frozenset()
         if not include_submodules:
             self._submodule_paths = _parse_gitmodules(self.repo_root)
+        self._include_nested_repos = include_nested_repos
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
         log.info(
@@ -223,6 +235,7 @@ class FileTraverser:
             max_file_size_kb=max_file_size_kb,
             extra_exclude_patterns=len(patterns),
             submodules_skipped=len(self._submodule_paths),
+            include_nested_repos=include_nested_repos,
         )
 
     # ------------------------------------------------------------------
@@ -292,7 +305,9 @@ class FileTraverser:
 
             # Prune ignored directories in-place (affects os.walk recursion)
             dirnames[:] = sorted(
-                d for d in dirnames if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
+                d
+                for d in dirnames
+                if not self._should_skip_dir(d, rel_dir / d, dirpath_obj / d, dir_ignore)
             )
 
             for filename in sorted(filenames):
@@ -315,6 +330,7 @@ class FileTraverser:
         self,
         dirname: str,
         rel_path: Path,
+        abs_path: Path,
         dir_ignore: pathspec.PathSpec | None = None,
     ) -> bool:
         if dirname in _BLOCKED_DIRS:
@@ -322,6 +338,15 @@ class FileTraverser:
         rel_str = rel_path.as_posix()
         if rel_str in self._submodule_paths:
             self.stats.skipped_submodule += 1
+            return True
+        # Nested git repos are independent units — stop at the boundary
+        # unless the caller explicitly opted in. Mirrors the workspace
+        # scanner, which already refuses to descend into nested `.git`
+        # markers. Without this, a parent repo that physically contains
+        # sibling repos gets walked end-to-end.
+        if not self._include_nested_repos and _is_nested_git_repo(abs_path):
+            self.stats.skipped_nested_repo += 1
+            log.debug("Skipping nested git repo", path=rel_str)
             return True
         if self._gitignore.match_file(rel_str + "/"):
             return True
@@ -573,6 +598,20 @@ def _find_entry_points_in(directory: Path, repo_root: Path) -> list[str]:
     except OSError:
         pass
     return sorted(result)
+
+
+def _is_nested_git_repo(path: Path) -> bool:
+    """Return True if *path* is itself a git repository.
+
+    A directory is a git repository when it contains a ``.git`` entry,
+    which may be a directory (regular repo) or a file (git submodule,
+    worktree, or repo with an externally located gitdir). We test for
+    existence rather than `.is_dir()` to catch all three forms.
+    """
+    try:
+        return (path / ".git").exists()
+    except OSError:
+        return False
 
 
 def _parse_gitmodules(repo_root: Path) -> frozenset[str]:

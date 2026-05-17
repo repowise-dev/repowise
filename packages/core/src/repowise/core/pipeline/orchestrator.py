@@ -169,6 +169,7 @@ async def run_pipeline(
     skip_infra: bool = False,
     exclude_patterns: list[str] | None = None,
     include_submodules: bool = False,
+    include_nested_repos: bool = False,
     generate_docs: bool = False,
     llm_client: Any | None = None,
     embedder: Any | None = None,
@@ -254,6 +255,7 @@ async def run_pipeline(
             repo_path,
             exclude_patterns=exclude_patterns,
             include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             progress=progress,
@@ -447,6 +449,7 @@ async def _run_ingestion(
     *,
     exclude_patterns: list[str] | None,
     include_submodules: bool = False,
+    include_nested_repos: bool = False,
     skip_tests: bool,
     skip_infra: bool,
     progress: ProgressCallback | None,
@@ -462,6 +465,7 @@ async def _run_ingestion(
         repo_path,
         extra_exclude_patterns=exclude_patterns or None,
         include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
     )
 
     # Walk directory tree
@@ -677,6 +681,8 @@ async def _run_ingestion(
             parts.append(f"{stats.skipped_extra_ignore:,} by .repowiseIgnore")
         if stats.skipped_submodule:
             parts.append(f"{stats.skipped_submodule:,} submodule dirs")
+        if stats.skipped_nested_repo:
+            parts.append(f"{stats.skipped_nested_repo:,} nested git repos")
         if stats.skipped_unknown_language:
             parts.append(f"{stats.skipped_unknown_language:,} unknown type")
 

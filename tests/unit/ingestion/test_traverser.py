@@ -423,3 +423,99 @@ class TestSubmoduleHandling:
         assert any("app.py" in p for p in paths)
         assert not any("libs/foo" in p for p in paths)
         assert not any("libs/bar" in p for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Nested git repo handling
+# ---------------------------------------------------------------------------
+
+
+class TestNestedGitRepoHandling:
+    """A parent repo may physically contain other independent git repos as
+    subdirectories (common when a workspace root is itself versioned).
+    Those subdirs must be treated as traversal boundaries — not walked into
+    as if they were part of the parent's working tree.
+    """
+
+    def _make_repo(self, path: Path, gitdir_is_file: bool = False) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        git_marker = path / ".git"
+        if gitdir_is_file:
+            git_marker.write_text("gitdir: /elsewhere/.git\n")
+        else:
+            git_marker.mkdir()
+
+    def test_skips_nested_git_repo_dir(self, tmp_path: Path) -> None:
+        self._make_repo(tmp_path / "child_repo")
+        (tmp_path / "child_repo" / "inner.py").write_text("pass")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("pass")
+
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+
+        assert any("app.py" in p for p in paths)
+        assert not any("child_repo" in p for p in paths)
+        assert traverser.stats.skipped_nested_repo >= 1
+
+    def test_skips_nested_git_repo_when_gitdir_is_file(self, tmp_path: Path) -> None:
+        # `.git` as a file (submodule / worktree / external gitdir) still
+        # marks the directory as an independent repo and must be skipped.
+        self._make_repo(tmp_path / "linked_repo", gitdir_is_file=True)
+        (tmp_path / "linked_repo" / "inner.py").write_text("pass")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("pass")
+
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+
+        assert not any("linked_repo" in p for p in paths)
+        assert traverser.stats.skipped_nested_repo >= 1
+
+    def test_skips_multiple_nested_repos(self, tmp_path: Path) -> None:
+        for name in ("backend", "frontend", "shared"):
+            self._make_repo(tmp_path / name)
+            (tmp_path / name / f"{name}.py").write_text("pass")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("pass")
+
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+
+        assert any("app.py" in p for p in paths)
+        for name in ("backend", "frontend", "shared"):
+            assert not any(name in p for p in paths)
+        assert traverser.stats.skipped_nested_repo == 3
+
+    def test_root_itself_being_a_git_repo_is_fine(self, tmp_path: Path) -> None:
+        # The root .git must NOT cause the traverser to skip the root.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "app.py").write_text("pass")
+
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+
+        assert any("app.py" in p for p in paths)
+        assert traverser.stats.skipped_nested_repo == 0
+
+    def test_include_nested_repos_flag_opts_in(self, tmp_path: Path) -> None:
+        self._make_repo(tmp_path / "child_repo")
+        (tmp_path / "child_repo" / "inner.py").write_text("pass")
+
+        traverser = FileTraverser(tmp_path, include_nested_repos=True)
+        paths = [f.path for f in traverser.traverse()]
+
+        assert any("inner.py" in p for p in paths)
+        assert traverser.stats.skipped_nested_repo == 0
+
+    def test_deeply_nested_repo_is_still_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+        self._make_repo(tmp_path / "a" / "b" / "c" / "vendored")
+        (tmp_path / "a" / "b" / "c" / "vendored" / "lib.py").write_text("pass")
+        (tmp_path / "a" / "ok.py").write_text("pass")
+
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+
+        assert any("ok.py" in p for p in paths)
+        assert not any("vendored" in p for p in paths)
