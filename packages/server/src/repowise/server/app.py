@@ -29,6 +29,7 @@ from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.server import __version__
 from repowise.server.routers import (
     blast_radius,
+    c4,
     chat,
     claude_md,
     costs,
@@ -333,6 +334,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(symbols.router)
     app.include_router(graph.router)
+    app.include_router(c4.router)
     app.include_router(webhooks.router)
     app.include_router(git.router)
     app.include_router(dead_code.router)
