@@ -608,7 +608,7 @@ def _generate_docs_for_added_repo(
     file_infos = list(traverser.traverse())
     repo_structure = traverser.get_repo_structure()
     parser = ASTParser()
-    graph_builder = GraphBuilder()
+    graph_builder = GraphBuilder(repo_path)
     parsed_files = []
     source_map: dict = {}
     for fi in file_infos:

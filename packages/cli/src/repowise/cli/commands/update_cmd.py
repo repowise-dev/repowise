@@ -377,7 +377,7 @@ def update_command(
     parser = ASTParser()
     parsed_files = []
     source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder()
+    graph_builder = GraphBuilder(repo_path)
 
     for fi in file_infos:
         try:

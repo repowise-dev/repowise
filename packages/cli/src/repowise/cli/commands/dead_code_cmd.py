@@ -122,7 +122,7 @@ def dead_code_command(
     traverser = FileTraverser(repo_path)
     file_infos = list(traverser.traverse())
     parser = ASTParser()
-    graph_builder = GraphBuilder()
+    graph_builder = GraphBuilder(repo_path)
 
     for fi in file_infos:
         try:
