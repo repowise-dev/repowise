@@ -75,6 +75,9 @@ _TOKEN_HEURISTICS: dict[str, tuple[int, int]] = {
     "repo_overview": (5000, 3000),
     "architecture_diagram": (4000, 2500),
     "infra_page": (2000, 1500),
+    # Onboarding pages are short, narrative summaries — fewer output tokens
+    # than file_page, similar input context size to module_page.
+    "onboarding": (4000, 2000),
 }
 
 # Cost per 1K tokens (input, output).
@@ -222,6 +225,16 @@ def build_generation_plan(
     plans.append(PageTypePlan("architecture_diagram", 1, 6))
     if infra_count:
         plans.append(PageTypePlan("infra_page", infra_count, 7))
+
+    # Onboarding — upper bound from registered subkinds. Gates may skip
+    # some at runtime, so this can over-estimate cost slightly; the user
+    # sees the worst case before approving.
+    if getattr(config, "enable_onboarding", True):
+        from repowise.core.generation.onboarding import iter_specs as _iter_onboarding
+
+        onboarding_count = len(_iter_onboarding())
+        if onboarding_count:
+            plans.append(PageTypePlan("onboarding", onboarding_count, 8))
 
     return plans
 

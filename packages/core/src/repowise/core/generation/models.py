@@ -29,9 +29,13 @@ PageType = Literal[
     "repo_overview",
     "architecture_diagram",
     "infra_page",
+    # Phase 3: onboarding collection (subkind in metadata).
+    "onboarding",
 ]
 
-# Maps PageType → generation level (0 = first, 7 = last)
+# Maps PageType → generation level (0 = first, 8 = last).
+# Onboarding runs last so it can reference module/file pages already in the
+# wiki and so its prompts see the freshest signal bundle.
 GENERATION_LEVELS: dict[str, int] = {
     "api_contract": 0,
     "symbol_spotlight": 1,
@@ -41,6 +45,7 @@ GENERATION_LEVELS: dict[str, int] = {
     "repo_overview": 6,
     "architecture_diagram": 6,
     "infra_page": 7,
+    "onboarding": 8,
 }
 
 FreshnessStatus = Literal["fresh", "stale", "expired", "unknown"]
@@ -90,6 +95,10 @@ class GenerationConfig:
     # doesn't get its own page (its files still appear under file_page).
     module_grouping: Literal["community", "top_dir"] = "community"
     min_module_size: int = 3
+    # Phase 3: emit the curated Onboarding collection at level 8. Each
+    # subkind defines its own gate; slots whose gates fail are silently
+    # skipped (no UI nav entry either).
+    enable_onboarding: bool = True
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"

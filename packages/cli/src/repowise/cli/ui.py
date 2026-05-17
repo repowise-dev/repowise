@@ -1160,6 +1160,7 @@ _PHASE_LABELS: dict[str, str] = {
     "dead_code": "Detecting dead code...",
     "decisions": "Extracting decisions...",
     "generation": "Generating pages...",
+    "onboarding": "Curating onboarding docs...",
 }
 
 

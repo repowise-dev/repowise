@@ -30,6 +30,7 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
+from . import onboarding as _onboarding
 from .context_assembler import ContextAssembler, FilePageContext
 from .models import (
     GENERATION_LEVELS,
@@ -129,6 +130,14 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Document this infrastructure file for DevOps and platform engineers. "
         "Output markdown only. "
         "Required sections: ## Purpose, ## Key Targets/Stages, ## Configuration, ## Operational Notes."
+    ),
+    "onboarding": (
+        "You are repowise, an expert technical documentation generator producing "
+        "a single page in a curated Onboarding collection that a new contributor "
+        "or LLM agent reads first. "
+        "Write concise, navigable prose grounded in the structured signals supplied. "
+        "Do not invent file paths, symbol names, or rationale that is not in the context. "
+        "Output markdown only — follow the exact section structure the user prompt prescribes."
     ),
 }
 
@@ -420,6 +429,54 @@ class PageGenerator:
             GENERATION_LEVELS["api_contract"],
         )
 
+    async def generate_onboarding_page(
+        self,
+        spec: "_onboarding.SubkindSpec",
+        signals: "_onboarding.OnboardingSignals",
+    ) -> GeneratedPage | None:
+        """Generate one onboarding page from a registered subkind spec.
+
+        Returns ``None`` when the subkind's gate fails (``build_context``
+        returned ``None``) — the slot is silently skipped for this repo.
+        """
+        ctx = spec.build_context(signals)
+        if ctx is None:
+            log.debug("onboarding.gate_skipped", slot=spec.slot)
+            return None
+
+        template_name = f"onboarding/{spec.template}"
+        user_prompt = self._render(template_name, ctx=ctx, slot=spec.slot)
+        target = _onboarding.target_path(spec.slot)
+        response = await self._call_provider(
+            "onboarding", user_prompt, str(uuid.uuid4()), target_path=target
+        )
+        page = self._build_generated_page(
+            "onboarding",
+            target,
+            spec.title,
+            response,
+            compute_source_hash(user_prompt),
+            GENERATION_LEVELS["onboarding"],
+        )
+        # Subkind discriminator lives in metadata; page_type alone is shared
+        # across all six generated onboarding slots.
+        page.metadata["subkind"] = spec.slot
+        page.metadata["onboarding_slot"] = spec.slot
+        return page
+
+    @staticmethod
+    def _tag_promoted_pages(pages: list[GeneratedPage]) -> None:
+        """Tag repo_overview / architecture_diagram pages with their slot.
+
+        Mutates each matching page's ``metadata["onboarding_slot"]`` so the
+        UI groups them into the Onboarding folder without changing their
+        underlying ``page_type``. Idempotent and tolerant of missing pages.
+        """
+        for page in pages:
+            slot = _onboarding.PROMOTED_SLOTS.get(page.page_type)
+            if slot is not None:
+                page.metadata["onboarding_slot"] = slot
+
     async def generate_infra_page(
         self,
         parsed: ParsedFile,
@@ -453,6 +510,7 @@ class PageGenerator:
         job_system: Any | None = None,  # JobSystem | None
         on_page_done: Callable[[str], None] | None = None,
         on_total_known: Callable[[int], None] | None = None,
+        on_subphase: Callable[[str, int | None], None] | None = None,
         git_meta_map: dict[str, dict] | None = None,
         resume: bool = False,
         repo_path: Path | str | None = None,
@@ -977,6 +1035,9 @@ class PageGenerator:
                 )
             )
         level6_pages = await run_level(level6_coros, 6)
+        # Tag the promoted onboarding pages (repo_overview / architecture_diagram)
+        # so the UI groups them into the Onboarding folder. No content change.
+        self._tag_promoted_pages(level6_pages)
         all_pages.extend(level6_pages)
 
         # ---- Level 7: infra_page ----
@@ -991,6 +1052,54 @@ class PageGenerator:
         ]
         level7_pages = await run_level(level7_coros, 7)
         all_pages.extend(level7_pages)
+
+        # ---- Level 8: onboarding (curated collection) ----
+        # Each subkind defines its own gate inside build_context — slots
+        # whose gates fail return None and are skipped entirely. Promoted
+        # slots (project_overview / architecture_guide) are tagged onto the
+        # level-6 pages above and don't appear here.
+        if getattr(self._config, "enable_onboarding", True):
+            specs = _onboarding.iter_specs()
+            if specs:
+                # Announce the subphase to the progress UI so the terminal
+                # shows a distinct "Onboarding" task with its own count. The
+                # count is an upper bound — gates may skip slots.
+                if on_subphase is not None:
+                    try:
+                        on_subphase("onboarding", len(specs))
+                    except Exception:
+                        pass
+                signals = _onboarding.OnboardingSignals(
+                    repo_name=repo_name,
+                    repo_structure=repo_structure,
+                    parsed_files=tuple(parsed_files),
+                    source_map=source_map,
+                    graph_builder=graph_builder,
+                    pagerank=pagerank,
+                    betweenness=betweenness,
+                    community=community,
+                    sccs=tuple(sccs),
+                    git_meta_map=git_meta_map,
+                    dead_code_by_file=dead_code_by_file,
+                    decisions_all=tuple(decisions_all),
+                    external_systems=tuple(external_systems),
+                    completed_page_summaries=dict(completed_page_summaries),
+                )
+                level8_coros: list[tuple[str, Any]] = []
+                for spec in specs:
+                    page_id = compute_page_id(
+                        "onboarding", _onboarding.target_path(spec.slot)
+                    )
+                    if page_id in completed_ids:
+                        continue
+                    level8_coros.append(
+                        (page_id, self.generate_onboarding_page(spec, signals))
+                    )
+                level8_pages_raw = await run_level(level8_coros, 8)
+                # generate_onboarding_page may return None when its gate
+                # fails; run_level already filters non-pages out, so this
+                # list is safe to extend directly.
+                all_pages.extend(level8_pages_raw)
 
         # Finalize job
         if job_system is not None and job_id is not None:

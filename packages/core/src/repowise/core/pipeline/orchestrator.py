@@ -1000,14 +1000,17 @@ async def run_generation(
 
     repo_name = repo_path.name
 
-    # Track generation progress
+    # Track generation progress. Onboarding pages get routed to their own
+    # phase so the terminal UI shows them as a distinct, named step rather
+    # than blending into the long file_page run.
     _pages_done = 0
 
     def on_page_done(page_type: str) -> None:
         nonlocal _pages_done
         _pages_done += 1
         if progress:
-            progress.on_item_done("generation")
+            phase = "onboarding" if page_type == "onboarding" else "generation"
+            progress.on_item_done(phase)
             # Push live cost update if the callback supports it
             if cost_tracker is not None and hasattr(progress, "set_cost"):
                 progress.set_cost(cost_tracker.session_cost)
@@ -1018,6 +1021,11 @@ async def run_generation(
     def on_total_known(total: int) -> None:
         if progress:
             progress.on_phase_start("generation", total)
+
+    def on_subphase(name: str, total: int | None) -> None:
+        """Start a distinct sub-phase (currently used only for onboarding)."""
+        if progress:
+            progress.on_phase_start(name, total)
 
     generator = PageGenerator(
         llm_client,
@@ -1036,6 +1044,7 @@ async def run_generation(
         job_system=job_system,
         on_page_done=on_page_done,
         on_total_known=on_total_known,
+        on_subphase=on_subphase,
         git_meta_map=git_meta_map if git_meta_map else None,
         resume=resume,
         repo_path=repo_path,
@@ -1044,8 +1053,27 @@ async def run_generation(
         external_systems=external_systems,
     )
 
+    # Onboarding summary — count generated slots and surface which ones
+    # were gated out so the user can see the curated collection's state.
+    onboarding_generated = [p for p in generated_pages if p.page_type == "onboarding"]
+    promoted_present = {
+        p.metadata.get("onboarding_slot")
+        for p in generated_pages
+        if p.metadata.get("onboarding_slot")
+        and p.page_type in ("repo_overview", "architecture_diagram")
+    }
     if progress:
+        if onboarding_generated or promoted_present:
+            slots_made = sorted(
+                {p.metadata.get("subkind", "?") for p in onboarding_generated}
+                | promoted_present
+            )
+            progress.on_message(
+                "info",
+                f"Onboarding: {len(slots_made)}/8 slots — {', '.join(slots_made)}",
+            )
         progress.on_message("info", f"Generated {len(generated_pages)} pages")
+    _phase_done(progress, "onboarding")
     _phase_done(progress, "generation")
 
     return generated_pages

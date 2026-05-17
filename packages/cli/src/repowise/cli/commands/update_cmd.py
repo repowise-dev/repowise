@@ -360,10 +360,15 @@ def update_command(
 
     cfg = load_config(repo_path)
     language = cfg.get("language", "en")
+    # Config-driven (saved by `repowise init`); CLI override not surfaced
+    # on update yet — defaults to on to keep the onboarding collection
+    # fresh as the codebase evolves.
+    enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
     config = GenerationConfig(
         max_concurrency=concurrency,
         language=language,
         reasoning=resolve_reasoning(reasoning, cfg),
+        enable_onboarding=enable_onboarding_cfg,
     )
 
     # Read exclude patterns from config (set during init or via web UI)

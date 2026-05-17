@@ -321,6 +321,7 @@ def _run_workspace_generation(
     gen_config = GenerationConfig(
         max_concurrency=concurrency,
         reasoning=resolve_reasoning(reasoning),
+        enable_onboarding=onboarding,
     )
     plans = build_generation_plan(
         result.parsed_files, result.graph_builder, gen_config, skip_tests, skip_infra
@@ -916,6 +917,17 @@ def _workspace_init(
     default=False,
     help="In multi-repo mode, index all detected repos without prompting.",
 )
+@click.option(
+    "--onboarding/--no-onboarding",
+    "onboarding",
+    default=True,
+    help=(
+        "Generate the curated Onboarding collection (Project Overview, "
+        "Architecture Guide, Getting Started, Codebase Map, Key Concepts, "
+        "How It Works, Development Guide, Active Landscape). Default: on. "
+        "Slots with insufficient signal are skipped automatically."
+    ),
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -937,6 +949,7 @@ def init_command(
     no_claude_md: bool,
     include_submodules: bool,
     init_all: bool,
+    onboarding: bool,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -1272,6 +1285,7 @@ def init_command(
             max_concurrency=concurrency,
             language=language,
             reasoning=resolved_reasoning,
+            enable_onboarding=onboarding,
         )
         plans = build_generation_plan(
             result.parsed_files, result.graph_builder, gen_config, skip_tests, skip_infra
@@ -1299,6 +1313,16 @@ def init_command(
             f"  Estimated tokens: ~{est.estimated_input_tokens + est.estimated_output_tokens:,} "
             f"(${est.estimated_cost_usd:.2f} USD)"
         )
+        if onboarding:
+            console.print(
+                "  [cyan]Onboarding collection:[/cyan] "
+                "[dim]up to 8 curated pages — Project Overview, Architecture Guide, "
+                "Getting Started, Codebase Map, Key Concepts, How It Works, "
+                "Development Guide, Active Landscape "
+                "(slots without enough signal are skipped).[/dim]"
+            )
+        else:
+            console.print("  [dim]Onboarding collection: disabled (--no-onboarding).[/dim]")
         console.print()
 
         if dry_run:
@@ -1448,6 +1472,23 @@ def init_command(
     with console.status("  Persisting to database…", spinner="dots"):
         run_async(_persist_result(result, repo_path))
     console.print("  [green]✓[/green] Database updated")
+
+    # Persist the onboarding choice so subsequent `repowise update` runs
+    # honor it without re-passing the flag. Default True is omitted to keep
+    # config files tidy — only the override is recorded.
+    if not onboarding:
+        cfg = load_config(repo_path)
+        cfg["enable_onboarding"] = False
+        try:
+            import yaml  # type: ignore[import-untyped]
+
+            cfg_path = repo_path / ".repowise" / "config.yaml"
+            cfg_path.write_text(
+                yaml.dump(cfg, default_flow_style=False, sort_keys=False),
+                encoding="utf-8",
+            )
+        except ImportError:
+            pass
 
     # ---- Post-run: config, state, MCP, editor project files ----
     if commit_limit is not None:
