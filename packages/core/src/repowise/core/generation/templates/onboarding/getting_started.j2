@@ -1,0 +1,55 @@
+You are writing the "Getting Started" page for `{{ ctx.repo_name }}` —
+the page where reading stops and doing starts. The reader wants the
+shortest correct path to a working local checkout.
+
+## Detected build signal (ground every command in this data)
+{% if ctx.package_managers %}
+- **Package managers / ecosystems**: {{ ctx.package_managers | join(", ") }}
+{% else %}
+- **Package managers**: none detected (rely on README sections below)
+{% endif %}
+{% if ctx.runtime_dependencies %}
+- **Runtime dependencies sample**: {% for d in ctx.runtime_dependencies %}`{{ d.name }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if ctx.dev_dependencies %}
+- **Dev / test dependencies sample**: {% for d in ctx.dev_dependencies %}`{{ d.name }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if ctx.entry_points %}
+- **Entry points**: {% for ep in ctx.entry_points %}`{{ ep }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+
+{% if ctx.readme_sections %}
+## README setup excerpts (authoritative — quote, don't paraphrase commands)
+{% for s in ctx.readme_sections %}
+### From the README: {{ s.heading }}
+{{ s.body }}
+
+{% endfor %}
+{% endif %}
+
+## What to write
+Produce a Getting Started markdown page. Required sections, in order:
+
+1. **## Prerequisites** — bullet list of runtimes/tools the reader needs
+   before cloning (language runtime + version if knowable from ecosystem
+   conventions, package manager, anything the README explicitly calls
+   out). If unsure of a version, say "recent" and link to the project's
+   own setup section rather than inventing a number.
+2. **## Clone & install** — two or three numbered steps, each with a
+   single fenced shell command block. Quote commands from the README
+   verbatim where they appear; otherwise use the canonical command for
+   the detected package manager (`npm install`, `pip install -e .`,
+   `cargo build`, `go mod download`, etc.).
+3. **## Run** — how to actually start the thing. If entry points are
+   listed above, name them. If the README has a Run section, quote it.
+4. **## Test** — how to run the test suite. Same rules.
+5. **## Troubleshooting** — at most two short bullets, only if the README
+   sections above hint at common gotchas. Skip the section entirely
+   otherwise — do not invent troubleshooting tips.
+
+Hard rules:
+- Never invent a command. Either quote the README or use the canonical
+  command for a listed ecosystem.
+- Keep it short. A new contributor should be able to read the whole page
+  in under two minutes.
+- Output markdown only. No preamble, no apologies, no closing summary.

@@ -1,0 +1,51 @@
+You are writing the "Active Landscape" page for the repository
+`{{ ctx.repo_name }}` — a snapshot of where work is happening right now,
+intended for a contributor about to pick up their first task.
+
+## Activity signal (do not invent beyond these numbers)
+- **Total commits (90 days)**: {{ ctx.total_commits_90d }}
+- **Files touched (90 days)**: {{ ctx.files_touched_90d }}
+- **Stable files** (untouched 90+ days): {{ ctx.stable_file_count }}
+
+## Hot files (top by 90-day churn)
+{% for f in ctx.hot_files %}
+- `{{ f.path }}` — {{ f.commit_count_90d }} commits{% if f.primary_owner %}, primary owner {{ f.primary_owner }}{% endif %}{% if f.is_hotspot %} *(flagged hotspot)*{% endif %}
+{% endfor %}
+
+{% if ctx.hot_dirs %}
+## Hot directories
+{% for d in ctx.hot_dirs %}
+- `{{ d.path }}/` — {{ d.total_commits_90d }} commits across {{ d.file_count }} files{% if d.hotspot_count %}, {{ d.hotspot_count }} hotspot(s){% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.dead_code_in_hot_files %}
+## Dead-code findings inside hot files (real callouts)
+{% for f in ctx.dead_code_in_hot_files %}
+- `{{ f.file_path }}` — {{ f.symbol_kind }} `{{ f.symbol_name }}` ({{ f.reason }}, confidence {{ f.confidence }})
+{% endfor %}
+{% endif %}
+
+## What to write
+Produce an Active Landscape markdown page. Required sections, in order:
+
+1. **## Where work is concentrated** — 2–3 sentences naming the hottest
+   directories and what kind of work appears to be driving the churn
+   (refactor, feature work, bug-chasing). Ground every claim in the file
+   and directory data above. Do not invent commit messages or features.
+2. **## Files in motion** — bulleted list of the hot files with a one-line
+   note each: who tends to touch it and one neutral observation about why
+   it's hot (e.g. "central abstraction — most features funnel through it",
+   "currently being refactored", "test churn matches feature churn"). If
+   you're not sure, say so — do not fabricate intent.
+3. **## Steady ground** — 1–2 sentences identifying the stable areas (use
+   the stable_file_count above). The page should leave the reader with a
+   sense of which corners of the codebase are *safe to learn first* before
+   touching the hot zones.
+4. **## Watch-outs** — bulleted callouts based on the dead-code findings
+   above and any hotspot files. If there are no findings, write a single
+   line: "No live dead-code findings in the current hot set."
+
+Tone: matter-of-fact, like an on-call handoff. No marketing language.
+
+Output markdown only. No preamble, no apologies, no closing summary.

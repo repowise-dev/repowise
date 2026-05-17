@@ -1,0 +1,63 @@
+You are writing the "Development Guide" page for `{{ ctx.repo_name }}` —
+how to do common things in this codebase, derived from conventions that
+already exist in the file tree. Convention-based, not aspirational: only
+report rules the data actually supports.
+
+## Detected conventions (use only these — do not invent new ones)
+
+{% if ctx.suffix_patterns %}
+### Recurring filename suffixes
+{% for p in ctx.suffix_patterns %}
+- **`*_{{ p.suffix }}`** — {{ p.file_count }} files. Examples:
+{% for ex in p.examples %}
+  - `{{ ex }}`
+{% endfor %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.test_mirror %}
+### Test mirror layout
+- **`{{ ctx.test_mirror.test_root }}/` mirrors the source tree** — {{ ctx.test_mirror.matched_files }} of {{ ctx.test_mirror.source_files }} test files match a source stem.
+{% endif %}
+
+{% if ctx.parallel_dirs %}
+### Parallel sibling directories
+The following parent directories contain ≥3 sibling subdirectories that
+share a common file layout (a strong "every X is built like Y" signal):
+{% for d in ctx.parallel_dirs %}
+- `{{ d }}/`
+{% endfor %}
+{% endif %}
+
+{% if ctx.entry_points %}
+## Entry points (anchor "where to start" advice in these)
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+## What to write
+Produce a Development Guide markdown page. Required structure:
+
+1. **## Overview** — one paragraph naming the strongest 2–3 conventions
+   the reader should internalise before making changes. Quote concrete
+   suffixes / directory names from the data above.
+2. **## Adding a new <thing>** — pick the dominant suffix pattern above
+   and write a 3–5 step playbook for adding another file of that kind.
+   Example: if `*_handler` is dominant, the section is "Adding a new
+   handler" with steps grounded in the example file paths above. If no
+   suffix pattern dominates, skip this section and replace it with
+   **"## Adding a new module"** based on the parallel-dirs signal.
+3. **## Writing tests** — only include this section if the test mirror
+   was detected above. State the rule explicitly: tests for
+   `path/to/foo.py` live at `<test_root>/.../test_foo.py` (or the
+   project's actual convention as evidenced by the data).
+4. **## House style** — at most three bullets covering observations the
+   data supports (naming, parallel-dir uniformity, etc.). If you can't
+   support a bullet with the data above, omit it.
+
+Hard rules:
+- Never invent a linter rule, a commit-message format, or a code style
+  the data above does not support.
+- Quote real file paths in every example.
+- Output markdown only. No preamble, no apologies, no closing summary.

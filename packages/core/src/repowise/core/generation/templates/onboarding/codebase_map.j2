@@ -1,0 +1,56 @@
+You are writing the "Codebase Map" page for the repository `{{ ctx.repo_name }}`.
+
+This is the wayfinding page — where things physically live. The reader has
+already read the Architecture Guide (which is conceptual); this page is
+spatial. The right tone is: "if you're looking for X, go to Y."
+
+## Repo facts (do not invent beyond these)
+- **Total files**: {{ ctx.total_files }}
+- **Total lines of code**: {{ ctx.total_loc }}
+- **Top-level directories surveyed**: {{ ctx.directories | length }}
+
+{% if ctx.entry_points %}
+## Repo-wide entry points
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+## Top-level directories
+{% for d in ctx.directories %}
+### `{{ d.path }}/`  ({{ d.file_count }} files, mostly {{ d.dominant_language }})
+{% if d.community_labels %}
+- Architectural clusters present: {{ d.community_labels | join(", ") }}
+{% endif %}
+{% if d.entry_points %}
+- Entry points: {% for ep in d.entry_points %}`{{ ep }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if d.top_files %}
+- Key files (by PageRank):
+{% for f in d.top_files %}
+  - `{{ f }}`
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+
+## What to write
+Produce a Codebase Map markdown page. Required sections, in this order:
+
+1. **## Overview** — one paragraph: the shape of the file tree at a glance,
+   how many top-level directories matter, and which one a new contributor
+   should explore first. Ground every claim in the facts above.
+2. **## Top-level directories** — one short subsection per directory listed
+   above (heading: `### \`<path>/\``). Each subsection should answer two
+   questions in 2–4 sentences: (a) what kind of code lives here, (b) the
+   first file or two to read. Reference the listed entry points and key
+   files. Do not invent files that aren't in the data.
+3. **## If you're looking for…** — a bulleted lookup list of 5–8 entries
+   that map common questions to directories. Examples to model on (adapt
+   to what's actually here): "the HTTP layer → `server/`", "tests → mirror
+   the layout under `tests/`", "the public API surface → `<top file>`".
+4. **## What's not here** — one short paragraph naming up to three
+   directories that exist in the tree but are *not* the primary place a
+   contributor should start (build infrastructure, vendor folders, etc.).
+
+Output markdown only. No preamble, no apologies, no closing summary.

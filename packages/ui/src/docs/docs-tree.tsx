@@ -4,15 +4,29 @@ import { useState, useMemo } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  Compass,
   FolderOpen,
   Folder,
   Search,
   Filter,
 } from "lucide-react";
-import { getPageTypeIcon, getPageTypeLabel, ALL_PAGE_TYPES } from "../lib/page-types";
+import {
+  ALL_PAGE_TYPES,
+  ONBOARDING_ORDER,
+  ONBOARDING_SLOT_TITLES,
+  getOnboardingSlot,
+  getPageTypeIcon,
+  getPageTypeLabel,
+  type OnboardingSlot,
+} from "../lib/page-types";
 import { cn } from "../lib/cn";
 import { statusBadgeClasses, type FreshnessStatus } from "../lib/confidence";
 import type { DocPage } from "@repowise-dev/types/docs";
+
+// Synthetic path used as the Onboarding folder's tree key. Distinct from any
+// real target_path (which never starts with "@") so directory lookups don't
+// collide with module paths.
+const ONBOARDING_DIR_KEY = "@onboarding";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,14 +60,68 @@ function PageIcon({ pageType, className }: { pageType: string; className?: strin
 // Build tree from flat page list
 // ---------------------------------------------------------------------------
 
+function buildOnboardingFolder(pages: DocPage[]): TreeNode | null {
+  // Bucket every page by its onboarding slot. Both promoted pages
+  // (repo_overview / architecture_diagram, tagged via metadata) and dedicated
+  // `page_type === "onboarding"` pages flow into the same bucket.
+  const bySlot = new Map<OnboardingSlot, DocPage>();
+  for (const page of pages) {
+    const slot = getOnboardingSlot(page);
+    if (slot && !bySlot.has(slot)) {
+      bySlot.set(slot, page);
+    }
+  }
+  if (bySlot.size === 0) return null;
+
+  // Render in canonical reading order. Slots without a page (gated out at
+  // generation time) are silently skipped.
+  const children: TreeNode[] = [];
+  for (const slot of ONBOARDING_ORDER) {
+    const page = bySlot.get(slot);
+    if (!page) continue;
+    children.push({
+      name: ONBOARDING_SLOT_TITLES[slot],
+      path: page.id,
+      isDir: false,
+      page,
+      children: [],
+    });
+  }
+
+  return {
+    name: "Onboarding",
+    path: ONBOARDING_DIR_KEY,
+    isDir: true,
+    children,
+  };
+}
+
 function buildTree(pages: DocPage[]): TreeNode[] {
   const root: TreeNode[] = [];
 
-  // Separate special pages (overview, architecture) from path-based pages
+  // ---- Onboarding folder (always at top when any slot is filled) ----
+  const onboardingFolder = buildOnboardingFolder(pages);
+  if (onboardingFolder) {
+    root.push(onboardingFolder);
+  }
+
+  // Pages already shown inside the Onboarding folder are skipped at the
+  // top level so they don't appear twice.
+  const onboardingPageIds = new Set(
+    onboardingFolder
+      ? onboardingFolder.children.map((c) => c.page?.id).filter((id): id is string => Boolean(id))
+      : [],
+  );
+
+  // ---- Remaining special pages (overview/architecture only when *not*
+  // already promoted into the Onboarding folder) and path-based pages ----
   const specialPages: DocPage[] = [];
   const pathPages: DocPage[] = [];
 
   for (const page of pages) {
+    if (onboardingPageIds.has(page.id)) continue;
+    // Dedicated onboarding pages without a recognised slot fall through to
+    // path-based grouping under the "onboarding/" prefix.
     if (page.page_type === "repo_overview" || page.page_type === "architecture_diagram") {
       specialPages.push(page);
     } else {
@@ -61,7 +129,7 @@ function buildTree(pages: DocPage[]): TreeNode[] {
     }
   }
 
-  // Add special pages at top level
+  // Add remaining special pages at top level
   for (const page of specialPages) {
     root.push({
       name: page.title,
@@ -156,6 +224,15 @@ function buildTree(pages: DocPage[]): TreeNode[] {
   }
 
   sortChildren(root);
+
+  // The Onboarding folder is a fixed top-level entry and must appear first,
+  // regardless of alphabetical order against other directories.
+  const onbIdx = root.findIndex((n) => n.path === ONBOARDING_DIR_KEY);
+  if (onbIdx > 0) {
+    const [onbNode] = root.splice(onbIdx, 1);
+    if (onbNode) root.unshift(onbNode);
+  }
+
   return root;
 }
 
@@ -258,12 +335,21 @@ function TreeItem({
           ) : (
             <span className="w-3 shrink-0" />
           )}
-          {isExpanded ? (
+          {node.path === ONBOARDING_DIR_KEY ? (
+            <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />
+          ) : isExpanded ? (
             <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)] opacity-70" />
           ) : (
             <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
           )}
-          <span className="truncate font-medium">{node.name}</span>
+          <span
+            className={cn(
+              "truncate font-medium",
+              node.path === ONBOARDING_DIR_KEY && "text-[var(--color-text-primary)]",
+            )}
+          >
+            {node.name}
+          </span>
           {node.page && (
             <FreshnessDot status={node.page.freshness_status as FreshnessStatus} />
           )}
@@ -334,8 +420,9 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [freshnessFilter, setFreshnessFilter] = useState<FreshnessFilter>("all");
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
-    // Auto-expand first two levels
+    // Auto-expand first two levels, plus the Onboarding folder if present.
     const dirs = new Set<string>();
+    dirs.add(ONBOARDING_DIR_KEY);
     for (const page of pages) {
       const parts = page.target_path.split("/");
       if (parts.length > 1 && parts[0]) dirs.add(parts[0]);

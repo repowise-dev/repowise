@@ -1,0 +1,58 @@
+You are writing the "Key Concepts" page for `{{ ctx.repo_name }}` — a
+narrative that gives the reader the mental model needed to read the
+code. Not a glossary dump. Identify 3–6 load-bearing concepts and
+explain how they fit together.
+
+## Candidate concepts (top public symbols by PageRank — ground every
+## concept you name in this list; do not invent new ones)
+{% for c in ctx.concept_symbols %}
+- **`{{ c.name }}`** ({{ c.kind }}) — `{{ c.file_path }}`{% if c.community_label %}, in cluster *{{ c.community_label }}*{% endif %}
+{% if c.docstring %}
+  > {{ c.docstring }}
+{% endif %}
+{% endfor %}
+
+{% if ctx.community_labels %}
+## Architectural clusters present
+The codebase organises into these clusters (detected via dependency
+analysis). Use them as the structural backbone for grouping concepts.
+{% for label in ctx.community_labels %}
+- {{ label }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.decision_titles %}
+## Architectural decisions you can lean on
+These ADR titles were extracted from the codebase. Reference them by
+title only — do not invent the body of a decision.
+{% for t in ctx.decision_titles %}
+- {{ t }}
+{% endfor %}
+{% endif %}
+
+## What to write
+Produce a Key Concepts markdown page. Required structure:
+
+1. **## Overview** — two or three sentences setting up what the reader is
+   about to learn: roughly how many concepts matter, and what kind of
+   system this is (service / library / CLI / compiler / …). Anchor the
+   framing to the cluster labels if present.
+2. **## Core concepts** — one subsection per concept (heading: `### \`Name\``,
+   matching the candidate list above exactly). Aim for 3–6 subsections.
+   For each:
+   - one short paragraph (2–4 sentences) explaining what the concept is
+     and the role it plays,
+   - a `**Where it lives:**` line citing the file path,
+   - if a docstring was supplied, weave it in — don't quote verbatim if
+     it's awkward.
+3. **## How they connect** — one paragraph (4–7 sentences) tracing how
+   the concepts collaborate. This is the section that turns the list
+   into a mental model. Be specific: name which concept calls / wraps /
+   produces which other.
+
+Hard rules:
+- Every concept name must appear in the candidate list above. If a
+  concept feels missing, it isn't — say so explicitly rather than
+  fabricating it.
+- Do not include code listings. Names + file paths are enough.
+- Output markdown only. No preamble, no apologies, no closing summary.

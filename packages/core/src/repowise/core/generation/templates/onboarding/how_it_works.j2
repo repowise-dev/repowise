@@ -1,0 +1,63 @@
+You are writing the "How It Works" page for `{{ ctx.repo_name }}` — the
+page that turns the static architecture into a movie. One concrete
+end-to-end trace through the system, narrated phase by phase.
+
+## Detected archetype (treat as a hint, not gospel)
+- **Archetype**: `{{ ctx.archetype }}`
+- **Evidence**:
+{% for e in ctx.archetype_evidence %}
+  - {{ e }}
+{% endfor %}
+
+{% if ctx.entry_points %}
+## Entry points (ground each flow in one of these)
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.flows %}
+## Detected execution flows (use these as the spine of the narrative)
+{% for f in ctx.flows %}
+### Flow from `{{ f.entry_point }}` (score: {{ "%.3f"|format(f.score) }})
+{% for h in f.hops %}
+{{ loop.index }}. `{{ h }}`
+{% endfor %}
+
+{% endfor %}
+{% else %}
+*No multi-hop execution flow was detected. Build the narrative from the
+entry points and the archetype hint above.*
+{% endif %}
+
+## What to write
+Produce a How It Works markdown page. Required structure:
+
+1. **## What this system does in one sentence** — open with a single,
+   concrete sentence that captures the system's job, adapted to the
+   archetype above (service / cli / library / pipeline / module).
+2. **## A walk through one example** — the heart of the page. Pick one
+   concrete example matching the archetype:
+   - service → "when a request hits `<a real entry point>`, …"
+   - cli → "when you run `<the real CLI entry>`, …"
+   - library → "when a consumer calls `<a real public symbol>`, …"
+   - pipeline → "when input enters at `<the real source>`, …"
+   - module → narrate the highest-scoring flow above as a generic
+     control-flow story.
+   Walk through the hops above (or, if no flow was detected, the entry
+   point and its immediate neighbors). Use the file/symbol names as-is.
+3. **## Why it's shaped this way** — 2–3 sentences linking the flow to
+   the archetype: why this structure makes sense for a service / cli /
+   etc. Do not invent decisions; restrict yourself to observations the
+   flow itself supports.
+4. **## Where to read next** — a short bulleted list of 2–4 file paths
+   the reader should open after this page, pulled from the flow hops
+   above. Each bullet gets a half-sentence reason ("the boundary where
+   request becomes domain object", etc.).
+
+Hard rules:
+- Every file path or symbol you name must come from the data above.
+- If a flow hop is unfamiliar, narrate the *transition* generically ("the
+  request crosses the framework boundary here") rather than inventing
+  what the file does internally.
+- Output markdown only. No preamble, no apologies, no closing summary.

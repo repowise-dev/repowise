@@ -396,7 +396,7 @@ async def test_generate_all_level_values_in_range():
         [p], {"pkg/main.py": b"def main(): pass"}, builder, repo, "test-repo"
     )
     for page in pages:
-        assert 0 <= page.generation_level <= 7
+        assert 0 <= page.generation_level <= 8
 
 
 # ---------------------------------------------------------------------------
