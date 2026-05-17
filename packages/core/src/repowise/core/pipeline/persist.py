@@ -125,6 +125,8 @@ async def persist_pipeline_result(
         batch_upsert_graph_edges,
         batch_upsert_graph_nodes,
         batch_upsert_symbols,
+        bulk_upsert_external_systems,
+        link_graph_nodes_to_external_systems,
         upsert_page_from_generated,
     )
     from repowise.core.persistence.crud import (
@@ -164,6 +166,18 @@ async def persist_pipeline_result(
         )
     if edges:
         await batch_upsert_graph_edges(session, repo_id, edges)
+
+    # ---- External systems (C4 L1) -------------------------------------------
+    # Persist before symbols so the FK linkage step below sees the IDs.
+    external_systems = getattr(result, "external_systems", None) or []
+    if external_systems:
+        id_map = await bulk_upsert_external_systems(session, repo_id, external_systems)
+        # Collapse multi-manifest duplicates: any id for a given name is fine
+        # (renderer only needs name/category/ecosystem which are stable).
+        name_to_id: dict[str, int] = {}
+        for (name, _declared_in), sys_id in id_map.items():
+            name_to_id.setdefault(name, sys_id)
+        await link_graph_nodes_to_external_systems(session, repo_id, name_to_id)
 
     # ---- Symbols -------------------------------------------------------------
     # NOTE: This mutates sym.file_path on the caller's PipelineResult objects.

@@ -148,6 +148,12 @@ class PipelineResult:
     # data module. Populated post-traversal during the graph build phase.
     tech_stack: list[dict] = field(default_factory=list)
 
+    # External systems parsed from repo manifests (package.json,
+    # pyproject.toml, Cargo.toml, go.mod, .csproj). Powers the C4 L1
+    # System Context view. Plain dicts mirroring ExternalSystemRecord fields
+    # for the same reason as tech_stack.
+    external_systems: list[dict] = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -274,6 +280,34 @@ async def run_pipeline(
     if git_meta_map:
         graph_builder.add_co_change_edges(git_meta_map)
 
+    # ---- External systems (C4 L1) ------------------------------------------
+    # Parse repo manifests for declared third-party dependencies. Failure here
+    # must not break the pipeline — log and continue with an empty list.
+    external_systems: list[dict] = []
+    try:
+        from repowise.core.ingestion.external_systems import extract_external_systems
+
+        records = await asyncio.to_thread(extract_external_systems, repo_path)
+        external_systems = [
+            {
+                "name": r.name,
+                "display_name": r.display_name,
+                "ecosystem": r.ecosystem,
+                "category": r.category,
+                "version": r.version,
+                "declared_in": r.declared_in,
+                "is_dev_dep": r.is_dev_dep,
+            }
+            for r in records
+        ]
+        if progress and external_systems:
+            progress.on_message(
+                "info",
+                f"→ External systems: {len(external_systems):,} declared deps across manifests",
+            )
+    except Exception as _ext_err:  # noqa: BLE001
+        logger.warning("external_systems_extraction_failed", error=str(_ext_err))
+
     # Emit rich insight summary for the ingestion phase
     if progress:
         _g = graph_builder.graph()
@@ -399,6 +433,7 @@ async def run_pipeline(
             {"name": t.name, "version": t.version, "category": t.category}
             for t in tech_items
         ],
+        external_systems=external_systems,
     )
 
 

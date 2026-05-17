@@ -21,6 +21,9 @@ from .crud import (
     batch_upsert_graph_nodes,
     batch_upsert_symbols,
     bulk_upsert_decisions,
+    bulk_upsert_external_systems,
+    link_graph_nodes_to_external_systems,
+    list_external_systems,
     count_chat_messages,
     create_chat_message,
     create_conversation,
@@ -91,6 +94,7 @@ from .models import (
     Conversation,
     DeadCodeFinding,
     DecisionRecord,
+    ExternalSystem,
     GenerationJob,
     GitMetadata,
     GraphEdge,
@@ -121,6 +125,7 @@ __all__ = [
     "DecisionRecord",
     # embedder
     "Embedder",
+    "ExternalSystem",
     # search
     "FullTextSearch",
     "GenerationJob",
@@ -146,6 +151,10 @@ __all__ = [
     "batch_upsert_symbols",
     # decision crud
     "bulk_upsert_decisions",
+    # external systems crud (C4 L1)
+    "bulk_upsert_external_systems",
+    "link_graph_nodes_to_external_systems",
+    "list_external_systems",
     # chat crud
     "count_chat_messages",
     # graph read-side queries

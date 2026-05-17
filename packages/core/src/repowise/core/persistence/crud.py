@@ -26,6 +26,7 @@ from .models import (
     Conversation,
     DeadCodeFinding,
     DecisionRecord,
+    ExternalSystem,
     GenerationJob,
     GitMetadata,
     GraphEdge,
@@ -519,6 +520,107 @@ async def batch_upsert_graph_edges(
             )
 
     await session.flush()
+
+
+# ---------------------------------------------------------------------------
+# ExternalSystem CRUD
+# ---------------------------------------------------------------------------
+
+
+async def bulk_upsert_external_systems(
+    session: AsyncSession,
+    repository_id: str,
+    systems: list[dict],
+) -> dict[tuple[str, str], int]:
+    """Upsert external systems for a repository.
+
+    Each element of *systems* is a dict with keys matching ``ExternalSystem``
+    columns (excluding ``id``, ``repository_id``, ``created_at``).
+
+    Returns a mapping of ``(name, declared_in)`` → row ``id`` for both newly
+    inserted and existing rows, so callers can link ``graph_nodes`` to the
+    persisted external system without an extra round-trip.
+    """
+    id_map: dict[tuple[str, str], int] = {}
+    for sys_data in systems:
+        name = sys_data.get("name", "")
+        declared_in = sys_data.get("declared_in", "")
+        if not name:
+            continue
+        result = await session.execute(
+            select(ExternalSystem).where(
+                ExternalSystem.repository_id == repository_id,
+                ExternalSystem.name == name,
+                ExternalSystem.declared_in == declared_in,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            for key, val in sys_data.items():
+                if key not in ("id", "repository_id", "created_at") and hasattr(existing, key):
+                    setattr(existing, key, val)
+            id_map[(name, declared_in)] = existing.id
+        else:
+            row = ExternalSystem(
+                repository_id=repository_id,
+                **{k: v for k, v in sys_data.items() if k not in ("id", "repository_id")},
+            )
+            session.add(row)
+            await session.flush()
+            id_map[(name, declared_in)] = row.id
+    await session.flush()
+    return id_map
+
+
+async def link_graph_nodes_to_external_systems(
+    session: AsyncSession,
+    repository_id: str,
+    name_to_id: dict[str, int],
+) -> int:
+    """Resolve ``external:{name}`` graph nodes to their ExternalSystem row.
+
+    ``name_to_id`` should be a flat map of dep name → ExternalSystem id
+    (collapse multi-manifest entries by picking any id — the C4 renderer
+    only needs ``name``/``category`` which are the same across rows).
+
+    Returns the number of graph_nodes updated.
+    """
+    if not name_to_id:
+        return 0
+    prefix = "external:"
+    result = await session.execute(
+        select(GraphNode).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_id.like(f"{prefix}%"),
+        )
+    )
+    updated = 0
+    for node in result.scalars():
+        suffix = node.node_id[len(prefix) :]
+        # Try the full suffix first, then the first segment (handles e.g.
+        # ``external:fastapi.responses`` → ``fastapi``).
+        sys_id = name_to_id.get(suffix)
+        if sys_id is None and "." in suffix:
+            sys_id = name_to_id.get(suffix.split(".", 1)[0])
+        if sys_id is None and "/" in suffix:
+            sys_id = name_to_id.get(suffix.split("/", 1)[0])
+        if sys_id is not None and node.external_system_id != sys_id:
+            node.external_system_id = sys_id
+            updated += 1
+    await session.flush()
+    return updated
+
+
+async def list_external_systems(
+    session: AsyncSession, repository_id: str
+) -> list[ExternalSystem]:
+    """List all external systems for a repository, ordered by name."""
+    result = await session.execute(
+        select(ExternalSystem)
+        .where(ExternalSystem.repository_id == repository_id)
+        .order_by(ExternalSystem.name)
+    )
+    return list(result.scalars())
 
 
 # ---------------------------------------------------------------------------
