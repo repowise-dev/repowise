@@ -255,6 +255,7 @@ This is what happens when an AI agent has real codebase intelligence.
 | **Chat** | Ask anything about your codebase in natural language |
 | **Docs** | AI-generated wiki with syntax highlighting, Mermaid diagrams, and a graph intelligence sidebar showing PageRank/betweenness percentiles, community membership, and degree |
 | **Graph** | Interactive dependency graph — handles 2,000+ nodes. Community color mode with real labels, community detail panel on click, path finder |
+| **C4 Architecture** | C4-model view of the codebase (Context → Containers → Components) with drill-down, URL-synced state, and a per-node detail panel that surfaces module health, top contributors, and the generated wiki page inline |
 | **Search** | Full-text and semantic search with global command palette (Ctrl+K) |
 | **Symbols** | Searchable index of every function, class, and method, server-ranked by importance (PageRank × visibility × complexity × kind × entry-point). Filter facets for public-only, language, kind, in-hotspot-files, and in-entry-point-files. Click any symbol for graph metrics, callers/callees, class heritage, and a git panel with governing decisions |
 | **Coverage** | Doc freshness per file with one-click regeneration |
