@@ -29,11 +29,11 @@ export interface NodeShellProps {
   tone: NodeTone;
   kindLabel: string;
   title: string;
-  subtitle?: string;
-  footer?: React.ReactNode;
-  selected?: boolean;
-  width?: number;
-  height?: number;
+  subtitle?: string | undefined;
+  footer?: React.ReactNode | undefined;
+  selected?: boolean | undefined;
+  width?: number | undefined;
+  height?: number | undefined;
 }
 
 export function NodeShell({

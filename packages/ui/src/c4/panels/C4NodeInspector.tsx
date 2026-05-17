@@ -6,7 +6,7 @@ import type { C4NodeData } from "../types";
 export interface C4NodeInspectorProps {
   data: C4NodeData | null;
   onClose: () => void;
-  onDrillIn?: (containerId: string) => void;
+  onDrillIn?: ((containerId: string) => void) | undefined;
 }
 
 export function C4NodeInspector({ data, onClose, onDrillIn }: C4NodeInspectorProps) {
@@ -60,7 +60,7 @@ function InspectorBody({
   onDrillIn,
 }: {
   data: C4NodeData;
-  onDrillIn?: (containerId: string) => void;
+  onDrillIn?: ((containerId: string) => void) | undefined;
 }) {
   switch (data.kind) {
     case "system":

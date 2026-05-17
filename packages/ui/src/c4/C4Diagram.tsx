@@ -190,7 +190,7 @@ function C4DiagramInner({
         <C4NodeInspector
           data={selectedData}
           onClose={() => setSelectedNodeId(null)}
-          onDrillIn={selectedData?.kind === "container" ? onDrillInto : undefined}
+          {...(selectedData?.kind === "container" ? { onDrillIn: onDrillInto } : {})}
         />
       </div>
     </div>

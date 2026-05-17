@@ -50,7 +50,7 @@ function RelationEdgeImpl(props: EdgeProps) {
 
   return (
     <>
-      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={{ stroke, strokeWidth }} />
+      <BaseEdge id={id} path={edgePath} {...(markerEnd ? { markerEnd } : {})} style={{ stroke, strokeWidth }} />
       {label && (
         <EdgeLabelRenderer>
           <div
