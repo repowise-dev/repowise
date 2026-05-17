@@ -35,6 +35,15 @@ export {
 export { RelationEdge, c4EdgeTypes } from "./edges/RelationEdge";
 
 export {
+  C4ExportMenu,
+  buildC4Svg,
+  downloadSvg,
+  downloadPng,
+  svgToPngBlob,
+} from "./export";
+export type { C4ExportMenuProps, SvgExportOptions, PngExportOptions } from "./export";
+
+export {
   C4LevelTabs,
   C4Breadcrumb,
   C4Legend,

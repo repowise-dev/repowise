@@ -28,6 +28,7 @@ import {
   C4LevelTabs,
   C4NodeInspector,
 } from "./panels";
+import { C4ExportMenu } from "./export/ExportMenu";
 import { useC4Layout } from "./hooks/use-c4-layout";
 import { useC4Keyboard } from "./hooks/use-c4-keyboard";
 import type {
@@ -64,6 +65,12 @@ export interface C4DiagramProps {
     onDrillIn?: ((containerId: string) => void) | undefined;
   }) => ReactNode;
 
+  /**
+   * Host-provided Mermaid source fetcher for the current view. When supplied,
+   * the export menu shows "Copy / Download Mermaid". Omit to hide.
+   */
+  fetchMermaid?: (() => Promise<string>) | undefined;
+
   onLevelChange: (level: C4Level) => void;
   onDrillInto: (containerId: string) => void;
   onDrillOut: () => void;
@@ -88,6 +95,7 @@ function C4DiagramInner({
   error,
   docsPathSet,
   renderInspector,
+  fetchMermaid,
   onLevelChange,
   onDrillInto,
   onDrillOut,
@@ -169,8 +177,16 @@ function C4DiagramInner({
           activeContainerPath={activeContainerPath}
           onNavigate={onLevelChange}
         />
-        <div style={{ marginLeft: "auto" }}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
           <C4Legend />
+          <C4ExportMenu
+            nodes={nodes}
+            edges={edges}
+            fileNameStem={exportFileStem(systemName, level, activeContainerPath)}
+            title={exportTitle(systemName, level, activeContainerPath)}
+            disabled={nodes.length === 0}
+            {...(fetchMermaid ? { fetchMermaid } : {})}
+          />
         </div>
       </div>
 
@@ -220,6 +236,19 @@ function C4DiagramInner({
       </div>
     </div>
   );
+}
+
+function exportTitle(systemName: string, level: C4Level, activePath: string | null): string {
+  if (level === 1) return `${systemName} — System Context`;
+  if (level === 2) return `${systemName} — Containers`;
+  return `${systemName} — Components${activePath ? ` (${activePath})` : ""}`;
+}
+
+function exportFileStem(systemName: string, level: C4Level, activePath: string | null): string {
+  const safe = (s: string) => s.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  const base = `${safe(systemName)}-c4-l${level}`;
+  if (level === 3 && activePath) return `${base}-${safe(activePath)}`;
+  return base;
 }
 
 function CenteredMessage({ tone, text }: { tone: "info" | "empty" | "error"; text: string }) {

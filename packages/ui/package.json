@@ -50,6 +50,7 @@
     "./blast-radius": "./src/blast-radius/index.ts",
     "./blast-radius/*": "./src/blast-radius/*.tsx",
     "./c4": "./src/c4/index.ts",
+    "./c4/export": "./src/c4/export/index.ts",
     "./c4/*": "./src/c4/*.tsx",
     "./costs": "./src/costs/index.ts",
     "./costs/*": "./src/costs/*.tsx",
