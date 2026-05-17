@@ -120,9 +120,6 @@ ehthumbs.db
 # Superpowers planning docs
 docs/superpowers/
 
-# SQL implementation planning docs
-2026-05-17-*.md
-
 # repowise API keys (local)
 .repowise/.env
 
