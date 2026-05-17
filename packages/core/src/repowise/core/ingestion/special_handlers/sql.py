@@ -110,9 +110,20 @@ def _extract_from_table_node(statement) -> str | None:
     else:
         name_str = None
 
+    # Filter out temporary tables (start with #)
+    if name_str and name_str.startswith('#'):
+        return None
+
     if schema_str and name_str:
-        return f"{schema_str}.{name_str}"
+        full_name = f"{schema_str}.{name_str}"
+        # Double-check for temp tables with schema prefix
+        if '#' in full_name:
+            return None
+        return full_name
     elif name_str:
+        # Check if name contains # (edge case)
+        if '#' in name_str:
+            return None
         return name_str
     return None
 
@@ -265,6 +276,12 @@ def _extract_symbols(ast, source: str, file_info: FileInfo) -> list[Symbol]:
         kind = statement.kind
         name = None
         params = ""
+
+        # Filter out temporary tables before extraction
+        # sqlglot converts '#' to TEMPORARY TABLE during parsing
+        statement_sql = statement.sql() if hasattr(statement, 'sql') else ""
+        if kind == "TABLE" and "TEMPORARY TABLE" in statement_sql.upper():
+            continue
 
         # AST-based extraction for clean parses
         if kind == "TABLE":
