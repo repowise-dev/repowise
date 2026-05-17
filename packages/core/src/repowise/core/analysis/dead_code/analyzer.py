@@ -20,6 +20,7 @@ import structlog
 
 from .constants import (
     _DEFAULT_DYNAMIC_PATTERNS,
+    _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
     _NEVER_FLAG_PATTERNS,
     _NEVER_PACKAGE_DIRS,
@@ -93,6 +94,24 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
     "Startup",             # ASP.NET Core legacy
     "__module__",          # synthetic per-file module anchor
     "_start",              # C runtime
+    # ---- Python WSGI / ASGI / app-factory conventions ---------------
+    # Loaded by external servers (uvicorn / gunicorn / hypercorn /
+    # Tornado / aiohttp / Django) via dotted-path string such as
+    # ``module:create_app`` or ``module:application``. The graph never
+    # sees a call edge from the launching server, so without this
+    # allowlist every web entry point shows up as an unused public
+    # symbol with 1.0 confidence.
+    "create_app",
+    "make_app",
+    "create_application",
+    "make_application",
+    "application",
+    "asgi_app",
+    "wsgi_app",
+    "asgi_application",
+    "wsgi_application",
+    "get_asgi_application",
+    "get_wsgi_application",
     # ---- Windows DLL / COM entry points -----------------------------
     # Invoked by the Windows loader or COM runtime; never referenced
     # statically from user code.
@@ -473,13 +492,28 @@ class DeadCodeAnalyzer:
                     continue
 
                 # Decorators are stored with the leading "@" (e.g. "@app.route").
-                # _FRAMEWORK_DECORATORS entries are bare prefixes, so compare
-                # against the stripped form.
+                # _FRAMEWORK_DECORATORS entries are bare prefixes; suffixes
+                # like ``.command`` match locally-named Click groups
+                # (``@my_group.command("add")``). Compare against the
+                # stripped form, and strip any call ``(...)`` tail so the
+                # suffix check sees the attribute path itself.
                 decorators = sym.get("decorators", [])
+
+                def _decorator_base(d: str) -> str:
+                    stripped = d.lstrip("@")
+                    paren = stripped.find("(")
+                    return stripped[:paren] if paren >= 0 else stripped
+
                 if any(
-                    d.lstrip("@").startswith(prefix)
+                    _decorator_base(d).startswith(prefix)
                     for d in decorators
                     for prefix in _FRAMEWORK_DECORATORS
+                ):
+                    continue
+                if any(
+                    _decorator_base(d).endswith(suffix)
+                    for d in decorators
+                    for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
                 ):
                     continue
 
@@ -623,6 +657,26 @@ class DeadCodeAnalyzer:
                 for pred in self.graph.predecessors(node)
             )
             if has_callers:
+                continue
+
+            # Dispatch-table pattern: a private helper imported by name
+            # into a sibling module and stored in a lookup dict
+            # (``HANDLERS = {"python": _extract_python_heritage, ...}``).
+            # The function is reached at runtime via dict lookup, so no
+            # direct ``calls`` edge ever lands in the graph — but the
+            # ``imports`` edge into its file carries the symbol name. If
+            # any cross-file importer pulled this symbol by name,
+            # something is actively referencing it; do not flag.
+            file_pred_imports = False
+            for pred in self.graph.predecessors(file_path):
+                edge = self.graph.get_edge_data(pred, file_path, {})
+                if edge.get("edge_type") != "imports":
+                    continue
+                imported = edge.get("imported_names", [])
+                if sym_name in imported or "*" in imported:
+                    file_pred_imports = True
+                    break
+            if file_pred_imports:
                 continue
 
             git_meta = self.git_meta_map.get(file_path, {})

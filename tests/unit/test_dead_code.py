@@ -1211,3 +1211,340 @@ def test_unused_internal_explicit_opt_out():
 
     internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
     assert internals == []
+
+
+# ---------------------------------------------------------------------------
+# D3. Alembic migration scripts are never flagged
+# ---------------------------------------------------------------------------
+
+
+def test_alembic_versions_never_flagged_as_unreachable():
+    """Files under <root>/alembic/versions/*.py are loaded reflectively by
+    Alembic at runtime — they have no static importer and must not be
+    surfaced as unreachable on any Alembic-using repo (generic Python
+    convention)."""
+    g = _build_graph(
+        nodes={
+            "myapp/alembic/versions/0001_init.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "symbols": [],
+            },
+            "myapp/alembic/versions/0002_add_users.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "symbols": [],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {"detect_unused_exports": False, "detect_zombie_packages": False}
+    )
+    paths = {f.file_path for f in report.findings}
+    assert "myapp/alembic/versions/0001_init.py" not in paths
+    assert "myapp/alembic/versions/0002_add_users.py" not in paths
+
+
+def test_alembic_upgrade_downgrade_never_flagged_as_unused():
+    """``upgrade()`` / ``downgrade()`` in Alembic migration scripts are
+    called via reflection by the Alembic runner — the file pattern
+    exemption (``*/alembic/versions/*.py``) already covers them, so the
+    symbols inside must not surface as unused exports either."""
+    g = _build_graph(
+        nodes={
+            "myapp/alembic/versions/0001_init.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "symbols": [
+                    {
+                        "name": "upgrade",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1, "end_line": 5,
+                        "complexity_estimate": 1,
+                    },
+                    {
+                        "name": "downgrade",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 7, "end_line": 11,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {"detect_unreachable_files": False, "detect_zombie_packages": False}
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "upgrade" not in names
+    assert "downgrade" not in names
+
+
+# ---------------------------------------------------------------------------
+# D4. Click @<group>.command(...) decorator suffix detection
+# ---------------------------------------------------------------------------
+
+
+def test_click_group_command_decorator_excluded():
+    """Subcommands registered on a locally-named Click ``Group`` are
+    decorated as e.g. ``@my_cli.command("add")``. The receiver name is
+    project-local, so the matcher needs to recognise the ``.command``
+    suffix rather than a hard-coded ``click.command`` prefix. Same shape
+    covers Typer (``.command``/``.callback``) and any user-named
+    dispatcher."""
+    g = _build_graph(
+        nodes={
+            "pkg/cli.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 3,
+                "symbols": [
+                    {
+                        "name": "decision_add",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": ["decision_group.command"],
+                        "start_line": 1, "end_line": 10,
+                        "complexity_estimate": 1,
+                    },
+                    {
+                        "name": "decision_list",
+                        "kind": "function",
+                        "visibility": "public",
+                        # Real-world capture sometimes includes the call
+                        # arguments — the matcher must strip them.
+                        "decorators": ['my_cli.group("decision")'],
+                        "start_line": 12, "end_line": 20,
+                        "complexity_estimate": 1,
+                    },
+                    {
+                        "name": "after_cmd",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": ["app.callback"],
+                        "start_line": 22, "end_line": 28,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {"detect_unreachable_files": False, "detect_zombie_packages": False}
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "decision_add" not in names
+    assert "decision_list" not in names
+    assert "after_cmd" not in names
+
+
+def test_unrelated_dot_command_function_still_flagged():
+    """A decorator suffix-match must not accidentally whitelist symbols
+    with unrelated decorators. ``@functools.lru_cache`` does not end with
+    ``.command/.group/.callback``, so a plain unused public helper with
+    that decorator is still surfaced."""
+    g = _build_graph(
+        nodes={
+            "pkg/helpers.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "expensive_lookup",
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": ["functools.lru_cache"],
+                        "start_line": 1, "end_line": 20,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {"detect_unreachable_files": False, "detect_zombie_packages": False}
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert "expensive_lookup" in names
+
+
+# ---------------------------------------------------------------------------
+# D7. unused_internal: imports-by-name into the symbol's file means used
+# ---------------------------------------------------------------------------
+
+
+def test_unused_internal_skipped_when_imported_by_name():
+    """A private helper imported by name into a sibling module (typical
+    dispatch-table pattern: ``HANDLERS = {"python": _extract_py, ...}``)
+    is reached at runtime via dict lookup — no direct ``calls`` edge
+    will exist, but the ``imports`` edge carries the symbol name. Such
+    helpers must not be flagged as unused internals."""
+    g = _build_graph(
+        nodes={
+            "pkg/python_handler.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": "_extract_python",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1, "end_line": 15,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+            "pkg/dispatch.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 0,
+                "symbols": [],
+            },
+        },
+        edges=[
+            (
+                "pkg/dispatch.py",
+                "pkg/python_handler.py",
+                {"edge_type": "imports", "imported_names": ["_extract_python"]},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+    assert "_extract_python" not in names
+
+
+def test_unused_internal_still_flagged_when_imports_dont_carry_name():
+    """Sanity check: an ``imports`` edge that does NOT list the private
+    symbol's name (e.g. the importer pulls a different sibling symbol)
+    must not rescue the helper from the unused-internal pass."""
+    g = _build_graph(
+        nodes={
+            "pkg/helpers.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 2,
+                "symbols": [
+                    {
+                        "name": "_unused_helper",
+                        "kind": "function",
+                        "visibility": "private",
+                        "decorators": [],
+                        "start_line": 1, "end_line": 8,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+            "pkg/consumer.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 0,
+                "symbols": [],
+            },
+        },
+        edges=[
+            (
+                "pkg/consumer.py",
+                "pkg/helpers.py",
+                {"edge_type": "imports", "imported_names": ["something_else"]},
+            ),
+        ],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {
+            "detect_unreachable_files": False,
+            "detect_unused_exports": False,
+            "detect_zombie_packages": False,
+            "min_confidence": 0.0,
+        }
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL}
+    assert "_unused_helper" in names
+
+
+# ---------------------------------------------------------------------------
+# D10. WSGI / ASGI / app-factory names treated as entry points
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "factory_name",
+    [
+        "create_app",
+        "make_app",
+        "application",
+        "asgi_app",
+        "wsgi_app",
+        "get_asgi_application",
+        "get_wsgi_application",
+    ],
+)
+def test_python_web_factory_not_flagged(factory_name):
+    """FastAPI / Flask / Tornado / aiohttp / Django entry symbols are
+    loaded by an external server via dotted-path string
+    (``module:create_app`` / ``module:application``) — no graph edge
+    exists from the launching server. These conventional names must be
+    in the entry-point allowlist so the unused-export pass skips them."""
+    g = _build_graph(
+        nodes={
+            "myapp/server.py": {
+                "is_entry_point": False,
+                "is_test": False,
+                "is_api_contract": False,
+                "symbol_count": 1,
+                "symbols": [
+                    {
+                        "name": factory_name,
+                        "kind": "function",
+                        "visibility": "public",
+                        "decorators": [],
+                        "start_line": 1, "end_line": 20,
+                        "complexity_estimate": 1,
+                    },
+                ],
+            },
+        },
+        edges=[],
+    )
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze(
+        {"detect_unreachable_files": False, "detect_zombie_packages": False}
+    )
+    names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+    assert factory_name not in names

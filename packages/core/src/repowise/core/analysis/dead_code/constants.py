@@ -25,6 +25,12 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*__main__.py",
     "*conftest.py",
     "*alembic/env.py",
+    # Alembic migration scripts live in <root>/versions/<rev>_<slug>.py and
+    # are loaded reflectively by Alembic at runtime from script_location in
+    # alembic.ini — they have no static importer by design. The legacy
+    # ``*migrations*`` glob only matches paths that literally contain the
+    # token ``migrations``; many Alembic setups use ``alembic/versions/``.
+    "*/alembic/versions/*.py",
     "*manage.py",
     "*wsgi.py",
     "*asgi.py",
@@ -217,6 +223,27 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     # Typer — same shape.
     "typer.command",
     "typer.callback",
+)
+
+# Decorator *suffixes* that indicate framework registration regardless of
+# the receiver name. Many Click/Typer codebases register subcommands on a
+# locally-named Group instance, e.g.::
+#
+#     decision_group = click.Group(...)
+#
+#     @decision_group.command("add")
+#     def decision_add(): ...
+#
+# The decorator is captured as ``decision_group.command`` — its prefix is
+# project-local, but its trailing attribute (``.command``) is a strong
+# signal that the wrapped function is registered with a framework
+# dispatcher and not called by name. Matching the suffix catches every
+# Click ``Group`` / Typer ``Typer`` / aiogram ``Dispatcher`` / aiohttp
+# ``RouteTableDef`` etc. without hard-coding receiver names.
+_FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
+    ".command",
+    ".group",
+    ".callback",
 )
 
 # Default dynamic patterns (plugins, handlers, etc.)
