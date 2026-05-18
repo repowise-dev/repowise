@@ -121,6 +121,22 @@ def allocate_budget(
         every entry in :data:`BUCKET_TYPES`. Shares need not sum to 1;
         any leftover budget after capping spills into ``file_page``.
     """
+    # Shortcut: when the budget is large enough to cover every available
+    # candidate, allocate them all. This is the obviously-correct
+    # behavior for ``coverage_pct >= 1.0`` and for repos where the total
+    # supply is below the configured budget — there's no signal to be
+    # gained by squeezing shares when nothing competes for the slots.
+    total_available = sum(candidates_per_bucket.values())
+    if total_available > 0 and budget >= total_available:
+        return BucketAllocation(
+            file_page=candidates_per_bucket.get("file_page", 0),
+            symbol_spotlight=candidates_per_bucket.get("symbol_spotlight", 0),
+            module_page=candidates_per_bucket.get("module_page", 0),
+            api_contract=candidates_per_bucket.get("api_contract", 0),
+            infra_page=candidates_per_bucket.get("infra_page", 0),
+            scc_page=candidates_per_bucket.get("scc_page", 0),
+        )
+
     # For small repos, every bucket with at least one candidate gets
     # at least one page — this avoids percentage rounding zeroing out
     # buckets when the budget is tiny.
