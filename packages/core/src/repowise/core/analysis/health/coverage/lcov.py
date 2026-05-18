@@ -18,6 +18,7 @@ DA/BRDA when missing so partial reports still parse cleanly.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from .model import CoverageReport, FileCoverage
@@ -97,15 +98,11 @@ def parse_lcov(text: str) -> CoverageReport:
                 if parts[3] not in ("-", "0"):
                     branches_hit += 1
         elif tag == "LF":
-            try:
+            with contextlib.suppress(ValueError):
                 explicit_lf = int(rest)
-            except ValueError:
-                pass
         elif tag == "LH":
-            try:
+            with contextlib.suppress(ValueError):
                 explicit_lh = int(rest)
-            except ValueError:
-                pass
         elif tag == "BRF":
             try:
                 branches_found = max(branches_found, int(rest))

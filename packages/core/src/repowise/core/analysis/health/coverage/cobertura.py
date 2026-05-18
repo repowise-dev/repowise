@@ -99,10 +99,7 @@ def parse_cobertura(text: str) -> CoverageReport:
         branch_pct: float | None
         bf = int(bucket["branches_found"])
         bh = int(bucket["branches_hit"])
-        if bucket["has_branches"] and bf:
-            branch_pct = bh / bf * 100.0
-        else:
-            branch_pct = None
+        branch_pct = bh / bf * 100.0 if bucket["has_branches"] and bf else None
         files.append(
             FileCoverage(
                 file_path=path,

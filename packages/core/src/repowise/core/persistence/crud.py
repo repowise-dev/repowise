@@ -2118,7 +2118,7 @@ async def get_coverage_summary(
     branch_pcts: list[float] = []
     branch_weights: list[int] = []
     for r in rows:
-        covered += int(round(r.line_coverage_pct / 100.0 * r.total_coverable_lines))
+        covered += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
         total += r.total_coverable_lines
         if r.branch_coverage_pct is not None:
             branch_pcts.append(r.branch_coverage_pct)

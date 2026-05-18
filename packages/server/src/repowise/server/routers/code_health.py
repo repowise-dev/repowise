@@ -154,7 +154,7 @@ async def health_coverage(
         rows_sorted = sorted(rows, key=lambda r: r.line_coverage_pct)
         files = [_coverage_row_to_dict(r) for r in rows_sorted[:limit]]
         # Attach per-file health score so the UI can render a coverage
-        # × score matrix without a second request.
+        # x score matrix without a second request.
         for f in files:
             m = metric_by_path.get(f["file_path"])
             if m is not None:
@@ -170,9 +170,7 @@ async def health_coverage(
         )
         bucket["files"] += 1
         bucket["total"] += r.total_coverable_lines
-        bucket["covered"] += int(
-            round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
-        )
+        bucket["covered"] += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)
     module_rows = [
         {
             "module": name,

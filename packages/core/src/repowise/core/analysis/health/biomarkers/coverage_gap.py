@@ -39,7 +39,7 @@ class CoverageGapDetector:
         uncovered = total - len(ctx.covered_lines or ())
         # Some parsers don't emit a per-line set; fall back to math.
         if uncovered <= 0:
-            uncovered = int(round(total * (100.0 - cov) / 100.0))
+            uncovered = round(total * (100.0 - cov) / 100.0)
 
         deep_gap = cov < _LINE_COVERAGE_DEEP_GAP and total >= _MIN_FILE_SIZE
         regular_gap = cov < _LINE_COVERAGE_GAP and uncovered >= _MIN_UNCOVERED_LINES
