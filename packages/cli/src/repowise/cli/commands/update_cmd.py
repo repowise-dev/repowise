@@ -10,19 +10,25 @@ from rich.table import Table
 from repowise.cli.helpers import (
     CommandTarget,
     acquire_update_lock,
+    clear_update_pending,
+    clear_update_queued,
     console,
     ensure_repowise_dir,
     find_workspace_root,
     get_head_commit,
     load_config,
     load_state,
+    read_update_lock,
+    read_update_pending,
     release_update_lock,
     resolve_command_target,
     resolve_provider,
     resolve_reasoning,
     resolve_repo_path,
+    rotate_update_log_if_needed,
     run_async,
     save_state,
+    write_update_pending,
 )
 
 # ---------------------------------------------------------------------------
@@ -132,6 +138,14 @@ def _workspace_update(
     def _on_done(result: "RepoUpdateResult") -> None:
         if result.error:
             console.print(f"    [red]\u2717 {result.alias}: {result.error}[/red]")
+        elif result.skipped_reason == "in_flight":
+            # Surface skipped-because-in-flight as a yellow note rather than
+            # a silent skip. Single-flight is the noise-fix path, so the
+            # user benefits from seeing it actually trigger.
+            console.print(
+                f"    [yellow]\u21bb {result.alias}: another update is already "
+                "in flight; this commit was queued for it to pick up.[/yellow]"
+            )
         elif result.updated:
             console.print(
                 f"    [green]\u2713[/green] {result.alias}: "
@@ -269,6 +283,11 @@ def update_command(
     repo_path = target.repo_path
     assert repo_path is not None  # single mode always sets repo_path
     ensure_repowise_dir(repo_path)
+    # Truncate the hook-managed log if it has grown past the cap. The hook
+    # appends each run unconditionally — without this opportunistic rotation
+    # at the start of every CLI update, a busy repo's ``.update.log`` would
+    # balloon to MBs over time.
+    rotate_update_log_if_needed(repo_path)
 
     # Load saved API keys from .repowise/.env (won't overwrite existing env vars)
     from repowise.cli.ui import load_dotenv
@@ -301,6 +320,33 @@ def update_command(
         console.print("[green]Already up to date.[/green]")
         return
 
+    # --- Single-flight check ------------------------------------------------
+    # A fresh lock from another process means a `repowise update` is already
+    # running on this repo. Two updates racing on save_state was the actual
+    # root cause of "wiki keeps going stale": post-commit hooks fired during
+    # rapid-fire commits would each redo full ingestion + generation from the
+    # same outdated base, take 10+ minutes, then save_state out of order so
+    # state.json never reflected reality. Bail cleanly instead — and leave
+    # the new HEAD in ``.update.pending`` so the running update can roll
+    # forward to it at the end of its current pass.
+    existing_lock = read_update_lock(repo_path)
+    if existing_lock is not None:
+        import time as _time
+
+        elapsed = int(_time.time() - existing_lock.get("started_at", _time.time()))
+        target_short = (existing_lock.get("target_commit") or "")[:8]
+        write_update_pending(repo_path, head)
+        console.print(
+            f"[yellow]Another `repowise update` is already running "
+            f"(pid {existing_lock.get('pid')}, target {target_short}, "
+            f"started {elapsed}s ago).[/yellow]"
+        )
+        console.print(
+            f"[dim]HEAD {head[:8] if head else 'HEAD'} marked as pending; "
+            "the running update will roll forward to it.[/dim]"
+        )
+        return
+
     # Backfill docs_enabled on legacy state files using the same
     # shape-based inference the resolver uses, so the post-commit hook
     # and future runs stop relying on the inference. Done before mode
@@ -329,7 +375,12 @@ def update_command(
     import atexit
 
     acquire_update_lock(repo_path, head)
+    # Drop the queued marker now that the real lock owns the suppression
+    # window. Leaving both behind would cause the augment hook to keep
+    # suppressing for the queued-stale-after duration even past a failed run.
+    clear_update_queued(repo_path)
     atexit.register(release_update_lock, repo_path)
+    atexit.register(clear_update_queued, repo_path)
 
     console.print(f"[bold]repowise update[/bold] — {repo_path}")
     console.print(f"Diffing [cyan]{base_ref[:8]}..{(head or 'HEAD')[:8]}[/cyan]")
@@ -778,6 +829,17 @@ def update_command(
     state["last_sync_commit"] = head
     state["total_pages"] = state.get("total_pages", 0) + len(generated_pages)
     save_state(repo_path, state)
+
+    # --- Roll forward to any commit that landed during this run ------------
+    # Another `repowise update` (from a post-commit hook) may have written a
+    # ``.update.pending`` marker while we were generating pages. If the new
+    # HEAD points past where we just finished, clear the marker only if it's
+    # already caught up; otherwise leave it in place as a signal to the
+    # augment hook so its message can be "update done, new commits since"
+    # instead of the bare stale-wiki warning.
+    pending_head = read_update_pending(repo_path)
+    if pending_head and pending_head == head:
+        clear_update_pending(repo_path)
 
     # Trigger cross-repo hooks if this repo is part of a workspace
     try:

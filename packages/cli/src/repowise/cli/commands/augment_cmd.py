@@ -488,7 +488,24 @@ _GIT_COMMIT_PATTERNS = (
 
 
 def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | None:
-    """After a successful git commit, check if the wiki needs updating."""
+    """After a successful git commit, check if the wiki needs updating.
+
+    Three-state response to "state.json is behind HEAD":
+
+      1. A real ``.update.lock`` is held → an update is actively running.
+         Emit a *positive* notice ("updating in background") so the agent
+         knows the system is healing itself. Squelches the noisy stale
+         warning during the long tail of large updates.
+
+      2. A fresh ``.update.queued`` marker exists (post-commit hook just
+         spawned a new update but the lock file isn't on disk yet) → also
+         emit the positive notice. Closes the race window between commit
+         and update start where we'd otherwise warn for ~5s.
+
+      3. Neither marker → the update didn't run or already finished. Warn
+         once per HEAD as before, so the user knows the wiki is genuinely
+         out of sync.
+    """
     if isinstance(tool_output, dict):
         exit_code = tool_output.get("exit_code")
         if exit_code is None:
@@ -541,8 +558,22 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
     if head == last_sync:
         return None
 
-    if _update_in_flight(repo_path, head):
-        return None
+    # Active update? Tell the agent the system is healing itself instead of
+    # repeating the stale warning every commit. Per-head de-dup applies
+    # equally to the positive notice so the chat doesn't get a notice spam
+    # for the same HEAD over multiple tool calls.
+    in_flight = _read_in_flight_marker(repo_path)
+    if in_flight is not None:
+        if _already_warned(repo_path, head):
+            return None
+        _record_warning(repo_path, head)
+        target_short = (in_flight.get("target_commit") or head)[:8]
+        elapsed = in_flight.get("elapsed_seconds")
+        elapsed_str = f"started {int(elapsed)}s ago" if isinstance(elapsed, (int, float)) else "running now"
+        return (
+            f"[repowise] Wiki update in background — {elapsed_str}, "
+            f"target {target_short}. State will catch up once it finishes."
+        )
 
     if _already_warned(repo_path, head):
         return None
@@ -557,29 +588,54 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
     )
 
 
-def _update_in_flight(repo_path: "object", head: str) -> bool:
-    """Return True if a recent ``repowise update`` is still running."""
+def _read_in_flight_marker(repo_path: "object") -> dict | None:
+    """Return a normalised in-flight marker, or None when nothing is running.
+
+    Considers two on-disk signals as evidence of an in-flight update:
+
+      * ``.update.lock``   — written by ``update_cmd`` once it starts the
+        actual work. Authoritative.
+      * ``.update.queued`` — written by the post-commit hook *before*
+        backgrounding the update, to close the start-up race window.
+
+    Both have a freshness window so an aborted run can't suppress real
+    warnings indefinitely.
+    """
     import time
     from pathlib import Path
 
-    lock_path = Path(repo_path) / ".repowise" / ".update.lock"
-    if not lock_path.exists():
-        return False
-    try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False
+    repo_path = Path(repo_path)
+    now = time.time()
 
-    started = payload.get("started_at")
-    if not isinstance(started, (int, float)):
-        return False
-    if time.time() - started > 30 * 60:
-        return False
+    lock_path = repo_path / ".repowise" / ".update.lock"
+    if lock_path.exists():
+        try:
+            payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            started = payload.get("started_at")
+            if isinstance(started, (int, float)) and now - started <= 30 * 60:
+                return {
+                    "source": "lock",
+                    "target_commit": payload.get("target_commit"),
+                    "elapsed_seconds": now - started,
+                }
+        except (json.JSONDecodeError, OSError):
+            pass
 
-    target = payload.get("target_commit")
-    if target and target == head:
-        return True
-    return True
+    queued_path = repo_path / ".repowise" / ".update.queued"
+    if queued_path.exists():
+        try:
+            payload = json.loads(queued_path.read_text(encoding="utf-8"))
+            queued_at = payload.get("queued_at")
+            if isinstance(queued_at, (int, float)) and now - queued_at <= 5 * 60:
+                return {
+                    "source": "queued",
+                    "target_commit": payload.get("target_commit"),
+                    "elapsed_seconds": now - queued_at,
+                }
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return None
 
 
 def _already_warned(repo_path: "object", head: str) -> bool:
