@@ -32,6 +32,26 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import AnswerCache, Page, WikiSymbol
+from repowise.server.mcp_server._answer_context import (
+    build_context_block as _build_context_block_v2,
+)
+from repowise.server.mcp_server._answer_context import (
+    build_structured_prelude as _build_structured_prelude,
+)
+from repowise.server.mcp_server._answer_context import (
+    fetch_relevant_decisions as _fetch_relevant_decisions,
+)
+from repowise.server.mcp_server._answer_context import is_why_question as _is_why_question
+from repowise.server.mcp_server._answer_pipeline import (
+    apply_pagerank_bias as _apply_pagerank_bias,
+)
+from repowise.server.mcp_server._answer_pipeline import (
+    expand_via_graph as _expand_via_graph,
+)
+from repowise.server.mcp_server._answer_pipeline import (
+    hybrid_retrieve as _hybrid_retrieve,
+)
+from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _resolve_repo_context,
@@ -208,6 +228,62 @@ def _answer_is_hedged(answer_text: str) -> bool:
 # to ground in (vs. one-line summary that's too thin to act on).
 _GATED_EXCERPT_CHARS = 600
 _GATED_RETURN_HITS = 3
+
+# Path-prefix domain heuristics — down-weight cross-domain retrievals so a
+# clearly backend question doesn't anchor on a same-vocabulary UI file (and
+# vice versa). The penalty is multiplicative, not absolute, so a strongly
+# matching cross-domain file can still survive on raw signal; the goal is
+# to break ties when retrieval is otherwise ambiguous, not to censor results.
+_UI_PATH_PREFIXES = (
+    "packages/ui/",
+    "packages/web/",
+    "frontend/",
+    "website/",
+)
+_BACKEND_PATH_PREFIXES = (
+    "packages/server/",
+    "packages/core/",
+    "packages/cli/",
+    "backend/",
+    "modal_app/",
+)
+# Tokens that flag a question as being about a specific domain. Kept small
+# and conservative — ambiguous questions (both lists hit, or neither) fall
+# through to no penalty rather than misclassify.
+_UI_QUESTION_TOKENS = frozenset({
+    "ui", "frontend", "component", "react", "tsx", "jsx", "render",
+    "css", "tailwind", "view", "dashboard", "button", "modal", "page",
+    "browser", "client-side",
+})
+_BACKEND_QUESTION_TOKENS = frozenset({
+    "backend", "server", "api", "endpoint", "route", "indexer", "ingest",
+    "ingestion", "pipeline", "database", "db", "schema", "migration",
+    "orchestrat", "mcp", "fastapi", "sqlalchemy", "subprocess", "worker",
+    "cli", "command", "sql",
+})
+# Penalty factor applied to cross-domain hits. 0.5 is strong enough to
+# overtake a same-domain near-tie but small enough that a dominant cross-
+# domain hit (real top score outlier) still survives.
+_DOMAIN_PENALTY = 0.5
+
+# Floor on raw top-hit score for "high" confidence. Below this the answer
+# may be technically dominant but built on weak retrieval — downgrade to
+# "medium" so the agent verifies. Tuned against observed BM25 ranges on
+# the wiki corpus where useful hits routinely score >1.5.
+_HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
+
+# Schema version stamped on every cached payload. Bump whenever the response
+# shape changes in a way that would mislead a consumer reading an old cached
+# entry (new top-level fields, semantics of existing fields). On cache reads
+# we treat any payload at a lower version as a miss and re-synthesise — the
+# alternative (returning stale-shape payloads) silently bypasses every
+# improvement to the tool and was the failure mode that hid the entire
+# get_answer rework behind a cache hit during testing.
+# v3: retrieval pipeline overhaul (hybrid FTS+vector, PageRank bias, graph
+# expansion, structured prelude, decision fusion). Cached v2 payloads were
+# synthesised over weaker retrieval — bumping forces re-synthesis so the
+# upgrade actually reaches callers without waiting for cache expiry.
+_ANSWER_SCHEMA_VERSION = 3
 
 # Intersection-retrieval connectives. If a question contains any of these
 # (case-insensitive whole-word), it's likely a relational/multi-entity
@@ -732,6 +808,77 @@ async def _enrich_gated_excerpts(hits: list[dict], ctx: Any = None) -> None:
             h["excerpt"] = body[:_GATED_EXCERPT_CHARS]
 
 
+def _detect_question_domain(question: str) -> str | None:
+    """Return ``"ui"``, ``"backend"``, or ``None`` when the question is ambiguous.
+
+    Used to break ties on retrievals where vocabulary overlaps across domains
+    (e.g. "how does indexing work" could plausibly retrieve a UI status-pill
+    component or the actual ingestion pipeline). The classifier is intentionally
+    conservative: if both domain token sets fire, or neither does, we return
+    ``None`` and apply no penalty — better to leave ranking alone than to
+    miscategorise a cross-cutting question.
+    """
+    qlow = question.lower()
+    has_ui = any(tok in qlow for tok in _UI_QUESTION_TOKENS)
+    has_backend = any(tok in qlow for tok in _BACKEND_QUESTION_TOKENS)
+    if has_ui and not has_backend:
+        return "ui"
+    if has_backend and not has_ui:
+        return "backend"
+    return None
+
+
+def _apply_domain_penalty(hits: list[dict], question: str) -> None:
+    """Multiplicatively penalise cross-domain hits in place.
+
+    Mutates ``hits`` and re-sorts by adjusted score. No-op when the question
+    domain is ambiguous (see ``_detect_question_domain``). Hits that take the
+    penalty get a ``_domain_penalty`` marker so the gated-return path can
+    surface the reason to the caller.
+    """
+    domain = _detect_question_domain(question)
+    if domain is None or not hits:
+        return
+    if domain == "backend":
+        bad_prefixes = _UI_PATH_PREFIXES
+    else:
+        bad_prefixes = _BACKEND_PATH_PREFIXES
+    touched = False
+    for h in hits:
+        tp = h.get("target_path") or ""
+        if tp and any(tp.startswith(p) for p in bad_prefixes):
+            h["score"] = h.get("score", 0.0) * _DOMAIN_PENALTY
+            h["_domain_penalty"] = f"{domain} question; cross-domain path"
+            touched = True
+    if touched:
+        hits.sort(key=lambda h: h["score"], reverse=True)
+
+
+def _candidate_justification(h: dict) -> str:
+    """One-line reason this hit might answer the question.
+
+    Used on the low-confidence return path so the agent sees something
+    decision-shaped ("Read file X because it implements Y") instead of a
+    flat list of paths it has to scan into. Prefers the matched-symbol name
+    over the file summary because the matched symbol is what tied this hit
+    to the question in the first place.
+    """
+    syms = h.get("symbols") or []
+    matched = next((s for s in syms if s.get("_matched")), None)
+    if matched:
+        name = matched.get("name") or matched.get("signature") or "matched symbol"
+        kind = matched.get("kind") or "symbol"
+        return f"Implements {kind} {name}."
+    summary = (h.get("summary") or h.get("snippet") or "").strip()
+    if summary:
+        # First sentence only; trailing prose is mostly cache-write cost on
+        # the consumer side.
+        first = summary.split(". ")[0]
+        return (first[:160].rstrip() + ".") if first else ""
+    title = h.get("title") or ""
+    return title[:160]
+
+
 def _question_terms(question: str) -> list[str]:
     """Extract content terms from a question. Lowercase, alnum-tokenized,
     stopwords + length<3 dropped. Used by the term-coverage re-ranker."""
@@ -782,12 +929,19 @@ async def get_answer(
     scope: str | None = None,
     repo: str | None = None,
 ) -> dict:
-    """One-call RAG: answer a code question. Always your first call.
+    """Synthesised answer to a code question with verified citations and a calibrated trust signal.
 
-    Returns {answer, citations, confidence, fallback_targets}. High-confidence
-    answers name concrete files/symbols and can be used with less verification.
-    For medium/low confidence, cross-reference with search_codebase + get_context.
-    Always verify cited file paths exist before acting on them.
+    The only tool that pairs RAG retrieval over the wiki with an LLM-written
+    answer plus a separately-reported retrieval_quality. Use it as the first
+    call on "how does X work" / "where is Y" / "why is Z structured this way"
+    questions — it eliminates the search → context → read loop when retrieval
+    is dominant. On low confidence it returns a structured ``best_guesses``
+    list (one-line justifications per candidate) instead of an empty answer,
+    so the caller always has somewhere concrete to Read next.
+
+    Returns ``{answer, citations, confidence, retrieval_quality,
+    fallback_targets, best_guesses?, next_action_hint?}``. Always verify cited
+    paths exist if you intend to act on them.
 
     Args:
         question: developer question.
@@ -831,11 +985,24 @@ async def get_answer(
     if cached is not None:
         with contextlib.suppress(Exception):
             payload = _json.loads(cached.payload_json)
+            # Schema bypass: payloads from a pre-rework code path don't carry
+            # the fields the current consumer expects (retrieval_quality,
+            # best_guesses, calibrated confidence). Returning them masks every
+            # subsequent improvement until the cache happens to expire. Bypass
+            # silently so the next write upgrades the row.
+            cached_version = payload.get("_schema_version", 1)
+            schema_stale = cached_version < _ANSWER_SCHEMA_VERSION
             # Bypass-on-hedged: if the cached answer hedged, the retrieval +
             # symbol pipeline has since been upgraded (question-aware symbol
             # promotion, source-body excerpts). Give synthesis another shot
             # with the new context rather than pinning the bad answer.
-            if _answer_is_hedged(payload.get("answer", "")):
+            hedged_cache = _answer_is_hedged(payload.get("answer", ""))
+            if schema_stale:
+                _log.info(
+                    "Bypassing cache entry at schema v%s (current v%s)",
+                    cached_version, _ANSWER_SCHEMA_VERSION,
+                )
+            elif hedged_cache:
                 _log.info("Bypassing hedged cache entry for re-synthesis")
             else:
                 payload["_meta"] = _build_meta(
@@ -845,63 +1012,40 @@ async def get_answer(
                         payload.get("confidence", "low"),
                         len(payload.get("retrieval", [])),
                     ),
+                    repository=repository,
                 )
                 return payload
 
-    # --- Retrieval (FTS) ---------------------------------------------------
-    raw_hits: list[Any] = []
-    if ctx.fts is not None:
-        with contextlib.suppress(Exception):
-            # Pull a wider candidate set so the term-coverage re-ranker has
-            # room to push conjunctive matches up the list before we cap to 5.
-            raw_hits = await asyncio.wait_for(
-                ctx.fts.search(question, limit=15), timeout=5.0
-            )
+    # --- Retrieval pipeline ------------------------------------------------
+    # Stages live in ``_answer_pipeline`` so each can evolve without
+    # rereading the orchestrator: hybrid retrieval (FTS + vector + RRF) →
+    # hydration → coverage rerank → domain penalty → intersection boost →
+    # PageRank bias → 1-hop graph expansion. The orchestrator only sequences
+    # them and decides when to stop (cap at 5 for the response payload).
+    hits = await _hybrid_retrieve(question, ctx)
+    hits = await _hydrate_hits(hits, ctx, scope=scope)
 
-    # Hydrate hits with target_path + summary from the Page table.
-    hits: list[dict] = []
-    if raw_hits:
-        page_ids = [h.page_id for h in raw_hits]
-        async with get_session(ctx.session_factory) as session:
-            res = await session.execute(
-                select(
-                    Page.id,
-                    Page.target_path,
-                    Page.summary,
-                    Page.page_type,
-                ).where(Page.id.in_(page_ids))
-            )
-            meta_by_id = {
-                row[0]: {
-                    "target_path": row[1],
-                    "summary": row[2] or "",
-                    "page_type": row[3],
-                }
-                for row in res.all()
-            }
-        for h in raw_hits:
-            meta = meta_by_id.get(h.page_id, {})
-            target_path = meta.get("target_path", "")
-            if scope and target_path and not target_path.startswith(scope):
-                continue
-            hits.append(
-                {
-                    "page_id": h.page_id,
-                    "title": h.title,
-                    "target_path": target_path,
-                    "page_type": meta.get("page_type", h.page_type),
-                    "snippet": h.snippet,
-                    "summary": meta.get("summary", ""),
-                    "score": float(h.score or 0.0),
-                }
-            )
-
-    # Term-coverage re-rank before the cap so conjunctive matches survive.
+    # Term-coverage re-rank before any graph-aware bias so conjunctive
+    # matches survive the merge.
     hits = _rerank_by_coverage(hits, question)
+    # Domain heuristic: down-weight cross-domain hits (e.g. UI files for a
+    # clearly backend question). Cheap tie-breaker, never a hard filter.
+    _apply_domain_penalty(hits, question)
     # Intersection-retrieval boost for relational questions (multi-entity).
     # Pages at the intersection of two split-FTS halves get a 2× bonus.
     with contextlib.suppress(Exception):
         await _intersection_boost(question, hits, ctx)
+    # PageRank bias: nudge architecturally central files above peripheral
+    # ones at the same retrieval score. Damped + normalised within the
+    # candidate set so it's a tie-breaker, not a wholesale reordering.
+    with contextlib.suppress(Exception):
+        await _apply_pagerank_bias(hits, ctx)
+    # Graph expansion: 1-hop walk from the top hits to rescue near-misses
+    # where retrieval landed in the right module but on the wrong file
+    # (consumer instead of orchestrator). Adds up to 3 neighbors with a
+    # damped score, then re-sorts.
+    with contextlib.suppress(Exception):
+        hits = await _expand_via_graph(hits, ctx)
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 
@@ -935,6 +1079,7 @@ async def get_answer(
             "_meta": _build_meta(
                 timing_ms=(time.perf_counter() - t0) * 1000,
                 hint=_answer_hint("low", 0),
+                repository=repository,
             ),
         }
 
@@ -968,21 +1113,43 @@ async def get_answer(
             # Enrich top hits with substantive excerpts so the agent has
             # real material to ground in (not one-line summaries).
             await _enrich_gated_excerpts(hits, ctx)
+            # Structured candidate set: a decision-shaped list with a
+            # one-line justification per file. Beats the prior flat
+            # ``fallback_targets`` list because the agent can pick ONE file
+            # to Read first instead of skimming five.
+            best_guesses = [
+                {
+                    "file": h.get("target_path"),
+                    "why_relevant": _candidate_justification(h),
+                    "score": round(h.get("score", 0.0), 3),
+                    "domain_penalty": h.get("_domain_penalty"),
+                }
+                for h in hits[:_GATED_RETURN_HITS]
+                if h.get("target_path")
+            ]
             return {
                 "answer": "",
                 "citations": [],
                 "confidence": "low",
+                "retrieval_quality": "weak",
+                "best_guesses": best_guesses,
+                "next_action_hint": (
+                    f"Read {best_guesses[0]['file']} first — it scored highest "
+                    "but retrieval was ambiguous, so verify before answering."
+                    if best_guesses
+                    else "Fall back to search_codebase or Grep."
+                ),
                 "fallback_targets": fallback_targets,
                 "retrieval": hits[:_GATED_RETURN_HITS],
                 "note": (
                     "Multiple plausible candidates — synthesis skipped to "
-                    "avoid anchoring on a wrong frame. Each retrieval entry "
-                    "includes an excerpt from the page; read them and pick "
-                    "the one that actually answers the question."
+                    "avoid anchoring on a wrong frame. Each best_guess entry "
+                    "names why that file is in the running."
                 ),
                 "_meta": _build_meta(
                     timing_ms=(time.perf_counter() - t0) * 1000,
                     hint=_answer_hint("low", len(hits)),
+                    repository=repository,
                 ),
             }
 
@@ -1013,13 +1180,27 @@ async def get_answer(
             "_meta": _build_meta(
                 timing_ms=(time.perf_counter() - t0) * 1000,
                 hint=_answer_hint("low", len(hits)),
+                repository=repository,
             ),
         }
+
+    # Decision fusion (why-shaped questions only) + structured prelude. Both
+    # layers are gated on signal: no ADRs for the top hits → no decisions
+    # block, no symbols / commits / decisions → no prelude. Empty layers are
+    # dropped before formatting, so the prompt never carries hollow scaffolding.
+    top_paths = [h["target_path"] for h in hits if h.get("target_path")]
+    decisions: list[dict] = []
+    if _is_why_question(question) and top_paths:
+        with contextlib.suppress(Exception):
+            decisions = await _fetch_relevant_decisions(ctx, repo_id, top_paths)
+    prelude = ""
+    with contextlib.suppress(Exception):
+        prelude = await _build_structured_prelude(hits, decisions, ctx, repo_id)
 
     user_prompt = _USER_TEMPLATE.format(
         question=question.strip(),
         n=len(hits),
-        context=_build_context_block(hits),
+        context=_build_context_block_v2(hits, prelude=prelude, decisions=decisions),
     )
 
     answer_text = ""
@@ -1046,6 +1227,7 @@ async def get_answer(
             "_meta": _build_meta(
                 timing_ms=(time.perf_counter() - t0) * 1000,
                 hint=_answer_hint("low", len(hits)),
+                repository=repository,
             ),
         }
 
@@ -1065,8 +1247,14 @@ async def get_answer(
         _ratio = _top / _second
     else:
         _ratio = float("inf") if hits else 0.0
-    if _ratio >= _DOMINANCE_RATIO:
+    _top_score = hits[0].get("score", 0.0) if hits else 0.0
+    if _ratio >= _DOMINANCE_RATIO and _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
         confidence = "high"
+    elif _ratio >= _DOMINANCE_RATIO:
+        # Dominant but weak — the right file relative to its siblings, but
+        # the signal isn't strong enough to trust the synthesised answer
+        # without verification. Downgrade so the consumer Reads the source.
+        confidence = "medium"
     else:
         confidence = "medium"
 
@@ -1095,15 +1283,29 @@ async def get_answer(
         if not has_match:
             confidence = "medium"
 
+    # retrieval_quality is a separate signal from confidence. Where confidence
+    # says "how much should you trust the synthesised text", retrieval_quality
+    # says "how good was the retrieval that fed it". The agent uses confidence
+    # to decide whether to re-read; retrieval_quality to decide whether to
+    # call search_codebase again with a refined query.
+    if _top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR and _ratio >= _DOMINANCE_RATIO:
+        retrieval_quality = "high"
+    elif _ratio >= _DOMINANCE_RATIO:
+        retrieval_quality = "partial"
+    else:
+        retrieval_quality = "weak"
+
     if hedged:
         # Hedged answers: drop the retrieval payload. The consumer has been
         # told to read the source — the symbol-docstring blob that helped
         # synthesis doesn't help them, and keeping it in the response bloats
         # every follow-up turn's prompt cache.
         payload = {
+            "_schema_version": _ANSWER_SCHEMA_VERSION,
             "answer": answer_text,
             "citations": citations,
             "confidence": "low",
+            "retrieval_quality": retrieval_quality,
             "fallback_targets": fallback_targets[:3],
             "retrieval": [],
             "note": (
@@ -1113,18 +1315,21 @@ async def get_answer(
         }
     else:
         payload = {
+            "_schema_version": _ANSWER_SCHEMA_VERSION,
             "answer": answer_text,
             "citations": citations,
             "confidence": confidence,
+            "retrieval_quality": retrieval_quality,
             "fallback_targets": fallback_targets,
             "retrieval": hits,
         }
         if confidence == "high":
             payload["note"] = (
                 "High confidence: top retrieval result clearly dominates "
-                f"(dominance ratio {_ratio:.2f}x) AND the synthesized answer "
-                "is direct (no hedging). Cite this answer; do not re-read the "
-                "source unless a specific detail is missing."
+                f"(dominance ratio {_ratio:.2f}x, top score {_top_score:.2f}) "
+                "AND the synthesised answer is direct (no hedging). Cite this "
+                "answer; do not re-read the source unless a specific detail "
+                "is missing."
             )
 
     # Persist to cache. Best-effort: cache failures must NEVER block the
@@ -1146,5 +1351,6 @@ async def get_answer(
     payload["_meta"] = _build_meta(
         timing_ms=(time.perf_counter() - t0) * 1000,
         hint=_answer_hint(confidence, len(hits)),
+        repository=repository,
     )
     return payload

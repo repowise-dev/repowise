@@ -1,4 +1,4 @@
-"""repowise MCP Server — 7 tools for AI coding assistants.
+"""repowise MCP Server — 8 tools for AI coding assistants.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports both stdio transport (Claude Code, Cursor, Cline) and SSE transport
@@ -36,6 +36,7 @@ from repowise.server.mcp_server.tool_dead_code import get_dead_code
 from repowise.server.mcp_server.tool_overview import get_overview
 from repowise.server.mcp_server.tool_risk import get_risk
 from repowise.server.mcp_server.tool_search import search_codebase
+from repowise.server.mcp_server.tool_symbol import get_symbol
 from repowise.server.mcp_server.tool_why import get_why
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,7 @@ __all__ = [
     "get_dead_code",
     "get_overview",
     "get_risk",
+    "get_symbol",
     "get_why",
     "mcp",
     "run_mcp",

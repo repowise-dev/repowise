@@ -21,6 +21,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_all_contexts,
     _resolve_repo_context,
 )
+from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._server import mcp
 
 
@@ -167,16 +168,19 @@ def _build_workspace_footer() -> dict | None:
 
 @mcp.tool()
 async def get_overview(repo: str | None = None) -> dict:
-    """Get the repository overview: architecture summary, module map, key entry points.
+    """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
-    Best first call when starting to explore an unfamiliar codebase.
+    Returns the synthesised overview plus key modules, entry points, repo-wide
+    git health (hotspot count, churn trend, bus-factor distribution), the
+    knowledge map (top owners, knowledge silos), and the community summary.
+    Skip this on subsequent calls — once you have the map, jump straight to
+    ``get_context`` / ``get_answer``.
 
     In workspace mode:
-    - Omit ``repo`` for the default repo overview (includes workspace context,
-      cross-repo co-changes, package dependencies, and API contract links).
-    - Use ``repo="all"`` for a workspace-level summary of all repos including
-      cross-repo topology and contract links (HTTP routes, gRPC services, topics).
-    - Use ``repo="<alias>"`` to query a specific repo.
+    - Omit ``repo`` for the default repo's overview plus a workspace footer.
+    - ``repo="all"`` returns the cross-repo topology (co-changes, package deps,
+      API contracts) — no single-repo detail.
+    - ``repo="<alias>"`` targets one specific repo.
 
     Args:
         repo: Repository alias, path, or ID. Use ``"all"`` for workspace overview.
@@ -424,4 +428,5 @@ async def get_overview(repo: str | None = None) -> dict:
         if ws_footer:
             result["workspace"] = ws_footer
 
+        result["_meta"] = _build_meta(repository=repository)
         return result

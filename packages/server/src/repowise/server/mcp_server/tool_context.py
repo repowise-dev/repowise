@@ -1,12 +1,21 @@
-"""MCP Tool: get_context — the workhorse tool for files, modules, or symbols.
+"""MCP Tool: get_context — relationships and triage signals for files / modules / symbols.
 
-Absorbs functionality from the former get_symbol, get_callers_callees,
-get_graph_metrics, and get_community tools via the ``include`` parameter:
-  - include=["source"]   → symbol source body (replaces get_symbol)
-  - include=["callers"]  → who calls this symbol (replaces get_callers_callees)
-  - include=["callees"]  → what this symbol calls
-  - include=["metrics"]  → PageRank, betweenness, percentiles (replaces get_graph_metrics)
-  - include=["community"]→ community membership + neighbors (replaces get_community)
+Workhorse for "what is this and what touches it" questions. Returns a triage
+card by default (title, summary, signatures, hotspot bit, top callers, pointers
+to risk / why / symbol). NOT a source-body tool — for raw bytes call
+``get_symbol("path::Name")`` instead. The split keeps the cached prompt prefix
+small on multi-turn agent sessions: ``get_context`` stays under ~2k tokens for
+common targets, while ``get_symbol`` returns bounded bytes for one symbol.
+
+Optional ``include`` parameter widens the response:
+  - include=["full_doc"]  → full wiki markdown content
+  - include=["callers"]   → who calls this symbol (symbol targets only)
+  - include=["callees"]   → what this symbol calls (symbol targets only)
+  - include=["ownership"] → primary owner, bus factor, contributor count
+  - include=["last_change"]→ last commit date and author
+  - include=["metrics"]   → PageRank, betweenness, percentile ranks
+  - include=["community"] → community membership + neighbors
+  - include=["decisions"] → full decision records (default returns titles only)
 """
 
 from __future__ import annotations
@@ -14,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -68,8 +76,6 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server._server import mcp
 
-# Safety cap for source retrieval (from former get_symbol)
-_MAX_SOURCE_LINES = 400
 # Minimum confidence for call edges to filter false positives
 _MIN_CALL_CONFIDENCE = 0.7
 
@@ -104,8 +110,6 @@ async def _resolve_one_target(
     target: str,
     include: set[str] | None,
     compact: bool = False,
-    *,
-    repo_path: str | None = None,
 ) -> dict:
     """Resolve a single target and return its full context."""
     repo_id = repository.id
@@ -288,19 +292,35 @@ async def _resolve_one_target(
             classes = [s.name for s in symbols if s.kind == "class"]
             functions = [s.name for s in symbols if s.kind in ("function", "method")]
             if compact:
-                # Compact mode: name+kind+signature+line only. Drop docstring,
-                # start_line/end_line range, structure block, and imported_by.
-                # Used by agents that already know the file and just want a
-                # cheap signature index.
+                # Compact mode: name+kind+signature+line+symbol_id only. Drops
+                # docstrings, line ranges, structure, and imported_by — those
+                # live behind compact=False or include= flags. The symbol_id
+                # is the canonical handle the caller pipes straight into
+                # get_symbol when it wants bytes.
+                #
+                # Cap at 40 symbols so a dense generated file (protobuf
+                # wrappers, vendored libs) can't blow the triage card past
+                # the agent's budget. Order matches WikiSymbol.start_line
+                # (assigned at index time), so the head is the navigationally
+                # useful slice.
+                symbol_cap = 40
+                visible = list(symbols)[:symbol_cap]
                 docs["symbols"] = [
                     {
                         "name": s.name,
                         "kind": s.kind,
                         "signature": s.signature,
                         "line": s.start_line,
+                        "symbol_id": s.symbol_id,
                     }
-                    for s in symbols
+                    for s in visible
                 ]
+                if len(symbols) > symbol_cap:
+                    docs["symbols_truncated"] = {
+                        "shown": symbol_cap,
+                        "total": len(symbols),
+                        "hint": "Call with compact=False or include=['full_doc'] for the full list.",
+                    }
                 if not docs.get("summary"):
                     docs["summary"] = _synthesize_structural_summary(
                         target, classes, functions
@@ -421,6 +441,51 @@ async def _resolve_one_target(
                 ]
 
         result_data["docs"] = docs
+
+    # --- Triage signals (always on) ---------------------------------------
+    # Two single-bit-ish pointers the agent uses to decide its next move:
+    #   * ``hotspot``: lights the way to ``get_risk`` for files in the 95th+
+    #     churn percentile. Just the boolean — the full risk dossier stays
+    #     in ``get_risk`` so the triage card doesn't grow.
+    #   * ``decision_records``: titles only, no body. Lights the way to
+    #     ``get_why``. We deliberately don't inline the rationale here;
+    #     duplicating it across every ``get_context`` response bloats the
+    #     cached prompt prefix and defeats the split between the two tools.
+    #
+    # Cheap: two short queries piggybacking on the session we already opened.
+    triage_path = file_path_for_git
+    if target_type == "module" and page:
+        triage_path = page.target_path
+    if triage_path:
+        triage_meta_res = await session.execute(
+            select(GitMetadata.is_hotspot).where(
+                GitMetadata.repository_id == repo_id,
+                GitMetadata.file_path == triage_path,
+            )
+        )
+        triage_meta = triage_meta_res.scalar_one_or_none()
+        result_data["hotspot"] = bool(triage_meta) if triage_meta is not None else False
+
+        decision_titles_res = await session.execute(
+            select(DecisionRecord.title, DecisionRecord.affected_files_json).where(
+                DecisionRecord.repository_id == repo_id,
+            )
+        )
+        titles: list[str] = []
+        for title, affected_json in decision_titles_res.all():
+            try:
+                affected = json.loads(affected_json or "[]")
+            except (json.JSONDecodeError, TypeError):
+                affected = []
+            if triage_path in affected or target in affected:
+                titles.append(title)
+                if len(titles) >= 5:
+                    break
+        if titles:
+            result_data["decision_records"] = titles
+            result_data["decision_records_hint"] = (
+                "Decisions touch this file. Call get_why(targets=[...]) for rationale."
+            )
 
     # --- Ownership ---
     if include is None or "ownership" in include:
@@ -543,13 +608,6 @@ async def _resolve_one_target(
             freshness["is_stale"] = None
         result_data["freshness"] = freshness
 
-    # --- Source (replaces get_symbol) ---
-    if include and "source" in include:
-        await _resolve_source(
-            session, repository, target, target_type, result_data,
-            repo_path=repo_path,
-        )
-
     # --- Callers / Callees (replaces get_callers_callees) ---
     want_callers = bool(include and "callers" in include)
     want_callees = bool(include and "callees" in include)
@@ -573,100 +631,6 @@ async def _resolve_one_target(
 # ---------------------------------------------------------------------------
 # Merged tool helpers (source, callers/callees, metrics, community)
 # ---------------------------------------------------------------------------
-
-
-async def _resolve_source(
-    session: AsyncSession,
-    repository: Repository,
-    target: str,
-    target_type: str | None,
-    result_data: dict[str, Any],
-    *,
-    repo_path: str | None = None,
-) -> None:
-    """Resolve symbol source body and attach to result_data["source"]."""
-    repo_id = repository.id
-
-    # Find the symbol — target could be "path::Name" or a bare name
-    file_path, name = None, None
-    if "::" in target:
-        file_path, _, name = target.partition("::")
-    else:
-        name = target
-
-    # Try exact symbol_id match first
-    res = await session.execute(
-        select(WikiSymbol).where(
-            WikiSymbol.repository_id == repo_id,
-            WikiSymbol.symbol_id == target,
-        )
-    )
-    row = res.scalar_one_or_none()
-
-    if row is None and file_path and name:
-        # Try (file_path, qualified_name)
-        res = await session.execute(
-            select(WikiSymbol).where(
-                WikiSymbol.repository_id == repo_id,
-                WikiSymbol.file_path == file_path,
-                WikiSymbol.qualified_name == name,
-            )
-        )
-        row = res.scalar_one_or_none()
-
-    if row is None and file_path and name:
-        # Try (file_path, name) — bare name
-        bare = name.split("::")[-1] if "::" in name else name
-        res = await session.execute(
-            select(WikiSymbol).where(
-                WikiSymbol.repository_id == repo_id,
-                WikiSymbol.file_path == file_path,
-                WikiSymbol.name == bare,
-            )
-        )
-        row = res.scalar_one_or_none()
-
-    if row is None:
-        result_data["source"] = {"error": f"Symbol not found: {target!r}"}
-        return
-
-    if not repo_path:
-        result_data["source"] = {"error": "MCP server has no repo path configured"}
-        return
-
-    repo_root = Path(repo_path)
-    abs_path = (repo_root / row.file_path).resolve()
-    try:
-        abs_path.relative_to(repo_root.resolve())
-    except ValueError:
-        result_data["source"] = {"error": "Path escape attempt blocked"}
-        return
-
-    try:
-        text = abs_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        result_data["source"] = {"error": "Source file could not be read"}
-        return
-
-    lines = text.splitlines()
-    total = len(lines)
-    s = max(1, min(row.start_line, total))
-    e = max(s, min(row.end_line, total))
-
-    span = e - s + 1
-    truncated = False
-    if span > _MAX_SOURCE_LINES:
-        e = s + _MAX_SOURCE_LINES - 1
-        truncated = True
-
-    sliced = "\n".join(lines[s - 1 : e])
-    result_data["source"] = {
-        "body": sliced,
-        "start_line": s,
-        "end_line": e,
-        "language": row.language,
-        "truncated": truncated,
-    }
 
 
 async def _resolve_call_graph(
@@ -1061,32 +1025,33 @@ async def get_context(
     compact: bool = True,
     repo: str | None = None,
 ) -> dict:
-    """Compact context for files, modules, or symbols. Batch multiple targets.
+    """Triage card for files / modules / symbols — relationships, not source bytes.
 
-    Default returns title + summary + symbol signatures. Add include options
-    for richer data. Pass all relevant targets in one call.
+    Returns a compact card the agent can use to decide its next move: title,
+    summary, signatures, hotspot bit, top callers, and pointers (decision_record
+    titles, symbol_ids) into the deeper tools. For the actual source body of a
+    symbol, call ``get_symbol("path/to/file.py::Name")`` — it is cheaper than
+    Read and returns bounded bytes with exact line numbers.
 
-    In workspace mode, responses are automatically enriched with cross-repo
-    signals: co-change partners, and API contract links (HTTP routes, gRPC
-    services, message topics consumed/provided by this file).
+    Batch multiple targets in one call. In workspace mode responses are
+    auto-enriched with cross-repo co-change partners and API contract links.
 
-    Include options:
-      - "docs" (default): wiki summary + symbol signatures
-      - "full_doc": full wiki markdown content
-      - "ownership": primary owner, bus factor, contributor count
-      - "last_change": last commit date and author
-      - "source": symbol source body (for symbol targets like "path::Name")
-      - "callers": who calls this symbol (symbol targets only)
-      - "callees": what this symbol calls (symbol targets only)
-      - "metrics": PageRank, betweenness centrality, percentile ranks
-      - "community": architectural community membership + neighbors
+    Include options (everything outside defaults is opt-in):
+      - "full_doc":   full wiki markdown content for the target
+      - "ownership":  primary owner, bus factor, contributor count
+      - "last_change":last commit date and author
+      - "callers":    who calls this symbol (symbol targets only)
+      - "callees":    what this symbol calls (symbol targets only)
+      - "metrics":    PageRank, betweenness centrality, percentile ranks
+      - "community":  architectural community membership + neighbors
+      - "decisions":  full decision records (default returns titles only)
 
     Example: get_context(["src/auth/service.py", "src/auth/middleware.py"])
-    Example: get_context(["src/auth/service.py::verify_token"], include=["source","callers"])
+    Example: get_context(["src/auth/service.py::verify_token"], include=["callers"])
 
     Args:
         targets: file paths, module paths, or qualified symbol IDs.
-        include: list of data blocks to include (default: ["docs","freshness"]).
+        include: list of optional data blocks (defaults are always returned).
         compact: default True (signatures only). False adds structure+imports+docstrings.
         repo: usually omitted.
     """
@@ -1110,7 +1075,6 @@ async def get_context(
             *[
                 _resolve_one_target(
                     session, repository, t, include_set, compact,
-                    repo_path=str(ctx.path),
                 )
                 for t in targets
             ]
@@ -1121,6 +1085,7 @@ async def get_context(
         "_meta": _build_meta(
             timing_ms=(_time.perf_counter() - _t0) * 1000,
             hint=_context_hint(targets, compact, include_set),
+            repository=repository,
         ),
     }
 

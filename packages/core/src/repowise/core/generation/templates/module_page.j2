@@ -1,13 +1,20 @@
 You are documenting the module **{{ ctx.module_path }}** (language: {{ ctx.language }}).
 
 ## Module Overview
-- **Label**: {{ ctx.module_path }}
-- **Language**: {{ ctx.language }}
-- **Files in module**: {{ ctx.files | length }}
-- **Total symbols**: {{ ctx.total_symbols }} ({{ ctx.public_symbols }} public)
-- **Mean PageRank**: {{ "%.4f"|format(ctx.pagerank_mean) }}
-{% if ctx.community_label %}
-- **Community label**: {{ ctx.community_label }}{% if ctx.community_cohesion > 0 %} (cohesion {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}
+
+**Module:** `{{ ctx.module_path }}` | **Language:** {{ ctx.language }} | **Files:** {{ ctx.files | length }} | **Public symbols:** {{ ctx.public_symbols }} / {{ ctx.total_symbols }}{% if ctx.community_label %} | **Community:** {{ ctx.community_label }}{% if ctx.community_cohesion > 0 %} (cohesion {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}{% endif %}
+
+{# The role-leading sentence is the highest-leverage signal a module page
+   carries. Surface the module's position in the system so the LLM can frame
+   the Overview correctly — high-PageRank modules are usually orchestrators
+   or shared infrastructure, low-PageRank modules are leaf consumers. #}
+{%- set _mod_signals = [] -%}
+{%- if ctx.entry_points -%}{%- set _ = _mod_signals.append("hosts entry points into this subsystem") -%}{%- endif -%}
+{%- if ctx.pagerank_mean is defined and ctx.pagerank_mean >= 0.005 -%}{%- set _ = _mod_signals.append("architecturally central (high mean PageRank across its files)") -%}{%- endif -%}
+{% if _mod_signals %}
+**Architectural signals:** {{ _mod_signals | join("; ") }}.
+
+Lead the ## Overview's first sentence with the module's role in repowise's pipeline; weave the signals above into that opening rather than re-listing them.
 {% endif %}
 
 {% if ctx.entry_points %}

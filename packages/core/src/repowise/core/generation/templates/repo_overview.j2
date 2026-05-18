@@ -1,11 +1,14 @@
 You are generating a high-level overview for the repository `{{ ctx.repo_name }}`.
 
 ## Repository Summary
-- **Name**: {{ ctx.repo_name }}
-- **Is monorepo**: {{ ctx.is_monorepo }}
-- **Total files**: {{ ctx.total_files }}
-- **Total lines of code**: {{ ctx.total_loc }}
-- **Circular dependency count**: {{ ctx.circular_dependency_count }}
+
+**Name:** `{{ ctx.repo_name }}`{% if ctx.is_monorepo %} (monorepo){% endif %} | **Files:** {{ ctx.total_files }} | **LOC:** {{ ctx.total_loc }}{% if ctx.circular_dependency_count > 0 %} | **Circular deps:** {{ ctx.circular_dependency_count }}{% endif %}
+
+The first sentence of your ## Project Summary section is what every downstream
+agent (RAG, semantic search, onboarding) anchors on. Make it answer "what does
+this repository do, end-to-end?" using concrete pipeline vocabulary — name the
+inputs the repo consumes, the transformation stages, and the artifacts produced.
+Do NOT open with stats or package counts; those belong further down.
 
 ## Packages
 {% for pkg in ctx.packages %}

@@ -1,17 +1,32 @@
 You are documenting the file `{{ ctx.file_path }}` (language: {{ ctx.language }}).
 
 ## File Overview
-{% if ctx.docstring %}
-Module docstring: {{ ctx.docstring }}
+
+**Path:** `{{ ctx.file_path }}` | **Language:** {{ ctx.language }}{% if ctx.is_test %} | test file{% endif %}{% if ctx.is_api_contract %} | API contract{% endif %}
+
+{% if ctx.docstring %}**Module docstring:** {{ ctx.docstring }}
+
 {% endif %}
-- **Path**: `{{ ctx.file_path }}`
-- **Language**: {{ ctx.language }}
-- **PageRank score**: {{ "%.4f"|format(ctx.pagerank_score) }}
-- **Betweenness centrality**: {{ "%.4f"|format(ctx.betweenness_score) }}
-- **Community**: {{ ctx.community_id }}
-- **Is API contract**: {{ ctx.is_api_contract }}
-- **Is entry point**: {{ ctx.is_entry_point }}
-- **Is test file**: {{ ctx.is_test }}
+{# Surface architectural signals in plain prose so the LLM weaves them into the
+   opening sentence. Raw numeric metrics (pagerank=0.0234) carry no semantic
+   weight in the generated page — embeddings see digits, not meaning. Stating
+   the same fact in role vocabulary ("entry point", "central in dependency
+   graph", "bridge between modules") puts retrieval-relevant terms into the
+   page text where both FTS and vector search can anchor on them. #}
+{%- set _signals = [] -%}
+{%- if ctx.is_entry_point -%}{%- set _ = _signals.append("entry point into this subsystem") -%}{%- endif -%}
+{%- if ctx.pagerank_score is defined and ctx.pagerank_score >= 0.01 -%}{%- set _ = _signals.append("central in the dependency graph (high PageRank)") -%}{%- endif -%}
+{%- if ctx.betweenness_score is defined and ctx.betweenness_score >= 0.005 -%}{%- set _ = _signals.append("frequent bridge between modules (high betweenness)") -%}{%- endif -%}
+{%- if ctx.community_label -%}{%- set _ = _signals.append("part of the " ~ ctx.community_label ~ " community") -%}{%- endif -%}
+{% if _signals %}
+**Architectural signals:** {{ _signals | join("; ") }}.
+
+Weave these into the role-leading first sentence of ## Overview. They are the
+shape of the file's job, not decoration.
+{% endif %}
+
+**Raw metrics** (for reference, do NOT recite verbatim in the page):
+PageRank {{ "%.4f"|format(ctx.pagerank_score) }} · betweenness {{ "%.4f"|format(ctx.betweenness_score) }} · community {{ ctx.community_id }}
 
 ## Symbols ({{ ctx.symbols | length }})
 {% for sym in ctx.symbols %}

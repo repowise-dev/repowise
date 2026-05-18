@@ -24,6 +24,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
 )
+from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._server import mcp
 
 
@@ -33,22 +34,28 @@ async def get_why(
     targets: list[str] | None = None,
     repo: str | None = None,
 ) -> dict:
-    """Understand why code is built the way it is — intent archaeology.
+    """Why this code looks the way it does — decision archaeology git log cannot answer.
+
+    The only tool that surfaces architectural decision records, their status
+    (active / proposed / deprecated / superseded), and the commits that are
+    evidence for them. ``git log`` tells you *what* changed; this tells you
+    *why we chose this design* — call it before any architectural change,
+    refactor of an owned module, or pattern divergence in a community.
 
     Four modes:
-    1. get_why("why is auth using JWT?") — semantic + keyword search over decisions
-    2. get_why("src/auth/service.py") — all decisions governing a specific file,
-       plus origin story and alignment score
-    3. get_why("why was caching added?", targets=["src/auth/cache.py"]) —
-       target-aware search: prioritizes decisions governing the target files
-    4. get_why() — decision health dashboard
+    1. ``get_why("why is auth using JWT?")`` — keyword + semantic decision search.
+    2. ``get_why("src/auth/service.py")`` — decisions governing the file plus
+       origin story and an alignment score (does this file follow its own ADRs?).
+    3. ``get_why("why was caching added?", targets=["src/auth/cache.py"])`` —
+       target-anchored search; decisions touching the targets get boosted.
+    4. ``get_why()`` — health dashboard (stale, proposed, ungoverned hotspots).
 
-    Always call this before making architectural changes.
+    When no decisions exist for a path, falls back to git archaeology
+    (significant commits + cross-file references) so the call is never empty.
 
     Args:
         query: Natural language question, file/module path, or omit for health dashboard.
-        targets: Optional file paths to anchor the search. Decisions governing
-                 these files are prioritized in results.
+        targets: Optional file paths to anchor the search.
         repo: Repository path, name, or ID.
     """
     # --- repo="all": search decisions across ALL repos ---
@@ -84,6 +91,7 @@ async def get_why(
             "query": query,
             "workspace": True,
             "decisions": merged[:15],
+            "_meta": _build_meta(),
         }
 
     # --- Mode 1: No query → health dashboard ---
@@ -127,6 +135,7 @@ async def get_why(
                     for d in proposed[:10]
                 ],
                 "ungoverned_hotspots": ungoverned[:15],
+                "_meta": _build_meta(repository=repository),
             }
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
@@ -197,6 +206,7 @@ async def get_why(
                     repository,
                 )
 
+            result_data["_meta"] = _build_meta(repository=repository)
             return result_data
 
     # --- Mode 3: Natural language → target-aware search ---
@@ -362,6 +372,7 @@ async def get_why(
                 target_context[t] = ctx_entry
             result_data["target_context"] = target_context
 
+    result_data["_meta"] = _build_meta(repository=repository)
     return result_data
 
 

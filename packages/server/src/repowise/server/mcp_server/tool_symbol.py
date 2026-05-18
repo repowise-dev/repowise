@@ -282,11 +282,16 @@ async def get_symbol(
     context_lines: int = 0,
     repo: str | None = None,
 ) -> dict:
-    """Return the exact source body of one symbol by ID. Trust the result.
+    """Read one function/class with exact line bounds — cheaper and safer than Read+math.
 
-    Cheaper than Read for "show me X" / "what does Y do" questions.
-    Returns {file, name, kind, signature, start_line, end_line, source}.
-    On miss returns {error: "Symbol not found"}.
+    The only tool that returns the raw source bytes of a single indexed symbol
+    without the agent having to compute offsets or guess at file structure.
+    Bounded to ~400 lines (hard cap) so a misconfigured row can never blow up
+    the context window. Pass the canonical ``"path/to/file.py::Name"`` that
+    appears in ``get_context``'s symbol list.
+
+    Returns {file, name, kind, signature, start_line, end_line, source,
+    truncated}. On miss returns {error: "Symbol not found …"}.
 
     Args:
         symbol_id: "path/to/file.py::SymbolName" (canonical id from get_context).
@@ -304,6 +309,7 @@ async def get_symbol(
             "error": "symbol_id is required",
             "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
         }
+    repository = None
     if context_lines < 0 or context_lines > 50:
         # Bound context_lines to a sane range — runaway values would
         # defeat the whole point of symbol-level retrieval.
@@ -321,14 +327,20 @@ async def get_symbol(
                 "available symbols in the file, then try again with the "
                 "exact symbol_id from that response."
             ),
-            "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+            "_meta": _build_meta(
+                timing_ms=(time.perf_counter() - t0) * 1000,
+                repository=repository,
+            ),
         }
 
     if not ctx.path:
         return {
             "symbol_id": symbol_id,
             "error": "MCP server has no repo path configured",
-            "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+            "_meta": _build_meta(
+                timing_ms=(time.perf_counter() - t0) * 1000,
+                repository=repository,
+            ),
         }
 
     repo_root = Path(str(ctx.path))
@@ -347,7 +359,10 @@ async def get_symbol(
                 "Symbol metadata exists but source file could not be read. "
                 "The file may have been moved or deleted since indexing."
             ),
-            "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+            "_meta": _build_meta(
+                timing_ms=(time.perf_counter() - t0) * 1000,
+                repository=repository,
+            ),
         }
 
     truncated = (end - start + 1) >= _MAX_SOURCE_LINES and (
@@ -371,5 +386,6 @@ async def get_symbol(
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
             hint=_symbol_hint(row.symbol_id, row.end_line, row.start_line),
+            repository=repository,
         ),
     }

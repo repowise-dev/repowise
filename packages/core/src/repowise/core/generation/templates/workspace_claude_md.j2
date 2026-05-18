@@ -55,30 +55,22 @@ _No entry points indexed._
 
 ### Repowise MCP Tools
 
-These tools work across all repos in this workspace. Pass `repo="alias"` to scope queries, or omit for the default repo.
+These tools work across all repos in this workspace. Pass `repo="alias"` to scope, `repo="all"` for cross-repo queries, or omit for the default repo. Every response carries `_meta` with `index_age_days`, `indexed_commit`, and a `stale_warning` only when the index has diverged from HEAD.
 
-**Recommended workflow:**
+| Tool | What only this tool answers |
+|------|------------------------------|
+| `get_answer(question)` | Synthesised answer with verified citations and a calibrated `retrieval_quality`. First call for "how does X work" / "why is Y like this". On low confidence returns `best_guesses` with one-line justifications. |
+| `get_context(targets=[...])` | Triage card for files/modules/symbols — title, summary, signatures, `hotspot` bit, `decision_records` titles, and `symbol_id`s to pipe into `get_symbol`. Use `include=[...]` to widen. NOT for source bytes. |
+| `get_symbol("path/to/file.py::Name")` | Raw source bytes for one indexed symbol with exact line bounds. Cheaper than `Read` + offset math. |
+| `search_codebase(query, kind?)` | Find pages by concept when you don't know the file. Each result tags its `search_method` (`embedding` vs `bm25`). For exact identifiers use Grep. |
+| `get_why(query, targets?)` | Architectural decision archaeology — *why* the code is shaped this way. Call before refactors. Falls back to git archaeology when no ADRs exist. |
+| `get_risk(targets, changed_files?)` | What history says about touching these files. Pass `changed_files` for PR mode → returns a `directive` (`will_break`, `missing_cochanges`, `missing_tests`) plus cross-repo blast radius. |
+| `get_dead_code(...)` | Tiered unreachable / unused-export / zombie-package findings; cross-repo consumer detection lowers confidence on shared exports. |
+| `get_overview(repo?)` | Architecture map. `repo="all"` returns cross-repo topology (co-changes, package deps, API contracts). |
 
-1. Start with `get_overview()` on a new task to orient yourself.
-2. Call `get_context(targets=["path/to/file.py"])` for enriched context on unfamiliar files — but always read the source before editing.
-3. Call `get_risk(targets=["path/to/file.py"])` before changing hotspot files.
-4. Don't know where something lives? Call `search_codebase(query="authentication flow")`.
-5. Need to understand why code is structured a certain way? Call `get_why(query="why JWT over sessions")` before architectural changes.
-6. After **architectural changes**, consider calling `update_decision_records(action="create", ...)` to record the rationale.
-7. Need to understand how two modules connect? Call `get_dependency_path(source="src/auth", target="src/db")`.
-8. Before cleanup tasks, call `get_dead_code()` to find confirmed unused code.
-9. For documentation or diagrams, call `get_architecture_diagram(scope="src/auth")`.
+**Composition tips:**
+- `get_answer` → on `confidence: medium/low`, follow `best_guesses[0].file` into `get_context`, then `get_symbol` for bytes.
+- `get_context` returns `hotspot: true` → call `get_risk` before editing.
+- PR review across repos → `get_risk(changed_files=[...])` picks up cross-repo consumers automatically.
 
-**Note:** MCP tool responses reflect the last index run. If the index is stale, verify against source files.
-
-| Tool | When to use |
-|------|-------------|
-| `get_overview()` | Orient yourself on a new task |
-| `get_context(targets=[...])` | Enriched context on unfamiliar files |
-| `get_risk(targets=[...])` | Before changing hotspot files |
-| `get_why(query="...")` | Before architectural changes |
-| `update_decision_records(action=...)` | After architectural changes — record decisions |
-| `search_codebase(query="...")` | When locating code |
-| `get_dependency_path(source=..., target=...)` | When tracing module connections |
-| `get_dead_code()` | Before any cleanup or removal |
-| `get_architecture_diagram(scope=...)` | For visual structure or documentation |
+**Verify when:** `_meta.stale_warning` is present, `retrieval_quality` is `partial`/`weak`, or `search_method` is `bm25`. Otherwise trust the response.

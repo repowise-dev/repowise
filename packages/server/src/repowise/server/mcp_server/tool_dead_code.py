@@ -19,6 +19,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_all_contexts,
     _resolve_repo_context,
 )
+from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._server import mcp
 
 
@@ -38,11 +39,13 @@ async def get_dead_code(
     no_unreachable: bool = False,
     no_unused_exports: bool = False,
 ) -> dict:
-    """Get a tiered refactor plan for dead and unused code.
+    """Unused exports, unreachable files, zombie packages — what grep cannot tell you.
 
-    Returns findings organized into confidence tiers (high/medium/low),
-    with per-directory rollups, ownership hotspots, and impact estimates
-    so you can prioritize cleanup.
+    Static reachability analysis the agent cannot derive from imports alone.
+    Returns findings tiered by confidence (high = zero refs; medium = likely
+    unused; low = check first) with per-directory and per-owner rollups so a
+    cleanup sprint can prioritise. In workspace mode, cross-repo consumer
+    detection lowers confidence on findings that other repos import.
 
     Use group_by="directory" for a directory-level overview, or
     group_by="owner" to see who owns the most dead code. Use tier
@@ -224,6 +227,7 @@ async def get_dead_code(
                 f"and was clamped to {_MAX_PER_TIER}. Use tier/directory/owner filters "
                 "or paginate to see more findings."
             )
+        result_ws["_meta"] = _build_meta()
         return result_ws
 
     # --- Single repo path ---
@@ -318,6 +322,7 @@ async def get_dead_code(
             "or paginate to see more findings."
         )
 
+    result["_meta"] = _build_meta(repository=repository)
     return result
 
 
