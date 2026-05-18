@@ -26,6 +26,7 @@ import structlog
 from .biomarkers import FileContext, detect_all
 from .complexity import FunctionComplexity, walk_file_complexity
 from .coverage import is_test_file as _coverage_is_test_file
+from .duplication import DuplicationReport, detect_clones
 from .models import HealthFileMetricData, HealthFindingData, HealthReport
 from .scoring import attach_impacts, compute_kpis, score_file
 
@@ -99,11 +100,24 @@ class HealthAnalyzer:
     ) -> HealthReport:
         cfg = config or {}
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
+        per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
 
         # PageRank is optional — graph_builder.symbol_pagerank exists but
         # is symbol-level; we use file-level in-degree as the dependents
         # signal (cheap, deterministic, conservative).
         all_paths = {pf.file_info.path for pf in self.parsed_files}
+
+        # Duplication runs once, up-front, so each file biomarker can see
+        # its clone list. Cheap when the repo is small; when disabled
+        # explicitly we skip the work entirely.
+        if "dry_violation" in disabled:
+            dup_report = DuplicationReport()
+        else:
+            try:
+                dup_report = detect_clones(self.parsed_files, self.git_meta_map)
+            except Exception as exc:
+                log.debug("health_duplication_failed", error=str(exc))
+                dup_report = DuplicationReport()
 
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
@@ -120,8 +134,14 @@ class HealthAnalyzer:
             # their default (1).
             self._populate_symbol_complexity(pf, fc_list)
 
+            file_disabled = list(disabled)
+            extra = per_file_disabled.get(pf.file_info.path)
+            if extra:
+                for name in extra:
+                    if name not in file_disabled:
+                        file_disabled.append(name)
             file_metric, file_findings = self._evaluate_file(
-                pf, fc_list, all_paths, disabled=disabled
+                pf, fc_list, all_paths, disabled=file_disabled, dup_report=dup_report
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -173,6 +193,7 @@ class HealthAnalyzer:
         all_paths: set[str],
         *,
         disabled: list[str],
+        dup_report: DuplicationReport,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData]]:
         file_path = pf.file_info.path
 
@@ -196,6 +217,9 @@ class HealthAnalyzer:
         covered_lines: set[int] = set(cov.get("covered_lines") or ()) if cov else set()
         total_coverable_lines = int(cov.get("total_coverable_lines", 0)) if cov else 0
 
+        clones = dup_report.pairs_by_file.get(file_path, [])
+        dup_pct = dup_report.duplication_pct.get(file_path)
+
         ctx = FileContext(
             file_path=file_path,
             language=pf.file_info.language,
@@ -212,6 +236,8 @@ class HealthAnalyzer:
             branch_coverage_pct=branch_cov,
             covered_lines=covered_lines,
             total_coverable_lines=total_coverable_lines,
+            clones=list(clones),
+            duplication_pct=dup_pct,
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)
@@ -230,6 +256,7 @@ class HealthAnalyzer:
             module=None,
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,
+            duplication_pct=dup_pct,
         )
         return metric, findings
 

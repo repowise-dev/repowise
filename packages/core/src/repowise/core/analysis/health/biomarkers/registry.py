@@ -16,6 +16,7 @@ from .brain_method import BrainMethodDetector
 from .bumpy_road import BumpyRoadDetector
 from .complex_method import ComplexMethodDetector
 from .coverage_gap import CoverageGapDetector
+from .dry_violation import DryViolationDetector
 from .large_method import LargeMethodDetector
 from .nested_complexity import NestedComplexityDetector
 from .primitive_obsession import PrimitiveObsessionDetector
@@ -28,6 +29,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     BumpyRoadDetector,  # type: ignore[list-item]
     LargeMethodDetector,  # type: ignore[list-item]
     PrimitiveObsessionDetector,  # type: ignore[list-item]
+    DryViolationDetector,  # type: ignore[list-item]
     UntestedHotspotDetector,  # type: ignore[list-item]
     CoverageGapDetector,  # type: ignore[list-item]
 ]

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ..complexity import FunctionComplexity
+from ..duplication import ClonePair
 from ..models import Severity
 
 
@@ -38,6 +39,12 @@ class FileContext:
     branch_coverage_pct: float | None = None
     covered_lines: set[int] = field(default_factory=set)
     total_coverable_lines: int = 0
+    # Duplication signals (populated when the engine ran the
+    # duplication detector for this analyze() call). ``clones`` is the
+    # list of clone pairs this file participates in; ``duplication_pct``
+    # is the percent of NLOC covered by clones.
+    clones: list[ClonePair] = field(default_factory=list)
+    duplication_pct: float | None = None
 
 
 @dataclass
