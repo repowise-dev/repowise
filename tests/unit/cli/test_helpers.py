@@ -382,3 +382,119 @@ class TestResolveProviderBaseUrl:
         assert result == "provider"
         assert captured["name"] == "ollama"
         assert captured["kwargs"].get("base_url") == "http://ollama.local:11434"
+
+
+# ---------------------------------------------------------------------------
+# Update queued / pending markers — coalescing primitives that prevent the
+# post-commit hook from spawning N concurrent updates on rapid-fire commits.
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateQueuedMarker:
+    """The hook drops .update.queued *before* backgrounding update_cmd so the
+    augment hook can suppress its stale-wiki warning during the start-up
+    window where the real lock hasn't been acquired yet."""
+
+    def test_round_trip(self, tmp_path):
+        from repowise.cli.helpers import (
+            clear_update_queued,
+            read_update_queued,
+            write_update_queued,
+        )
+
+        write_update_queued(tmp_path, "abc123")
+        payload = read_update_queued(tmp_path)
+        assert payload is not None
+        assert payload["target_commit"] == "abc123"
+        assert isinstance(payload["queued_at"], float)
+
+        clear_update_queued(tmp_path)
+        assert read_update_queued(tmp_path) is None
+
+    def test_stale_queued_returns_none(self, tmp_path):
+        # A queued marker older than UPDATE_QUEUED_STALE_AFTER_SECONDS
+        # (5 min) is treated as crashed-hook noise and ignored.
+        import json
+
+        from repowise.cli.helpers import ensure_repowise_dir, read_update_queued
+
+        ensure_repowise_dir(tmp_path)
+        (tmp_path / ".repowise" / ".update.queued").write_text(
+            json.dumps({"target_commit": "abc", "queued_at": 0}),
+            encoding="utf-8",
+        )
+        assert read_update_queued(tmp_path) is None
+
+    def test_missing_marker_returns_none(self, tmp_path):
+        from repowise.cli.helpers import read_update_queued
+
+        assert read_update_queued(tmp_path) is None
+
+
+class TestUpdatePendingMarker:
+    """A new update_cmd run that finds an existing lock writes the latest
+    HEAD into .update.pending so the running update can roll forward to
+    it instead of stopping at a stale commit."""
+
+    def test_round_trip(self, tmp_path):
+        from repowise.cli.helpers import (
+            clear_update_pending,
+            read_update_pending,
+            write_update_pending,
+        )
+
+        write_update_pending(tmp_path, "deadbeef")
+        assert read_update_pending(tmp_path) == "deadbeef"
+
+        clear_update_pending(tmp_path)
+        assert read_update_pending(tmp_path) is None
+
+    def test_write_with_none_head_is_noop(self, tmp_path):
+        from repowise.cli.helpers import read_update_pending, write_update_pending
+
+        write_update_pending(tmp_path, None)
+        assert read_update_pending(tmp_path) is None
+
+
+class TestRotateUpdateLog:
+    """The post-commit hook appends every run's output to .update.log.
+    Without rotation it would grow unboundedly on a busy repo."""
+
+    def test_no_op_when_under_cap(self, tmp_path):
+        from repowise.cli.helpers import (
+            ensure_repowise_dir,
+            rotate_update_log_if_needed,
+            update_log_path,
+        )
+
+        ensure_repowise_dir(tmp_path)
+        path = update_log_path(tmp_path)
+        path.write_text("small log", encoding="utf-8")
+
+        rotate_update_log_if_needed(tmp_path)
+        assert path.read_text(encoding="utf-8") == "small log"
+
+    def test_truncates_when_over_cap(self, tmp_path):
+        from repowise.cli.helpers import (
+            UPDATE_LOG_KEEP_TAIL_BYTES,
+            UPDATE_LOG_MAX_BYTES,
+            ensure_repowise_dir,
+            rotate_update_log_if_needed,
+            update_log_path,
+        )
+
+        ensure_repowise_dir(tmp_path)
+        path = update_log_path(tmp_path)
+        # Build a payload comfortably over the cap with a known tail so we
+        # can assert what survives.
+        body_size = UPDATE_LOG_MAX_BYTES * 2
+        path.write_bytes(b"x" * (body_size - 20) + b"TAIL_MARKER_ZZZZ\n")
+
+        rotate_update_log_if_needed(tmp_path)
+
+        after = path.read_bytes()
+        # Capped to roughly KEEP_TAIL_BYTES + the truncation banner; far
+        # below the original size in any case.
+        assert len(after) < UPDATE_LOG_MAX_BYTES
+        assert b"TAIL_MARKER_ZZZZ" in after
+        assert after.startswith(b"... (log truncated) ...")

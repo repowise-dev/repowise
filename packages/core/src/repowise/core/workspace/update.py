@@ -7,8 +7,11 @@ analysis hooks (Phase 3).
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
+import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +20,63 @@ from typing import Any, Callable
 from .config import WorkspaceConfig
 
 _log = logging.getLogger("repowise.workspace.update")
+
+
+# ---------------------------------------------------------------------------
+# Per-repo update lock — duplicated from cli/helpers.py to avoid a core →
+# cli import. The format and stale-after threshold MUST stay in sync with
+# the canonical helpers; both versions are tiny and rarely change. This
+# lives in core/ so ``update_single_repo_index`` (which workspace updates
+# call directly, bypassing the CLI lock acquisition in update_cmd.py) is
+# itself single-flight per repo.
+# ---------------------------------------------------------------------------
+
+_LOCK_FILENAME = ".update.lock"
+_LOCK_STALE_AFTER_SECONDS = 30 * 60
+
+
+def _lock_path(repo_path: Path) -> Path:
+    return repo_path / ".repowise" / _LOCK_FILENAME
+
+
+def _read_lock(repo_path: Path) -> dict[str, Any] | None:
+    """Return a live lock payload, or None when absent / stale / unreadable."""
+    path = _lock_path(repo_path)
+    if not path.exists():
+        return None
+    try:
+        payload = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    started = payload.get("started_at")
+    if not isinstance(started, (int, float)):
+        return None
+    if time.time() - started > _LOCK_STALE_AFTER_SECONDS:
+        return None
+    return payload
+
+
+def _acquire_lock(repo_path: Path, target_commit: str | None) -> None:
+    """Best-effort write of the lock file. Caller still must release."""
+    try:
+        (repo_path / ".repowise").mkdir(parents=True, exist_ok=True)
+        _lock_path(repo_path).write_text(
+            _json.dumps({
+                "pid": os.getpid(),
+                "target_commit": target_commit,
+                "started_at": time.time(),
+            }),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _release_lock(repo_path: Path) -> None:
+    try:
+        _lock_path(repo_path).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -323,11 +383,41 @@ async def update_workspace(
             # first-time indexing has a place to put wiki.db and state.json.
             (path / ".repowise").mkdir(parents=True, exist_ok=True)
 
-            result = await update_single_repo_index(
-                path,
-                commit_depth=commit_depth,
-                exclude_patterns=exclude_patterns,
-            )
+            # Per-repo single-flight check. The post-commit hook fires a
+            # new ``repowise update`` for every commit; without this guard,
+            # rapid-fire commits race on save_state, each pass starts from
+            # the same stale base, and the wiki never converges to HEAD.
+            existing = _read_lock(path)
+            if existing is not None:
+                elapsed = int(time.time() - existing.get("started_at", time.time()))
+                target_short = (existing.get("target_commit") or "")[:8]
+                _log.info(
+                    "workspace_update: skipping %s — update already in flight "
+                    "(pid=%s target=%s elapsed=%ds)",
+                    alias, existing.get("pid"), target_short, elapsed,
+                )
+                # Record pending so the running update can roll forward.
+                try:
+                    (path / ".repowise" / ".update.pending").write_text(
+                        new_head, encoding="utf-8"
+                    )
+                except OSError:
+                    pass
+                return RepoUpdateResult(
+                    alias=alias,
+                    updated=False,
+                    skipped_reason="in_flight",
+                )
+
+            _acquire_lock(path, new_head)
+            try:
+                result = await update_single_repo_index(
+                    path,
+                    commit_depth=commit_depth,
+                    exclude_patterns=exclude_patterns,
+                )
+            finally:
+                _release_lock(path)
             result.alias = alias
             result.first_time_indexed = first_time and result.updated
 

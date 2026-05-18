@@ -93,12 +93,15 @@ class TestStaleWarning:
 
 
 class TestUpdateLockSuppression:
-    def test_lock_suppresses_warning(self, repo):
+    def test_lock_emits_in_flight_notice_not_stale_warning(self, repo):
+        # When an update is running, the agent should hear "updating in
+        # background" instead of "wiki is stale". The original behavior was
+        # to suppress entirely (return None); the explicit positive notice
+        # is better UX because the agent can plan around it.
         repo_path, head = repo
         _state(repo_path, last_sync_commit=head, docs_enabled=True)
         new_head = _commit(repo_path)
 
-        # Simulate `repowise update` running with target_commit=new_head
         import time
 
         (repo_path / ".repowise" / ".update.lock").write_text(
@@ -110,7 +113,10 @@ class TestUpdateLockSuppression:
             encoding="utf-8",
         )
 
-        assert _post(repo_path) is None
+        msg = _post(repo_path)
+        assert msg is not None
+        assert "update in background" in msg
+        assert "stale" not in msg.lower()
 
     def test_stale_lock_does_not_suppress(self, repo):
         repo_path, head = repo
@@ -123,12 +129,14 @@ class TestUpdateLockSuppression:
             encoding="utf-8",
         )
 
-        assert _post(repo_path) is not None
+        msg = _post(repo_path)
+        assert msg is not None
+        assert "stale" in msg.lower()  # Falls through to the real stale warning
 
-    def test_lock_for_different_commit_still_suppresses(self, repo):
-        # An update is running but its target predates HEAD. We still
-        # suppress: the in-flight run will at least narrow the gap, and
-        # the next tool call will re-evaluate.
+    def test_lock_for_different_commit_still_signals_in_flight(self, repo):
+        # An update is running but its target predates HEAD. We still emit
+        # the in-flight notice (not the stale warning): the running update
+        # will narrow the gap, and the next tool call will re-evaluate.
         repo_path, head = repo
         _state(repo_path, last_sync_commit=head, docs_enabled=True)
         _commit(repo_path)
@@ -144,7 +152,49 @@ class TestUpdateLockSuppression:
             encoding="utf-8",
         )
 
-        assert _post(repo_path) is None
+        msg = _post(repo_path)
+        assert msg is not None
+        assert "update in background" in msg
+
+
+class TestQueuedMarkerSuppression:
+    """The post-commit hook drops ``.update.queued`` before backgrounding the
+    update. The augment hook must treat that marker the same as a held lock,
+    or every commit in a rapid burst will get a noisy stale warning during
+    the start-up window before the real lock file lands on disk."""
+
+    def test_queued_marker_emits_in_flight_notice(self, repo):
+        repo_path, head = repo
+        _state(repo_path, last_sync_commit=head, docs_enabled=True)
+        new_head = _commit(repo_path)
+
+        import time
+
+        (repo_path / ".repowise" / ".update.queued").write_text(
+            json.dumps({"target_commit": new_head, "queued_at": time.time()}),
+            encoding="utf-8",
+        )
+
+        msg = _post(repo_path)
+        assert msg is not None
+        assert "update in background" in msg
+
+    def test_stale_queued_marker_falls_through_to_stale_warning(self, repo):
+        # The queued marker has a much shorter staleness window (5 min) than
+        # the real lock (30 min) — a queued marker that age means the hook
+        # spawned an update but it never reached the lock-acquire step.
+        repo_path, head = repo
+        _state(repo_path, last_sync_commit=head, docs_enabled=True)
+        _commit(repo_path)
+
+        (repo_path / ".repowise" / ".update.queued").write_text(
+            json.dumps({"target_commit": "x", "queued_at": 0}),
+            encoding="utf-8",
+        )
+
+        msg = _post(repo_path)
+        assert msg is not None
+        assert "stale" in msg.lower()
 
 
 class TestPerHeadDedupe:
