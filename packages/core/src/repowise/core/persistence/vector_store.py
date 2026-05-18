@@ -84,6 +84,30 @@ class VectorStore(ABC):
         """
         return None  # default: no-op (subclasses should override)
 
+    async def get_page_summaries_by_paths(
+        self, paths: list[str]
+    ) -> dict[str, dict]:
+        """Batch variant of :meth:`get_page_summary_by_path`.
+
+        Returns a mapping of resolved paths → summary dict for every
+        input path that produced a non-None result. The default
+        implementation fires all per-path calls concurrently via
+        ``asyncio.gather`` so callers don't have to await each one
+        sequentially — backends that can do a single SQL/index scan
+        should override this for the obvious efficiency gain.
+        """
+        import asyncio as _asyncio
+
+        if not paths:
+            return {}
+        coros = [self.get_page_summary_by_path(p) for p in paths]
+        results = await _asyncio.gather(*coros, return_exceptions=True)
+        out: dict[str, dict] = {}
+        for path, result in zip(paths, results, strict=False):
+            if isinstance(result, dict) and result.get("summary"):
+                out[path] = result
+        return out
+
 
 # ---------------------------------------------------------------------------
 # InMemoryVectorStore
@@ -169,6 +193,28 @@ class InMemoryVectorStore(VectorStore):
                 key_exports = meta.get("exports") or []
                 return {"summary": summary, "key_exports": list(key_exports)}
         return None
+
+    async def get_page_summaries_by_paths(
+        self, paths: list[str]
+    ) -> dict[str, dict]:
+        """Single-pass scan over the store — avoids N full scans when
+        many paths are queried at once.
+        """
+        if not paths:
+            return {}
+        wanted = set(paths)
+        out: dict[str, dict] = {}
+        for _pid, (_, meta) in self._store.items():
+            tp = meta.get("target_path")
+            if tp in wanted and tp not in out:
+                summary = meta.get("summary") or str(meta.get("content", ""))[:500]
+                out[str(tp)] = {
+                    "summary": summary,
+                    "key_exports": list(meta.get("exports") or []),
+                }
+                if len(out) == len(wanted):
+                    break
+        return out
 
     def __len__(self) -> int:
         return len(self._store)

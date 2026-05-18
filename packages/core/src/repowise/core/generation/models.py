@@ -84,12 +84,32 @@ class GenerationConfig:
     cache_enabled: bool = True
     staleness_threshold_days: int = 7
     expiry_threshold_days: int = 30
-    top_symbol_percentile: float = 0.20  # top N% public symbols by PageRank → symbol_spotlight
-    file_page_top_percentile: float = 0.10  # top N% code files by PageRank → file_page
-    file_page_min_symbols: int = 1  # files with fewer symbols are skipped for file_page
-    max_pages_pct: float = 0.10  # hard cap: total pages ≤ max(50, N_files * this)
-    skip_trivial_files: bool = True  # skip tiny low-symbol files unless entry/hub
-    dedupe_near_clones: bool = True  # collapse 3+ identical-shape siblings to one page
+    # ---- Coverage budget (enforced by generation.selection) ----------
+    # ``coverage_pct`` is the single knob users care about: the fraction
+    # of repo files that should produce a wiki page. The selection
+    # subsystem (``generation.selection``) is the *single source of
+    # truth* — it scores every candidate, allocates the budget across
+    # buckets via the share fields below, and returns an allow-set that
+    # both page_generator and cost_estimator honor verbatim. There is
+    # no longer an absolute cap — the percentage scales linearly.
+    coverage_pct: float = 0.20
+    file_page_share: float = 0.50
+    symbol_spotlight_share: float = 0.15
+    module_page_share: float = 0.10
+    api_contract_share: float = 0.08
+    infra_page_share: float = 0.05
+    scc_share: float = 0.04
+    # ``max_pages_pct`` is kept as a deprecated alias for backwards
+    # compatibility — older tests and CLI flows still read it. The
+    # selector picks ``coverage_pct`` when set and falls back here.
+    max_pages_pct: float = 0.20
+    # Legacy percentile knobs are retained for callers that want fine
+    # control but no longer drive page selection on their own.
+    top_symbol_percentile: float = 0.20
+    file_page_top_percentile: float = 0.10
+    file_page_min_symbols: int = 1
+    skip_trivial_files: bool = True
+    dedupe_near_clones: bool = True
     # Phase 2: switch module_page grouping from top-directory to graph
     # communities. min_module_size is the floor below which a community
     # doesn't get its own page (its files still appear under file_page).

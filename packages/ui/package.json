@@ -38,6 +38,7 @@
     "./coverage/*": "./src/coverage/*.tsx",
     "./wiki": "./src/wiki/index.ts",
     "./wiki/wiki-mdx-preprocess": "./src/wiki/wiki-mdx-preprocess.ts",
+    "./wiki/wiki-links-types": "./src/wiki/wiki-links-types.ts",
     "./wiki/*": "./src/wiki/*.tsx",
     "./chat": "./src/chat/index.ts",
     "./chat/*": "./src/chat/*.tsx",

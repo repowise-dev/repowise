@@ -692,7 +692,13 @@ class PageGenerator:
                     job_system.complete_page(job_id, r.page_id)
             return pages
 
-        # ---- Budget pre-computation ----
+        # ---- Page selection (single source of truth) ----
+        # The selection subsystem scores every candidate, allocates the
+        # global budget across page-type buckets, and returns an
+        # allow-set. Each level's emit loop iterates only over members
+        # of that allow-set — there are no bypass paths. The same
+        # function is called by the cost estimator so the pre-run
+        # estimate cannot drift from the actual run.
         code_files = [
             p
             for p in parsed_files
@@ -701,109 +707,70 @@ class PageGenerator:
             and p.file_info.language in _CODE_LANGUAGES
         ]
 
-        # Sort: entry points first, then hotspots, then high PageRank (A1)
-        if git_meta_map:
-            code_files = sorted(
-                code_files,
-                key=lambda p: (
-                    not p.file_info.is_entry_point,
-                    not git_meta_map.get(p.file_info.path, {}).get("is_hotspot", False),
-                    -pagerank.get(p.file_info.path, 0.0),
-                ),
-            )
-        else:
-            code_files = sorted(
-                code_files,
-                key=lambda p: (
-                    not p.file_info.is_entry_point,
-                    -pagerank.get(p.file_info.path, 0.0),
-                ),
-            )
-
-        # Near-clone dedupe: when 3+ files in the same directory share an
-        # identical symbol shape (same kinds + names — e.g. Messages/*.cs
-        # one-class-per-file boilerplate), keep only the highest-PageRank
-        # representative. Entry points never get dropped.
+        # Near-clone dedupe runs before scoring so clone losers never
+        # consume scoring budget. Entry points are never dropped.
         if getattr(self._config, "dedupe_near_clones", True):
             drop_paths = _select_clone_representatives(code_files, pagerank)
             if drop_paths:
                 log.info("page_selection.clone_dedupe", dropped=len(drop_paths))
                 code_files = [p for p in code_files if p.file_info.path not in drop_paths]
-
-        code_pr_scores = sorted(
-            [pagerank.get(p.file_info.path, 0.0) for p in code_files],
-            reverse=True,
-        )
-        _all_public_symbols: list[tuple[Any, Any]] = [
-            (sym, p) for p in parsed_files for sym in p.symbols if sym.visibility == "public"
-        ]
-
-        budget = max(50, int(len(parsed_files) * self._config.max_pages_pct))
-        # Estimate module-page count using whichever grouping is configured.
-        _min_module_size = max(1, getattr(self._config, "min_module_size", 3))
-        if getattr(self._config, "module_grouping", "community") == "community":
-            from collections import Counter as _Counter
-            _cid_counts = _Counter(
-                community.get(p.file_info.path) for p in code_files
-                if community.get(p.file_info.path) is not None
-            )
-            _module_count = sum(1 for n in _cid_counts.values() if n >= _min_module_size)
+                parsed_files_for_selection = [
+                    p for p in parsed_files if p.file_info.path not in drop_paths
+                ]
+            else:
+                parsed_files_for_selection = parsed_files
         else:
-            _module_count = len(
-                {
-                    (
-                        Path(p.file_info.path).parts[0]
-                        if len(Path(p.file_info.path).parts) > 1
-                        else "root"
-                    )
-                    for p in code_files
-                }
+            parsed_files_for_selection = parsed_files
+
+        try:
+            community_info_map = graph_builder.community_info() or {}
+        except Exception:
+            community_info_map = {}
+
+        from .selection import SelectionInputs, select_pages
+
+        selection = select_pages(
+            SelectionInputs(
+                parsed_files=parsed_files_for_selection,
+                pagerank=pagerank,
+                betweenness=betweenness,
+                community=community,
+                community_info=community_info_map,
+                sccs=list(sccs),
+                git_meta_map=git_meta_map,
+                config=self._config,
             )
-        # Estimate fixed overhead (api, scc, module, repo_overview, arch_diagram)
-        _fixed_overhead = (
-            sum(1 for p in parsed_files if p.file_info.is_api_contract)
-            + sum(1 for scc in sccs if len(scc) > 1)
-            + _module_count
-            + 2  # repo_overview + architecture_diagram
-        )
-        _remaining = max(0, budget - _fixed_overhead)
-
-        # File page gets priority over symbol_spotlight
-        _n_file_uncapped = (
-            max(1, int(len(code_pr_scores) * self._config.file_page_top_percentile))
-            if code_pr_scores
-            else 0
-        )
-        _n_file_cap = min(_n_file_uncapped, _remaining)
-        pr_threshold = (
-            code_pr_scores[_n_file_cap - 1] if code_pr_scores and _n_file_cap > 0 else 0.0
         )
 
-        _sym_budget = max(0, _remaining - _n_file_cap)
-        _n_sym_uncapped = (
-            max(1, int(len(_all_public_symbols) * self._config.top_symbol_percentile))
-            if _all_public_symbols
-            else 0
-        )
-        _n_sym_cap = min(_n_sym_uncapped, _sym_budget)
+        # Bucket allow-sets — O(1) membership checks in the level loops.
+        sel_file_paths: set[str] = set(selection.file_page_paths)
+        sel_symbol_keys: set[tuple[str, str]] = set(selection.symbol_spotlights)
+        sel_api_paths: set[str] = set(selection.api_contract_paths)
+        sel_infra_paths: set[str] = set(selection.infra_paths)
+        sel_module_groups = list(selection.module_groups)
+        sel_scc_groups = list(selection.scc_groups)
 
-        # Compute estimated total and notify progress (A7)
-        # Use the actual file_page count (files passing _is_significant_file), not
-        # _n_file_cap. The cap sets pr_threshold, but files with high betweenness or
-        # entry_point status bypass that threshold, so actual count > _n_file_cap.
-        _actual_file_page_count = sum(
-            1
-            for p in code_files
-            if _is_significant_file(p, pagerank, betweenness, self._config, pr_threshold)
+        # Sort code_files for stable level-2 ordering: selected files
+        # first (so dep summaries land in the store earliest), then by
+        # PageRank desc. The topo-sort below further refines this.
+        code_files = sorted(
+            code_files,
+            key=lambda p: (
+                p.file_info.path not in sel_file_paths,
+                not p.file_info.is_entry_point,
+                -pagerank.get(p.file_info.path, 0.0),
+            ),
         )
+
         estimated_total = (
-            sum(1 for p in parsed_files if p.file_info.is_api_contract)
-            + _n_sym_cap
-            + _actual_file_page_count
-            + sum(1 for scc in sccs if len(scc) > 1)
-            + _module_count
-            + 2  # repo_overview + arch_diagram
-            + sum(1 for p in parsed_files if _is_infra_file(p))
+            selection.counts()["api_contract"]
+            + selection.counts()["symbol_spotlight"]
+            + selection.counts()["file_page"]
+            + selection.counts()["scc_page"]
+            + selection.counts()["module_page"]
+            + int(selection.emit_repo_overview)
+            + int(selection.emit_arch_diagram)
+            + selection.counts()["infra_page"]
         )
         remaining_total = max(0, estimated_total - len(completed_ids))
         if on_total_known is not None:
@@ -811,8 +778,12 @@ class PageGenerator:
         if job_system is not None and job_id is not None:
             job_system.start_job(job_id, estimated_total)
 
-        # ---- Level 0: api_contract ----
-        api_files = [p for p in parsed_files if p.file_info.is_api_contract]
+        # ---- Level 0: api_contract (allow-set filtered) ----
+        api_files = [
+            p
+            for p in parsed_files
+            if p.file_info.is_api_contract and p.file_info.path in sel_api_paths
+        ]
         level0_coros = [
             (
                 compute_page_id("api_contract", p.file_info.path),
@@ -821,19 +792,20 @@ class PageGenerator:
             for p in api_files
             if compute_page_id("api_contract", p.file_info.path) not in completed_ids
         ]
-        level0_pages = await run_level(level0_coros, 0)
-        all_pages.extend(level0_pages)
-
-        # ---- Level 1: symbol_spotlight (top percentile by PageRank) ----
-        all_symbols_with_file: list[tuple[Any, ParsedFile]] = _all_public_symbols
-
-        if all_symbols_with_file and _n_sym_cap > 0:
-            all_symbols_with_file.sort(
-                key=lambda x: pagerank.get(x[1].file_info.path, 0.0), reverse=True
-            )
-            top_symbols = all_symbols_with_file[:_n_sym_cap]
-        else:
-            top_symbols = []
+        # ---- Level 1: symbol_spotlight (allow-set filtered) ----
+        # The selection layer already picked the top symbols by score;
+        # here we just resolve them back to (Symbol, ParsedFile) pairs.
+        parsed_by_path: dict[str, ParsedFile] = {
+            p.file_info.path: p for p in parsed_files
+        }
+        top_symbols: list[tuple[Any, ParsedFile]] = []
+        for file_path, sym_name in selection.symbol_spotlights:
+            pf = parsed_by_path.get(file_path)
+            if pf is None:
+                continue
+            sym = next((s for s in pf.symbols if s.name == sym_name), None)
+            if sym is not None:
+                top_symbols.append((sym, pf))
 
         level1_coros = [
             (
@@ -844,8 +816,15 @@ class PageGenerator:
             if compute_page_id("symbol_spotlight", f"{pf.file_info.path}::{sym.name}")
             not in completed_ids
         ]
-        level1_pages = await run_level(level1_coros, 1)
-        all_pages.extend(level1_pages)
+
+        # Levels 0 (api_contract) and 1 (symbol_spotlight) share no
+        # data dependencies — both feed into nothing else upstream of
+        # Level 2 — so they run in one merged batch instead of two
+        # sequential barriers. ``run_level`` already bounds total
+        # concurrency via ``self._config.max_concurrency`` so the merge
+        # only removes idle slots, never over-saturates the provider.
+        level01_pages = await run_level(level0_coros + level1_coros, 1)
+        all_pages.extend(level01_pages)
 
         # ---- Level 2: file_page (significant code files only) ----
         # Context is assembled for ALL code files (module pages need it).
@@ -896,23 +875,36 @@ class PageGenerator:
 
         file_page_contexts: dict[str, FilePageContext] = {}
 
+        # Batch-prefetch dependency summaries from the vector store in a
+        # SINGLE call covering every code file's dependencies — replaces
+        # the prior per-file serial loop that turned N×M awaits into a
+        # measurable bottleneck on the level-2 critical path.
+        if self._vector_store is not None:
+            needed_deps: set[str] = set()
+            for p in code_files:
+                path_ = p.file_info.path
+                if path_ not in graph:
+                    continue
+                for dep in graph.successors(path_):
+                    if dep.startswith("external:"):
+                        continue
+                    if dep in completed_page_summaries:
+                        continue
+                    needed_deps.add(dep)
+            if needed_deps:
+                try:
+                    batch = await self._vector_store.get_page_summaries_by_paths(
+                        list(needed_deps)
+                    )
+                    for dep_path, payload in batch.items():
+                        summary = payload.get("summary") if payload else None
+                        if summary:
+                            completed_page_summaries[dep_path] = summary
+                except Exception as exc:
+                    log.debug("rag.batch_dep_prefetch_failed", error=str(exc))
+
         level2_coros: list[tuple[str, Any]] = []
         for p in code_files:
-            # Pre-fetch dependency summaries from vector store for deps not yet
-            # in the completed_page_summaries accumulator (e.g. from prior runs).
-            if self._vector_store is not None:
-                path_ = p.file_info.path
-                out_edges = list(graph.successors(path_)) if path_ in graph else []
-                internal_deps = [e for e in out_edges if not e.startswith("external:")]
-                for dep in internal_deps:
-                    if dep not in completed_page_summaries:
-                        try:
-                            result = await self._vector_store.get_page_summary_by_path(dep)
-                            if result and result.get("summary"):
-                                completed_page_summaries[dep] = result["summary"]
-                        except Exception:
-                            pass  # Non-fatal — dep context is optional
-
             ctx = self._assembler.assemble_file_page(
                 p,
                 graph,
@@ -927,22 +919,15 @@ class PageGenerator:
             )
             file_page_contexts[p.file_info.path] = ctx
             pid = compute_page_id("file_page", p.file_info.path)
-            if (
-                _is_significant_file(p, pagerank, betweenness, self._config, pr_threshold)
-                and pid not in completed_ids
-            ):
+            if p.file_info.path in sel_file_paths and pid not in completed_ids:
                 level2_coros.append((pid, self._generate_file_page_from_ctx(p, ctx)))
 
         level2_pages = await run_level(level2_coros, 2)
         all_pages.extend(level2_pages)
 
-        # ---- Level 3: scc_page (only true cycles: len > 1) ----
+        # ---- Level 3: scc_page (allow-set filtered) ----
         scc_coros: list[tuple[str, Any]] = []
-        for i, scc in enumerate(sccs):
-            if len(scc) <= 1:
-                continue
-            scc_id = f"scc-{i}"
-            scc_files = sorted(scc)
+        for scc_id, scc_files in sel_scc_groups:
             fc_list = [file_page_contexts[f] for f in scc_files if f in file_page_contexts]
             pid = compute_page_id("scc_page", scc_id)
             if pid not in completed_ids:
@@ -950,71 +935,28 @@ class PageGenerator:
         level3_pages = await run_level(scc_coros, 3)
         all_pages.extend(level3_pages)
 
-        # ---- Level 4: module_page ----
-        # Default grouping is by graph community (post Phase 2); legacy
-        # top-directory grouping is preserved behind module_grouping="top_dir".
-        module_groups: dict[str, list[FilePageContext]] = {}
-        module_languages: dict[str, str] = {}
-        module_display: dict[str, str] = {}
-        module_meta: dict[str, dict] = {}
-
-        use_communities = getattr(self._config, "module_grouping", "community") == "community"
-        community_info_map: dict[int, Any] = {}
-        if use_communities:
-            try:
-                community_info_map = graph_builder.community_info() or {}
-            except Exception:
-                community_info_map = {}
-
-        if use_communities and community_info_map:
-            for p in code_files:
-                path_ = p.file_info.path
-                fc = file_page_contexts.get(path_)
-                if fc is None:
-                    continue
-                cid = community.get(path_)
-                if cid is None:
-                    continue
-                key = f"community-{cid}"
-                module_groups.setdefault(key, []).append(fc)
-                # Pick the most common language inside the community
-                module_languages.setdefault(key, p.file_info.language)
-                ci = community_info_map.get(cid)
-                if ci is not None and key not in module_display:
-                    label = getattr(ci, "label", "") or f"cluster_{cid}"
-                    module_display[key] = label
-                    module_meta[key] = {
-                        "label": label,
-                        "cohesion": float(getattr(ci, "cohesion", 0.0) or 0.0),
-                    }
-        else:
-            # Fallback: top-level directory grouping.
-            for p in code_files:
-                parts = Path(p.file_info.path).parts
-                module = parts[0] if len(parts) > 1 else "root"
-                fc = file_page_contexts.get(p.file_info.path)
-                if fc is None:
-                    continue
-                module_groups.setdefault(module, []).append(fc)
-                module_languages[module] = p.file_info.language
-                module_display.setdefault(module, module)
-
-        min_size = max(1, getattr(self._config, "min_module_size", 3))
+        # ---- Level 4: module_page (allow-set filtered) ----
+        # Module groups come from the selection layer; we only need to
+        # resolve FilePageContext objects for the files we already
+        # built contexts for in Level 2.
         level4_coros: list[tuple[str, Any]] = []
-        for module_key, fcs in module_groups.items():
-            if len(fcs) < min_size:
+        for mg in sel_module_groups:
+            fcs = [
+                file_page_contexts[fp]
+                for fp in mg.file_paths
+                if fp in file_page_contexts
+            ]
+            if not fcs:
                 continue
-            page_id = compute_page_id("module_page", module_key)
+            page_id = compute_page_id("module_page", mg.key)
             if page_id in completed_ids:
                 continue
-            display = module_display.get(module_key, module_key)
-            meta = module_meta.get(module_key, {})
             level4_coros.append(
                 (
                     page_id,
                     self.generate_module_page(
-                        display,
-                        module_languages.get(module_key, "unknown"),
+                        mg.display,
+                        mg.language,
                         fcs,
                         graph,
                         git_meta_map=git_meta_map,
@@ -1024,9 +966,9 @@ class PageGenerator:
                             d for fc in fcs for d in dead_code_by_file.get(fc.file_path, [])
                         ],
                         external_systems=external_systems,
-                        community_label=meta.get("label"),
-                        community_cohesion=meta.get("cohesion"),
-                        target_path=module_key,
+                        community_label=mg.label,
+                        community_cohesion=mg.cohesion,
+                        target_path=mg.key,
                     ),
                 )
             )
@@ -1059,14 +1001,12 @@ class PageGenerator:
                     self.generate_architecture_diagram(graph, pagerank, community, sccs, repo_name),
                 )
             )
-        level6_pages = await run_level(level6_coros, 6)
-        # Tag the promoted onboarding pages (repo_overview / architecture_diagram)
-        # so the UI groups them into the Onboarding folder. No content change.
-        self._tag_promoted_pages(level6_pages)
-        all_pages.extend(level6_pages)
-
-        # ---- Level 7: infra_page ----
-        infra_files = [p for p in parsed_files if _is_infra_file(p)]
+        # ---- Level 7: infra_page (allow-set filtered) ----
+        infra_files = [
+            p
+            for p in parsed_files
+            if _is_infra_file(p) and p.file_info.path in sel_infra_paths
+        ]
         level7_coros: list[tuple[str, Any]] = [
             (
                 compute_page_id("infra_page", p.file_info.path),
@@ -1075,20 +1015,16 @@ class PageGenerator:
             for p in infra_files
             if compute_page_id("infra_page", p.file_info.path) not in completed_ids
         ]
-        level7_pages = await run_level(level7_coros, 7)
-        all_pages.extend(level7_pages)
 
         # ---- Level 8: onboarding (curated collection) ----
         # Each subkind defines its own gate inside build_context — slots
         # whose gates fail return None and are skipped entirely. Promoted
         # slots (project_overview / architecture_guide) are tagged onto the
-        # level-6 pages above and don't appear here.
+        # level-6 pages and don't appear here.
+        level8_coros: list[tuple[str, Any]] = []
         if getattr(self._config, "enable_onboarding", True):
             specs = _onboarding.iter_specs()
             if specs:
-                # Announce the subphase to the progress UI so the terminal
-                # shows a distinct "Onboarding" task with its own count. The
-                # count is an upper bound — gates may skip slots.
                 if on_subphase is not None:
                     try:
                         on_subphase("onboarding", len(specs))
@@ -1110,7 +1046,6 @@ class PageGenerator:
                     external_systems=tuple(external_systems),
                     completed_page_summaries=dict(completed_page_summaries),
                 )
-                level8_coros: list[tuple[str, Any]] = []
                 for spec in specs:
                     page_id = compute_page_id(
                         "onboarding", _onboarding.target_path(spec.slot)
@@ -1120,11 +1055,29 @@ class PageGenerator:
                     level8_coros.append(
                         (page_id, self.generate_onboarding_page(spec, signals))
                     )
-                level8_pages_raw = await run_level(level8_coros, 8)
-                # generate_onboarding_page may return None when its gate
-                # fails; run_level already filters non-pages out, so this
-                # list is safe to extend directly.
-                all_pages.extend(level8_pages_raw)
+
+        # Levels 6, 7, and 8 share no data dependencies with each other
+        # — Level 6 needs only the graph + repo metadata; Level 7
+        # documents standalone infra files; Level 8 consumes a frozen
+        # ``OnboardingSignals`` snapshot. Run them in a single merged
+        # batch instead of three sequential barriers.
+        final_pages = await run_level(level6_coros + level7_coros + level8_coros, 8)
+        # Tag promoted onboarding slots (repo_overview / architecture_diagram)
+        # so the UI groups them into the Onboarding folder. No content change.
+        self._tag_promoted_pages(final_pages)
+        all_pages.extend(final_pages)
+
+        # Post-generation: resolve backtick-quoted refs in every page's
+        # markdown to other pages' ``page_id``s and stash the result in
+        # ``metadata["wiki_links"]``. The reverse index lands in
+        # ``metadata["backlinks"]``. Pure regex + dict lookup — no LLM
+        # call, safe to run on every generation.
+        try:
+            from .interlinking import attach_wiki_links_and_backlinks
+
+            attach_wiki_links_and_backlinks(all_pages, parsed_files)
+        except Exception as exc:
+            log.debug("interlinking.failed", error=str(exc))
 
         # Finalize job
         if job_system is not None and job_id is not None:

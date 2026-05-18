@@ -12,6 +12,11 @@ import { TableOfContents } from "@repowise-dev/ui/wiki/table-of-contents";
 import { RegenerateButtonWrapper } from "@/components/wiki/regenerate-button";
 import { GitHistoryPanel } from "@repowise-dev/ui/wiki/git-history-panel";
 import { SecurityPanelWrapper } from "@/components/wiki/security-panel";
+import { BacklinksPanel } from "@repowise-dev/ui/wiki/backlinks-panel";
+import {
+  getBacklinks,
+  getWikiLinks,
+} from "@repowise-dev/ui/wiki/wiki-links-types";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { Separator } from "@repowise-dev/ui/ui/separator";
 import { formatRelativeTime, formatTokens } from "@repowise-dev/ui/lib/format";
@@ -126,7 +131,11 @@ export default async function WikiPageRoute({ params }: Props) {
           )}
 
           <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
-            <WikiRenderer content={page.content} />
+            <WikiRenderer
+              content={page.content}
+              wikiLinks={getWikiLinks(page.metadata)}
+              repoId={id}
+            />
           </article>
 
           {/* Hallucination warnings */}
@@ -240,6 +249,14 @@ export default async function WikiPageRoute({ params }: Props) {
               </div>
             </div>
           )}
+
+          {/* Backlinks — pages mentioning this one. Hidden when empty
+              so legacy pages without interlinking metadata don't show
+              an awkward "Linked by (0)" header. */}
+          <BacklinksPanel
+            backlinks={getBacklinks(page.metadata)}
+            repoId={id}
+          />
 
           {/* Security findings panel */}
           {page.target_path && (

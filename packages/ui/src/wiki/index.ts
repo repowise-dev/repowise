@@ -1,3 +1,4 @@
+export * from "./backlinks-panel.js";
 export * from "./code-block.js";
 export * from "./confidence-badge.js";
 export * from "./git-history-panel.js";
@@ -6,6 +7,8 @@ export * from "./regenerate-button.js";
 export * from "./security-panel.js";
 export * from "./table-of-contents.js";
 export * from "./version-history.js";
+export * from "./wiki-link.js";
+export * from "./wiki-links-types.js";
 export * from "./wiki-markdown.js";
 export * from "./wiki-mdx-components.js";
 export * from "./wiki-mdx-preprocess.js";
