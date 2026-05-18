@@ -97,10 +97,21 @@ class HealthAnalyzer:
         config: dict | None = None,
         *,
         on_step: Any | None = None,
+        changed_files: set[str] | list[str] | None = None,
     ) -> HealthReport:
+        """Analyze the configured parsed files.
+
+        Pass *changed_files* (repo-relative POSIX paths) for incremental
+        runs from ``repowise update`` — the engine still needs the full
+        parsed-file set to build duplication context (clones cross
+        files), but only files in *changed_files* contribute findings /
+        metrics. The caller is responsible for upserting (not replacing)
+        the result against the existing rows.
+        """
         cfg = config or {}
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
         per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
+        changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
 
         # PageRank is optional — graph_builder.symbol_pagerank exists but
         # is symbol-level; we use file-level in-degree as the dependents
@@ -109,7 +120,9 @@ class HealthAnalyzer:
 
         # Duplication runs once, up-front, so each file biomarker can see
         # its clone list. Cheap when the repo is small; when disabled
-        # explicitly we skip the work entirely.
+        # explicitly we skip the work entirely. Even for incremental
+        # runs we keep the full-repo scan: a changed file's clone partners
+        # may be unchanged files we still need to compare against.
         if "dry_violation" in disabled:
             dup_report = DuplicationReport()
         else:
@@ -123,6 +136,8 @@ class HealthAnalyzer:
         metrics: list[HealthFileMetricData] = []
 
         for pf in self.parsed_files:
+            if changed_set is not None and pf.file_info.path not in changed_set:
+                continue
             try:
                 fc_list = self._walk(pf)
             except Exception as exc:
@@ -149,8 +164,14 @@ class HealthAnalyzer:
             if on_step:
                 on_step(pf.file_info.path)
 
-        hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
-        kpis = compute_kpis(metrics, hotspot_paths)
+        # KPIs are repo-wide; on an incremental run they would be biased
+        # by the changed-files subset. Skip them in that case — the
+        # ``persist`` step recomputes KPIs from the merged DB rows.
+        if changed_set is None:
+            hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
+            kpis = compute_kpis(metrics, hotspot_paths)
+        else:
+            kpis = {}
 
         return HealthReport(
             repo_id="",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import click
 from rich.table import Table
@@ -78,6 +79,28 @@ def _resolve_index_only_mode(
     return _infer_legacy_docs_enabled(state) is False
 
 
+async def _persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
+    """Upsert health findings + metrics for the changed-files subset.
+
+    Unlike ``persist_pipeline_result`` (which delete-then-inserts the
+    whole repo), this writer only touches rows whose ``file_path`` is in
+    the partial report — so unchanged files keep their existing findings
+    and metrics across an incremental ``repowise update``.
+    """
+    from repowise.core.persistence.crud import (
+        upsert_health_findings,
+        upsert_health_metrics,
+    )
+
+    changed_paths = sorted({m.file_path for m in report.metrics or []})
+    if not changed_paths:
+        return
+    await upsert_health_metrics(session, repo_id, report.metrics or [])
+    await upsert_health_findings(
+        session, repo_id, list(report.findings or []), file_paths=changed_paths
+    )
+
+
 # ---------------------------------------------------------------------------
 # Workspace update flow
 # ---------------------------------------------------------------------------
@@ -114,7 +137,9 @@ def _workspace_update(
         abs_path = (ws_root / entry.path).resolve()
         stored = entry.last_commit_at_index
         is_stale, head, behind = check_repo_staleness(abs_path, stored)
-        status = f"[yellow]{behind} new commit(s)[/yellow]" if is_stale else "[green]up to date[/green]"
+        status = (
+            f"[yellow]{behind} new commit(s)[/yellow]" if is_stale else "[green]up to date[/green]"
+        )
         if not (abs_path / ".repowise").is_dir():
             status = "[dim]not indexed[/dim]"
         console.print(f"  {entry.alias:<20} {status}")
@@ -312,8 +337,7 @@ def update_command(
             )
         raise click.ClickException(
             f"No previous sync found for {repo_path}. "
-            "Run 'repowise init' there first, or pass --since <ref>."
-            + hint
+            "Run 'repowise init' there first, or pass --since <ref>." + hint
         )
 
     if head and head == base_ref:
@@ -364,9 +388,7 @@ def update_command(
         save_state(repo_path, state)
 
     # --- Resolve effective mode (index-only vs full LLM regen) ---
-    index_only = _resolve_index_only_mode(
-        index_only=index_only, docs_flag=docs_flag, state=state
-    )
+    index_only = _resolve_index_only_mode(index_only=index_only, docs_flag=docs_flag, state=state)
 
     # --- Acquire update lock so the augment hook can suppress its
     # stale-wiki warning while this run is in flight (typical case: the
@@ -492,6 +514,38 @@ def update_command(
         console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
         return
 
+    # Run partial code-health analysis up front so both the index-only
+    # and full paths can upsert findings/metrics for changed files only.
+    # The full file-list is needed because duplication is cross-file —
+    # but only files in ``changed_paths`` produce new findings/metrics.
+    partial_health_report = None
+    try:
+        from repowise.core.analysis.health import HealthAnalyzer
+        from repowise.core.analysis.health.config import HealthConfig
+
+        _health_analyzer = HealthAnalyzer(
+            graph_builder.graph(),
+            git_meta_map=git_meta_map,
+            parsed_files=parsed_files,
+        )
+        _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
+        if _health_changed:
+            _hcfg = HealthConfig.load(repo_path)
+            _analyzer_config = (
+                _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
+                if (_hcfg.disabled_biomarkers or _hcfg.rules)
+                else None
+            )
+            partial_health_report = _health_analyzer.analyze(
+                _analyzer_config, changed_files=_health_changed
+            )
+            console.print(
+                f"Health analysis (partial): [cyan]{len(_health_changed)} files[/cyan], "
+                f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
+            )
+    except Exception as exc:
+        console.print(f"[yellow]Health analysis skipped: {exc}[/yellow]")
+
     # Run partial dead-code analysis up front so both branches can
     # persist its results. Previously this sat below the ``if index_only``
     # short-circuit, which left the closure's reference to
@@ -555,13 +609,15 @@ def update_command(
                             save_dead_code_findings,
                         )
 
-                        await save_dead_code_findings(
-                            session, repo_id, dead_code_report.findings
-                        )
+                        await save_dead_code_findings(session, repo_id, dead_code_report.findings)
                     except Exception as exc:
-                        console.print(
-                            f"[yellow]Dead-code persist skipped: {exc}[/yellow]"
-                        )
+                        console.print(f"[yellow]Dead-code persist skipped: {exc}[/yellow]")
+
+                if partial_health_report is not None:
+                    try:
+                        await _persist_partial_health(session, repo_id, partial_health_report)
+                    except Exception as exc:
+                        console.print(f"[yellow]Health persist skipped: {exc}[/yellow]")
 
                 # Re-persist graph_nodes so symbol-level PageRank /
                 # betweenness / community ids stay in sync with the
@@ -574,9 +630,7 @@ def update_command(
 
                     await persist_graph_nodes(session, repo_id, graph_builder)
                 except Exception as exc:
-                    console.print(
-                        f"[yellow]Graph nodes persist skipped: {exc}[/yellow]"
-                    )
+                    console.print(f"[yellow]Graph nodes persist skipped: {exc}[/yellow]")
 
         run_async(_persist_index_only())
         save_state(repo_path, {**state, "last_sync_commit": head})
@@ -665,9 +719,7 @@ def update_command(
         engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
-            repo = await upsert_repository(
-                session, name=repo_path.name, local_path=str(repo_path)
-            )
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             return await load_prior_pages(session, repo.id)
 
     try:
@@ -756,6 +808,14 @@ def update_command(
                     await recompute_decision_staleness(session, repo_id, git_meta_map)
         except Exception:
             pass  # never fail update due to decision processing
+
+        # Persist code-health findings + metrics (partial — upsert only)
+        if partial_health_report is not None:
+            try:
+                async with get_session(sf) as session:
+                    await _persist_partial_health(session, repo_id, partial_health_report)
+            except Exception:
+                pass  # health persistence is best-effort
 
         # Persist dead code findings (partial)
         if dead_code_report and dead_code_report.findings:
@@ -851,6 +911,7 @@ def update_command(
             ws_config = WorkspaceConfig.load(ws_root)
             # Find this repo's alias in the workspace config
             from pathlib import Path as _P
+
             repo_abs = repo_path.resolve()
             alias = None
             for entry in ws_config.repos:
