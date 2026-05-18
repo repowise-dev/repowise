@@ -432,6 +432,7 @@ def _workspace_init(
     dry_run: bool = False,
     resume: bool = False,
     force: bool = False,
+    onboarding: bool = True,
 ) -> None:
     """Multi-repo workspace initialization.
 
@@ -1015,6 +1016,7 @@ def init_command(
             dry_run=dry_run,
             resume=resume,
             force=force,
+            onboarding=onboarding,
         )
         return
 
