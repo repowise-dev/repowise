@@ -541,6 +541,11 @@ def _workspace_init(
     if not index_only:
         try:
             provider = resolve_provider(provider_name, model, primary_repo.path)
+            # Re-resolve the embedder now that interactive_provider_select
+            # may have set the provider's API key in os.environ. Without
+            # this, full-mode runs would display "mock" forever because
+            # the initial resolution happened before the key was available.
+            embedder_name_resolved = _resolve_embedder(embedder_name)
             console.print(
                 f"  Provider: [cyan]{provider.provider_name}[/cyan] / "
                 f"Model: [cyan]{provider.model_name}[/cyan]"
@@ -1141,6 +1146,11 @@ def init_command(
             provider_name, model = _ips(console, model)
 
         provider = resolve_provider(provider_name, model, repo_path)
+        # resolve_provider / interactive_provider_select may have just set
+        # the API key in os.environ. Re-resolve the embedder so the
+        # display (and the embed path below) honors the key the user just
+        # pasted, rather than the pre-prompt "mock" fallback.
+        embedder_name_resolved = _resolve_embedder(embedder_name)
         if not is_interactive:
             console.print(f"[bold]repowise init[/bold] — {repo_path}")
         console.print(
