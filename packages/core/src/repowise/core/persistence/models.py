@@ -535,6 +535,105 @@ class DeadCodeFinding(Base):
     )
 
 
+class HealthFinding(Base):
+    """One biomarker hit produced by the code-health analyzer."""
+
+    __tablename__ = "health_findings"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    biomarker_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    function_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    health_impact: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class HealthFileMetric(Base):
+    """Per-file aggregate metrics + final score."""
+
+    __tablename__ = "health_file_metrics"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
+    max_ccn: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_nesting: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    nloc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duplication_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    has_test_file: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    line_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    module: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint("repository_id", "file_path", name="uq_health_file_metrics"),
+    )
+
+
+class HealthSnapshot(Base):
+    """KPI history + compact per-file score map. Keep last 50 per repo."""
+
+    __tablename__ = "health_snapshots"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    taken_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    hotspot_health: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
+    average_health: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
+    worst_performer_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    worst_performer_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    per_file_scores_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+
+class CoverageFile(Base):
+    """Per-file coverage data, overwritten on each --coverage run."""
+
+    __tablename__ = "coverage_files"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    source_format: Mapped[str] = mapped_column(String(32), nullable=False)
+    line_coverage_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    covered_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    total_coverable_lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("repository_id", "file_path", name="uq_coverage_files"),
+    )
+
+
 class AnswerCache(Base):
     """Cached LLM-synthesized answers from get_answer.
 

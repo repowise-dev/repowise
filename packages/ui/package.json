@@ -24,6 +24,8 @@
     "./git/*": "./src/git/*.tsx",
     "./dead-code": "./src/dead-code/index.ts",
     "./dead-code/*": "./src/dead-code/*.tsx",
+    "./health": "./src/health/index.ts",
+    "./health/*": "./src/health/*.tsx",
     "./decisions": "./src/decisions/index.ts",
     "./decisions/*": "./src/decisions/*.tsx",
     "./docs": "./src/docs/index.ts",

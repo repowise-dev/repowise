@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
-from typing import Any
 
 import click
 from rich.table import Table
@@ -11,15 +11,12 @@ from rich.table import Table
 from repowise.cli.helpers import (
     CommandTarget,
     console,
-    find_workspace_root,
     get_db_url_for_repo,
     get_repowise_dir,
     load_state,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
-
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -129,17 +126,85 @@ def _query_page_count(repo_path: Path) -> int:
         return 0
 
 
+def _query_health_line(repo_path: Path) -> str | None:
+    """One-line health summary for ``repowise status``.
+
+    Returns ``None`` when no health data exists yet so the caller can
+    skip the line silently. Format matches plan §4 P4.10:
+
+        Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
+    """
+    db_path = get_repowise_dir(repo_path) / "wiki.db"
+    if not db_path.exists():
+        return None
+
+    async def _q() -> dict | None:
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.crud import (
+            get_health_metrics,
+            get_health_summary,
+            get_repository_by_path,
+        )
+
+        url = get_db_url_for_repo(repo_path)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        try:
+            async with get_session(sf) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    return None
+                summary = await get_health_summary(session, repo.id)
+                if summary["file_count"] == 0:
+                    return None
+                metrics = await get_health_metrics(session, repo.id)
+                # Hotspot health: NLOC-weighted avg of top-25% files by NLOC.
+                if metrics:
+                    by_nloc = sorted(metrics, key=lambda m: m.nloc or 0, reverse=True)
+                    top = by_nloc[: max(1, len(by_nloc) // 4)]
+                    tot = sum(max(m.nloc, 1) for m in top)
+                    hotspot = (
+                        sum(m.score * max(m.nloc, 1) for m in top) / tot
+                        if tot
+                        else summary["average_health"]
+                    )
+                else:
+                    hotspot = summary["average_health"]
+                return {**summary, "hotspot_health": round(hotspot, 2)}
+        finally:
+            await engine.dispose()
+
+    try:
+        data = run_async(_q())
+    except Exception:
+        return None
+    if not data:
+        return None
+    worst_path = data["worst_performer_path"] or "n/a"
+    worst_score = data["worst_performer_score"]
+    worst_repr = f"{worst_score:.1f}" if worst_score is not None else "—"
+    return (
+        f"[bold]Health:[/bold] {data['average_health']:.1f} (avg) · "
+        f"{data['hotspot_health']:.1f} (hotspots) · "
+        f"{worst_repr} (worst: {worst_path})"
+    )
+
+
 def _format_relative_time(iso_timestamp: str | None) -> str:
     """Format an ISO 8601 timestamp as a relative time string."""
     if not iso_timestamp:
         return "-"
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         dt = datetime.fromisoformat(iso_timestamp)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         delta = now - dt
         seconds = int(delta.total_seconds())
         if seconds < 60:
@@ -153,7 +218,7 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
         return iso_timestamp[:10] if len(iso_timestamp) >= 10 else iso_timestamp
 
 
-def _workspace_status(target: "CommandTarget") -> None:
+def _workspace_status(target: CommandTarget) -> None:
     """Show status for all repos in a workspace."""
     from repowise.core.workspace import check_repo_staleness
 
@@ -361,3 +426,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool) -> Non
         pages_table.add_row("[bold]Total[/bold]", f"[bold]{sum(counts.values())}[/bold]")
         pages_table.add_row("Total tokens", f"{total_db_tokens:,}")
         console.print(pages_table)
+
+    health_line = _query_health_line(repo_path)
+    if health_line:
+        console.print()
+        console.print(health_line)

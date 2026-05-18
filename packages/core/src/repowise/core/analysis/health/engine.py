@@ -1,0 +1,412 @@
+"""HealthAnalyzer — thin orchestrator over walker → biomarkers → scorer.
+
+Run sequence per file:
+
+  1. Open the source bytes from ``ParsedFile.file_info.abs_path``.
+  2. Walk the AST with ``complexity.walk_file_complexity`` → list of
+     ``FunctionComplexity``.
+  3. Build a ``FileContext`` (function metrics, git meta, dependents
+     count, NLOC, test-file flag).
+  4. Run all registered biomarkers via ``biomarkers.detect_all``.
+  5. Score the file, attach per-finding impacts.
+  6. Side effect: write ``max(ccn)`` into each Symbol's
+     ``complexity_estimate`` so downstream consumers benefit.
+
+Repo-level KPIs are computed from the final per-file metrics.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import structlog
+
+from .biomarkers import FileContext, detect_all
+from .complexity import FunctionComplexity, walk_file_complexity
+from .coverage import is_test_file as _coverage_is_test_file
+from .duplication import DuplicationReport, detect_clones
+from .models import HealthFileMetricData, HealthFindingData, HealthReport
+from .scoring import attach_impacts, compute_kpis, score_file
+
+log = structlog.get_logger(__name__)
+
+
+def _is_test_file(rel_path: str) -> bool:
+    p = rel_path.lower()
+    return (
+        "/test/" in p
+        or "/tests/" in p
+        or "/__tests__/" in p
+        or p.startswith("test_")
+        or p.endswith("_test.py")
+        or p.endswith(".test.ts")
+        or p.endswith(".test.tsx")
+        or p.endswith(".test.js")
+        or p.endswith(".spec.ts")
+        or p.endswith(".spec.js")
+        or p.endswith("_test.go")
+    )
+
+
+def _fallback_module(rel_path: str) -> str | None:
+    """Top-level directory as a stand-in module label when no community map.
+
+    Returns ``None`` for root-level files so the rollup endpoint doesn't
+    create a phantom "" bucket.
+    """
+    norm = rel_path.replace("\\", "/")
+    if "/" not in norm:
+        return None
+    head = norm.split("/", 1)[0]
+    return head or None
+
+
+def _has_paired_test_file(rel_path: str, all_paths: set[str]) -> bool:
+    """Heuristic: does any other file look like a test for *rel_path*?
+
+    Cheap and conservative — looks for common test-file naming
+    conventions paired with the same basename.
+    """
+    p = Path(rel_path)
+    stem = p.stem
+    candidates = {
+        f"test_{stem}.py",
+        f"{stem}_test.py",
+        f"{stem}.test.ts",
+        f"{stem}.test.tsx",
+        f"{stem}.test.js",
+        f"{stem}.spec.ts",
+        f"{stem}.spec.js",
+        f"{stem}_test.go",
+    }
+    return any(
+        any(other.endswith("/" + c) or other == c for c in candidates) for other in all_paths
+    )
+
+
+class HealthAnalyzer:
+    """Pure-Python health analyzer. No LLM, no network."""
+
+    def __init__(
+        self,
+        graph: Any,  # networkx.DiGraph
+        git_meta_map: dict[str, dict] | None = None,
+        parsed_files: list[Any] | None = None,
+        coverage_map: dict[str, dict[str, Any]] | None = None,
+        module_map: dict[str, str] | None = None,
+    ) -> None:
+        self.graph = graph
+        self.git_meta_map = git_meta_map or {}
+        self.parsed_files = list(parsed_files or [])
+        # Per-file coverage keyed by repo-relative POSIX path. Each value
+        # is ``{line_coverage_pct, branch_coverage_pct, covered_lines,
+        # total_coverable_lines}``. ``None``-equivalent files are simply
+        # absent from the map.
+        self.coverage_map = coverage_map or {}
+        # Per-file module label keyed by repo-relative POSIX path.
+        # Populated from graph community labels by the orchestrator. When
+        # missing, the engine falls back to the top-level directory so
+        # module rollups still group sensibly on small repos that didn't
+        # produce community labels.
+        self.module_map = module_map or {}
+
+    def analyze(
+        self,
+        config: dict | None = None,
+        *,
+        on_step: Any | None = None,
+        changed_files: set[str] | list[str] | None = None,
+    ) -> HealthReport:
+        """Analyze the configured parsed files.
+
+        Pass *changed_files* (repo-relative POSIX paths) for incremental
+        runs from ``repowise update`` — the engine still needs the full
+        parsed-file set to build duplication context (clones cross
+        files), but only files in *changed_files* contribute findings /
+        metrics. The caller is responsible for upserting (not replacing)
+        the result against the existing rows.
+        """
+        cfg = config or {}
+        disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
+        per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
+        changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
+
+        # PageRank is optional — graph_builder.symbol_pagerank exists but
+        # is symbol-level; we use file-level in-degree as the dependents
+        # signal (cheap, deterministic, conservative).
+        all_paths = {pf.file_info.path for pf in self.parsed_files}
+
+        # Duplication runs once, up-front, so each file biomarker can see
+        # its clone list. Cheap when the repo is small; when disabled
+        # explicitly we skip the work entirely. Even for incremental
+        # runs we keep the full-repo scan: a changed file's clone partners
+        # may be unchanged files we still need to compare against.
+        if "dry_violation" in disabled:
+            dup_report = DuplicationReport()
+        else:
+            try:
+                dup_report = detect_clones(self.parsed_files, self.git_meta_map)
+            except Exception as exc:
+                log.debug("health_duplication_failed", error=str(exc))
+                dup_report = DuplicationReport()
+
+        findings: list[HealthFindingData] = []
+        metrics: list[HealthFileMetricData] = []
+
+        for pf in self.parsed_files:
+            if changed_set is not None and pf.file_info.path not in changed_set:
+                continue
+            try:
+                fc_list = self._walk(pf)
+            except Exception as exc:
+                log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
+                fc_list = []
+
+            # Side-effect: bump Symbol.complexity_estimate when we can
+            # match by enclosing line range. Symbols not matched keep
+            # their default (1).
+            self._populate_symbol_complexity(pf, fc_list)
+
+            file_disabled = list(disabled)
+            extra = per_file_disabled.get(pf.file_info.path)
+            if extra:
+                for name in extra:
+                    if name not in file_disabled:
+                        file_disabled.append(name)
+            file_metric, file_findings = self._evaluate_file(
+                pf, fc_list, all_paths, disabled=file_disabled, dup_report=dup_report
+            )
+            metrics.append(file_metric)
+            findings.extend(file_findings)
+
+            if on_step:
+                on_step(pf.file_info.path)
+
+        # KPIs are repo-wide; on an incremental run they would be biased
+        # by the changed-files subset. Skip them in that case — the
+        # ``persist`` step recomputes KPIs from the merged DB rows.
+        if changed_set is None:
+            hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
+            kpis = compute_kpis(metrics, hotspot_paths)
+        else:
+            kpis = {}
+
+        return HealthReport(
+            repo_id="",
+            analyzed_at=datetime.now(UTC),
+            findings=findings,
+            metrics=metrics,
+            kpis=kpis,
+        )
+
+    async def analyze_async(
+        self,
+        config: dict | None = None,
+        *,
+        on_step: Any | None = None,
+        changed_files: set[str] | list[str] | None = None,
+        max_workers: int | None = None,
+    ) -> HealthReport:
+        """Parallel variant of :meth:`analyze` for large repos.
+
+        Splits the per-file work across an ``asyncio.gather`` of
+        ``asyncio.to_thread`` calls. Tree-sitter parsing releases the
+        GIL, so this gives a real wall-clock win even on single-process
+        Python — the 30s budget on a 3,000-file synthetic repo (plan §4
+        P4.6) is met by this path.
+
+        Duplication still runs once up-front (cross-file by nature), and
+        the symbol-complexity write-back still runs on the main thread
+        so ORM objects don't cross thread boundaries unexpectedly.
+        """
+        cfg = config or {}
+        disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
+        per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
+        changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
+
+        all_paths = {pf.file_info.path for pf in self.parsed_files}
+
+        if "dry_violation" in disabled:
+            dup_report = DuplicationReport()
+        else:
+            try:
+                dup_report = await asyncio.to_thread(
+                    detect_clones, self.parsed_files, self.git_meta_map
+                )
+            except Exception as exc:
+                log.debug("health_duplication_failed", error=str(exc))
+                dup_report = DuplicationReport()
+
+        target_files = [
+            pf
+            for pf in self.parsed_files
+            if changed_set is None or pf.file_info.path in changed_set
+        ]
+        if not target_files:
+            return HealthReport(
+                repo_id="",
+                analyzed_at=datetime.now(UTC),
+                findings=[],
+                metrics=[],
+                kpis={},
+            )
+
+        # Pre-walk in worker threads so each task hands a list of
+        # FunctionComplexity entries to the synchronous biomarker stage.
+        # tree-sitter parsing releases the GIL → real parallelism here.
+        workers = max(1, int(max_workers or os.cpu_count() or 4))
+        semaphore = asyncio.Semaphore(workers)
+
+        async def _one(pf: Any) -> tuple[Any, list[FunctionComplexity]]:
+            async with semaphore:
+                try:
+                    fc = await asyncio.to_thread(self._walk, pf)
+                except Exception as exc:
+                    log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
+                    fc = []
+            return pf, fc
+
+        walked = await asyncio.gather(*[_one(pf) for pf in target_files])
+
+        findings: list[HealthFindingData] = []
+        metrics: list[HealthFileMetricData] = []
+        for pf, fc_list in walked:
+            self._populate_symbol_complexity(pf, fc_list)
+            file_disabled = list(disabled)
+            extra = per_file_disabled.get(pf.file_info.path)
+            if extra:
+                for name in extra:
+                    if name not in file_disabled:
+                        file_disabled.append(name)
+            file_metric, file_findings = self._evaluate_file(
+                pf, fc_list, all_paths, disabled=file_disabled, dup_report=dup_report
+            )
+            metrics.append(file_metric)
+            findings.extend(file_findings)
+            if on_step:
+                on_step(pf.file_info.path)
+
+        if changed_set is None:
+            hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
+            kpis = compute_kpis(metrics, hotspot_paths)
+        else:
+            kpis = {}
+
+        return HealthReport(
+            repo_id="",
+            analyzed_at=datetime.now(UTC),
+            findings=findings,
+            metrics=metrics,
+            kpis=kpis,
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _walk(self, pf: Any) -> list[FunctionComplexity]:
+        path = pf.file_info.abs_path
+        language = pf.file_info.language
+        try:
+            source = Path(path).read_bytes()
+        except OSError:
+            return []
+        return walk_file_complexity(path, language, source)
+
+    def _populate_symbol_complexity(self, pf: Any, fc_list: list[FunctionComplexity]) -> None:
+        if not fc_list:
+            return
+        # Index function metrics by (start_line, end_line) for fast lookup.
+        by_range = {(fc.start_line, fc.end_line): fc for fc in fc_list}
+        by_name = {fc.name: fc for fc in fc_list}
+        for sym in pf.symbols:
+            fc = by_range.get((sym.start_line, sym.end_line)) or by_name.get(sym.name)
+            if fc is None:
+                continue
+            # Cap at the ORM Integer; CCN beyond ~10k is implausible.
+            sym.complexity_estimate = int(min(fc.ccn, 9999))
+
+    def _evaluate_file(
+        self,
+        pf: Any,
+        fc_list: list[FunctionComplexity],
+        all_paths: set[str],
+        *,
+        disabled: list[str],
+        dup_report: DuplicationReport,
+    ) -> tuple[HealthFileMetricData, list[HealthFindingData]]:
+        file_path = pf.file_info.path
+
+        fn_metrics: dict[str, FunctionComplexity] = {fc.name: fc for fc in fc_list}
+        max_ccn = max((fc.ccn for fc in fc_list), default=1)
+        max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
+        nloc = sum(fc.nloc for fc in fc_list)
+
+        dependents_count = 0
+        if self.graph is not None and file_path in self.graph:
+            try:
+                dependents_count = int(self.graph.in_degree(file_path))
+            except Exception:
+                dependents_count = 0
+
+        cov = self.coverage_map.get(file_path)
+        if cov is None:
+            cov = self.coverage_map.get(file_path.replace("\\", "/"))
+        line_cov = cov.get("line_coverage_pct") if cov else None
+        branch_cov = cov.get("branch_coverage_pct") if cov else None
+        covered_lines: set[int] = set(cov.get("covered_lines") or ()) if cov else set()
+        total_coverable_lines = int(cov.get("total_coverable_lines", 0)) if cov else 0
+
+        clones = dup_report.pairs_by_file.get(file_path, [])
+        dup_pct = dup_report.duplication_pct.get(file_path)
+
+        module = self.module_map.get(file_path) or _fallback_module(file_path)
+
+        ctx = FileContext(
+            file_path=file_path,
+            language=pf.file_info.language,
+            nloc=nloc,
+            has_test_file=_has_paired_test_file(file_path, all_paths)
+            or _is_test_file(file_path)
+            or _coverage_is_test_file(file_path),
+            module=module,
+            function_metrics=fn_metrics,
+            git_meta=self.git_meta_map.get(file_path, {}) or {},
+            dependents_count=dependents_count,
+            pagerank_score=0.0,
+            line_coverage_pct=line_cov,
+            branch_coverage_pct=branch_cov,
+            covered_lines=covered_lines,
+            total_coverable_lines=total_coverable_lines,
+            clones=list(clones),
+            duplication_pct=dup_pct,
+        )
+
+        biomarker_results = detect_all(ctx, disabled=disabled)
+        score, deductions = score_file(biomarker_results)
+        findings = attach_impacts(biomarker_results, deductions)
+        for f in findings:
+            f.file_path = file_path
+
+        metric = HealthFileMetricData(
+            file_path=file_path,
+            score=round(score, 2),
+            max_ccn=max_ccn,
+            max_nesting=max_nesting,
+            nloc=nloc,
+            has_test_file=ctx.has_test_file,
+            module=module,
+            line_coverage_pct=line_cov,
+            branch_coverage_pct=branch_cov,
+            duplication_pct=dup_pct,
+        )
+        return metric, findings
+
+    def _is_hotspot(self, meta: dict | object) -> bool:
+        if isinstance(meta, dict):
+            return bool(meta.get("is_hotspot", False))
+        return bool(getattr(meta, "is_hotspot", False))

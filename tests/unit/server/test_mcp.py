@@ -1194,6 +1194,98 @@ async def test_get_dead_code_group_by_owner(setup_mcp):
     assert "Bob" in owner_names  # Bob owns dc2 + dc3
 
 
+# ---- Tool: get_health ----
+
+
+@pytest.fixture
+async def health_data(session: AsyncSession, populated_db: str) -> str:
+    """Seed health_findings + health_file_metrics for the existing repo."""
+    from repowise.core.persistence.crud import (
+        save_health_findings,
+        save_health_metrics,
+    )
+
+    rid = populated_db
+    await save_health_metrics(
+        session,
+        rid,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "score": 4.5,
+                "max_ccn": 15,
+                "max_nesting": 5,
+                "nloc": 200,
+                "has_test_file": False,
+                "module": "auth",
+            },
+            {
+                "file_path": "src/db/models.py",
+                "score": 8.5,
+                "max_ccn": 4,
+                "max_nesting": 2,
+                "nloc": 50,
+                "has_test_file": True,
+                "module": "db",
+            },
+        ],
+    )
+    await save_health_findings(
+        session,
+        rid,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "biomarker_type": "complex_method",
+                "severity": "high",
+                "function_name": "authenticate",
+                "line_start": 10,
+                "line_end": 80,
+                "details": {"ccn": 15, "cognitive": 30, "nloc": 70},
+                "health_impact": 1.2,
+                "reason": "authenticate has cyclomatic complexity 15",
+            },
+            {
+                "file_path": "src/auth/service.py",
+                "biomarker_type": "nested_complexity",
+                "severity": "medium",
+                "function_name": "authenticate",
+                "line_start": 10,
+                "line_end": 80,
+                "details": {"max_nesting": 5, "ccn": 15, "cognitive": 30},
+                "health_impact": 0.7,
+                "reason": "authenticate nests 5 levels deep",
+            },
+        ],
+    )
+    await session.commit()
+    return rid
+
+
+@pytest.mark.asyncio
+async def test_get_health_dashboard(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health()
+    assert result["mode"] == "dashboard"
+    assert result["kpis"]["file_count"] == 2
+    assert result["kpis"]["worst_performer_path"] == "src/auth/service.py"
+    assert len(result["worst_files"]) == 2
+    assert result["worst_files"][0]["file_path"] == "src/auth/service.py"
+    assert len(result["top_findings"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_health_targeted(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["src/auth/service.py"])
+    assert result["mode"] == "targets"
+    assert len(result["metrics"]) == 1
+    assert result["metrics"][0]["max_ccn"] == 15
+    assert all(f["file_path"] == "src/auth/service.py" for f in result["findings"])
+
+
 # ---- MCP config generation ----
 
 

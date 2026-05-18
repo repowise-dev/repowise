@@ -1,0 +1,71 @@
+"""Unit tests for ``scoring.score_file`` and KPI helpers."""
+
+from __future__ import annotations
+
+from repowise.core.analysis.health.biomarkers.base import BiomarkerResult
+from repowise.core.analysis.health.models import HealthFileMetricData, Severity
+from repowise.core.analysis.health.scoring import (
+    CATEGORY_CAPS,
+    compute_kpis,
+    score_file,
+)
+
+
+def _r(name: str, severity: Severity) -> BiomarkerResult:
+    return BiomarkerResult(
+        biomarker_type=name,
+        severity=severity,
+        function_name=None,
+        line_start=1,
+        line_end=10,
+        details={},
+        reason="",
+    )
+
+
+def test_score_clean_file_is_ten():
+    score, deductions = score_file([])
+    assert score == 10.0
+    assert deductions == []
+
+
+def test_score_clamps_floor_at_one():
+    # Twenty critical findings in the same category — should hit the cap
+    # but never go below 1.0.
+    results = [_r("complex_method", Severity.CRITICAL) for _ in range(20)]
+    score, _ = score_file(results)
+    assert score >= 1.0
+    # Cap on size_and_complexity is 2.0 → score should be 8.0.
+    assert score == 8.0
+
+
+def test_category_cap_applied():
+    # Two structural-complexity hits that together would deduct 4.0 raw,
+    # but the category cap is 3.5.
+    results = [
+        _r("brain_method", Severity.CRITICAL),  # 2.0 raw
+        _r("nested_complexity", Severity.CRITICAL),  # 2.0 raw
+    ]
+    score, _ = score_file(results)
+    assert score == 10.0 - CATEGORY_CAPS["structural_complexity"]
+
+
+def test_compute_kpis_uses_nloc_weighting():
+    metrics = [
+        HealthFileMetricData(
+            "a.py", score=5.0, max_ccn=1, max_nesting=1, nloc=100, has_test_file=False
+        ),
+        HealthFileMetricData(
+            "b.py", score=10.0, max_ccn=1, max_nesting=1, nloc=10, has_test_file=False
+        ),
+    ]
+    kpis = compute_kpis(metrics, hotspot_paths=set())
+    # Weighted avg = (5*100 + 10*10) / 110 ≈ 5.45
+    assert abs(kpis["average_health"] - 5.45) < 0.02
+    assert kpis["worst_performer_path"] == "a.py"
+
+
+def test_compute_kpis_empty_returns_defaults():
+    kpis = compute_kpis([], hotspot_paths=set())
+    assert kpis["average_health"] == 10.0
+    assert kpis["file_count"] == 0

@@ -1,0 +1,24 @@
+<?xml version="1.0" ?>
+<coverage line-rate="0.75" branch-rate="0.5" version="6.5.0">
+  <sources><source>/repo</source></sources>
+  <packages>
+    <package name="src" line-rate="0.75" branch-rate="0.5">
+      <classes>
+        <class name="foo" filename="src/foo.py" line-rate="0.75" branch-rate="0.5">
+          <lines>
+            <line number="1" hits="2" branch="false"/>
+            <line number="2" hits="0" branch="false"/>
+            <line number="3" hits="5" branch="true" condition-coverage="50% (1/2)"/>
+            <line number="4" hits="1" branch="false"/>
+          </lines>
+        </class>
+        <class name="bar" filename="src/bar.py" line-rate="1.0" branch-rate="1.0">
+          <lines>
+            <line number="10" hits="3" branch="false"/>
+            <line number="11" hits="3" branch="false"/>
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>

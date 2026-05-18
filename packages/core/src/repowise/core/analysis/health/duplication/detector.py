@@ -1,0 +1,305 @@
+"""Native clone-pair detection over tree-sitter tokens.
+
+Pipeline:
+
+1. Tokenize every parsed file with the duplication ``tokenizer``.
+2. Rolling-hash each token stream into fixed-size windows.
+3. Bucket windows by hash; for each multi-window bucket, verify token
+   equality (hash collision-proof) and emit a ``ClonePair``.
+4. Merge adjacent windows in the same (file_a, file_b) pair into a
+   single contiguous clone region.
+5. Weight active vs dormant clone pairs using
+   ``git_meta_map[path]['co_change_partners_json']`` — when two files
+   that contain a clone also frequently change together, the clone is
+   *actively maintained duplication* and should be rated higher.
+
+The Phase-3 plan calls for co-change correlation from day one so that
+the ``dry_violation`` biomarker can rank clones by activity, not just
+size.
+"""
+
+from __future__ import annotations
+
+import json
+from collections import defaultdict
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import structlog
+
+from .rabin_karp import WindowHash, index_by_hash, rolling_hashes
+from .tokenizer import Token, tokenize_file
+
+log = structlog.get_logger(__name__)
+
+
+# Tunables — locked in for v1, may move to ``HealthConfig`` later.
+DEFAULT_WINDOW_TOKENS = 50
+DEFAULT_MIN_LINES = 6
+
+
+@dataclass
+class ClonePair:
+    """One verified clone region between two files (or two regions in
+    the same file)."""
+
+    file_a: str
+    file_b: str
+    a_start_line: int
+    a_end_line: int
+    b_start_line: int
+    b_end_line: int
+    token_count: int
+    co_change_count: int = 0  # 0 when files don't share co-change history
+
+    @property
+    def is_intra_file(self) -> bool:
+        return self.file_a == self.file_b
+
+    @property
+    def a_line_count(self) -> int:
+        return self.a_end_line - self.a_start_line + 1
+
+    @property
+    def b_line_count(self) -> int:
+        return self.b_end_line - self.b_start_line + 1
+
+
+@dataclass
+class DuplicationReport:
+    pairs: list[ClonePair] = field(default_factory=list)
+    # Per-file duplication percent: ratio of duplicated lines vs file's
+    # total non-blank line count. Used by the dry_violation biomarker
+    # and surfaced on HealthFileMetric.duplication_pct.
+    duplication_pct: dict[str, float] = field(default_factory=dict)
+    # Per-file pair index for fast lookups by biomarker.
+    pairs_by_file: dict[str, list[ClonePair]] = field(default_factory=dict)
+
+
+def _read_source(abs_path: str) -> bytes | None:
+    try:
+        return Path(abs_path).read_bytes()
+    except OSError:
+        return None
+
+
+def _parse_co_change_partners(meta: dict[str, Any]) -> dict[str, int]:
+    raw = meta.get("co_change_partners_json")
+    if not raw:
+        return {}
+    try:
+        partners = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    out: dict[str, int] = {}
+    for p in partners:
+        if not isinstance(p, dict):
+            continue
+        path = p.get("file_path") or p.get("path")
+        count = p.get("co_change_count") or p.get("count") or 0
+        if not path:
+            continue
+        try:
+            out[str(path)] = int(count)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _co_change_score(
+    file_a: str,
+    file_b: str,
+    git_meta_map: dict[str, dict[str, Any]],
+) -> int:
+    """Bidirectional max — co-change matrices are stored per file, but
+    the same pair shows up from both sides, sometimes with slightly
+    different counts depending on the window. Take the max."""
+    a_meta = git_meta_map.get(file_a, {}) or {}
+    b_meta = git_meta_map.get(file_b, {}) or {}
+    from_a = _parse_co_change_partners(a_meta).get(file_b, 0)
+    from_b = _parse_co_change_partners(b_meta).get(file_a, 0)
+    return max(from_a, from_b)
+
+
+def _tokens_equal(
+    a_tokens: list[Token],
+    b_tokens: list[Token],
+    a_start: int,
+    b_start: int,
+    window: int,
+) -> bool:
+    """Verify hash-collision by comparing token ``kind`` sequences."""
+    if a_start + window > len(a_tokens) or b_start + window > len(b_tokens):
+        return False
+    for offset in range(window):
+        if a_tokens[a_start + offset].kind != b_tokens[b_start + offset].kind:
+            return False
+    return True
+
+
+def _merge_adjacent_pairs(raw: list[ClonePair]) -> list[ClonePair]:
+    """Merge overlapping/adjacent clone windows in the same (a, b) pair.
+
+    Two pairs are merged when:
+      - they share file_a and file_b
+      - their A-side and B-side ranges both touch or overlap (within 1
+        line of slack for token-level windows that don't perfectly
+        align with statement boundaries).
+    """
+    if not raw:
+        return []
+
+    def _key(p: ClonePair) -> tuple[str, str, int, int]:
+        return (p.file_a, p.file_b, p.a_start_line, p.b_start_line)
+
+    raw = sorted(raw, key=_key)
+    merged: list[ClonePair] = []
+    for p in raw:
+        if not merged:
+            merged.append(p)
+            continue
+        last = merged[-1]
+        same_pair = last.file_a == p.file_a and last.file_b == p.file_b
+        a_touch = p.a_start_line <= last.a_end_line + 1
+        b_touch = p.b_start_line <= last.b_end_line + 1
+        if same_pair and a_touch and b_touch:
+            merged[-1] = ClonePair(
+                file_a=last.file_a,
+                file_b=last.file_b,
+                a_start_line=last.a_start_line,
+                a_end_line=max(last.a_end_line, p.a_end_line),
+                b_start_line=last.b_start_line,
+                b_end_line=max(last.b_end_line, p.b_end_line),
+                token_count=last.token_count + p.token_count,
+                co_change_count=max(last.co_change_count, p.co_change_count),
+            )
+        else:
+            merged.append(p)
+    return merged
+
+
+def detect_clones(
+    parsed_files: Iterable[Any],
+    git_meta_map: dict[str, dict[str, Any]] | None = None,
+    *,
+    window_tokens: int = DEFAULT_WINDOW_TOKENS,
+    min_lines: int = DEFAULT_MIN_LINES,
+) -> DuplicationReport:
+    """Run the duplication pipeline over the supplied parsed files.
+
+    The detector reads source bytes from ``ParsedFile.file_info.abs_path``
+    and tokenizes each file once. Skipping files where tokenization
+    returns an empty list (unsupported language, parse failure) keeps
+    the rest of the pipeline running.
+    """
+    meta_map = git_meta_map or {}
+    per_file_tokens: dict[str, list[Token]] = {}
+    per_file_nloc: dict[str, int] = {}
+    all_windows: list[WindowHash] = []
+
+    for pf in parsed_files:
+        path = pf.file_info.path
+        language = pf.file_info.language
+        source = _read_source(pf.file_info.abs_path)
+        if source is None:
+            continue
+        toks = tokenize_file(language, source)
+        if len(toks) < window_tokens:
+            continue
+        per_file_tokens[path] = toks
+        per_file_nloc[path] = _nloc(source)
+        all_windows.extend(rolling_hashes(path, toks, window_tokens))
+
+    if not all_windows:
+        return DuplicationReport()
+
+    bucket = index_by_hash(all_windows)
+    raw_pairs: list[ClonePair] = []
+    seen: set[tuple[str, int, str, int]] = set()
+
+    for windows in bucket.values():
+        if len(windows) < 2:
+            continue
+        # All-pairs within a bucket — buckets are small in practice.
+        for i in range(len(windows)):
+            for j in range(i + 1, len(windows)):
+                a, b = windows[i], windows[j]
+                # Canonicalize so (file_a, file_b) is stable.
+                if (a.file_path, a.start_index) > (b.file_path, b.start_index):
+                    a, b = b, a
+                key = (a.file_path, a.start_index, b.file_path, b.start_index)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if not _tokens_equal(
+                    per_file_tokens[a.file_path],
+                    per_file_tokens[b.file_path],
+                    a.start_index,
+                    b.start_index,
+                    window_tokens,
+                ):
+                    continue
+                raw_pairs.append(
+                    ClonePair(
+                        file_a=a.file_path,
+                        file_b=b.file_path,
+                        a_start_line=a.start_line,
+                        a_end_line=a.end_line,
+                        b_start_line=b.start_line,
+                        b_end_line=b.end_line,
+                        token_count=window_tokens,
+                    )
+                )
+
+    merged = _merge_adjacent_pairs(raw_pairs)
+    final: list[ClonePair] = []
+    for p in merged:
+        if min(p.a_line_count, p.b_line_count) < min_lines:
+            continue
+        score = _co_change_score(p.file_a, p.file_b, meta_map)
+        if score:
+            p = ClonePair(
+                file_a=p.file_a,
+                file_b=p.file_b,
+                a_start_line=p.a_start_line,
+                a_end_line=p.a_end_line,
+                b_start_line=p.b_start_line,
+                b_end_line=p.b_end_line,
+                token_count=p.token_count,
+                co_change_count=score,
+            )
+        final.append(p)
+
+    pairs_by_file: dict[str, list[ClonePair]] = defaultdict(list)
+    dup_lines: dict[str, int] = defaultdict(int)
+    for p in final:
+        pairs_by_file[p.file_a].append(p)
+        dup_lines[p.file_a] += p.a_line_count
+        if not p.is_intra_file:
+            pairs_by_file[p.file_b].append(p)
+            dup_lines[p.file_b] += p.b_line_count
+
+    duplication_pct: dict[str, float] = {}
+    for path, dup in dup_lines.items():
+        nloc = per_file_nloc.get(path, 0)
+        if nloc <= 0:
+            continue
+        # Cap at 100% — overlapping clones can otherwise double-count
+        # the same physical lines.
+        duplication_pct[path] = round(min(100.0, 100.0 * dup / nloc), 2)
+
+    return DuplicationReport(
+        pairs=final,
+        duplication_pct=duplication_pct,
+        pairs_by_file=dict(pairs_by_file),
+    )
+
+
+def _nloc(source: bytes) -> int:
+    try:
+        text = source.decode("utf-8", errors="replace")
+    except Exception:
+        return 0
+    return sum(1 for line in text.splitlines() if line.strip())

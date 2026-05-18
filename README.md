@@ -3,7 +3,7 @@
 <img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
 **The codebase intelligence layer for your AI coding agent.**
 
-Four intelligence layers. Eight MCP tools. Multi-repo workspaces. Auto-sync hooks. One `pip install`.
+Five intelligence layers. Nine MCP tools. Multi-repo workspaces. Auto-sync hooks. One `pip install`.
 
 [![PyPI version](https://img.shields.io/pypi/v/repowise?color=F59520&labelColor=0A0A0A)](https://pypi.org/project/repowise/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
@@ -83,6 +83,21 @@ The layer nobody else has. Architectural decisions captured from git history, in
 ```
 
 These become structured decision records, queryable by Claude Code via `get_why()`.
+
+### ◈ Code Health Intelligence
+Twelve deterministic biomarkers compute a 1–10 health score per file — McCabe complexity, deep nesting, brain methods, native Rabin–Karp duplication detection, untested hotspots, primitive obsession, developer congestion, knowledge loss, and more. **Zero LLM calls, zero new runtime dependencies** — pure Python over tree-sitter and git data, designed to finish in under 30 seconds on a 3 000-file repo.
+
+Ingest LCOV, Cobertura, or Clover coverage reports to light up the test-coverage biomarkers. Rolling 50-row snapshot history powers `Declining Health` and `Predicted Decline` alerts. Deterministic, rule-based refactoring suggestions surface on the dashboard and via `get_health(include=["refactoring"])`. Per-file overrides via `.repowise/health-rules.json`.
+
+```bash
+repowise health                       # KPIs + lowest-scoring files
+repowise health --coverage cov.lcov   # ingest coverage, light up untested-hotspot
+repowise health --refactoring-targets # ranked by impact / effort
+repowise health --trend               # last 10 snapshots + alerts
+repowise status                       # one-line summary in the status report
+```
+
+See [`docs/CODE_HEALTH.md`](docs/CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](docs/architecture/code-health.md) for the internals.
 
 ---
 
@@ -175,7 +190,7 @@ Full guide: [docs/WORKSPACES.md](docs/WORKSPACES.md)
 
 ---
 
-## Eight MCP tools
+## Nine MCP tools
 
 Most tools are designed around data entities — one module, one file, one symbol — which forces AI agents into long chains of sequential calls. repowise tools are designed around **tasks**. Pass multiple targets in one call. Get complete context back. Every response carries an `_meta` envelope with `index_age_days`, `indexed_commit`, and a `stale_warning` that fires only when the indexed HEAD diverges from live `.git/HEAD` — silence means the index is current. Full reference: [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md)
 
@@ -189,6 +204,7 @@ Most tools are designed around data entities — one module, one file, one symbo
 | `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → response carries a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`) for one-glance review plus cross-repo blast radius. | Before modifying files — understand what could break |
 | `get_why(query?, targets?)` | Architectural decision records, their status (active / proposed / deprecated / superseded), and the commits that are evidence for them. Falls back to git archaeology when no ADRs exist for a file. | Before architectural changes — understand existing intent |
 | `get_dead_code(min_confidence?, include_internals?)` | Unreachable code sorted by confidence tier with cleanup impact estimates. In workspace mode, cross-repo consumer detection lowers confidence on findings that other repos import. | Cleanup tasks |
+| `get_health(targets?, include?)` | Twelve deterministic biomarker scores per file. Dashboard mode returns KPIs + the lowest-scoring files + a per-module NLOC-weighted rollup; targeted mode returns per-file findings. `include` flags layer richer data: `"coverage"`, `"refactoring"` (rule-based suggestions), `"trend"` (snapshot diff + declining/predicted-decline alerts). `module:foo` targets expand to a module's file set. | Before refactoring — find the worst-scoring files and what to fix first |
 
 ### Tool call comparison — a real task
 
@@ -197,7 +213,7 @@ Most tools are designed around data entities — one module, one file, one symbo
 | Approach | Tool calls | Time to first change | What it misses |
 |---|---|---|---|
 | Claude Code alone (no MCP) | grep + read ~30 files | ~8 min | Ownership, prior decisions, hidden coupling |
-| **repowise (8 tools)** | **5 calls** | **~2 min** | **Nothing** |
+| **repowise (9 tools)** | **5 calls** | **~2 min** | **Nothing** |
 
 The 5 calls for that task:
 
@@ -457,11 +473,20 @@ The "why" usually walks out the door — when a teammate leaves, or when you reo
 | Auto-generated documentation | ✅ | ✅ Gemini | ✅ | ✅ PR2Doc | ❌ |
 | Private repo — no cloud | ✅ | ❌ in development | ❌ OSS forks only | ✅ Enterprise tier | ✅ |
 | Dead code detection | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Code health score (1–10) | ✅ 12 biomarkers | ❌ | ❌ | ❌ | ✅ 25–30 |
+| Brain Method detection | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Complexity biomarkers | ✅ native tree-sitter | ❌ | ❌ | ❌ | ✅ |
+| Test coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ | ❌ |
+| Untested hotspot detection | ✅ coverage × hotspot | ❌ | ❌ | ❌ | ❌ |
+| DRY violation detection | ✅ native (no npm) | ❌ | ❌ | ❌ | ✅ |
+| Health trend tracking | ✅ rolling 50 snapshots | ❌ | ❌ | ❌ | ✅ |
+| Declining health alerts | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Refactoring recommendations | ✅ deterministic | ❌ | ❌ | ❌ | ✅ |
 | Git intelligence (hotspots, ownership, co-changes) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Multi-repo workspace intelligence | ✅ co-changes, contracts, federated MCP | ❌ | ❌ | ❌ | ❌ |
-| MCP server for AI agents | ✅ 8 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
+| MCP server for AI agents | ✅ 9 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Proactive agent hooks | ✅ PreToolUse + PostToolUse | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Doc freshness scoring | ✅ | ❌ | ❌ | ⚠️ staleness only | ❌ |

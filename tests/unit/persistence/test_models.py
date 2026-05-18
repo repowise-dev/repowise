@@ -308,5 +308,9 @@ def test_base_includes_all_models():
         "security_findings",
         "answer_cache",
         "external_systems",
+        "health_findings",
+        "health_file_metrics",
+        "health_snapshots",
+        "coverage_files",
     }
     assert expected == table_names

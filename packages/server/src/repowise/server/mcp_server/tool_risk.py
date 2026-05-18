@@ -8,10 +8,8 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from sqlalchemy import text
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -187,7 +185,7 @@ async def _get_security_signals(
             {"kind": r[0], "severity": r[1], "snippet": r[2]}
             for r in rows.all()
         ]
-    except Exception:  # noqa: BLE001 — table may not exist pre-migration
+    except Exception:
         return []
 
 
@@ -520,6 +518,58 @@ async def get_risk(
                 f"{base} dependents",
                 f"{r['dependents_count']} dependents",
             )
+
+    # ---- Code-health enrichment --------------------------------------------
+    # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
+    # health tables. Conservative: missing data → no field, never invented.
+    try:
+        from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+
+        target_paths = [r["target"] for r in results if r.get("target")]
+        if target_paths:
+            async with get_session(ctx.session_factory) as _h_session:
+                m_res = await _h_session.execute(
+                    select(HealthFileMetric).where(
+                        HealthFileMetric.repository_id == repo_id,
+                        HealthFileMetric.file_path.in_(target_paths),
+                    )
+                )
+                metric_map = {m.file_path: m for m in m_res.scalars().all()}
+
+                f_res = await _h_session.execute(
+                    select(HealthFinding)
+                    .where(
+                        HealthFinding.repository_id == repo_id,
+                        HealthFinding.file_path.in_(target_paths),
+                        HealthFinding.status == "open",
+                    )
+                    .order_by(HealthFinding.health_impact.desc())
+                )
+                top_by_file: dict[str, list[dict]] = {}
+                for f in f_res.scalars().all():
+                    lst = top_by_file.setdefault(f.file_path, [])
+                    if len(lst) >= 3:
+                        continue
+                    lst.append({
+                        "biomarker_type": f.biomarker_type,
+                        "severity": f.severity,
+                        "function_name": f.function_name,
+                        "impact": round(f.health_impact, 2),
+                    })
+
+            for r in results:
+                path = r.get("target")
+                m = metric_map.get(path)
+                if m is not None:
+                    r["health_score"] = round(m.score, 2)
+                    if m.line_coverage_pct is not None:
+                        r["coverage_pct"] = round(m.line_coverage_pct, 2)
+                    if m.branch_coverage_pct is not None:
+                        r["branch_coverage_pct"] = round(m.branch_coverage_pct, 2)
+                if path in top_by_file:
+                    r["top_biomarkers"] = top_by_file[path]
+    except Exception:
+        pass
 
     response: dict = {
         "targets": {r["target"]: r for r in results},

@@ -171,6 +171,9 @@ class PipelineResult:
     execution_flow_report: Any | None = None
     """``ExecutionFlowReport`` or None (populated after graph build)."""
 
+    health_report: Any | None = None
+    """``HealthReport`` or None — populated by ``_run_health_analysis``."""
+
     # Traversal stats
     traversal_stats: Any | None = None
     """``TraversalStats`` from the file traverser, or None."""
@@ -342,7 +345,7 @@ async def run_pipeline(
                 "info",
                 f"→ External systems: {len(external_systems):,} declared deps across manifests",
             )
-    except Exception as _ext_err:  # noqa: BLE001
+    except Exception as _ext_err:
         logger.warning("external_systems_extraction_failed", error=str(_ext_err))
     _phase_done(progress, "external_systems")
 
@@ -391,6 +394,10 @@ async def run_pipeline(
 
     dead_code_report = await _run_dead_code_analysis(graph_builder, git_meta_map, progress=progress)
 
+    health_report = await _run_health_analysis(
+        graph_builder, git_meta_map, parsed_files, repo_path=repo_path, progress=progress
+    )
+
     decision_report = await _run_decision_extraction(
         repo_path,
         llm_client=llm_client,
@@ -414,7 +421,7 @@ async def run_pipeline(
 
             resolved_generation_config = GenerationConfig(
                 max_concurrency=concurrency,
-                reasoning=resolve_reasoning(config=load_repo_config(repo_path))
+                reasoning=resolve_reasoning(config=load_repo_config(repo_path)),
             )
 
         # Phase 2 enrichment: flag framework-defined HTTP surfaces (FastAPI,
@@ -423,12 +430,11 @@ async def run_pipeline(
         # generation package so language-specific heuristics stay co-located
         # with the templates that consume them.
         from repowise.core.generation import detect_code_api_contracts as _detect_apis
+
         try:
             flipped = _detect_apis(parsed_files)
             if flipped and progress:
-                progress.on_message(
-                    "info", f"→ Detected {flipped} additional API contract file(s)"
-                )
+                progress.on_message("info", f"→ Detected {flipped} additional API contract file(s)")
         except Exception as _api_err:
             logger.warning("api_contract_detection_failed", error=str(_api_err))
 
@@ -477,6 +483,7 @@ async def run_pipeline(
         git_summary=git_summary,
         dead_code_report=dead_code_report,
         decision_report=decision_report,
+        health_report=health_report,
         execution_flow_report=execution_flow_report,
         generated_pages=generated_pages,
         traversal_stats=traversal_stats,
@@ -486,8 +493,7 @@ async def run_pipeline(
         languages=languages,
         elapsed_seconds=elapsed,
         tech_stack=[
-            {"name": t.name, "version": t.version, "category": t.category}
-            for t in tech_items
+            {"name": t.name, "version": t.version, "category": t.category} for t in tech_items
         ],
         external_systems=external_systems,
     )
@@ -887,6 +893,86 @@ async def _run_dead_code_analysis(
         return None
 
 
+async def _run_health_analysis(
+    graph_builder: Any,
+    git_meta_map: dict[str, dict],
+    parsed_files: list[Any],
+    *,
+    repo_path: Path | None = None,
+    progress: ProgressCallback | None,
+) -> Any | None:
+    """Run code-health analysis (complexity + biomarkers + scoring)."""
+    try:
+        from repowise.core.analysis.health import HealthAnalyzer
+        from repowise.core.analysis.health.config import HealthConfig
+
+        if progress:
+            # Per-file determinate progress: one tick per parsed file.
+            progress.on_phase_start("health", len(parsed_files))
+
+        # Build a {file_path → community label} map so per-file metrics
+        # carry a real module name, not None. Community detection is
+        # already computed for the graph view, so this is essentially
+        # free.
+        module_map: dict[str, str] = {}
+        try:
+            cd = graph_builder.community_detection()
+            ci = graph_builder.community_info()
+            for node_id, comm_id in cd.items():
+                info = ci.get(comm_id)
+                label = getattr(info, "label", None) if info else None
+                if label:
+                    module_map[node_id] = label
+        except Exception as exc:
+            logger.debug("health_module_map_failed", error=str(exc))
+
+        analyzer = HealthAnalyzer(
+            graph_builder.graph(),
+            git_meta_map=git_meta_map,
+            parsed_files=parsed_files,
+            module_map=module_map,
+        )
+
+        # Load per-file override rules from `.repowise/health-rules.json`.
+        # Missing or malformed file → empty config (no-op).
+        analyzer_config: dict[str, object] | None = None
+        if repo_path is not None:
+            cfg = HealthConfig.load(repo_path)
+            if cfg.disabled_biomarkers or cfg.rules:
+                file_paths = [pf.file_info.path for pf in parsed_files]
+                analyzer_config = cfg.to_analyzer_config(file_paths)
+
+        def _step(_path: str) -> None:
+            if progress:
+                progress.on_item_done("health")
+
+        # Parallel path for repos large enough to benefit (tree-sitter
+        # releases the GIL during parsing, so asyncio.gather over a
+        # thread pool actually scales). Threshold chosen so small repos
+        # avoid the overhead.
+        if len(parsed_files) >= 500:
+            report = await analyzer.analyze_async(analyzer_config, on_step=_step)
+        else:
+            report = await asyncio.to_thread(analyzer.analyze, analyzer_config, on_step=_step)
+
+        if progress:
+            findings_count = len(report.findings)
+            avg = report.kpis.get("average_health", 10.0)
+            worst = report.kpis.get("worst_performer_score", 10.0)
+            progress.on_message(
+                "info",
+                f"→ {findings_count} health findings · avg {avg}/10 · worst {worst}/10",
+            )
+
+        _phase_done(progress, "health")
+        return report
+    except Exception as exc:
+        if progress:
+            progress.on_message("warning", f"Health analysis skipped: {exc}")
+        _phase_done(progress, "health")
+        return None
+
+
 async def _run_decision_extraction(
     repo_path: Path,
     *,
@@ -1065,8 +1151,7 @@ async def run_generation(
     if progress:
         if onboarding_generated or promoted_present:
             slots_made = sorted(
-                {p.metadata.get("subkind", "?") for p in onboarding_generated}
-                | promoted_present
+                {p.metadata.get("subkind", "?") for p in onboarding_generated} | promoted_present
             )
             progress.on_message(
                 "info",

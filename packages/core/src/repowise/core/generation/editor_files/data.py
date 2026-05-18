@@ -42,6 +42,19 @@ class DecisionSummary:
 
 
 @dataclass(frozen=True)
+class CodeHealthBlock:
+    """Compact summary for the generated CLAUDE.md ``## Code health`` section."""
+
+    hotspot_health: float
+    average_health: float
+    worst_score: float
+    worst_path: str
+    hotspot_trend: str = "stable"
+    critical_biomarkers: list[dict] = field(default_factory=list)
+    untested_hotspots: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EditorFileData:
     repo_name: str
     indexed_at: str  # date only: "2026-03-28"
@@ -54,6 +67,7 @@ class EditorFileData:
     decisions: list[DecisionSummary] = field(default_factory=list)
     build_commands: dict[str, str] = field(default_factory=dict)
     avg_confidence: float = 0.0
+    code_health: CodeHealthBlock | None = None
 
 
 # ---------------------------------------------------------------------------

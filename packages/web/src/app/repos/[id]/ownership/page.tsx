@@ -13,6 +13,7 @@ import { BusFactorPanel } from "@repowise-dev/ui/git/bus-factor-panel";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { getOwnership, getGitSummary, getHotspots } from "@/lib/api/git";
+import { HealthRisksPanel } from "@/components/health/health-risks-panel";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { cn } from "@/lib/utils/cn";
 import type { OwnershipEntry, GitSummaryResponse, HotspotResponse } from "@/lib/api/types";
@@ -152,16 +153,21 @@ export default function OwnershipPage() {
         )}
       </div>
 
-      {/* Detail table */}
-      {loadingEntries ? (
-        <div className="space-y-2">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <Skeleton key={i} className="h-10 w-full" />
-          ))}
+      {/* Detail table + health sidecar */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
+        <div className="xl:col-span-3">
+          {loadingEntries ? (
+            <div className="space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 w-full" />
+              ))}
+            </div>
+          ) : (
+            <OwnershipTable entries={entries ?? []} repoId={id} />
+          )}
         </div>
-      ) : (
-        <OwnershipTable entries={entries ?? []} repoId={id} />
-      )}
+        <HealthRisksPanel repoId={id} title="Lowest-health files" limit={6} />
+      </div>
     </div>
   );
 }

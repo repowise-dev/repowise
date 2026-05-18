@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<coverage generated="1700000000">
+  <project timestamp="1700000000">
+    <package name="src">
+      <file path="src/y.ts">
+        <line num="1" count="3" type="stmt"/>
+        <line num="2" count="0" type="stmt"/>
+        <line num="3" count="2" type="cond" truecount="1" falsecount="0"/>
+        <line num="4" count="1" type="stmt"/>
+      </file>
+      <file path="src/z.ts">
+        <line num="1" count="5" type="stmt"/>
+        <line num="2" count="5" type="stmt"/>
+      </file>
+    </package>
+  </project>
+</coverage>
