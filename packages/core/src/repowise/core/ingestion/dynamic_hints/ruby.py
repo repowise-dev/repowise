@@ -35,7 +35,7 @@ class RubyDynamicHints(DynamicHintExtractor):
         method_to_files: dict[str, list[str]] = {}
         rb_files: list[tuple[Path, str]] = []
         repo_root_resolved = repo_root.resolve()
-        for src in repo_root.rglob("*.rb"):
+        for src in self._rglob(repo_root, "*.rb"):
             try:
                 rel_path = src.resolve().relative_to(repo_root_resolved)
             except ValueError:

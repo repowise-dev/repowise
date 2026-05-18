@@ -36,7 +36,7 @@ class CDynamicHints(DynamicHintExtractor):
         sources: list[tuple[Path, str]] = []
         repo_root_resolved = repo_root.resolve()
         for ext in (".c", ".h"):
-            for src in repo_root.rglob(f"*{ext}"):
+            for src in self._rglob(repo_root, f"*{ext}"):
                 try:
                     rel_path = src.resolve().relative_to(repo_root_resolved)
                 except ValueError:

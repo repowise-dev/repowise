@@ -38,7 +38,7 @@ class PhpDynamicHints(DynamicHintExtractor):
         type_to_file: dict[str, str] = {}
         php_files: list[tuple[Path, str]] = []
         repo_root_resolved = repo_root.resolve()
-        for src in repo_root.rglob("*.php"):
+        for src in self._rglob(repo_root, "*.php"):
             try:
                 rel_path = src.resolve().relative_to(repo_root_resolved)
             except ValueError:

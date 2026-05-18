@@ -55,7 +55,7 @@ class PytestDynamicHints(DynamicHintExtractor):
     def extract(self, repo_root: Path) -> list[DynamicEdge]:
         edges: list[DynamicEdge] = []
 
-        for conftest in repo_root.rglob("conftest.py"):
+        for conftest in self._rglob(repo_root, "conftest.py"):
             try:
                 source = conftest.read_text(encoding="utf-8", errors="ignore")
                 tree = ast.parse(source, filename=str(conftest))
@@ -72,7 +72,7 @@ class PytestDynamicHints(DynamicHintExtractor):
 
             # Find all test files under the conftest's parent directory
             for pattern in ("test_*.py", "*_test.py"):
-                for test_file in conftest_dir.rglob(pattern):
+                for test_file in self._rglob(conftest_dir, pattern):
                     if test_file == conftest:
                         continue
                     try:

@@ -105,7 +105,7 @@ class DotNetDynamicHints(DynamicHintExtractor):
         type_to_files: dict[str, list[str]] = {}
         cs_files: list[tuple[Path, str]] = []  # (path, text)
         repo_root_resolved = repo_root.resolve()
-        for cs in repo_root.rglob("*.cs"):
+        for cs in self._rglob(repo_root, "*.cs"):
             try:
                 rel_path = cs.resolve().relative_to(repo_root_resolved)
             except ValueError:

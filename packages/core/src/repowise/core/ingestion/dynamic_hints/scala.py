@@ -30,7 +30,7 @@ class ScalaDynamicHints(DynamicHintExtractor):
         type_to_file: dict[str, str] = {}
         sources: list[tuple[Path, str]] = []
         repo_root_resolved = repo_root.resolve()
-        for src in repo_root.rglob("*.scala"):
+        for src in self._rglob(repo_root, "*.scala"):
             try:
                 rel_path = src.resolve().relative_to(repo_root_resolved)
             except ValueError:

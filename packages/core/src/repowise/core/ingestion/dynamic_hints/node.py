@@ -43,10 +43,7 @@ class NodeDynamicHints(DynamicHintExtractor):
     def _scan_package_json(self, repo_root: Path) -> list[DynamicEdge]:
         edges: list[DynamicEdge] = []
 
-        for pkg_file in repo_root.rglob("package.json"):
-            # Skip node_modules
-            if "node_modules" in pkg_file.parts:
-                continue
+        for pkg_file in self._rglob(repo_root, "package.json"):
             try:
                 text = pkg_file.read_text(encoding="utf-8", errors="ignore")
                 data = json.loads(text)
@@ -90,9 +87,7 @@ class NodeDynamicHints(DynamicHintExtractor):
     def _scan_tsconfig(self, repo_root: Path) -> list[DynamicEdge]:
         edges: list[DynamicEdge] = []
 
-        for tsconfig in repo_root.rglob("tsconfig*.json"):
-            if "node_modules" in tsconfig.parts:
-                continue
+        for tsconfig in self._rglob(repo_root, "tsconfig*.json"):
             try:
                 text = tsconfig.read_text(encoding="utf-8", errors="ignore")
                 data = _json_loads_lenient(text)

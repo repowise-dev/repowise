@@ -66,8 +66,8 @@ class DjangoDynamicHints(DynamicHintExtractor):
         edges: list[DynamicEdge] = []
 
         # Collect all settings files
-        settings_files: list[Path] = list(repo_root.rglob("settings.py"))
-        for settings_dir in repo_root.rglob("settings"):
+        settings_files: list[Path] = list(self._rglob(repo_root, "settings.py"))
+        for settings_dir in self._rglob(repo_root, "settings"):
             if settings_dir.is_dir():
                 settings_files.extend(settings_dir.glob("*.py"))
 
@@ -137,7 +137,7 @@ class DjangoDynamicHints(DynamicHintExtractor):
         edges: list[DynamicEdge] = []
         include_re = re.compile(r"""include\(\s*['\"]([\w\.]+)['\"]""")
 
-        for urls_file in repo_root.rglob("urls.py"):
+        for urls_file in self._rglob(repo_root, "urls.py"):
             try:
                 source = urls_file.read_text(encoding="utf-8", errors="ignore")
                 rel_urls = urls_file.relative_to(repo_root).as_posix()

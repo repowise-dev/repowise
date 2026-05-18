@@ -173,8 +173,9 @@ class XamlDynamicHints(DynamicHintExtractor):
 # ---------------------------------------------------------------------------
 
 def _iter_xaml_files(repo_root: Path):
+    from ._walk import iter_glob as _iter_glob
     for ext in _XAML_EXTS:
-        for path in repo_root.rglob(f"*{ext}"):
+        for path in _iter_glob(repo_root, f"*{ext}"):
             try:
                 rel = path.resolve().relative_to(repo_root.resolve())
             except ValueError:

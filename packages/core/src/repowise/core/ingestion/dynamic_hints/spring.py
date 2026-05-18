@@ -43,7 +43,7 @@ class SpringDynamicHints(DynamicHintExtractor):
         sources: list[tuple[Path, str, str]] = []  # (path, text, lang)
         repo_root_resolved = repo_root.resolve()
         for ext, lang in ((".java", "java"), (".kt", "kotlin")):
-            for src in repo_root.rglob(f"*{ext}"):
+            for src in self._rglob(repo_root, f"*{ext}"):
                 try:
                     rel_path = src.resolve().relative_to(repo_root_resolved)
                 except ValueError:
