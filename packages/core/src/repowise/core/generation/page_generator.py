@@ -613,40 +613,61 @@ class PageGenerator:
                 self._provider.model_name,
             )
 
+        async def _embed_async(page: GeneratedPage) -> None:
+            """Embed a finished page into the vector store. Safe to fire-and-forget.
+
+            Errors are swallowed at debug level — embedding is a RAG
+            enhancement, not load-bearing for the page itself.
+            """
+            try:
+                summary = _extract_summary(page.content)
+                async with embed_semaphore:
+                    await self._vector_store.embed_and_upsert(
+                        page.page_id,
+                        page.content,
+                        {
+                            "page_type": page.page_type,
+                            "target_path": page.target_path,
+                            "content": page.content[:600],
+                            "summary": summary,
+                        },
+                    )
+            except Exception as e:
+                log.debug("rag.embed_failed", page_id=page.page_id, error=str(e))
+
         async def run_level(named_coros: list[tuple[str, Any]], level: int) -> list[GeneratedPage]:
             if job_system is not None and job_id is not None:
                 job_system.update_level(job_id, level)
+
+            # Embed tasks spawned during this level. Drained after the
+            # gather() so the next level's RAG search sees a fully-indexed
+            # store, but never blocks the per-page wave.
+            pending_embeds: list[asyncio.Task[None]] = []
 
             async def guarded_named(page_id: str, coro: Any) -> Any:
                 try:
                     async with semaphore:
                         result = await coro
 
-                    # Embed page for RAG (B1)
-                    if self._vector_store is not None and isinstance(result, GeneratedPage):
-                        try:
-                            page_summary = _extract_summary(result.content)
-                            async with embed_semaphore:
-                                await self._vector_store.embed_and_upsert(
-                                    result.page_id,
-                                    result.content,
-                                    {
-                                        "page_type": result.page_type,
-                                        "target_path": result.target_path,
-                                        "content": result.content[:600],
-                                        "summary": page_summary,
-                                    },
-                                )
-                        except Exception as e:
-                            log.debug("rag.embed_failed", page_id=result.page_id, error=str(e))
-                    # Store summary for dependency context (B2)
                     if isinstance(result, GeneratedPage):
+                        # Summary capture is cheap (string ops) — keep
+                        # inline so the next page's context assembly sees
+                        # it immediately.
                         completed_page_summaries[result.target_path] = _extract_summary(
                             result.content
                         )
-                        # Report progress immediately (not batched after gather)
+                        # Progress tick fires the moment the LLM call
+                        # returns — the user sees the page as done before
+                        # the embed completes.
                         if on_page_done is not None:
                             on_page_done(result.page_type)
+                        # Fire-and-forget the embed/upsert. Removes ~1
+                        # embedder round-trip from this task's critical
+                        # path so the LLM slot frees up immediately.
+                        if self._vector_store is not None:
+                            pending_embeds.append(
+                                asyncio.create_task(_embed_async(result))
+                            )
                     return result
                 except Exception as exc:
                     if job_system is not None and job_id is not None:
@@ -661,6 +682,10 @@ class PageGenerator:
 
             tasks = [guarded_named(pid, c) for pid, c in named_coros]
             results = await asyncio.gather(*tasks)
+            # Drain pending embeds before declaring the level done — the
+            # next level's RAG search depends on these landing in the store.
+            if pending_embeds:
+                await asyncio.gather(*pending_embeds, return_exceptions=True)
             pages = [r for r in results if isinstance(r, GeneratedPage)]
             if job_system is not None and job_id is not None:
                 for r in pages:
@@ -1123,20 +1148,45 @@ class PageGenerator:
         ctx: FilePageContext,
     ) -> GeneratedPage:
         """Generate a file_page from a pre-assembled context (avoids double-assembly)."""
-        # RAG context: query vector store for related pages (B1)
-        if self._vector_store is not None:
-            query_terms = parsed.exports or [
-                s["name"] for s in ctx.symbols[:3] if s.get("visibility") == "public"
-            ]
-            if query_terms:
+        # RAG context: query vector store for related pages (B1).
+        # Gated by two short-circuits so we don't burn an embedder
+        # round-trip on every page when the result wouldn't help:
+        #   1. ``enable_rag_context`` config flag (off → fully skip).
+        #   2. ``rag_min_store_size`` — early pages run against an empty
+        #      or near-empty store and the search returns nothing useful.
+        if self._vector_store is not None and getattr(
+            self._config, "enable_rag_context", True
+        ):
+            min_store_size = max(0, int(getattr(self._config, "rag_min_store_size", 10) or 0))
+            store_ok = True
+            if min_store_size > 0:
                 try:
-                    results = await self._vector_store.search(", ".join(query_terms[:5]), limit=3)
-                    self_id = f"file_page:{parsed.file_info.path}"
-                    ctx.rag_context = [
-                        f"[{r.page_id}]\n{r.snippet}" for r in results if r.page_id != self_id
-                    ]
-                except Exception as e:
-                    log.debug("rag.search_failed", path=parsed.file_info.path, error=str(e))
+                    current_ids = await self._vector_store.list_page_ids()
+                    store_ok = len(current_ids) >= min_store_size
+                except Exception:
+                    # If the store can't be sized cheaply, fall through to
+                    # the search — it'll either succeed or hit the
+                    # existing exception path.
+                    store_ok = True
+            if store_ok:
+                query_terms = parsed.exports or [
+                    s["name"] for s in ctx.symbols[:3] if s.get("visibility") == "public"
+                ]
+                if query_terms:
+                    try:
+                        results = await self._vector_store.search(
+                            ", ".join(query_terms[:5]), limit=3
+                        )
+                        self_id = f"file_page:{parsed.file_info.path}"
+                        ctx.rag_context = [
+                            f"[{r.page_id}]\n{r.snippet}"
+                            for r in results
+                            if r.page_id != self_id
+                        ]
+                    except Exception as e:
+                        log.debug(
+                            "rag.search_failed", path=parsed.file_info.path, error=str(e)
+                        )
         user_prompt = self._render("file_page.j2", ctx=ctx)
         response = await self._call_provider(
             "file_page", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path

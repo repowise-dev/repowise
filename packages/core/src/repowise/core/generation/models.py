@@ -99,6 +99,17 @@ class GenerationConfig:
     # subkind defines its own gate; slots whose gates fail are silently
     # skipped (no UI nav entry either).
     enable_onboarding: bool = True
+    # When True, file_page generation runs a vector-store search (one
+    # embedder round-trip per page) to inject related-page snippets into
+    # the prompt. On cheap models the extra latency is often more costly
+    # than the marginal quality lift — turn off to skip the search.
+    # See also rag_min_store_size below for the auto-bypass on small stores.
+    enable_rag_context: bool = True
+    # RAG search is bypassed entirely until the vector store has at least
+    # this many pages. The first wave of file_page generation runs against
+    # an empty / nearly-empty store anyway, so the search is a wasted
+    # round-trip until enough content is indexed to return useful hits.
+    rag_min_store_size: int = 10
     jobs_dir: str = ".repowise/jobs"
     large_file_source_pct: float = 0.4  # use structural summary when source tokens > budget * this
     language: str = "en"
