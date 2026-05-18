@@ -1,4 +1,4 @@
-import { HealthBadge } from "./health-badge.js";
+import { HealthBadge } from "./health-badge";
 
 export interface ModuleRollupRow {
   module: string;
