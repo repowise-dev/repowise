@@ -31,6 +31,13 @@ class FileContext:
     # Graph-derived signals.
     dependents_count: int = 0
     pagerank_score: float = 0.0
+    # Coverage signals (populated when --coverage was ingested). When no
+    # coverage is available these stay ``None`` and coverage-aware
+    # biomarkers return no findings.
+    line_coverage_pct: float | None = None
+    branch_coverage_pct: float | None = None
+    covered_lines: set[int] = field(default_factory=set)
+    total_coverable_lines: int = 0
 
 
 @dataclass

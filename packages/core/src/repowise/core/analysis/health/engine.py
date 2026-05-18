@@ -25,6 +25,7 @@ import structlog
 
 from .biomarkers import FileContext, detect_all
 from .complexity import FunctionComplexity, walk_file_complexity
+from .coverage import is_test_file as _coverage_is_test_file
 from .models import HealthFileMetricData, HealthFindingData, HealthReport
 from .scoring import attach_impacts, compute_kpis, score_file
 
@@ -79,10 +80,16 @@ class HealthAnalyzer:
         graph: Any,  # networkx.DiGraph
         git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
+        coverage_map: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
         self.parsed_files = list(parsed_files or [])
+        # Per-file coverage keyed by repo-relative POSIX path. Each value
+        # is ``{line_coverage_pct, branch_coverage_pct, covered_lines,
+        # total_coverable_lines}``. ``None``-equivalent files are simply
+        # absent from the map.
+        self.coverage_map = coverage_map or {}
 
     def analyze(
         self,
@@ -181,16 +188,30 @@ class HealthAnalyzer:
             except Exception:
                 dependents_count = 0
 
+        cov = self.coverage_map.get(file_path)
+        if cov is None:
+            cov = self.coverage_map.get(file_path.replace("\\", "/"))
+        line_cov = cov.get("line_coverage_pct") if cov else None
+        branch_cov = cov.get("branch_coverage_pct") if cov else None
+        covered_lines: set[int] = set(cov.get("covered_lines") or ()) if cov else set()
+        total_coverable_lines = int(cov.get("total_coverable_lines", 0)) if cov else 0
+
         ctx = FileContext(
             file_path=file_path,
             language=pf.file_info.language,
             nloc=nloc,
-            has_test_file=_has_paired_test_file(file_path, all_paths) or _is_test_file(file_path),
+            has_test_file=_has_paired_test_file(file_path, all_paths)
+            or _is_test_file(file_path)
+            or _coverage_is_test_file(file_path),
             module=None,
             function_metrics=fn_metrics,
             git_meta=self.git_meta_map.get(file_path, {}) or {},
             dependents_count=dependents_count,
             pagerank_score=0.0,
+            line_coverage_pct=line_cov,
+            branch_coverage_pct=branch_cov,
+            covered_lines=covered_lines,
+            total_coverable_lines=total_coverable_lines,
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)
@@ -207,6 +228,8 @@ class HealthAnalyzer:
             nloc=nloc,
             has_test_file=ctx.has_test_file,
             module=None,
+            line_coverage_pct=line_cov,
+            branch_coverage_pct=branch_cov,
         )
         return metric, findings
 
