@@ -58,10 +58,13 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
+    CoverageFile,
     DecisionRecord,
     GitMetadata,
     GraphEdge,
     GraphNode,
+    HealthFileMetric,
+    HealthFinding,
     Page,
     Repository,
     WikiSymbol,
@@ -625,6 +628,10 @@ async def _resolve_one_target(
     if include and "community" in include:
         await _resolve_community(session, repository, target, result_data)
 
+    # --- Code health (Phase 2) ---
+    if include and "health" in include:
+        await _resolve_health(session, repository, target, target_type, result_data)
+
     return result_data
 
 
@@ -826,6 +833,99 @@ async def _resolve_community(
         "top_members": member_paths,
         "neighbors": neighbors,
     }
+
+
+async def _resolve_health(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    target_type: str,
+    result_data: dict[str, Any],
+) -> None:
+    """Attach per-file health metric + top 2 biomarkers + coverage row.
+
+    Only meaningful for *file* targets. For symbol targets we resolve the
+    enclosing file path via the already-computed ``file_path_for_git`` is
+    not available here — we fall back to ``target`` when ``target_type``
+    is ``"file"`` and otherwise inspect the target string for a
+    ``"path::symbol"`` separator.
+    """
+    file_path: str | None
+    if target_type == "file":
+        file_path = target
+    elif "::" in target:
+        file_path = target.split("::", 1)[0]
+    else:
+        file_path = None
+
+    if not file_path:
+        result_data["health"] = None
+        return
+
+    repo_id = repository.id
+    metric = (
+        await session.execute(
+            select(HealthFileMetric).where(
+                HealthFileMetric.repository_id == repo_id,
+                HealthFileMetric.file_path == file_path,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if metric is None:
+        result_data["health"] = None
+        return
+
+    findings_res = await session.execute(
+        select(HealthFinding)
+        .where(
+            HealthFinding.repository_id == repo_id,
+            HealthFinding.file_path == file_path,
+            HealthFinding.status == "open",
+        )
+        .order_by(HealthFinding.health_impact.desc())
+        .limit(2)
+    )
+    top_biomarkers = [
+        {
+            "biomarker_type": f.biomarker_type,
+            "severity": f.severity,
+            "function_name": f.function_name,
+            "impact": round(f.health_impact, 2),
+        }
+        for f in findings_res.scalars().all()
+    ]
+
+    coverage_row = (
+        await session.execute(
+            select(CoverageFile).where(
+                CoverageFile.repository_id == repo_id,
+                CoverageFile.file_path == file_path,
+            )
+        )
+    ).scalar_one_or_none()
+
+    health: dict[str, Any] = {
+        "score": round(metric.score, 2),
+        "max_ccn": metric.max_ccn,
+        "max_nesting": metric.max_nesting,
+        "nloc": metric.nloc,
+        "has_test_file": metric.has_test_file,
+        "top_biomarkers": top_biomarkers,
+    }
+    if coverage_row is not None:
+        health["coverage"] = {
+            "source_format": coverage_row.source_format,
+            "line_coverage_pct": coverage_row.line_coverage_pct,
+            "branch_coverage_pct": coverage_row.branch_coverage_pct,
+            "total_coverable_lines": coverage_row.total_coverable_lines,
+        }
+    elif metric.line_coverage_pct is not None:
+        health["coverage"] = {
+            "line_coverage_pct": metric.line_coverage_pct,
+            "branch_coverage_pct": metric.branch_coverage_pct,
+        }
+    result_data["health"] = health
 
 
 def _estimate_tokens(obj: Any) -> int:

@@ -7,6 +7,10 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.persistence.crud import (
+    get_coverage_summary,
+    load_coverage_for_repo,
+)
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import HealthFileMetric, HealthFinding
 from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
@@ -42,7 +46,25 @@ def _serialize_metric(m: HealthFileMetric) -> dict[str, Any]:
         "nloc": m.nloc,
         "has_test_file": m.has_test_file,
         "line_coverage_pct": m.line_coverage_pct,
+        "branch_coverage_pct": m.branch_coverage_pct,
         "module": m.module,
+    }
+
+
+def _serialize_coverage_row(row: Any) -> dict[str, Any]:
+    try:
+        covered = json.loads(row.covered_lines_json) if row.covered_lines_json else []
+    except Exception:
+        covered = []
+    return {
+        "file_path": row.file_path,
+        "source_format": row.source_format,
+        "line_coverage_pct": row.line_coverage_pct,
+        "branch_coverage_pct": row.branch_coverage_pct,
+        "covered_lines": covered,
+        "total_coverable_lines": row.total_coverable_lines,
+        "ingested_at": row.ingested_at.isoformat() if row.ingested_at else None,
+        "ingested_commit_sha": row.ingested_commit_sha,
     }
 
 
@@ -112,6 +134,14 @@ async def get_health(
         finding_q = finding_q.order_by(HealthFinding.health_impact.desc())
         finding_rows = list((await session.execute(finding_q)).scalars().all())
 
+        coverage_rows: list[Any] = []
+        coverage_summary: dict[str, Any] = {}
+        if "coverage" in include_set:
+            coverage_rows = await load_coverage_for_repo(
+                session, repository.id, file_paths=list(targets) if targets else None
+            )
+            coverage_summary = await get_coverage_summary(session, repository.id)
+
     kpis = _compute_kpis(metric_rows)
 
     if targets:
@@ -132,6 +162,27 @@ async def get_health(
 
     if "biomarkers" in include_set and "findings" not in result:
         result["findings"] = [_serialize_finding(f) for f in finding_rows]
+
+    if "coverage" in include_set:
+        # Drop the bulky covered-lines arrays from dashboard mode; full
+        # detail is available in targeted mode.
+        if targets:
+            coverage_payload = [_serialize_coverage_row(r) for r in coverage_rows]
+        else:
+            coverage_payload = [
+                {k: v for k, v in _serialize_coverage_row(r).items() if k != "covered_lines"}
+                for r in coverage_rows[:limit]
+            ]
+        # ``ingested_at`` is a datetime on the summary too — coerce.
+        if coverage_summary.get("ingested_at") is not None:
+            coverage_summary = {
+                **coverage_summary,
+                "ingested_at": coverage_summary["ingested_at"].isoformat(),
+            }
+        result["coverage"] = {
+            "summary": coverage_summary,
+            "files": coverage_payload,
+        }
 
     result["_meta"] = _build_meta(repository=repository)
     return result

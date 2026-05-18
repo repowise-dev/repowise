@@ -562,6 +562,10 @@ async def get_risk(
                 m = metric_map.get(path)
                 if m is not None:
                     r["health_score"] = round(m.score, 2)
+                    if m.line_coverage_pct is not None:
+                        r["coverage_pct"] = round(m.line_coverage_pct, 2)
+                    if m.branch_coverage_pct is not None:
+                        r["branch_coverage_pct"] = round(m.branch_coverage_pct, 2)
                 if path in top_by_file:
                     r["top_biomarkers"] = top_by_file[path]
     except Exception:
