@@ -106,3 +106,35 @@ export async function getHealthCoverage(
     opts,
   );
 }
+
+export interface RefactoringTarget {
+  file_path: string;
+  score: number;
+  nloc: number;
+  primary_biomarker: string;
+  primary_severity: "low" | "medium" | "high" | "critical";
+  primary_reason: string;
+  primary_function: string | null;
+  primary_line_start: number | null;
+  primary_line_end: number | null;
+  total_impact: number;
+  finding_count: number;
+  biomarkers: string[];
+  effort_bucket: "S" | "M" | "L" | "XL";
+  impact_per_effort: number;
+}
+
+export interface RefactoringTargetsResponse {
+  targets: RefactoringTarget[];
+  total: number;
+}
+
+export async function getRefactoringTargets(
+  repoId: string,
+  opts?: { limit?: number; module?: string },
+): Promise<RefactoringTargetsResponse> {
+  return apiGet<RefactoringTargetsResponse>(
+    `/api/repos/${repoId}/health/refactoring-targets`,
+    opts,
+  );
+}

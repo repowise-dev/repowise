@@ -190,3 +190,82 @@ async def health_coverage(
         "files": files,
         "modules": module_rows[:limit],
     }
+
+
+_EFFORT_BUCKETS: tuple[tuple[int, str], ...] = (
+    (40, "S"),
+    (150, "M"),
+    (400, "L"),
+)
+
+
+def _effort_for_nloc(nloc: int) -> str:
+    for ceiling, label in _EFFORT_BUCKETS:
+        if nloc <= ceiling:
+            return label
+    return "XL"
+
+
+@router.get("/api/repos/{repo_id}/health/refactoring-targets")
+async def refactoring_targets(
+    repo_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    module: str | None = Query(None, description="Filter to files in this module path"),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Refactoring candidates ranked by impact / effort.
+
+    A *target* aggregates one file's findings: total health impact (the
+    score deduction across all biomarkers) divided by an effort proxy
+    (file NLOC bucket). The UI renders each target as a card with type,
+    description, impact, and effort.
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    metrics = await crud.get_health_metrics(session, repo_id)
+    metric_by_path = {m.file_path: m for m in metrics}
+    findings = await crud.get_health_findings(session, repo_id)
+
+    by_file: dict[str, list[Any]] = {}
+    for f in findings:
+        by_file.setdefault(f.file_path, []).append(f)
+
+    targets: list[dict] = []
+    for file_path, fs in by_file.items():
+        if module and not file_path.startswith(module):
+            continue
+        m = metric_by_path.get(file_path)
+        nloc = m.nloc if m is not None else 0
+        score = m.score if m is not None else 10.0
+        # Largest hit per file becomes the headline biomarker; rest are
+        # supporting evidence the UI can expand into.
+        primary = max(fs, key=lambda x: x.health_impact)
+        total_impact = round(sum(x.health_impact for x in fs), 3)
+        effort_bucket = _effort_for_nloc(nloc)
+        # Effort weight: S=1, M=2, L=3, XL=5 — keeps the ratio in a
+        # human-readable shape on the card.
+        weight = {"S": 1, "M": 2, "L": 3, "XL": 5}[effort_bucket]
+        ratio = round(total_impact / weight, 3)
+        targets.append(
+            {
+                "file_path": file_path,
+                "score": round(score, 2),
+                "nloc": nloc,
+                "primary_biomarker": primary.biomarker_type,
+                "primary_severity": primary.severity,
+                "primary_reason": primary.reason,
+                "primary_function": primary.function_name,
+                "primary_line_start": primary.line_start,
+                "primary_line_end": primary.line_end,
+                "total_impact": total_impact,
+                "finding_count": len(fs),
+                "biomarkers": sorted({x.biomarker_type for x in fs}),
+                "effort_bucket": effort_bucket,
+                "impact_per_effort": ratio,
+            }
+        )
+
+    targets.sort(key=lambda t: (-t["impact_per_effort"], -t["total_impact"]))
+    return {"targets": targets[:limit], "total": len(targets)}
