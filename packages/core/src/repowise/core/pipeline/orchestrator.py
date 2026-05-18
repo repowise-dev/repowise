@@ -395,7 +395,7 @@ async def run_pipeline(
     dead_code_report = await _run_dead_code_analysis(graph_builder, git_meta_map, progress=progress)
 
     health_report = await _run_health_analysis(
-        graph_builder, git_meta_map, parsed_files, progress=progress
+        graph_builder, git_meta_map, parsed_files, repo_path=repo_path, progress=progress
     )
 
     decision_report = await _run_decision_extraction(
@@ -900,11 +900,13 @@ async def _run_health_analysis(
     git_meta_map: dict[str, dict],
     parsed_files: list[Any],
     *,
+    repo_path: Path | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Run code-health analysis (complexity + biomarkers + scoring)."""
     try:
         from repowise.core.analysis.health import HealthAnalyzer
+        from repowise.core.analysis.health.config import HealthConfig
 
         if progress:
             # Per-file determinate progress: one tick per parsed file.
@@ -916,11 +918,20 @@ async def _run_health_analysis(
             parsed_files=parsed_files,
         )
 
+        # Load per-file override rules from `.repowise/health-rules.json`.
+        # Missing or malformed file → empty config (no-op).
+        analyzer_config: dict[str, object] | None = None
+        if repo_path is not None:
+            cfg = HealthConfig.load(repo_path)
+            if cfg.disabled_biomarkers or cfg.rules:
+                file_paths = [pf.file_info.path for pf in parsed_files]
+                analyzer_config = cfg.to_analyzer_config(file_paths)
+
         def _step(_path: str) -> None:
             if progress:
                 progress.on_item_done("health")
 
-        report = await asyncio.to_thread(analyzer.analyze, None, on_step=_step)
+        report = await asyncio.to_thread(analyzer.analyze, analyzer_config, on_step=_step)
 
         if progress:
             findings_count = len(report.findings)
