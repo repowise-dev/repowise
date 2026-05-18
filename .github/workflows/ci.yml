@@ -43,6 +43,14 @@ jobs:
       - name: Run unit tests
         run: uv run pytest tests/unit/ -v --tb=short
 
+      - name: Code-health smoke test
+        # Fail the PR if the health analyzer can't run end-to-end on the
+        # repowise repo itself. Cheap (<10s) — runs the analyzer in JSON
+        # mode and asserts the report parses.
+        run: |
+          uv run repowise health --format json > /tmp/health.json
+          python -c "import json,sys; r=json.load(open('/tmp/health.json')); assert r.get('metrics') is not None, 'no metrics in health report'; print(f\"OK {len(r['metrics'])} metric rows\")"
+
   # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
   # ---------------------------------------------------------------------------

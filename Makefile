@@ -54,6 +54,18 @@ check: lint format-check typecheck  ## Run all checks (no modifications)
 fix: format lint  ## Format + lint with auto-fix
 
 # ---------------------------------------------------------------------------
+# Code Health (Phase 4)
+# ---------------------------------------------------------------------------
+
+health-check:  ## Run the code-health analyzer against this repo and fail on regressions
+	uv run pytest tests/unit/health/ tests/unit/server/test_mcp.py -v
+	uv run repowise health --format json > /tmp/repowise-health-report.json || true
+	@echo "Health report → /tmp/repowise-health-report.json"
+
+health-bench:  ## Run the 3,000-file health analyzer perf benchmark
+	uv run pytest tests/integration/test_health_perf_benchmark.py -v -m slow
+
+# ---------------------------------------------------------------------------
 # Web UI
 # ---------------------------------------------------------------------------
 
