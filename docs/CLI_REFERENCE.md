@@ -257,6 +257,41 @@ repowise dead-code resolve <id>          # mark resolved / false positive
 
 ---
 
+### `repowise health [PATH]`
+
+Compute per-file code-health scores from twelve deterministic biomarkers (CCN, nesting, brain methods, duplication, untested hotspots, organizational risk). Zero LLM calls — pure Python over tree-sitter + git data. See [`docs/CODE_HEALTH.md`](./CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](./architecture/code-health.md) for the internals.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--file <path>` | Deep-dive a single file (relative path) |
+| `--module <prefix>` | Restrict the report to files whose path starts with this prefix |
+| `--refactoring-targets` | Print top refactoring candidates ranked by impact / effort |
+| `--trend` | Print the last 10 health snapshots + any active alerts (declining / predicted decline) |
+| `--coverage <path>` | Ingest a coverage report (LCOV / Cobertura / Clover). Repeat for multiple files |
+| `--coverage-format` | Override coverage-format auto-detection: `lcov`, `cobertura`, `clover` |
+| `--format` | Output: `table` (default), `json`, `md` |
+| `--safe-only` | Confidence ≥ 0.8 only (placeholder for v1 biomarkers) |
+| `--repo` | In workspace mode, target a specific repo (defaults to primary) |
+| `--no-workspace` | Force single-repo mode |
+
+```bash
+repowise health                                       # KPIs + lowest-scoring files
+repowise health --file packages/server/.../app.py     # one file in detail
+repowise health --module packages/server              # restrict to a directory
+repowise health --refactoring-targets                 # ranked by impact / effort
+repowise health --trend                               # snapshot history + alerts
+repowise health --coverage coverage.lcov              # ingest coverage
+repowise health --format json | jq .kpis              # machine-readable
+```
+
+`repowise init` and `repowise update` populate the health tables automatically —
+no separate command needed. `repowise status` shows a one-line summary
+(`Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: <path>)`).
+
+---
+
 ### `repowise decision`
 
 Manage architectural decision records.
