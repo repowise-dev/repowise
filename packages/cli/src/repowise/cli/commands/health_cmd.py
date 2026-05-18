@@ -52,6 +52,20 @@ from repowise.cli.helpers import (
     default=False,
     help="Force single-repo mode.",
 )
+@click.option(
+    "--coverage",
+    "coverage_paths",
+    multiple=True,
+    type=click.Path(exists=True),
+    help="Ingest a coverage report (LCOV/Cobertura/Clover). May be repeated.",
+)
+@click.option(
+    "--coverage-format",
+    "coverage_format",
+    default=None,
+    type=click.Choice(["lcov", "cobertura", "clover"]),
+    help="Override coverage-format auto-detection.",
+)
 def health_command(
     path: str | None,
     file_filter: str | None,
@@ -59,6 +73,8 @@ def health_command(
     safe_only: bool,
     repo_alias: str | None,
     no_workspace: bool,
+    coverage_paths: tuple[str, ...],
+    coverage_format: str | None,
 ) -> None:
     """Compute code-health scores from biomarkers (CCN, nesting, brain-method).
 
@@ -68,6 +84,7 @@ def health_command(
     from pathlib import Path as PathlibPath
 
     from repowise.core.analysis.health import HealthAnalyzer
+    from repowise.core.analysis.health.coverage import parse as parse_coverage
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
     target = resolve_command_target(
@@ -118,10 +135,39 @@ def health_command(
     except Exception:
         pass
 
+    coverage_map: dict[str, dict] = {}
+    if coverage_paths:
+        for cov_path in coverage_paths:
+            try:
+                text = PathlibPath(cov_path).read_text(encoding="utf-8")
+            except OSError as exc:
+                console.print(f"[red]Could not read coverage file {cov_path}: {exc}[/red]")
+                continue
+            report_cov = parse_coverage(text, format=coverage_format)
+            if not report_cov.files:
+                console.print(
+                    f"[yellow]No coverage entries parsed from {cov_path} "
+                    f"(detected={report_cov.source_format}).[/yellow]"
+                )
+                continue
+            for fc in report_cov.files:
+                coverage_map[fc.file_path] = {
+                    "line_coverage_pct": fc.line_coverage_pct,
+                    "branch_coverage_pct": fc.branch_coverage_pct,
+                    "covered_lines": list(fc.covered_lines),
+                    "total_coverable_lines": fc.total_coverable_lines,
+                    "source_format": report_cov.source_format,
+                }
+            console.print(
+                f"[green]Ingested {len(report_cov.files)} files "
+                f"from {cov_path} ({report_cov.source_format}).[/green]"
+            )
+
     analyzer = HealthAnalyzer(
         graph_builder.graph(),
         git_meta_map=git_meta_map,
         parsed_files=parsed_files,
+        coverage_map=coverage_map,
     )
     report = analyzer.analyze()
 
