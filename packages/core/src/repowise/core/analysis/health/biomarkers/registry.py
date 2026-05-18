@@ -13,15 +13,21 @@ from collections.abc import Sequence
 
 from .base import Biomarker, BiomarkerResult, FileContext
 from .brain_method import BrainMethodDetector
+from .bumpy_road import BumpyRoadDetector
 from .complex_method import ComplexMethodDetector
 from .coverage_gap import CoverageGapDetector
+from .large_method import LargeMethodDetector
 from .nested_complexity import NestedComplexityDetector
+from .primitive_obsession import PrimitiveObsessionDetector
 from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     BrainMethodDetector,  # type: ignore[list-item]
     NestedComplexityDetector,  # type: ignore[list-item]
     ComplexMethodDetector,  # type: ignore[list-item]
+    BumpyRoadDetector,  # type: ignore[list-item]
+    LargeMethodDetector,  # type: ignore[list-item]
+    PrimitiveObsessionDetector,  # type: ignore[list-item]
     UntestedHotspotDetector,  # type: ignore[list-item]
     CoverageGapDetector,  # type: ignore[list-item]
 ]

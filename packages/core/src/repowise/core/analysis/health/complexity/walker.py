@@ -44,6 +44,13 @@ class FunctionComplexity:
     max_nesting: int
     cognitive: int
     nloc: int  # non-blank lines inside the body
+    # Number of top-level body sub-blocks whose internal nesting reached
+    # ≥ 2 — used by ``bumpy_road``. A flat function has 0 bumps.
+    bumps: int = 0
+    # Number of declared parameters on the function signature — used by
+    # ``primitive_obsession``. Counted via the tree-sitter ``parameters``
+    # field; 0 when the language lacks an explicit list or extraction fails.
+    param_count: int = 0
 
 
 def _find_name(node: Node) -> str:
@@ -93,17 +100,23 @@ def _is_boolean_operator(node: Node, lmap: LanguageNodeMap) -> bool:
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
-) -> tuple[int, int, int]:
-    """Recursive AST walk. Returns (ccn, max_nesting, cognitive).
+) -> tuple[int, int, int, int]:
+    """Recursive AST walk. Returns (ccn, max_nesting, cognitive, bumps).
 
     Starts CCN at 1 (the entry path). Nested function bodies are
     skipped — they will (or already did) produce their own
     ``FunctionComplexity``.
+
+    ``bumps`` counts how many *direct* children of the function body
+    contain nested control flow that reaches a depth of ≥ 2. A function
+    with several heavy independent branches is "bumpy" in
+    CodeScene/SonarSource terminology.
     """
 
     ccn = 1
     max_nesting = 0
     cognitive = 0
+    bumps = 0
 
     def _recurse(node: Node, depth: int) -> None:
         nonlocal ccn, max_nesting, cognitive
@@ -150,9 +163,17 @@ def _walk_function_body(
             _recurse(child, new_depth)
 
     for child in body_node.children:
+        # Per-child peak depth: temporarily swap max_nesting out so we
+        # can read just this child's contribution, then restore.
+        outer_max = max_nesting
+        max_nesting = 0
         _recurse(child, 0)
+        child_peak = max_nesting
+        max_nesting = max(outer_max, child_peak)
+        if child_peak >= 2:
+            bumps += 1
 
-    return ccn, max_nesting, cognitive
+    return ccn, max_nesting, cognitive, bumps
 
 
 def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
@@ -219,7 +240,7 @@ def walk_file_complexity(
     results: list[FunctionComplexity] = []
     for fn_node in _collect_function_nodes(tree.root_node, lmap):
         body = fn_node.child_by_field_name("body") or fn_node
-        ccn, max_nest, cognitive = _walk_function_body(body, lmap)
+        ccn, max_nest, cognitive, bumps = _walk_function_body(body, lmap)
         results.append(
             FunctionComplexity(
                 name=_find_name(fn_node),
@@ -229,6 +250,31 @@ def walk_file_complexity(
                 max_nesting=max_nest,
                 cognitive=cognitive,
                 nloc=_count_nloc(body, source),
+                bumps=bumps,
+                param_count=_count_parameters(fn_node),
             )
         )
     return results
+
+
+def _count_parameters(fn_node: Node) -> int:
+    """Best-effort parameter-list size for *fn_node*.
+
+    Looks at tree-sitter ``parameters`` / ``parameter_list`` / ``parameters_list`` fields and counts non-punctuation
+    children. Returns 0 when no parameter list is found.
+    """
+    params = fn_node.child_by_field_name("parameters")
+    if params is None:
+        for child in fn_node.children:
+            if child.type in ("parameters", "parameter_list", "formal_parameters"):
+                params = child
+                break
+    if params is None:
+        return 0
+    count = 0
+    for child in params.children:
+        if child.type in ("(", ")", ",", "self", "cls", ":", "*", "**"):
+            continue
+        if child.is_named:
+            count += 1
+    return count
