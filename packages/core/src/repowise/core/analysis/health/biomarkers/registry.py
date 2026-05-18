@@ -16,7 +16,9 @@ from .brain_method import BrainMethodDetector
 from .bumpy_road import BumpyRoadDetector
 from .complex_method import ComplexMethodDetector
 from .coverage_gap import CoverageGapDetector
+from .developer_congestion import DeveloperCongestionDetector
 from .dry_violation import DryViolationDetector
+from .knowledge_loss import KnowledgeLossDetector
 from .large_method import LargeMethodDetector
 from .nested_complexity import NestedComplexityDetector
 from .primitive_obsession import PrimitiveObsessionDetector
@@ -32,6 +34,8 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     DryViolationDetector,  # type: ignore[list-item]
     UntestedHotspotDetector,  # type: ignore[list-item]
     CoverageGapDetector,  # type: ignore[list-item]
+    DeveloperCongestionDetector,  # type: ignore[list-item]
+    KnowledgeLossDetector,  # type: ignore[list-item]
 ]
 
 
