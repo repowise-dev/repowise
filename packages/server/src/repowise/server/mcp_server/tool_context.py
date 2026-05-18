@@ -83,9 +83,7 @@ from repowise.server.mcp_server._server import mcp
 _MIN_CALL_CONFIDENCE = 0.7
 
 
-def _synthesize_structural_summary(
-    file_path: str, classes: list[str], functions: list[str]
-) -> str:
+def _synthesize_structural_summary(file_path: str, classes: list[str], functions: list[str]) -> str:
     """Build a deterministic 1-line summary when no LLM-generated summary exists.
 
     Used in --index-only mode (no wiki pages) and as a fallback when an LLM
@@ -229,7 +227,9 @@ async def _resolve_one_target(
                         "the PageRank threshold. Run `repowise update` to regenerate docs."
                     ),
                     "exists_in_git": True,
-                    "last_commit_at": meta.last_commit_at.isoformat() if meta.last_commit_at else None,
+                    "last_commit_at": meta.last_commit_at.isoformat()
+                    if meta.last_commit_at
+                    else None,
                     "primary_owner": meta.primary_owner_name,
                     "is_hotspot": meta.is_hotspot,
                 }
@@ -325,9 +325,7 @@ async def _resolve_one_target(
                         "hint": "Call with compact=False or include=['full_doc'] for the full list.",
                     }
                 if not docs.get("summary"):
-                    docs["summary"] = _synthesize_structural_summary(
-                        target, classes, functions
-                    )
+                    docs["summary"] = _synthesize_structural_summary(target, classes, functions)
             else:
                 docs["symbols"] = [
                     {
@@ -343,9 +341,7 @@ async def _resolve_one_target(
                 # Structure summary block — quick scan of what's in the file
                 total_loc = max((s.end_line for s in symbols), default=0)
                 avg_complexity = (
-                    sum(s.complexity_estimate for s in symbols) / len(symbols)
-                    if symbols
-                    else 0
+                    sum(s.complexity_estimate for s in symbols) / len(symbols) if symbols else 0
                 )
                 docs["structure"] = {
                     "classes": classes,
@@ -357,9 +353,7 @@ async def _resolve_one_target(
                 # Fallback summary: if no Page (index-only mode) or page.summary
                 # is empty, synthesize a deterministic one-liner from structure.
                 if not docs.get("summary"):
-                    docs["summary"] = _synthesize_structural_summary(
-                        target, classes, functions
-                    )
+                    docs["summary"] = _synthesize_structural_summary(target, classes, functions)
                 # Importers
                 res = await session.execute(
                     select(GraphEdge).where(
@@ -616,8 +610,13 @@ async def _resolve_one_target(
     want_callees = bool(include and "callees" in include)
     if want_callers or want_callees:
         await _resolve_call_graph(
-            session, repository, target, target_type, result_data,
-            want_callers=want_callers, want_callees=want_callees,
+            session,
+            repository,
+            target,
+            target_type,
+            result_data,
+            want_callers=want_callers,
+            want_callees=want_callees,
         )
 
     # --- Metrics (replaces get_graph_metrics) ---
@@ -691,16 +690,18 @@ async def _resolve_call_graph(
         direction = "callees"
 
     edges = await get_graph_edges_for_node(
-        session, repo_id, node.node_id,
-        direction=direction, edge_types=["calls", "extends", "implements"],
+        session,
+        repo_id,
+        node.node_id,
+        direction=direction,
+        edge_types=["calls", "extends", "implements"],
         limit=limit,
     )
 
     # Hydrate other nodes
-    other_ids = list({
-        e.source_node_id if e.target_node_id == node.node_id else e.target_node_id
-        for e in edges
-    })
+    other_ids = list(
+        {e.source_node_id if e.target_node_id == node.node_id else e.target_node_id for e in edges}
+    )
     node_map = await get_graph_nodes_by_ids(session, repo_id, other_ids)
 
     callers: list[dict[str, Any]] = []
@@ -717,9 +718,13 @@ async def _resolve_call_graph(
 
         entry: dict[str, Any] = {
             "symbol_id": other_id,
-            "name": other_node.name if other_node else (other_id.split("::")[-1] if "::" in other_id else other_id),
+            "name": other_node.name
+            if other_node
+            else (other_id.split("::")[-1] if "::" in other_id else other_id),
             "kind": other_node.kind if other_node else None,
-            "file": other_node.file_path if other_node else (other_id.split("::")[0] if "::" in other_id else other_id),
+            "file": other_node.file_path
+            if other_node
+            else (other_id.split("::")[0] if "::" in other_id else other_id),
             "confidence": e.confidence,
             "edge_type": e.edge_type,
         }
@@ -820,11 +825,13 @@ async def _resolve_community(
                 nlabel = nmeta.get("label", "")
             except (json.JSONDecodeError, TypeError):
                 pass
-        neighbors.append({
-            "id": nid,
-            "label": nlabel or f"cluster_{nid}",
-            "cross_edges": ce["edge_count"],
-        })
+        neighbors.append(
+            {
+                "id": nid,
+                "label": nlabel or f"cluster_{nid}",
+                "cross_edges": ce["edge_count"],
+            }
+        )
 
     result_data["community"] = {
         "id": node.community_id,
@@ -886,12 +893,15 @@ async def _resolve_health(
         .order_by(HealthFinding.health_impact.desc())
         .limit(2)
     )
+    from repowise.core.analysis.health.suggestions import suggestion_for
+
     top_biomarkers = [
         {
             "biomarker_type": f.biomarker_type,
             "severity": f.severity,
             "function_name": f.function_name,
             "impact": round(f.health_impact, 2),
+            "suggestion": suggestion_for(f.biomarker_type),
         }
         for f in findings_res.scalars().all()
     ]
@@ -911,6 +921,8 @@ async def _resolve_health(
         "max_nesting": metric.max_nesting,
         "nloc": metric.nloc,
         "has_test_file": metric.has_test_file,
+        "module": metric.module,
+        "duplication_pct": metric.duplication_pct,
         "top_biomarkers": top_biomarkers,
     }
     if coverage_row is not None:
@@ -963,8 +975,14 @@ def _symbol_priority(sym: dict[str, Any], query_terms: set[str]) -> tuple[int, i
     fuzzy = 1 if any(t and t in name for t in query_terms) else 0
     kind = (sym.get("kind") or "").lower()
     kind_rank = {
-        "class": 3, "interface": 3, "struct": 3, "trait": 3, "type": 3, "enum": 3,
-        "function": 2, "method": 2,
+        "class": 3,
+        "interface": 3,
+        "struct": 3,
+        "trait": 3,
+        "type": 3,
+        "enum": 3,
+        "function": 2,
+        "method": 2,
     }.get(kind, 1)
     centrality = int((sym.get("pagerank") or sym.get("centrality") or 0) * 1000)
     return (exact * 10 + fuzzy * 5 + kind_rank, centrality, -len(json.dumps(sym, default=str)))
@@ -1110,9 +1128,7 @@ def _truncate_to_budget(
                 "token_budget": _TOKEN_BUDGET,
                 "final_chars": _size(),
                 "dropped_targets": result["dropped_targets"],
-                "dropped_symbol_counts": {
-                    k: len(v) for k, v in result["dropped_symbols"].items()
-                },
+                "dropped_symbol_counts": {k: len(v) for k, v in result["dropped_symbols"].items()},
             },
         )
     return result
@@ -1167,6 +1183,7 @@ async def get_context(
     include_set = set(include) if include else {"docs", "freshness"}
 
     import time as _time
+
     _t0 = _time.perf_counter()
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
@@ -1174,7 +1191,11 @@ async def get_context(
         results = await asyncio.gather(
             *[
                 _resolve_one_target(
-                    session, repository, t, include_set, compact,
+                    session,
+                    repository,
+                    t,
+                    include_set,
+                    compact,
                 )
                 for t in targets
             ]
@@ -1206,12 +1227,8 @@ async def get_context(
 
             # Contract links (Phase 4)
             if enricher.has_contract_data:
-                provider_links = enricher.get_contract_links_as_provider(
-                    ctx.alias, target_key
-                )
-                consumer_links = enricher.get_contract_links_as_consumer(
-                    ctx.alias, target_key
-                )
+                provider_links = enricher.get_contract_links_as_provider(ctx.alias, target_key)
+                consumer_links = enricher.get_contract_links_as_consumer(ctx.alias, target_key)
                 if provider_links or consumer_links:
                     contracts: dict[str, Any] = {}
                     if provider_links:
