@@ -66,6 +66,19 @@ from repowise.cli.helpers import (
     type=click.Choice(["lcov", "cobertura", "clover"]),
     help="Override coverage-format auto-detection.",
 )
+@click.option(
+    "--refactoring-targets",
+    "refactoring_targets",
+    is_flag=True,
+    default=False,
+    help="Print top refactoring candidates (impact/effort ratio).",
+)
+@click.option(
+    "--module",
+    "module_filter",
+    default=None,
+    help="Restrict the report to files whose path starts with this prefix.",
+)
 def health_command(
     path: str | None,
     file_filter: str | None,
@@ -75,6 +88,8 @@ def health_command(
     no_workspace: bool,
     coverage_paths: tuple[str, ...],
     coverage_format: str | None,
+    refactoring_targets: bool,
+    module_filter: str | None,
 ) -> None:
     """Compute code-health scores from biomarkers (CCN, nesting, brain-method).
 
@@ -169,16 +184,33 @@ def health_command(
         parsed_files=parsed_files,
         coverage_map=coverage_map,
     )
-    report = analyzer.analyze()
+    # Load any .repowise/health-rules.json the user keeps in the repo.
+    from repowise.core.analysis.health.config import HealthConfig
+
+    health_cfg = HealthConfig.load(repo_path)
+    analyzer_cfg = (
+        health_cfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
+        if (health_cfg.disabled_biomarkers or health_cfg.rules)
+        else None
+    )
+    report = analyzer.analyze(analyzer_cfg)
 
     metrics = report.metrics
     if file_filter:
         metrics = [m for m in metrics if m.file_path == file_filter]
+    if module_filter:
+        metrics = [m for m in metrics if m.file_path.startswith(module_filter)]
     metrics_sorted = sorted(metrics, key=lambda m: m.score)
 
     findings = report.findings
     if file_filter:
         findings = [f for f in findings if f.file_path == file_filter]
+    if module_filter:
+        findings = [f for f in findings if f.file_path.startswith(module_filter)]
+
+    if refactoring_targets:
+        _render_refactoring_targets(metrics_sorted, findings, fmt=fmt)
+        return
 
     if fmt == "json":
         click.echo(
@@ -271,3 +303,79 @@ def health_command(
                 f"-{f.health_impact:.2f}",
             )
         console.print(f_table)
+
+
+def _effort_bucket(nloc: int) -> tuple[str, int]:
+    if nloc <= 40:
+        return "S", 1
+    if nloc <= 150:
+        return "M", 2
+    if nloc <= 400:
+        return "L", 3
+    return "XL", 5
+
+
+def _render_refactoring_targets(
+    metrics: list, findings: list, *, fmt: str, limit: int = 20
+) -> None:
+    """Aggregate findings per file, rank by impact/effort, render."""
+    by_file: dict[str, list] = {}
+    for f in findings:
+        by_file.setdefault(f.file_path, []).append(f)
+
+    metric_by_path = {m.file_path: m for m in metrics}
+    targets: list[dict] = []
+    for path, fs in by_file.items():
+        m = metric_by_path.get(path)
+        nloc = m.nloc if m is not None else 0
+        score = m.score if m is not None else 10.0
+        primary = max(fs, key=lambda x: x.health_impact)
+        total_impact = round(sum(x.health_impact for x in fs), 3)
+        bucket, weight = _effort_bucket(nloc)
+        targets.append(
+            {
+                "file_path": path,
+                "score": round(score, 2),
+                "nloc": nloc,
+                "primary_biomarker": primary.biomarker_type,
+                "primary_severity": str(primary.severity),
+                "primary_reason": primary.reason,
+                "total_impact": total_impact,
+                "effort_bucket": bucket,
+                "impact_per_effort": round(total_impact / weight, 3),
+                "finding_count": len(fs),
+            }
+        )
+    targets.sort(key=lambda t: (-t["impact_per_effort"], -t["total_impact"]))
+    targets = targets[:limit]
+
+    if fmt == "json":
+        click.echo(json.dumps({"targets": targets}, indent=2))
+        return
+    if fmt == "md":
+        click.echo("# Refactoring targets\n")
+        for t in targets:
+            click.echo(
+                f"- **{t['file_path']}** ({t['effort_bucket']}, "
+                f"score {t['score']:.1f}/10, -{t['total_impact']:.2f}) "
+                f"— {t['primary_biomarker']}: {t['primary_reason']}"
+            )
+        return
+
+    table = Table(title=f"Refactoring targets ({len(targets)})")
+    table.add_column("File", style="cyan")
+    table.add_column("Score", justify="right")
+    table.add_column("Impact", justify="right")
+    table.add_column("Effort", justify="center")
+    table.add_column("Ratio", justify="right")
+    table.add_column("Primary biomarker")
+    for t in targets:
+        table.add_row(
+            t["file_path"],
+            f"{t['score']:.1f}",
+            f"-{t['total_impact']:.2f}",
+            t["effort_bucket"],
+            f"{t['impact_per_effort']:.2f}",
+            t["primary_biomarker"],
+        )
+    console.print(table)
