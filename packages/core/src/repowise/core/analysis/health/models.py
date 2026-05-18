@@ -1,0 +1,61 @@
+"""Dataclasses returned by the health analyzer.
+
+These are language-agnostic plain dataclasses, mirrored by SQLAlchemy ORM
+counterparts in ``persistence/models.py`` (``HealthFinding``,
+``HealthFileMetric``, ``HealthSnapshot``).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
+from typing import Any
+
+
+class Severity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+@dataclass
+class HealthFindingData:
+    """One biomarker hit. Persisted as a ``HealthFinding`` row."""
+
+    biomarker_type: str
+    severity: Severity
+    file_path: str
+    function_name: str | None
+    line_start: int | None
+    line_end: int | None
+    details: dict[str, Any]
+    health_impact: float
+    reason: str = ""
+
+
+@dataclass
+class HealthFileMetricData:
+    """Per-file aggregate. Persisted as a ``HealthFileMetric`` row."""
+
+    file_path: str
+    score: float
+    max_ccn: int
+    max_nesting: int
+    nloc: int
+    has_test_file: bool
+    module: str | None = None
+    duplication_pct: float | None = None
+    line_coverage_pct: float | None = None
+    branch_coverage_pct: float | None = None
+
+
+@dataclass
+class HealthReport:
+    repo_id: str
+    analyzed_at: datetime
+    findings: list[HealthFindingData] = field(default_factory=list)
+    metrics: list[HealthFileMetricData] = field(default_factory=list)
+    # Repo-level KPIs computed by ``scoring.compute_kpis``.
+    kpis: dict[str, Any] = field(default_factory=dict)
