@@ -58,3 +58,51 @@ export async function listHealthFindings(
 ): Promise<HealthFinding[]> {
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
 }
+
+export interface CoverageFileRow {
+  file_path: string;
+  source_format: string;
+  line_coverage_pct: number;
+  branch_coverage_pct: number | null;
+  total_coverable_lines: number;
+  ingested_at: string | null;
+  ingested_commit_sha: string | null;
+  covered_lines?: number[];
+  health_score?: number;
+  nloc?: number;
+}
+
+export interface ModuleCoverageRow {
+  module: string;
+  files: number;
+  covered_lines: number;
+  total_lines: number;
+  line_coverage_pct: number;
+}
+
+export interface CoverageSummary {
+  file_count: number;
+  covered_lines: number;
+  total_lines: number;
+  line_coverage_pct: number | null;
+  branch_coverage_pct: number | null;
+  source_format: string | null;
+  ingested_at: string | null;
+  ingested_commit_sha: string | null;
+}
+
+export interface HealthCoverageResponse {
+  summary: CoverageSummary;
+  files: CoverageFileRow[];
+  modules: ModuleCoverageRow[];
+}
+
+export async function getHealthCoverage(
+  repoId: string,
+  opts?: { file_path?: string; limit?: number },
+): Promise<HealthCoverageResponse> {
+  return apiGet<HealthCoverageResponse>(
+    `/api/repos/${repoId}/health/coverage`,
+    opts,
+  );
+}

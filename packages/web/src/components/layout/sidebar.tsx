@@ -25,6 +25,7 @@ import {
   Users,
   Boxes,
   HeartPulse,
+  TestTubeDiagonal,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
@@ -58,6 +59,7 @@ function repoNavItems(repoId: string): NavItem[] {
     { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare, exact: true },
     { label: "Risk", href: `/repos/${repoId}/risk`, icon: ShieldAlert },
     { label: "Health", href: `/repos/${repoId}/health`, icon: HeartPulse },
+    { label: "Coverage", href: `/repos/${repoId}/health/coverage`, icon: TestTubeDiagonal },
     { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
     { label: "C4 Diagram", href: `/repos/${repoId}/c4`, icon: Boxes },
     { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
