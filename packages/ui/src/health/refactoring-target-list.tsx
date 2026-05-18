@@ -1,4 +1,4 @@
-import { RefactoringCard, type RefactoringTarget } from "./refactoring-card.js";
+import { RefactoringCard, type RefactoringTarget } from "./refactoring-card";
 
 export interface RefactoringTargetListProps {
   targets: RefactoringTarget[];
@@ -27,4 +27,4 @@ export function RefactoringTargetList({
   );
 }
 
-export type { RefactoringTarget } from "./refactoring-card.js";
+export type { RefactoringTarget } from "./refactoring-card";

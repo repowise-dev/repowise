@@ -1,4 +1,4 @@
-import { CoverageBar } from "./coverage-bar.js";
+import { CoverageBar } from "./coverage-bar";
 
 export interface ModuleCoverageRow {
   module: string;
