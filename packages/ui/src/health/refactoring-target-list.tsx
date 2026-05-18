@@ -1,15 +1,17 @@
-import { RefactoringCard, type RefactoringTarget } from "./refactoring-card";
+import { RefactoringCard, type RefactoringTarget, type FindingStatus } from "./refactoring-card";
 
 export interface RefactoringTargetListProps {
   targets: RefactoringTarget[];
-  onSelect?: (target: RefactoringTarget) => void;
+  onSelect?: ((target: RefactoringTarget) => void) | undefined;
+  onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
   emptyMessage?: string;
 }
 
 export function RefactoringTargetList({
   targets,
   onSelect,
-  emptyMessage = "No refactoring targets — your health findings list is empty.",
+  onStatusChange,
+  emptyMessage = "No refactoring targets match the current filters.",
 }: RefactoringTargetListProps) {
   if (targets.length === 0) {
     return (
@@ -21,10 +23,15 @@ export function RefactoringTargetList({
   return (
     <div className="grid gap-3">
       {targets.map((t) => (
-        <RefactoringCard key={t.file_path} target={t} onSelect={onSelect} />
+        <RefactoringCard
+          key={t.file_path}
+          target={t}
+          onSelect={onSelect}
+          onStatusChange={onStatusChange}
+        />
       ))}
     </div>
   );
 }
 
-export type { RefactoringTarget } from "./refactoring-card";
+export type { RefactoringTarget, FindingStatus } from "./refactoring-card";

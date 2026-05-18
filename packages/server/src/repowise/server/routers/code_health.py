@@ -8,12 +8,21 @@ here require API-key auth and operate on the ``health_findings`` /
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.models import Severity
+from repowise.core.analysis.health.scoring import (
+    CATEGORY_CAPS,
+    biomarker_category,
+    severity_deduction,
+)
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
+from repowise.core.analysis.health.trends import diff_snapshots, recent_kpis
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 
@@ -21,6 +30,9 @@ router = APIRouter(
     tags=["code-health"],
     dependencies=[Depends(verify_api_key)],
 )
+
+
+_SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 
 def _finding_to_dict(f: Any) -> dict:
@@ -53,7 +65,18 @@ def _metric_to_dict(m: Any) -> dict:
         "has_test_file": m.has_test_file,
         "line_coverage_pct": m.line_coverage_pct,
         "module": m.module,
+        "duplication_pct": getattr(m, "duplication_pct", None),
     }
+
+
+# Strip the trailing " (N)" suffix that community detection appends to
+# disambiguate same-named modules. The leak is harmless in the DB but
+# noisy in the dashboard.
+_MODULE_SUFFIX = re.compile(r"\s*\(\d+\)\s*$")
+
+
+def _clean_module(name: str) -> str:
+    return _MODULE_SUFFIX.sub("", name).strip()
 
 
 def _module_rollups(metrics: list[Any]) -> list[dict]:
@@ -61,7 +84,7 @@ def _module_rollups(metrics: list[Any]) -> list[dict]:
     buckets: dict[str, list[Any]] = {}
     for m in metrics:
         if m.module:
-            buckets.setdefault(m.module, []).append(m)
+            buckets.setdefault(_clean_module(m.module), []).append(m)
     rows: list[dict] = []
     for name, group in buckets.items():
         total_nloc = sum(max(r.nloc, 1) for r in group)
@@ -81,24 +104,73 @@ def _module_rollups(metrics: list[Any]) -> list[dict]:
     return rows
 
 
+def _severity_breakdown(findings: list[Any]) -> dict[str, int]:
+    out = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for f in findings:
+        s = (f.severity or "").lower()
+        if s in out:
+            out[s] += 1
+    return out
+
+
+def _biomarker_breakdown(findings: list[Any]) -> list[dict]:
+    """Per-biomarker counts split by severity, sorted by total."""
+    by_type: dict[str, dict[str, int]] = {}
+    for f in findings:
+        b = f.biomarker_type
+        sev = (f.severity or "").lower()
+        bucket = by_type.setdefault(
+            b, {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0}
+        )
+        if sev in bucket:
+            bucket[sev] += 1
+        bucket["total"] += 1
+    rows = [{"biomarker_type": b, **counts} for b, counts in by_type.items()]
+    rows.sort(key=lambda r: r["total"], reverse=True)
+    return rows
+
+
 @router.get("/api/repos/{repo_id}/health/overview")
 async def health_overview(
     repo_id: str,
     limit: int = Query(20, ge=1, le=200),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
-    """KPIs + lowest-scoring files + per-module rollup."""
+    """KPIs + lowest-scoring files + per-module rollup + meta."""
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     summary = await crud.get_health_summary(session, repo_id)
     metrics = await crud.get_health_metrics(session, repo_id)
     findings = await crud.get_health_findings(session, repo_id)
+    snapshots = await crud.list_health_snapshots(session, repo_id)
+
+    # Pull hotspot_health from the latest snapshot (KPIs aren't recomputed
+    # on every overview hit — the snapshot is authoritative).
+    hotspot_health: float | None = None
+    last_indexed_at: str | None = None
+    if snapshots:
+        latest = snapshots[-1]
+        hotspot_health = round(float(latest.hotspot_health), 2)
+        last_indexed_at = latest.taken_at.isoformat() if latest.taken_at else None
+
+    summary = {
+        **summary,
+        "hotspot_health": hotspot_health,
+        "severity_breakdown": _severity_breakdown(findings),
+    }
+
     return {
         "summary": summary,
         "files": [_metric_to_dict(m) for m in metrics[:limit]],
         "top_findings": [_finding_to_dict(f) for f in findings[:limit]],
         "modules": _module_rollups(metrics),
+        "biomarkers": _biomarker_breakdown(findings),
+        "meta": {
+            "last_indexed_at": last_indexed_at,
+            "head_commit": repo.head_commit,
+            "snapshot_count": len(snapshots),
+        },
     }
 
 
@@ -134,14 +206,232 @@ async def list_health_findings(
     return [_finding_to_dict(f) for f in findings[:limit]]
 
 
+_SORT_FIELDS = {
+    "score",
+    "max_ccn",
+    "max_nesting",
+    "nloc",
+    "duplication_pct",
+    "line_coverage_pct",
+    "file_path",
+}
+
+
 @router.get("/api/repos/{repo_id}/health/files")
 async def list_health_files(
     repo_id: str,
     limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+    sort: str = Query("score", description="Sort field"),
+    order: str = Query("asc", pattern="^(asc|desc)$"),
+    search: str | None = Query(None, description="Substring filter on file_path"),
+    module: str | None = Query(None, description="Filter to a module prefix"),
+    only_hotspots: bool = Query(False),
+    only_untested: bool = Query(False),
+    only_failing: bool = Query(False, description="score < 7"),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
-) -> list[dict]:
+) -> dict:
+    if sort not in _SORT_FIELDS:
+        sort = "score"
     metrics = await crud.get_health_metrics(session, repo_id)
-    return [_metric_to_dict(m) for m in metrics[:limit]]
+
+    hotspot_paths: set[str] = set()
+    if only_hotspots:
+        git_meta = await crud.get_all_git_metadata(session, repo_id)
+        hotspot_paths = {p for p, gm in git_meta.items() if getattr(gm, "is_hotspot", False)}
+
+    def _keep(m: Any) -> bool:
+        if search and search.lower() not in m.file_path.lower():
+            return False
+        if module and not m.file_path.startswith(module):
+            return False
+        if only_hotspots and m.file_path not in hotspot_paths:
+            return False
+        if only_untested and m.has_test_file:
+            return False
+        return not (only_failing and m.score >= 7)
+
+    filtered = [m for m in metrics if _keep(m)]
+
+    def _key(m: Any):
+        v = getattr(m, sort, None)
+        if v is None:
+            return (1, 0) if order == "asc" else (0, 0)
+        return (0, v) if order == "asc" else (0, -v if isinstance(v, (int, float)) else v)
+
+    reverse = order == "desc" and sort == "file_path"
+    if sort == "file_path":
+        filtered.sort(key=lambda m: m.file_path, reverse=reverse)
+    else:
+        filtered.sort(key=_key, reverse=False)
+
+    total = len(filtered)
+    page = filtered[offset : offset + limit]
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "files": [_metric_to_dict(m) for m in page],
+    }
+
+
+def _score_breakdown_from_findings(findings: list[Any]) -> dict:
+    """Recompute per-category deductions from open findings of one file.
+
+    Mirrors ``scoring.score_file`` so the dashboard can show how a file's
+    score was built up — even though the scoring math runs at index time,
+    not at request time.
+    """
+    raw_per_cat: dict[str, list[tuple[Any, float]]] = {}
+    for f in findings:
+        sev = Severity(f.severity) if not isinstance(f.severity, Severity) else f.severity
+        d = severity_deduction(sev)
+        cat = biomarker_category(f.biomarker_type)
+        raw_per_cat.setdefault(cat, []).append((f, d))
+
+    categories: list[dict] = []
+    total_deduction = 0.0
+    for cat, cap in CATEGORY_CAPS.items():
+        entries = raw_per_cat.get(cat, [])
+        raw_sum = sum(d for _, d in entries)
+        capped = min(raw_sum, cap)
+        scale = (cap / raw_sum) if raw_sum > cap and raw_sum > 0 else 1.0
+        categories.append(
+            {
+                "category": cat,
+                "cap": round(cap, 2),
+                "raw_deduction": round(raw_sum, 3),
+                "applied_deduction": round(capped, 3),
+                "capped": raw_sum > cap,
+                "finding_count": len(entries),
+                "findings": [
+                    {
+                        "id": f.id,
+                        "biomarker_type": f.biomarker_type,
+                        "severity": f.severity,
+                        "raw_impact": round(d, 3),
+                        "applied_impact": round(d * scale, 3),
+                        "function_name": f.function_name,
+                        "reason": f.reason,
+                    }
+                    for f, d in entries
+                ],
+            }
+        )
+        total_deduction += capped
+    score = max(1.0, min(10.0, 10.0 - total_deduction))
+    return {
+        "score": round(score, 2),
+        "total_deduction": round(total_deduction, 3),
+        "categories": categories,
+    }
+
+
+@router.get("/api/repos/{repo_id}/health/files/breakdown")
+async def file_score_breakdown(
+    repo_id: str,
+    file_path: str = Query(..., description="File path to break down"),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    metrics = await crud.get_health_metrics(session, repo_id, file_paths=[file_path])
+    metric = metrics[0] if metrics else None
+    findings = await crud.get_health_findings(session, repo_id, file_path=file_path)
+    breakdown = _score_breakdown_from_findings(findings)
+    return {
+        "file_path": file_path,
+        "metric": _metric_to_dict(metric) if metric else None,
+        "breakdown": breakdown,
+        "findings": [_finding_to_dict(f) for f in findings],
+        "suggestions": {
+            b: _suggestion_for(b) for b in {f.biomarker_type for f in findings}
+        },
+    }
+
+
+@router.get("/api/repos/{repo_id}/health/trend")
+async def health_trend(
+    repo_id: str,
+    limit: int = Query(20, ge=1, le=50),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    snapshots = await crud.list_health_snapshots(session, repo_id)
+    summary = diff_snapshots(snapshots)
+
+    # Per-file delta from the last two snapshots.
+    file_deltas: list[dict] = []
+    if len(snapshots) >= 2:
+        try:
+            prev = json.loads(snapshots[-2].per_file_scores_json or "{}")
+            cur = json.loads(snapshots[-1].per_file_scores_json or "{}")
+        except Exception:
+            prev, cur = {}, {}
+        all_paths = set(prev) | set(cur)
+        for p in all_paths:
+            before = prev.get(p)
+            after = cur.get(p)
+            if before is None or after is None:
+                continue
+            d = round(float(after) - float(before), 2)
+            if d == 0:
+                continue
+            file_deltas.append(
+                {"file_path": p, "before": before, "after": after, "delta": d}
+            )
+        file_deltas.sort(key=lambda r: r["delta"])
+
+    return {
+        "history": recent_kpis(snapshots, limit=limit),
+        "summary": {
+            "current_hotspot_health": summary.current_hotspot_health,
+            "current_average_health": summary.current_average_health,
+            "previous_hotspot_health": summary.previous_hotspot_health,
+            "previous_average_health": summary.previous_average_health,
+            "hotspot_delta": summary.hotspot_delta,
+            "average_delta": summary.average_delta,
+        },
+        "alerts": [
+            {
+                "kind": a.kind,
+                "metric": a.metric,
+                "current": a.current,
+                "baseline": a.baseline,
+                "delta": a.delta,
+                "message": a.message,
+            }
+            for a in summary.alerts
+        ],
+        "file_deltas": file_deltas[:50],
+        "snapshot_count": len(snapshots),
+    }
+
+
+class FindingStatusUpdate(BaseModel):
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+_ALLOWED_STATUSES = {"open", "acknowledged", "resolved", "false_positive"}
+
+
+@router.patch("/api/repos/{repo_id}/health/findings/{finding_id}")
+async def update_finding_status(
+    repo_id: str,
+    finding_id: str,
+    payload: FindingStatusUpdate,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    if payload.status not in _ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(_ALLOWED_STATUSES)}")
+    f = await crud.update_health_finding_status(session, finding_id, payload.status)
+    if f is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    await session.commit()
+    return _finding_to_dict(f)
 
 
 def _coverage_row_to_dict(row: Any, *, include_covered_lines: bool = False) -> dict:
@@ -247,17 +537,15 @@ def _effort_for_nloc(nloc: int) -> str:
 @router.get("/api/repos/{repo_id}/health/refactoring-targets")
 async def refactoring_targets(
     repo_id: str,
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=500),
     module: str | None = Query(None, description="Filter to files in this module path"),
+    biomarker: str | None = Query(None, description="Filter to one biomarker type"),
+    min_severity: str | None = Query(None),
+    max_effort: str | None = Query(None, description="S | M | L | XL"),
+    sort: str = Query("impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
-    """Refactoring candidates ranked by impact / effort.
-
-    A *target* aggregates one file's findings: total health impact (the
-    score deduction across all biomarkers) divided by an effort proxy
-    (file NLOC bucket). The UI renders each target as a card with type,
-    description, impact, and effort.
-    """
+    """Refactoring candidates ranked by impact / effort."""
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
@@ -268,7 +556,16 @@ async def refactoring_targets(
 
     by_file: dict[str, list[Any]] = {}
     for f in findings:
+        if biomarker and f.biomarker_type != biomarker:
+            continue
+        if min_severity:
+            order = _SEVERITY_ORDER
+            if order.get(f.severity, 0) < order.get(min_severity, 0):
+                continue
         by_file.setdefault(f.file_path, []).append(f)
+
+    effort_rank = {"S": 1, "M": 2, "L": 3, "XL": 5}
+    max_effort_rank = effort_rank.get(max_effort or "", 99)
 
     targets: list[dict] = []
     for file_path, fs in by_file.items():
@@ -277,20 +574,19 @@ async def refactoring_targets(
         m = metric_by_path.get(file_path)
         nloc = m.nloc if m is not None else 0
         score = m.score if m is not None else 10.0
-        # Largest hit per file becomes the headline biomarker; rest are
-        # supporting evidence the UI can expand into.
         primary = max(fs, key=lambda x: x.health_impact)
         total_impact = round(sum(x.health_impact for x in fs), 3)
         effort_bucket = _effort_for_nloc(nloc)
-        # Effort weight: S=1, M=2, L=3, XL=5 — keeps the ratio in a
-        # human-readable shape on the card.
-        weight = {"S": 1, "M": 2, "L": 3, "XL": 5}[effort_bucket]
+        if effort_rank[effort_bucket] > max_effort_rank:
+            continue
+        weight = effort_rank[effort_bucket]
         ratio = round(total_impact / weight, 3)
         targets.append(
             {
                 "file_path": file_path,
                 "score": round(score, 2),
                 "nloc": nloc,
+                "module": _clean_module(m.module) if (m and m.module) else None,
                 "primary_biomarker": primary.biomarker_type,
                 "primary_severity": primary.severity,
                 "primary_reason": primary.reason,
@@ -298,13 +594,21 @@ async def refactoring_targets(
                 "primary_line_start": primary.line_start,
                 "primary_line_end": primary.line_end,
                 "primary_suggestion": _suggestion_for(primary.biomarker_type),
+                "primary_finding_id": primary.id,
                 "total_impact": total_impact,
                 "finding_count": len(fs),
                 "biomarkers": sorted({x.biomarker_type for x in fs}),
                 "effort_bucket": effort_bucket,
                 "impact_per_effort": ratio,
+                "all_findings": [_finding_to_dict(f) for f in fs],
             }
         )
 
-    targets.sort(key=lambda t: (-t["impact_per_effort"], -t["total_impact"]))
+    sort_key_map = {
+        "impact_per_effort": lambda t: (-t["impact_per_effort"], -t["total_impact"]),
+        "total_impact": lambda t: -t["total_impact"],
+        "score": lambda t: t["score"],
+        "finding_count": lambda t: -t["finding_count"],
+    }
+    targets.sort(key=sort_key_map[sort])
     return {"targets": targets[:limit], "total": len(targets)}
