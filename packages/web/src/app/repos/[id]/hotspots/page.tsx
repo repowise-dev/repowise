@@ -9,6 +9,7 @@ import { CommitCategoryDonut } from "@repowise-dev/ui/git/commit-category-donut"
 import { RiskDistributionChart } from "@repowise-dev/ui/git/risk-distribution-chart";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
 import { getHotspots, getGitSummary } from "@/lib/api/git";
+import { HealthRisksPanel } from "@/components/health/health-risks-panel";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 export const metadata: Metadata = { title: "Hotspots" };
@@ -141,6 +142,8 @@ export default async function HotspotsPage({
           <HotspotTable hotspots={hotspots} repoId={id} />
         </div>
 
+        <div className="space-y-4">
+          <HealthRisksPanel repoId={id} title="Health risks in this list" limit={6} />
         {/* Top owners leaderboard */}
         {summary && summary.top_owners.length > 0 && (
           <Card>
@@ -167,6 +170,7 @@ export default async function HotspotsPage({
             </CardContent>
           </Card>
         )}
+        </div>
       </div>
     </div>
   );
