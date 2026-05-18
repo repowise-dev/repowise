@@ -9,6 +9,17 @@ Tree-sitter AST walker. Single AST pass per file computes:
 - **cognitive complexity** — SonarSource-style weighted nesting cost
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).
+- **bumps** — count of branches at the same nesting depth as their
+  sibling branches. Feeds `bumpy_road`.
+- **param_count** — formal parameter count. Feeds `primitive_obsession`.
+- **nloc** — non-comment lines of code per function.
+
+## Performance characteristics
+
+One parser instance per process (lazy-loaded via the ingestion registry).
+Single pass per file — no AST re-traversal. The walker re-parses the file
+because `ParsedFile` does not carry the tree-sitter `Node` across the
+ingestion boundary; cost is acceptable (≲ 1 ms for typical files).
 
 ## Public API
 

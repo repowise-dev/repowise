@@ -457,6 +457,15 @@ The "why" usually walks out the door — when a teammate leaves, or when you reo
 | Auto-generated documentation | ✅ | ✅ Gemini | ✅ | ✅ PR2Doc | ❌ |
 | Private repo — no cloud | ✅ | ❌ in development | ❌ OSS forks only | ✅ Enterprise tier | ✅ |
 | Dead code detection | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Code health score (1–10) | ✅ 12 biomarkers | ❌ | ❌ | ❌ | ✅ 25–30 |
+| Brain Method detection | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Complexity biomarkers | ✅ native tree-sitter | ❌ | ❌ | ❌ | ✅ |
+| Test coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ | ❌ |
+| Untested hotspot detection | ✅ coverage × hotspot | ❌ | ❌ | ❌ | ❌ |
+| DRY violation detection | ✅ native (no npm) | ❌ | ❌ | ❌ | ✅ |
+| Health trend tracking | ✅ rolling 50 snapshots | ❌ | ❌ | ❌ | ✅ |
+| Declining health alerts | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Refactoring recommendations | ✅ deterministic | ❌ | ❌ | ❌ | ✅ |
 | Git intelligence (hotspots, ownership, co-changes) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
