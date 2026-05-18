@@ -19,10 +19,18 @@ from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
     GraphNode,
+    HealthFileMetric,
+    HealthFinding,
     Page,
 )
 
-from .data import DecisionSummary, EditorFileData, HotspotFile, KeyModule
+from .data import (
+    CodeHealthBlock,
+    DecisionSummary,
+    EditorFileData,
+    HotspotFile,
+    KeyModule,
+)
 from .tech_stack import detect_build_commands, detect_tech_stack
 
 # Maximum items per section to keep CLAUDE.md within ~200 lines
@@ -62,6 +70,7 @@ class EditorFileDataFetcher:
             decisions=await self._get_decisions(),
             build_commands=detect_build_commands(self._repo_path),
             avg_confidence=await self._get_avg_confidence(),
+            code_health=await self._get_code_health(),
         )
 
     # ------------------------------------------------------------------
@@ -202,6 +211,92 @@ class EditorFileDataFetcher:
         )
         avg = result.scalar_one_or_none()
         return round(float(avg), 2) if avg is not None else 0.0
+
+    async def _get_code_health(self) -> CodeHealthBlock | None:
+        """Build the compact code-health block for CLAUDE.md.
+
+        Filters per plan §9: critical biomarkers in hotspot files, plus
+        any Brain Method finding. Empty list when no health data yet.
+        """
+        metric_rows = list(
+            (
+                await self._session.execute(
+                    select(HealthFileMetric).where(
+                        HealthFileMetric.repository_id == self._repo_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not metric_rows:
+            return None
+
+        # KPIs.
+        total_nloc = sum(max(m.nloc, 1) for m in metric_rows)
+        avg = (
+            sum(m.score * max(m.nloc, 1) for m in metric_rows) / total_nloc
+            if total_nloc
+            else sum(m.score for m in metric_rows) / len(metric_rows)
+        )
+        worst = min(metric_rows, key=lambda m: m.score)
+
+        # Hotspot-flagged paths.
+        hotspot_paths_res = await self._session.execute(
+            select(GitMetadata.file_path).where(
+                GitMetadata.repository_id == self._repo_id,
+                GitMetadata.is_hotspot == True,  # noqa: E712
+            )
+        )
+        hotspot_paths = {row[0] for row in hotspot_paths_res.all()}
+
+        hotspot_metrics = [m for m in metric_rows if m.file_path in hotspot_paths]
+        if hotspot_metrics:
+            h_nloc = sum(max(m.nloc, 1) for m in hotspot_metrics)
+            hotspot_health = (
+                sum(m.score * max(m.nloc, 1) for m in hotspot_metrics) / h_nloc
+                if h_nloc
+                else avg
+            )
+        else:
+            hotspot_health = avg
+
+        # Critical biomarkers: brain methods, or critical-severity findings
+        # in hotspot files. Cap at 5 to keep CLAUDE.md tight.
+        f_res = await self._session.execute(
+            select(HealthFinding)
+            .where(
+                HealthFinding.repository_id == self._repo_id,
+                HealthFinding.status == "open",
+            )
+            .order_by(HealthFinding.health_impact.desc())
+        )
+        all_findings = list(f_res.scalars().all())
+        critical = []
+        for f in all_findings:
+            if len(critical) >= 5:
+                break
+            if f.biomarker_type == "brain_method" or (
+                f.severity == "critical" and f.file_path in hotspot_paths
+            ):
+                critical.append({
+                    "path": f.file_path,
+                    "summary": (
+                        f"{f.biomarker_type.replace('_', ' ')}"
+                        + (f" ({f.function_name})" if f.function_name else "")
+                        + f" — impact −{f.health_impact:.1f}"
+                    ),
+                })
+
+        return CodeHealthBlock(
+            hotspot_health=round(hotspot_health, 2),
+            average_health=round(avg, 2),
+            worst_score=round(worst.score, 2),
+            worst_path=worst.file_path,
+            hotspot_trend="stable",
+            critical_biomarkers=critical,
+            untested_hotspots=[],  # Phase 2 fills this from coverage data
+        )
 
     async def _get_owners_for_paths(self, paths: list[str]) -> dict[str, str]:
         """Return {path: primary_owner_name} for the given paths."""
