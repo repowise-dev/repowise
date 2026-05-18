@@ -171,6 +171,9 @@ class PipelineResult:
     execution_flow_report: Any | None = None
     """``ExecutionFlowReport`` or None (populated after graph build)."""
 
+    health_report: Any | None = None
+    """``HealthReport`` or None — populated by ``_run_health_analysis``."""
+
     # Traversal stats
     traversal_stats: Any | None = None
     """``TraversalStats`` from the file traverser, or None."""
@@ -342,7 +345,7 @@ async def run_pipeline(
                 "info",
                 f"→ External systems: {len(external_systems):,} declared deps across manifests",
             )
-    except Exception as _ext_err:  # noqa: BLE001
+    except Exception as _ext_err:
         logger.warning("external_systems_extraction_failed", error=str(_ext_err))
     _phase_done(progress, "external_systems")
 
@@ -390,6 +393,10 @@ async def run_pipeline(
         progress.on_message("info", "Phase 2: Analysis")
 
     dead_code_report = await _run_dead_code_analysis(graph_builder, git_meta_map, progress=progress)
+
+    health_report = await _run_health_analysis(
+        graph_builder, git_meta_map, parsed_files, progress=progress
+    )
 
     decision_report = await _run_decision_extraction(
         repo_path,
@@ -477,6 +484,7 @@ async def run_pipeline(
         git_summary=git_summary,
         dead_code_report=dead_code_report,
         decision_report=decision_report,
+        health_report=health_report,
         execution_flow_report=execution_flow_report,
         generated_pages=generated_pages,
         traversal_stats=traversal_stats,
@@ -884,6 +892,51 @@ async def _run_dead_code_analysis(
         if progress:
             progress.on_message("warning", f"Dead code detection skipped: {exc}")
         _phase_done(progress, "dead_code")
+        return None
+
+
+async def _run_health_analysis(
+    graph_builder: Any,
+    git_meta_map: dict[str, dict],
+    parsed_files: list[Any],
+    *,
+    progress: ProgressCallback | None,
+) -> Any | None:
+    """Run code-health analysis (complexity + biomarkers + scoring)."""
+    try:
+        from repowise.core.analysis.health import HealthAnalyzer
+
+        if progress:
+            # Per-file determinate progress: one tick per parsed file.
+            progress.on_phase_start("health", len(parsed_files))
+
+        analyzer = HealthAnalyzer(
+            graph_builder.graph(),
+            git_meta_map=git_meta_map,
+            parsed_files=parsed_files,
+        )
+
+        def _step(_path: str) -> None:
+            if progress:
+                progress.on_item_done("health")
+
+        report = await asyncio.to_thread(analyzer.analyze, None, on_step=_step)
+
+        if progress:
+            findings_count = len(report.findings)
+            avg = report.kpis.get("average_health", 10.0)
+            worst = report.kpis.get("worst_performer_score", 10.0)
+            progress.on_message(
+                "info",
+                f"→ {findings_count} health findings · avg {avg}/10 · worst {worst}/10",
+            )
+
+        _phase_done(progress, "health")
+        return report
+    except Exception as exc:
+        if progress:
+            progress.on_message("warning", f"Health analysis skipped: {exc}")
+        _phase_done(progress, "health")
         return None
 
 
