@@ -17,6 +17,8 @@ Repo-level KPIs are computed from the final per-file metrics.
 
 from __future__ import annotations
 
+import asyncio
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -187,6 +189,107 @@ class HealthAnalyzer:
         # KPIs are repo-wide; on an incremental run they would be biased
         # by the changed-files subset. Skip them in that case — the
         # ``persist`` step recomputes KPIs from the merged DB rows.
+        if changed_set is None:
+            hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
+            kpis = compute_kpis(metrics, hotspot_paths)
+        else:
+            kpis = {}
+
+        return HealthReport(
+            repo_id="",
+            analyzed_at=datetime.now(UTC),
+            findings=findings,
+            metrics=metrics,
+            kpis=kpis,
+        )
+
+    async def analyze_async(
+        self,
+        config: dict | None = None,
+        *,
+        on_step: Any | None = None,
+        changed_files: set[str] | list[str] | None = None,
+        max_workers: int | None = None,
+    ) -> HealthReport:
+        """Parallel variant of :meth:`analyze` for large repos.
+
+        Splits the per-file work across an ``asyncio.gather`` of
+        ``asyncio.to_thread`` calls. Tree-sitter parsing releases the
+        GIL, so this gives a real wall-clock win even on single-process
+        Python — the 30s budget on a 3,000-file synthetic repo (plan §4
+        P4.6) is met by this path.
+
+        Duplication still runs once up-front (cross-file by nature), and
+        the symbol-complexity write-back still runs on the main thread
+        so ORM objects don't cross thread boundaries unexpectedly.
+        """
+        cfg = config or {}
+        disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
+        per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
+        changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
+
+        all_paths = {pf.file_info.path for pf in self.parsed_files}
+
+        if "dry_violation" in disabled:
+            dup_report = DuplicationReport()
+        else:
+            try:
+                dup_report = await asyncio.to_thread(
+                    detect_clones, self.parsed_files, self.git_meta_map
+                )
+            except Exception as exc:
+                log.debug("health_duplication_failed", error=str(exc))
+                dup_report = DuplicationReport()
+
+        target_files = [
+            pf
+            for pf in self.parsed_files
+            if changed_set is None or pf.file_info.path in changed_set
+        ]
+        if not target_files:
+            return HealthReport(
+                repo_id="",
+                analyzed_at=datetime.now(UTC),
+                findings=[],
+                metrics=[],
+                kpis={},
+            )
+
+        # Pre-walk in worker threads so each task hands a list of
+        # FunctionComplexity entries to the synchronous biomarker stage.
+        # tree-sitter parsing releases the GIL → real parallelism here.
+        workers = max(1, int(max_workers or os.cpu_count() or 4))
+        semaphore = asyncio.Semaphore(workers)
+
+        async def _one(pf: Any) -> tuple[Any, list[FunctionComplexity]]:
+            async with semaphore:
+                try:
+                    fc = await asyncio.to_thread(self._walk, pf)
+                except Exception as exc:
+                    log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
+                    fc = []
+            return pf, fc
+
+        walked = await asyncio.gather(*[_one(pf) for pf in target_files])
+
+        findings: list[HealthFindingData] = []
+        metrics: list[HealthFileMetricData] = []
+        for pf, fc_list in walked:
+            self._populate_symbol_complexity(pf, fc_list)
+            file_disabled = list(disabled)
+            extra = per_file_disabled.get(pf.file_info.path)
+            if extra:
+                for name in extra:
+                    if name not in file_disabled:
+                        file_disabled.append(name)
+            file_metric, file_findings = self._evaluate_file(
+                pf, fc_list, all_paths, disabled=file_disabled, dup_report=dup_report
+            )
+            metrics.append(file_metric)
+            findings.extend(file_findings)
+            if on_step:
+                on_step(pf.file_info.path)
+
         if changed_set is None:
             hotspot_paths = {p for p, meta in self.git_meta_map.items() if self._is_hotspot(meta)}
             kpis = compute_kpis(metrics, hotspot_paths)

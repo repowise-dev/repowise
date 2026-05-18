@@ -946,7 +946,14 @@ async def _run_health_analysis(
             if progress:
                 progress.on_item_done("health")
 
-        report = await asyncio.to_thread(analyzer.analyze, analyzer_config, on_step=_step)
+        # Parallel path for repos large enough to benefit (tree-sitter
+        # releases the GIL during parsing, so asyncio.gather over a
+        # thread pool actually scales). Threshold chosen so small repos
+        # avoid the overhead.
+        if len(parsed_files) >= 500:
+            report = await analyzer.analyze_async(analyzer_config, on_step=_step)
+        else:
+            report = await asyncio.to_thread(analyzer.analyze, analyzer_config, on_step=_step)
 
         if progress:
             findings_count = len(report.findings)
