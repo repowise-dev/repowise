@@ -14,12 +14,16 @@ from collections.abc import Sequence
 from .base import Biomarker, BiomarkerResult, FileContext
 from .brain_method import BrainMethodDetector
 from .complex_method import ComplexMethodDetector
+from .coverage_gap import CoverageGapDetector
 from .nested_complexity import NestedComplexityDetector
+from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     BrainMethodDetector,  # type: ignore[list-item]
     NestedComplexityDetector,  # type: ignore[list-item]
     ComplexMethodDetector,  # type: ignore[list-item]
+    UntestedHotspotDetector,  # type: ignore[list-item]
+    CoverageGapDetector,  # type: ignore[list-item]
 ]
 
 
