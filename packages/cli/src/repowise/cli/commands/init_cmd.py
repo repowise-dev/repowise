@@ -257,6 +257,7 @@ def _run_workspace_generation(
     skip_infra: bool,
     test_run: bool,
     reasoning: str = "auto",
+    onboarding: bool = True,
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -657,6 +658,7 @@ def _workspace_init(
                         skip_infra=skip_infra,
                         test_run=test_run,
                         reasoning=resolved_reasoning,
+                        onboarding=onboarding,
                     )
                     result.generated_pages = generated_pages
                     total_pages += len(generated_pages)
