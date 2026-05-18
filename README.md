@@ -3,7 +3,7 @@
 <img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
 **The codebase intelligence layer for your AI coding agent.**
 
-Four intelligence layers. Seven MCP tools. Multi-repo workspaces. Auto-sync hooks. One `pip install`.
+Four intelligence layers. Eight MCP tools. Multi-repo workspaces. Auto-sync hooks. One `pip install`.
 
 [![PyPI version](https://img.shields.io/pypi/v/repowise?color=F59520&labelColor=0A0A0A)](https://pypi.org/project/repowise/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
@@ -23,7 +23,7 @@ Four intelligence layers. Seven MCP tools. Multi-repo workspaces. Auto-sync hook
 
 Your AI coding agent reads files. It doesn't know which ones change together, which ones are dead, or why they were built the way they were. It has the source code and no memory of how the codebase got there.
 
-repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through seven precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
+repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through eight precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
 
 The result: your agent answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
@@ -175,19 +175,20 @@ Full guide: [docs/WORKSPACES.md](docs/WORKSPACES.md)
 
 ---
 
-## Seven MCP tools
+## Eight MCP tools
 
-Most tools are designed around data entities — one module, one file, one symbol — which forces AI agents into long chains of sequential calls. repowise tools are designed around **tasks**. Pass multiple targets in one call. Get complete context back. Full reference: [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md)
+Most tools are designed around data entities — one module, one file, one symbol — which forces AI agents into long chains of sequential calls. repowise tools are designed around **tasks**. Pass multiple targets in one call. Get complete context back. Every response carries an `_meta` envelope with `index_age_days`, `indexed_commit`, and a `stale_warning` that fires only when the indexed HEAD diverges from live `.git/HEAD` — silence means the index is current. Full reference: [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md)
 
-| Tool | What it answers | When Claude Code calls it |
+| Tool | What only this tool answers | When Claude Code calls it |
 |---|---|---|
 | `get_overview()` | Architecture summary, module map, entry points, git health, community summary | First call on any unfamiliar codebase |
-| `get_answer(question)` | One-call RAG: retrieves over the wiki, gates on confidence, and synthesizes a cited 2–5 sentence answer. High-confidence answers cite directly; ambiguous queries return ranked excerpts. | First call on any code question — collapses search → read → reason into one round-trip |
-| `get_context(targets, include?)` | The workhorse. Docs, symbols, ownership, freshness, community membership for any targets. `include` options: `"source"` (symbol body), `"callers"`/`"callees"` (call graph), `"metrics"` (PageRank, centrality), `"community"` (cluster membership). Batch multiple targets. In workspace mode, pass `repo` to target a specific repo. | Before reading or modifying code. Pass all relevant targets in one call. |
-| `search_codebase(query)` | Semantic search over the full wiki. Natural language. In workspace mode, searches across all repos. | When `get_answer` returned low confidence and you need to discover candidate pages by topic |
-| `get_risk(targets?, changed_files?)` | Hotspot scores, dependents, co-change partners, blast radius, recommended reviewers, test gaps, security signals, 0–10 risk score | Before modifying files — understand what could break |
-| `get_why(query?)` | Three modes: NL search over decisions · path-based decisions for a file · no-arg health dashboard | Before architectural changes — understand existing intent |
-| `get_dead_code(min_confidence?, include_internals?)` | Unreachable code sorted by confidence tier with cleanup impact estimates | Cleanup tasks |
+| `get_answer(question)` | Hybrid retrieval (FTS + vector merged via RRF) plus PageRank bias and 1-hop graph expansion, synthesised into a cited answer with a calibrated `retrieval_quality` reported separately from `confidence`. On low confidence returns a structured `best_guesses` list with one-line per-file justifications instead of an empty answer. Decision records are fused in for "why"-shaped questions. | First call on any code question — collapses search → read → reason into one round-trip |
+| `get_context(targets, include?)` | Triage card for files / modules / symbols: title, summary, signatures, `hotspot` bit, `decision_records` titles, and `symbol_id`s the agent pipes into `get_symbol`. NOT source bytes. `include` opens richer data: `"callers"`/`"callees"`, `"ownership"`, `"last_change"`, `"metrics"`, `"community"`, `"decisions"`, `"full_doc"`. Batch multiple targets. | Before reading or modifying code. Pass all relevant targets in one call. |
+| `get_symbol("path/to/file.py::Name")` | Raw source bytes for one indexed symbol with exact line bounds — cheaper and safer than `Read` + offset math. Bounded at ~400 lines, normalises `::` / `.` / `/` separators across languages, deterministic resolution on overloads. | When you need the body of one function or class. Use the `symbol_id` returned by `get_context`. |
+| `search_codebase(query, kind?)` | Semantic search over the wiki. Each result tags its `search_method` (`"embedding"` vs `"bm25"` fallback) and is filterable by `kind` (`implementation` / `test` / `config` / `doc`). Surfaces a Grep hint when the query is a bareword identifier. | When `get_answer` returned low confidence and you need to discover candidate pages by topic |
+| `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → response carries a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`) for one-glance review plus cross-repo blast radius. | Before modifying files — understand what could break |
+| `get_why(query?, targets?)` | Architectural decision records, their status (active / proposed / deprecated / superseded), and the commits that are evidence for them. Falls back to git archaeology when no ADRs exist for a file. | Before architectural changes — understand existing intent |
+| `get_dead_code(min_confidence?, include_internals?)` | Unreachable code sorted by confidence tier with cleanup impact estimates. In workspace mode, cross-repo consumer detection lowers confidence on findings that other repos import. | Cleanup tasks |
 
 ### Tool call comparison — a real task
 
@@ -196,7 +197,7 @@ Most tools are designed around data entities — one module, one file, one symbo
 | Approach | Tool calls | Time to first change | What it misses |
 |---|---|---|---|
 | Claude Code alone (no MCP) | grep + read ~30 files | ~8 min | Ownership, prior decisions, hidden coupling |
-| **repowise (7 tools)** | **5 calls** | **~2 min** | **Nothing** |
+| **repowise (8 tools)** | **5 calls** | **~2 min** | **Nothing** |
 
 The 5 calls for that task:
 
@@ -460,7 +461,7 @@ The "why" usually walks out the door — when a teammate leaves, or when you reo
 | Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Multi-repo workspace intelligence | ✅ co-changes, contracts, federated MCP | ❌ | ❌ | ❌ | ❌ |
-| MCP server for AI agents | ✅ 7 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
+| MCP server for AI agents | ✅ 8 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
 | Proactive agent hooks | ✅ PreToolUse + PostToolUse | ❌ | ❌ | ❌ | ❌ |
 | Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Doc freshness scoring | ✅ | ❌ | ❌ | ⚠️ staleness only | ❌ |
