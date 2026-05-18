@@ -10,6 +10,7 @@ export interface RefactoringTarget {
   primary_function: string | null;
   primary_line_start: number | null;
   primary_line_end: number | null;
+  primary_suggestion?: string;
   total_impact: number;
   finding_count: number;
   biomarkers: string[];
@@ -66,6 +67,11 @@ export function RefactoringCard({ target, onSelect }: RefactoringCardProps) {
       <p className="text-xs text-[var(--color-text-secondary)] line-clamp-2">
         {target.primary_reason}
       </p>
+      {target.primary_suggestion ? (
+        <p className="text-xs text-[var(--color-text-tertiary)] italic line-clamp-3">
+          {target.primary_suggestion}
+        </p>
+      ) : null}
       <div className="flex items-center gap-3 pt-1 text-[11px] text-[var(--color-text-tertiary)]">
         <span>Score {target.score.toFixed(1)}/10</span>
         <span>· {target.nloc} NLOC</span>

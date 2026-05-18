@@ -7,8 +7,11 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.suggestions import suggestion_for
+from repowise.core.analysis.health.trends import diff_snapshots, recent_kpis
 from repowise.core.persistence.crud import (
     get_coverage_summary,
+    list_health_snapshots,
     load_coverage_for_repo,
 )
 from repowise.core.persistence.database import get_session
@@ -142,6 +145,10 @@ async def get_health(
             )
             coverage_summary = await get_coverage_summary(session, repository.id)
 
+        snapshots: list[Any] = []
+        if "trend" in include_set:
+            snapshots = await list_health_snapshots(session, repository.id, limit=20)
+
     kpis = _compute_kpis(metric_rows)
 
     if targets:
@@ -162,6 +169,49 @@ async def get_health(
 
     if "biomarkers" in include_set and "findings" not in result:
         result["findings"] = [_serialize_finding(f) for f in finding_rows]
+
+    if "refactoring" in include_set:
+        # Attach deterministic refactoring suggestions to every finding
+        # in the response. Surfaces on the dashboard cards as well so
+        # both consumers stay in sync.
+        for field in ("findings", "top_findings"):
+            rows = result.get(field)
+            if rows:
+                result[field] = [
+                    {**row, "suggestion": suggestion_for(row.get("biomarker_type", ""))}
+                    for row in rows
+                ]
+        if "findings" not in result and "top_findings" not in result:
+            result["findings"] = [
+                {
+                    **_serialize_finding(f),
+                    "suggestion": suggestion_for(f.biomarker_type),
+                }
+                for f in finding_rows
+            ]
+
+    if "trend" in include_set:
+        summary = diff_snapshots(snapshots)
+        result["trend"] = {
+            "current_hotspot_health": summary.current_hotspot_health,
+            "current_average_health": summary.current_average_health,
+            "previous_hotspot_health": summary.previous_hotspot_health,
+            "previous_average_health": summary.previous_average_health,
+            "hotspot_delta": summary.hotspot_delta,
+            "average_delta": summary.average_delta,
+            "alerts": [
+                {
+                    "kind": a.kind,
+                    "metric": a.metric,
+                    "current": a.current,
+                    "baseline": a.baseline,
+                    "delta": a.delta,
+                    "message": a.message,
+                }
+                for a in summary.alerts
+            ],
+            "recent": recent_kpis(snapshots, limit=10),
+        }
 
     if "coverage" in include_set:
         # Drop the bulky covered-lines arrays from dashboard mode; full

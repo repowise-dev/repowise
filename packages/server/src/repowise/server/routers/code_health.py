@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 
@@ -257,6 +258,7 @@ async def refactoring_targets(
                 "primary_function": primary.function_name,
                 "primary_line_start": primary.line_start,
                 "primary_line_end": primary.line_end,
+                "primary_suggestion": _suggestion_for(primary.biomarker_type),
                 "total_impact": total_impact,
                 "finding_count": len(fs),
                 "biomarkers": sorted({x.biomarker_type for x in fs}),
