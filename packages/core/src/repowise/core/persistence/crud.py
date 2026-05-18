@@ -31,6 +31,8 @@ from .models import (
     GitMetadata,
     GraphEdge,
     GraphNode,
+    HealthFileMetric,
+    HealthFinding,
     Page,
     PageVersion,
     Repository,
@@ -1808,3 +1810,202 @@ async def get_node_degree_counts(
         "in_degree": in_result.scalar() or 0,
         "out_degree": out_result.scalar() or 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Code Health CRUD
+# ---------------------------------------------------------------------------
+
+
+async def save_health_findings(
+    session: AsyncSession,
+    repository_id: str,
+    findings: list[Any],
+) -> None:
+    """Replace open health findings for *repository_id* with *findings*.
+
+    Mirrors ``save_dead_code_findings`` — delete-then-insert. Accepts
+    either ``HealthFindingData`` dataclasses or plain dicts.
+    """
+    existing = await session.execute(
+        select(HealthFinding).where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.status == "open",
+        )
+    )
+    for row in existing.scalars().all():
+        await session.delete(row)
+
+    for i in range(0, len(findings), _BATCH_SIZE):
+        batch = findings[i : i + _BATCH_SIZE]
+        for f in batch:
+            if hasattr(f, "biomarker_type"):
+                severity = f.severity
+                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
+                data = {
+                    "file_path": f.file_path,
+                    "biomarker_type": f.biomarker_type,
+                    "severity": severity_str,
+                    "function_name": f.function_name,
+                    "line_start": f.line_start,
+                    "line_end": f.line_end,
+                    "details_json": json.dumps(f.details or {}),
+                    "health_impact": float(f.health_impact),
+                    "reason": f.reason or "",
+                }
+            else:
+                data = dict(f)
+                if "details" in data:
+                    data["details_json"] = json.dumps(data.pop("details") or {})
+
+            session.add(
+                HealthFinding(
+                    id=_new_uuid(),
+                    repository_id=repository_id,
+                    **{
+                        k: v
+                        for k, v in data.items()
+                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
+                    },
+                )
+            )
+        await session.flush()
+
+
+async def save_health_metrics(
+    session: AsyncSession,
+    repository_id: str,
+    metrics: list[Any],
+) -> None:
+    """Replace per-file health metrics for *repository_id*.
+
+    Delete-then-insert (matches the findings writer). The unique
+    constraint on (repository_id, file_path) means we cannot leave
+    stale rows around without an upsert dance — delete-and-insert keeps
+    it simple and aligns with how dead-code findings are written.
+    """
+    existing = await session.execute(
+        select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
+    )
+    for row in existing.scalars().all():
+        await session.delete(row)
+    await session.flush()
+
+    for i in range(0, len(metrics), _BATCH_SIZE):
+        batch = metrics[i : i + _BATCH_SIZE]
+        for m in batch:
+            if hasattr(m, "file_path"):
+                data = {
+                    "file_path": m.file_path,
+                    "score": float(m.score),
+                    "max_ccn": int(m.max_ccn),
+                    "max_nesting": int(m.max_nesting),
+                    "nloc": int(m.nloc),
+                    "duplication_pct": m.duplication_pct,
+                    "has_test_file": bool(m.has_test_file),
+                    "line_coverage_pct": m.line_coverage_pct,
+                    "branch_coverage_pct": m.branch_coverage_pct,
+                    "module": m.module,
+                }
+            else:
+                data = dict(m)
+
+            session.add(
+                HealthFileMetric(
+                    id=_new_uuid(),
+                    repository_id=repository_id,
+                    **{
+                        k: v
+                        for k, v in data.items()
+                        if k not in ("id", "repository_id") and hasattr(HealthFileMetric, k)
+                    },
+                )
+            )
+        await session.flush()
+
+
+async def get_health_findings(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    biomarker_type: str | None = None,
+    min_severity: str | None = None,
+    file_path: str | None = None,
+    status: str = "open",
+) -> list[HealthFinding]:
+    q = select(HealthFinding).where(
+        HealthFinding.repository_id == repository_id,
+        HealthFinding.status == status,
+    )
+    if biomarker_type is not None:
+        q = q.where(HealthFinding.biomarker_type == biomarker_type)
+    if file_path is not None:
+        q = q.where(HealthFinding.file_path == file_path)
+    if min_severity is not None:
+        # Severity order: low < medium < high < critical
+        order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        threshold = order.get(min_severity, 0)
+        allowed = [k for k, v in order.items() if v >= threshold]
+        q = q.where(HealthFinding.severity.in_(allowed))
+    q = q.order_by(HealthFinding.health_impact.desc())
+    result = await session.execute(q)
+    return list(result.scalars().all())
+
+
+async def get_health_metrics(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: list[str] | None = None,
+) -> list[HealthFileMetric]:
+    q = select(HealthFileMetric).where(HealthFileMetric.repository_id == repository_id)
+    if file_paths is not None:
+        q = q.where(HealthFileMetric.file_path.in_(file_paths))
+    q = q.order_by(HealthFileMetric.score.asc())
+    result = await session.execute(q)
+    return list(result.scalars().all())
+
+
+async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
+    """Aggregate KPIs over the per-file metrics table."""
+    metrics = await get_health_metrics(session, repository_id)
+    if not metrics:
+        return {
+            "file_count": 0,
+            "average_health": 10.0,
+            "worst_performer_path": None,
+            "worst_performer_score": None,
+            "open_findings": 0,
+        }
+    total_nloc = sum(max(m.nloc, 1) for m in metrics)
+    if total_nloc:
+        avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
+    else:
+        avg = sum(m.score for m in metrics) / len(metrics)
+    worst = min(metrics, key=lambda r: r.score)
+    findings_count = await session.execute(
+        select(func.count()).select_from(HealthFinding).where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.status == "open",
+        )
+    )
+    return {
+        "file_count": len(metrics),
+        "average_health": round(avg, 2),
+        "worst_performer_path": worst.file_path,
+        "worst_performer_score": round(worst.score, 2),
+        "open_findings": findings_count.scalar() or 0,
+    }
+
+
+async def update_health_finding_status(
+    session: AsyncSession,
+    finding_id: str,
+    status: str,
+) -> HealthFinding | None:
+    f = await session.get(HealthFinding, finding_id)
+    if f is None:
+        return None
+    f.status = status
+    await session.flush()
+    return f
