@@ -1,16 +1,19 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { TestTubeDiagonal } from "lucide-react";
+import { ArrowUpRight, Sparkles, TestTubeDiagonal } from "lucide-react";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
 
 import {
+  AiPromptModal,
   CoverageBar,
   ModuleCoverageList,
   UntestedHotspotWarning,
   RiskCoverageScatter,
+  buildCoverageAiPrompt,
   scoreBadgeClass,
+  type CoverageFilePromptInput,
 } from "@repowise-dev/ui/health";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
@@ -27,6 +30,7 @@ export default function HealthCoveragePage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [promptRow, setPromptRow] = useState<CoverageFilePromptInput | null>(null);
 
   const { data, isLoading, error } = useSWR<HealthCoverageResponse>(
     `code-health-coverage:${id}`,
@@ -69,6 +73,7 @@ export default function HealthCoveragePage() {
           data={data}
           onSelect={(p) => setSelectedFile(p)}
           selectedFile={selectedFile}
+          onGeneratePrompt={(r) => setPromptRow(r)}
         />
       )}
 
@@ -76,6 +81,21 @@ export default function HealthCoveragePage() {
         repoId={id}
         filePath={selectedFile}
         onClose={() => setSelectedFile(null)}
+      />
+
+      <AiPromptModal
+        open={promptRow !== null}
+        onOpenChange={(open) => {
+          if (!open) setPromptRow(null);
+        }}
+        filePath={promptRow?.file_path}
+        title="AI test prompt"
+        description="A ready-to-paste prompt that asks your AI coding agent to add tests for this file's uncovered lines and branches."
+        getPrompt={
+          promptRow
+            ? (flavor) => buildCoverageAiPrompt({ row: promptRow, flavor })
+            : null
+        }
       />
     </div>
   );
@@ -85,10 +105,12 @@ function CoverageView({
   data,
   onSelect,
   selectedFile,
+  onGeneratePrompt,
 }: {
   data: HealthCoverageResponse;
   onSelect: (path: string) => void;
   selectedFile: string | null;
+  onGeneratePrompt: (row: CoverageFilePromptInput) => void;
 }) {
   const { summary, files, modules } = data;
   const [search, setSearch] = useState("");
@@ -197,6 +219,7 @@ function CoverageView({
           files={filteredFiles}
           onSelect={onSelect}
           selectedFile={selectedFile}
+          onGeneratePrompt={onGeneratePrompt}
         />
       </section>
     </div>
@@ -207,10 +230,12 @@ function FileCoverageTable({
   files,
   onSelect,
   selectedFile,
+  onGeneratePrompt,
 }: {
   files: HealthCoverageResponse["files"];
   onSelect: (path: string) => void;
   selectedFile: string | null;
+  onGeneratePrompt: (row: CoverageFilePromptInput) => void;
 }) {
   return (
     <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] overflow-hidden max-h-[600px] overflow-y-auto">
@@ -222,6 +247,7 @@ function FileCoverageTable({
             <th className="px-4 py-2 text-right font-medium">Branch</th>
             <th className="px-4 py-2 text-right font-medium">Lines</th>
             <th className="px-4 py-2 text-right font-medium">Health</th>
+            <th className="px-4 py-2 text-right font-medium w-12"></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--color-border-default)]">
@@ -234,7 +260,10 @@ function FileCoverageTable({
                 onClick={() => onSelect(f.file_path)}
               >
                 <td className="px-4 py-2 font-mono text-xs text-[var(--color-text-primary)] truncate max-w-[480px]" title={f.file_path}>
-                  {f.file_path}
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="truncate">{f.file_path}</span>
+                    <ArrowUpRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" />
+                  </span>
                 </td>
                 <td className="px-4 py-2">
                   <CoverageBar value={f.line_coverage_pct} size="sm" />
@@ -255,6 +284,28 @@ function FileCoverageTable({
                       {f.health_score.toFixed(1)}
                     </span>
                   )}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onGeneratePrompt({
+                        file_path: f.file_path,
+                        line_coverage_pct: f.line_coverage_pct,
+                        branch_coverage_pct: f.branch_coverage_pct,
+                        total_coverable_lines: f.total_coverable_lines,
+                        covered_lines: f.covered_lines,
+                        source_format: f.source_format,
+                        health_score: f.health_score ?? null,
+                        nloc: f.nloc ?? null,
+                      });
+                    }}
+                    title="Generate AI test prompt for this file"
+                    className="inline-flex items-center justify-center rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                  </button>
                 </td>
               </tr>
             );

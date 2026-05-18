@@ -4,6 +4,7 @@ export interface RefactoringTargetListProps {
   targets: RefactoringTarget[];
   onSelect?: ((target: RefactoringTarget) => void) | undefined;
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
+  onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
   emptyMessage?: string;
 }
 
@@ -11,6 +12,7 @@ export function RefactoringTargetList({
   targets,
   onSelect,
   onStatusChange,
+  onGeneratePrompt,
   emptyMessage = "No refactoring targets match the current filters.",
 }: RefactoringTargetListProps) {
   if (targets.length === 0) {
@@ -28,6 +30,7 @@ export function RefactoringTargetList({
           target={t}
           onSelect={onSelect}
           onStatusChange={onStatusChange}
+          onGeneratePrompt={onGeneratePrompt}
         />
       ))}
     </div>

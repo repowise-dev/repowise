@@ -19,3 +19,5 @@ export * from "./trend-chart";
 export * from "./risk-coverage-scatter";
 export * from "./impact-effort-quadrant";
 export * from "./health-file-drawer";
+export * from "./ai-prompt-builder";
+export * from "./ai-prompt-modal";

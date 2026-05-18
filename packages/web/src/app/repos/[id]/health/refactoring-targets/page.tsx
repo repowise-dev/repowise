@@ -6,11 +6,13 @@ import { useParams } from "next/navigation";
 import useSWR from "swr";
 
 import {
+  AiPromptModal,
   ImpactEffortQuadrant,
   RefactoringTargetList,
   biomarkerLabel,
+  buildAiPrompt,
 } from "@repowise-dev/ui/health";
-import type { FindingStatus } from "@repowise-dev/ui/health";
+import type { FindingStatus, RefactoringTarget } from "@repowise-dev/ui/health";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 
 import {
@@ -43,6 +45,7 @@ export default function RefactoringTargetsPage() {
   const [sort, setSort] = useState<RefactoringQuery["sort"]>("impact_per_effort");
   const [groupBy, setGroupBy] = useState<GroupBy>("none");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [promptTarget, setPromptTarget] = useState<RefactoringTarget | null>(null);
 
   const queryKey = useMemo(
     () => JSON.stringify({ id, biomarker, minSeverity, maxEffort, sort }),
@@ -210,6 +213,7 @@ export default function RefactoringTargetsPage() {
                   targets={g.targets}
                   onSelect={(t) => setSelectedFile(t.file_path)}
                   onStatusChange={handleStatus}
+                  onGeneratePrompt={(t) => setPromptTarget(t)}
                 />
               </section>
             ))}
@@ -221,6 +225,21 @@ export default function RefactoringTargetsPage() {
         repoId={id}
         filePath={selectedFile}
         onClose={() => setSelectedFile(null)}
+      />
+
+      <AiPromptModal
+        open={promptTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setPromptTarget(null);
+        }}
+        filePath={promptTarget?.file_path}
+        title="AI fix prompt"
+        description="A ready-to-paste prompt that gives your AI coding agent every biomarker, line range, score deduction, and constraint needed to refactor this file in one focused pass."
+        getPrompt={
+          promptTarget
+            ? (flavor) => buildAiPrompt({ target: promptTarget, flavor })
+            : null
+        }
       />
     </div>
   );

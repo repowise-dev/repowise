@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 import { biomarkerLabel } from "./biomarker-glossary";
 import { SEVERITY_CHIP, SEVERITY_LABEL, type Severity } from "./tokens";
 
@@ -44,6 +44,7 @@ export interface RefactoringCardProps {
   target: RefactoringTarget;
   onSelect?: ((target: RefactoringTarget) => void) | undefined;
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
+  onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
   expandable?: boolean;
 }
 
@@ -65,6 +66,7 @@ export function RefactoringCard({
   target,
   onSelect,
   onStatusChange,
+  onGeneratePrompt,
   expandable = true,
 }: RefactoringCardProps) {
   const [expanded, setExpanded] = useState(false);
@@ -98,10 +100,11 @@ export function RefactoringCard({
         <button
           type="button"
           onClick={onSelect ? () => onSelect(target) : undefined}
-          className="block w-full text-left"
+          className="group/file flex w-full items-center gap-1.5 text-left rounded-md -mx-1 px-1 py-0.5 hover:bg-[var(--color-bg-elevated)] disabled:cursor-default disabled:hover:bg-transparent"
           disabled={!onSelect}
+          title={onSelect ? "Open file health drawer" : undefined}
         >
-          <p className="text-sm font-mono text-[var(--color-text-primary)] truncate hover:underline">
+          <p className="min-w-0 flex-1 text-sm font-mono text-[var(--color-text-primary)] truncate group-hover/file:text-[var(--color-accent-primary)]">
             {target.file_path}
             {target.primary_function ? (
               <span className="text-[var(--color-text-secondary)]">
@@ -110,6 +113,9 @@ export function RefactoringCard({
               </span>
             ) : null}
           </p>
+          {onSelect ? (
+            <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] group-hover/file:text-[var(--color-accent-primary)] transition-transform group-hover/file:-translate-y-px group-hover/file:translate-x-px" />
+          ) : null}
         </button>
         <p className="text-xs text-[var(--color-text-secondary)] line-clamp-2">{target.primary_reason}</p>
         {target.primary_suggestion ? (
@@ -124,6 +130,22 @@ export function RefactoringCard({
           <span>· {target.finding_count} findings</span>
           <span className="ml-auto tabular-nums">leverage {target.impact_per_effort.toFixed(2)}</span>
         </div>
+        {onGeneratePrompt ? (
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onGeneratePrompt(target);
+              }}
+              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-600 hover:bg-emerald-500/20 hover:border-emerald-500/60 transition-colors"
+              title="Generate a ready-to-paste prompt for an AI coding agent"
+            >
+              <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />
+              AI fix prompt
+            </button>
+          </div>
+        ) : null}
       </div>
       {expandable && target.all_findings && target.all_findings.length > 0 ? (
         <>
