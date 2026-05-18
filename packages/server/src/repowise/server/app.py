@@ -12,10 +12,10 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from fastapi import FastAPI, Request
 from repowise.core.persistence.database import (
     create_engine,
     create_session_factory,
@@ -32,6 +32,7 @@ from repowise.server.routers import (
     c4,
     chat,
     claude_md,
+    code_health,
     costs,
     dead_code,
     decisions,
@@ -97,8 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     db_url = resolve_db_url()
     if not os.environ.get("REPOWISE_DB_URL") and not os.environ.get("REPOWISE_DATABASE_URL"):
         try:
-            from pathlib import Path as _WsPath
-            from repowise.core.workspace.config import find_workspace_root, WorkspaceConfig
+            from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
 
             _ws_root = find_workspace_root()
             if _ws_root is not None:
@@ -123,9 +123,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Note: with multi-worker deployments this is a best-effort race; the
     # try/except prevents a SQLite lock error from crashing startup.
     try:
+        from datetime import UTC as _UTC
+        from datetime import datetime
+
         from sqlalchemy import update as sa_update
+
         from repowise.core.persistence.models import GenerationJob
-        from datetime import datetime, UTC as _UTC
 
         async with get_session(session_factory) as session:
             stale_result = await session.execute(
@@ -338,6 +341,7 @@ def create_app() -> FastAPI:
     app.include_router(webhooks.router)
     app.include_router(git.router)
     app.include_router(dead_code.router)
+    app.include_router(code_health.router)
     app.include_router(claude_md.router)
     app.include_router(decisions.router)
     app.include_router(chat.router)
