@@ -19,7 +19,7 @@ const EMBEDDERS = ["mock", "gemini", "openai"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
   gemini: "gemini-3.1-flash-lite-preview",
-  openai: "gpt-4.1",
+  openai: "gpt-5.4-nano",
   anthropic: "claude-sonnet-4-6",
   deepseek: "deepseek-v4-flash",
   ollama: "llama3.2",
