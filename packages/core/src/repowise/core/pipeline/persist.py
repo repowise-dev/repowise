@@ -134,6 +134,7 @@ async def persist_pipeline_result(
         save_dead_code_findings,
         save_health_findings,
         save_health_metrics,
+        save_health_snapshot,
         upsert_git_metadata_bulk,
     )
 
@@ -204,9 +205,7 @@ async def persist_pipeline_result(
         scanner = SecurityScanner(session, repo_id)
         for pf in result.parsed_files:
             source_text = getattr(pf.file_info, "content", "") or ""
-            findings = await scanner.scan_file(
-                pf.file_info.path, source_text, pf.symbols
-            )
+            findings = await scanner.scan_file(pf.file_info.path, source_text, pf.symbols)
             if findings:
                 await scanner.persist(pf.file_info.path, findings)
     except Exception as _sec_err:
@@ -226,6 +225,20 @@ async def persist_pipeline_result(
         await save_health_metrics(session, repo_id, hr.metrics or [])
         if hr.findings:
             await save_health_findings(session, repo_id, hr.findings)
+        # Snapshot the run for trend tracking (rolling delete inside).
+        kpis = hr.kpis or {}
+        try:
+            await save_health_snapshot(
+                session,
+                repo_id,
+                hotspot_health=float(kpis.get("hotspot_health", 10.0)),
+                average_health=float(kpis.get("average_health", 10.0)),
+                worst_performer_path=kpis.get("worst_performer_path"),
+                worst_performer_score=kpis.get("worst_performer_score"),
+                per_file_scores={m.file_path: round(float(m.score), 2) for m in hr.metrics or []},
+            )
+        except Exception as _snap_err:
+            logger.warning("health_snapshot_skipped", error=str(_snap_err))
 
     # ---- Decision records ----------------------------------------------------
     if result.decision_report and result.decision_report.decisions:
@@ -244,9 +257,7 @@ async def persist_pipeline_result(
                     if fp:
                         git_meta_map[fp] = gm_dict
                 if git_meta_map:
-                    updated = await recompute_decision_staleness(
-                        session, repo_id, git_meta_map
-                    )
+                    updated = await recompute_decision_staleness(session, repo_id, git_meta_map)
                     if updated:
                         logger.info("decision_staleness_recomputed", updated=updated)
             except Exception as _stale_err:

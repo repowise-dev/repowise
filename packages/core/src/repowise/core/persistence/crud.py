@@ -34,6 +34,7 @@ from .models import (
     GraphNode,
     HealthFileMetric,
     HealthFinding,
+    HealthSnapshot,
     Page,
     PageVersion,
     Repository,
@@ -133,9 +134,7 @@ async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
 
 async def list_page_ids(session: AsyncSession, repository_id: str) -> list[str]:
     """Return all page IDs for a repository (lightweight, ID-only query)."""
-    result = await session.execute(
-        select(Page.id).where(Page.repository_id == repository_id)
-    )
+    result = await session.execute(select(Page.id).where(Page.repository_id == repository_id))
     return list(result.scalars().all())
 
 
@@ -350,9 +349,7 @@ async def load_prior_pages(
     # module-load time.
     from repowise.core.generation.page_generator import PriorPage
 
-    result = await session.execute(
-        select(Page).where(Page.repository_id == repository_id)
-    )
+    result = await session.execute(select(Page).where(Page.repository_id == repository_id))
     prior: dict[str, Any] = {}
     for row in result.scalars():
         prior[row.id] = PriorPage(
@@ -645,9 +642,7 @@ async def link_graph_nodes_to_external_systems(
     return updated
 
 
-async def list_external_systems(
-    session: AsyncSession, repository_id: str
-) -> list[ExternalSystem]:
+async def list_external_systems(session: AsyncSession, repository_id: str) -> list[ExternalSystem]:
     """List all external systems for a repository, ordered by name."""
     result = await session.execute(
         select(ExternalSystem)
@@ -1302,6 +1297,7 @@ async def delete_decision(session: AsyncSession, decision_id: str) -> bool:
 def _normalize_title(title: str) -> str:
     """Normalize a decision title for cross-source dedup comparison."""
     import re as _re
+
     t = title.lower().strip()
     t = _re.sub(r"[^a-z0-9\s]", "", t)
     t = _re.sub(r"\s+", " ", t)
@@ -1985,7 +1981,9 @@ async def get_health_summary(session: AsyncSession, repository_id: str) -> dict:
         avg = sum(m.score for m in metrics) / len(metrics)
     worst = min(metrics, key=lambda r: r.score)
     findings_count = await session.execute(
-        select(func.count()).select_from(HealthFinding).where(
+        select(func.count())
+        .select_from(HealthFinding)
+        .where(
             HealthFinding.repository_id == repository_id,
             HealthFinding.status == "open",
         )
@@ -2010,6 +2008,201 @@ async def update_health_finding_status(
     f.status = status
     await session.flush()
     return f
+
+
+# Rolling history kept per repo. Older snapshots are deleted on insert.
+# 50 entries gives Phase 4's `--trend` flag (last 10) plus the 5-back
+# Declining-Health baseline plenty of headroom.
+HEALTH_SNAPSHOT_RETENTION: int = 50
+
+
+async def save_health_snapshot(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    hotspot_health: float,
+    average_health: float,
+    worst_performer_path: str | None,
+    worst_performer_score: float | None,
+    per_file_scores: dict[str, float] | None = None,
+    taken_at: datetime | None = None,
+) -> HealthSnapshot:
+    """Append a snapshot; prune oldest rows past ``HEALTH_SNAPSHOT_RETENTION``.
+
+    Returns the inserted row. Per-file scores are stored compactly as
+    ``{path: score}`` JSON (no per-finding detail — that lives in
+    ``HealthFinding`` rows; snapshots are a thin history layer).
+    """
+    snap = HealthSnapshot(
+        id=_new_uuid(),
+        repository_id=repository_id,
+        taken_at=taken_at or _now_utc(),
+        hotspot_health=float(hotspot_health),
+        average_health=float(average_health),
+        worst_performer_path=worst_performer_path,
+        worst_performer_score=(
+            float(worst_performer_score) if worst_performer_score is not None else None
+        ),
+        per_file_scores_json=json.dumps(per_file_scores or {}, separators=(",", ":")),
+    )
+    session.add(snap)
+    await session.flush()
+
+    # Prune older-than-retention rows. We keep the *N* newest by
+    # ``taken_at``; ties are broken by id (UUIDs are random but stable).
+    rows = await session.execute(
+        select(HealthSnapshot)
+        .where(HealthSnapshot.repository_id == repository_id)
+        .order_by(HealthSnapshot.taken_at.desc(), HealthSnapshot.id.desc())
+    )
+    history = list(rows.scalars().all())
+    if len(history) > HEALTH_SNAPSHOT_RETENTION:
+        for row in history[HEALTH_SNAPSHOT_RETENTION:]:
+            await session.delete(row)
+        await session.flush()
+    return snap
+
+
+async def list_health_snapshots(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int | None = None,
+) -> list[HealthSnapshot]:
+    """Return snapshots **oldest-first** (the shape ``trends.diff_snapshots``
+    expects). Pass ``limit`` to cap the most recent N (still returned
+    oldest-first for stable iteration)."""
+    q = (
+        select(HealthSnapshot)
+        .where(HealthSnapshot.repository_id == repository_id)
+        .order_by(HealthSnapshot.taken_at.asc(), HealthSnapshot.id.asc())
+    )
+    result = await session.execute(q)
+    rows = list(result.scalars().all())
+    if limit is not None and len(rows) > limit:
+        rows = rows[-limit:]
+    return rows
+
+
+async def upsert_health_findings(
+    session: AsyncSession,
+    repository_id: str,
+    findings: list[Any],
+    *,
+    file_paths: list[str],
+) -> None:
+    """Replace open findings **only for the given file paths**.
+
+    Used by the incremental ``repowise update`` path so unchanged files
+    keep their findings instead of being wiped on every partial re-index.
+    """
+    if not file_paths:
+        return
+    existing = await session.execute(
+        select(HealthFinding).where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.status == "open",
+            HealthFinding.file_path.in_(file_paths),
+        )
+    )
+    for row in existing.scalars().all():
+        await session.delete(row)
+    await session.flush()
+
+    for i in range(0, len(findings), _BATCH_SIZE):
+        batch = findings[i : i + _BATCH_SIZE]
+        for f in batch:
+            if hasattr(f, "biomarker_type"):
+                severity = f.severity
+                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
+                data = {
+                    "file_path": f.file_path,
+                    "biomarker_type": f.biomarker_type,
+                    "severity": severity_str,
+                    "function_name": f.function_name,
+                    "line_start": f.line_start,
+                    "line_end": f.line_end,
+                    "details_json": json.dumps(f.details or {}),
+                    "health_impact": float(f.health_impact),
+                    "reason": f.reason or "",
+                }
+            else:
+                data = dict(f)
+                if "details" in data:
+                    data["details_json"] = json.dumps(data.pop("details") or {})
+
+            session.add(
+                HealthFinding(
+                    id=_new_uuid(),
+                    repository_id=repository_id,
+                    **{
+                        k: v
+                        for k, v in data.items()
+                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
+                    },
+                )
+            )
+        await session.flush()
+
+
+async def upsert_health_metrics(
+    session: AsyncSession,
+    repository_id: str,
+    metrics: list[Any],
+) -> None:
+    """Upsert per-file metrics; unchanged files in the table stay put.
+
+    Sibling of ``save_health_metrics`` (which delete-then-inserts the
+    whole repo). Used by the incremental analysis path so a partial
+    re-index never wipes metric rows for files that weren't touched.
+    """
+    if not metrics:
+        return
+    paths = [m.file_path if hasattr(m, "file_path") else m["file_path"] for m in metrics]
+    existing = await session.execute(
+        select(HealthFileMetric).where(
+            HealthFileMetric.repository_id == repository_id,
+            HealthFileMetric.file_path.in_(paths),
+        )
+    )
+    by_path = {row.file_path: row for row in existing.scalars().all()}
+
+    for m in metrics:
+        if hasattr(m, "file_path"):
+            data = {
+                "file_path": m.file_path,
+                "score": float(m.score),
+                "max_ccn": int(m.max_ccn),
+                "max_nesting": int(m.max_nesting),
+                "nloc": int(m.nloc),
+                "duplication_pct": m.duplication_pct,
+                "has_test_file": bool(m.has_test_file),
+                "line_coverage_pct": m.line_coverage_pct,
+                "branch_coverage_pct": m.branch_coverage_pct,
+                "module": m.module,
+            }
+        else:
+            data = dict(m)
+
+        row = by_path.get(data["file_path"])
+        if row is not None:
+            for k, v in data.items():
+                if k in ("id", "repository_id") or not hasattr(HealthFileMetric, k):
+                    continue
+                setattr(row, k, v)
+        else:
+            session.add(
+                HealthFileMetric(
+                    id=_new_uuid(),
+                    repository_id=repository_id,
+                    **{
+                        k: v
+                        for k, v in data.items()
+                        if k not in ("id", "repository_id") and hasattr(HealthFileMetric, k)
+                    },
+                )
+            )
+    await session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -2046,9 +2239,7 @@ async def save_coverage_files(
                     "file_path": f.file_path,
                     "line_coverage_pct": float(f.line_coverage_pct),
                     "branch_coverage_pct": (
-                        float(f.branch_coverage_pct)
-                        if f.branch_coverage_pct is not None
-                        else None
+                        float(f.branch_coverage_pct) if f.branch_coverage_pct is not None else None
                     ),
                     "covered_lines_json": json.dumps(list(f.covered_lines or [])),
                     "total_coverable_lines": int(f.total_coverable_lines or 0),
@@ -2056,9 +2247,7 @@ async def save_coverage_files(
             else:
                 data = dict(f)
                 if "covered_lines" in data:
-                    data["covered_lines_json"] = json.dumps(
-                        list(data.pop("covered_lines") or [])
-                    )
+                    data["covered_lines_json"] = json.dumps(list(data.pop("covered_lines") or []))
 
             session.add(
                 CoverageFile(
