@@ -51,8 +51,7 @@ class BumpyRoadDetector:
                         "max_nesting": fn.max_nesting,
                     },
                     reason=(
-                        f"{fn.name} has {fn.bumps} nested blocks at the same level "
-                        f"(bumpy road)"
+                        f"{fn.name} has {fn.bumps} nested blocks at the same level (bumpy road)"
                     ),
                 )
             )

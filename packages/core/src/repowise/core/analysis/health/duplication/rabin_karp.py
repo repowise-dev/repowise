@@ -84,9 +84,7 @@ def rolling_hashes(
         )
     )
     for i in range(1, n - window + 1):
-        h = (
-            (h - kind_hashes[i - 1] * base_pow) * _BASE + kind_hashes[i + window - 1]
-        ) % _MODULUS
+        h = ((h - kind_hashes[i - 1] * base_pow) * _BASE + kind_hashes[i + window - 1]) % _MODULUS
         # Python's % already yields a non-negative result for a positive
         # modulus, but we keep the guard for clarity.
         if h < 0:

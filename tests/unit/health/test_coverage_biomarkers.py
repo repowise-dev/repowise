@@ -122,7 +122,5 @@ def test_coverage_gap_skips_when_no_coverage_data() -> None:
 
 
 def test_coverage_gap_skips_well_covered() -> None:
-    ctx = _ctx(
-        line_cov=85.0, total_lines=200, covered_lines=set(range(1, 171))
-    )
+    ctx = _ctx(line_cov=85.0, total_lines=200, covered_lines=set(range(1, 171)))
     assert CoverageGapDetector().detect(ctx) == []

@@ -71,10 +71,7 @@ class UntestedHotspotDetector:
             if cov >= _COVERAGE_LOW:
                 return []
             cov_for_severity = cov
-            reason = (
-                f"Hotspot with {cov:.0f}% line coverage and "
-                f"{ctx.dependents_count} dependents"
-            )
+            reason = f"Hotspot with {cov:.0f}% line coverage and {ctx.dependents_count} dependents"
 
         if cov_for_severity <= _COVERAGE_VERY_LOW and ctx.dependents_count >= 10:
             severity = Severity.CRITICAL

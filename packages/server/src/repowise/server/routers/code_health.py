@@ -165,9 +165,7 @@ async def health_coverage(
     modules: dict[str, dict[str, Any]] = {}
     for r in rows:
         mod = r.file_path.rsplit("/", 1)[0] if "/" in r.file_path else "(root)"
-        bucket = modules.setdefault(
-            mod, {"covered": 0, "total": 0, "files": 0}
-        )
+        bucket = modules.setdefault(mod, {"covered": 0, "total": 0, "files": 0})
         bucket["files"] += 1
         bucket["total"] += r.total_coverable_lines
         bucket["covered"] += round(r.line_coverage_pct / 100.0 * r.total_coverable_lines)

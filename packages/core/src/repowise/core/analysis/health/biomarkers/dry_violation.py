@@ -62,9 +62,7 @@ class DryViolationDetector:
                 line_start=worst.a_start_line
                 if worst.file_a == ctx.file_path
                 else worst.b_start_line,
-                line_end=worst.a_end_line
-                if worst.file_a == ctx.file_path
-                else worst.b_end_line,
+                line_end=worst.a_end_line if worst.file_a == ctx.file_path else worst.b_end_line,
                 details={
                     "duplication_pct": dup_pct,
                     "clone_pair_count": len(ctx.clones),
@@ -75,11 +73,7 @@ class DryViolationDetector:
                 reason=(
                     f"{dup_pct:.0f}% of file duplicated; worst clone shares "
                     f"{worst_lines} lines with {partner}"
-                    + (
-                        f" (co-changed {worst.co_change_count}×)"
-                        if worst.co_change_count
-                        else ""
-                    )
+                    + (f" (co-changed {worst.co_change_count}x)" if worst.co_change_count else "")
                 ),
             )
         ]

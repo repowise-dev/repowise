@@ -84,9 +84,7 @@ class HealthConfig:
             if not isinstance(glob, str) or not glob:
                 continue
             disabled_for = [
-                str(b)
-                for b in (entry.get("disabled_biomarkers") or [])
-                if isinstance(b, str)
+                str(b) for b in (entry.get("disabled_biomarkers") or []) if isinstance(b, str)
             ]
             rules.append(HealthRule(path_glob=glob, disabled_biomarkers=disabled_for))
         return cls(disabled_biomarkers=disabled, rules=rules)

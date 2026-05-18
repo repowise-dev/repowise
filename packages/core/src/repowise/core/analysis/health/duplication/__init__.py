@@ -10,9 +10,9 @@ from .detector import (
 from .tokenizer import Token, tokenize_file, tokenize_tree
 
 __all__ = [
-    "ClonePair",
     "DEFAULT_MIN_LINES",
     "DEFAULT_WINDOW_TOKENS",
+    "ClonePair",
     "DuplicationReport",
     "Token",
     "detect_clones",

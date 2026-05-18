@@ -52,8 +52,8 @@ class DeveloperCongestionDetector:
             return []
         if commits_90d < _RECENT_COMMITS_THRESHOLD:
             return []
-        # primary_owner_commit_pct may be stored as a 0–1 fraction or
-        # 0–100 percentage depending on the source — normalize.
+        # primary_owner_commit_pct may be stored as a 0-1 fraction or
+        # 0-100 percentage depending on the source - normalize.
         share = primary_pct / 100.0 if primary_pct > 1.0 else primary_pct
         if share >= _OWNER_SHARE_THRESHOLD:
             return []

@@ -50,9 +50,7 @@ _TEST_FILE_SUFFIXES = (
     "Tests.java",
     "Spec.scala",
 )
-_TEST_FILE_PREFIXES = (
-    "test_",
-)
+_TEST_FILE_PREFIXES = ("test_",)
 
 # Test framework import patterns — used when the path heuristic is
 # inconclusive. Detected via cheap substring scan (no tree-sitter pass).
@@ -81,9 +79,7 @@ def detect_format(text: str) -> str | None:
     if sample.startswith("<?xml") or sample.startswith("<"):
         if "<coverage" in sample and "<project" in sample[:4096]:
             return "clover"
-        if "<coverage" in sample and (
-            "<packages" in sample[:4096] or "line-rate" in sample[:4096]
-        ):
+        if "<coverage" in sample and ("<packages" in sample[:4096] or "line-rate" in sample[:4096]):
             return "cobertura"
     return None
 

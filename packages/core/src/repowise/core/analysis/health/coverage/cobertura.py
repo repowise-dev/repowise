@@ -83,9 +83,7 @@ def parse_cobertura(text: str) -> CoverageReport:
                     bucket["branches_hit"] = int(bucket["branches_hit"]) + hit
                 else:
                     bucket["branches_found"] = int(bucket["branches_found"]) + 2
-                    bucket["branches_hit"] = int(bucket["branches_hit"]) + (
-                        2 if hits > 0 else 0
-                    )
+                    bucket["branches_hit"] = int(bucket["branches_hit"]) + (2 if hits > 0 else 0)
 
     files: list[FileCoverage] = []
     for path, bucket in per_file.items():

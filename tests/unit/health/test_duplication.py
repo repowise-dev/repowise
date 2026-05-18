@@ -54,7 +54,7 @@ def test_index_by_hash_groups_collisions():
 
 
 def test_tokenize_file_drops_comments_and_normalizes_identifiers():
-    source = b'def add(a, b):\n    # comment\n    return a + b + 42\n'
+    source = b"def add(a, b):\n    # comment\n    return a + b + 42\n"
     toks = tokenize_file("python", source)
     kinds = [t.kind for t in toks]
     assert "ID" in kinds  # identifier collapsed
@@ -125,14 +125,10 @@ def test_detect_clones_attaches_co_change_count(tmp_path: Path):
     parsed = [_pf("a.py", str(a)), _pf("b.py", str(b))]
     git_meta_map = {
         "a.py": {
-            "co_change_partners_json": json.dumps(
-                [{"file_path": "b.py", "co_change_count": 7}]
-            )
+            "co_change_partners_json": json.dumps([{"file_path": "b.py", "co_change_count": 7}])
         },
         "b.py": {
-            "co_change_partners_json": json.dumps(
-                [{"file_path": "a.py", "co_change_count": 5}]
-            )
+            "co_change_partners_json": json.dumps([{"file_path": "a.py", "co_change_count": 5}])
         },
     }
     report = detect_clones(parsed, git_meta_map, window_tokens=20, min_lines=4)

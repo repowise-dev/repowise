@@ -66,9 +66,7 @@ class CoverageGapDetector:
                     "uncovered_lines": uncovered,
                     "total_coverable_lines": total,
                 },
-                reason=(
-                    f"{uncovered}/{total} lines uncovered ({cov:.0f}% line coverage)"
-                ),
+                reason=(f"{uncovered}/{total} lines uncovered ({cov:.0f}% line coverage)"),
             )
         ]
 
@@ -80,8 +78,9 @@ def _looks_like_test_path(path: str) -> bool:
         or "/tests/" in p
         or "/__tests__/" in p
         or p.startswith(("test/", "tests/", "__tests__/"))
-        or p.endswith(("_test.py", "_test.go", ".test.ts", ".test.tsx", ".test.js",
-                       ".spec.ts", ".spec.js"))
+        or p.endswith(
+            ("_test.py", "_test.go", ".test.ts", ".test.tsx", ".test.js", ".spec.ts", ".spec.js")
+        )
         or p.rsplit("/", 1)[-1].startswith("test_")
     )
 

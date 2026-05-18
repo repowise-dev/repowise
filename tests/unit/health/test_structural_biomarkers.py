@@ -29,9 +29,7 @@ def _ctx(fns: list[FunctionComplexity]) -> FileContext:
 
 
 def test_bumpy_road_flags_multi_hump_function():
-    fn = FunctionComplexity(
-        "rough", 1, 80, ccn=8, max_nesting=3, cognitive=15, nloc=50, bumps=4
-    )
+    fn = FunctionComplexity("rough", 1, 80, ccn=8, max_nesting=3, cognitive=15, nloc=50, bumps=4)
     results = BumpyRoadDetector().detect(_ctx([fn]))
     assert len(results) == 1
     assert results[0].details["bumps"] == 4

@@ -89,11 +89,9 @@ class Token:
 def _is_skippable(node: Node) -> bool:
     if node.type in _COMMENT_KINDS:
         return True
-    # Tree-sitter exposes ERROR / MISSING for parse errors — drop them
+    # Tree-sitter exposes ERROR / MISSING for parse errors - drop them
     # so a single broken file can't pollute the hash stream.
-    if getattr(node, "has_error", False) and node.child_count == 0:
-        return True
-    return False
+    return bool(getattr(node, "has_error", False) and node.child_count == 0)
 
 
 def tokenize_tree(root: Node, source: bytes) -> list[Token]:
