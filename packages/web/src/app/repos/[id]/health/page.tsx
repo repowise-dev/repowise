@@ -8,6 +8,7 @@ import { Button } from "@repowise-dev/ui/ui/button";
 import { HealthKpiCards } from "@repowise-dev/ui/health/kpi-cards";
 import { HealthFileTable } from "@repowise-dev/ui/health/file-table";
 import { BiomarkerList } from "@repowise-dev/ui/health/biomarker-list";
+import { ModuleRollupList } from "@repowise-dev/ui/health/module-rollup-list";
 import { getHealthOverview, type HealthOverviewResponse } from "@/lib/api/code-health";
 
 export default function HealthPage() {
@@ -64,6 +65,14 @@ export default function HealthPage() {
               <BiomarkerList findings={data.top_findings} />
             </div>
           </div>
+          {data.modules && data.modules.length > 0 ? (
+            <div>
+              <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mb-2">
+                By module
+              </h2>
+              <ModuleRollupList modules={data.modules} />
+            </div>
+          ) : null}
         </>
       ) : null}
     </div>

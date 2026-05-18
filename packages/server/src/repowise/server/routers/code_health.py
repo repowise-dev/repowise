@@ -56,13 +56,38 @@ def _metric_to_dict(m: Any) -> dict:
     }
 
 
+def _module_rollups(metrics: list[Any]) -> list[dict]:
+    """NLOC-weighted module rollups derived from ``HealthFileMetric.module``."""
+    buckets: dict[str, list[Any]] = {}
+    for m in metrics:
+        if m.module:
+            buckets.setdefault(m.module, []).append(m)
+    rows: list[dict] = []
+    for name, group in buckets.items():
+        total_nloc = sum(max(r.nloc, 1) for r in group)
+        avg = sum(r.score * max(r.nloc, 1) for r in group) / total_nloc if total_nloc else 10.0
+        worst = min(group, key=lambda r: r.score)
+        rows.append(
+            {
+                "module": name,
+                "file_count": len(group),
+                "nloc": sum(r.nloc for r in group),
+                "average_health": round(avg, 2),
+                "worst_performer_path": worst.file_path,
+                "worst_performer_score": round(worst.score, 2),
+            }
+        )
+    rows.sort(key=lambda r: r["average_health"])
+    return rows
+
+
 @router.get("/api/repos/{repo_id}/health/overview")
 async def health_overview(
     repo_id: str,
     limit: int = Query(20, ge=1, le=200),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
-    """KPIs + lowest-scoring files."""
+    """KPIs + lowest-scoring files + per-module rollup."""
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
@@ -73,7 +98,21 @@ async def health_overview(
         "summary": summary,
         "files": [_metric_to_dict(m) for m in metrics[:limit]],
         "top_findings": [_finding_to_dict(f) for f in findings[:limit]],
+        "modules": _module_rollups(metrics),
     }
+
+
+@router.get("/api/repos/{repo_id}/health/modules")
+async def health_modules(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """NLOC-weighted module rollups for the dashboard module section."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    metrics = await crud.get_health_metrics(session, repo_id)
+    return {"modules": _module_rollups(metrics)}
 
 
 @router.get("/api/repos/{repo_id}/health/findings")

@@ -421,7 +421,7 @@ async def run_pipeline(
 
             resolved_generation_config = GenerationConfig(
                 max_concurrency=concurrency,
-                reasoning=resolve_reasoning(config=load_repo_config(repo_path))
+                reasoning=resolve_reasoning(config=load_repo_config(repo_path)),
             )
 
         # Phase 2 enrichment: flag framework-defined HTTP surfaces (FastAPI,
@@ -430,12 +430,11 @@ async def run_pipeline(
         # generation package so language-specific heuristics stay co-located
         # with the templates that consume them.
         from repowise.core.generation import detect_code_api_contracts as _detect_apis
+
         try:
             flipped = _detect_apis(parsed_files)
             if flipped and progress:
-                progress.on_message(
-                    "info", f"→ Detected {flipped} additional API contract file(s)"
-                )
+                progress.on_message("info", f"→ Detected {flipped} additional API contract file(s)")
         except Exception as _api_err:
             logger.warning("api_contract_detection_failed", error=str(_api_err))
 
@@ -494,8 +493,7 @@ async def run_pipeline(
         languages=languages,
         elapsed_seconds=elapsed,
         tech_stack=[
-            {"name": t.name, "version": t.version, "category": t.category}
-            for t in tech_items
+            {"name": t.name, "version": t.version, "category": t.category} for t in tech_items
         ],
         external_systems=external_systems,
     )
@@ -912,10 +910,27 @@ async def _run_health_analysis(
             # Per-file determinate progress: one tick per parsed file.
             progress.on_phase_start("health", len(parsed_files))
 
+        # Build a {file_path → community label} map so per-file metrics
+        # carry a real module name, not None. Community detection is
+        # already computed for the graph view, so this is essentially
+        # free.
+        module_map: dict[str, str] = {}
+        try:
+            cd = graph_builder.community_detection()
+            ci = graph_builder.community_info()
+            for node_id, comm_id in cd.items():
+                info = ci.get(comm_id)
+                label = getattr(info, "label", None) if info else None
+                if label:
+                    module_map[node_id] = label
+        except Exception as exc:
+            logger.debug("health_module_map_failed", error=str(exc))
+
         analyzer = HealthAnalyzer(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            module_map=module_map,
         )
 
         # Load per-file override rules from `.repowise/health-rules.json`.
@@ -1129,8 +1144,7 @@ async def run_generation(
     if progress:
         if onboarding_generated or promoted_present:
             slots_made = sorted(
-                {p.metadata.get("subkind", "?") for p in onboarding_generated}
-                | promoted_present
+                {p.metadata.get("subkind", "?") for p in onboarding_generated} | promoted_present
             )
             progress.on_message(
                 "info",

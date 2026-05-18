@@ -71,6 +71,39 @@ def _serialize_coverage_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _module_rollups(metrics: list[HealthFileMetric]) -> list[dict[str, Any]]:
+    """NLOC-weighted module rollups derived from ``HealthFileMetric.module``.
+
+    One row per module; ``None`` modules are dropped. Sorted by health
+    ascending so the worst modules surface first — matches the per-file
+    ordering and what the dashboard already expects.
+    """
+    buckets: dict[str, list[HealthFileMetric]] = {}
+    for m in metrics:
+        if m.module:
+            buckets.setdefault(m.module, []).append(m)
+    out: list[dict[str, Any]] = []
+    for name, rows in buckets.items():
+        total_nloc = sum(max(r.nloc, 1) for r in rows)
+        if total_nloc:
+            avg = sum(r.score * max(r.nloc, 1) for r in rows) / total_nloc
+        else:
+            avg = sum(r.score for r in rows) / len(rows)
+        worst = min(rows, key=lambda r: r.score)
+        out.append(
+            {
+                "module": name,
+                "file_count": len(rows),
+                "nloc": sum(r.nloc for r in rows),
+                "average_health": round(avg, 2),
+                "worst_performer_path": worst.file_path,
+                "worst_performer_score": round(worst.score, 2),
+            }
+        )
+    out.sort(key=lambda r: r["average_health"])
+    return out
+
+
 def _compute_kpis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     if not metrics:
         return {
@@ -118,22 +151,46 @@ async def get_health(
     limit = min(max(limit, 1), 50)
     include_set = set(include or [])
 
+    # Split ``module:foo`` targets out of the path list. A target that
+    # matches one or more modules is expanded into the set of files
+    # belonging to those modules.
+    raw_targets = list(targets or [])
+    module_targets = [t.split(":", 1)[1] for t in raw_targets if t.startswith("module:")]
+    file_targets = [t for t in raw_targets if not t.startswith("module:")]
+
     ctx = await _resolve_repo_context(repo)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session, repo)
 
-        metric_q = select(HealthFileMetric).where(HealthFileMetric.repository_id == repository.id)
-        if targets:
-            metric_q = metric_q.where(HealthFileMetric.file_path.in_(list(targets)))
-        metric_q = metric_q.order_by(HealthFileMetric.score.asc())
-        metric_rows = list((await session.execute(metric_q)).scalars().all())
+        all_metrics_q = select(HealthFileMetric).where(
+            HealthFileMetric.repository_id == repository.id
+        )
+        all_metrics = list((await session.execute(all_metrics_q)).scalars().all())
+
+        if module_targets:
+            module_set = set(module_targets)
+            for m in all_metrics:
+                if m.module in module_set:
+                    file_targets.append(m.file_path)
+            file_targets = sorted(set(file_targets))
+
+        effective_targets = file_targets if (raw_targets) else []
+
+        if effective_targets:
+            metric_rows = [
+                m
+                for m in sorted(all_metrics, key=lambda r: r.score)
+                if m.file_path in set(effective_targets)
+            ]
+        else:
+            metric_rows = sorted(all_metrics, key=lambda r: r.score)
 
         finding_q = select(HealthFinding).where(
             HealthFinding.repository_id == repository.id,
             HealthFinding.status == "open",
         )
-        if targets:
-            finding_q = finding_q.where(HealthFinding.file_path.in_(list(targets)))
+        if effective_targets:
+            finding_q = finding_q.where(HealthFinding.file_path.in_(effective_targets))
         finding_q = finding_q.order_by(HealthFinding.health_impact.desc())
         finding_rows = list((await session.execute(finding_q)).scalars().all())
 
@@ -149,22 +206,28 @@ async def get_health(
         if "trend" in include_set:
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
-    kpis = _compute_kpis(metric_rows)
+    kpis = _compute_kpis(metric_rows if effective_targets else all_metrics)
 
-    if targets:
+    if effective_targets:
         result: dict[str, Any] = {
             "mode": "targets",
-            "targets": list(targets),
+            "targets": raw_targets,
             "metrics": [_serialize_metric(m) for m in metric_rows],
             "findings": [_serialize_finding(f) for f in finding_rows],
         }
+        if module_targets:
+            scoped = [m for m in all_metrics if m.module in set(module_targets)]
+            result["modules"] = _module_rollups(scoped)
     else:
-        # Dashboard mode — top-N worst files + headline findings.
+        # Dashboard mode — top-N worst files + headline findings + the
+        # per-module rollup so the overview page doesn't need a second
+        # round-trip.
         result = {
             "mode": "dashboard",
             "kpis": kpis,
             "worst_files": [_serialize_metric(m) for m in metric_rows[:limit]],
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
+            "modules": _module_rollups(all_metrics),
         }
 
     if "biomarkers" in include_set and "findings" not in result:

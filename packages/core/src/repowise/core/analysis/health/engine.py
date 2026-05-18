@@ -50,6 +50,19 @@ def _is_test_file(rel_path: str) -> bool:
     )
 
 
+def _fallback_module(rel_path: str) -> str | None:
+    """Top-level directory as a stand-in module label when no community map.
+
+    Returns ``None`` for root-level files so the rollup endpoint doesn't
+    create a phantom "" bucket.
+    """
+    norm = rel_path.replace("\\", "/")
+    if "/" not in norm:
+        return None
+    head = norm.split("/", 1)[0]
+    return head or None
+
+
 def _has_paired_test_file(rel_path: str, all_paths: set[str]) -> bool:
     """Heuristic: does any other file look like a test for *rel_path*?
 
@@ -82,6 +95,7 @@ class HealthAnalyzer:
         git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
         coverage_map: dict[str, dict[str, Any]] | None = None,
+        module_map: dict[str, str] | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -91,6 +105,12 @@ class HealthAnalyzer:
         # total_coverable_lines}``. ``None``-equivalent files are simply
         # absent from the map.
         self.coverage_map = coverage_map or {}
+        # Per-file module label keyed by repo-relative POSIX path.
+        # Populated from graph community labels by the orchestrator. When
+        # missing, the engine falls back to the top-level directory so
+        # module rollups still group sensibly on small repos that didn't
+        # produce community labels.
+        self.module_map = module_map or {}
 
     def analyze(
         self,
@@ -241,6 +261,8 @@ class HealthAnalyzer:
         clones = dup_report.pairs_by_file.get(file_path, [])
         dup_pct = dup_report.duplication_pct.get(file_path)
 
+        module = self.module_map.get(file_path) or _fallback_module(file_path)
+
         ctx = FileContext(
             file_path=file_path,
             language=pf.file_info.language,
@@ -248,7 +270,7 @@ class HealthAnalyzer:
             has_test_file=_has_paired_test_file(file_path, all_paths)
             or _is_test_file(file_path)
             or _coverage_is_test_file(file_path),
-            module=None,
+            module=module,
             function_metrics=fn_metrics,
             git_meta=self.git_meta_map.get(file_path, {}) or {},
             dependents_count=dependents_count,
@@ -274,7 +296,7 @@ class HealthAnalyzer:
             max_nesting=max_nesting,
             nloc=nloc,
             has_test_file=ctx.has_test_file,
-            module=None,
+            module=module,
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,
             duplication_pct=dup_pct,

@@ -7,3 +7,4 @@ export * from "./untested-hotspot-warning.js";
 export * from "./refactoring-card.js";
 export * from "./refactoring-target-list.js";
 export * from "./health-badge.js";
+export * from "./module-rollup-list.js";

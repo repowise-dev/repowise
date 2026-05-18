@@ -25,6 +25,15 @@ export interface HealthFinding {
   status: string;
 }
 
+export interface HealthModuleRow {
+  module: string;
+  file_count: number;
+  nloc: number;
+  average_health: number;
+  worst_performer_path: string;
+  worst_performer_score: number;
+}
+
 export interface HealthOverviewResponse {
   summary: {
     file_count: number;
@@ -35,6 +44,7 @@ export interface HealthOverviewResponse {
   };
   files: HealthFileMetric[];
   top_findings: HealthFinding[];
+  modules?: HealthModuleRow[];
 }
 
 export async function getHealthOverview(
