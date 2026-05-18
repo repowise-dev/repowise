@@ -14,6 +14,7 @@ from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    err_console,
     resolve_command_target,
     run_async,
 )
@@ -110,10 +111,15 @@ def health_command(
     from repowise.core.analysis.health.coverage import parse as parse_coverage
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
+    # Status output goes to stderr when the user asked for a machine-readable
+    # format — otherwise rich's banner pollutes stdout and breaks
+    # `repowise health --format json | jq …` (and the CI smoke test).
+    status = err_console if fmt != "table" else console
+
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(console, command="health")
+    target.notice(status, command="health")
 
     if target.is_workspace:
         if target.repo_filter is not None:
@@ -130,7 +136,7 @@ def health_command(
         assert target.repo_path is not None
         repo_path = target.repo_path
 
-    console.print(f"[bold]repowise health[/bold] — {repo_path}")
+    status.print(f"[bold]repowise health[/bold] — {repo_path}")
 
     if trend_view:
         _render_trend(repo_path, fmt=fmt)
@@ -170,11 +176,11 @@ def health_command(
             try:
                 text = PathlibPath(cov_path).read_text(encoding="utf-8")
             except OSError as exc:
-                console.print(f"[red]Could not read coverage file {cov_path}: {exc}[/red]")
+                status.print(f"[red]Could not read coverage file {cov_path}: {exc}[/red]")
                 continue
             report_cov = parse_coverage(text, format=coverage_format)
             if not report_cov.files:
-                console.print(
+                status.print(
                     f"[yellow]No coverage entries parsed from {cov_path} "
                     f"(detected={report_cov.source_format}).[/yellow]"
                 )
@@ -192,7 +198,7 @@ def health_command(
             # practice, but the CLI doesn't enforce it.
             coverage_persist_files.extend(report_cov.files)
             coverage_persist_format = report_cov.source_format
-            console.print(
+            status.print(
                 f"[green]Ingested {len(report_cov.files)} files "
                 f"from {cov_path} ({report_cov.source_format}).[/green]"
             )
@@ -219,7 +225,12 @@ def health_command(
     # run. Without this step, `--coverage` was effectively a stdout-only
     # toy — biomarkers got recomputed in memory but nothing reached the
     # tables that drive the Coverage page / get_health.
-    if not file_filter and not module_filter:
+    #
+    # Skip when fmt != "table" (json/md are read by scripts and CI; side
+    # effects are unwelcome) or when the run is filtered to a single
+    # file/module (those are inspection runs that shouldn't overwrite
+    # repo-level state).
+    if fmt == "table" and not file_filter and not module_filter:
         _persist_health(
             repo_path,
             report=report,
