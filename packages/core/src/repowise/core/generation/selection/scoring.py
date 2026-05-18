@@ -63,7 +63,13 @@ def score_file(
     if n_symbols == 0 and not fi.is_entry_point and not is_hotspot:
         return 0.0
 
-    base = _normalize(pagerank, max_pagerank) + _normalize(betweenness, max_betweenness) * 0.5
+    # Tiny per-symbol floor — a file with content but zero PageRank
+    # (lowest in a tiny graph, leaf module on huge graph) is still
+    # documentable, and the global budget will gate it if there's no
+    # slot. Without this floor, ranked sort drops the file before the
+    # bucket gets a chance to consider it.
+    base = 0.01 * min(n_symbols, 5)
+    base += _normalize(pagerank, max_pagerank) + _normalize(betweenness, max_betweenness) * 0.5
 
     if fi.is_entry_point:
         base += _BONUS_ENTRY_POINT

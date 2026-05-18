@@ -49,6 +49,7 @@ class _TrackingProvider(MockProvider):
         temperature: float = 0.3,
         request_id: str | None = None,
         reasoning: ReasoningMode = "auto",
+        cache_hints: Any = None,
     ) -> GeneratedResponse:
         if "Required sections: ## Overview, ## Public API" in system_prompt:
             self.file_page_starts.append(time.perf_counter())
@@ -85,6 +86,9 @@ class _SlowVectorStore:
 
     async def get_page_summary_by_path(self, path: str) -> None:
         return None
+
+    async def get_page_summaries_by_paths(self, paths: list[str]) -> dict[str, dict]:
+        return {}
 
     async def search(self, query: str, limit: int = 3) -> list[Any]:
         return []
@@ -246,6 +250,9 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
         embed_concurrency=1,
         file_page_top_percentile=1.0,
         top_symbol_percentile=0.01,
+        # The selection layer drives off coverage_pct; max_pages_pct is
+        # the deprecated alias kept for backwards compatibility.
+        coverage_pct=1.0,
         max_pages_pct=1.0,
         cache_enabled=False,
     )
@@ -263,8 +270,11 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
     )
 
     file_pages = [page for page in pages if page.page_type == "file_page"]
-    assert len(file_pages) == 4
-    assert len(provider.file_page_starts) >= 4
+    # The selection layer may allocate one slot to symbol_spotlight on
+    # this tiny fixture; the test exists to observe LLM/embed interleave,
+    # so any count >= 3 is enough to assert ordering at index 2.
+    assert len(file_pages) >= 3
+    assert len(provider.file_page_starts) >= 3
     assert vector_store.file_page_embed_finishes
     assert vector_store.max_active_embeds == 1
     assert provider.file_page_starts[2] < vector_store.file_page_embed_finishes[0]
@@ -410,9 +420,9 @@ class TestGenerationPipeline:
         assert "module_page" in types
 
     def test_level_values_in_range(self, pipeline_result):
-        """All generation_level values must be in [0, 7]."""
+        """All generation_level values must be in [0, 8] — onboarding is level 8."""
         for page in pipeline_result["pages"]:
-            assert 0 <= page.generation_level <= 7, (
+            assert 0 <= page.generation_level <= 8, (
                 f"Page {page.page_id} has out-of-range level {page.generation_level}"
             )
 
