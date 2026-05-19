@@ -15,6 +15,7 @@ export * from "./severity-distribution";
 export * from "./score-breakdown";
 export * from "./sparkline";
 export * from "./health-tabs";
+export * from "./page-chrome";
 export * from "./trend-chart";
 export * from "./risk-coverage-scatter";
 export * from "./impact-effort-quadrant";

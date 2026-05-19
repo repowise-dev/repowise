@@ -7,6 +7,10 @@ export type HealthTabKey = "overview" | "trend" | "coverage" | "refactoring";
 export interface HealthTabsProps {
   repoId: string;
   active: HealthTabKey;
+  /** Override the URL prefix the tabs build hrefs against. Defaults to
+   *  `/repos/${repoId}/health`. Consumers with a different URL shape
+   *  (snapshot-scoped, owner/name-scoped, …) pass their own prefix. */
+  basePath?: string;
   /** Optional render-prop that produces a `<a href>` / `<Link>`. Lets the
    *  caller plug Next's `<Link>` without dragging the next dep into ui/. */
   renderLink?: (props: {
@@ -25,12 +29,13 @@ const TABS: { key: HealthTabKey; label: string; suffix: string; Icon: React.Comp
   { key: "refactoring", label: "Refactoring", suffix: "/refactoring-targets", Icon: Wrench },
 ];
 
-export function HealthTabs({ repoId, active, renderLink }: HealthTabsProps) {
+export function HealthTabs({ repoId, active, basePath, renderLink }: HealthTabsProps) {
+  const prefix = basePath ?? `/repos/${repoId}/health`;
   return (
     <div className="border-b border-[var(--color-border-default)]">
       <nav className="-mb-px flex flex-wrap gap-1" aria-label="Code health views">
         {TABS.map((t) => {
-          const href = `/repos/${repoId}/health${t.suffix}`;
+          const href = `${prefix}${t.suffix}`;
           const isActive = active === t.key;
           const baseCls =
             "inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition-colors";
