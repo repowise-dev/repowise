@@ -1,10 +1,9 @@
 """Dependency graph builder for the repowise ingestion pipeline.
 
-GraphBuilder constructs a directed graph from ParsedFile objects with two
-tiers of nodes:
+Builds a directed graph from ``ParsedFile`` objects across two tiers:
 
     File-level nodes:
-        "file"     — every source file
+        "file"     — every source file in the repo
         "external" — third-party / unresolvable imports (prefix "external:")
 
     Symbol-level nodes:
