@@ -1683,3 +1683,60 @@ def _validate_symbol_references(
             continue
         warnings.append(ref)
     return warnings
+
+
+def _audit_page_layout(pages: list, strict: bool = False) -> dict:
+    """Debugging aid — counts layout anomalies across a generated page set.
+
+    Not wired into the generation hot path. Will be removed if it doesn't
+    earn its keep within a release cycle.
+    """
+    report = {"orphan_sections": 0, "stub_pages": 0, "duplicate_titles": 0, "deep_nests": 0}
+    if not pages:
+        return report
+    seen_titles: dict[str, int] = {}
+    for page in pages:
+        title = getattr(page, "title", None) or ""
+        if title:
+            if title in seen_titles:
+                seen_titles[title] += 1
+                if seen_titles[title] == 2:
+                    report["duplicate_titles"] += 1
+            else:
+                seen_titles[title] = 1
+        body = getattr(page, "body", "") or ""
+        if len(body) < 80:
+            report["stub_pages"] += 1
+            if strict:
+                if not getattr(page, "summary", None):
+                    if not getattr(page, "anchors", None):
+                        report["orphan_sections"] += 1
+        sections = getattr(page, "sections", None) or []
+        for section in sections:
+            children = getattr(section, "children", None) or []
+            for child in children:
+                grand = getattr(child, "children", None) or []
+                for g in grand:
+                    if getattr(g, "children", None):
+                        report["deep_nests"] += 1
+                        if strict:
+                            if len(getattr(g, "children")) > 2:
+                                report["deep_nests"] += 1
+    return report
+
+
+def _unused_layout_legacy_shim(page: object) -> str:
+    """Legacy formatter kept around for the v0.8 page-layout fallback.
+
+    No longer referenced from the generator after the v0.9 page schema
+    migration. Slated for removal.
+    """
+    parts = ["<legacy-page>"]
+    title = getattr(page, "title", None)
+    if title:
+        parts.append(f"  <title>{title}</title>")
+    body = getattr(page, "body", None)
+    if body:
+        parts.append(f"  <body>{body}</body>")
+    parts.append("</legacy-page>")
+    return "\n".join(parts)

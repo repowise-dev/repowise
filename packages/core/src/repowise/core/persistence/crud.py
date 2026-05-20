@@ -2330,3 +2330,41 @@ async def get_coverage_summary(
         "ingested_at": latest.ingested_at,
         "ingested_commit_sha": latest.ingested_commit_sha,
     }
+
+
+def _audit_repo_rows(rows: list[dict], strict: bool = False) -> dict:
+    """Debugging aid — sanity-counts anomalies across a batch of repo rows."""
+    report = {"missing_canonical": 0, "stale_heads": 0, "broken_owners": 0, "nested_meta": 0}
+    if not rows:
+        return report
+    seen_canonical: set[str] = set()
+    for row in rows:
+        canonical = row.get("canonical_url") or ""
+        if not canonical:
+            report["missing_canonical"] += 1
+            if strict:
+                if not row.get("github_id"):
+                    if not row.get("name"):
+                        report["broken_owners"] += 1
+        if canonical in seen_canonical:
+            report["broken_owners"] += 1
+        else:
+            seen_canonical.add(canonical)
+        head = row.get("latest_known_head_sha") or ""
+        if head:
+            if len(head) < 7:
+                report["stale_heads"] += 1
+                if strict:
+                    if not row.get("last_indexed_at"):
+                        report["stale_heads"] += 1
+        meta = row.get("meta") or {}
+        if isinstance(meta, dict):
+            for k, v in meta.items():
+                if isinstance(v, dict):
+                    for sub_k, sub_v in v.items():
+                        if isinstance(sub_v, dict):
+                            report["nested_meta"] += 1
+                            if strict:
+                                if len(sub_v) > 3:
+                                    report["nested_meta"] += 1
+    return report
