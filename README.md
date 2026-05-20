@@ -514,6 +514,7 @@ We use it on our own codebase — see the live snapshot of repowise indexing its
 **What you get on top of self-hosting:**
 - **Zero ops** — managed deploys, managed webhooks, auto re-index on every commit, no infrastructure
 - **Hosted MCP endpoint** — point Claude Code (or any MCP client) at one URL, no local server to run
+- **Repowise PR Bot** — free GitHub App that posts one deterministic comment per pull request (hotspot touches, hidden coupling, declining health, dead code). Zero LLM calls — same engine, just running on your PRs. [Install →](https://github.com/apps/repowise-bot) · [Learn more →](https://www.repowise.dev/bot)
 - **CVE-aware security layer** — on top of the local pattern scan, the hosted version adds CVE-aware vulnerability detection, dependency risk surfacing, and cross-repo security anti-pattern analysis
 - **Cross-repo intelligence at scale** — federated hotspots, dead code, and ownership across all your repos in one dashboard
 - **Integrations** *(rolling out)* — Slack alerts, Jira/Linear decision linking, Confluence/Notion doc sync, PagerDuty escalation
