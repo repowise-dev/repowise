@@ -28,6 +28,7 @@ from ._constants import (
     HOTSPOT_HALFLIFE_DAYS,
 )
 from .enrich import detect_original_path, get_blame_ownership, is_significant_commit
+from .function_blame import BlameIndex, build_blame_index, ownership_from_blame
 from .records import _CommitRec, _extract_rename_paths
 
 logger = structlog.get_logger(__name__)
@@ -139,12 +140,8 @@ def _parse_per_file_log(
                     match_path = _new or stat_path
                 if match_path in known_paths or match_path == file_path:
                     try:
-                        current.added += (
-                            int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
-                        )
-                        current.deleted += (
-                            int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
-                        )
+                        current.added += int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
+                        current.deleted += int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
                     except ValueError:
                         pass
     return commits, orig_path
@@ -277,20 +274,38 @@ def index_file(
                 recent_top[1] / recent_total if recent_total > 0 else 0.0
             )
 
-        # Blame ownership (FULL tier only; overrides author-based if available).
-        # Skipped for large files — git blame is O(lines) and can block the
-        # executor thread for many seconds on files > 100 KB.
+        # Blame ownership + per-line index (FULL tier only). One
+        # ``git blame --line-porcelain`` invocation produces both the
+        # primary-owner signal and the in-memory ``BlameIndex`` consumed by
+        # ``function_hotspot`` / ``code_age_volatility``. Skipped for large
+        # files — git blame is O(lines) and can block the executor thread.
         if include_blame:
             try:
                 file_size = (repo_path / file_path).stat().st_size
                 if file_size <= _MAX_BLAME_SIZE_BYTES:
-                    blame_name, blame_email, blame_pct = get_blame_ownership(
-                        repo, file_path
+                    blame_idx = build_blame_index(
+                        repo,
+                        file_path,
+                        repo_path=repo_path,
+                        commit_count_total=meta["commit_count_total"],
                     )
-                    if blame_name:
-                        meta["primary_owner_name"] = blame_name
-                        meta["primary_owner_email"] = blame_email
-                        meta["primary_owner_commit_pct"] = blame_pct
+                    if blame_idx.lines:
+                        meta["blame_index"] = blame_idx
+                        blame_name, blame_email, blame_pct = ownership_from_blame(blame_idx)
+                        if blame_name:
+                            meta["primary_owner_name"] = blame_name
+                            meta["primary_owner_email"] = blame_email
+                            meta["primary_owner_commit_pct"] = blame_pct
+                    else:
+                        # Below the in-blame commit-count floor — fall back
+                        # to the legacy gitpython ownership computation so we
+                        # don't lose owner data on small files that the
+                        # function biomarkers don't need anyway.
+                        blame_name, blame_email, blame_pct = get_blame_ownership(repo, file_path)
+                        if blame_name:
+                            meta["primary_owner_name"] = blame_name
+                            meta["primary_owner_email"] = blame_email
+                            meta["primary_owner_commit_pct"] = blame_pct
             except Exception:
                 pass  # blame is best-effort
 
@@ -303,9 +318,7 @@ def index_file(
             if not sig_full and is_significant_commit(msg, c.author_name):
                 entry: dict[str, Any] = {
                     "sha": c.sha[:8],
-                    "date": datetime.fromtimestamp(c.ts, tz=UTC).isoformat()
-                    if c.ts
-                    else "",
+                    "date": datetime.fromtimestamp(c.ts, tz=UTC).isoformat() if c.ts else "",
                     "message": msg,
                     "author": c.author_name,
                 }

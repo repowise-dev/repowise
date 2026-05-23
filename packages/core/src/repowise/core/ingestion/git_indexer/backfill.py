@@ -29,10 +29,14 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["BACKFILL_PHASE", "backfill_full_tier"]
+__all__ = ["BACKFILL_BLAME_PHASE", "BACKFILL_PHASE", "backfill_blame", "backfill_full_tier"]
 
 # Phase name used for the JobStore record so resume detection can find it.
 BACKFILL_PHASE = "git.backfill"
+# Sub-phase covering per-line blame index population only. Reuses the FULL
+# orchestration; named so callers can distinguish a blame-only backfill from
+# a full tier promotion in logs and job records.
+BACKFILL_BLAME_PHASE = "git.backfill.blame"
 
 
 async def backfill_full_tier(
@@ -72,11 +76,57 @@ async def backfill_full_tier(
         indexer.tier = original_tier
 
     if job_store is not None and job_id is not None:
-        await job_store.update_state(
-            job_id, JobState.COMPLETED, cursor=str(summary.files_indexed)
-        )
+        await job_store.update_state(job_id, JobState.COMPLETED, cursor=str(summary.files_indexed))
     logger.info(
         "git_backfill_complete",
+        repo_id=repo_id,
+        files=summary.files_indexed,
+    )
+    return summary, results
+
+
+async def backfill_blame(
+    indexer: GitIndexer,
+    repo_id: str,
+    *,
+    job_store: JobStore | None = None,  # type: ignore[name-defined]
+) -> tuple[GitIndexSummary, list[dict]]:
+    """Promote an ESSENTIAL index to include per-line blame indexes.
+
+    Thin wrapper around :func:`backfill_full_tier` — the FULL tier already
+    builds the :class:`~.function_blame.BlameIndex` inline alongside
+    ownership blame, so the same orchestration covers both. The wrapper
+    exists so callers (and tests) can express "I just need blame populated"
+    intent independent of the larger FULL promotion.
+    """
+    from repowise.core.persistence._interfaces.job_store import JobState
+
+    job_id: str | None = None
+    if job_store is not None:
+        job = await job_store.create_job(
+            repository_id=repo_id,
+            phase=BACKFILL_BLAME_PHASE,
+            metadata={"tier": GitIndexTier.FULL.value, "scope": "blame"},
+        )
+        job_id = job.id
+        await job_store.update_state(job_id, JobState.RUNNING)
+
+    original_tier = indexer.tier
+    indexer.tier = GitIndexTier.FULL
+    try:
+        summary, results = await indexer.index_repo(repo_id)
+    except Exception as exc:
+        if job_store is not None and job_id is not None:
+            await job_store.update_state(job_id, JobState.FAILED, error=str(exc))
+        logger.warning("git_blame_backfill_failed", repo_id=repo_id, error=str(exc))
+        raise
+    finally:
+        indexer.tier = original_tier
+
+    if job_store is not None and job_id is not None:
+        await job_store.update_state(job_id, JobState.COMPLETED, cursor=str(summary.files_indexed))
+    logger.info(
+        "git_blame_backfill_complete",
         repo_id=repo_id,
         files=summary.files_indexed,
     )
