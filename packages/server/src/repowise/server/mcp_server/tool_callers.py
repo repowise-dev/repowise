@@ -1,4 +1,4 @@
-"""MCP Tool: get_callers_callees — find who calls a symbol and what it calls.
+﻿"""MCP Tool: get_callers_callees — find who calls a symbol and what it calls.
 
 Provides symbol-level call graph navigation for AI coding assistants.
 Supports call edges, heritage edges (extends/implements), and any other
@@ -31,7 +31,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 _DEFAULT_EDGE_TYPES = ["calls"]
 

@@ -1,4 +1,4 @@
-"""MCP Tool: get_symbol — byte-precise source retrieval for a single symbol.
+﻿"""MCP Tool: get_symbol — byte-precise source retrieval for a single symbol.
 
 This is the structural counterpart to get_context. Where get_context returns
 file-level narrative (summary, symbol list, importers), get_symbol returns
@@ -44,7 +44,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import symbol_hint as _symbol_hint
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 _log = __import__("logging").getLogger("repowise.mcp.symbol")
 

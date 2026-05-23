@@ -24,6 +24,7 @@ from repowise.cli.commands.status_cmd import status_command
 from repowise.cli.commands.update_cmd import update_command
 from repowise.cli.commands.watch_cmd import watch_command
 from repowise.cli.commands.workspace_cmd import workspace_group
+from repowise.core.registry import cli_registry, register_command
 
 
 @click.group()
@@ -45,23 +46,28 @@ def cli(ctx: click.Context) -> None:
             pass
 
 
-cli.add_command(augment_command)
-cli.add_command(init_command)
-cli.add_command(delete_command)
-cli.add_command(claude_md_command)
-cli.add_command(costs_command)
-cli.add_command(update_command)
-cli.add_command(dead_code_command)
-cli.add_command(health_command)
-cli.add_command(decision_group)
-cli.add_command(search_command)
-cli.add_command(export_command)
-cli.add_command(hook_group)
-cli.add_command(status_command)
-cli.add_command(doctor_command)
-cli.add_command(watch_command)
-cli.add_command(serve_command)
-cli.add_command(mcp_command)
-cli.add_command(reindex_command)
-cli.add_command(workspace_group)
+# Register OSS commands through the shared registry so third-party
+# packages can extend the CLI without monkey-patching the root group.
+# Order is preserved by the registry, so `repowise --help` reads the same.
+register_command(augment_command)
+register_command(init_command)
+register_command(delete_command)
+register_command(claude_md_command)
+register_command(costs_command)
+register_command(update_command)
+register_command(dead_code_command)
+register_command(health_command)
+register_command(decision_group)
+register_command(search_command)
+register_command(export_command)
+register_command(hook_group)
+register_command(status_command)
+register_command(doctor_command)
+register_command(watch_command)
+register_command(serve_command)
+register_command(mcp_command)
+register_command(reindex_command)
+register_command(workspace_group)
+
+cli_registry.apply(cli)
 

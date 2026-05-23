@@ -670,3 +670,37 @@ class AnswerCache(Base):
     __table_args__ = (
         UniqueConstraint("repository_id", "question_hash", name="uq_answer_cache_q"),
     )
+
+
+class PipelineJob(Base):
+    """Checkpoint/resume state for one execution of a pipeline phase.
+
+    Inserted at the start of each phase that opts into checkpointing, then
+    updated on a fixed cadence with the latest opaque ``cursor`` value
+    (interpreted by the phase implementation — typically a file path,
+    commit SHA, or batch index). On startup, the orchestrator queries
+    rows in state ``running`` / ``pending`` for the active repo and
+    offers to resume them.
+
+    The full orchestrator integration is delivered in a follow-up phase;
+    this revision introduces the table + ABC so plugin authors can target
+    it.
+    """
+
+    __tablename__ = "pipeline_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    phase: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

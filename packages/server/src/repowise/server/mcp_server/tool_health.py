@@ -1,4 +1,4 @@
-"""MCP tool: get_health — code-health biomarkers and per-file scores."""
+﻿"""MCP tool: get_health — code-health biomarkers and per-file scores."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import HealthFileMetric, HealthFinding
 from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 
 def _serialize_finding(f: HealthFinding) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""MCP Tool: get_context — relationships and triage signals for files / modules / symbols.
+﻿"""MCP Tool: get_context — relationships and triage signals for files / modules / symbols.
 
 Workhorse for "what is this and what touches it" questions. Returns a triage
 card by default (title, summary, signatures, hotspot bit, top callers, pointers
@@ -77,7 +77,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 # Minimum confidence for call edges to filter false positives
 _MIN_CALL_CONFIDENCE = 0.7

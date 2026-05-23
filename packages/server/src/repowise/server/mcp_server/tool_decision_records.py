@@ -1,4 +1,4 @@
-"""MCP Tool 9: update_decision_records — CRUD operations on architectural decision records."""
+﻿"""MCP Tool 9: update_decision_records — CRUD operations on architectural decision records."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
 )
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 _VALID_ACTIONS = frozenset({"create", "update", "update_status", "delete", "list", "get"})
 

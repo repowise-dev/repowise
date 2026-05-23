@@ -1,4 +1,4 @@
-"""MCP Tool 8: get_architecture_diagram — Mermaid diagram generation."""
+﻿"""MCP Tool 8: get_architecture_diagram — Mermaid diagram generation."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
 )
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 
 def _sanitize_mermaid_id(node_id: str) -> str:

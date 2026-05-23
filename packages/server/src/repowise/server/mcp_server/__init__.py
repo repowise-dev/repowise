@@ -40,6 +40,13 @@ from repowise.server.mcp_server.tool_search import search_codebase
 from repowise.server.mcp_server.tool_symbol import get_symbol
 from repowise.server.mcp_server.tool_why import get_why
 
+# Attach every tool that registered itself through the shared registry to
+# the FastMCP instance. Idempotent per server, so a second call (e.g. when
+# tests build an isolated mcp) is a no-op against the original mcp.
+from repowise.core.registry import mcp_tool_registry as _mcp_tool_registry  # noqa: E402
+
+_mcp_tool_registry.apply(mcp)
+
 # ---------------------------------------------------------------------------
 # Backward-compatible access to _state globals.
 #

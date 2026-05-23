@@ -1,4 +1,4 @@
-"""``annotate_file`` — attach human notes to a wiki page.
+﻿"""``annotate_file`` — attach human notes to a wiki page.
 
 Notes survive LLM-driven re-generation and appear in ``get_context`` responses.
 """
@@ -15,7 +15,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     _unsupported_repo_all,
 )
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 
 @mcp.tool()

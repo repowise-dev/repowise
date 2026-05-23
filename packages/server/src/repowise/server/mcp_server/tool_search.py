@@ -1,4 +1,4 @@
-"""MCP Tool 5: search_codebase — semantic search over the wiki."""
+﻿"""MCP Tool 5: search_codebase — semantic search over the wiki."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 # Minimum relevance score below which results are dropped. Prevents
 # returning semantically unrelated pages when the corpus has no real match.

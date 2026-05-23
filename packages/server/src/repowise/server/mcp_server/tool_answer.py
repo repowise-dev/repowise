@@ -1,4 +1,4 @@
-"""MCP Tool: get_answer — RAG-style synthesis over the wiki layer.
+﻿"""MCP Tool: get_answer — RAG-style synthesis over the wiki layer.
 
 Single-call retrieval + LLM synthesis. Replaces the agent's multi-turn
 search → context → read loop with one tool call that returns:
@@ -59,7 +59,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 # How many top retrieval hits to enrich with WikiSymbol context. Enriching
 # every hit produces large responses that bloat the cached prompt prefix on

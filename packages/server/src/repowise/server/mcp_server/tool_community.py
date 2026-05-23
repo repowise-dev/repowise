@@ -1,4 +1,4 @@
-"""MCP Tool: get_community — explore architectural communities/clusters.
+﻿"""MCP Tool: get_community — explore architectural communities/clusters.
 
 Returns the community a file belongs to, its members, cohesion score,
 label, and neighboring communities. Helps Claude Code understand module
@@ -24,7 +24,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 
 def _parse_community_meta(node: GraphNode) -> dict[str, Any]:

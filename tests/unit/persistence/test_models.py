@@ -312,5 +312,6 @@ def test_base_includes_all_models():
         "health_file_metrics",
         "health_snapshots",
         "coverage_files",
+        "pipeline_jobs",
     }
     assert expected == table_names

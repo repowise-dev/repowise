@@ -25,6 +25,7 @@ from typing import Any
 import structlog
 
 from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.registry import HookProgressCallback
 
 logger = structlog.get_logger(__name__)
 
@@ -264,6 +265,10 @@ async def run_pipeline(
     start = time.monotonic()
 
     commit_depth = max(1, min(commit_depth, 5000))
+
+    # Wrap the incoming progress callback so registered pipeline hooks fire
+    # around each phase transition. Zero-op when no hooks are registered.
+    progress = HookProgressCallback(progress)
 
     # Attach cost tracker to provider if supplied
     if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):

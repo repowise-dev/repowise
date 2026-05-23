@@ -1,4 +1,4 @@
-"""MCP Tool 7: get_dead_code — tiered refactor plan for unused code."""
+﻿"""MCP Tool 7: get_dead_code — tiered refactor plan for unused code."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 
 @mcp.tool()

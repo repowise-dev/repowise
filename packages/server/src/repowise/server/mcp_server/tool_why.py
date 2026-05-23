@@ -1,4 +1,4 @@
-"""MCP Tool 4: get_why — intent archaeology and decision search."""
+﻿"""MCP Tool 4: get_why — intent archaeology and decision search."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 
 @mcp.tool()

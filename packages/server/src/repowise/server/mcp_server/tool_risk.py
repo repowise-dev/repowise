@@ -1,4 +1,4 @@
-"""MCP Tool 3: get_risk — modification risk assessment."""
+﻿"""MCP Tool 3: get_risk — modification risk assessment."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 _FIX_PATTERN = re.compile(
     r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import json
 import math
 import re
@@ -27,6 +28,22 @@ import structlog
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 
 logger = structlog.get_logger(__name__)
+
+
+class GitIndexTier(enum.StrEnum):
+    """Public knob for git-indexing depth on large repositories.
+
+    ``FULL`` (the default) preserves today's behavior — last *commit_depth*
+    commits with co-change accumulation and extended blame. ``ESSENTIAL``
+    runs only the cheap baseline (last commit, no co-change graph) and is
+    intended for the fast orchestrator path; the implementation that
+    actually switches on this tier is delivered in a follow-up phase
+    addressing large-repo scale. The enum is published in this revision so
+    plugin authors and downstream tooling can target it now.
+    """
+
+    ESSENTIAL = "essential"
+    FULL = "full"
 
 # Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
 # When git cat-file streams are GC'd after the subprocess pipe is closed,

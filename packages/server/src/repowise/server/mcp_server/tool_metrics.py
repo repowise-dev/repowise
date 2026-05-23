@@ -1,4 +1,4 @@
-"""MCP Tool: get_graph_metrics — importance metrics for a file or symbol.
+﻿"""MCP Tool: get_graph_metrics — importance metrics for a file or symbol.
 
 Returns PageRank, betweenness centrality, community info, degree counts,
 and percentile ranks. Helps Claude Code assess how central/important a
@@ -24,7 +24,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._server import mcp
+from repowise.core.registry import mcp_tool_registry as mcp
 
 
 def _percentile_rank(value: float, all_values: list[float]) -> int:
