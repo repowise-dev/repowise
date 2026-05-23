@@ -72,6 +72,18 @@ _TEMPLATES: dict[str, str] = {
         "at once — clarify ownership, or split the file along its "
         "natural seams so contributors don't collide."
     ),
+    "hidden_coupling": (
+        "Surface the hidden dependency. This file co-changes with a "
+        "sibling that it doesn't import — promote the implicit contract "
+        "into a shared module, type, or interface so the coupling is "
+        "visible at the source level instead of hidden in commit history."
+    ),
+    "complex_conditional": (
+        "Decompose the boolean expression. Extract sub-clauses into "
+        "named predicates that explain *what* each branch checks; "
+        "compound conditions of three or more operators are usually "
+        "two policies fighting for one line."
+    ),
     "knowledge_loss": (
         "Document the surviving knowledge. The primary author(s) of "
         "this file are no longer active — pair-program with someone "

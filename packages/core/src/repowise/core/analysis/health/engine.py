@@ -26,6 +26,7 @@ from typing import Any
 import structlog
 
 from .biomarkers import FileContext, detect_all
+from .biomarkers.base import HasEdge
 from .complexity import FunctionComplexity, walk_file_complexity
 from .coverage import is_test_file as _coverage_is_test_file
 from .duplication import DuplicationReport, detect_clones
@@ -63,6 +64,44 @@ def _fallback_module(rel_path: str) -> str | None:
         return None
     head = norm.split("/", 1)[0]
     return head or None
+
+
+class _ImportEdgeView:
+    """Thin ``HasEdge`` adapter over a NetworkX DiGraph.
+
+    The graph stores ``edge_type`` as an attribute on each (single)
+    edge between two file nodes. We look it up directly rather than
+    pulling NetworkX into the biomarker test surface.
+    """
+
+    __slots__ = ("_graph",)
+
+    def __init__(self, graph: Any) -> None:
+        self._graph = graph
+
+    def has_edge(self, src: str, dst: str, key: str = "imports") -> bool:
+        g = self._graph
+        if g is None:
+            return False
+        try:
+            if not g.has_edge(src, dst):
+                return False
+            data = g.get_edge_data(src, dst) or {}
+        except Exception:
+            return False
+        return data.get("edge_type") == key
+
+
+def _build_repo_commit_counts(git_meta_map: dict[str, dict]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for path, meta in git_meta_map.items():
+        if not isinstance(meta, dict):
+            continue
+        try:
+            out[path] = int(meta.get("commit_count_total") or 0)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _has_paired_test_file(rel_path: str, all_paths: set[str]) -> bool:
@@ -139,6 +178,10 @@ class HealthAnalyzer:
         # is symbol-level; we use file-level in-degree as the dependents
         # signal (cheap, deterministic, conservative).
         all_paths = {pf.file_info.path for pf in self.parsed_files}
+        repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
+        graph_view: HasEdge | None = (
+            _ImportEdgeView(self.graph) if self.graph is not None else None
+        )
 
         # Duplication runs once, up-front, so each file biomarker can see
         # its clone list. Cheap when the repo is small; when disabled
@@ -178,7 +221,13 @@ class HealthAnalyzer:
                     if name not in file_disabled:
                         file_disabled.append(name)
             file_metric, file_findings = self._evaluate_file(
-                pf, fc_list, all_paths, disabled=file_disabled, dup_report=dup_report
+                pf,
+                fc_list,
+                all_paths,
+                disabled=file_disabled,
+                dup_report=dup_report,
+                graph_view=graph_view,
+                repo_commit_counts=repo_commit_counts,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -229,6 +278,10 @@ class HealthAnalyzer:
         changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
 
         all_paths = {pf.file_info.path for pf in self.parsed_files}
+        repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
+        graph_view: HasEdge | None = (
+            _ImportEdgeView(self.graph) if self.graph is not None else None
+        )
 
         if "dry_violation" in disabled:
             dup_report = DuplicationReport()
@@ -283,7 +336,13 @@ class HealthAnalyzer:
                     if name not in file_disabled:
                         file_disabled.append(name)
             file_metric, file_findings = self._evaluate_file(
-                pf, fc_list, all_paths, disabled=file_disabled, dup_report=dup_report
+                pf,
+                fc_list,
+                all_paths,
+                disabled=file_disabled,
+                dup_report=dup_report,
+                graph_view=graph_view,
+                repo_commit_counts=repo_commit_counts,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -338,6 +397,8 @@ class HealthAnalyzer:
         *,
         disabled: list[str],
         dup_report: DuplicationReport,
+        graph_view: HasEdge | None = None,
+        repo_commit_counts: dict[str, int] | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData]]:
         file_path = pf.file_info.path
 
@@ -384,6 +445,8 @@ class HealthAnalyzer:
             total_coverable_lines=total_coverable_lines,
             clones=list(clones),
             duplication_pct=dup_pct,
+            graph_view=graph_view,
+            repo_commit_counts=repo_commit_counts or {},
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)

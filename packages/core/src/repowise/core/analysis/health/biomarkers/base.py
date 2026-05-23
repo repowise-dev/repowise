@@ -10,6 +10,16 @@ from ..duplication import ClonePair
 from ..models import Severity
 
 
+class HasEdge(Protocol):
+    """Minimal graph view for biomarkers that need to ask "is there an
+    edge between these two files?" without depending on NetworkX in
+    tests. ``engine.py`` wraps the real ``DiGraph`` in an adapter that
+    implements this protocol.
+    """
+
+    def has_edge(self, src: str, dst: str, key: str = "imports") -> bool: ...
+
+
 @dataclass
 class FileContext:
     """All inputs a biomarker may need to evaluate a file.
@@ -45,6 +55,14 @@ class FileContext:
     # is the percent of NLOC covered by clones.
     clones: list[ClonePair] = field(default_factory=list)
     duplication_pct: float | None = None
+    # Thin graph view exposing only ``has_edge`` — see ``HasEdge`` above.
+    # ``None`` on test fixtures that never construct a graph.
+    graph_view: HasEdge | None = None
+    # Repo-wide per-file commit totals (``commit_count_total`` from
+    # git_meta), keyed by repo-relative POSIX path. Used by
+    # ``hidden_coupling`` to compute correlation denominators against
+    # the partner file. Empty when git indexing was skipped.
+    repo_commit_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass

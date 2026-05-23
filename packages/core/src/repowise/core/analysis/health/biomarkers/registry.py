@@ -18,6 +18,7 @@ from .complex_method import ComplexMethodDetector
 from .coverage_gap import CoverageGapDetector
 from .developer_congestion import DeveloperCongestionDetector
 from .dry_violation import DryViolationDetector
+from .hidden_coupling import HiddenCouplingDetector
 from .knowledge_loss import KnowledgeLossDetector
 from .large_method import LargeMethodDetector
 from .nested_complexity import NestedComplexityDetector
@@ -36,6 +37,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     CoverageGapDetector,  # type: ignore[list-item]
     DeveloperCongestionDetector,  # type: ignore[list-item]
     KnowledgeLossDetector,  # type: ignore[list-item]
+    HiddenCouplingDetector,  # type: ignore[list-item]
 ]
 
 
