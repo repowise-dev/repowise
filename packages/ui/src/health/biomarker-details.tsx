@@ -6,7 +6,7 @@ export type BiomarkerDetailsRecord = Record<string, unknown>;
 
 export interface BiomarkerDetailsProps {
   biomarkerType: string;
-  details?: BiomarkerDetailsRecord | null;
+  details?: BiomarkerDetailsRecord | null | undefined;
   onPartnerSelect?: ((path: string) => void) | undefined;
   onPartnerHref?: ((path: string) => string) | undefined;
 }
