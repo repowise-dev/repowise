@@ -52,7 +52,18 @@ export function ScoreBreakdown({
       </div>
 
       <div className="space-y-2.5">
-        {categories.map((c) => {
+        {[...categories]
+          .sort((a, b) => {
+            if (b.applied_deduction !== a.applied_deduction) {
+              return b.applied_deduction - a.applied_deduction;
+            }
+            const capA =
+              CATEGORY_CAP[a.category as BiomarkerCategory] ?? a.cap;
+            const capB =
+              CATEGORY_CAP[b.category as BiomarkerCategory] ?? b.cap;
+            return capB - capA;
+          })
+          .map((c) => {
           const label =
             CATEGORY_LABEL[c.category as BiomarkerCategory] ?? c.category;
           const cap = CATEGORY_CAP[c.category as BiomarkerCategory] ?? c.cap;

@@ -29,11 +29,11 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
 };
 
 export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
-  structural_complexity: 3.5,
-  size_and_complexity: 2.0,
-  duplication: 1.5,
+  organizational: 3.5,
+  structural_complexity: 2.5,
   test_coverage: 2.0,
-  organizational: 1.0,
+  size_and_complexity: 1.5,
+  duplication: 1.0,
 };
 
 export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
@@ -102,6 +102,30 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     category: "organizational",
     description:
       "Files whose primary author has reduced or stopped contributing — a bus-factor warning.",
+  },
+  hidden_coupling: {
+    label: "Hidden coupling",
+    category: "organizational",
+    description:
+      "Two files co-change in git history but have no explicit import between them. The implicit contract is invisible at the source level, so changes slip out of sync and break in production.",
+  },
+  complex_conditional: {
+    label: "Complex conditional",
+    category: "structural_complexity",
+    description:
+      "A boolean expression stitching three or more operators together. Compound conditions like these usually encode two policies fighting for one line and are easy to misread under pressure.",
+  },
+  function_hotspot: {
+    label: "Function hotspot",
+    category: "organizational",
+    description:
+      "A single function concentrating an outsized share of the file's churn while carrying real structural complexity. Defects accumulate where modification frequency and complexity collide.",
+  },
+  code_age_volatility: {
+    label: "Code age volatility",
+    category: "organizational",
+    description:
+      "A long-stable function (median line age ≥ 1 year) that has suddenly started moving again. This edit profile is one of the strongest empirical predictors of regressions.",
   },
 };
 
