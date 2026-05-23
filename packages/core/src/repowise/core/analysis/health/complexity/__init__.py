@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .walker import FunctionComplexity, walk_file_complexity
+from .walker import ConditionComplexity, FunctionComplexity, walk_file_complexity
 
-__all__ = ["FunctionComplexity", "walk_file_complexity"]
+__all__ = ["ConditionComplexity", "FunctionComplexity", "walk_file_complexity"]

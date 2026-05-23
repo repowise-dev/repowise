@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from .base import Biomarker, BiomarkerResult, FileContext
 from .brain_method import BrainMethodDetector
 from .bumpy_road import BumpyRoadDetector
+from .complex_conditional import ComplexConditionalDetector
 from .complex_method import ComplexMethodDetector
 from .coverage_gap import CoverageGapDetector
 from .developer_congestion import DeveloperCongestionDetector
@@ -38,6 +39,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     DeveloperCongestionDetector,  # type: ignore[list-item]
     KnowledgeLossDetector,  # type: ignore[list-item]
     HiddenCouplingDetector,  # type: ignore[list-item]
+    ComplexConditionalDetector,  # type: ignore[list-item]
 ]
 
 
