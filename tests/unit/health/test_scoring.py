@@ -35,8 +35,8 @@ def test_score_clamps_floor_at_one():
     results = [_r("complex_method", Severity.CRITICAL) for _ in range(20)]
     score, _ = score_file(results)
     assert score >= 1.0
-    # Cap on size_and_complexity is 2.0 → score should be 8.0.
-    assert score == 8.0
+    # Cap on size_and_complexity is 1.5 (post-recalibration) → score 8.5.
+    assert score == 8.5
 
 
 def test_category_cap_applied():

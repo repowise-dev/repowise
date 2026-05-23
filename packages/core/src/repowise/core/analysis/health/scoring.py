@@ -4,13 +4,17 @@ Each file starts at 10.0. Biomarker findings deduct; deductions are
 capped per category so no single category can drive the score below the
 cap. Final score is clamped to [1.0, 10.0].
 
-The category caps in §5 of the plan:
+The recalibrated category caps (plan §3.1):
 
-    structural_complexity -> -3.5
-    size_and_complexity   -> -2.0
-    duplication           -> -1.5
+    organizational        -> -3.5   # was -1.0 (process-aware signals)
+    structural_complexity -> -2.5   # was -3.5
     test_coverage         -> -2.0
-    organizational        -> -1.0
+    size_and_complexity   -> -1.5   # was -2.0
+    duplication           -> -1.0   # was -1.5
+
+Per-biomarker weight multipliers (plan §3.2 Option A) are applied to
+the per-finding raw deduction *before* category capping, so the strongest
+empirical predictors are no longer suppressed by uniform severity values.
 """
 
 from __future__ import annotations
@@ -22,11 +26,11 @@ from .models import HealthFileMetricData, HealthFindingData, Severity
 
 # Per-category max deduction.
 CATEGORY_CAPS: dict[str, float] = {
-    "structural_complexity": 3.5,
-    "size_and_complexity": 2.0,
-    "duplication": 1.5,
+    "organizational": 3.5,
+    "structural_complexity": 2.5,
     "test_coverage": 2.0,
-    "organizational": 1.0,
+    "size_and_complexity": 1.5,
+    "duplication": 1.0,
 }
 
 # Per-biomarker deduction by severity. The scorer caps the per-category
@@ -38,6 +42,18 @@ _SEVERITY_DEDUCTION: dict[Severity, float] = {
     Severity.CRITICAL: 2.0,
 }
 
+# Per-biomarker weight multiplier (plan §3.2 Option A). Applied to the
+# severity deduction BEFORE category capping. Lets stronger empirical
+# predictors deduct more without re-tuning the severity table itself.
+# Unknown biomarkers fall back to 1.0.
+_BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
+    "developer_congestion": 1.5,
+    "untested_hotspot": 1.3,
+    "function_hotspot": 1.2,
+    "hidden_coupling": 1.0,
+    "knowledge_loss": 0.4,
+}
+
 # Map biomarker name → category. Kept here (single source of truth)
 # rather than on each biomarker class because some biomarkers naturally
 # span categories and we may want to retune without re-deploying.
@@ -45,6 +61,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "brain_method": "structural_complexity",
     "nested_complexity": "structural_complexity",
     "bumpy_road": "structural_complexity",
+    "complex_conditional": "structural_complexity",
     "complex_method": "size_and_complexity",
     "large_method": "size_and_complexity",
     "primitive_obsession": "size_and_complexity",
@@ -53,11 +70,17 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "coverage_gap": "test_coverage",
     "developer_congestion": "organizational",
     "knowledge_loss": "organizational",
+    "hidden_coupling": "organizational",
 }
 
 
 def severity_deduction(sev: Severity) -> float:
     return _SEVERITY_DEDUCTION.get(sev, 0.5)
+
+
+def biomarker_weight(name: str) -> float:
+    """Per-biomarker multiplier; 1.0 for unknown biomarkers."""
+    return _BIOMARKER_WEIGHT_MULTIPLIER.get(name, 1.0)
 
 
 def biomarker_category(name: str) -> str:
@@ -78,7 +101,8 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[float, list[float]]:
     raw: dict[str, list[tuple[int, float]]] = {}
     for idx, r in enumerate(results_list):
         cat = biomarker_category(r.biomarker_type)
-        raw.setdefault(cat, []).append((idx, severity_deduction(r.severity)))
+        weighted = severity_deduction(r.severity) * biomarker_weight(r.biomarker_type)
+        raw.setdefault(cat, []).append((idx, weighted))
 
     per_result = [0.0] * len(results_list)
     total = 0.0
