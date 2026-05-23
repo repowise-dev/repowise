@@ -34,6 +34,10 @@ Organizational (cap −3.5):
 - `knowledge_loss` — primary authors no longer active (de-rated to 0.4).
 - `hidden_coupling` — files that co-change in history without an explicit
   import edge between them.
+- `function_hotspot` — functions that are both structurally complex and
+  frequently modified (per-function churn from the FULL-tier blame index).
+- `code_age_volatility` — dormant functions (median line age ≥ 1y) that
+  are suddenly being modified again. Uses the same blame index.
 
 Caps were recalibrated to lift `organizational` (was −1.0) and de-rate
 `size_and_complexity` / `duplication` per plan §3.1. A per-biomarker

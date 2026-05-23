@@ -84,6 +84,19 @@ _TEMPLATES: dict[str, str] = {
         "compound conditions of three or more operators are usually "
         "two policies fighting for one line."
     ),
+    "function_hotspot": (
+        "Refactor this specific function — it's where the file's churn "
+        "concentrates. Split its responsibilities so future commits land "
+        "on smaller, more focused units; pair the refactor with "
+        "characterization tests if coverage is thin."
+    ),
+    "code_age_volatility": (
+        "Slow down before editing more. This function has sat largely "
+        "untouched for over a year and is suddenly being modified — that "
+        "edit profile is one of the strongest defect predictors. Pull in "
+        "the original author or write down the design intent before "
+        "shipping the next change."
+    ),
     "knowledge_loss": (
         "Document the surviving knowledge. The primary author(s) of "
         "this file are no longer active — pair-program with someone "

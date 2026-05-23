@@ -41,6 +41,7 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     "developer_congestion": 1.5,
     "untested_hotspot": 1.3,
     "function_hotspot": 1.2,
+    "code_age_volatility": 1.1,
     "hidden_coupling": 1.0,
     "knowledge_loss": 0.4,
 }
@@ -59,6 +60,8 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "developer_congestion": "organizational",
     "knowledge_loss": "organizational",
     "hidden_coupling": "organizational",
+    "function_hotspot": "organizational",
+    "code_age_volatility": "organizational",
 }
 
 

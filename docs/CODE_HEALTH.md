@@ -94,6 +94,23 @@ ESSENTIAL-tier repos until co-change backfill runs.
 boolean operators. Severity grows with the operator count (LOW at 3, MED
 at 4, HIGH at 5, CRIT at 6+).
 
+**function_hotspot** — Functions that are both structurally complex and
+frequently modified. Per-function modification counts come from a
+per-line blame index built once per file (FULL git tier) and shared
+with `code_age_volatility`. Fires when a function's distinct-commit
+count is at or above the repo-wide p80 AND the function meets a
+structural floor (CCN ≥ 10 or max nesting ≥ 3). Tier-aware: returns no
+findings on ESSENTIAL-tier repos until `backfill_blame()` runs.
+
+**code_age_volatility** — Functions whose median line age is at least a
+year old that are suddenly being modified. Strong defect predictor:
+the editor is usually working in unfamiliar territory. Uses the same
+per-line blame index — `median_age_days` from per-line author
+timestamps, `recent_mod_count` from distinct shas inside the last 30
+days. Severity escalates with both axes (CRIT when median age ≥ 2y AND
+≥ 5 recent commits). Tier-aware: same ESSENTIAL no-op as
+`function_hotspot`.
+
 ## Test coverage
 
 Pass coverage reports straight into the analyzer:
