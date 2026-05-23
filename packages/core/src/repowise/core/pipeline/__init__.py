@@ -14,6 +14,7 @@ from .orchestrator import PipelineResult, run_generation, run_pipeline
 from .persist import persist_pipeline_result
 from .phase_timing import PhaseTimingRecorder
 from .progress import LoggingProgressCallback, ProgressCallback
+from .upgrade import rehydrate_graph_builder
 
 __all__ = [
     "LoggingProgressCallback",
@@ -21,6 +22,7 @@ __all__ = [
     "PipelineResult",
     "ProgressCallback",
     "persist_pipeline_result",
+    "rehydrate_graph_builder",
     "run_generation",
     "run_pipeline",
 ]

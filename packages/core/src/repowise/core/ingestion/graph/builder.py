@@ -20,6 +20,7 @@ from ..resolvers.go import read_go_module_path, read_go_modules
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
 from ._metrics import MetricsMixin
+from ._rehydrate import RehydrateMixin
 from ._resolvers import ResolveMixin
 from ._serialize import SerializeMixin
 from ._stem import build_stem_map
@@ -27,7 +28,7 @@ from ._stem import build_stem_map
 log = structlog.get_logger(__name__)
 
 
-class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin):
+class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, RehydrateMixin):
     """Build a dependency graph from a collection of ParsedFile objects.
 
     Usage::

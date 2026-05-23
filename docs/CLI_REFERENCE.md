@@ -104,8 +104,11 @@ Incrementally update wiki pages for files changed since the last sync.
 | `--workspace` | Update all stale repos in the workspace + cross-repo analysis |
 | `--no-workspace` | Force single-repo mode (handy when running from a workspace root) |
 | `--repo` | Update a specific workspace repo by alias |
+| `--full` | Upgrade a fast (`--mode fast`) index to a full one — see below. Single-repo only. |
 
 **First-time indexing:** as of v0.8, `update --workspace` now runs full first-time indexing for workspace entries that have no `.repowise/` dir yet (previously skipped with `"not_indexed"`). The pipeline runs index-only — no LLM cost — and writes a state.json marker so `repowise update --repo <alias> --docs` later picks up doc generation cleanly.
+
+**Upgrading a fast index to full (`--full`):** a repo first indexed with `repowise init --mode fast` has the full dependency graph + metrics persisted, but only the *essential* git tier (last commits, no per-file blame or co-change) and no LLM docs. `repowise update --full` upgrades it **incrementally**: it backfills the git tier to FULL (per-file blame + repo-wide co-change) using a resumable, checkpointed worker, then generates the docs that fast mode skipped. Crucially, it **reuses the persisted graph** — the dependency graph is rehydrated from SQL rather than re-parsed and re-resolved, so the expensive import/call/heritage resolution and centrality computation the fast index already did are not repeated. This is measurably cheaper than re-running a full `init`. The backfill is resumable: if it is interrupted, re-running `repowise update --full` picks it up. A provider is required (the fast index made no LLM calls), so pass `--provider`/`--model` or have one configured.
 
 **Examples:**
 
@@ -117,6 +120,7 @@ repowise update --reasoning off        # one-off supported-provider thinking-off
 repowise update --workspace            # all workspace repos (incl. first-time indexing)
 repowise update --repo backend         # specific workspace repo
 repowise update --no-workspace         # force single-repo mode in a workspace root
+repowise update --full --provider anthropic   # upgrade a fast index to full
 ```
 
 ---

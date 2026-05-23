@@ -31,6 +31,8 @@ from .crud import (
     delete_repository,
     get_all_file_metrics,
     get_all_git_metadata,
+    get_all_graph_edges,
+    get_all_graph_nodes,
     get_community_members,
     get_conversation,
     get_cross_community_edges,
@@ -172,6 +174,8 @@ __all__ = [
     "get_all_file_metrics",
     # git metadata crud
     "get_all_git_metadata",
+    "get_all_graph_edges",
+    "get_all_graph_nodes",
     "get_community_members",
     "get_configured_db_url",
     "get_conversation",

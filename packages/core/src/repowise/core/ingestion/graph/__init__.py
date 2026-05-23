@@ -29,6 +29,7 @@ Internal layout (kept under the 400-line ceiling):
     _resolvers.py   — heritage / member-read / call resolution passes
     _edges.py       — co-change / dynamic / framework edges
     _serialize.py   — node-link JSON + SQLite export
+    _rehydrate.py   — rebuild a builder from persisted nodes/edges/metrics
     _stem.py        — import-stem resolution helpers
 """
 

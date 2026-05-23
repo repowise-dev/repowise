@@ -617,6 +617,77 @@ async def get_graph_metrics(
     }
 
 
+async def get_all_graph_nodes(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[dict]:
+    """Read every persisted graph node as a list of plain dicts.
+
+    Used to rehydrate an in-memory :class:`GraphBuilder` from SQL without
+    re-parsing or re-resolving the graph (see
+    ``repowise.core.pipeline.upgrade.rehydrate_graph_builder``). Each dict
+    carries ``node_id`` plus the file/symbol attributes that the NetworkX node
+    needs for traversal and rendering.
+    """
+    result = await session.execute(
+        select(GraphNode).where(GraphNode.repository_id == repository_id)
+    )
+    return [
+        {
+            "node_id": row.node_id,
+            "node_type": row.node_type,
+            "language": row.language,
+            "symbol_count": row.symbol_count,
+            "has_error": row.has_error,
+            "is_test": row.is_test,
+            "is_entry_point": row.is_entry_point,
+            "kind": row.kind,
+            "name": row.name,
+            "qualified_name": row.qualified_name,
+            "file_path": row.file_path,
+            "start_line": row.start_line,
+            "end_line": row.end_line,
+            "visibility": row.visibility,
+            "signature": row.signature,
+            "parent_symbol_id": row.parent_symbol_id,
+        }
+        for row in result.scalars().all()
+    ]
+
+
+async def get_all_graph_edges(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[dict]:
+    """Read every persisted graph edge as a list of plain dicts.
+
+    Companion to :func:`get_all_graph_nodes` for graph rehydration. The
+    ``imported_names_json`` column is decoded back into a list so the
+    rehydrated edge matches the in-memory shape produced during ingestion.
+    """
+    import json as _json
+
+    result = await session.execute(
+        select(GraphEdge).where(GraphEdge.repository_id == repository_id)
+    )
+    edges: list[dict] = []
+    for row in result.scalars().all():
+        try:
+            imported_names = _json.loads(row.imported_names_json or "[]")
+        except (ValueError, TypeError):
+            imported_names = []
+        edges.append(
+            {
+                "source_node_id": row.source_node_id,
+                "target_node_id": row.target_node_id,
+                "edge_type": row.edge_type,
+                "confidence": row.confidence,
+                "imported_names": imported_names,
+            }
+        )
+    return edges
+
+
 # ---------------------------------------------------------------------------
 # ExternalSystem CRUD
 # ---------------------------------------------------------------------------

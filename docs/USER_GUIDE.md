@@ -235,6 +235,17 @@ Much faster and cheaper than a full `init` — only regenerates pages for change
 | `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal`. |
 | `--cascade-budget` | Max pages to regenerate per run (default: 30). Prevents runaway regeneration. |
 | `--dry-run` | Show what would be updated without regenerating. |
+| `--full` | Upgrade a fast (`--mode fast`) index to a full one (single-repo). See below. |
+
+**Upgrading a fast index to full (`--full`):**
+
+If you first indexed a large repo with `repowise init --mode fast` (graph + essential git only, no LLM docs), `repowise update --full` upgrades it to a full index **without redoing the structural work**:
+
+1. Backfills the git tier from *essential* to *full* — per-file blame and repo-wide co-change — via a resumable, checkpointed worker (re-run `--full` to resume if interrupted).
+2. Rehydrates the dependency graph straight from the database instead of re-parsing and re-resolving it, so imports/calls/heritage resolution and centrality are **not** recomputed.
+3. Generates the LLM documentation that fast mode skipped.
+
+This is cheaper than re-running a full `init`, which would rebuild the graph from scratch. A provider is required, so pass `--provider`/`--model` or have one configured.
 
 **Examples:**
 
@@ -254,6 +265,9 @@ repowise update --cascade-budget 10
 
 # Disable reasoning for a supported provider/model for this run
 repowise update --reasoning off
+
+# Upgrade a fast index to a full one (backfill git + generate docs)
+repowise update --full --provider anthropic
 ```
 
 ---

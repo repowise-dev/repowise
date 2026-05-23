@@ -47,6 +47,18 @@ This is gated by the pipeline knob `OrchestratorMode` / `sql_backed_metrics`
 (default off in standard mode; on in fast mode). Standard generation keeps the
 graph live because it traverses it for context assembly.
 
+### Rehydrating a builder from SQL
+
+`GraphBuilder.from_persisted(nodes, edges, metrics)` rebuilds a finalized
+builder directly from persisted rows (`persistence.get_all_graph_nodes` /
+`get_all_graph_edges` / `get_graph_metrics`) — **without re-parsing or
+re-resolving** imports/calls/heritage. It reconstructs the NetworkX graph and
+calls `load_metrics_from_sql`, so the result is metric- and
+traversal-equivalent to the originally-built graph. This is what powers the
+incremental `repowise update --full` fast→full upgrade: doc generation runs
+against the rehydrated graph, skipping the expensive resolution + centrality
+recompute that the fast index already did.
+
 ## Internal layout
 
 - `builder.py` — `GraphBuilder` core: node/edge construction + `build()`.
@@ -54,6 +66,7 @@ graph live because it traverses it for context assembly.
 - `_resolvers.py` — `ResolveMixin`: heritage / member-read / call passes.
 - `_edges.py` — `EdgesMixin`: co-change / dynamic / framework edges.
 - `_serialize.py` — `SerializeMixin`: node-link JSON + SQLite export.
+- `_rehydrate.py` — `RehydrateMixin`: `from_persisted` rebuild from SQL rows.
 - `_stem.py` — import-stem priority + stem-map construction.
 
 ## Extension points

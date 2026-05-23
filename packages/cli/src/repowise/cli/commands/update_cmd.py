@@ -268,6 +268,18 @@ def _workspace_update(
         "(set during `repowise init`)."
     ),
 )
+@click.option(
+    "--full",
+    "full",
+    is_flag=True,
+    default=False,
+    help=(
+        "Upgrade a fast (`--mode fast`) index to a full one: backfill the git "
+        "tier ESSENTIAL -> FULL and generate the LLM docs that fast mode "
+        "skipped. Incremental — reuses the persisted graph instead of "
+        "re-parsing and re-resolving it. Single-repo only."
+    ),
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -281,6 +293,7 @@ def update_command(
     repo_alias: str | None,
     index_only: bool = False,
     docs_flag: bool | None = None,
+    full: bool = False,
     concurrency: int = 5,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync.
@@ -301,6 +314,11 @@ def update_command(
     target.notice(console, command="update")
 
     if target.is_workspace:
+        if full:
+            raise click.ClickException(
+                "--full is single-repo only. Run it inside a specific repo "
+                "(or pass --no-workspace / --repo <alias>)."
+            )
         _workspace_update(target, dry_run=dry_run)
         return
 
@@ -308,6 +326,22 @@ def update_command(
     repo_path = target.repo_path
     assert repo_path is not None  # single mode always sets repo_path
     ensure_repowise_dir(repo_path)
+
+    # --- Fast -> full upgrade (--full): a distinct path that reuses the
+    # persisted graph rather than diffing changed files. Dispatched before any
+    # incremental change-detection so the normal `repowise update` flow below
+    # is byte-for-byte unchanged. ---
+    if full:
+        from repowise.cli.commands.upgrade_flow import upgrade_to_full
+
+        upgrade_to_full(
+            repo_path,
+            provider_name=provider_name,
+            model=model,
+            reasoning=reasoning,
+            concurrency=concurrency,
+        )
+        return
     # Truncate the hook-managed log if it has grown past the cap. The hook
     # appends each run unconditionally — without this opportunistic rotation
     # at the start of every CLI update, a busy repo's ``.update.log`` would
