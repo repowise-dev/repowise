@@ -313,5 +313,6 @@ def test_base_includes_all_models():
         "health_snapshots",
         "coverage_files",
         "pipeline_jobs",
+        "graph_metrics",
     }
     assert expected == table_names

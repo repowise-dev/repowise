@@ -100,7 +100,7 @@ class Page(Base):
     page_type: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # 1–3 sentence purpose blurb. Always populated (LLM-extracted from content
+    # 1-3 sentence purpose blurb. Always populated (LLM-extracted from content
     # for full mode, deterministic structure summary for index-only mode).
     # Surfaced by get_context as the default narrative; content is gated
     # behind include=["full_doc"] to keep MCP responses small.
@@ -241,6 +241,34 @@ class GraphEdge(Base):
             name="uq_graph_edge_typed",
         ),
     )
+
+
+class GraphMetric(Base):
+    """Materialized file-level graph metrics snapshot (large-repo scale).
+
+    Lets metric reads be served from SQL without recomputing the expensive
+    NetworkX centrality kernels on big graphs. Written after the graph is
+    built (additive to ``graph_nodes``) and read back into a GraphBuilder via
+    ``load_metrics_from_sql``.
+    """
+
+    __tablename__ = "graph_metrics"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    node_id: Mapped[str] = mapped_column(Text, nullable=False)
+    pagerank: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    betweenness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    community_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    in_degree: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    out_degree: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (UniqueConstraint("repository_id", "node_id", name="uq_graph_metric"),)
 
 
 class WebhookEvent(Base):

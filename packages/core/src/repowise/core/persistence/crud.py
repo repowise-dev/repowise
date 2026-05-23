@@ -31,6 +31,7 @@ from .models import (
     GenerationJob,
     GitMetadata,
     GraphEdge,
+    GraphMetric,
     GraphNode,
     HealthFileMetric,
     HealthFinding,
@@ -551,6 +552,69 @@ async def batch_upsert_graph_edges(
             )
 
     await session.flush()
+
+
+async def batch_upsert_graph_metrics(
+    session: AsyncSession,
+    repository_id: str,
+    metrics: dict[str, dict],
+) -> None:
+    """Materialize the file-level metrics snapshot into ``graph_metrics``.
+
+    *metrics* maps ``node_id`` → a dict with ``pagerank``, ``betweenness``,
+    ``community_id``, ``in_degree``, ``out_degree``. Additive to
+    ``graph_nodes`` — this is the snapshot read back by
+    ``GraphBuilder.load_metrics_from_sql`` on large repos. SELECT-then-write
+    for dialect portability (SQLite + Postgres).
+    """
+    fields = ("pagerank", "betweenness", "community_id", "in_degree", "out_degree")
+    for node_id, m in metrics.items():
+        result = await session.execute(
+            select(GraphMetric).where(
+                GraphMetric.repository_id == repository_id,
+                GraphMetric.node_id == node_id,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            for key in fields:
+                if key in m:
+                    setattr(existing, key, m[key])
+        else:
+            session.add(
+                GraphMetric(
+                    id=_new_uuid(),
+                    repository_id=repository_id,
+                    node_id=node_id,
+                    pagerank=float(m.get("pagerank", 0.0)),
+                    betweenness=float(m.get("betweenness", 0.0)),
+                    community_id=int(m.get("community_id", 0)),
+                    in_degree=int(m.get("in_degree", 0)),
+                    out_degree=int(m.get("out_degree", 0)),
+                )
+            )
+
+    await session.flush()
+
+
+async def get_graph_metrics(
+    session: AsyncSession,
+    repository_id: str,
+) -> dict[str, dict]:
+    """Read the materialized ``graph_metrics`` snapshot as ``node_id → metrics``."""
+    result = await session.execute(
+        select(GraphMetric).where(GraphMetric.repository_id == repository_id)
+    )
+    return {
+        row.node_id: {
+            "pagerank": row.pagerank,
+            "betweenness": row.betweenness,
+            "community_id": row.community_id,
+            "in_degree": row.in_degree,
+            "out_degree": row.out_degree,
+        }
+        for row in result.scalars().all()
+    }
 
 
 # ---------------------------------------------------------------------------

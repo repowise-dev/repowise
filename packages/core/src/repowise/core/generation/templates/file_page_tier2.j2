@@ -1,0 +1,45 @@
+{#- Deterministic (no-LLM) tier-2 file page.
+
+    Rendered straight from the assembled FilePageContext for the long tail
+    of selected files on large repos. No model call — the content is a
+    structured, factual stub built entirely from parsed AST + graph signals,
+    and is embedded for search like any other page.
+-#}
+# {{ ctx.file_path }}
+
+## Overview
+
+{% if ctx.docstring %}{{ ctx.docstring | trim }}
+{% else %}`{{ ctx.file_path }}` is a {{ ctx.language }} {% if ctx.is_entry_point %}entry-point {% endif %}{% if ctx.is_test %}test {% endif %}source file in this repository.{% endif %}
+
+{% set public_syms = ctx.symbols | selectattr("visibility", "equalto", "public") | list %}
+{% if public_syms %}It exposes {{ public_syms | length }} public symbol{{ "s" if public_syms | length != 1 else "" }}{% if ctx.dependencies %} and depends on {{ ctx.dependencies | length }} internal module{{ "s" if ctx.dependencies | length != 1 else "" }}{% endif %}.{% endif %}
+
+## Public API
+
+{% if public_syms %}
+| Symbol | Kind | Signature |
+| --- | --- | --- |
+{% for s in public_syms -%}
+| `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | replace("|", "\\|") | replace("\n", " ") | truncate(120, true, "…") }} |
+{% endfor %}
+{% else %}
+_No public symbols were extracted from this file._
+{% endif %}
+
+## Dependencies
+
+{% if ctx.dependencies %}
+{% for dep in ctx.dependencies -%}
+- `{{ dep }}`
+{% endfor %}
+{% else %}
+_No internal dependencies resolved._
+{% endif %}
+
+## Usage Notes
+
+{% if ctx.dependents %}Imported by {{ ctx.dependents | length }} file{{ "s" if ctx.dependents | length != 1 else "" }} in this repository.{% else %}No internal callers were resolved for this file.{% endif %}
+{% if ctx.community_label %} Part of the **{{ ctx.community_label }}** module cluster.{% endif %}
+
+<!-- Generated deterministically (tier-2, no LLM). -->

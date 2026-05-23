@@ -406,6 +406,52 @@ def _ensure_gitignored(repo_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# A repo at or above this many files is "large" — large enough that a quick
+# fast-mode first index (graph + essential git, no LLM docs) is worth offering.
+LARGE_REPO_FILE_THRESHOLD = 5000
+
+
+def should_offer_fast_mode(scan: RepoScanInfo | None) -> bool:
+    """Whether to surface the fast-mode offer for this repo.
+
+    Fast mode only makes sense on large repos; small repos run full in seconds
+    so the offer would just be noise.
+    """
+    return scan is not None and scan.total_files > LARGE_REPO_FILE_THRESHOLD
+
+
+def interactive_fast_mode_offer(
+    console: Console,
+    scan: RepoScanInfo | None,
+    *,
+    default_fast: bool,
+) -> bool:
+    """Offer fast mode after a large repo is detected. Returns True to use it.
+
+    Shown only when :func:`should_offer_fast_mode` is true. Fast mode is a quick
+    first index (dependency graph + essential git history, metrics in SQL) with
+    no per-file blame, no co-change walk, and no LLM docs — backfillable later.
+    """
+    n = scan.total_files if scan else 0
+    body = Text()
+    body.append("  Large repository detected — ", style="bold")
+    body.append(f"{n:,} files.\n\n", style=BRAND_STYLE)
+    body.append("  Fast mode runs a quick first index:\n", style="bold")
+    body.append("    • dependency graph + essential git history\n")
+    body.append("    • graph metrics materialized to SQL\n")
+    body.append("    • no per-file blame, no co-change walk, no LLM docs\n\n")
+    body.append("  You can backfill full git history and generate docs later.\n", style="dim")
+    console.print(
+        Panel(
+            body,
+            title="[bold]Fast first index?[/bold]",
+            border_style=BRAND,
+            padding=(1, 2),
+        )
+    )
+    return click.confirm("  Use fast mode?", default=default_fast)
+
+
 def interactive_mode_select(console: Console) -> str:
     """Let the user choose full / index-only / advanced.
 
@@ -616,6 +662,8 @@ def _prompt_api_key(
 def interactive_advanced_config(
     console: Console,
     scan: RepoScanInfo | None = None,
+    *,
+    allow_fast: bool = False,
 ) -> dict[str, Any]:
     """Prompt for advanced init options, grouped into logical sections.
 
@@ -666,6 +714,26 @@ def interactive_advanced_config(
         )
     else:
         result["include_submodules"] = False
+
+    # ── Run mode (large-repo scale) ───────────────────────────────────────
+    # Fast mode = quick graph + essential-git index, no LLM docs. Suggested
+    # by default on large repos; off otherwise. Only offered for single-repo
+    # init (allow_fast); the workspace path leaves this untouched.
+    is_large = bool(scan and scan.total_files > LARGE_REPO_FILE_THRESHOLD)
+    if allow_fast:
+        console.print()
+        console.print(f"  [{BRAND}]Run mode[/]")
+        console.print(
+            "  [dim]standard = full depth · fast = quick graph + essential git, "
+            "no LLM docs[/dim]"
+        )
+        result["run_mode"] = click.prompt(
+            "  Run mode",
+            default="fast" if is_large else "standard",
+            type=click.Choice(["standard", "fast"]),
+        )
+    else:
+        result["run_mode"] = "standard"
 
     # ── Exclude Patterns ──────────────────────────────────────────────────
     console.print()
@@ -766,6 +834,22 @@ def interactive_advanced_config(
         default=False,
     )
 
+    # Tiered doc generation: cap the number of full-LLM (tier-1) file pages on
+    # large repos. The long tail is rendered from a deterministic template +
+    # embedded for search (no LLM). 0 = no cap (every selected page is tier-1).
+    # Only meaningful when docs actually generate (standard mode).
+    result["tier1_top_n"] = None
+    if allow_fast and result["run_mode"] == "standard":
+        tier_default = 300 if is_large else 0
+        console.print()
+        console.print("  [dim]Tiered docs: cap full-LLM file pages; rest are template-only.[/dim]")
+        tier_val = click.prompt(
+            "  Full-LLM file-page cap (tier-1, 0 = no cap)",
+            default=tier_default,
+            type=int,
+        )
+        result["tier1_top_n"] = tier_val if tier_val > 0 else None
+
     # ── Summary ───────────────────────────────────────────────────────────
     console.print()
     summary = Table(box=None, padding=(0, 2), show_header=False)
@@ -780,6 +864,10 @@ def interactive_advanced_config(
     summary.add_row("Concurrency", str(result["concurrency"]))
     summary.add_row("Reasoning", result["reasoning"])
     summary.add_row("Embedder", result["embedder"])
+    if allow_fast:
+        summary.add_row("Run mode", result["run_mode"])
+        if result.get("tier1_top_n"):
+            summary.add_row("Full-LLM page cap", str(result["tier1_top_n"]))
     if patterns:
         if len(patterns) <= 5:
             summary.add_row("Exclude", ", ".join(patterns))
@@ -939,16 +1027,26 @@ def build_completion_panel(
 def build_contextual_next_steps(
     *,
     index_only: bool,
+    fast_mode: bool = False,
     dead_unreachable: int = 0,
     dead_unused: int = 0,
     hotspot_count: int = 0,
     decision_count: int = 0,
     top_hotspot: str = "",
 ) -> list[tuple[str, str]]:
-    """Build next-step suggestions based on what the analysis actually found."""
+    """Build next-step suggestions based on what the analysis actually found.
+
+    When *fast_mode* is set, the index used the essential git tier and skipped
+    LLM docs, so the suggestions lead with how to upgrade to the full result.
+    """
     steps: list[tuple[str, str]] = []
 
-    if index_only:
+    if fast_mode:
+        # Fast index: graph + essential git, no docs. Tell them how to get the
+        # full thing — complete git history + generated wiki pages.
+        steps.append(("repowise init", "run full mode: complete git history + generate docs"))
+        steps.append(("repowise mcp .", "start MCP server for AI assistants now"))
+    elif index_only:
         steps.append(("repowise mcp .", "start MCP server for AI assistants"))
         steps.append(("repowise init --provider gemini", "generate full documentation"))
     else:

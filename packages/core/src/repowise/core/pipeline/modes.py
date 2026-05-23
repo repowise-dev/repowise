@@ -41,3 +41,18 @@ class OrchestratorMode(enum.StrEnum):
         the ``generate_docs`` flag passed to the pipeline.
         """
         return self is not OrchestratorMode.FAST
+
+    @property
+    def sql_backed_metrics(self) -> bool:
+        """Whether file-level metrics should be served from SQL post-build.
+
+        When ``True`` the pipeline materializes the metrics snapshot to
+        ``graph_metrics`` and may drop the in-memory NetworkX object (via
+        ``GraphBuilder.release_graph``), serving subsequent metric reads from
+        the loaded snapshot — the large-repo scaling path.
+
+        Default off in ``STANDARD`` (doc generation traverses the live graph)
+        and on in ``FAST`` (which generates no docs, so nothing needs the
+        structural graph after build + persistence).
+        """
+        return self is OrchestratorMode.FAST

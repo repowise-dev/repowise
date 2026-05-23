@@ -81,6 +81,13 @@ class _SlowVectorStore:
         finally:
             self.active_embeds -= 1
 
+    async def embed_batch(self, items: list[tuple[str, str, dict[str, Any]]]) -> None:
+        # Mirror the generator's batched embed path: a level's pages are
+        # embedded together after their LLM calls have all returned. The real
+        # stores issue one batched embed call, so this never fans out.
+        for pid, text, meta in items:
+            await self.embed_and_upsert(pid, text, meta)
+
     async def list_page_ids(self) -> set[str]:
         return set()
 

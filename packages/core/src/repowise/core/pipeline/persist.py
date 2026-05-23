@@ -27,7 +27,10 @@ async def persist_graph_nodes(
     update path can refresh ``graph_nodes`` (including symbol-level
     PageRank / betweenness) without constructing a full ``PipelineResult``.
     """
-    from repowise.core.persistence import batch_upsert_graph_nodes
+    from repowise.core.persistence import (
+        batch_upsert_graph_metrics,
+        batch_upsert_graph_nodes,
+    )
 
     graph = graph_builder.graph()
     pr = graph_builder.pagerank()
@@ -95,6 +98,16 @@ async def persist_graph_nodes(
 
     if nodes:
         await batch_upsert_graph_nodes(session, repo_id, nodes)
+
+    # Materialize the file-level metrics snapshot (graph_metrics) so large
+    # repos can serve metric reads from SQL without recomputing the NetworkX
+    # centrality kernels. Additive to graph_nodes; never changes node rows.
+    try:
+        await batch_upsert_graph_metrics(
+            session, repo_id, graph_builder.file_metrics_snapshot()
+        )
+    except Exception as exc:  # materialization is non-load-bearing
+        logger.warning("graph_metrics_materialize_skipped", error=str(exc))
 
 
 async def persist_pipeline_result(
