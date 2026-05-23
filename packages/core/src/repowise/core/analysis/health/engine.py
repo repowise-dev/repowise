@@ -179,9 +179,7 @@ class HealthAnalyzer:
         # signal (cheap, deterministic, conservative).
         all_paths = {pf.file_info.path for pf in self.parsed_files}
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
-        graph_view: HasEdge | None = (
-            _ImportEdgeView(self.graph) if self.graph is not None else None
-        )
+        graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
         # Duplication runs once, up-front, so each file biomarker can see
         # its clone list. Cheap when the repo is small; when disabled
@@ -279,9 +277,7 @@ class HealthAnalyzer:
 
         all_paths = {pf.file_info.path for pf in self.parsed_files}
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
-        graph_view: HasEdge | None = (
-            _ImportEdgeView(self.graph) if self.graph is not None else None
-        )
+        graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
         if "dry_violation" in disabled:
             dup_report = DuplicationReport()

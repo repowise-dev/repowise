@@ -25,11 +25,20 @@ most:
 
 | Category               | Cap   | Biomarkers |
 |------------------------|-------|------------|
-| Structural complexity  | −3.5  | brain_method, nested_complexity, bumpy_road |
-| Size & complexity      | −2.0  | complex_method, large_method, primitive_obsession |
-| Duplication            | −1.5  | dry_violation |
+| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling |
+| Structural complexity  | −2.5  | brain_method, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0  | untested_hotspot, coverage_gap |
-| Organizational         | −1.0  | developer_congestion, knowledge_loss |
+| Size & complexity      | −1.5  | complex_method, large_method, primitive_obsession |
+| Duplication            | −1.0  | dry_violation |
+
+Per-biomarker weight multipliers (see `scoring._BIOMARKER_WEIGHT_MULTIPLIER`)
+let the strongest empirical predictors deduct more than the uniform severity
+table alone allows. `developer_congestion` is multiplied by 1.5,
+`untested_hotspot` by 1.3, `function_hotspot` (a follow-up biomarker) by 1.2,
+and `knowledge_loss` is de-rated to 0.4. The de-rating is OSS-calibrated
+(legacy code gets handed off because it works); enterprise users where
+attrition is a real risk should raise it back via per-repo overrides — see
+plan §3.5.
 
 The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 
@@ -37,7 +46,7 @@ The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 - **Average Health** — NLOC-weighted average over all files.
 - **Worst Performer** — single lowest-scoring file.
 
-## The 12 biomarkers
+## The biomarkers
 
 **brain_method** — A single function that is simultaneously long, deeply
 nested, highly complex, and central to the dependency graph. The strongest
@@ -74,6 +83,16 @@ Usually an ownership problem dressed up as a code problem.
 
 **knowledge_loss** — The primary authors of the file are no longer active
 on the project. Refactor while someone still remembers why.
+
+**hidden_coupling** — Files that consistently change in the same commits
+without an explicit import or dependency edge between them. Captures
+behavioral coupling (shared protocols, parallel config, copy-pasted
+constants) that static analysis cannot see. Tier-aware: empty on
+ESSENTIAL-tier repos until co-change backfill runs.
+
+**complex_conditional** — Branch / loop guards that combine three or more
+boolean operators. Severity grows with the operator count (LOW at 3, MED
+at 4, HIGH at 5, CRIT at 6+).
 
 ## Test coverage
 

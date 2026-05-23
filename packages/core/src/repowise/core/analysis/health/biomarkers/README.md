@@ -9,28 +9,37 @@ class Biomarker(Protocol):
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]: ...
 ```
 
-## Registered v1 detectors (12)
+## Registered detectors (14)
 
-Structural complexity (cap −3.5):
+Structural complexity (cap −2.5):
 - `brain_method` — symbols simultaneously long, complex, and central.
 - `nested_complexity` — functions with deep nesting (≥ 4 levels).
 - `bumpy_road` — multiple branches at the same nesting depth.
+- `complex_conditional` — compound boolean expressions with ≥ 3 ops.
 
-Size & complexity (cap −2.0):
+Size & complexity (cap −1.5):
 - `complex_method` — functions with CCN ≥ 9.
 - `large_method` — functions exceeding the NLOC threshold.
 - `primitive_obsession` — many primitive parameters in a single signature.
 
-Duplication (cap −1.5):
+Duplication (cap −1.0):
 - `dry_violation` — Rabin–Karp clone pairs, weighted by co-change.
 
 Test coverage (cap −2.0):
 - `untested_hotspot` — hotspot × low coverage × many dependents.
 - `coverage_gap` — non-test files with meaningful uncovered surface.
 
-Organizational (cap −1.0):
+Organizational (cap −3.5):
 - `developer_congestion` — too many active authors competing on a file.
-- `knowledge_loss` — primary authors no longer active.
+- `knowledge_loss` — primary authors no longer active (de-rated to 0.4).
+- `hidden_coupling` — files that co-change in history without an explicit
+  import edge between them.
+
+Caps were recalibrated to lift `organizational` (was −1.0) and de-rate
+`size_and_complexity` / `duplication` per plan §3.1. A per-biomarker
+weight multiplier in `scoring._BIOMARKER_WEIGHT_MULTIPLIER` lets the
+strongest empirical predictors deduct more than the uniform severity
+table alone would allow.
 
 ## Inputs
 
@@ -45,6 +54,10 @@ Organizational (cap −1.0):
 - `line_coverage_pct`, `branch_coverage_pct`, `covered_lines` — coverage
   signals; `None` when no coverage was ingested.
 - `clones`, `duplication_pct` — pre-computed cross-file clone data.
+- `graph_view` — thin `HasEdge` protocol wrapper over the dependency
+  graph; `None` on test fixtures that didn't construct a graph.
+- `repo_commit_counts` — `dict[path, commit_count_total]` populated once
+  per `analyze` call so co-change detectors can look up partner totals.
 
 ## Outputs
 
