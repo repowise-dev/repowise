@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { ExternalLink, X } from "lucide-react";
 import { biomarkerLabel, biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
+import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
 import {
   SEVERITY_CHIP,
@@ -21,6 +22,7 @@ export interface HealthDrawerFinding {
   health_impact: number;
   reason: string;
   status?: string;
+  details?: BiomarkerDetailsRecord | null;
 }
 
 export interface HealthDrawerMetric {
@@ -48,7 +50,11 @@ export interface HealthFileDrawerProps {
   findings?: HealthDrawerFinding[];
   suggestions?: Record<string, string>;
   fileViewHref?: string;
+  /** Build a per-line deep-link from the drawer's function:line span. */
+  fileViewHrefFor?: ((lineStart: number) => string) | undefined;
   permalinkHref?: string;
+  onPartnerSelect?: ((path: string) => void) | undefined;
+  onPartnerHref?: ((path: string) => string) | undefined;
 }
 
 export function HealthFileDrawer({
@@ -60,7 +66,10 @@ export function HealthFileDrawer({
   findings = [],
   suggestions = {},
   fileViewHref,
+  fileViewHrefFor,
   permalinkHref,
+  onPartnerSelect,
+  onPartnerHref,
 }: HealthFileDrawerProps) {
   // ESC to close
   useEffect(() => {
@@ -190,15 +199,36 @@ export function HealthFileDrawer({
                             <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
                               {CATEGORY_LABEL[info.category]}
                             </span>
-                            {f.function_name ? (
-                              <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
-                                {f.function_name}
-                                {f.line_start ? `:${f.line_start}` : ""}
-                              </span>
-                            ) : null}
+                            {f.function_name ? (() => {
+                              const label = `${f.function_name}${f.line_start ? `:${f.line_start}` : ""}`;
+                              const lineHref =
+                                f.line_start != null && fileViewHrefFor
+                                  ? fileViewHrefFor(f.line_start)
+                                  : f.line_start != null
+                                    ? fileViewHref
+                                    : undefined;
+                              return lineHref ? (
+                                <a
+                                  href={lineHref}
+                                  className="text-xs font-mono text-[var(--color-accent-primary)] hover:underline"
+                                >
+                                  {label}
+                                </a>
+                              ) : (
+                                <span className="text-xs font-mono text-[var(--color-text-tertiary)]">
+                                  {label}
+                                </span>
+                              );
+                            })() : null}
                             <span className="ml-auto text-xs tabular-nums text-red-500">−{f.health_impact.toFixed(2)}</span>
                           </div>
                           <p className="text-xs text-[var(--color-text-secondary)]">{f.reason}</p>
+                          <BiomarkerDetails
+                            biomarkerType={f.biomarker_type}
+                            details={f.details}
+                            onPartnerSelect={onPartnerSelect}
+                            onPartnerHref={onPartnerHref}
+                          />
                           {suggestions[f.biomarker_type] ? (
                             <p className="text-xs text-[var(--color-text-tertiary)] italic">
                               {suggestions[f.biomarker_type]}

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { biomarkerLabel, biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
+import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, SEVERITY_ORDER, type Severity } from "./tokens";
 
 export interface BiomarkerFinding {
@@ -13,6 +14,7 @@ export interface BiomarkerFinding {
   function_name: string | null;
   health_impact: number;
   reason: string;
+  details?: BiomarkerDetailsRecord | null;
 }
 
 export interface BiomarkerListProps {
@@ -23,6 +25,10 @@ export interface BiomarkerListProps {
   minSeverity?: Severity;
   onSelect?: ((f: BiomarkerFinding) => void) | undefined;
   maxPerGroup?: number;
+  /** Click-handler for the partner-file chip on hidden_coupling rows. */
+  onPartnerSelect?: ((path: string) => void) | undefined;
+  /** Optional anchor href for the partner-file chip. */
+  onPartnerHref?: ((path: string) => string) | undefined;
 }
 
 export function BiomarkerList({
@@ -31,6 +37,8 @@ export function BiomarkerList({
   minSeverity,
   onSelect,
   maxPerGroup = 8,
+  onPartnerSelect,
+  onPartnerHref,
 }: BiomarkerListProps) {
   const filtered = minSeverity
     ? findings.filter((f) => SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER[minSeverity])
@@ -48,7 +56,13 @@ export function BiomarkerList({
     return (
       <ul className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] divide-y divide-[var(--color-border-default)]">
         {filtered.map((f) => (
-          <FindingRow key={f.id} finding={f} onSelect={onSelect} />
+          <FindingRow
+            key={f.id}
+            finding={f}
+            onSelect={onSelect}
+            onPartnerSelect={onPartnerSelect}
+            onPartnerHref={onPartnerHref}
+          />
         ))}
       </ul>
     );
@@ -73,6 +87,8 @@ export function BiomarkerList({
           findings={group}
           onSelect={onSelect}
           maxPerGroup={maxPerGroup}
+          onPartnerSelect={onPartnerSelect}
+          onPartnerHref={onPartnerHref}
         />
       ))}
     </div>
@@ -84,11 +100,15 @@ function BiomarkerGroup({
   findings,
   onSelect,
   maxPerGroup,
+  onPartnerSelect,
+  onPartnerHref,
 }: {
   type: string;
   findings: BiomarkerFinding[];
   onSelect?: ((f: BiomarkerFinding) => void) | undefined;
   maxPerGroup: number;
+  onPartnerSelect?: ((path: string) => void) | undefined;
+  onPartnerHref?: ((path: string) => string) | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
   const info = biomarkerInfo(type);
@@ -132,7 +152,14 @@ function BiomarkerGroup({
       </button>
       <ul className="divide-y divide-[var(--color-border-default)] border-t border-[var(--color-border-default)]">
         {visible.map((f) => (
-          <FindingRow key={f.id} finding={f} onSelect={onSelect} hideBiomarker />
+          <FindingRow
+            key={f.id}
+            finding={f}
+            onSelect={onSelect}
+            hideBiomarker
+            onPartnerSelect={onPartnerSelect}
+            onPartnerHref={onPartnerHref}
+          />
         ))}
         {!expanded && findings.length > maxPerGroup ? (
           <li className="px-3 py-2 text-xs text-[var(--color-text-tertiary)]">
@@ -148,10 +175,14 @@ function FindingRow({
   finding,
   onSelect,
   hideBiomarker = false,
+  onPartnerSelect,
+  onPartnerHref,
 }: {
   finding: BiomarkerFinding;
   onSelect?: ((f: BiomarkerFinding) => void) | undefined;
   hideBiomarker?: boolean;
+  onPartnerSelect?: ((path: string) => void) | undefined;
+  onPartnerHref?: ((path: string) => string) | undefined;
 }) {
   const f = finding;
   const interactive = !!onSelect;
@@ -180,6 +211,12 @@ function FindingRow({
         {f.function_name ? ` :: ${f.function_name}` : ""}
       </p>
       <p className="text-xs text-[var(--color-text-tertiary)] line-clamp-2">{f.reason}</p>
+      <BiomarkerDetails
+        biomarkerType={f.biomarker_type}
+        details={f.details}
+        onPartnerSelect={onPartnerSelect}
+        onPartnerHref={onPartnerHref}
+      />
     </li>
   );
 }

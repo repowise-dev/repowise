@@ -4,6 +4,7 @@ export * from "./biomarker-chip";
 export * from "./kpi-cards";
 export * from "./file-table";
 export * from "./biomarker-list";
+export * from "./biomarker-details";
 export * from "./coverage-bar";
 export * from "./module-coverage-list";
 export * from "./untested-hotspot-warning";

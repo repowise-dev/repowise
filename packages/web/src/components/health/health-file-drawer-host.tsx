@@ -31,6 +31,12 @@ export function HealthFileDrawerHost({
       findings={data?.findings ?? []}
       suggestions={data?.suggestions ?? {}}
       fileViewHref={filePath ? `/repos/${repoId}/files?path=${encodeURIComponent(filePath)}` : undefined}
+      fileViewHrefFor={
+        filePath
+          ? (line: number) =>
+              `/repos/${repoId}/files?path=${encodeURIComponent(filePath)}#L${line}`
+          : undefined
+      }
     />
   );
 }
