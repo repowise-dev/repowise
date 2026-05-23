@@ -30,6 +30,61 @@ function bulletList(items: (string | null | undefined | false)[]): string {
   return items.filter(Boolean).map((s) => `- ${s}`).join("\n");
 }
 
+function biomarkerExtraContext(
+  biomarkerType: string,
+  details: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!details) return null;
+  const numField = (k: string): number | null => {
+    const v = details[k];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v !== "" && Number.isFinite(Number(v))) {
+      return Number(v);
+    }
+    return null;
+  };
+  const strField = (k: string): string | null => {
+    const v = details[k];
+    return typeof v === "string" && v.length > 0 ? v : null;
+  };
+
+  if (biomarkerType === "hidden_coupling") {
+    const partner = strField("partner");
+    if (!partner) return null;
+    const co = numField("co_change_count");
+    const corr = numField("correlation");
+    const pct = corr != null ? `${Math.round(corr * 100)}%` : null;
+    const tail = [
+      co != null ? `${co} co-changes` : null,
+      pct ? `${pct} of shared commits` : null,
+    ]
+      .filter(Boolean)
+      .join(" — ");
+    return `Partner file: \`${partner}\`${tail ? ` — ${tail}` : ""}`;
+  }
+  if (biomarkerType === "complex_conditional") {
+    const ops = numField("operator_count");
+    if (ops == null) return null;
+    return `Boolean operators in this condition: ${ops}`;
+  }
+  if (biomarkerType === "function_hotspot") {
+    const mod = numField("modification_count") ?? numField("mod_count");
+    const p80 = numField("repo_p80") ?? numField("p80");
+    if (mod == null) return null;
+    return `Function modified across ${mod} distinct commits${p80 != null ? ` (repo p80 = ${p80})` : ""}`;
+  }
+  if (biomarkerType === "code_age_volatility") {
+    const age = numField("median_age_days");
+    const recent = numField("recent_mod_count");
+    if (age == null && recent == null) return null;
+    const parts: string[] = [];
+    if (age != null) parts.push(`median line age ~${age} days`);
+    if (recent != null) parts.push(`${recent} distinct commits in last 30 days`);
+    return parts.join(", ");
+  }
+  return null;
+}
+
 function effortHint(effort: RefactoringTarget["effort_bucket"]): string {
   switch (effort) {
     case "S":
@@ -89,12 +144,19 @@ export function buildAiPrompt({
               : ""
           }`
         : "file-level";
+      const extra = biomarkerExtraContext(
+        f.biomarker_type,
+        (f as { details?: Record<string, unknown> | null }).details,
+      );
       return [
         `${i + 1}. **${info.label}** · ${CATEGORY_LABEL[info.category]} · ${f.severity.toUpperCase()} · health impact −${f.health_impact.toFixed(2)}`,
         `   - Where: ${loc}`,
         `   - Why it's a problem: ${info.description}`,
         `   - Observed: ${f.reason}`,
-      ].join("\n");
+        extra ? `   - Extra context: ${extra}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
     })
     .join("\n\n");
 

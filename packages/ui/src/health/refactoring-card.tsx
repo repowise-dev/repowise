@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ArrowUpRight, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 import { biomarkerLabel } from "./biomarker-glossary";
+import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, type Severity } from "./tokens";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
@@ -12,9 +13,12 @@ export interface RefactoringTargetFinding {
   biomarker_type: string;
   severity: Severity;
   function_name: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
   health_impact: number;
   reason: string;
   status?: string;
+  details?: BiomarkerDetailsRecord | null;
 }
 
 export interface RefactoringTarget {
