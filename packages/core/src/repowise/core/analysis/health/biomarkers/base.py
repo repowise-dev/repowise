@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from ....ingestion.git_indexer.function_blame import BlameIndex
 from ..complexity import FunctionComplexity
 from ..duplication import ClonePair
 from ..models import Severity
@@ -63,6 +64,17 @@ class FileContext:
     # ``hidden_coupling`` to compute correlation denominators against
     # the partner file. Empty when git indexing was skipped.
     repo_commit_counts: dict[str, int] = field(default_factory=dict)
+    # Per-line blame index produced by the FULL git tier (see
+    # ``ingestion.git_indexer.function_blame``). ``None`` on ESSENTIAL
+    # tier until ``backfill_blame()`` runs; function-level biomarkers
+    # must treat ``None`` (and an empty index) as the documented
+    # "no signal" outcome and emit zero findings.
+    blame_index: BlameIndex | None = None
+    # Repo-wide p80 of per-function modification counts, computed by the
+    # engine across every function in the analyze() call. ``None`` when
+    # blame is unavailable or no functions exist. ``function_hotspot``
+    # uses this as the churn threshold for its top-quintile gate.
+    repo_function_mod_p80: int | None = None
 
 
 @dataclass

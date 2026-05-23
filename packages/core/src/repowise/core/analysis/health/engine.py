@@ -25,6 +25,10 @@ from typing import Any
 
 import structlog
 
+from ...ingestion.git_indexer.function_blame import (
+    BlameIndex,
+    distinct_commits_in_range,
+)
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FunctionComplexity, walk_file_complexity
@@ -90,6 +94,36 @@ class _ImportEdgeView:
         except Exception:
             return False
         return data.get("edge_type") == key
+
+
+def _compute_repo_function_mod_p80(
+    walked: list[tuple[Any, list[FunctionComplexity]]],
+    git_meta_map: dict[str, dict],
+) -> int | None:
+    """Compute the repo-wide 80th percentile of per-function modification counts.
+
+    Uses the per-file ``BlameIndex`` produced by the FULL git tier. Returns
+    ``None`` when blame is unavailable on every file (ESSENTIAL tier, or
+    git indexing skipped entirely) — biomarkers treat ``None`` as the
+    "no signal" outcome.
+    """
+    counts: list[int] = []
+    for pf, fc_list in walked:
+        meta = git_meta_map.get(pf.file_info.path) or {}
+        idx = meta.get("blame_index")
+        if not isinstance(idx, BlameIndex) or not idx.lines:
+            continue
+        for fc in fc_list:
+            mod_count = len(distinct_commits_in_range(idx, fc.start_line, fc.end_line))
+            if mod_count > 0:
+                counts.append(mod_count)
+    if not counts:
+        return None
+    counts.sort()
+    # ``int(0.8 * n)`` matches the (inclusive-lower) percentile convention
+    # already used by churn_percentile in enrich.compute_percentiles.
+    idx_p80 = min(len(counts) - 1, max(0, int(0.8 * len(counts))))
+    return counts[idx_p80]
 
 
 def _build_repo_commit_counts(git_meta_map: dict[str, dict]) -> dict[str, int]:
@@ -198,6 +232,10 @@ class HealthAnalyzer:
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
 
+        # Pre-walk every target so we can compute the repo-wide p80 of
+        # per-function modification counts ONCE before any biomarker runs.
+        # The walked list is reused by the per-file biomarker stage below.
+        walked: list[tuple[Any, list[FunctionComplexity]]] = []
         for pf in self.parsed_files:
             if changed_set is not None and pf.file_info.path not in changed_set:
                 continue
@@ -206,7 +244,11 @@ class HealthAnalyzer:
             except Exception as exc:
                 log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
                 fc_list = []
+            walked.append((pf, fc_list))
 
+        repo_fn_mod_p80 = _compute_repo_function_mod_p80(walked, self.git_meta_map)
+
+        for pf, fc_list in walked:
             # Side-effect: bump Symbol.complexity_estimate when we can
             # match by enclosing line range. Symbols not matched keep
             # their default (1).
@@ -226,6 +268,7 @@ class HealthAnalyzer:
                 dup_report=dup_report,
                 graph_view=graph_view,
                 repo_commit_counts=repo_commit_counts,
+                repo_function_mod_p80=repo_fn_mod_p80,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -320,6 +363,7 @@ class HealthAnalyzer:
             return pf, fc
 
         walked = await asyncio.gather(*[_one(pf) for pf in target_files])
+        repo_fn_mod_p80 = _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
 
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
@@ -339,6 +383,7 @@ class HealthAnalyzer:
                 dup_report=dup_report,
                 graph_view=graph_view,
                 repo_commit_counts=repo_commit_counts,
+                repo_function_mod_p80=repo_fn_mod_p80,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -395,6 +440,7 @@ class HealthAnalyzer:
         dup_report: DuplicationReport,
         graph_view: HasEdge | None = None,
         repo_commit_counts: dict[str, int] | None = None,
+        repo_function_mod_p80: int | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData]]:
         file_path = pf.file_info.path
 
@@ -423,6 +469,10 @@ class HealthAnalyzer:
 
         module = self.module_map.get(file_path) or _fallback_module(file_path)
 
+        file_git_meta = self.git_meta_map.get(file_path, {}) or {}
+        blame_idx_obj = file_git_meta.get("blame_index")
+        blame_index = blame_idx_obj if isinstance(blame_idx_obj, BlameIndex) else None
+
         ctx = FileContext(
             file_path=file_path,
             language=pf.file_info.language,
@@ -432,7 +482,7 @@ class HealthAnalyzer:
             or _coverage_is_test_file(file_path),
             module=module,
             function_metrics=fn_metrics,
-            git_meta=self.git_meta_map.get(file_path, {}) or {},
+            git_meta=file_git_meta,
             dependents_count=dependents_count,
             pagerank_score=0.0,
             line_coverage_pct=line_cov,
@@ -443,6 +493,8 @@ class HealthAnalyzer:
             duplication_pct=dup_pct,
             graph_view=graph_view,
             repo_commit_counts=repo_commit_counts or {},
+            blame_index=blame_index,
+            repo_function_mod_p80=repo_function_mod_p80,
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)
