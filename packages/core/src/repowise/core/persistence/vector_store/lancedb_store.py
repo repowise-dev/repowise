@@ -1,0 +1,201 @@
+"""LanceDB-backed vector store (embedded, local file storage)."""
+
+from __future__ import annotations
+
+from repowise.core.providers.embedding.base import Embedder
+
+from ..search import SearchResult
+from ._base import VectorStore
+
+__all__ = ["LanceDBVectorStore"]
+
+
+class LanceDBVectorStore(VectorStore):
+    """Vector store backed by LanceDB (embedded, local file storage).
+
+    Requires the ``repowise-core[search]`` extra:
+        pip install repowise-core[search]
+
+    Data is stored in *db_path* (e.g. ``.repowise/lancedb/``).
+    The LanceDB table is created lazily on the first call to
+    :meth:`embed_and_upsert`.
+    """
+
+    _TABLE_NAME = "wiki_pages"
+
+    def __init__(
+        self, db_path: str, embedder: Embedder, table_name: str | None = None
+    ) -> None:
+        self._db_path = db_path
+        self._embedder = embedder
+        self._table_name = table_name or self._TABLE_NAME
+        self._db = None
+        self._table = None
+
+    async def _ensure_connected(self) -> None:
+        if self._db is not None:
+            return
+        try:
+            import lancedb  # type: ignore[import]
+        except ImportError as exc:
+            raise RuntimeError(
+                "LanceDB is not installed. Install it with: pip install repowise-core[search]"
+            ) from exc
+
+        self._db = await lancedb.connect_async(self._db_path)
+        table_names = await self._db.table_names()
+        if self._table_name in table_names:
+            self._table = await self._db.open_table(self._table_name)
+        else:
+            self._table = None  # will be created on first upsert
+
+    async def _ensure_table(self, sample_vector: list[float]) -> None:
+        """Create the LanceDB table if it does not exist yet."""
+        if self._table is not None:
+            return
+
+        try:
+            import pyarrow as pa  # type: ignore[import]
+        except ImportError as exc:
+            raise RuntimeError(
+                "pyarrow is required for LanceDBVectorStore. "
+                "It is installed automatically with lancedb."
+            ) from exc
+
+        dim = len(sample_vector)
+        schema = pa.schema(
+            [
+                pa.field("page_id", pa.string()),
+                pa.field("vector", pa.list_(pa.float32(), dim)),
+                pa.field("title", pa.string()),
+                pa.field("page_type", pa.string()),
+                pa.field("target_path", pa.string()),
+                pa.field("content_snippet", pa.string()),
+            ]
+        )
+        self._table = await self._db.create_table(  # type: ignore[union-attr]
+            self._table_name, schema=schema, exist_ok=True
+        )
+
+    @staticmethod
+    def _row(page_id: str, vector: list[float], metadata: dict) -> dict:
+        content = str(metadata.get("content", ""))
+        return {
+            "page_id": page_id,
+            "vector": [float(v) for v in vector],
+            "title": str(metadata.get("title", "")),
+            "page_type": str(metadata.get("page_type", "")),
+            "target_path": str(metadata.get("target_path", "")),
+            "content_snippet": content[:200],
+        }
+
+    async def _upsert_rows(self, rows: list[dict]) -> None:
+        # merge_insert: upsert by page_id (LanceDB 0.12+)
+        try:
+            await (
+                self._table.merge_insert("page_id")  # type: ignore[union-attr]
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute(rows)
+            )
+        except AttributeError:
+            # Fallback for older LanceDB versions: delete + add
+            for row in rows:
+                safe_id = str(row["page_id"]).replace("'", "''")
+                await self._table.delete(f"page_id = '{safe_id}'")  # type: ignore[union-attr]
+            await self._table.add(rows)  # type: ignore[union-attr]
+
+    async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
+        await self._ensure_connected()
+        vectors = await self._embedder.embed([text])
+        vector = vectors[0]
+        await self._ensure_table(vector)
+        meta = {"content": text, **metadata}
+        await self._upsert_rows([self._row(page_id, vector, meta)])
+
+    async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
+        if not items:
+            return
+        await self._ensure_connected()
+        texts = [text for _, text, _ in items]
+        vectors = await self._embedder.embed(texts)
+        await self._ensure_table(vectors[0])
+        rows = [
+            self._row(page_id, vector, {"content": text, **metadata})
+            for (page_id, text, metadata), vector in zip(items, vectors, strict=True)
+        ]
+        await self._upsert_rows(rows)
+
+    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        await self._ensure_connected()
+        if self._table is None:
+            return []
+
+        q_vecs = await self._embedder.embed([query])
+        q_vec = [float(v) for v in q_vecs[0]]
+
+        raw = (
+            await self._table.query()  # type: ignore[union-attr]
+            .nearest_to(q_vec)
+            .limit(limit)
+            .to_list()
+        )
+
+        return [
+            SearchResult(
+                page_id=r["page_id"],
+                title=r.get("title", ""),
+                page_type=r.get("page_type", ""),
+                target_path=r.get("target_path", ""),
+                score=float(r.get("_distance", 0.0)),
+                snippet=r.get("content_snippet", ""),
+                search_type="vector",
+            )
+            for r in raw
+        ]
+
+    async def delete(self, page_id: str) -> None:
+        await self._ensure_connected()
+        if self._table is not None:
+            safe_id = page_id.replace("'", "''")
+            await self._table.delete(f"page_id = '{safe_id}'")  # type: ignore[union-attr]
+
+    async def close(self) -> None:
+        self._table = None
+        self._db = None
+
+    async def list_page_ids(self) -> set[str]:
+        await self._ensure_connected()
+        if self._table is None:
+            return set()
+        rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
+        return {r["page_id"] for r in rows}
+
+    async def get_page_summary_by_path(self, path: str) -> dict | None:
+        """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
+
+        LanceDB stores up to 200 chars of content in 'content_snippet'; we use
+        that as the summary. 'key_exports' is not stored in the schema, so we
+        return [] — the caller only uses the text summary for prompt injection.
+        """
+        await self._ensure_connected()
+        if self._table is None:
+            return None
+
+        safe_path = path.replace("'", "''")
+        try:
+            rows = (
+                await self._table.query()  # type: ignore[union-attr]
+                .where(f"target_path = '{safe_path}'")
+                .select(["content_snippet"])
+                .limit(1)
+                .to_list()
+            )
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        summary = rows[0].get("content_snippet") or ""
+        return {"summary": str(summary), "key_exports": []}

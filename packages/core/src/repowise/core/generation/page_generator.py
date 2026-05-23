@@ -608,7 +608,6 @@ class PageGenerator:
 
         all_pages: list[GeneratedPage] = []
         semaphore = asyncio.Semaphore(self._config.max_concurrency)
-        embed_semaphore = asyncio.Semaphore(self._config.embed_concurrency or 1)
         # Summaries of completed pages: target_path → brief summary text (for dep context)
         completed_page_summaries: dict[str, str] = {}
 
@@ -643,36 +642,30 @@ class PageGenerator:
                 self._provider.model_name,
             )
 
-        async def _embed_async(page: GeneratedPage) -> None:
-            """Embed a finished page into the vector store. Safe to fire-and-forget.
-
-            Errors are swallowed at debug level — embedding is a RAG
-            enhancement, not load-bearing for the page itself.
-            """
-            try:
-                summary = _extract_summary(page.content)
-                async with embed_semaphore:
-                    await self._vector_store.embed_and_upsert(
-                        page.page_id,
-                        page.content,
-                        {
-                            "page_type": page.page_type,
-                            "target_path": page.target_path,
-                            "content": page.content[:600],
-                            "summary": summary,
-                        },
-                    )
-            except Exception as e:
-                log.debug("rag.embed_failed", page_id=page.page_id, error=str(e))
+        def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:
+            """Build the ``(page_id, text, metadata)`` tuple for embedding."""
+            summary = _extract_summary(page.content)
+            return (
+                page.page_id,
+                page.content,
+                {
+                    "page_type": page.page_type,
+                    "target_path": page.target_path,
+                    "content": page.content[:600],
+                    "summary": summary,
+                },
+            )
 
         async def run_level(named_coros: list[tuple[str, Any]], level: int) -> list[GeneratedPage]:
             if job_system is not None and job_id is not None:
                 job_system.update_level(job_id, level)
 
-            # Embed tasks spawned during this level. Drained after the
-            # gather() so the next level's RAG search sees a fully-indexed
-            # store, but never blocks the per-page wave.
-            pending_embeds: list[asyncio.Task[None]] = []
+            # Pages finished during this level, collected for a single
+            # batched embed at the end. Embedding the whole wave in one
+            # call amortises the embedder round-trip — important on large
+            # repos — and the level drains before the next level's RAG
+            # search runs anyway, so there is no freshness regression.
+            embed_items: list[tuple[str, str, dict]] = []
 
             async def guarded_named(page_id: str, coro: Any) -> Any:
                 try:
@@ -691,13 +684,8 @@ class PageGenerator:
                         # the embed completes.
                         if on_page_done is not None:
                             on_page_done(result.page_type)
-                        # Fire-and-forget the embed/upsert. Removes ~1
-                        # embedder round-trip from this task's critical
-                        # path so the LLM slot frees up immediately.
                         if self._vector_store is not None:
-                            pending_embeds.append(
-                                asyncio.create_task(_embed_async(result))
-                            )
+                            embed_items.append(_embed_item(result))
                     return result
                 except Exception as exc:
                     if job_system is not None and job_id is not None:
@@ -712,10 +700,17 @@ class PageGenerator:
 
             tasks = [guarded_named(pid, c) for pid, c in named_coros]
             results = await asyncio.gather(*tasks)
-            # Drain pending embeds before declaring the level done — the
-            # next level's RAG search depends on these landing in the store.
-            if pending_embeds:
-                await asyncio.gather(*pending_embeds, return_exceptions=True)
+            # Embed the whole level in one batch before declaring it done —
+            # the next level's RAG search depends on these landing in the
+            # store. Embedding is a RAG enhancement, not load-bearing for
+            # the pages themselves, so failures are swallowed at debug level.
+            if embed_items and self._vector_store is not None:
+                try:
+                    await self._vector_store.embed_batch(embed_items)
+                except Exception as e:
+                    log.debug(
+                        "rag.embed_batch_failed", count=len(embed_items), error=str(e)
+                    )
             pages = [r for r in results if isinstance(r, GeneratedPage)]
             if job_system is not None and job_id is not None:
                 for r in pages:

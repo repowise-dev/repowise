@@ -24,6 +24,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ingestion.git_indexer import GitIndexTier
+from repowise.core.pipeline.modes import OrchestratorMode
 from repowise.core.pipeline.progress import ProgressCallback
 from repowise.core.registry import HookProgressCallback
 
@@ -214,6 +216,8 @@ async def run_pipeline(
     concurrency: int = 5,
     test_run: bool = False,
     resume: bool = False,
+    mode: OrchestratorMode = OrchestratorMode.STANDARD,
+    job_store: Any | None = None,
     progress: ProgressCallback | None = None,
     cost_tracker: Any | None = None,
     generation_config: Any | None = None,
@@ -266,9 +270,27 @@ async def run_pipeline(
 
     commit_depth = max(1, min(commit_depth, 5000))
 
+    # Mode policy: FAST forces ESSENTIAL git indexing and disables doc
+    # generation (and therefore all LLM calls). STANDARD preserves the
+    # caller's flags exactly. This is the single switch point — the rest of
+    # the pipeline reads ``generate_docs`` / the git tier, not ``mode``.
+    git_tier = mode.git_tier
+    generate_docs = generate_docs and mode.allows_doc_generation
+
     # Wrap the incoming progress callback so registered pipeline hooks fire
     # around each phase transition. Zero-op when no hooks are registered.
     progress = HookProgressCallback(progress)
+
+    # Optional crash-resume checkpointing. When a JobStore is supplied, a
+    # checkpointer records each major phase's lifecycle (via the same hook
+    # seam) so a re-run can detect completed phases. No-op otherwise — the
+    # default (None) preserves existing behaviour exactly.
+    _checkpointer = None
+    if job_store is not None:
+        from repowise.core.pipeline.checkpoint import PhaseCheckpointer
+
+        _checkpointer = PhaseCheckpointer(job_store, str(repo_path))
+        await _checkpointer.start()
 
     # Attach cost tracker to provider if supplied
     if cost_tracker is not None and llm_client is not None and hasattr(llm_client, "_cost_tracker"):
@@ -288,6 +310,7 @@ async def run_pipeline(
             repo_path,
             commit_depth=commit_depth,
             follow_renames=follow_renames,
+            tier=git_tier,
             progress=progress,
         )
 
@@ -473,6 +496,12 @@ async def run_pipeline(
     _phase_done(progress, "graph.flows")
 
     # ---- Build result -------------------------------------------------------
+    # Flush checkpoints on the success path; on an exception above this point
+    # the checkpointer is intentionally not closed so interrupted phases stay
+    # RUNNING for a resumable re-run.
+    if _checkpointer is not None:
+        await _checkpointer.aclose()
+
     elapsed = time.monotonic() - start
     languages = {fi.language for fi in file_infos if hasattr(fi, "language") and fi.language}
     symbol_count = sum(len(pf.symbols) for pf in parsed_files)
@@ -793,6 +822,7 @@ async def _run_git_indexing(
     *,
     commit_depth: int,
     follow_renames: bool,
+    tier: GitIndexTier = GitIndexTier.FULL,
     progress: ProgressCallback | None,
 ) -> tuple[Any | None, list[dict], dict[str, dict]]:
     """Run git history indexing.
@@ -806,6 +836,7 @@ async def _run_git_indexing(
             repo_path,
             commit_limit=commit_depth,
             follow_renames=follow_renames,
+            tier=tier,
         )
 
         def _on_start(total: int) -> None:

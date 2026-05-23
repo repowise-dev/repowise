@@ -225,6 +225,95 @@ async def test_in_memory_store_close_clears(in_memory_vector_store):
 
 
 # ---------------------------------------------------------------------------
+# embed_batch
+# ---------------------------------------------------------------------------
+
+
+async def test_in_memory_embed_batch_empty_is_noop(in_memory_vector_store):
+    await in_memory_vector_store.embed_batch([])
+    assert len(in_memory_vector_store) == 0
+
+
+async def test_in_memory_embed_batch_matches_single_path(mock_embedder):
+    """embed_batch must produce the same stored vectors as N embed_and_upsert calls."""
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+
+    items = [
+        (
+            f"p{i}",
+            f"content number {i}",
+            {
+                "title": f"Page {i}",
+                "page_type": "file_page",
+                "target_path": f"f{i}.py",
+                "content": f"content number {i}",
+            },
+        )
+        for i in range(5)
+    ]
+
+    batched = InMemoryVectorStore(mock_embedder)
+    await batched.embed_batch(items)
+
+    single = InMemoryVectorStore(mock_embedder)
+    for page_id, text, meta in items:
+        await single.embed_and_upsert(page_id, text, meta)
+
+    assert len(batched) == len(single) == 5
+    # Identical query results prove vectors + metadata landed identically.
+    bq = await batched.search("content number 2", limit=5)
+    sq = await single.search("content number 2", limit=5)
+    assert [(r.page_id, r.title) for r in bq] == [(r.page_id, r.title) for r in sq]
+
+
+async def test_in_memory_embed_batch_searchable(in_memory_vector_store):
+    await in_memory_vector_store.embed_batch(
+        [
+            (
+                "p1",
+                "Python decorator pattern",
+                {"title": "Dec", "page_type": "file_page", "target_path": "a.py", "content": "Python decorator pattern"},
+            ),
+            (
+                "p2",
+                "Rust ownership model",
+                {"title": "Rust", "page_type": "file_page", "target_path": "b.py", "content": "Rust ownership model"},
+            ),
+        ]
+    )
+    assert len(in_memory_vector_store) == 2
+    results = await in_memory_vector_store.search("Python decorator pattern", limit=2)
+    assert results[0].page_id == "p1"
+
+
+async def test_base_embed_batch_default_uses_single_path(mock_embedder):
+    """A backend that does NOT override embed_batch falls back to the ABC's
+    sequential default, which must still upsert every item correctly.
+    """
+    from repowise.core.persistence.vector_store import VectorStore
+
+    class _CountingStore(VectorStore):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def embed_and_upsert(self, page_id, text, metadata):
+            self.calls.append(page_id)
+
+        async def search(self, query, limit=10):
+            return []
+
+        async def delete(self, page_id):
+            return None
+
+        async def close(self):
+            return None
+
+    store = _CountingStore()
+    await store.embed_batch([("a", "x", {}), ("b", "y", {})])
+    assert store.calls == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
 # LanceDB (optional — skipped if not installed)
 # ---------------------------------------------------------------------------
 
@@ -244,5 +333,24 @@ async def test_lancedb_vector_store_basic(tmp_path, mock_embedder):
         results = await store.search("async generators", limit=5)
         assert len(results) >= 1
         assert results[0].page_id == "p1"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_lancedb_embed_batch(tmp_path, mock_embedder):
+    lancedb = pytest.importorskip("lancedb")  # noqa: F841
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    store = LanceDBVectorStore(str(tmp_path / "lance"), mock_embedder)
+    try:
+        await store.embed_batch(
+            [
+                ("p1", "Python async generators", {"target_path": "a.py"}),
+                ("p2", "Rust ownership model", {"target_path": "b.py"}),
+            ]
+        )
+        ids = await store.list_page_ids()
+        assert ids == {"p1", "p2"}
     finally:
         await store.close()

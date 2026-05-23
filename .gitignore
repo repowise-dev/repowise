@@ -83,6 +83,9 @@ next-env.d.ts
 .repowise-workspace/
 .repowise-workspace.yaml
 
+# Benchmark output (large-repo scale runs) — keep the dir, ignore results
+bench/results/
+
 # Database
 *.db
 *.db-shm

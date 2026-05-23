@@ -949,6 +949,17 @@ def _workspace_init(
     help="Index files, git history, graph, and dead code — skip LLM page generation.",
 )
 @click.option(
+    "--mode",
+    "run_mode",
+    type=click.Choice(["standard", "fast"]),
+    default="standard",
+    help=(
+        "Pipeline depth. 'fast' indexes graph + essential git only (no per-file "
+        "blame, no co-change, no LLM docs) for a quick first pass on very large "
+        "repos; backfill the rest later. Default: standard."
+    ),
+)
+@click.option(
     "--exclude",
     "-x",
     multiple=True,
@@ -1025,6 +1036,7 @@ def init_command(
     reasoning: str | None,
     test_run: bool,
     index_only: bool,
+    run_mode: str,
     exclude: tuple[str, ...],
     commit_limit: int | None,
     follow_renames: bool,
@@ -1038,7 +1050,13 @@ def init_command(
 
     PATH defaults to the current directory.
     Use --index-only to run ingestion (AST, graph, git, dead code) without LLM generation.
+    Use --mode fast for a quick graph + essential-git index of a very large repo.
     """
+    # --mode fast is a graph + essential-git index with no LLM work, so it
+    # implies index-only on the CLI side; the orchestrator mode below switches
+    # the git tier to ESSENTIAL.
+    if run_mode == "fast":
+        index_only = True
     from repowise.cli.ui import (
         BRAND,
         RichProgressCallback,
@@ -1267,6 +1285,11 @@ def init_command(
     llm_client = provider if not index_only else decision_provider
 
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
+    from repowise.core.pipeline.modes import OrchestratorMode
+
+    orchestrator_mode = (
+        OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
+    )
 
     with Progress(
         SpinnerColumn(),
@@ -1298,6 +1321,7 @@ def init_command(
                 llm_client=llm_client,
                 concurrency=concurrency,
                 test_run=test_run,
+                mode=orchestrator_mode,
                 progress=callback,
             )
         )

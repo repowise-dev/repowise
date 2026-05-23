@@ -1,0 +1,58 @@
+"""Git history indexer for the repowise ingestion pipeline.
+
+Mines git history into the git_metadata table. Uses gitpython for git
+operations and parallelises per-file git log calls.
+
+Non-blocking: if git is unavailable or the repo has no history, a warning is
+logged and an empty summary returned. All downstream features degrade
+gracefully.
+
+The indexer is tiered (:class:`GitIndexTier`): ``FULL`` (default) preserves the
+historical behaviour exactly, while ``ESSENTIAL`` skips the two expensive
+signals — per-file ``git blame`` and the repo-wide co-change walk — for fast
+large-repo indexing. :func:`~.backfill.backfill_full_tier` promotes an
+ESSENTIAL index to FULL afterwards.
+
+This package was split out of a single 1k-line module; the public import path
+(``repowise.core.ingestion.git_indexer``) is unchanged.
+"""
+
+from __future__ import annotations
+
+from ._constants import HOTSPOT_HALFLIFE_DAYS
+from .backfill import BACKFILL_PHASE, backfill_full_tier
+from .co_change import compute_co_changes
+from .enrich import (
+    compute_percentiles,
+    detect_original_path,
+    get_blame_ownership,
+    is_significant_commit,
+)
+from .file_history import index_file
+from .indexer import GitIndexer
+from .records import (
+    GitIndexSummary,
+    _CommitRec,
+    _extract_rename_paths,
+    _should_skip_index,
+)
+from .tiers import GitIndexTier
+
+__all__ = [
+    "BACKFILL_PHASE",
+    "HOTSPOT_HALFLIFE_DAYS",
+    "GitIndexSummary",
+    "GitIndexTier",
+    "GitIndexer",
+    # Re-exported for ``git_commit_index`` which builds the shared commit index.
+    "_CommitRec",
+    "_extract_rename_paths",
+    "_should_skip_index",
+    "backfill_full_tier",
+    "compute_co_changes",
+    "compute_percentiles",
+    "detect_original_path",
+    "get_blame_ownership",
+    "index_file",
+    "is_significant_commit",
+]
