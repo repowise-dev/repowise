@@ -11,6 +11,9 @@ import {
   HealthFileTable,
   BiomarkerList,
   ModuleRollupList,
+  HotFunctionsPanel,
+  HiddenCouplingList,
+  RecalibrationBanner,
   type FileSortField,
   type Severity,
 } from "@repowise-dev/ui/health";
@@ -18,6 +21,8 @@ import {
   getHealthOverview,
   getHealthTrend,
   listHealthFiles,
+  listHealthFindings,
+  type HealthFinding,
   type HealthOverviewResponse,
   type HealthTrendResponse,
   type HealthFilesResponse,
@@ -36,6 +41,36 @@ export default function HealthPage() {
     () => getHealthOverview(id, 25),
     { revalidateOnFocus: false },
   );
+  const { data: hotFunctionFindings } = useSWR<HealthFinding[]>(
+    `code-health-hot-functions:${id}`,
+    async () => {
+      const types = [
+        "function_hotspot",
+        "code_age_volatility",
+        "complex_conditional",
+      ] as const;
+      const batches = await Promise.all(
+        types.map((t) =>
+          listHealthFindings(id, { biomarker_type: t, limit: 100 }).catch(
+            () => [] as HealthFinding[],
+          ),
+        ),
+      );
+      return batches.flat();
+    },
+    { revalidateOnFocus: false },
+  );
+
+  const { data: couplingFindings } = useSWR<HealthFinding[]>(
+    `code-health-hidden-coupling:${id}`,
+    () =>
+      listHealthFindings(id, {
+        biomarker_type: "hidden_coupling",
+        limit: 100,
+      }).catch(() => []),
+    { revalidateOnFocus: false },
+  );
+
   const { data: trend } = useSWR<HealthTrendResponse>(
     `code-health-trend:${id}`,
     () => getHealthTrend(id, 20),
@@ -131,6 +166,7 @@ export default function HealthPage() {
         </div>
       ) : overview ? (
         <>
+          <RecalibrationBanner repoId={id} />
           <HealthKpiCards
             summary={overview.summary}
             averageHistory={avgSeries}
@@ -234,6 +270,20 @@ export default function HealthPage() {
               />
             </div>
           </div>
+
+          {hotFunctionFindings && hotFunctionFindings.length >= 3 ? (
+            <HotFunctionsPanel
+              findings={hotFunctionFindings}
+              onSelect={(f) => setSelectedFile(f.file_path)}
+            />
+          ) : null}
+
+          {couplingFindings && couplingFindings.length >= 3 ? (
+            <HiddenCouplingList
+              findings={couplingFindings}
+              onSelect={(path) => setSelectedFile(path)}
+            />
+          ) : null}
 
           {overview.modules && overview.modules.length > 0 ? (
             <div className="space-y-2">
