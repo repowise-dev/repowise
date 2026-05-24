@@ -522,6 +522,7 @@ async def run_pipeline(
         decision_report=decision_report,
         health_report=health_report,
         execution_flow_report=execution_flow_report,
+        knowledge_graph_result=knowledge_graph_result,
         generated_pages=generated_pages,
         traversal_stats=traversal_stats,
         repo_name=repo_path.name,
@@ -770,6 +771,41 @@ async def _run_ingestion(
         _timed_step("symbol communities", graph_builder.symbol_communities, progress),
     )
     _phase_done(progress, "graph.communities")
+
+    # ---- Knowledge Graph skeleton (deterministic, no LLM) ----------------
+    knowledge_graph_result = None
+    try:
+        from repowise.core.analysis.knowledge_graph import (
+            build_knowledge_graph_skeleton,
+            compute_kg_fingerprint,
+        )
+
+        if progress:
+            progress.on_phase_start("knowledge_graph.skeleton", None)
+        knowledge_graph_result = build_knowledge_graph_skeleton(
+            parsed_files=parsed_files,
+            graph_builder=graph_builder,
+            repo_structure=repo_structure,
+            tech_stack=[
+                {"name": t.name, "version": t.version, "category": t.category}
+                for t in tech_items
+            ],
+            external_systems=external_systems,
+            git_meta_map=git_meta_map,
+            dead_code_report=dead_code_report,
+            repo_path=repo_path,
+        )
+        knowledge_graph_result.fingerprint = compute_kg_fingerprint(graph_builder)
+        if progress:
+            progress.on_message(
+                "info",
+                f"  ↳ KG skeleton: {len(knowledge_graph_result.nodes)} nodes, "
+                f"{len(knowledge_graph_result.edges)} edges, "
+                f"{len(knowledge_graph_result.layers)} layers",
+            )
+        _phase_done(progress, "knowledge_graph.skeleton")
+    except Exception as _kg_err:
+        logger.warning("kg_skeleton_building_skipped", error=str(_kg_err))
 
     # Emit filtering summary so users can see what was included/excluded
     stats = traverser.stats
