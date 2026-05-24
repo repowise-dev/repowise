@@ -193,6 +193,9 @@ class PipelineResult:
     # for the same reason as tech_stack.
     external_systems: list[dict] = field(default_factory=list)
 
+    knowledge_graph_result: Any | None = None
+    """``KnowledgeGraphResult`` or None — populated after community detection."""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline

@@ -700,6 +700,43 @@ class AnswerCache(Base):
     )
 
 
+class KnowledgeGraphLayer(Base):
+    __tablename__ = "knowledge_graph_layers"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    layer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    node_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (UniqueConstraint("repository_id", "layer_id", name="uq_kg_layer"),)
+
+
+class KnowledgeGraphTourStep(Base):
+    __tablename__ = "knowledge_graph_tour_steps"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    node_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (UniqueConstraint("repository_id", "step_order", name="uq_kg_tour_step"),)
+
+
 class PipelineJob(Base):
     """Checkpoint/resume state for one execution of a pipeline phase.
 

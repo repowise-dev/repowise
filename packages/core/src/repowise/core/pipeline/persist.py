@@ -276,6 +276,16 @@ async def persist_pipeline_result(
             except Exception as _stale_err:
                 logger.debug("staleness_scoring_skipped", error=str(_stale_err))
 
+    # ---- Knowledge graph layers & tour steps -----------------------------------
+    kg = getattr(result, "knowledge_graph_result", None)
+    if kg is not None:
+        from repowise.core.persistence.crud import upsert_kg_layers, upsert_kg_tour_steps
+
+        if hasattr(kg, "layers") and kg.layers:
+            await upsert_kg_layers(session, repo_id, kg.layers)
+        if hasattr(kg, "tour") and kg.tour:
+            await upsert_kg_tour_steps(session, repo_id, kg.tour)
+
     logger.info(
         "pipeline_result_persisted",
         repo_id=repo_id,

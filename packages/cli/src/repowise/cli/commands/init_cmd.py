@@ -765,7 +765,26 @@ def _workspace_init(
             state["model"] = provider.model_name
         if repo_phase_timings:
             state["phase_timings"] = repo_phase_timings
+        kg = getattr(result, "knowledge_graph_result", None)
+        if kg is not None:
+            state["knowledge_graph"] = {
+                "version": "1.0.0",
+                "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
+                "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
+                "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
+                "has_summaries": any(n.get("summary") for n in kg.nodes) if hasattr(kg, "nodes") else False,
+                "fingerprint": getattr(kg, "fingerprint", ""),
+            }
         save_state(repo.path, state)
+
+        if kg is not None and hasattr(kg, "to_dict"):
+            import json as _kg_json
+
+            kg_json_path = repo.path / ".repowise" / "knowledge-graph.json"
+            kg_json_path.parent.mkdir(parents=True, exist_ok=True)
+            kg_json_path.write_text(
+                _kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8"
+            )
 
         # Update workspace config with indexing metadata
         from datetime import datetime, timezone
