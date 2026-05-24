@@ -23,7 +23,7 @@ Five intelligence layers. Nine MCP tools. Multi-repo workspaces. Auto-sync hooks
 
 Your AI coding agent reads files. It doesn't know which ones change together, which ones are dead, or why they were built the way they were. It has the source code and no memory of how the codebase got there.
 
-repowise fixes that. It indexes your codebase into four intelligence layers — dependency graph, git history, auto-generated documentation, and architectural decisions — and exposes them to Claude Code (and any MCP-compatible AI agent) through eight precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **27× fewer tokens per query. 36% cheaper. Same answer quality.**
+repowise fixes that. It indexes your codebase into five intelligence layers — dependency graph, git history, auto-generated documentation, architectural decisions, and code health — and exposes them to Claude Code (and any MCP-compatible AI agent) through nine precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **Up to 70% fewer tool calls, 89% fewer file reads, and 36% cheaper per query — at parity answer quality.**
 
 The result: your agent answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
@@ -31,18 +31,34 @@ The result: your agent answers *"why does auth work this way?"* instead of *"her
 
 ## 🏆 Benchmarked against frontier LLMs
 
-> **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)** — an open SWE-QA benchmark that grades how well standard LLMs answer real software-engineering questions over real repositories.
->
-> On 48 paired tasks from `pallets/flask` (`claude-sonnet-4-6`, end-to-end), repowise-augmented Claude Code matches baseline answer quality while being dramatically leaner:
->
-> | Metric (per task, mean) | Baseline | **+ repowise** | Δ |
-> |---|---|---|---|
-> | 💰 Cost | $0.1396 | **$0.0890** | **−36 %** |
-> | ⚡ Wall time | 41.7 s | **33.9 s** | **−19 %** |
-> | 🛠️ Tool calls | 7.4 | **3.8** | **−49 %** |
-> | 📄 Files read | 1.9 | **0.2** | **−89 %** |
->
-> **32 / 48 (67 %)** tasks are cheaper with repowise — at parity quality (judge Δ ≈ −0.01).
+Same model. Same harness. The only difference is whether the agent has repowise's MCP tools. On a paired SWE-QA benchmark over real repositories, repowise makes a state-of-the-art coding agent **dramatically cheaper and leaner — while answering just as well.**
+
+> **Up to −70 % tool calls · −89 % file reads · −36 % cost · ~2/3 of tasks cheaper — at parity answer quality.**
+
+**`pallets/flask`** — a ~25K-LOC web framework, 48 paired SWE-QA tasks. **Same answer quality, a third of the cost:**
+
+| Metric (per task, mean) | Baseline | **+ repowise** | Δ |
+|---|---|---|---|
+| ✅ Judge score (0–10) | 8.82 | **8.81** | **parity** |
+| 💰 Cost | $0.1396 | **$0.0890** | **−36 %** |
+| ⚡ Wall time | 41.7 s | **33.9 s** | **−19 %** |
+| 🛠️ Tool calls | 7.4 | **3.8** | **−49 %** |
+| 📄 Files read | 1.9 | **0.2** | **−89 %** |
+
+> **32 / 48 (67 %)** tasks cheaper, at **dead-even** answer quality — judge Δ = −0.01, identical medians.
+
+**`scikit-learn/scikit-learn`** — a ~300K-LOC ML library with a dense private-method surface, 48 paired SWE-QA tasks. **The win gets bigger on the larger, harder codebase:**
+
+| Metric (per task, mean) | Baseline | **+ repowise** | Δ |
+|---|---|---|---|
+| 🛠️ Tool calls | 8.1 | **2.4** | **−70 %** |
+| 📄 Files read | 1.8 | **0.6** | **−69 %** |
+| 💰 Cost | $0.1180 | **$0.0834** | **−29 %** |
+| ⚡ Wall time | 39.7 s | **28.6 s** | **−28 %** |
+
+> **33 / 48 (69 %)** tasks cheaper, **28 / 48 (58 %)** faster, answer quality within judge noise. The median repowise task reads **zero** source files — it answers straight from the index without opening a single file from the repo.
+
+The mechanism is the same on both repos: most of a coding agent's spend is *exploration* — greping, reading candidate files, re-reading them as context grows. repowise does that exploration once, offline, so the agent skips it on every query. **Bigger, more tangled codebase → more exploration to skip → bigger win.**
 
 ### Token efficiency — because context windows aren't free
 
@@ -56,7 +72,7 @@ There's a small genre of "token efficiency" benchmarks going around. It would be
 
 **209× less than naive (mean), 26.8× pooled, 1,214× best case. 41.7× less than git diff (mean), 6.2× pooled.** Same file list, same tokenizer (`cl100k_base`), no per-strategy fudge. We report mean, pooled, and median together because picking just one would be the kind of thing other people in this genre seem to do.
 
-> Full methodology, per-task tables, and the actual SWE-QA evaluation (which has third-party ground truth and an independently-scored LLM judge — unlike this sanity-check): **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)**
+> Full methodology, per-task tables, per-model cost decomposition, and the complete variance discussion for both repos: **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)**
 
 ---
 
@@ -85,7 +101,7 @@ The layer nobody else has. Architectural decisions captured from git history, in
 These become structured decision records, queryable by Claude Code via `get_why()`.
 
 ### ◈ Code Health Intelligence
-Twelve deterministic biomarkers compute a 1–10 health score per file — McCabe complexity, deep nesting, brain methods, native Rabin–Karp duplication detection, untested hotspots, primitive obsession, developer congestion, knowledge loss, and more. **Zero LLM calls, zero new runtime dependencies** — pure Python over tree-sitter and git data, designed to finish in under 30 seconds on a 3 000-file repo.
+Fifteen deterministic biomarkers compute a 1–10 health score per file — McCabe complexity, deep nesting, brain methods, native Rabin–Karp duplication detection, untested hotspots, primitive obsession, developer congestion, knowledge loss, blame-based function hotspots, code-age volatility, and more. **Zero LLM calls, zero new runtime dependencies** — pure Python over tree-sitter and git data, designed to finish in under 30 seconds on a 3 000-file repo.
 
 Ingest LCOV, Cobertura, or Clover coverage reports to light up the test-coverage biomarkers. Rolling 50-row snapshot history powers `Declining Health` and `Predicted Decline` alerts. Deterministic, rule-based refactoring suggestions surface on the dashboard and via `get_health(include=["refactoring"])`. Per-file overrides via `.repowise/health-rules.json`.
 
@@ -117,7 +133,7 @@ uv tool install repowise
 
 ```bash
 cd your-project
-repowise init        # builds all four intelligence layers (~25 min first time)
+repowise init        # builds all five intelligence layers (one-time)
 repowise serve       # starts MCP server + local dashboard
 ```
 
@@ -144,7 +160,7 @@ To manually add the MCP server to another editor:
 }
 ```
 
-> **Note on init time:** Initial indexing analyzes your entire codebase — AST parsing, git-history mining, LLM doc generation, embedding indexing, and decision archaeology. This is a one-time cost (~25 minutes for a 3,000-file project). Every subsequent update after a commit takes under 30 seconds and only regenerates the few pages affected by your changes.
+> **Note on init time:** The graph, git, dead-code, and code-health layers build in minutes with **zero LLM calls** — run `repowise init --index-only` and you have a queryable index almost immediately. The one-time cost is the documentation layer: LLM-generated wiki pages, which scale with repo size and run once (and can run in the background). After that, every update following a commit takes **under 30 seconds** and only regenerates the few pages your change touched.
 
 > **Full docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Workspaces](docs/WORKSPACES.md) · [Computed Glossary](docs/COMPUTED_GLOSSARY.md) · [Auto-Sync](docs/AUTO_SYNC.md)
 
@@ -204,7 +220,7 @@ Most tools are designed around data entities — one module, one file, one symbo
 | `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → response carries a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`) for one-glance review plus cross-repo blast radius. | Before modifying files — understand what could break |
 | `get_why(query?, targets?)` | Architectural decision records, their status (active / proposed / deprecated / superseded), and the commits that are evidence for them. Falls back to git archaeology when no ADRs exist for a file. | Before architectural changes — understand existing intent |
 | `get_dead_code(min_confidence?, include_internals?)` | Unreachable code sorted by confidence tier with cleanup impact estimates. In workspace mode, cross-repo consumer detection lowers confidence on findings that other repos import. | Cleanup tasks |
-| `get_health(targets?, include?)` | Twelve deterministic biomarker scores per file. Dashboard mode returns KPIs + the lowest-scoring files + a per-module NLOC-weighted rollup; targeted mode returns per-file findings. `include` flags layer richer data: `"coverage"`, `"refactoring"` (rule-based suggestions), `"trend"` (snapshot diff + declining/predicted-decline alerts). `module:foo` targets expand to a module's file set. | Before refactoring — find the worst-scoring files and what to fix first |
+| `get_health(targets?, include?)` | Fifteen deterministic biomarker scores per file. Dashboard mode returns KPIs + the lowest-scoring files + a per-module NLOC-weighted rollup; targeted mode returns per-file findings. `include` flags layer richer data: `"coverage"`, `"refactoring"` (rule-based suggestions), `"trend"` (snapshot diff + declining/predicted-decline alerts). `module:foo` targets expand to a module's file set. | Before refactoring — find the worst-scoring files and what to fix first |
 
 ### Tool call comparison — a real task
 
@@ -215,19 +231,7 @@ Most tools are designed around data entities — one module, one file, one symbo
 | Claude Code alone (no MCP) | grep + read ~30 files | ~8 min | Ownership, prior decisions, hidden coupling |
 | **repowise (9 tools)** | **5 calls** | **~2 min** | **Nothing** |
 
-The 5 calls for that task:
-
-```python
-get_overview()                                         # orient: understand the architecture
-get_context(["middleware", "api/routes", "payments"])  # understand 3 modules at once
-get_risk(["middleware/auth.ts"])                       # assess: 47 dependents, co-changes
-get_why("rate limiting")                               # check: any prior decision?
-search_codebase("rate limit OR throttle OR retry")     # find: any prior implementation?
-```
-
----
-
-## How Claude Code uses it
+Here are those five calls, and what each one actually returns:
 
 ```
 User: Implement rate limiting on all API endpoints
@@ -473,7 +477,7 @@ The "why" usually walks out the door — when a teammate leaves, or when you reo
 | Auto-generated documentation | ✅ | ✅ Gemini | ✅ | ✅ PR2Doc | ❌ |
 | Private repo — no cloud | ✅ | ❌ in development | ❌ OSS forks only | ✅ Enterprise tier | ✅ |
 | Dead code detection | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Code health score (1–10) | ✅ 12 biomarkers | ❌ | ❌ | ❌ | ✅ 25–30 |
+| Code health score (1–10) | ✅ 15 biomarkers | ❌ | ❌ | ❌ | ✅ 25–30 |
 | Brain Method detection | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Complexity biomarkers | ✅ native tree-sitter | ❌ | ❌ | ❌ | ✅ |
 | Test coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ | ❌ |
@@ -519,6 +523,8 @@ We use it on our own codebase — see the live snapshot of repowise indexing its
 - **Cross-repo intelligence at scale** — federated hotspots, dead code, and ownership across all your repos in one dashboard
 - **Integrations** *(rolling out)* — Slack alerts, Jira/Linear decision linking, Confluence/Notion doc sync, PagerDuty escalation
 
+Full breakdown of what's GA, in development, and planned — plus on-prem topology and pricing models: **[docs/COMMERCIAL.md](docs/COMMERCIAL.md)**
+
 [Get in touch →](https://www.repowise.dev/#contact) · [hello@repowise.dev](mailto:hello@repowise.dev)
 
 ---
@@ -548,6 +554,12 @@ repowise hook uninstall           # remove hooks
 repowise query "<question>"       # ask anything from the terminal
 repowise search "<query>"         # semantic search over the wiki
 repowise status                   # coverage, freshness, dead code summary
+
+# Code health
+repowise health                             # KPIs + lowest-scoring files
+repowise health --coverage cov.lcov         # ingest coverage, light up untested-hotspot
+repowise health --refactoring-targets       # ranked by impact / effort
+repowise health --trend                     # last 10 snapshots + declining/predicted-decline alerts
 
 # Dead code
 repowise dead-code                          # full report
@@ -671,7 +683,7 @@ Full guide including how to add languages and LLM providers: [CONTRIBUTING.md](C
 
 AGPL-3.0. Free for individuals, teams, and companies using repowise internally.
 
-For commercial licensing — embedding repowise in a product, white-labeling, or SaaS use without AGPL obligations — contact [hello@repowise.dev](mailto:hello@repowise.dev).
+For commercial licensing — the enterprise security & compliance layer, SSO/SCIM, RBAC, workflow integrations, priority support and SLA, or embedding repowise in a product without AGPL obligations — see **[docs/COMMERCIAL.md](docs/COMMERCIAL.md)** or contact [hello@repowise.dev](mailto:hello@repowise.dev).
 
 ---
 

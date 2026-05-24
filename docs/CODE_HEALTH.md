@@ -1,10 +1,11 @@
 # Code Health
 
-Repowise computes a 1–10 health score for every file in your repo from twelve
+Repowise computes a 1–10 health score for every file in your repo from fifteen
 deterministic biomarkers — McCabe complexity, deep nesting, brain methods,
-clone detection, untested hotspots, organizational risk, and more. **No LLM
-calls, no cloud requirement.** Pure Python over tree-sitter + git data,
-designed to finish in under 30 seconds on a 3 000-file repo.
+clone detection, untested hotspots, function-level churn, code-age volatility,
+organizational risk, and more. **No LLM calls, no cloud requirement.** Pure
+Python over tree-sitter + git data, designed to finish in under 30 seconds on a
+3 000-file repo.
 
 ## Quick start
 
@@ -25,11 +26,16 @@ most:
 
 | Category               | Cap   | Biomarkers |
 |------------------------|-------|------------|
-| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling |
+| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility |
 | Structural complexity  | −2.5  | brain_method, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0  | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5  | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0  | dry_violation |
+
+Fifteen biomarkers across five categories. `function_hotspot` and
+`code_age_volatility` are blame-based and sit in the organizational bucket —
+both are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line
+blame index is built.
 
 Per-biomarker weight multipliers (see `scoring._BIOMARKER_WEIGHT_MULTIPLIER`)
 let the strongest empirical predictors deduct more than the uniform severity
@@ -205,7 +211,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 12 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 15 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ |
 | Untested hotspot detection       | ✅ coverage × hotspot | ❌ | ❌ | ❌ |
