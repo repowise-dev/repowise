@@ -46,6 +46,7 @@ __all__ = [
     "Person",
     "Relation",
     "System",
+    "build_architecture_view",
     "build_l1",
     "build_l2",
     "build_l3",
