@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] — 2026-05-24
+
+### Added
+- **Fast index mode + incremental fast→full upgrade.** `repowise init --mode fast` does a quick first pass on very large repos — builds the dependency graph and indexes only the *essential* git tier (last commits, no per-file blame or co-change), and skips LLM doc generation. `repowise update --full` then upgrades that index to a full one **incrementally**: it backfills the git tier to FULL (per-file blame + repo-wide co-change) via a resumable, checkpointed worker, rehydrates the persisted graph from SQL rather than re-parsing and re-resolving it, and generates the docs fast mode skipped. Because the expensive import/call/heritage resolution and centrality computation are reused, the upgrade is measurably cheaper than re-running a full `init` (~14× faster on the avoided structural work at 2k files). The backfill is resumable — an interrupted `update --full` picks up where it left off (#220, #224).
+- **Four new code-health biomarkers.** `hidden_coupling` flags pairs of files that consistently change in the same commits without an explicit import/dependency edge — behavioral coupling static analysis can't see. `complex_conditional` catches branch/loop guards combining three or more boolean operators (severity grows with operator count). `function_hotspot` flags functions that are both structurally complex and frequently modified, and `code_age_volatility` flags old, settled functions that are suddenly being edited — both computed from a per-line blame index built once per file. The three git-derived biomarkers are tier-aware: they no-op on an ESSENTIAL-tier (fast) index and light up once the FULL git tier is present (#221, #222).
+- **Pluggable storage seams + capability registries.** New async `IndexStore` / `GraphStore` / `JobStore` interfaces with SQL/in-process default implementations, and process-wide `cli_registry` / `mcp_tool_registry` / `pipeline_hooks` registries so downstream packages can extend the CLI, MCP tool list, and pipeline phases without monkey-patching internals. Behavior is unchanged for OSS users — same CLI commands, same MCP tools, same default storage (#219).
+
+### Changed
+- **Code-health scoring recalibrated.** The organizational category cap is lifted from −1.0 to −3.5 so the strongest empirical predictors (`developer_congestion`, `untested_hotspot`, `hidden_coupling`) are no longer suppressed, and a per-biomarker weight multiplier was added (`developer_congestion` ×1.5, `untested_hotspot` ×1.3, `function_hotspot` ×1.2). `knowledge_loss` is de-rated to ×0.4 per OSS calibration (legacy code that works gets handed off) — enterprise users can raise it back via per-repo overrides. See the updated category-cap table in `docs/CODE_HEALTH.md` (#221).
+- **Health web UI surfaces the new biomarkers.** Glossary entries and biomarker-specific detail views for all four new biomarkers (partner-file chip for `hidden_coupling`, operator count for `complex_conditional`, mod/p80 ratio for `function_hotspot`, median age + recent edits for `code_age_volatility`), recalibrated category caps in the score breakdown (now sorted by applied deduction), and a clickable `function:line` deep-link in the file drawer. The new biomarker details also flow into the AI refactor prompt (#223).
+- **Doc generation scales to very large repos.** Batch embedding (one model call per generation level instead of N upserts), pipeline checkpoint/resume over the new JobStore seam, and graph metrics computed in SQL. Default behavior is unchanged when the new knobs aren't set (#220).
+
+### Fixed
+- **`repowise update --full` now recomputes code health at the FULL tier.** The upgrade backfilled the git tier and regenerated docs but never re-ran the health analysis, so the persisted health tables stayed frozen at the fast index's ESSENTIAL-tier findings — the blame/co-change biomarkers stayed invisible after an upgrade. The upgrade now runs a full-repo health pass against the rehydrated graph and persists findings/metrics/snapshot, matching what `init` and the normal `update` path do (#225).
+
+### Documentation
+- README mentions the Repowise PR Bot in the hosted-version section (#217).
+
+---
+
 ## [0.10.0] — 2026-05-18
 
 ### Added
