@@ -488,6 +488,39 @@ async def run_pipeline(
             external_systems=external_systems,
         )
 
+    # ---- Knowledge Graph LLM enrichment (layer naming + tour) -----------------
+    if (
+        knowledge_graph_result is not None
+        and generate_docs
+        and llm_client is not None
+    ):
+        try:
+            from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
+
+            if progress:
+                progress.on_phase_start("knowledge_graph.enrich", None)
+            knowledge_graph_result = await enrich_knowledge_graph(
+                kg_skeleton=knowledge_graph_result,
+                llm_client=llm_client,
+                graph_builder=graph_builder,
+                repo_structure=repo_structure,
+                tech_stack=[
+                    {"name": t.name, "version": t.version, "category": t.category}
+                    for t in tech_items
+                ],
+                generated_pages=generated_pages,
+                progress=progress,
+            )
+            if progress:
+                progress.on_message(
+                    "info",
+                    f"  ↳ KG enriched: {len(knowledge_graph_result.layers)} layers, "
+                    f"{len(knowledge_graph_result.tour)} tour steps",
+                )
+            _phase_done(progress, "knowledge_graph.enrich")
+        except Exception as exc:
+            logger.warning("knowledge_graph_enrichment_failed", error=str(exc))
+
     # ---- Execution flow tracing -----------------------------------------------
     execution_flow_report = None
     if progress:
