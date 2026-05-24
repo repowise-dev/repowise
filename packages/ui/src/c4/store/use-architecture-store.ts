@@ -262,6 +262,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           navigationLevel: "layer-detail",
           activeLayerId: layerId,
           selectedNodeId: null,
+          focusNodeId: null,
           expandedContainers: new Set(),
           containerLayoutCache: new Map(),
         });
@@ -272,6 +273,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           navigationLevel: "overview",
           activeLayerId: null,
           selectedNodeId: null,
+          focusNodeId: null,
           expandedContainers: new Set(),
           containerLayoutCache: new Map(),
         });
@@ -295,6 +297,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
               navigationLevel: "layer-detail",
               activeLayerId: nodeLayerId,
               selectedNodeId: nodeId,
+              focusNodeId: null,
               nodeHistory: history,
               expandedContainers: new Set(),
               containerLayoutCache: new Map(),
@@ -303,7 +306,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           }
         }
 
-        set({ selectedNodeId: nodeId, nodeHistory: history });
+        set({ selectedNodeId: nodeId, focusNodeId: null, nodeHistory: history });
       },
 
       goBackNode: () => {
@@ -454,10 +457,21 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         const tour = state.view?.tour;
         if (!tour || tour.length === 0) return;
         const firstStep = tour[0];
+        const nodeIds = firstStep?.node_ids ?? [];
+        const firstNodeId = nodeIds[0] ?? null;
+        const layerId = firstNodeId ? state.nodeIdToLayerId.get(firstNodeId) ?? null : null;
         set({
           tourActive: true,
           currentTourStep: 0,
-          tourHighlightedNodeIds: new Set(firstStep?.node_ids ?? []),
+          tourHighlightedNodeIds: new Set(nodeIds),
+          selectedNodeId: firstNodeId,
+          focusNodeId: null,
+          ...(layerId ? {
+            navigationLevel: "layer-detail" as NavigationLevel,
+            activeLayerId: layerId,
+            expandedContainers: new Set<string>(),
+            containerLayoutCache: new Map<string, ContainerLayoutResult>(),
+          } : {}),
         });
       },
 
@@ -475,11 +489,22 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         if (!tour || tour.length === 0) return;
         const maxStep = tour.length - 1;
         if (state.currentTourStep >= maxStep) return;
-        const nextStep = state.currentTourStep + 1;
-        const step = tour[nextStep];
+        const nextIdx = state.currentTourStep + 1;
+        const step = tour[nextIdx];
+        const nodeIds = step?.node_ids ?? [];
+        const firstNodeId = nodeIds[0] ?? null;
+        const layerId = firstNodeId ? state.nodeIdToLayerId.get(firstNodeId) ?? null : null;
         set({
-          currentTourStep: nextStep,
-          tourHighlightedNodeIds: new Set(step?.node_ids ?? []),
+          currentTourStep: nextIdx,
+          tourHighlightedNodeIds: new Set(nodeIds),
+          selectedNodeId: firstNodeId,
+          focusNodeId: null,
+          ...(layerId && layerId !== state.activeLayerId ? {
+            navigationLevel: "layer-detail" as NavigationLevel,
+            activeLayerId: layerId,
+            expandedContainers: new Set<string>(),
+            containerLayoutCache: new Map<string, ContainerLayoutResult>(),
+          } : {}),
         });
       },
 
@@ -488,11 +513,22 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         const tour = state.view?.tour;
         if (!tour || tour.length === 0) return;
         if (state.currentTourStep <= 0) return;
-        const prevStep = state.currentTourStep - 1;
-        const step = tour[prevStep];
+        const prevIdx = state.currentTourStep - 1;
+        const step = tour[prevIdx];
+        const nodeIds = step?.node_ids ?? [];
+        const firstNodeId = nodeIds[0] ?? null;
+        const layerId = firstNodeId ? state.nodeIdToLayerId.get(firstNodeId) ?? null : null;
         set({
-          currentTourStep: prevStep,
-          tourHighlightedNodeIds: new Set(step?.node_ids ?? []),
+          currentTourStep: prevIdx,
+          tourHighlightedNodeIds: new Set(nodeIds),
+          selectedNodeId: firstNodeId,
+          focusNodeId: null,
+          ...(layerId && layerId !== state.activeLayerId ? {
+            navigationLevel: "layer-detail" as NavigationLevel,
+            activeLayerId: layerId,
+            expandedContainers: new Set<string>(),
+            containerLayoutCache: new Map<string, ContainerLayoutResult>(),
+          } : {}),
         });
       },
 
@@ -502,9 +538,20 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         if (!tour || tour.length === 0) return;
         const clamped = Math.max(0, Math.min(step, tour.length - 1));
         const tourStep = tour[clamped];
+        const nodeIds = tourStep?.node_ids ?? [];
+        const firstNodeId = nodeIds[0] ?? null;
+        const layerId = firstNodeId ? state.nodeIdToLayerId.get(firstNodeId) ?? null : null;
         set({
           currentTourStep: clamped,
-          tourHighlightedNodeIds: new Set(tourStep?.node_ids ?? []),
+          tourHighlightedNodeIds: new Set(nodeIds),
+          selectedNodeId: firstNodeId,
+          focusNodeId: null,
+          ...(layerId && layerId !== state.activeLayerId ? {
+            navigationLevel: "layer-detail" as NavigationLevel,
+            activeLayerId: layerId,
+            expandedContainers: new Set<string>(),
+            containerLayoutCache: new Map<string, ContainerLayoutResult>(),
+          } : {}),
         });
       },
 

@@ -22,7 +22,18 @@ export function ArchDetailPanelHost({ repoId }: ArchDetailPanelHostProps) {
   const filePath = node?.file_path ?? null;
 
   const { pageIdByPath } = useC4DocsPathSet(repoId);
-  const pageId = filePath ? pageIdByPath.get(filePath) ?? null : null;
+  const pageId = (() => {
+    if (!filePath) return null;
+    const direct = pageIdByPath.get(filePath);
+    if (direct) return direct;
+    let parent = filePath;
+    while (parent.includes("/")) {
+      parent = parent.substring(0, parent.lastIndexOf("/"));
+      const hit = pageIdByPath.get(parent);
+      if (hit) return hit;
+    }
+    return null;
+  })();
 
   const { health, page, isLoading } = useC4SelectionContext(
     repoId,

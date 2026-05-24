@@ -1,8 +1,9 @@
 "use client";
 
 import { memo } from "react";
+import { ArrowRight } from "lucide-react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell } from "../../graph-primitives/node-shell";
+import { Handle, Position } from "@xyflow/react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 
 export interface PortalNodeProps {
@@ -19,17 +20,44 @@ function PortalNodeImpl(props: NodeProps) {
     useArchitectureStore.getState().drillIntoLayer(targetLayerId);
   };
 
+  const borderColor = selected
+    ? "#fbbf24"
+    : "rgba(148, 163, 184, 0.35)";
+
   return (
-    <div onClick={handleClick} style={{ cursor: "pointer" }}>
-      <NodeShell
-        tone="portal"
-        kindLabel="PORTAL"
-        title={`→ ${targetLayerName}`}
-        subtitle={`${edgeCount} connections`}
-        selected={selected}
-        width={220}
-        height={60}
-      />
+    <div
+      onClick={handleClick}
+      style={{
+        cursor: "pointer",
+        width: 220,
+        background: "rgba(17, 24, 39, 0.6)",
+        border: `2px dashed ${borderColor}`,
+        borderRadius: 8,
+        padding: "8px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+        boxShadow: selected ? "0 0 0 2px rgba(251,191,36,0.3)" : "0 2px 8px rgba(0,0,0,0.2)",
+      }}
+    >
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{
+          fontSize: 13,
+          fontWeight: 500,
+          color: "var(--color-text-primary, #f1f5f9)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}>
+          {targetLayerName}
+        </span>
+        <ArrowRight size={12} color="var(--color-text-secondary, #94a3b8)" aria-hidden />
+      </div>
+      <span style={{ fontSize: 10, color: "var(--color-text-secondary, #94a3b8)" }}>
+        {edgeCount} connections
+      </span>
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
     </div>
   );
 }

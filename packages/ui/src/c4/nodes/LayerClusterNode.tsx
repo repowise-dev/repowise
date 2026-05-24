@@ -1,6 +1,6 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell } from "../../graph-primitives/node-shell";
 import { useArchitectureStore } from "../store/use-architecture-store";
@@ -20,6 +20,7 @@ const COMPLEXITY_BAR_COLORS: Record<string, string> = {
 function LayerClusterNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: LayerClusterNodeProps };
   const { layer, searchHighlight } = data;
+  const [hovered, setHovered] = useState(false);
 
   const handleClick = () => {
     useArchitectureStore.getState().drillIntoLayer(layer.id);
@@ -63,17 +64,42 @@ function LayerClusterNodeImpl(props: NodeProps) {
     : null;
 
   const footer = (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-      <span>{layer.file_count} files</span>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        {complexityBars}
-        {healthDisplay}
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>{layer.file_count} files</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {complexityBars}
+          {healthDisplay}
+        </div>
+      </div>
+      <div
+        style={{
+          fontSize: 10,
+          opacity: hovered ? 0.9 : 0,
+          color: "var(--color-accent-primary, #f59520)",
+          transition: "opacity 0.2s ease",
+          textAlign: "right",
+        }}
+      >
+        Click to explore →
       </div>
     </div>
   );
 
   return (
-    <div onClick={handleClick} style={{ cursor: "pointer" }}>
+    <div
+      onClick={handleClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        cursor: "pointer",
+        boxShadow: hovered
+          ? "0 4px 16px rgba(0,0,0,0.4)"
+          : "none",
+        borderRadius: 8,
+        transition: "box-shadow 0.2s ease",
+      }}
+    >
       <NodeShell
         tone="layerCluster"
         kindLabel="LAYER"
@@ -83,7 +109,9 @@ function LayerClusterNodeImpl(props: NodeProps) {
         selected={selected}
         searchHighlight={searchHighlight}
         width={300}
-        height={160}
+        height={180}
+        titleFontSize={16}
+        subtitleLineClamp={2}
       />
     </div>
   );

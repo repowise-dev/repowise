@@ -93,15 +93,40 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
   ]);
 
   async function computeOverviewLayout(currentView: ArchitectureView): Promise<ArchitectureLayoutResult> {
+    const MAX_OVERVIEW_LAYERS = 12;
+    let displayLayers = currentView.layers;
+
+    if (displayLayers.length > MAX_OVERVIEW_LAYERS) {
+      const sorted = [...displayLayers].sort((a, b) => b.file_count - a.file_count);
+      const kept = sorted.slice(0, MAX_OVERVIEW_LAYERS - 1);
+      const merged = sorted.slice(MAX_OVERVIEW_LAYERS - 1);
+
+      const otherLayer: ArchLayer = {
+        id: "layer:other",
+        name: "Other",
+        description: `${merged.length} smaller layers`,
+        node_ids: merged.flatMap((l) => l.node_ids),
+        file_count: merged.reduce((s, l) => s + l.file_count, 0),
+        complexity_distribution: merged.reduce<Record<string, number>>((acc, l) => {
+          for (const [k, v] of Object.entries(l.complexity_distribution)) {
+            acc[k] = (acc[k] ?? 0) + v;
+          }
+          return acc;
+        }, {}),
+        health_score: null,
+      };
+      displayLayers = [...kept, otherLayer];
+    }
+
     const nodeToLayer = new Map<string, string>();
-    for (const layer of currentView.layers) {
+    for (const layer of displayLayers) {
       for (const nodeId of layer.node_ids) {
         nodeToLayer.set(nodeId, layer.id);
       }
     }
 
     const aggregated = aggregateEdges(currentView.edges, nodeToLayer);
-    const layerNodes = currentView.layers.map((layer: ArchLayer) => ({
+    const layerNodes = displayLayers.map((layer: ArchLayer) => ({
       id: layer.id,
       width: ARCH_NODE_SIZES.layerCluster.width,
       height: ARCH_NODE_SIZES.layerCluster.height,
@@ -122,7 +147,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     );
 
     const searchHighlightIds = new Set<string>(searchResults.map((r) => r.nodeId));
-    const nodes: Node[] = currentView.layers.map((layer: ArchLayer) => {
+    const nodes: Node[] = displayLayers.map((layer: ArchLayer) => {
       const pos = positions.get(layer.id) ?? { x: 0, y: 0, width: 0, height: 0 };
       const hasSearchHit = layer.node_ids.some((nid: string) => searchHighlightIds.has(nid));
       return {
@@ -307,7 +332,19 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       });
     }
 
+    const selectedConnectedNodes = new Set<string>();
+    if (selectedNodeId) {
+      selectedConnectedNodes.add(selectedNodeId);
+      for (const e of currentView.edges) {
+        if (e.source === selectedNodeId) selectedConnectedNodes.add(e.target);
+        if (e.target === selectedNodeId) selectedConnectedNodes.add(e.source);
+      }
+    }
+
     for (const agg of aggregated) {
+      const isDimmed = selectedNodeId
+        ? !selectedConnectedNodes.has(agg.source) && !selectedConnectedNodes.has(agg.target)
+        : false;
       allEdges.push({
         id: agg.id,
         source: agg.source,
@@ -318,6 +355,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           count: agg.count,
           category: agg.dominantType,
           isPortalEdge: false,
+          dimmed: isDimmed,
         },
       });
     }
@@ -352,12 +390,21 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
 
   function applyFocusMode(nodes: ArchNode[], edges: ArchEdge[]): ArchNode[] {
     if (!focusNodeId) return nodes;
-    const neighbors = new Set<string>([focusNodeId]);
+    const direct = new Set<string>([focusNodeId]);
     for (const edge of edges) {
-      if (edge.source === focusNodeId) neighbors.add(edge.target);
-      if (edge.target === focusNodeId) neighbors.add(edge.source);
+      if (edge.source === focusNodeId) direct.add(edge.target);
+      if (edge.target === focusNodeId) direct.add(edge.source);
     }
-    return nodes.filter((n) => neighbors.has(n.id));
+    const neighborhood = new Set(direct);
+    for (const nid of direct) {
+      for (const edge of edges) {
+        if (edge.source === nid) neighborhood.add(edge.target);
+        if (edge.target === nid) neighborhood.add(edge.source);
+      }
+    }
+    const focused = nodes.filter((n) => neighborhood.has(n.id));
+    if (focused.length < 2) return nodes;
+    return focused;
   }
 
   function buildArchFileData(node: ArchNode, searchHighlightIds: Set<string>) {

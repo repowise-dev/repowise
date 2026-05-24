@@ -35,6 +35,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useC4L1, useC4L2, useC4L3 } from "@/lib/hooks/use-c4";
@@ -78,7 +79,16 @@ export default function C4Page({ params }: { params: Promise<{ id: string }> }) 
 // ---------------------------------------------------------------------------
 
 function ArchitectureViewPage({ repoId, repoName }: { repoId: string; repoName: string }) {
+  return (
+    <ReactFlowProvider>
+      <ArchitectureViewInner repoId={repoId} repoName={repoName} />
+    </ReactFlowProvider>
+  );
+}
+
+function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName: string }) {
   const { view, error, isLoading } = useArchitectureView(repoId);
+  const { fitView } = useReactFlow();
 
   const [, setViewParam] = useQueryState(
     "view",
@@ -138,8 +148,32 @@ function ArchitectureViewPage({ repoId, repoName }: { repoId: string; repoName: 
 
   const { nodes, edges, loading: layoutLoading } = useArchitectureLayout();
 
+  const pendingFitRef = useRef(false);
+  const prevNavRef = useRef({ navigationLevel, activeLayerId });
+  useEffect(() => {
+    if (
+      prevNavRef.current.navigationLevel !== navigationLevel ||
+      prevNavRef.current.activeLayerId !== activeLayerId
+    ) {
+      pendingFitRef.current = true;
+      prevNavRef.current = { navigationLevel, activeLayerId };
+    }
+  }, [navigationLevel, activeLayerId]);
+
+  useEffect(() => {
+    if (!pendingFitRef.current || nodes.length === 0) return;
+    pendingFitRef.current = false;
+    const raf = requestAnimationFrame(() => {
+      fitView({ duration: 400, padding: 0.2 });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [nodes, fitView]);
+
+  const SYNTHETIC_NODE_TYPES = new Set(["layerCluster", "archContainer", "portal"]);
+
   const handleNodeClick = useCallback(
-    (_: React.MouseEvent, node: { id: string }) => {
+    (_: React.MouseEvent, node: { id: string; type?: string }) => {
+      if (SYNTHETIC_NODE_TYPES.has(node.type ?? "")) return;
       selectNode(node.id);
     },
     [selectNode],
@@ -196,29 +230,27 @@ function ArchitectureViewPage({ repoId, repoName }: { repoId: string; repoName: 
           </div>
         )}
 
-        <ReactFlowProvider>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={archNodeTypes}
-            edgeTypes={archEdgeTypes}
-            onNodeClick={handleNodeClick}
-            onNodeDoubleClick={handleNodeDoubleClick}
-            onPaneClick={handlePaneClick}
-            onInit={setReactFlowInstance}
-            fitView
-            fitViewOptions={{ padding: 0.15 }}
-            minZoom={0.1}
-            maxZoom={3}
-            proOptions={{ hideAttribution: true }}
-            nodesDraggable={false}
-            nodesConnectable={false}
-          >
-            <Background gap={28} size={1} color="rgba(148,163,184,0.18)" />
-            <Controls showInteractive={false} />
-            <MiniMap pannable zoomable maskColor="rgba(11,18,32,0.85)" />
-          </ReactFlow>
-        </ReactFlowProvider>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={archNodeTypes}
+          edgeTypes={archEdgeTypes}
+          onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
+          onPaneClick={handlePaneClick}
+          onInit={setReactFlowInstance}
+          fitView
+          fitViewOptions={{ padding: 0.2 }}
+          minZoom={0.1}
+          maxZoom={3}
+          proOptions={{ hideAttribution: true }}
+          nodesDraggable={false}
+          nodesConnectable={false}
+        >
+          <Background gap={28} size={1} color="rgba(148,163,184,0.18)" />
+          <Controls showInteractive={false} />
+          <MiniMap pannable zoomable maskColor="rgba(11,18,32,0.85)" />
+        </ReactFlow>
 
         <ArchDetailPanelHost repoId={repoId} />
 

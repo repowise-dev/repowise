@@ -274,12 +274,29 @@ async def build_architecture_view(
     )
     page_map: dict[str, str] = {row[0]: row[1] for row in page_result.all()}
 
+    def _find_page_summary(path: str) -> str:
+        hit = page_map.get(path)
+        if hit:
+            return hit
+        parent = path
+        while "/" in parent:
+            parent = parent.rsplit("/", 1)[0]
+            hit = page_map.get(parent)
+            if hit:
+                return hit
+        return ""
+
     # -- Pagerank percentiles --
     pr_values = [n.pagerank for n in all_nodes]
     pr_pcts = _percentile_ranks(pr_values)
 
     # -- Layers (3-tier cascade) --
-    kg = _load_knowledge_graph(knowledge_graph_path) if knowledge_graph_path else None
+    kg_path = knowledge_graph_path
+    if not kg_path and repo and repo.local_path:
+        candidate = os.path.join(repo.local_path, ".understand-anything", "knowledge-graph.json")
+        if os.path.isfile(candidate):
+            kg_path = candidate
+    kg = _load_knowledge_graph(kg_path) if kg_path else None
     raw_layers: list[dict]
     if kg and kg.get("layers"):
         raw_layers = _layers_from_knowledge_graph(kg, node_id_set)
@@ -292,7 +309,7 @@ async def build_architecture_view(
     arch_nodes: list[ArchNode] = []
     for i, n in enumerate(all_nodes):
         gm = git_by_path.get(n.node_id) or git_by_path.get(n.file_path or "")
-        page_summary = page_map.get(n.node_id, "")
+        page_summary = _find_page_summary(n.node_id)
 
         if n.node_type == "file":
             name = n.node_id.rsplit("/", 1)[-1]

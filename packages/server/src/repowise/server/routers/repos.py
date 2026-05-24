@@ -6,13 +6,13 @@ import asyncio
 import io
 import logging
 import zipfile
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -487,3 +487,29 @@ async def export_wiki(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/{repo_id}/file-content")
+async def get_file_content(
+    repo_id: str,
+    file_path: str = Query(...),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> PlainTextResponse:
+    """Return raw file content from the repository's local checkout."""
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    base = Path(repo.local_path).resolve()
+    target = (base / file_path).resolve()
+    if not target.is_relative_to(base):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        content = target.read_text(errors="replace")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return PlainTextResponse(content)

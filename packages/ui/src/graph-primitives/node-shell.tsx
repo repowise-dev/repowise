@@ -20,6 +20,9 @@ export interface NodeShellProps {
   height?: number | undefined;
   hasDocs?: boolean | undefined;
   badges?: React.ReactNode | undefined;
+  titleFontSize?: number | undefined;
+  subtitleFontSize?: number | undefined;
+  subtitleLineClamp?: number | undefined;
 }
 
 function getBorderColor(props: NodeShellProps, fallbackBorder: string): string {
@@ -58,6 +61,9 @@ export function NodeShell(props: NodeShellProps) {
     height,
     hasDocs,
     badges,
+    titleFontSize = 14,
+    subtitleFontSize = 11,
+    subtitleLineClamp = 3,
   } = props;
 
   const s = getTone(tone);
@@ -113,18 +119,18 @@ export function NodeShell(props: NodeShellProps) {
         </span>
       </div>
       <div style={{ padding: "8px 10px", flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.25, wordBreak: "break-word" }}>
+        <div style={{ fontSize: titleFontSize, fontWeight: 600, lineHeight: 1.25, wordBreak: "break-word" }}>
           {title}
         </div>
         {subtitle && (
           <div
             style={{
-              fontSize: 11,
+              fontSize: subtitleFontSize,
               opacity: 0.75,
               lineHeight: 1.3,
               wordBreak: "break-word",
               display: "-webkit-box",
-              WebkitLineClamp: 2,
+              WebkitLineClamp: subtitleLineClamp,
               WebkitBoxOrient: "vertical",
               overflow: "hidden",
             }}

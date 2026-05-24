@@ -13,6 +13,7 @@ export interface ArchEdgeData {
   count: number;
   category?: string | undefined;
   isPortalEdge?: boolean | undefined;
+  dimmed?: boolean | undefined;
 }
 
 export const EDGE_CATEGORY_COLORS: Record<string, string> = {
@@ -50,6 +51,7 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
   const count = edgeData?.count ?? 1;
   const category = edgeData?.category;
   const isPortal = edgeData?.isPortalEdge ?? false;
+  const dimmed = edgeData?.dimmed ?? false;
 
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
@@ -62,13 +64,10 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
 
   const baseColor = getEdgeCategoryColor(category);
   const stroke = selected ? "#fbbf24" : baseColor;
-  const strokeWidth = computeEdgeStrokeWidth(count);
+  const strokeWidth = dimmed ? 1 : computeEdgeStrokeWidth(count);
+  const strokeOpacity = selected ? 0.9 : dimmed ? 0.08 : 0.4;
 
-  const label = edgeData
-    ? count > 1
-      ? `${count} ${edgeData.edge_type}`
-      : edgeData.edge_type
-    : "";
+  const label = count > 1 ? String(count) : "";
 
   return (
     <>
@@ -80,23 +79,25 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
           stroke,
           strokeWidth,
           strokeDasharray: isPortal ? "6 3" : undefined,
+          opacity: strokeOpacity,
         }}
       />
-      {label && (
+      {label && !dimmed && (
         <EdgeLabelRenderer>
           <div
             style={{
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              background: "rgba(15, 23, 42, 0.92)",
-              color: "#e2e8f0",
+              background: "rgba(15, 23, 42, 0.82)",
+              color: "#94a3b8",
               padding: "2px 6px",
               borderRadius: 4,
               fontSize: 10,
-              fontWeight: 500,
+              fontWeight: 600,
               pointerEvents: "none",
-              border: "1px solid rgba(148, 163, 184, 0.25)",
+              border: "1px solid rgba(148, 163, 184, 0.15)",
               whiteSpace: "nowrap",
+              opacity: selected ? 1 : 0.7,
             }}
             className="nodrag nopan"
           >

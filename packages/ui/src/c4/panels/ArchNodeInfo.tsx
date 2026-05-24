@@ -94,6 +94,27 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
         </ActionRow>
       </Section>
 
+      {props.docContent && props.renderDoc ? (
+        <Section title="Wiki">
+          <div style={{ fontSize: 12, lineHeight: 1.45, color: "var(--color-text-secondary, #cbd5e1)" }}>
+            {props.renderDoc(props.docContent)}
+          </div>
+          {props.onOpenDoc && (
+            <div style={{ marginTop: 6 }}>
+              <ActionButton onClick={() => props.onOpenDoc!("")} variant="ghost" icon={ExternalLink}>
+                Open full page
+              </ActionButton>
+            </div>
+          )}
+        </Section>
+      ) : (
+        <Section title="Wiki">
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary, #94a3b8)", opacity: 0.7 }}>
+            Wiki not generated yet. Run docs generation to populate this section.
+          </div>
+        </Section>
+      )}
+
       {props.health && (
         <HealthSection
           health={props.health}
@@ -138,21 +159,6 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
         nodesById={nodesById}
         onSelect={selectNode}
       />
-
-      {props.docContent && props.renderDoc && (
-        <Section title="Documentation">
-          <div style={{ fontSize: 12, lineHeight: 1.45, color: "var(--color-text-secondary, #cbd5e1)" }}>
-            {props.renderDoc(props.docContent)}
-          </div>
-          {props.onOpenDoc && (
-            <div style={{ marginTop: 6 }}>
-              <ActionButton onClick={() => props.onOpenDoc!("")} variant="ghost" icon={ExternalLink}>
-                Open full page
-              </ActionButton>
-            </div>
-          )}
-        </Section>
-      )}
 
       {node.tags.length > 0 && (
         <Section title="Tags">

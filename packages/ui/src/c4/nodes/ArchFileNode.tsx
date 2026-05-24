@@ -24,9 +24,7 @@ function ArchFileNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: ArchFileNodeProps };
   const { node, hasDocs, searchHighlight, tourHighlight, diffState } = data;
 
-  const kindLabel = node.language
-    ? `${node.node_type.toUpperCase()} · ${node.language}`
-    : node.node_type.toUpperCase();
+  const kindLabel = node.node_type;
 
   const complexityColor = COMPLEXITY_COLORS[node.complexity] ?? "#94a3b8";
 
@@ -79,8 +77,8 @@ function ArchFileNodeImpl(props: NodeProps) {
       diffState={diffState}
       hasDocs={hasDocs ?? node.has_doc}
       badges={badges}
-      width={240}
-      height={100}
+      width={260}
+      height={120}
     />
   );
 }

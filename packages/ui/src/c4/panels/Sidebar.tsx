@@ -6,6 +6,7 @@ import { useArchitectureStore } from "../store/use-architecture-store";
 import { ProjectOverview } from "./ProjectOverview";
 import { ArchNodeInfo } from "./ArchNodeInfo";
 import type { ArchNodeInfoProps } from "./ArchNodeInfo";
+import { LearnPanel } from "./LearnPanel";
 import { FileExplorer } from "./FileExplorer";
 
 export interface SidebarProps {
@@ -46,6 +47,7 @@ const TAB_STYLE_ACTIVE: React.CSSProperties = {
 export function Sidebar(props: SidebarProps) {
   const view = useArchitectureStore((s) => s.view);
   const selectedNodeId = useArchitectureStore((s) => s.selectedNodeId);
+  const tourActive = useArchitectureStore((s) => s.tourActive);
   const [activeTab, setActiveTab] = useState<SidebarTab>("info");
 
   if (!view) return null;
@@ -108,6 +110,7 @@ export function Sidebar(props: SidebarProps) {
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
         {activeTab === "info" && (
           <div id="sidebar-panel-info" role="tabpanel">
+            {tourActive && <LearnPanel />}
             {selectedNodeId ? (
               <ArchNodeInfo
                 health={props.health}
@@ -117,9 +120,9 @@ export function Sidebar(props: SidebarProps) {
                 onOpenInGraph={props.onOpenInGraph}
                 onOpenDoc={props.onOpenDoc}
               />
-            ) : (
+            ) : !tourActive ? (
               <ProjectOverview />
-            )}
+            ) : null}
           </div>
         )}
         {activeTab === "files" && (
