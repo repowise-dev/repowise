@@ -52,8 +52,9 @@ export {
   downloadSvg,
   downloadPng,
   svgToPngBlob,
+  exportArchitectureJson,
 } from "./export";
-export type { C4ExportMenuProps, SvgExportOptions, PngExportOptions } from "./export";
+export type { C4ExportMenuProps, SvgExportOptions, PngExportOptions, ArchitectureJsonExport } from "./export";
 
 export {
   C4LevelTabs,
@@ -65,9 +66,24 @@ export {
   ProjectOverview,
   ArchNodeInfo,
   FileExplorer,
+  SearchBar,
+  FilterPanel,
+  NodeTypeCategoryFilters,
+  LearnPanel,
+  PersonaSelector,
+  CodeViewer,
+  getLanguageFromPath,
+  NodeTooltip,
 } from "./panels";
 export type { C4DetailPanelProps, C4Health, C4DocSummary } from "./panels";
-export type { SidebarProps, ArchNodeInfoProps, ArchNodeHealth } from "./panels";
+export type { SidebarProps, ArchNodeInfoProps, ArchNodeHealth, NodeTooltipProps } from "./panels";
+export type { CodeViewerProps } from "./panels";
+
+export { ExecutionFlowOverlay, DiffOverlay, useDiffNodeStyle } from "./overlays";
+export type { ExecutionFlowEntry } from "./overlays";
+export { PathFinderModal } from "./panels";
+export { findShortestPath } from "./utils";
+export { fuzzyMatch } from "./utils/fuzzy-match";
 
 export type {
   C4Level,
@@ -97,3 +113,8 @@ export type {
   ArchFilters,
   ContainerLayoutResult,
 } from "./types";
+
+export { MobileLayout, useIsMobile, MobileBottomNav } from "./mobile";
+export type { MobileLayoutProps, MobileTab, MobileBottomNavProps } from "./mobile";
+
+export { THEME, KEYFRAMES } from "./theme/theme-variables";

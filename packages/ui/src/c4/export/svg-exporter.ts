@@ -10,6 +10,50 @@ import type { Edge, Node } from "@xyflow/react";
 import type { C4EdgeData, C4NodeData } from "../types";
 import { TONE_STYLES, type ToneName } from "../../graph-primitives/tone-styles";
 
+interface ArchFileNodeData {
+  node: {
+    node_type: string;
+    name: string;
+    summary: string;
+    complexity: string;
+    language: string | null;
+    in_degree: number;
+    out_degree: number;
+    is_entry_point: boolean;
+    is_hotspot: boolean;
+    is_dead: boolean;
+    has_doc: boolean;
+  };
+}
+
+interface LayerClusterNodeData {
+  layer: {
+    name: string;
+    description: string;
+    file_count: number;
+    health_score: number | null;
+  };
+}
+
+interface ArchContainerNodeData {
+  containerId: string;
+  label: string;
+  childCount: number;
+  expanded: boolean;
+}
+
+interface PortalNodeData {
+  targetLayerId: string;
+  targetLayerName: string;
+  edgeCount: number;
+}
+
+const COMPLEXITY_COLORS: Record<string, string> = {
+  simple: "#4ade80",
+  moderate: "#fbbf24",
+  complex: "#f87171",
+};
+
 const PADDING = 40;
 const BAND_HEIGHT = 18;
 const FONT_FAMILY = "system-ui, -apple-system, Segoe UI, sans-serif";
@@ -140,6 +184,85 @@ function renderNode(n: Node): string {
   return parts.join("");
 }
 
+function renderArchNode(n: Node): string {
+  const type = n.type ?? "";
+  const w = (n.width as number | undefined) ?? 200;
+  const h = (n.height as number | undefined) ?? 100;
+  const x = n.position.x;
+  const y = n.position.y;
+  const parts: string[] = [];
+
+  if (type === "archFile") {
+    const data = n.data as unknown as ArchFileNodeData;
+    const nodeData = data.node;
+    const tone = nodeData.node_type as ToneName;
+    const style = TONE_STYLES[tone] ?? TONE_STYLES.file;
+    const kindLabel = nodeData.language
+      ? `${nodeData.node_type.toUpperCase()} · ${nodeData.language}`
+      : nodeData.node_type.toUpperCase();
+    const title = escapeXml(truncate(nodeData.name, Math.floor(w / 8)));
+    const subtitle = escapeXml(truncate(nodeData.summary, Math.floor(w / 6)));
+    const complexityColor = COMPLEXITY_COLORS[nodeData.complexity] ?? "#94a3b8";
+
+    parts.push(`<g transform="translate(${x},${y})">`);
+    parts.push(`<rect width="${w}" height="${h}" rx="8" ry="8" fill="${style.bg}" stroke="${style.border}" stroke-width="1.5"/>`);
+    parts.push(`<rect width="${w}" height="${BAND_HEIGHT}" rx="8" ry="8" fill="${style.band}"/>`);
+    parts.push(`<rect y="${BAND_HEIGHT - 8}" width="${w}" height="8" fill="${style.band}"/>`);
+    parts.push(`<text x="8" y="${BAND_HEIGHT - 5}" font-family="${FONT_FAMILY}" font-size="9" font-weight="600" letter-spacing="0.6" fill="${style.text}" opacity="0.85">${escapeXml(kindLabel)}</text>`);
+    parts.push(`<text x="10" y="${BAND_HEIGHT + 20}" font-family="${FONT_FAMILY}" font-size="13" font-weight="600" fill="${style.text}">${title}</text>`);
+    parts.push(`<text x="10" y="${BAND_HEIGHT + 36}" font-family="${FONT_FAMILY}" font-size="11" fill="${style.text}" opacity="0.75">${subtitle}</text>`);
+    parts.push(`<circle cx="14" cy="${h - 12}" r="4" fill="${complexityColor}"/>`);
+    parts.push(`<text x="24" y="${h - 8}" font-family="${FONT_FAMILY}" font-size="10" fill="${style.text}" opacity="0.8">↓${nodeData.in_degree} ↑${nodeData.out_degree}</text>`);
+    parts.push(`</g>`);
+  } else if (type === "layerCluster") {
+    const data = n.data as unknown as LayerClusterNodeData;
+    const layer = data.layer;
+    const style = TONE_STYLES.layerCluster;
+    const title = escapeXml(truncate(layer.name, Math.floor(w / 8)));
+    const subtitle = escapeXml(truncate(layer.description, Math.floor(w / 6)));
+
+    parts.push(`<g transform="translate(${x},${y})">`);
+    parts.push(`<rect width="${w}" height="${h}" rx="8" ry="8" fill="${style.bg}" stroke="${style.border}" stroke-width="1.5"/>`);
+    parts.push(`<rect width="${w}" height="${BAND_HEIGHT}" rx="8" ry="8" fill="${style.band}"/>`);
+    parts.push(`<rect y="${BAND_HEIGHT - 8}" width="${w}" height="8" fill="${style.band}"/>`);
+    parts.push(`<text x="8" y="${BAND_HEIGHT - 5}" font-family="${FONT_FAMILY}" font-size="9" font-weight="600" letter-spacing="0.6" fill="${style.text}" opacity="0.85">LAYER</text>`);
+    parts.push(`<text x="10" y="${BAND_HEIGHT + 20}" font-family="${FONT_FAMILY}" font-size="13" font-weight="600" fill="${style.text}">${title}</text>`);
+    parts.push(`<text x="10" y="${BAND_HEIGHT + 36}" font-family="${FONT_FAMILY}" font-size="11" fill="${style.text}" opacity="0.75">${subtitle}</text>`);
+    parts.push(`<text x="10" y="${h - 8}" font-family="${FONT_FAMILY}" font-size="10" fill="${style.text}" opacity="0.8">${layer.file_count} files</text>`);
+    if (layer.health_score !== null) {
+      const healthColor = layer.health_score >= 80 ? "#4ade80" : layer.health_score >= 60 ? "#fbbf24" : "#f87171";
+      parts.push(`<text x="${w - 10}" y="${h - 8}" font-family="${FONT_FAMILY}" font-size="12" font-weight="600" fill="${healthColor}" text-anchor="end">${Math.round(layer.health_score)}</text>`);
+    }
+    parts.push(`</g>`);
+  } else if (type === "archContainer") {
+    const data = n.data as unknown as ArchContainerNodeData;
+    const style = TONE_STYLES.container;
+    const title = escapeXml(truncate(`${data.childCount} files`, Math.floor(w / 8)));
+
+    parts.push(`<g transform="translate(${x},${y})">`);
+    parts.push(`<rect width="${w}" height="${h}" rx="8" ry="8" fill="${style.bg}" stroke="${style.border}" stroke-width="1.5" stroke-dasharray="6 3"/>`);
+    parts.push(`<rect width="${w}" height="${BAND_HEIGHT}" rx="8" ry="8" fill="${style.band}"/>`);
+    parts.push(`<rect y="${BAND_HEIGHT - 8}" width="${w}" height="8" fill="${style.band}"/>`);
+    parts.push(`<text x="8" y="${BAND_HEIGHT - 5}" font-family="${FONT_FAMILY}" font-size="9" font-weight="600" letter-spacing="0.6" fill="${style.text}" opacity="0.85">${escapeXml(data.label)}</text>`);
+    parts.push(`<text x="10" y="${BAND_HEIGHT + 20}" font-family="${FONT_FAMILY}" font-size="13" font-weight="600" fill="${style.text}">${title}</text>`);
+    parts.push(`</g>`);
+  } else if (type === "portal") {
+    const data = n.data as unknown as PortalNodeData;
+    const style = TONE_STYLES.portal;
+
+    parts.push(`<g transform="translate(${x},${y})">`);
+    parts.push(`<rect width="${w}" height="${h}" rx="8" ry="8" fill="${style.bg}" stroke="${style.border}" stroke-width="1.5" stroke-dasharray="6 3"/>`);
+    parts.push(`<rect width="${w}" height="${BAND_HEIGHT}" rx="8" ry="8" fill="${style.band}"/>`);
+    parts.push(`<rect y="${BAND_HEIGHT - 8}" width="${w}" height="8" fill="${style.band}"/>`);
+    parts.push(`<text x="8" y="${BAND_HEIGHT - 5}" font-family="${FONT_FAMILY}" font-size="9" font-weight="600" letter-spacing="0.6" fill="${style.text}" opacity="0.85">PORTAL</text>`);
+    parts.push(`<text x="10" y="${BAND_HEIGHT + 20}" font-family="${FONT_FAMILY}" font-size="13" font-weight="600" fill="${style.text}">→ ${escapeXml(data.targetLayerName)}</text>`);
+    parts.push(`<text x="10" y="${BAND_HEIGHT + 36}" font-family="${FONT_FAMILY}" font-size="11" fill="${style.text}" opacity="0.75">${data.edgeCount} connections</text>`);
+    parts.push(`</g>`);
+  }
+
+  return parts.join("");
+}
+
 function nodeCenter(n: Node): { x: number; y: number; w: number; h: number } {
   const w = (n.width as number | undefined) ?? 200;
   const h = (n.height as number | undefined) ?? 100;
@@ -201,8 +324,12 @@ export function buildC4Svg(
 
   const nodesById = new Map(nodes.map((n) => [n.id, n]));
 
+  const ARCH_NODE_TYPES = new Set(["archFile", "archContainer", "layerCluster", "portal"]);
+
   const edgeMarkup = edges.map((e) => renderEdge(e, nodesById)).join("");
-  const nodeMarkup = nodes.map(renderNode).join("");
+  const nodeMarkup = nodes.map((n) =>
+    ARCH_NODE_TYPES.has(n.type ?? "") ? renderArchNode(n) : renderNode(n)
+  ).join("");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="${Math.round(height)}" viewBox="0 0 ${Math.round(width)} ${Math.round(height)}">
