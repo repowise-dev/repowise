@@ -51,6 +51,17 @@ class DotNetProjectIndex:
 
     sln_paths: list[Path] = field(default_factory=list)
 
+    # Cache for per-from_file project resolution. Stores
+    # ``input Path → (resolved Path, enclosing csproj or None)``.
+    # ``rank_type_candidates`` is called once per ``TypeReference`` —
+    # dozens per file across thousands of files in a real C# monorepo —
+    # and each call previously paid a fresh ``Path.resolve()`` (a stat
+    # per component on Windows). Memoising collapses that to one
+    # resolve per unique source file across the entire indexing run.
+    _from_proj_cache: dict[Path, tuple[Path, Path | None]] = field(
+        default_factory=dict, repr=False
+    )
+
     # ------------------------------------------------------------------
     # Lookups
     # ------------------------------------------------------------------
@@ -59,6 +70,19 @@ class DotNetProjectIndex:
         """Return the project enclosing *file_abs*, or None."""
         csproj = self.file_to_project.get(file_abs.resolve())
         return self.projects.get(csproj) if csproj else None
+
+    def _resolve_from_file(self, from_file: Path) -> tuple[Path, Path | None]:
+        """Memoised resolve + project lookup for repeated callers."""
+        cached = self._from_proj_cache.get(from_file)
+        if cached is not None:
+            return cached
+        try:
+            resolved = from_file.resolve()
+        except OSError:
+            resolved = from_file
+        entry = (resolved, self.file_to_project.get(resolved))
+        self._from_proj_cache[from_file] = entry
+        return entry
 
     def referenced_projects(self, csproj: Path) -> set[Path]:
         """Return the direct ProjectReference set for *csproj*."""
@@ -90,8 +114,7 @@ class DotNetProjectIndex:
         if not candidates:
             return []
 
-        from_resolved = from_file.resolve()
-        from_proj = self.file_to_project.get(from_resolved)
+        from_resolved, from_proj = self._resolve_from_file(from_file)
         ref_projs = self.project_refs_by_proj.get(from_proj, set()) if from_proj else set()
 
         same_proj: list[Path] = []
@@ -153,16 +176,30 @@ def _bucket_files_by_project(
 ) -> dict[Path, Path]:
     """Map each resolved .cs file → enclosing csproj path via longest-prefix.
 
-    *project_dirs* is a list of ``(project_dir_resolved, csproj_path)``
-    pairs sorted by descending path-component depth so the most
-    specific project wins for nested project layouts (e.g. a test
-    project nested under its production project's directory).
+    Walks each file's parent chain ONCE against a precomputed
+    ``{project_dir → csproj}`` dict, so the cost is O(N x depth)
+    rather than the previous O(N x M_projects x depth). Because we
+    walk parents from deepest to shallowest, the first hit is by
+    construction the most specific project — no separate
+    descending-depth sort of projects required.
+
+    *project_dirs* is retained as a sequence (deterministic order)
+    only to seed the dict; the lookup itself is dict-only.
     """
+    dir_to_proj: dict[Path, Path] = {}
+    for proj_dir, csproj in project_dirs:
+        # If two projects somehow share a directory, the first wins
+        # (callers pass a stable-ordered iterable). Nested layouts are
+        # disambiguated by the parent walk below, not by this dict.
+        dir_to_proj.setdefault(proj_dir, csproj)
+
     out: dict[Path, Path] = {}
     for f in cs_files:
-        parents = set(f.parents)
-        for proj_dir, csproj in project_dirs:
-            if proj_dir in parents or proj_dir == f.parent:
+        # Walk parents from immediate dir outward; first match wins,
+        # which is always the most deeply-nested enclosing project.
+        for parent in f.parents:
+            csproj = dir_to_proj.get(parent)
+            if csproj is not None:
                 out[f] = csproj
                 break
     return out
@@ -217,13 +254,12 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
         except OSError:
             continue
 
-    # Build the file → project map by longest-prefix match. Sort by
-    # descending parent-depth so nested projects (e.g. a test project
-    # whose directory sits under its prod project's tree) bind first.
-    project_dirs: list[tuple[Path, Path]] = sorted(
-        ((proj.project_dir.resolve(), proj.path) for proj in index.projects.values()),
-        key=lambda t: -len(t[0].parts),
-    )
+    # Build the file → project map by longest-prefix match. The bucketer
+    # walks each file's parent chain (deepest-first) against a dict of
+    # project dirs, so nested projects bind naturally without a pre-sort.
+    project_dirs: list[tuple[Path, Path]] = [
+        (proj.project_dir.resolve(), proj.path) for proj in index.projects.values()
+    ]
     index.file_to_project = _bucket_files_by_project(all_cs_files, project_dirs)
 
     # ---- 4. Namespace + type map from cached texts ----

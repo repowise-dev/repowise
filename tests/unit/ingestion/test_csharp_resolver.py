@@ -274,3 +274,67 @@ class TestProjectIndexCaching:
 )
 def test_namespace_regex_edge_cases(raw: str, expected: list[str]) -> None:
     assert declared_namespaces(raw) == expected
+
+
+def test_bucketer_binds_nested_project_first(tmp_path: Path) -> None:
+    """A test project nested under its prod project must bind to the
+    inner csproj, not the enclosing one. The deepest-parent-first walk
+    in ``_bucket_files_by_project`` is what guarantees this — regressing
+    to project-order iteration would silently misroute files.
+    """
+    from repowise.core.ingestion.resolvers.dotnet.index import (
+        _bucket_files_by_project,
+    )
+
+    repo = tmp_path.resolve()
+    prod_dir = repo / "src" / "Prod"
+    test_dir = prod_dir / "Tests"
+    prod_csproj = prod_dir / "Prod.csproj"
+    test_csproj = test_dir / "Tests.csproj"
+    f_prod = prod_dir / "A.cs"
+    f_test = test_dir / "B.cs"
+
+    # Pass projects in the "wrong" order (outer first) — the bucketer
+    # must still pick the deepest enclosing project per file.
+    out = _bucket_files_by_project(
+        [f_prod, f_test],
+        [(prod_dir, prod_csproj), (test_dir, test_csproj)],
+    )
+    assert out[f_prod] == prod_csproj
+    assert out[f_test] == test_csproj
+
+
+def test_rank_type_candidates_memoises_from_file(tmp_path: Path) -> None:
+    """Per-call ``Path.resolve()`` on the source file is the hot loop's
+    biggest cost. Verify the second call for the same ``from_file``
+    short-circuits via the memo dict rather than re-statting.
+    """
+    (tmp_path / "A").mkdir()
+    (tmp_path / "A" / "A.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        "<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>"
+    )
+    (tmp_path / "A" / "Foo.cs").write_text("namespace A;\nclass Foo {}\n")
+    (tmp_path / "A" / "Bar.cs").write_text("namespace A;\nclass Bar {}\n")
+
+    index = build_index(tmp_path)
+    from_file = tmp_path / "A" / "Foo.cs"
+    index.rank_type_candidates("Bar", from_file)
+    # Memo dict should now contain the input Path verbatim.
+    assert from_file in index._from_proj_cache
+
+    # Monkey-patch resolve to detect any additional invocations.
+    calls = {"n": 0}
+    original = Path.resolve
+
+    def _spy(self: Path, *a: object, **kw: object) -> Path:
+        calls["n"] += 1
+        return original(self, *a, **kw)
+
+    Path.resolve = _spy  # type: ignore[method-assign]
+    try:
+        for _ in range(50):
+            index.rank_type_candidates("Bar", from_file)
+    finally:
+        Path.resolve = original  # type: ignore[method-assign]
+    assert calls["n"] == 0, "rank_type_candidates re-resolved from_file"

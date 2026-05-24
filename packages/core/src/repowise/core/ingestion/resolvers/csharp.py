@@ -34,10 +34,18 @@ from .context import ResolverContext
 from .dotnet import get_or_build_index
 
 
-def _to_repo_relative(abs_path: Path, repo_path: Path) -> str | None:
-    """Return *abs_path* relative to *repo_path* in posix form, or None."""
+def _to_repo_relative(abs_path: Path, repo_root_resolved: Path) -> str | None:
+    """Return *abs_path* relative to a pre-resolved repo root in posix form.
+
+    ``abs_path`` is expected to already be resolved — every value we pass
+    in here comes out of ``DotNetProjectIndex.file_to_project`` /
+    ``namespace_map``, both of which are keyed by resolved absolute paths.
+    Re-resolving on every call (as the original implementation did) costs
+    a stat-per-path-component on Windows and dominates ``graph.imports``
+    wall-clock on large C# monorepos.
+    """
     try:
-        return abs_path.resolve().relative_to(repo_path.resolve()).as_posix()
+        return abs_path.relative_to(repo_root_resolved).as_posix()
     except ValueError:
         return None
 
@@ -59,6 +67,44 @@ def _legacy_stem_resolve(
     return None
 
 
+_REPO_ROOT_RESOLVED_ATTR = "_repo_root_resolved"
+_IMPORTER_RESOLVED_ATTR = "_importer_resolved_cache"
+
+
+def _repo_root_resolved(index: object, repo_path: Path) -> Path:
+    """Return ``repo_path.resolve()`` from a cache on the index.
+
+    A C# monorepo can fire tens of thousands of ``resolve_csharp_import``
+    calls; resolving the repo root each time accounts for a measurable
+    chunk of ``graph.imports`` wall-clock on Windows.
+    """
+    cached = getattr(index, _REPO_ROOT_RESOLVED_ATTR, None)
+    if cached is not None:
+        return cached
+    resolved = repo_path.resolve()
+    setattr(index, _REPO_ROOT_RESOLVED_ATTR, resolved)
+    return resolved
+
+
+def _resolve_importer(index: object, repo_path: Path, importer_path: str) -> Path:
+    """Cache importer-path → resolved absolute path on the index.
+
+    Each .cs file has multiple ``using`` directives and each one triggers
+    a resolve of the same importer. Memoising collapses that to one
+    resolve per importer across the whole indexing run.
+    """
+    cache: dict[str, Path] | None = getattr(index, _IMPORTER_RESOLVED_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(index, _IMPORTER_RESOLVED_ATTR, cache)
+    cached = cache.get(importer_path)
+    if cached is not None:
+        return cached
+    resolved = (repo_path / importer_path).resolve()
+    cache[importer_path] = resolved
+    return resolved
+
+
 def _matches_package_prefix(module_path: str, packages: set[str]) -> bool:
     """True if *module_path* equals or is a child namespace of any package id."""
     for pkg in packages:
@@ -77,11 +123,18 @@ def resolve_csharp_import(
         legacy = _legacy_stem_resolve(module_path, ctx)
         return legacy if legacy else ctx.add_external_node(module_path)
 
-    # Locate the importer's project (if any).
-    importer_abs = (ctx.repo_path / importer_path).resolve()
-    importer_proj = index.project_for_file(importer_abs)
+    # Locate the importer's project (if any). Both lookups below previously
+    # ran ``.resolve()`` per call — on Windows that's a stat per path
+    # component. The index resolved every .cs file once at build time, so
+    # we cache the importer's resolved path on the index keyed by the
+    # raw repo-relative string and reuse it across all of this file's
+    # imports.
+    importer_abs = _resolve_importer(index, ctx.repo_path, importer_path)
+    importer_csproj = index.file_to_project.get(importer_abs)
+    importer_proj = index.projects.get(importer_csproj) if importer_csproj else None
 
     candidates = index.files_for_namespace(module_path)
+    repo_root_resolved = _repo_root_resolved(index, ctx.repo_path)
 
     if candidates:
         # Rank: same project, then referenced projects, then anywhere.
@@ -104,7 +157,7 @@ def resolve_csharp_import(
             ordered = candidates
 
         chosen = ordered[0]
-        rel = _to_repo_relative(chosen, ctx.repo_path)
+        rel = _to_repo_relative(chosen, repo_root_resolved)
         if rel and rel in ctx.path_set:
             return rel
 
