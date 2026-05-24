@@ -229,6 +229,56 @@ async def _run_upgrade(
     except Exception:
         pass  # FTS indexing is best-effort
 
+    # 7. Recompute + persist code health against the now-FULL git tier.
+    # The fast index persisted ESSENTIAL-tier findings only, so the blame /
+    # co-change biomarkers (function_hotspot, code_age_volatility,
+    # hidden_coupling) were no-ops. Now that the backfill has promoted the git
+    # tier and rehydrated the graph, re-run the full-repo health pass so those
+    # biomarkers land — otherwise the upgrade leaves the health tables frozen
+    # at the fast index's ESSENTIAL state. Mirrors what `init` / `update` do.
+    try:
+        from repowise.core.persistence.crud import (
+            save_health_findings,
+            save_health_metrics,
+            save_health_snapshot,
+        )
+        from repowise.core.pipeline.orchestrator import _run_health_analysis
+
+        health_report = await _run_health_analysis(
+            graph_builder,
+            git_meta_map,
+            parsed_files,
+            repo_path=repo_path,
+            progress=None,
+        )
+        if health_report is not None:
+            async with get_session(sf) as session:
+                await save_health_metrics(session, repo_id, health_report.metrics or [])
+                if health_report.findings:
+                    await save_health_findings(session, repo_id, health_report.findings)
+                kpis = health_report.kpis or {}
+                try:
+                    await save_health_snapshot(
+                        session,
+                        repo_id,
+                        hotspot_health=float(kpis.get("hotspot_health", 10.0)),
+                        average_health=float(kpis.get("average_health", 10.0)),
+                        worst_performer_path=kpis.get("worst_performer_path"),
+                        worst_performer_score=kpis.get("worst_performer_score"),
+                        per_file_scores={
+                            m.file_path: round(float(m.score), 2)
+                            for m in health_report.metrics or []
+                        },
+                    )
+                except Exception:
+                    pass  # snapshot is best-effort
+            console.print(
+                f"Code health recomputed at FULL tier: "
+                f"[cyan]{len(health_report.findings)}[/cyan] findings."
+            )
+    except Exception as exc:
+        console.print(f"[yellow]Health recompute skipped: {exc}[/yellow]")
+
     await engine.dispose()
     return generated_pages
 
