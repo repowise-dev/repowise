@@ -23,56 +23,15 @@ Five intelligence layers. Nine MCP tools. Multi-repo workspaces. Auto-sync hooks
 
 Your AI coding agent reads files. It doesn't know which ones change together, which ones are dead, or why they were built the way they were. It has the source code and no memory of how the codebase got there.
 
-repowise fixes that. It indexes your codebase into five intelligence layers — dependency graph, git history, auto-generated documentation, architectural decisions, and code health — and exposes them to Claude Code (and any MCP-compatible AI agent) through nine precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **Up to 70% fewer tool calls, 89% fewer file reads, and 36% cheaper per query — at parity answer quality.**
+repowise fixes that. It indexes your codebase into five intelligence layers — dependency graph, git history, auto-generated documentation, architectural decisions, and code health — and exposes them to Claude Code (and any MCP-compatible AI agent) through nine precisely designed tools. Multi-repo? Initialize a workspace and get cross-repo co-change detection, API contract extraction, and federated MCP queries across all your services. **The result: fewer tool calls, fewer file reads, and lower cost per query — at comparable answer quality.**
 
 The result: your agent answers *"why does auth work this way?"* instead of *"here is what auth.ts contains."*
 
 ---
 
-## 🏆 Benchmarked against frontier LLMs
+## Benchmarks
 
-Same model. Same harness. The only difference is whether the agent has repowise's MCP tools. On a paired SWE-QA benchmark over real repositories, repowise makes a state-of-the-art coding agent **dramatically cheaper and leaner — while answering just as well.**
-
-> **Up to −70 % tool calls · −89 % file reads · −36 % cost · ~2/3 of tasks cheaper — at parity answer quality.**
-
-**`pallets/flask`** — a ~25K-LOC web framework, 48 paired SWE-QA tasks. **Same answer quality, a third of the cost:**
-
-| Metric (per task, mean) | Baseline | **+ repowise** | Δ |
-|---|---|---|---|
-| ✅ Judge score (0–10) | 8.82 | **8.81** | **parity** |
-| 💰 Cost | $0.1396 | **$0.0890** | **−36 %** |
-| ⚡ Wall time | 41.7 s | **33.9 s** | **−19 %** |
-| 🛠️ Tool calls | 7.4 | **3.8** | **−49 %** |
-| 📄 Files read | 1.9 | **0.2** | **−89 %** |
-
-> **32 / 48 (67 %)** tasks cheaper, at **dead-even** answer quality — judge Δ = −0.01, identical medians.
-
-**`scikit-learn/scikit-learn`** — a ~300K-LOC ML library with a dense private-method surface, 48 paired SWE-QA tasks. **The win gets bigger on the larger, harder codebase:**
-
-| Metric (per task, mean) | Baseline | **+ repowise** | Δ |
-|---|---|---|---|
-| 🛠️ Tool calls | 8.1 | **2.4** | **−70 %** |
-| 📄 Files read | 1.8 | **0.6** | **−69 %** |
-| 💰 Cost | $0.1180 | **$0.0834** | **−29 %** |
-| ⚡ Wall time | 39.7 s | **28.6 s** | **−28 %** |
-
-> **33 / 48 (69 %)** tasks cheaper, **28 / 48 (58 %)** faster, answer quality within judge noise. The median repowise task reads **zero** source files — it answers straight from the index without opening a single file from the repo.
-
-The mechanism is the same on both repos: most of a coding agent's spend is *exploration* — greping, reading candidate files, re-reading them as context grows. repowise does that exploration once, offline, so the agent skips it on every query. **Bigger, more tangled codebase → more exploration to skip → bigger win.**
-
-### Token efficiency — because context windows aren't free
-
-There's a small genre of "token efficiency" benchmarks going around. It would be impolite not to contribute one. Ours runs on the 30 most recent non-merge commits of `pallets/flask` and asks one question: *to understand a commit, how many tokens does each strategy ask the model to read?*
-
-| Strategy | Tokens / commit |
-|---|---|
-| Naive (full contents of changed files) | 64,039 |
-| `git diff` only | 14,888 |
-| **`repowise get_context`** | **2,391** |
-
-**209× less than naive (mean), 26.8× pooled, 1,214× best case. 41.7× less than git diff (mean), 6.2× pooled.** Same file list, same tokenizer (`cl100k_base`), no per-strategy fudge. We report mean, pooled, and median together because picking just one would be the kind of thing other people in this genre seem to do.
-
-> Full methodology, per-task tables, per-model cost decomposition, and the complete variance discussion for both repos: **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)**
+Most of a coding agent's spend goes to *exploration* — greping for symbols, reading candidate files, re-reading them as context grows. repowise does that work once, offline, so the agent skips it on every query. In early paired SWE-QA runs on real repositories (same model, same harness, with and without repowise's MCP tools), that translated into up to **−70% tool calls, −89% file reads, and −36% cost per query at comparable answer quality**. We're putting together a more rigorous, up-to-date benchmark suite and will publish the full numbers here soon — early methodology and results live at **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)**.
 
 ---
 
