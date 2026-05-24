@@ -8,16 +8,7 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import type { C4EdgeData, C4NodeData } from "../types";
-
-const TONE_STYLES = {
-  system:    { bg: "#1f3a8a", border: "#1e40af", band: "#1e40af", text: "#ffffff" },
-  person:    { bg: "#374151", border: "#4b5563", band: "#4b5563", text: "#ffffff" },
-  external:  { bg: "#1f2937", border: "#374151", band: "#374151", text: "#e5e7eb" },
-  container: { bg: "#0f3a5f", border: "#1d4ed8", band: "#1d4ed8", text: "#ffffff" },
-  component: { bg: "#0d2a47", border: "#1e3a8a", band: "#1e3a8a", text: "#e5e7eb" },
-} as const;
-
-type Tone = keyof typeof TONE_STYLES;
+import { TONE_STYLES, type ToneName } from "../../graph-primitives/tone-styles";
 
 const PADDING = 40;
 const BAND_HEIGHT = 18;
@@ -32,7 +23,7 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-function nodeTone(data: C4NodeData): Tone {
+function nodeTone(data: C4NodeData): ToneName {
   return data.kind;
 }
 

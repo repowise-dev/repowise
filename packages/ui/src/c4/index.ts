@@ -26,16 +26,25 @@ export type {
   C4LayoutPosition,
 } from "./layout/elk-c4-layout";
 
-export { c4NodeTypes } from "./nodes";
+export { c4NodeTypes, archNodeTypes } from "./nodes";
 export {
   SystemNode,
   PersonNode,
   ExternalSystemNode,
   ContainerNode,
   ComponentNode,
+  ArchFileNode,
+  ArchContainerNode,
+  LayerClusterNode,
+  PortalNode,
 } from "./nodes";
 
 export { RelationEdge, c4EdgeTypes } from "./edges/RelationEdge";
+
+export { TONE_STYLES, getTone, ARCH_NODE_SIZES } from "../graph-primitives";
+export type { ToneName, ToneStyle } from "../graph-primitives";
+export { ArchEdgeRenderer, archEdgeTypes, EDGE_CATEGORY_COLORS, computeEdgeStrokeWidth } from "../graph-primitives";
+export type { ArchEdgeData } from "../graph-primitives";
 
 export {
   C4ExportMenu,
