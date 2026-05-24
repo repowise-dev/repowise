@@ -1,0 +1,553 @@
+"use client";
+
+import { create } from "zustand";
+import { devtools } from "zustand/middleware";
+import type { ReactFlowInstance } from "@xyflow/react";
+import type {
+  ArchitectureView,
+  ArchNode,
+  ArchEdge,
+  ArchLayer,
+  NavigationLevel,
+  Persona,
+  DetailLevel,
+  SearchMode,
+  SearchResult,
+  ArchFilters,
+  ContainerLayoutResult,
+} from "../types";
+
+interface ArchitectureStoreState {
+  view: ArchitectureView | null;
+  nodesById: Map<string, ArchNode>;
+  edgesBySource: Map<string, ArchEdge[]>;
+  edgesByTarget: Map<string, ArchEdge[]>;
+  nodeIdToLayerId: Map<string, string>;
+
+  navigationLevel: NavigationLevel;
+  activeLayerId: string | null;
+  selectedNodeId: string | null;
+  nodeHistory: string[];
+
+  expandedContainers: Set<string>;
+  containerLayoutCache: Map<string, ContainerLayoutResult>;
+  containerSizeMemory: Map<string, { width: number; height: number }>;
+  stage1Tick: number;
+
+  persona: Persona;
+  detailLevel: DetailLevel;
+
+  searchQuery: string;
+  searchResults: SearchResult[];
+  searchMode: SearchMode;
+
+  filters: ArchFilters;
+  nodeTypeFilters: Record<string, boolean>;
+  filterPanelOpen: boolean;
+
+  tourActive: boolean;
+  currentTourStep: number;
+  tourHighlightedNodeIds: Set<string>;
+
+  focusNodeId: string | null;
+
+  diffMode: boolean;
+  changedNodeIds: Set<string>;
+  affectedNodeIds: Set<string>;
+
+  codeViewerOpen: boolean;
+  codeViewerNodeId: string | null;
+  codeViewerExpanded: boolean;
+
+  exportMenuOpen: boolean;
+  pathFinderOpen: boolean;
+  reactFlowInstance: ReactFlowInstance | null;
+}
+
+interface ArchitectureStoreActions {
+  setView: (view: ArchitectureView) => void;
+  clearView: () => void;
+
+  drillIntoLayer: (layerId: string) => void;
+  drillOut: () => void;
+
+  selectNode: (nodeId: string | null) => void;
+  goBackNode: () => void;
+
+  toggleContainer: (containerId: string) => void;
+  setContainerLayout: (containerId: string, layout: ContainerLayoutResult) => void;
+  setContainerSizeEstimate: (containerId: string, size: { width: number; height: number }) => void;
+  bumpStage1Tick: () => void;
+
+  setPersona: (persona: Persona) => void;
+  setDetailLevel: (level: DetailLevel) => void;
+
+  setSearchQuery: (query: string) => void;
+  setSearchResults: (results: SearchResult[]) => void;
+  setSearchMode: (mode: SearchMode) => void;
+  clearSearch: () => void;
+
+  setNodeTypeFilter: (nodeType: string, visible: boolean) => void;
+  setComplexityFilter: (complexity: string, visible: boolean) => void;
+  setLayerFilter: (layerId: string, visible: boolean) => void;
+  setEdgeCategoryFilter: (category: string, visible: boolean) => void;
+  resetFilters: () => void;
+  setFilterPanelOpen: (open: boolean) => void;
+
+  startTour: () => void;
+  endTour: () => void;
+  nextTourStep: () => void;
+  prevTourStep: () => void;
+  goToTourStep: (step: number) => void;
+
+  setFocusNode: (nodeId: string | null) => void;
+  clearFocus: () => void;
+
+  setDiffMode: (on: boolean) => void;
+  setDiffData: (changed: Set<string>, affected: Set<string>) => void;
+
+  openCodeViewer: (nodeId: string) => void;
+  closeCodeViewer: () => void;
+  toggleCodeViewerExpanded: () => void;
+
+  setExportMenuOpen: (open: boolean) => void;
+  setPathFinderOpen: (open: boolean) => void;
+  setReactFlowInstance: (instance: ReactFlowInstance | null) => void;
+}
+
+export type ArchitectureStore = ArchitectureStoreState & ArchitectureStoreActions;
+
+const DEFAULT_NODE_TYPE_FILTERS: Record<string, boolean> = {
+  code: true,
+  config: true,
+  docs: true,
+  infra: true,
+  data: true,
+};
+
+function buildFiltersFromView(view: ArchitectureView): ArchFilters {
+  const nodeTypes = new Set<string>();
+  const complexities = new Set<string>();
+  for (const node of view.nodes) {
+    nodeTypes.add(node.node_type);
+    complexities.add(node.complexity);
+  }
+  const layerIds = new Set(view.layers.map((l: ArchLayer) => l.id));
+  const edgeCategories = new Set(view.edges.map((e: ArchEdge) => e.edge_type));
+  return { nodeTypes, complexities, layerIds, edgeCategories };
+}
+
+function buildIndexes(view: ArchitectureView) {
+  const nodesById = new Map<string, ArchNode>();
+  const edgesBySource = new Map<string, ArchEdge[]>();
+  const edgesByTarget = new Map<string, ArchEdge[]>();
+  const nodeIdToLayerId = new Map<string, string>();
+
+  for (const node of view.nodes) {
+    nodesById.set(node.id, node);
+  }
+
+  for (const edge of view.edges) {
+    const srcList = edgesBySource.get(edge.source);
+    if (srcList) {
+      srcList.push(edge);
+    } else {
+      edgesBySource.set(edge.source, [edge]);
+    }
+    const tgtList = edgesByTarget.get(edge.target);
+    if (tgtList) {
+      tgtList.push(edge);
+    } else {
+      edgesByTarget.set(edge.target, [edge]);
+    }
+  }
+
+  for (const layer of view.layers) {
+    for (const nodeId of layer.node_ids) {
+      nodeIdToLayerId.set(nodeId, layer.id);
+    }
+  }
+
+  return { nodesById, edgesBySource, edgesByTarget, nodeIdToLayerId };
+}
+
+const INITIAL_STATE: ArchitectureStoreState = {
+  view: null,
+  nodesById: new Map(),
+  edgesBySource: new Map(),
+  edgesByTarget: new Map(),
+  nodeIdToLayerId: new Map(),
+
+  navigationLevel: "overview",
+  activeLayerId: null,
+  selectedNodeId: null,
+  nodeHistory: [],
+
+  expandedContainers: new Set(),
+  containerLayoutCache: new Map(),
+  containerSizeMemory: new Map(),
+  stage1Tick: 0,
+
+  persona: "overview",
+  detailLevel: "file",
+
+  searchQuery: "",
+  searchResults: [],
+  searchMode: "fuzzy",
+
+  filters: {
+    nodeTypes: new Set(),
+    complexities: new Set(),
+    layerIds: new Set(),
+    edgeCategories: new Set(),
+  },
+  nodeTypeFilters: { ...DEFAULT_NODE_TYPE_FILTERS },
+  filterPanelOpen: false,
+
+  tourActive: false,
+  currentTourStep: 0,
+  tourHighlightedNodeIds: new Set(),
+
+  focusNodeId: null,
+
+  diffMode: false,
+  changedNodeIds: new Set(),
+  affectedNodeIds: new Set(),
+
+  codeViewerOpen: false,
+  codeViewerNodeId: null,
+  codeViewerExpanded: false,
+
+  exportMenuOpen: false,
+  pathFinderOpen: false,
+  reactFlowInstance: null,
+};
+
+export const useArchitectureStore = create<ArchitectureStore>()(
+  devtools(
+    (set, get) => ({
+      ...INITIAL_STATE,
+
+      setView: (view: ArchitectureView) => {
+        const { nodesById, edgesBySource, edgesByTarget, nodeIdToLayerId } = buildIndexes(view);
+        const filters = buildFiltersFromView(view);
+        set({
+          view,
+          nodesById,
+          edgesBySource,
+          edgesByTarget,
+          nodeIdToLayerId,
+          filters,
+          navigationLevel: "overview",
+          activeLayerId: null,
+          selectedNodeId: null,
+          nodeHistory: [],
+          expandedContainers: new Set(),
+          containerLayoutCache: new Map(),
+          searchQuery: "",
+          searchResults: [],
+          tourActive: false,
+          currentTourStep: 0,
+          tourHighlightedNodeIds: new Set(),
+          nodeTypeFilters: { ...DEFAULT_NODE_TYPE_FILTERS },
+        });
+      },
+
+      clearView: () => {
+        set({ ...INITIAL_STATE });
+      },
+
+      drillIntoLayer: (layerId: string) => {
+        set({
+          navigationLevel: "layer-detail",
+          activeLayerId: layerId,
+          selectedNodeId: null,
+          expandedContainers: new Set(),
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      drillOut: () => {
+        set({
+          navigationLevel: "overview",
+          activeLayerId: null,
+          selectedNodeId: null,
+          expandedContainers: new Set(),
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      selectNode: (nodeId: string | null) => {
+        const state = get();
+        const history = [...state.nodeHistory];
+
+        if (state.selectedNodeId !== null) {
+          history.push(state.selectedNodeId);
+          if (history.length > 50) {
+            history.shift();
+          }
+        }
+
+        if (nodeId !== null) {
+          const nodeLayerId = state.nodeIdToLayerId.get(nodeId);
+          if (nodeLayerId && nodeLayerId !== state.activeLayerId) {
+            set({
+              navigationLevel: "layer-detail",
+              activeLayerId: nodeLayerId,
+              selectedNodeId: nodeId,
+              nodeHistory: history,
+              expandedContainers: new Set(),
+              containerLayoutCache: new Map(),
+            });
+            return;
+          }
+        }
+
+        set({ selectedNodeId: nodeId, nodeHistory: history });
+      },
+
+      goBackNode: () => {
+        const state = get();
+        const history = [...state.nodeHistory];
+        const prev = history.pop();
+        set({
+          selectedNodeId: prev ?? null,
+          nodeHistory: history,
+        });
+      },
+
+      toggleContainer: (containerId: string) => {
+        const state = get();
+        const expanded = new Set(state.expandedContainers);
+        if (expanded.has(containerId)) {
+          expanded.delete(containerId);
+          const cache = new Map(state.containerLayoutCache);
+          cache.delete(containerId);
+          set({ expandedContainers: expanded, containerLayoutCache: cache });
+        } else {
+          expanded.add(containerId);
+          set({ expandedContainers: expanded });
+        }
+      },
+
+      setContainerLayout: (containerId: string, layout: ContainerLayoutResult) => {
+        const cache = new Map(get().containerLayoutCache);
+        cache.set(containerId, layout);
+        set({ containerLayoutCache: cache });
+      },
+
+      setContainerSizeEstimate: (containerId: string, size: { width: number; height: number }) => {
+        const memory = new Map(get().containerSizeMemory);
+        memory.set(containerId, size);
+        set({ containerSizeMemory: memory });
+      },
+
+      bumpStage1Tick: () => {
+        set({ stage1Tick: get().stage1Tick + 1 });
+      },
+
+      setPersona: (persona: Persona) => {
+        set({
+          persona,
+          expandedContainers: new Set(),
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      setDetailLevel: (level: DetailLevel) => {
+        set({
+          detailLevel: level,
+          expandedContainers: new Set(),
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      setSearchQuery: (query: string) => {
+        set({ searchQuery: query });
+      },
+
+      setSearchResults: (results: SearchResult[]) => {
+        set({ searchResults: results });
+      },
+
+      setSearchMode: (mode: SearchMode) => {
+        set({ searchMode: mode });
+      },
+
+      clearSearch: () => {
+        set({ searchQuery: "", searchResults: [] });
+      },
+
+      setNodeTypeFilter: (nodeType: string, visible: boolean) => {
+        const state = get();
+        const nodeTypes = new Set(state.filters.nodeTypes);
+        if (visible) {
+          nodeTypes.add(nodeType);
+        } else {
+          nodeTypes.delete(nodeType);
+        }
+        set({
+          filters: { ...state.filters, nodeTypes },
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      setComplexityFilter: (complexity: string, visible: boolean) => {
+        const state = get();
+        const complexities = new Set(state.filters.complexities);
+        if (visible) {
+          complexities.add(complexity);
+        } else {
+          complexities.delete(complexity);
+        }
+        set({
+          filters: { ...state.filters, complexities },
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      setLayerFilter: (layerId: string, visible: boolean) => {
+        const state = get();
+        const layerIds = new Set(state.filters.layerIds);
+        if (visible) {
+          layerIds.add(layerId);
+        } else {
+          layerIds.delete(layerId);
+        }
+        set({
+          filters: { ...state.filters, layerIds },
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      setEdgeCategoryFilter: (category: string, visible: boolean) => {
+        const state = get();
+        const edgeCategories = new Set(state.filters.edgeCategories);
+        if (visible) {
+          edgeCategories.add(category);
+        } else {
+          edgeCategories.delete(category);
+        }
+        set({
+          filters: { ...state.filters, edgeCategories },
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      resetFilters: () => {
+        const state = get();
+        if (!state.view) return;
+        const filters = buildFiltersFromView(state.view);
+        set({
+          filters,
+          nodeTypeFilters: { ...DEFAULT_NODE_TYPE_FILTERS },
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      setFilterPanelOpen: (open: boolean) => {
+        set({ filterPanelOpen: open });
+      },
+
+      startTour: () => {
+        const state = get();
+        const tour = state.view?.tour;
+        if (!tour || tour.length === 0) return;
+        const firstStep = tour[0];
+        set({
+          tourActive: true,
+          currentTourStep: 0,
+          tourHighlightedNodeIds: new Set(firstStep?.node_ids ?? []),
+        });
+      },
+
+      endTour: () => {
+        set({
+          tourActive: false,
+          currentTourStep: 0,
+          tourHighlightedNodeIds: new Set(),
+        });
+      },
+
+      nextTourStep: () => {
+        const state = get();
+        const tour = state.view?.tour;
+        if (!tour || tour.length === 0) return;
+        const maxStep = tour.length - 1;
+        if (state.currentTourStep >= maxStep) return;
+        const nextStep = state.currentTourStep + 1;
+        const step = tour[nextStep];
+        set({
+          currentTourStep: nextStep,
+          tourHighlightedNodeIds: new Set(step?.node_ids ?? []),
+        });
+      },
+
+      prevTourStep: () => {
+        const state = get();
+        const tour = state.view?.tour;
+        if (!tour || tour.length === 0) return;
+        if (state.currentTourStep <= 0) return;
+        const prevStep = state.currentTourStep - 1;
+        const step = tour[prevStep];
+        set({
+          currentTourStep: prevStep,
+          tourHighlightedNodeIds: new Set(step?.node_ids ?? []),
+        });
+      },
+
+      goToTourStep: (step: number) => {
+        const state = get();
+        const tour = state.view?.tour;
+        if (!tour || tour.length === 0) return;
+        const clamped = Math.max(0, Math.min(step, tour.length - 1));
+        const tourStep = tour[clamped];
+        set({
+          currentTourStep: clamped,
+          tourHighlightedNodeIds: new Set(tourStep?.node_ids ?? []),
+        });
+      },
+
+      setFocusNode: (nodeId: string | null) => {
+        set({ focusNodeId: nodeId });
+      },
+
+      clearFocus: () => {
+        set({ focusNodeId: null });
+      },
+
+      setDiffMode: (on: boolean) => {
+        set({ diffMode: on });
+      },
+
+      setDiffData: (changed: Set<string>, affected: Set<string>) => {
+        set({ changedNodeIds: changed, affectedNodeIds: affected });
+      },
+
+      openCodeViewer: (nodeId: string) => {
+        set({ codeViewerOpen: true, codeViewerNodeId: nodeId });
+      },
+
+      closeCodeViewer: () => {
+        set({ codeViewerOpen: false, codeViewerNodeId: null, codeViewerExpanded: false });
+      },
+
+      toggleCodeViewerExpanded: () => {
+        set({ codeViewerExpanded: !get().codeViewerExpanded });
+      },
+
+      setExportMenuOpen: (open: boolean) => {
+        set({ exportMenuOpen: open });
+      },
+
+      setPathFinderOpen: (open: boolean) => {
+        set({ pathFinderOpen: open });
+      },
+
+      setReactFlowInstance: (instance: ReactFlowInstance | null) => {
+        set({ reactFlowInstance: instance });
+      },
+    }),
+    { name: "architecture-store" },
+  ),
+);

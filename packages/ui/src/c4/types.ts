@@ -88,3 +88,108 @@ export type C4NodeData =
 export interface C4EdgeData {
   relation: C4Relation;
 }
+
+// ---------------------------------------------------------------------------
+// Architecture view types (mirror backend ArchitectureViewResponse)
+// ---------------------------------------------------------------------------
+
+export type ArchNodeType =
+  | "file" | "function" | "class" | "module" | "concept"
+  | "config" | "document" | "service" | "table" | "endpoint"
+  | "pipeline" | "schema" | "resource";
+
+export interface ArchNode {
+  id: string;
+  node_type: ArchNodeType;
+  name: string;
+  file_path: string | null;
+  line_range: [number, number] | null;
+  summary: string;
+  complexity: "simple" | "moderate" | "complex";
+  tags: string[];
+  language: string | null;
+  pagerank: number;
+  pagerank_percentile: number;
+  betweenness: number;
+  in_degree: number;
+  out_degree: number;
+  community_id: number | null;
+  is_entry_point: boolean;
+  is_test: boolean;
+  is_hotspot: boolean;
+  is_dead: boolean;
+  has_doc: boolean;
+  primary_owner: string | null;
+  primary_owner_pct: number | null;
+  bus_factor: number | null;
+}
+
+export interface ArchEdge {
+  source: string;
+  target: string;
+  edge_type: string;
+  direction: "forward" | "backward" | "bidirectional";
+  weight: number;
+  confidence: number;
+}
+
+export interface ArchLayer {
+  id: string;
+  name: string;
+  description: string;
+  node_ids: string[];
+  file_count: number;
+  complexity_distribution: Record<string, number>;
+  health_score: number | null;
+}
+
+export interface ArchTourStep {
+  order: number;
+  title: string;
+  description: string;
+  node_ids: string[];
+}
+
+export interface ArchitectureView {
+  project_name: string;
+  project_description: string;
+  layers: ArchLayer[];
+  nodes: ArchNode[];
+  edges: ArchEdge[];
+  tour: ArchTourStep[];
+  total_files: number;
+  total_symbols: number;
+  total_edges: number;
+  languages: string[];
+  frameworks: string[];
+  external_systems: C4ExternalSystem[];
+}
+
+// ---------------------------------------------------------------------------
+// Architecture store types
+// ---------------------------------------------------------------------------
+
+export type NavigationLevel = "overview" | "layer-detail";
+export type Persona = "overview" | "learn" | "deep-dive";
+export type DetailLevel = "file" | "class" | "symbol";
+export type SearchMode = "fuzzy" | "semantic";
+
+export interface SearchResult {
+  nodeId: string;
+  name: string;
+  node_type: ArchNodeType;
+  score: number;
+  matchedField: "name" | "summary" | "tags";
+}
+
+export interface ArchFilters {
+  nodeTypes: Set<string>;
+  complexities: Set<string>;
+  layerIds: Set<string>;
+  edgeCategories: Set<string>;
+}
+
+export interface ContainerLayoutResult {
+  positions: Map<string, { x: number; y: number }>;
+  size: { width: number; height: number };
+}

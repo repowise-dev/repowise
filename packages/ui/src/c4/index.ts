@@ -12,6 +12,9 @@ export type { C4DiagramProps } from "./C4Diagram";
 export { useC4Store } from "./store/use-c4-store";
 export type { C4Store, C4StoreState, UseC4StoreOptions } from "./store/use-c4-store";
 
+export { useArchitectureStore } from "./store/use-architecture-store";
+export type { ArchitectureStore } from "./store/use-architecture-store";
+
 export { useC4Layout } from "./hooks/use-c4-layout";
 export type { C4LayoutResult } from "./hooks/use-c4-layout";
 export { useC4Keyboard } from "./hooks/use-c4-keyboard";
@@ -66,4 +69,17 @@ export type {
   C4L3,
   C4NodeData,
   C4EdgeData,
+  ArchNodeType,
+  ArchNode,
+  ArchEdge,
+  ArchLayer,
+  ArchTourStep,
+  ArchitectureView,
+  NavigationLevel,
+  Persona,
+  DetailLevel,
+  SearchMode,
+  SearchResult,
+  ArchFilters,
+  ContainerLayoutResult,
 } from "./types";

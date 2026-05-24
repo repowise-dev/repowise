@@ -119,7 +119,8 @@
     "remark-gfm": "^4.0.1",
     "shiki": "^4.0.0",
     "sigma": "^3.0.3",
-    "tailwind-merge": "^3.5.0"
+    "tailwind-merge": "^3.5.0",
+    "zustand": "^4.4.0"
   },
   "peerDependencies": {
     "react": "^19.0.0",
