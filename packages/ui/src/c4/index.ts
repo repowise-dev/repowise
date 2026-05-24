@@ -61,8 +61,13 @@ export {
   C4Legend,
   C4NodeInspector,
   C4DetailPanel,
+  Sidebar,
+  ProjectOverview,
+  ArchNodeInfo,
+  FileExplorer,
 } from "./panels";
 export type { C4DetailPanelProps, C4Health, C4DocSummary } from "./panels";
+export type { SidebarProps, ArchNodeInfoProps, ArchNodeHealth } from "./panels";
 
 export type {
   C4Level,

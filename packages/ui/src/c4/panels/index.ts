@@ -11,3 +11,10 @@ export type {
   C4Health,
   C4DocSummary,
 } from "./C4DetailPanel";
+
+export { Sidebar } from "./Sidebar";
+export type { SidebarProps } from "./Sidebar";
+export { ProjectOverview } from "./ProjectOverview";
+export { ArchNodeInfo } from "./ArchNodeInfo";
+export type { ArchNodeInfoProps, ArchNodeHealth } from "./ArchNodeInfo";
+export { FileExplorer } from "./FileExplorer";
