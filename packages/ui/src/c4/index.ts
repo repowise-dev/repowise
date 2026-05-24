@@ -18,6 +18,9 @@ export type { ArchitectureStore } from "./store/use-architecture-store";
 export { useC4Layout } from "./hooks/use-c4-layout";
 export type { C4LayoutResult } from "./hooks/use-c4-layout";
 export { useC4Keyboard } from "./hooks/use-c4-keyboard";
+export { useArchitectureLayout } from "./hooks/use-architecture-layout";
+export type { ArchitectureLayoutResult } from "./hooks/use-architecture-layout";
+export { useArchitectureNavigation } from "./hooks/use-architecture-navigation";
 
 export { computeC4Layout, C4_NODE_SIZES } from "./layout/elk-c4-layout";
 export type {
