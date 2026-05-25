@@ -169,6 +169,11 @@ def test_generation_config_normalizes_reasoning():
     assert config.reasoning == "off"
 
 
+def test_generation_config_accepts_native_reasoning_effort():
+    config = GenerationConfig(reasoning="XHIGH")
+    assert config.reasoning == "xhigh"
+
+
 def test_generation_config_rejects_invalid_reasoning():
     with pytest.raises(ValueError):
         GenerationConfig(reasoning="verbose")

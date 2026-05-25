@@ -55,7 +55,7 @@ repowise init [PATH] [OPTIONS]
 | `--exclude` / `-x` | string | — | Gitignore-style exclude pattern (repeatable: `-x vendor/ -x "*.gen.*"`) |
 | `--include-submodules` | flag | false | Include git submodule directories (excluded by default) |
 | `--concurrency` | int | 5 | Max concurrent LLM calls |
-| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`, or `minimal` |
+| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `--resume` | flag | false | Resume from last checkpoint after an interruption |
 | `--force` | flag | false | Regenerate all pages even if up to date |
 | `--commit-limit` | int | 500 | Max commits per file for git analysis (max 5000, saved to config) |
@@ -133,7 +133,7 @@ repowise update [PATH] [OPTIONS]
 | `--provider` | string | — | Override LLM provider |
 | `--model` | string | — | Override model |
 | `--since` | string | — | Git ref to diff from (overrides saved `state.json`) |
-| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`, or `minimal` |
+| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `--cascade-budget` | int | auto | Max pages to regenerate from cascading changes |
 | `--dry-run` | flag | false | Show affected pages without regenerating |
 | `--agents` / `--no-agents` | flag | config | Generate or skip managed `AGENTS.md` after update |

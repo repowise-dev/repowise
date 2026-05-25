@@ -5,8 +5,28 @@ from __future__ import annotations
 import os
 from typing import Literal, cast
 
-ReasoningMode = Literal["auto", "off", "minimal"]
-REASONING_MODES: tuple[ReasoningMode, ...] = ("auto", "off", "minimal")
+ReasoningMode = Literal[
+    "auto",
+    "off",
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+]
+REASONING_MODES: tuple[ReasoningMode, ...] = (
+    "auto",
+    "off",
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
 
 
 def normalize_reasoning(
@@ -16,7 +36,7 @@ def normalize_reasoning(
 ) -> ReasoningMode:
     """Normalize a user/config supplied reasoning mode.
 
-    ``auto`` preserves provider defaults. ``off`` and ``minimal`` are provider
+    ``auto`` preserves provider defaults. The remaining values are portable
     intents; each provider decides whether and how to translate them.
     """
     if value is None:

@@ -46,6 +46,21 @@ def test_custom_model():
     assert p.model_name == "gpt-5.4-mini"
 
 
+def test_supported_reasoning_modes_are_model_specific():
+    assert OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5-mini",
+    ).supported_reasoning_modes() == ("auto", "minimal")
+    assert OpenAIProvider(
+        api_key="sk-test",
+        model="qwen3",
+    ).supported_reasoning_modes() == ("auto", "off", "none")
+    assert OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-4o",
+    ).supported_reasoning_modes() == ("auto",)
+
+
 def test_gpt54_model():
     p = OpenAIProvider(api_key="sk-test", model="gpt-5.4")
     assert p.model_name == "gpt-5.4"
@@ -154,6 +169,25 @@ async def test_generate_forwards_off_reasoning_extra_body():
         mock_client.return_value.chat.completions.create = fake_create
         provider._client = mock_client.return_value
         await provider.generate("system msg", "user msg", reasoning="off")
+
+    assert captured_kwargs[0]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+
+
+async def test_generate_forwards_none_reasoning_as_thinking_disabled():
+    provider = OpenAIProvider(api_key="sk-test", model="qwen3")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="none")
 
     assert captured_kwargs[0]["extra_body"] == {
         "chat_template_kwargs": {"enable_thinking": False}

@@ -80,7 +80,7 @@ The provider runs:
 codex exec --ephemeral --sandbox read-only --json --cd /absolute/path/to/repo -
 ```
 
-Repowise sends the prompt on stdin, parses Codex JSONL output, records token usage from `turn.completed.usage`, and treats `codex_cli/*` cost as `$0.00` because subscription billing happens outside Repowise API pricing. `--model` is passed to Codex only when you explicitly configure a model. `--reasoning minimal` maps to Codex `model_reasoning_effort="low"`; `--reasoning off` is not supported by the Codex CLI provider.
+Repowise sends the prompt on stdin, parses Codex JSONL output, records token usage from `turn.completed.usage`, and treats `codex_cli/*` cost as `$0.00` because subscription billing happens outside Repowise API pricing. `--model` is passed to Codex only when you explicitly configure a model. `--reasoning minimal` maps to Codex `model_reasoning_effort="low"`; `low`, `medium`, `high`, and `xhigh` pass through when the selected Codex model advertises those levels. `off`/`none` is not supported by the Codex CLI provider.
 
 Smoke check:
 

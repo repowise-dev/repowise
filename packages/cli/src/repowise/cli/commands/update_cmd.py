@@ -32,6 +32,7 @@ from repowise.cli.helpers import (
     save_state,
     write_update_pending,
 )
+from repowise.core.reasoning import REASONING_MODES
 
 # ---------------------------------------------------------------------------
 # Mode resolution
@@ -261,9 +262,12 @@ def _refresh_workspace_editor_project_files(
 @click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
 @click.option(
     "--reasoning",
-    type=click.Choice(["auto", "off", "minimal"]),
+    type=click.Choice(REASONING_MODES),
     default=None,
-    help="Reasoning mode for supported providers: auto, off, or minimal.",
+    help=(
+        "Reasoning mode for supported providers: auto, off/none, minimal, "
+        "low, medium, high, xhigh, or max."
+    ),
 )
 @click.option(
     "--cascade-budget",

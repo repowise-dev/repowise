@@ -61,7 +61,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--exclude / -x` | Gitignore-style exclusion patterns. Repeatable. |
 | `--include-submodules` | Include git submodule directories. |
 | `--concurrency` | Max concurrent LLM calls (default: 5). |
-| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal` (default: `auto`). |
+| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (default: `auto`). |
 | `--resume` | Resume from the last checkpoint if interrupted. |
 | `--force` | Regenerate all pages even if they exist. |
 | `--commit-limit` | Max commits to analyze per file (default: 500). |
@@ -102,7 +102,7 @@ Incrementally update wiki pages for files changed since the last sync.
 | `--provider` | Override LLM provider for this run |
 | `--model` | Override model |
 | `--since` | Git ref to diff from (overrides `state.json`) |
-| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal` |
+| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `--cascade-budget` | Max pages to regenerate (default: auto) |
 | `--dry-run` | Show what would be updated without regenerating |
 | `--workspace` | Update all stale repos in the workspace + cross-repo analysis |

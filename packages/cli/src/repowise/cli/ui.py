@@ -18,6 +18,7 @@ from rich.table import Table
 from rich.text import Text
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.reasoning import REASONING_MODES
 
 # ---------------------------------------------------------------------------
 # Brand / theme
@@ -866,7 +867,7 @@ def interactive_advanced_config(
     result["reasoning"] = click.prompt(
         "  Reasoning mode",
         default="auto",
-        type=click.Choice(["auto", "off", "minimal"]),
+        type=click.Choice(REASONING_MODES),
     )
 
     # Embedder selection

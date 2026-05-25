@@ -37,6 +37,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.ui import MaybeCountColumn
+from repowise.core.reasoning import REASONING_MODES
 
 # ---------------------------------------------------------------------------
 # Helpers (kept in this file; _resolve_embedder also imported by other cmds)
@@ -953,9 +954,12 @@ def _workspace_init(
 @click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
 @click.option(
     "--reasoning",
-    type=click.Choice(["auto", "off", "minimal"]),
+    type=click.Choice(REASONING_MODES),
     default=None,
-    help="Reasoning mode for supported providers: auto, off, or minimal. Default: auto.",
+    help=(
+        "Reasoning mode for supported providers: auto, off/none, minimal, "
+        "low, medium, high, xhigh, or max. Default: auto."
+    ),
 )
 @click.option(
     "--test-run",

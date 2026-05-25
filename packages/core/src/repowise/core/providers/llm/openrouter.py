@@ -72,18 +72,21 @@ def _openrouter_supports_reasoning_effort(model: str) -> bool:
     return False
 
 
+def _openrouter_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
+    if not _openrouter_supports_reasoning_effort(model):
+        return ()
+    return ("off", "none", "minimal")
+
+
 def _resolve_openrouter_reasoning_mode(
     reasoning: ReasoningMode, *, model: str
 ) -> ReasoningMode:
     """Validate OpenRouter reasoning support before retry handling."""
-    supported_modes: tuple[ReasoningMode, ...] = (
-        ("off", "minimal") if _openrouter_supports_reasoning_effort(model) else ()
-    )
     return ensure_reasoning_supported(
         "openrouter",
         model,
         normalize_reasoning(reasoning),
-        supported_modes,
+        _openrouter_supported_reasoning_modes(model),
         detail=(
             "OpenRouter maps reasoning.effort for OpenAI reasoning and Grok "
             "model families with known effort support. Unknown, dotted, and "
@@ -97,10 +100,11 @@ def _openrouter_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
     mode = normalize_reasoning(reasoning)
     if mode == "auto":
         return {}
+    effort = "none" if mode in ("off", "none") else "minimal"
     return {
         "extra_body": {
             "reasoning": {
-                "effort": "none" if mode == "off" else "minimal",
+                "effort": effort,
             }
         }
     }
@@ -161,6 +165,9 @@ class OpenRouterProvider(BaseProvider):
     @property
     def model_name(self) -> str:
         return self._model
+
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return ("auto", *_openrouter_supported_reasoning_modes(self._model))
 
     async def generate(
         self,

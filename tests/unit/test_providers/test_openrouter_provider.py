@@ -46,6 +46,17 @@ def test_custom_model():
     assert p.model_name == "google/gemini-3.1-flash-lite-preview"
 
 
+def test_supported_reasoning_modes_are_model_specific():
+    assert OpenRouterProvider(
+        api_key="sk-or-test",
+        model="x-ai/grok-4",
+    ).supported_reasoning_modes() == ("auto", "off", "none", "minimal")
+    assert OpenRouterProvider(
+        api_key="sk-or-test",
+        model="google/gemini-3.1-flash-lite-preview",
+    ).supported_reasoning_modes() == ("auto",)
+
+
 def test_default_headers_app_title():
     """Default app_title='repowise' sets X-Title header."""
     p = OpenRouterProvider(api_key="sk-or-test")
@@ -187,6 +198,23 @@ async def test_generate_forwards_off_reasoning_extra_body():
         mock_client.return_value.chat.completions.create = fake_create
         provider._client = mock_client.return_value
         await provider.generate("system msg", "user msg", reasoning="off")
+
+    assert captured_kwargs[0]["extra_body"] == {"reasoning": {"effort": "none"}}
+
+
+async def test_generate_forwards_none_reasoning_extra_body():
+    provider = OpenRouterProvider(api_key="sk-or-test", model="x-ai/grok-4")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="none")
 
     assert captured_kwargs[0]["extra_body"] == {"reasoning": {"effort": "none"}}
 

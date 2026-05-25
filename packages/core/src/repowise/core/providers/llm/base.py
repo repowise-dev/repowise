@@ -111,8 +111,8 @@ class BaseProvider(ABC):
                            repowise uses 0.3 for consistent doc style.
             request_id:    Optional trace ID for logging and debugging.
             reasoning:     Provider-level reasoning intent. ``auto`` preserves
-                           provider defaults; ``off`` and ``minimal`` are
-                           translated by providers that support them.
+                           provider defaults; explicit modes are translated by
+                           providers that support them.
             cache_hints:   Optional hints that one or more prompt segments are
                            reusable across calls. Providers with an explicit
                            caching primitive (Anthropic) use them; others
@@ -146,6 +146,16 @@ class BaseProvider(ABC):
         Stored on every generated page for attribution and reproducibility.
         """
         ...
+
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        """Return reasoning modes supported by this provider/model.
+
+        ``auto`` is always present because it means "preserve provider defaults".
+        Providers with model-specific support should override this method and
+        return the exact explicit modes they can translate before an API call.
+        """
+
+        return ("auto",)
 
 
 class ProviderError(Exception):

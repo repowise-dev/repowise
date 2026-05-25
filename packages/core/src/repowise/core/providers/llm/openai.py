@@ -76,7 +76,7 @@ def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
     if _supports_openai_reasoning_effort(model):
         modes.append("minimal")
     if _supports_chat_template_thinking_toggle(model):
-        modes.append("off")
+        modes.extend(("off", "none"))
     return tuple(modes)
 
 
@@ -105,6 +105,8 @@ def _openai_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
         return {}
     if mode == "minimal":
         return {"reasoning_effort": "minimal"}
+    if mode not in ("off", "none"):
+        return {}
     return {
         "extra_body": {
             "chat_template_kwargs": {
@@ -151,6 +153,9 @@ class OpenAIProvider(BaseProvider):
     @property
     def model_name(self) -> str:
         return self._model
+
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return ("auto", *_openai_supported_reasoning_modes(self._model))
 
     async def generate(
         self,

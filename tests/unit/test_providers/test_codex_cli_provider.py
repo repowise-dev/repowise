@@ -12,7 +12,11 @@ from typing import Any
 import pytest
 
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError
-from repowise.core.providers.llm.codex_cli import CodexCliProvider
+from repowise.core.providers.llm.codex_cli import (
+    CodexCliProvider,
+    CodexModelReasoning,
+    _extract_codex_model_catalog,
+)
 
 
 class FakeProcess:
@@ -69,6 +73,47 @@ def _success_jsonl(text: str = "OK") -> str:
     )
 
 
+def _reasoning_catalog(
+    *efforts: str,
+    slug: str = "gpt-5.5",
+    default: str = "medium",
+) -> dict[str, CodexModelReasoning]:
+    return {
+        slug: CodexModelReasoning(
+            slug=slug,
+            default_effort=default,
+            supported_efforts=efforts,
+        )
+    }
+
+
+def test_extract_codex_model_catalog_keeps_only_reasoning_capabilities():
+    catalog = _extract_codex_model_catalog(
+        {
+            "models": [
+                {
+                    "slug": "gpt-5.5",
+                    "default_reasoning_level": "medium",
+                    "supported_reasoning_levels": [
+                        {"effort": "low", "description": "fast"},
+                        {"effort": "high", "description": "deeper"},
+                    ],
+                    "base_instructions": "large prompt metadata should stay ignored",
+                },
+                {"slug": "no-reasoning", "supported_reasoning_levels": []},
+            ]
+        }
+    )
+
+    assert catalog == {
+        "gpt-5.5": CodexModelReasoning(
+            slug="gpt-5.5",
+            default_effort="medium",
+            supported_efforts=("low", "high"),
+        )
+    }
+
+
 def test_provider_name_and_default_model(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
 
@@ -92,6 +137,28 @@ def test_custom_model_is_normalized_for_attribution(monkeypatch, tmp_path):
     )
 
 
+def test_supported_reasoning_modes_reflect_codex_catalog(monkeypatch, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.codex_cli._load_codex_model_catalog",
+        lambda _cmd: _reasoning_catalog("none", "low", "medium", "high", "xhigh"),
+    )
+
+    assert CodexCliProvider(
+        model="gpt-5.5",
+        repo_path=tmp_path,
+    ).supported_reasoning_modes() == (
+        "auto",
+        "off",
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    )
+
+
 def test_missing_cli_raises(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
 
@@ -102,6 +169,10 @@ def test_missing_cli_raises(monkeypatch, tmp_path):
 async def test_generate_invokes_codex_exec_with_stdin(monkeypatch, tmp_path):
     codex_cmd = str(tmp_path / "bin" / "codex.CMD")
     monkeypatch.setattr("shutil.which", lambda cmd: codex_cmd if cmd == "codex" else None)
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.codex_cli._load_codex_model_catalog",
+        lambda _cmd: _reasoning_catalog("low", "medium", "high", "xhigh"),
+    )
     captured: dict[str, Any] = {}
     proc = FakeProcess(stdout=_success_jsonl("Hello from Codex"), stderr="plugin sync warning")
 
@@ -128,6 +199,58 @@ async def test_generate_invokes_codex_exec_with_stdin(monkeypatch, tmp_path):
     assert args[args.index("--model") + 1] == "gpt-5.5"
     assert args[-1] == "-"
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
+
+
+async def test_generate_passes_supported_codex_reasoning_effort(monkeypatch, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.codex_cli._load_codex_model_catalog",
+        lambda _cmd: _reasoning_catalog("low", "medium", "high", "xhigh"),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_exec(*args: str, **_kwargs: Any) -> FakeProcess:
+        captured["args"] = args
+        return FakeProcess(stdout=_success_jsonl("OK"))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    await CodexCliProvider(model="gpt-5.5", repo_path=tmp_path).generate(
+        "sys",
+        "user",
+        reasoning="xhigh",
+    )
+
+    args = list(captured["args"])
+    assert args[args.index("--config") + 1] == 'model_reasoning_effort="xhigh"'
+
+
+async def test_generate_passes_unknown_model_effort_without_catalog_block(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.codex_cli._load_codex_model_catalog",
+        lambda _cmd: _reasoning_catalog("low", "medium", "high", "xhigh"),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_exec(*args: str, **_kwargs: Any) -> FakeProcess:
+        captured["args"] = args
+        return FakeProcess(stdout=_success_jsonl("OK"))
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    await CodexCliProvider(model="future-codex", repo_path=tmp_path).generate(
+        "sys",
+        "user",
+        reasoning="max",
+    )
+
+    args = list(captured["args"])
+    assert args[args.index("--config") + 1] == 'model_reasoning_effort="max"'
+    assert args[args.index("--model") + 1] == "future-codex"
 
 
 async def test_generate_uses_jsonl_usage_and_ignores_noise(monkeypatch, tmp_path):
@@ -259,11 +382,15 @@ async def test_generate_times_out_and_kills_codex_exec(monkeypatch, tmp_path):
 
 async def test_generate_rejects_unsupported_reasoning_off(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.codex_cli._load_codex_model_catalog",
+        lambda _cmd: _reasoning_catalog("low", "medium", "high", "xhigh"),
+    )
 
     async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:
         raise AssertionError("subprocess should not be started")
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
-    with pytest.raises(ProviderError, match="reasoning='off' is not supported"):
+    with pytest.raises(ProviderError, match="model_reasoning_effort='none'"):
         await CodexCliProvider(repo_path=tmp_path).generate("sys", "user", reasoning="off")

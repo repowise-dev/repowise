@@ -130,12 +130,12 @@ class TestResolveReasoning:
         assert resolve_reasoning("off", {"reasoning": "auto"}) == "off"
 
     def test_env_wins_over_config(self, monkeypatch):
-        monkeypatch.setenv("REPOWISE_REASONING", "minimal")
-        assert resolve_reasoning(config={"reasoning": "off"}) == "minimal"
+        monkeypatch.setenv("REPOWISE_REASONING", "high")
+        assert resolve_reasoning(config={"reasoning": "off"}) == "high"
 
     def test_config_wins_over_default(self, monkeypatch):
         monkeypatch.delenv("REPOWISE_REASONING", raising=False)
-        assert resolve_reasoning(config={"reasoning": "off"}) == "off"
+        assert resolve_reasoning(config={"reasoning": "xhigh"}) == "xhigh"
 
 
 # ---------------------------------------------------------------------------

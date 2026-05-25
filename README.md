@@ -597,7 +597,7 @@ repowise reindex                  # rebuild vector store (no LLM calls)
 provider: anthropic               # anthropic | openai | openrouter | gemini | deepseek | ollama | litellm | codex_cli | mock
 model: claude-sonnet-4-5
 embedding_model: voyage-3
-reasoning: auto                   # auto | off | minimal
+reasoning: auto                   # auto | off/none | minimal | low | medium | high | xhigh | max
 
 editor_files:
   claude_md: true
@@ -617,8 +617,9 @@ maintenance:
 ```
 
 `reasoning` applies to documentation generation. `auto` preserves provider
-defaults; explicit `off` / `minimal` modes are translated only by providers and
-models that support them, otherwise repowise fails before making an API call.
+defaults; explicit modes (`off`/`none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`) are translated only by providers and models that support them,
+otherwise repowise fails before making an API call.
 
 Full configuration reference: [docs/CONFIG.md](docs/CONFIG.md)
 

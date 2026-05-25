@@ -11,6 +11,9 @@ import asyncio
 import contextlib
 import json
 import shutil
+import subprocess
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -20,15 +23,24 @@ from repowise.core.providers.llm.base import (
     BaseProvider,
     GeneratedResponse,
     ProviderError,
-    ensure_reasoning_supported,
 )
 from repowise.core.rate_limiter import RateLimiter
-from repowise.core.reasoning import ReasoningMode
+from repowise.core.reasoning import REASONING_MODES, ReasoningMode, normalize_reasoning
 
 log = structlog.get_logger(__name__)
 
 _DEFAULT_MODEL_LABEL = "codex_cli/default"
 _EXEC_TIMEOUT_SECONDS = 600
+_CATALOG_TIMEOUT_SECONDS = 5
+
+
+@dataclass(frozen=True)
+class CodexModelReasoning:
+    """Small reasoning-capability slice extracted from the Codex model catalog."""
+
+    slug: str
+    default_effort: str | None
+    supported_efforts: tuple[str, ...]
 
 
 def _resolve_codex_executable() -> str | None:
@@ -55,21 +67,162 @@ def _model_label(model: str | None) -> str:
     return f"codex_cli/{native}" if native else _DEFAULT_MODEL_LABEL
 
 
-def _codex_reasoning_config(model: str, reasoning: ReasoningMode) -> str | None:
-    mode = ensure_reasoning_supported(
-        "codex_cli",
-        model,
-        reasoning,
-        ("auto", "minimal"),
-        detail=(
-            "CodexCliProvider maps reasoning='minimal' to "
-            "model_reasoning_effort='low'. reasoning='off' is not supported "
-            "by the Codex CLI provider."
-        ),
-    )
+def _extract_codex_model_catalog(raw: object) -> dict[str, CodexModelReasoning]:
+    if not isinstance(raw, dict):
+        return {}
+
+    raw_models = raw.get("models")
+    if not isinstance(raw_models, list):
+        return {}
+
+    catalog: dict[str, CodexModelReasoning] = {}
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            continue
+        slug = raw_model.get("slug")
+        if not isinstance(slug, str) or not slug.strip():
+            continue
+
+        supported: list[str] = []
+        raw_levels = raw_model.get("supported_reasoning_levels")
+        if isinstance(raw_levels, list):
+            for raw_level in raw_levels:
+                if not isinstance(raw_level, dict):
+                    continue
+                effort = raw_level.get("effort")
+                if isinstance(effort, str) and effort.strip():
+                    supported.append(effort.strip().lower())
+
+        if not supported:
+            continue
+
+        default_effort = raw_model.get("default_reasoning_level")
+        catalog[slug.lower()] = CodexModelReasoning(
+            slug=slug,
+            default_effort=(
+                default_effort.strip().lower()
+                if isinstance(default_effort, str) and default_effort.strip()
+                else None
+            ),
+            supported_efforts=tuple(dict.fromkeys(supported)),
+        )
+
+    return catalog
+
+
+@lru_cache(maxsize=8)
+def _load_codex_model_catalog(codex_cmd: str) -> dict[str, CodexModelReasoning] | None:
+    """Ask the installed Codex CLI for its bundled model catalog."""
+
+    try:
+        completed = subprocess.run(
+            [codex_cmd, "debug", "models", "--bundled"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=_CATALOG_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if completed.returncode != 0:
+        return None
+
+    try:
+        raw = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    catalog = _extract_codex_model_catalog(raw)
+    return catalog or None
+
+
+def _codex_effort_for_reasoning(
+    reasoning: ReasoningMode,
+    supported_efforts: tuple[str, ...] | None,
+) -> str | None:
+    mode = normalize_reasoning(reasoning)
+    if mode == "auto":
+        return None
+    if mode in ("off", "none"):
+        return "none"
     if mode == "minimal":
-        return 'model_reasoning_effort="low"'
-    return None
+        if supported_efforts and "minimal" in supported_efforts:
+            return "minimal"
+        if supported_efforts and "low" in supported_efforts:
+            return "low"
+        return "low"
+    return mode
+
+
+def _catalog_supported_efforts(
+    catalog: dict[str, CodexModelReasoning],
+    native_model: str | None,
+) -> tuple[str, ...] | None:
+    if native_model:
+        model = catalog.get(native_model.lower())
+        return model.supported_efforts if model else None
+
+    efforts: list[str] = []
+    for model in catalog.values():
+        efforts.extend(model.supported_efforts)
+    return tuple(dict.fromkeys(efforts))
+
+
+def _codex_supported_reasoning_modes(
+    codex_cmd: str,
+    model: str,
+) -> tuple[ReasoningMode, ...]:
+    catalog = _load_codex_model_catalog(codex_cmd)
+    if catalog is None:
+        return REASONING_MODES
+
+    supported_efforts = _catalog_supported_efforts(catalog, _normalize_model(model))
+    if supported_efforts is None:
+        return REASONING_MODES
+
+    modes: list[ReasoningMode] = ["auto"]
+    if "none" in supported_efforts:
+        modes.extend(("off", "none"))
+    if "minimal" in supported_efforts or "low" in supported_efforts:
+        modes.append("minimal")
+    for mode in ("low", "medium", "high", "xhigh", "max"):
+        if mode in supported_efforts:
+            modes.append(mode)
+    return tuple(dict.fromkeys(modes))
+
+
+def _codex_reasoning_config(
+    codex_cmd: str,
+    model: str,
+    reasoning: ReasoningMode,
+) -> str | None:
+    mode = normalize_reasoning(reasoning)
+    if mode == "auto":
+        return None
+
+    native_model = _normalize_model(model)
+    catalog = _load_codex_model_catalog(codex_cmd)
+    supported_efforts = (
+        _catalog_supported_efforts(catalog, native_model) if catalog is not None else None
+    )
+    effort = _codex_effort_for_reasoning(mode, supported_efforts)
+    if effort is None:
+        return None
+
+    if supported_efforts is not None and effort not in supported_efforts:
+        supported = ", ".join(supported_efforts)
+        mapped = f" maps to model_reasoning_effort={effort!r}" if effort != mode else ""
+        raise ProviderError(
+            "codex_cli",
+            (
+                f"reasoning={mode!r}{mapped} is not supported by the Codex CLI "
+                f"model catalog for model {model!r}. Supported reasoning efforts: "
+                f"{supported}."
+            ),
+        )
+
+    return f'model_reasoning_effort="{effort}"'
 
 
 def _combine_prompt(system_prompt: str, user_prompt: str) -> str:
@@ -167,6 +320,9 @@ class CodexCliProvider(BaseProvider):
     def model_name(self) -> str:
         return _model_label(self._model)
 
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return _codex_supported_reasoning_modes(self._codex_cmd, self.model_name)
+
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
         if self._semaphore_loop is not loop:
@@ -185,7 +341,7 @@ class CodexCliProvider(BaseProvider):
             "--cd",
             str(self._repo_path),
         ]
-        reasoning_config = _codex_reasoning_config(self.model_name, reasoning)
+        reasoning_config = _codex_reasoning_config(self._codex_cmd, self.model_name, reasoning)
         if reasoning_config:
             cmd.extend(["--config", reasoning_config])
         if self._model:

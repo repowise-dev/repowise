@@ -188,7 +188,7 @@ repowise init [PATH]
 | `--skip-infra` | Exclude infrastructure files (Dockerfiles, Makefiles, Terraform, shell scripts). |
 | `--exclude / -x` | Gitignore-style exclusion patterns. Repeatable: `-x vendor/ -x "*.generated.*"` |
 | `--concurrency` | Max concurrent LLM calls (default: 5). Higher = faster but more API pressure. |
-| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal` (default: `auto`). |
+| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (default: `auto`). |
 | `--resume` | Resume from the last checkpoint if a previous run was interrupted. |
 | `--force` | Regenerate all pages even if they already exist. |
 | `--commit-limit` | Max commits to analyze per file (default: 500, max: 5000). Saved to config. |
@@ -253,7 +253,7 @@ Much faster and cheaper than a full `init` — only regenerates pages for change
 | `--provider` | Override LLM provider for this run |
 | `--model` | Override model |
 | `--since` | Git ref to diff from (overrides `state.json`). Example: `--since v1.0.0` |
-| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal`. |
+| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `--cascade-budget` | Max pages to regenerate per run (default: 30). Prevents runaway regeneration. |
 | `--dry-run` | Show what would be updated without regenerating. |
 | `--full` | Upgrade a fast (`--mode fast`) index to a full one (single-repo). See below. |

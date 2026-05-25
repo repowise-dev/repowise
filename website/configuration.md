@@ -46,7 +46,7 @@ The main configuration file. Created after first `init`, updated when you pass `
 provider: anthropic                  # LLM provider
 model: claude-sonnet-4-6             # Model identifier
 embedder: gemini                     # Embedding provider
-reasoning: auto                      # auto | off | minimal
+reasoning: auto                      # auto | off/none | minimal | low | medium | high | xhigh | max
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -61,16 +61,18 @@ editor_files:
 You can edit this file directly. Changes take effect on the next `init`, `update`, or `serve` run.
 
 `reasoning` controls documentation-generation calls for reasoning-capable chat
-models. `auto` preserves provider defaults. `off` disables Qwen3-style thinking
+models. `auto` preserves provider defaults. `off`/`none` disables Qwen3-style thinking
 for OpenAI-compatible vLLM/SGLang endpoints by sending
 `extra_body.chat_template_kwargs.enable_thinking=false`, and maps to
 OpenRouter's `reasoning.effort=none` for effort-capable OpenRouter model
 families. `minimal` requests OpenAI's lowest supported reasoning effort for
 supported OpenAI reasoning models and maps to OpenRouter's
 `reasoning.effort=minimal` for effort-capable OpenRouter model families.
-Providers or models that cannot translate an explicit mode fail before making
-an API call. The interactive `serve` chat streaming path is separate and does
-not currently consume this setting.
+`low`, `medium`, `high`, `xhigh`, and `max` request native effort levels for
+providers and model families that expose them. Providers or models that cannot
+translate an explicit mode fail before making an API call. The interactive
+`serve` chat streaming path is separate and does not currently consume this
+setting.
 
 ---
 
