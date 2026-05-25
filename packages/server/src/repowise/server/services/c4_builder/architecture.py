@@ -15,6 +15,12 @@ from repowise.core.persistence import (
     GraphNode,
     Repository,
 )
+from repowise.core.persistence.crud import (
+    get_kg_layers,
+    get_kg_tour_steps,
+    upsert_kg_layers,
+    upsert_kg_tour_steps,
+)
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata, Page
 
 from .models import (
@@ -203,11 +209,53 @@ def _tour_from_knowledge_graph(kg: dict) -> list[ArchTourStep]:
     return steps
 
 
+def _layers_from_db(db_layers: list, node_ids: set[str]) -> list[dict]:
+    layers = []
+    for row in db_layers:
+        raw_ids = json.loads(row.node_ids_json) if row.node_ids_json else []
+        mapped = [nid.removeprefix("file:") for nid in raw_ids]
+        matched = [nid for nid in mapped if nid in node_ids]
+        layers.append({
+            "id": row.layer_id,
+            "name": row.name,
+            "description": row.description or "",
+            "node_ids": matched,
+        })
+    return layers
+
+
+def _tour_from_db(db_steps: list) -> list[ArchTourStep]:
+    steps = []
+    for row in db_steps:
+        node_ids = json.loads(row.node_ids_json) if row.node_ids_json else []
+        node_ids = [nid.removeprefix("file:") for nid in node_ids]
+        steps.append(
+            ArchTourStep(
+                order=row.step_order,
+                title=row.title,
+                description=row.description or "",
+                node_ids=node_ids,
+            )
+        )
+    return steps
+
+
+async def _migrate_kg_file_to_db(
+    session: AsyncSession, repo_id: str, kg: dict,
+) -> None:
+    layers = kg.get("layers", [])
+    if layers:
+        await upsert_kg_layers(session, repo_id, layers)
+    tour = kg.get("tour", [])
+    if tour:
+        await upsert_kg_tour_steps(session, repo_id, tour)
+    await session.commit()
+
+
 async def build_architecture_view(
     session: AsyncSession,
     repo_id: str,
     include_symbols: bool = False,
-    knowledge_graph_path: str | None = None,
 ) -> ArchitectureView:
     repo = await _load_repo(session, repo_id)
 
@@ -290,20 +338,28 @@ async def build_architecture_view(
     pr_values = [n.pagerank for n in all_nodes]
     pr_pcts = _percentile_ranks(pr_values)
 
-    # -- Layers (3-tier cascade) --
-    kg_path = knowledge_graph_path
-    if not kg_path and repo and repo.local_path:
-        candidate = os.path.join(repo.local_path, ".understand-anything", "knowledge-graph.json")
-        if os.path.isfile(candidate):
-            kg_path = candidate
-    kg = _load_knowledge_graph(kg_path) if kg_path else None
+    # -- Layers (4-tier cascade: DB → file auto-migrate → communities → directories) --
+    db_layers = await get_kg_layers(session, repo_id)
+    kg: dict | None = None
     raw_layers: list[dict]
-    if kg and kg.get("layers"):
-        raw_layers = _layers_from_knowledge_graph(kg, node_id_set)
-    elif any(n.community_id and n.community_id > 0 for n in file_nodes):
-        raw_layers = _layers_from_communities(file_nodes)
+    if db_layers:
+        raw_layers = _layers_from_db(db_layers, node_id_set)
     else:
-        raw_layers = _layers_from_directories(file_nodes)
+        # Auto-migrate file-based KG to DB on first read
+        if repo and repo.local_path:
+            for kg_dir in (".repowise", ".understand-anything"):
+                candidate = os.path.join(repo.local_path, kg_dir, "knowledge-graph.json")
+                if os.path.isfile(candidate):
+                    kg = _load_knowledge_graph(candidate)
+                    break
+        if kg and kg.get("layers"):
+            with contextlib.suppress(Exception):
+                await _migrate_kg_file_to_db(session, repo_id, kg)
+            raw_layers = _layers_from_knowledge_graph(kg, node_id_set)
+        elif any(n.community_id and n.community_id > 0 for n in file_nodes):
+            raw_layers = _layers_from_communities(file_nodes)
+        else:
+            raw_layers = _layers_from_directories(file_nodes)
 
     # -- Build ArchNodes --
     arch_nodes: list[ArchNode] = []
@@ -368,9 +424,12 @@ async def build_architecture_view(
             )
         )
 
-    # -- Tour --
+    # -- Tour (DB first, fallback to file-based KG already loaded above) --
+    db_tour_steps = await get_kg_tour_steps(session, repo_id)
     tour: list[ArchTourStep] = []
-    if kg:
+    if db_tour_steps:
+        tour = _tour_from_db(db_tour_steps)
+    elif kg:
         tour = _tour_from_knowledge_graph(kg)
 
     # -- Finalize layers with complexity distribution --

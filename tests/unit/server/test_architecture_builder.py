@@ -14,6 +14,7 @@ from repowise.core.persistence import (
     bulk_upsert_external_systems,
     link_graph_nodes_to_external_systems,
 )
+from repowise.core.persistence.crud import upsert_kg_layers, upsert_kg_tour_steps
 from repowise.server.services.c4_builder.architecture import build_architecture_view
 
 
@@ -110,13 +111,20 @@ async def test_build_architecture_view_basic(client: AsyncClient, app) -> None:
     assert "typescript" in view.languages
 
 
-async def test_layer_assignment_from_knowledge_graph(client: AsyncClient, app, tmp_path: Path) -> None:
+async def test_layer_assignment_from_db_kg(client: AsyncClient, app) -> None:
     repo = await _create_repo(client)
     await _seed_graph(app, repo["id"])
-    kg_path = _write_knowledge_graph(tmp_path)
 
     async with app.state.session_factory() as session:
-        view = await build_architecture_view(session, repo["id"], knowledge_graph_path=kg_path)
+        await upsert_kg_layers(session, repo["id"], [
+            {"id": "layer:api", "name": "API", "description": "API layer", "nodeIds": ["file:src/main.py", "file:src/utils.py"]},
+            {"id": "layer:domain", "name": "Domain", "description": "Domain models", "nodeIds": ["file:src/models.py"]},
+            {"id": "layer:frontend", "name": "Frontend", "description": "Frontend code", "nodeIds": ["file:lib/index.ts", "file:lib/helpers.ts"]},
+        ])
+        await session.commit()
+
+    async with app.state.session_factory() as session:
+        view = await build_architecture_view(session, repo["id"])
 
     layer_names = {l.name for l in view.layers}
     assert layer_names == {"API", "Domain", "Frontend"}
@@ -241,6 +249,116 @@ async def test_empty_repo(client: AsyncClient, app) -> None:
     assert view.layers == []
     assert view.total_files == 0
     assert view.total_edges == 0
+
+
+async def test_tour_from_db(client: AsyncClient, app) -> None:
+    repo = await _create_repo(client)
+    await _seed_graph(app, repo["id"])
+
+    async with app.state.session_factory() as session:
+        await upsert_kg_tour_steps(session, repo["id"], [
+            {"order": 1, "title": "Entry Point", "description": "Start here", "nodeIds": ["file:src/main.py"]},
+            {"order": 2, "title": "Models", "description": "Core models", "nodeIds": ["file:src/models.py"]},
+        ])
+        await session.commit()
+
+    async with app.state.session_factory() as session:
+        view = await build_architecture_view(session, repo["id"])
+
+    assert len(view.tour) == 2
+    assert view.tour[0].title == "Entry Point"
+    assert view.tour[0].order == 1
+    assert "src/main.py" in view.tour[0].node_ids
+    assert view.tour[1].title == "Models"
+    assert view.tour[1].order == 2
+
+
+async def test_db_layers_take_priority_over_communities(client: AsyncClient, app) -> None:
+    """DB layers should win even when community_id is set on nodes."""
+    repo = await _create_repo(client)
+    repo_id = repo["id"]
+
+    async with app.state.session_factory() as session:
+        nodes = [
+            {"node_id": "a/foo.py", "node_type": "file", "language": "python", "symbol_count": 1, "community_id": 1, "community_meta_json": json.dumps({"name": "Cluster"})},
+            {"node_id": "a/bar.py", "node_type": "file", "language": "python", "symbol_count": 2, "community_id": 1},
+            {"node_id": "b/baz.py", "node_type": "file", "language": "python", "symbol_count": 3, "community_id": 2},
+        ]
+        await batch_upsert_graph_nodes(session, repo_id, nodes)
+        await upsert_kg_layers(session, repo_id, [
+            {"id": "layer:custom", "name": "Custom Layer", "description": "From DB", "nodeIds": ["file:a/foo.py", "file:a/bar.py", "file:b/baz.py"]},
+        ])
+        await session.commit()
+
+    async with app.state.session_factory() as session:
+        view = await build_architecture_view(session, repo_id)
+
+    assert len(view.layers) == 1
+    assert view.layers[0].name == "Custom Layer"
+    assert view.layers[0].id == "layer:custom"
+
+
+async def test_auto_migrate_kg_file_to_db(client: AsyncClient, app) -> None:
+    """When no DB layers exist but a KG file is on disk, layers are auto-migrated."""
+    repo_dir = Path(tempfile.mkdtemp()) / "migrate-repo"
+    repo_dir.mkdir(exist_ok=True)
+    (repo_dir / ".git").mkdir(exist_ok=True)
+
+    resp = await client.post(
+        "/api/repos",
+        json={
+            "name": "migrate-repo",
+            "local_path": str(repo_dir),
+            "url": "https://github.com/example/migrate-repo",
+        },
+    )
+    assert resp.status_code == 201
+    repo = resp.json()
+    repo_id = repo["id"]
+
+    async with app.state.session_factory() as session:
+        nodes = [
+            {"node_id": "src/a.py", "node_type": "file", "language": "python", "symbol_count": 1},
+            {"node_id": "src/b.py", "node_type": "file", "language": "python", "symbol_count": 2},
+        ]
+        await batch_upsert_graph_nodes(session, repo_id, nodes)
+        await session.commit()
+
+    rw_dir = repo_dir / ".repowise"
+    rw_dir.mkdir(exist_ok=True)
+    kg = {
+        "layers": [
+            {"id": "layer:migrated", "name": "Migrated", "description": "From file", "nodeIds": ["file:src/a.py", "file:src/b.py"]},
+        ],
+        "tour": [
+            {"order": 1, "title": "Start", "description": "Begin here", "nodeIds": ["file:src/a.py"]},
+        ],
+    }
+    (rw_dir / "knowledge-graph.json").write_text(json.dumps(kg))
+
+    async with app.state.session_factory() as session:
+        view = await build_architecture_view(session, repo_id)
+
+    assert len(view.layers) == 1
+    assert view.layers[0].name == "Migrated"
+    assert len(view.tour) == 1
+    assert view.tour[0].title == "Start"
+
+    async with app.state.session_factory() as session:
+        from repowise.core.persistence.crud import get_kg_layers as _get_layers
+        db_layers = await _get_layers(session, repo_id)
+        assert len(db_layers) >= 1
+        assert db_layers[0].name == "Migrated"
+
+
+async def test_tour_empty_when_no_data(client: AsyncClient, app) -> None:
+    repo = await _create_repo(client)
+    await _seed_graph(app, repo["id"])
+
+    async with app.state.session_factory() as session:
+        view = await build_architecture_view(session, repo["id"])
+
+    assert view.tour == []
 
 
 async def test_backward_compat_c4_endpoints(client: AsyncClient, app) -> None:
