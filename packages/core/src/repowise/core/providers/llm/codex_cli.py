@@ -36,6 +36,18 @@ _EXEC_TIMEOUT_SECONDS = 600
 _CATALOG_TIMEOUT_SECONDS = 5
 
 
+async def _close_subprocess_transport(proc: asyncio.subprocess.Process) -> None:
+    """Close asyncio's subprocess transport before the event loop shuts down."""
+
+    transport = getattr(proc, "_transport", None)
+    close = getattr(transport, "close", None)
+    if not callable(close):
+        return
+    with contextlib.suppress(Exception):
+        close()
+    await asyncio.sleep(0)
+
+
 @dataclass(frozen=True)
 class CodexModelReasoning:
     """Small reasoning-capability slice extracted from the Codex model catalog."""
@@ -449,6 +461,8 @@ class CodexCliProvider(BaseProvider):
                     "codex_cli",
                     f"codex exec timed out after {_EXEC_TIMEOUT_SECONDS} seconds.",
                 ) from exc
+            finally:
+                await _close_subprocess_transport(proc)
 
         stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
         stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""

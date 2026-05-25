@@ -27,11 +27,13 @@ class FakeProcess:
         stdout: str = "",
         stderr: str = "",
         on_communicate: Any | None = None,
+        transport: Any | None = None,
     ) -> None:
         self.returncode = returncode
         self._stdout = stdout
         self._stderr = stderr
         self._on_communicate = on_communicate
+        self._transport = transport
         self.stdin_input: bytes | None = None
         self.killed = False
 
@@ -46,6 +48,14 @@ class FakeProcess:
 
     async def wait(self) -> int:
         return self.returncode
+
+
+class FakeTransport:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _jsonl(*events: dict[str, Any], noise: bool = False) -> str:
@@ -318,6 +328,20 @@ async def test_generate_accepts_cache_hints(monkeypatch, tmp_path):
     )
 
     assert result.content == "OK"
+
+
+async def test_generate_closes_subprocess_transport(monkeypatch, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    transport = FakeTransport()
+
+    async def fake_exec(*_args: str, **_kwargs: Any) -> FakeProcess:
+        return FakeProcess(stdout=_success_jsonl("OK"), transport=transport)
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    await CodexCliProvider(repo_path=tmp_path).generate("sys", "user")
+
+    assert transport.closed is True
 
 
 async def test_generate_marks_missing_usage_as_estimated(monkeypatch, tmp_path):
