@@ -18,6 +18,8 @@ You are documenting the file `{{ ctx.file_path }}` (language: {{ ctx.language }}
 {%- if ctx.pagerank_score is defined and ctx.pagerank_score >= 0.01 -%}{%- set _ = _signals.append("central in the dependency graph (high PageRank)") -%}{%- endif -%}
 {%- if ctx.betweenness_score is defined and ctx.betweenness_score >= 0.005 -%}{%- set _ = _signals.append("frequent bridge between modules (high betweenness)") -%}{%- endif -%}
 {%- if ctx.community_label -%}{%- set _ = _signals.append("part of the " ~ ctx.community_label ~ " community") -%}{%- endif -%}
+{%- if ctx.kg_layer_name -%}{%- set _ = _signals.append("part of the " ~ ctx.kg_layer_name ~ " layer") -%}{%- endif -%}
+{%- if ctx.kg_layer_role == "edge_connector" -%}{%- set _ = _signals.append("edge connector (imported cross-layer)") -%}{%- endif -%}
 {% if _signals %}
 **Architectural signals:** {{ _signals | join("; ") }}.
 
@@ -156,6 +158,33 @@ Use this to explain how the file's functions connect to callers and callees.
 ## Architectural Community
 This file belongs to the **{{ ctx.community_label }}** community{% if ctx.community_cohesion > 0 %} (cohesion: {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}.
 Use this to explain the file's role within its architectural cluster.
+{% endif %}
+
+{% if ctx.kg_layer_name %}
+## Architectural Layer
+This file belongs to the **{{ ctx.kg_layer_name }}** layer: {{ ctx.kg_layer_description[:300] }}
+
+{% if ctx.kg_layer_role == "edge_connector" %}
+This file is an **edge connector** — imported by files outside its layer, making it part of the layer's public interface.
+{% elif ctx.kg_layer_role == "entry_point" %}
+This file is a **layer entry point** — not imported by other files, suggesting it is a top-level orchestrator.
+{% endif %}
+{% if ctx.kg_node_summary %}
+**Summary:** {{ ctx.kg_node_summary }}
+{% endif %}
+{% endif %}
+
+{% if ctx.kg_neighbors %}
+## Architectural Neighbors
+{% for n in ctx.kg_neighbors %}
+- `{{ n.path }}` ({{ n.relationship }}{% if n.same_layer %}, same layer{% else %}, cross-layer{% endif %})
+{% endfor %}
+{% endif %}
+
+{% if ctx.kg_tour_step %}
+## Codebase Tour
+This file appears in **Step {{ ctx.kg_tour_step.order }}: {{ ctx.kg_tour_step.title }}**.
+{{ ctx.kg_tour_step.description }}
 {% endif %}
 
 {% if ctx.decision_records %}

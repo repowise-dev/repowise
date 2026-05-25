@@ -72,6 +72,14 @@ class FilePageContext:
     # git archaeology). Kept short on purpose; the module-page renders
     # the full list.
     decision_records: list[dict] = field(default_factory=list)
+    # KG layer context (populated when knowledge graph available)
+    kg_layer_name: str = ""
+    kg_layer_description: str = ""
+    kg_layer_role: str = ""
+    kg_neighbors: list[dict] = field(default_factory=list)
+    kg_tour_step: dict | None = None
+    kg_tags: list[str] = field(default_factory=list)
+    kg_node_summary: str = ""
 
 
 @dataclass
@@ -218,6 +226,23 @@ class ContextAssembler:
             return suffix if remaining > 0 else ""
         return text[:max_chars] + suffix
 
+    def _estimate_kg_tokens(self, kg_context: Any) -> int:
+        """Estimate token cost for KG context sections in the template."""
+        parts = []
+        if kg_context.layer_name:
+            parts.append(kg_context.layer_name)
+            parts.append(kg_context.layer_description[:300])
+        if kg_context.role:
+            parts.append(kg_context.role)
+        for n in kg_context.neighbors[:10]:
+            parts.append(n.get("path", ""))
+        if kg_context.tour_step:
+            parts.append(kg_context.tour_step.get("title", ""))
+            parts.append(kg_context.tour_step.get("description", "")[:300])
+        if kg_context.node_summary:
+            parts.append(kg_context.node_summary)
+        return self._estimate_tokens(" ".join(parts))
+
     # ------------------------------------------------------------------
     # File page
     # ------------------------------------------------------------------
@@ -234,11 +259,17 @@ class ContextAssembler:
         dead_code_findings: list[dict] | None = None,
         page_summaries: dict[str, str] | None = None,
         decision_records: list[dict] | None = None,
+        kg_context: Any | None = None,
     ) -> FilePageContext:
         """Assemble context for the file_page template."""
         path = parsed.file_info.path
         budget = self._config.token_budget
         used = 0
+
+        # Reserve token budget for KG context when available
+        _KG_BUDGET_TOKENS = 800
+        if kg_context:
+            used += min(_KG_BUDGET_TOKENS, self._estimate_kg_tokens(kg_context))
 
         # Always include: path + language tag overhead
         used += self._estimate_tokens(path) + 5
@@ -340,6 +371,13 @@ class ContextAssembler:
             community_label=community_label,
             community_cohesion=community_cohesion,
             decision_records=decision_records or [],
+            kg_layer_name=kg_context.layer_name if kg_context else "",
+            kg_layer_description=kg_context.layer_description if kg_context else "",
+            kg_layer_role=kg_context.role if kg_context else "",
+            kg_neighbors=kg_context.neighbors if kg_context else [],
+            kg_tour_step=kg_context.tour_step if kg_context else None,
+            kg_tags=kg_context.tags if kg_context else [],
+            kg_node_summary=kg_context.node_summary if kg_context else "",
         )
 
     # ------------------------------------------------------------------

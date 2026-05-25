@@ -143,6 +143,7 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
     coros: list[tuple[str, Any]] = []
     for p in run.code_files:
+        kg_file_ctx = run.kg_ctx.get_file_context(p.file_info.path) if run.kg_ctx.available else None
         ctx: FilePageContext = gen._assembler.assemble_file_page(
             p,
             run.graph,
@@ -154,6 +155,7 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             page_summaries=run.completed_page_summaries,
             dead_code_findings=run.dead_code_by_file.get(p.file_info.path),
             decision_records=run.decisions_by_file.get(p.file_info.path),
+            kg_context=kg_file_ctx,
         )
         run.file_page_contexts[p.file_info.path] = ctx
         path = p.file_info.path

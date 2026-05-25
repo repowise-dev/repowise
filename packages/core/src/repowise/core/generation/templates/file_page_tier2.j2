@@ -41,5 +41,8 @@ _No internal dependencies resolved._
 
 {% if ctx.dependents %}Imported by {{ ctx.dependents | length }} file{{ "s" if ctx.dependents | length != 1 else "" }} in this repository.{% else %}No internal callers were resolved for this file.{% endif %}
 {% if ctx.community_label %} Part of the **{{ ctx.community_label }}** module cluster.{% endif %}
+{% if ctx.kg_layer_name %}
+**Layer:** {{ ctx.kg_layer_name }} | **Role:** {{ ctx.kg_layer_role }}
+{% endif %}
 
 <!-- Generated deterministically (tier-2, no LLM). -->
