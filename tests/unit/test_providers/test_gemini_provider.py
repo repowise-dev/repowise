@@ -11,6 +11,7 @@ import pytest
 
 pytest.importorskip("google.genai", reason="google-genai SDK not installed")
 
+from repowise.core.providers.llm import gemini as gemini_module
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
 from repowise.core.providers.llm.gemini import GeminiProvider
 
@@ -52,6 +53,66 @@ def test_model_name_default():
 def test_model_name_custom():
     p = GeminiProvider(model="gemini-3-flash-preview", api_key="k")
     assert p.model_name == "gemini-3-flash-preview"
+
+
+def test_available_model_options_lists_generate_content_models(monkeypatch):
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return self._payload
+
+    calls: list[dict[str, object]] = []
+
+    def fake_get(url, *, headers, params, timeout):
+        calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse(
+            {
+                "models": [
+                    {
+                        "name": "models/gemini-3.1-flash-lite-preview",
+                        "displayName": "Gemini Flash Lite",
+                        "supportedGenerationMethods": ["generateContent"],
+                        "thinking": True,
+                    },
+                    {
+                        "name": "models/gemini-embed",
+                        "supportedGenerationMethods": ["embedContent"],
+                    },
+                ]
+            }
+        )
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    options = GeminiProvider(api_key="k").available_model_options()
+
+    assert calls[0]["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
+    assert calls[0]["headers"] == {"x-goog-api-key": "k"}
+    models = [option.model for option in options]
+    assert "gemini-3.1-flash-lite-preview" in models
+    assert "gemini-embed" not in models
+    option = next(option for option in options if option.model == "gemini-3.1-flash-lite-preview")
+    assert option.label == "Gemini Flash Lite"
+    assert option.reasoning_modes == ("auto", "minimal", "low", "medium", "high")
+    assert GeminiProvider(api_key="k").supported_reasoning_modes() == (
+        "auto",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +176,25 @@ async def test_generate_passes_max_tokens():
 
     # max_output_tokens intentionally omitted — Gemini flash models default to 65k
     assert captured[0].max_output_tokens is None
+
+
+async def test_generate_forwards_thinking_level():
+    gemini_module._GEMINI_THINKING_MODELS_BY_BASE[gemini_module._gemini_cache_key(None)] = {
+        "gemini-3.1-flash-lite-preview"
+    }
+    provider = GeminiProvider(api_key="fake-key")
+    mock_response = _make_mock_response()
+    captured: list = []
+
+    def fake_generate_content(model, contents, config):
+        captured.append(config)
+        return mock_response
+
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.side_effect = fake_generate_content
+        await provider.generate("sys", "user", reasoning="high")
+
+    assert captured[0].thinking_config.thinking_level.value == "HIGH"
 
 
 # ---------------------------------------------------------------------------

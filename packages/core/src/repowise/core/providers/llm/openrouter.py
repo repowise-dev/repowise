@@ -14,7 +14,8 @@ Popular models:
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from openai import APIStatusError as _OpenAIAPIStatusError
@@ -34,8 +35,10 @@ from repowise.core.providers.llm.base import (
     ChatToolCall,
     GeneratedResponse,
     ProviderError,
+    ProviderModelOption,
     RateLimitError,
     ensure_reasoning_supported,
+    fallback_model_option,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -48,49 +51,52 @@ log = structlog.get_logger(__name__)
 _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
 _MAX_WAIT = 4.0
-_OPENROUTER_OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4")
-_OPENROUTER_OPENAI_GPT5_EXACT_MODELS = ("gpt-5", "gpt-5-mini", "gpt-5-nano")
-_OPENROUTER_OPENAI_GPT5_PREFIXES = ("gpt-5-mini-", "gpt-5-nano-")
+_OPENROUTER_REASONING_MODES: tuple[ReasoningMode, ...] = (
+    "off",
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+_OPENROUTER_REASONING_MODELS_BY_BASE: dict[str, set[str]] = {}
 
 
-def _model_leaf(model: str) -> str:
-    return model.rsplit("/", 1)[-1].lower()
-
-
-def _openrouter_supports_reasoning_effort(model: str) -> bool:
-    normalized = model.lower()
-    leaf = _model_leaf(model)
-    if normalized.startswith(("x-ai/grok", "xai/grok")):
-        return True
-    if normalized.startswith("openai/"):
-        if leaf.startswith(_OPENROUTER_OPENAI_REASONING_PREFIXES):
-            return True
-        if leaf in _OPENROUTER_OPENAI_GPT5_EXACT_MODELS:
-            return True
-        if leaf.startswith(_OPENROUTER_OPENAI_GPT5_PREFIXES):
+def _openrouter_supports_reasoning_effort(
+    model: str,
+    *,
+    base_url: str | None = None,
+) -> bool:
+    if base_url:
+        cached_models = _OPENROUTER_REASONING_MODELS_BY_BASE.get(base_url.rstrip("/"))
+        if cached_models is not None and model in cached_models:
             return True
     return False
 
 
-def _openrouter_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
-    if not _openrouter_supports_reasoning_effort(model):
+def _openrouter_supported_reasoning_modes(
+    model: str,
+    *,
+    base_url: str | None = None,
+) -> tuple[ReasoningMode, ...]:
+    if not _openrouter_supports_reasoning_effort(model, base_url=base_url):
         return ()
-    return ("off", "none", "minimal")
+    return _OPENROUTER_REASONING_MODES
 
 
 def _resolve_openrouter_reasoning_mode(
-    reasoning: ReasoningMode, *, model: str
+    reasoning: ReasoningMode, *, model: str, base_url: str | None = None
 ) -> ReasoningMode:
     """Validate OpenRouter reasoning support before retry handling."""
     return ensure_reasoning_supported(
         "openrouter",
         model,
         normalize_reasoning(reasoning),
-        _openrouter_supported_reasoning_modes(model),
+        _openrouter_supported_reasoning_modes(model, base_url=base_url),
         detail=(
-            "OpenRouter maps reasoning.effort for OpenAI reasoning and Grok "
-            "model families with known effort support. Unknown, dotted, and "
-            "pro GPT-5 routes fail fast until explicitly mapped."
+            "OpenRouter reasoning support is taken from models whose /models "
+            "entry advertises the reasoning parameter."
         ),
     )
 
@@ -100,7 +106,7 @@ def _openrouter_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
     mode = normalize_reasoning(reasoning)
     if mode == "auto":
         return {}
-    effort = "none" if mode in ("off", "none") else "minimal"
+    effort = "none" if mode in ("off", "none") else mode
     return {
         "extra_body": {
             "reasoning": {
@@ -108,6 +114,74 @@ def _openrouter_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
             }
         }
     }
+
+
+def _openrouter_model_options(
+    api_key: str,
+    base_url: str,
+    fallback_model: str,
+) -> tuple[ProviderModelOption, ...]:
+    fallback = fallback_model_option(
+        fallback_model,
+        reasoning_modes=(
+            "auto",
+            *_openrouter_supported_reasoning_modes(fallback_model, base_url=base_url),
+        ),
+    )
+    try:
+        import httpx
+
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        data = response.json().get("data", [])
+    except Exception:
+        return (fallback,)
+
+    if not isinstance(data, list):
+        return (fallback,)
+
+    base_key = base_url.rstrip("/")
+    reasoning_models: set[str] = set()
+    options: list[ProviderModelOption] = []
+    for raw in data:
+        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+            continue
+        model_id = raw["id"]
+        supported_parameters = raw.get("supported_parameters")
+        has_reasoning = (
+            isinstance(supported_parameters, list) and "reasoning" in supported_parameters
+        )
+        if has_reasoning:
+            reasoning_models.add(model_id)
+        display_name = raw.get("name")
+        reasoning_modes = (
+            _OPENROUTER_REASONING_MODES
+            if has_reasoning
+            else _openrouter_supported_reasoning_modes(model_id)
+        )
+        options.append(
+            ProviderModelOption(
+                model=model_id,
+                label=display_name if isinstance(display_name, str) else model_id,
+                reasoning_modes=("auto", *reasoning_modes),
+                recommended=model_id == fallback_model,
+                source="api",
+                notes=("reasoning parameter advertised by /models" if has_reasoning else ""),
+            )
+        )
+
+    if reasoning_models:
+        _OPENROUTER_REASONING_MODELS_BY_BASE[base_key] = reasoning_models
+
+    if not options:
+        return (fallback,)
+
+    options.sort(key=lambda option: option.model)
+    return tuple(options)
 
 
 class OpenRouterProvider(BaseProvider):
@@ -135,7 +209,7 @@ class OpenRouterProvider(BaseProvider):
         rate_limiter: RateLimiter | None = None,
         http_referer: str | None = None,
         app_title: str = "repowise",
-        cost_tracker: "CostTracker | None" = None,
+        cost_tracker: CostTracker | None = None,
     ) -> None:
         resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         if not resolved_key:
@@ -150,6 +224,8 @@ class OpenRouterProvider(BaseProvider):
         if app_title:
             headers["X-Title"] = app_title
 
+        self._api_key = resolved_key
+        self._base_url = base_url.rstrip("/")
         self._client = AsyncOpenAI(
             api_key=resolved_key,
             base_url=base_url,
@@ -167,7 +243,16 @@ class OpenRouterProvider(BaseProvider):
         return self._model
 
     def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
-        return ("auto", *_openrouter_supported_reasoning_modes(self._model))
+        return (
+            "auto",
+            *_openrouter_supported_reasoning_modes(
+                self._model,
+                base_url=self._base_url,
+            ),
+        )
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        return _openrouter_model_options(self._api_key, self._base_url, self._model)
 
     async def generate(
         self,
@@ -179,8 +264,13 @@ class OpenRouterProvider(BaseProvider):
         reasoning: ReasoningMode = "auto",
         cache_hints: tuple = (),
     ) -> GeneratedResponse:
+        if normalize_reasoning(reasoning) != "auto" and not _openrouter_supported_reasoning_modes(
+            self._model,
+            base_url=self._base_url,
+        ):
+            self.available_model_options()
         reasoning_mode = _resolve_openrouter_reasoning_mode(
-            reasoning, model=self._model
+            reasoning, model=self._model, base_url=self._base_url
         )
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
@@ -237,9 +327,7 @@ class OpenRouterProvider(BaseProvider):
         except _OpenAIRateLimitError as exc:
             raise RateLimitError("openrouter", str(exc), status_code=429) from exc
         except _OpenAIAPIStatusError as exc:
-            raise ProviderError(
-                "openrouter", str(exc), status_code=exc.status_code
-            ) from exc
+            raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
 
         usage = response.usage
         result = GeneratedResponse(

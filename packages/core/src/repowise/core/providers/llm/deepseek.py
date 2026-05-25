@@ -35,11 +35,13 @@ from repowise.core.providers.llm.base import (
     ChatToolCall,
     GeneratedResponse,
     ProviderError,
+    ProviderModelOption,
     RateLimitError,
     ensure_reasoning_supported,
+    fallback_model_option,
 )
 from repowise.core.rate_limiter import RateLimiter
-from repowise.core.reasoning import ReasoningMode
+from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
@@ -51,6 +53,100 @@ _MIN_WAIT = 1.0
 _MAX_WAIT = 4.0
 
 _DEFAULT_BASE_URL = "https://api.deepseek.com"
+_DEEPSEEK_REASONING_MODES: tuple[ReasoningMode, ...] = (
+    "off",
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+)
+
+
+def _deepseek_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
+    if model.startswith("deepseek-v4-"):
+        return _DEEPSEEK_REASONING_MODES
+    return ()
+
+
+def _resolve_deepseek_reasoning_mode(
+    reasoning: ReasoningMode,
+    *,
+    model: str,
+) -> ReasoningMode:
+    return ensure_reasoning_supported(
+        "deepseek",
+        model,
+        normalize_reasoning(reasoning),
+        _deepseek_supported_reasoning_modes(model),
+        detail=(
+            "DeepSeek /models lists IDs only; reasoning controls are enabled "
+            "for the documented V4 model family."
+        ),
+    )
+
+
+def _deepseek_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
+    mode = normalize_reasoning(reasoning)
+    if mode == "auto":
+        return {}
+    if mode in ("off", "none"):
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    effort = "max" if mode in ("xhigh", "max") else "high"
+    return {"extra_body": {"thinking": {"type": "enabled", "reasoning_effort": effort}}}
+
+
+def _deepseek_model_options(
+    api_key: str,
+    base_url: str,
+    fallback_model: str,
+) -> tuple[ProviderModelOption, ...]:
+    fallback = fallback_model_option(
+        fallback_model,
+        reasoning_modes=("auto", *_deepseek_supported_reasoning_modes(fallback_model)),
+    )
+    try:
+        import httpx
+
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        data = response.json().get("data", [])
+    except Exception:
+        return (fallback,)
+
+    if not isinstance(data, list):
+        return (fallback,)
+
+    options: list[ProviderModelOption] = []
+    for raw in data:
+        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+            continue
+        model_id = raw["id"]
+        reasoning_modes = ("auto", *_deepseek_supported_reasoning_modes(model_id))
+        options.append(
+            ProviderModelOption(
+                model=model_id,
+                label=model_id,
+                reasoning_modes=reasoning_modes,
+                recommended=model_id == fallback_model,
+                source="api",
+                notes=(
+                    "reasoning controls documented for DeepSeek V4"
+                    if len(reasoning_modes) > 1
+                    else ""
+                ),
+            )
+        )
+
+    if not options:
+        return (fallback,)
+
+    return tuple(options)
 
 
 class DeepSeekProvider(BaseProvider):
@@ -79,6 +175,8 @@ class DeepSeekProvider(BaseProvider):
                 "No API key provided. Pass api_key= or set DEEPSEEK_API_KEY.",
             )
         resolved_base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL") or _DEFAULT_BASE_URL
+        self._api_key = resolved_key
+        self._base_url = resolved_base_url
         self._client = AsyncOpenAI(
             api_key=resolved_key,
             base_url=resolved_base_url,
@@ -95,6 +193,12 @@ class DeepSeekProvider(BaseProvider):
     def model_name(self) -> str:
         return self._model
 
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return ("auto", *_deepseek_supported_reasoning_modes(self._model))
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        return _deepseek_model_options(self._api_key, self._base_url, self._model)
+
     async def generate(
         self,
         system_prompt: str,
@@ -105,7 +209,7 @@ class DeepSeekProvider(BaseProvider):
         reasoning: ReasoningMode = "auto",
         cache_hints: tuple = (),
     ) -> GeneratedResponse:
-        ensure_reasoning_supported("deepseek", self._model, reasoning)
+        reasoning_mode = _resolve_deepseek_reasoning_mode(reasoning, model=self._model)
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -123,6 +227,7 @@ class DeepSeekProvider(BaseProvider):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 request_id=request_id,
+                reasoning=reasoning_mode,
             )
         except RetryError as exc:
             raise ProviderError(
@@ -143,23 +248,24 @@ class DeepSeekProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
         request_id: str | None,
+        reasoning: ReasoningMode,
     ) -> GeneratedResponse:
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                messages=[
+            kwargs: dict[str, Any] = {
+                "model": self._model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-            )
+            }
+            kwargs.update(_deepseek_reasoning_kwargs(reasoning))
+            response = await self._client.chat.completions.create(**kwargs)
         except _OpenAIRateLimitError as exc:
             raise RateLimitError("deepseek", str(exc), status_code=429) from exc
         except _OpenAIAPIStatusError as exc:
-            raise ProviderError(
-                "deepseek", str(exc), status_code=exc.status_code
-            ) from exc
+            raise ProviderError("deepseek", str(exc), status_code=exc.status_code) from exc
 
         usage = response.usage
         result = GeneratedResponse(

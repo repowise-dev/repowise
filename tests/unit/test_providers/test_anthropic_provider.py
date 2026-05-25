@@ -51,6 +51,43 @@ def test_haiku_model():
     assert p.model_name == "claude-haiku-4-5"
 
 
+def test_available_model_options_uses_models_endpoint(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {
+                        "id": "claude-sonnet-4-6",
+                        "display_name": "Claude Sonnet 4.6",
+                    },
+                    {"id": "claude-haiku-4-5"},
+                ]
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_get(url, *, headers, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    options = AnthropicProvider(api_key="sk-ant-test").available_model_options()
+
+    assert captured["url"] == "https://api.anthropic.com/v1/models"
+    assert captured["headers"]["x-api-key"] == "sk-ant-test"
+    assert captured["headers"]["anthropic-version"] == "2023-06-01"
+    sonnet = next(option for option in options if option.model == "claude-sonnet-4-6")
+    assert sonnet.label == "Claude Sonnet 4.6"
+    assert sonnet.reasoning_modes == ("auto",)
+    assert sonnet.recommended is True
+
+
 # ---------------------------------------------------------------------------
 # Successful generation
 # ---------------------------------------------------------------------------

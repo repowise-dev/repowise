@@ -546,7 +546,7 @@ def _workspace_init(
         interactive_advanced_config,
         interactive_mode_select,
         interactive_primary_select,
-        interactive_provider_select,
+        interactive_provider_config_select,
         interactive_repo_select,
         load_dotenv,
         print_banner,
@@ -591,10 +591,13 @@ def _workspace_init(
         if mode == "index_only":
             index_only = True
         elif mode == "advanced":
-            provider_name, model = interactive_provider_select(
-                console, model, repo_path=primary_repo.path
+            selection = interactive_provider_config_select(
+                console, model, reasoning, repo_path=primary_repo.path
             )
-            adv = interactive_advanced_config(console)
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
+            adv = interactive_advanced_config(console, prompt_reasoning=False)
             commit_limit = adv.get("commit_limit") or commit_limit
             follow_renames = adv.get("follow_renames", follow_renames)
             skip_tests = adv.get("skip_tests", skip_tests)
@@ -607,9 +610,12 @@ def _workspace_init(
             embedder_name_resolved = _resolve_embedder(adv.get("embedder") or embedder_name)
         elif not index_only:
             # "full" mode
-            provider_name, model = interactive_provider_select(
-                console, model, repo_path=primary_repo.path
+            selection = interactive_provider_config_select(
+                console, model, reasoning, repo_path=primary_repo.path
             )
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
 
     # Resolve provider once (shared across all repos for generation)
     primary_cfg = load_config(primary_repo.path)
@@ -618,7 +624,7 @@ def _workspace_init(
     if not index_only:
         try:
             provider = resolve_provider(provider_name, model, primary_repo.path)
-            # Re-resolve the embedder now that interactive_provider_select
+            # Re-resolve the embedder now that interactive provider selection
             # may have set the provider's API key in os.environ. Without
             # this, full-mode runs would display "mock" forever because
             # the initial resolution happened before the key was available.
@@ -1106,7 +1112,7 @@ def init_command(
         interactive_advanced_config,
         interactive_fast_mode_offer,
         interactive_mode_select,
-        interactive_provider_select,
+        interactive_provider_config_select,
         load_dotenv,
         print_banner,
         print_index_only_intro,
@@ -1216,8 +1222,21 @@ def init_command(
             ):
                 run_mode = "fast"
         elif mode == "advanced":
-            provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
-            adv = interactive_advanced_config(console, scan=scan_info, allow_fast=True)
+            selection = interactive_provider_config_select(
+                console,
+                model,
+                reasoning,
+                repo_path=repo_path,
+            )
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
+            adv = interactive_advanced_config(
+                console,
+                scan=scan_info,
+                allow_fast=True,
+                prompt_reasoning=False,
+            )
             commit_limit = adv["commit_limit"]
             follow_renames = adv["follow_renames"]
             skip_tests = adv["skip_tests"]
@@ -1233,7 +1252,15 @@ def init_command(
             if run_mode == "fast":
                 index_only = True
         else:
-            provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
+            selection = interactive_provider_config_select(
+                console,
+                model,
+                reasoning,
+                repo_path=repo_path,
+            )
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
             # Full mode picked, but on a large repo offer the quick path too.
             # Default no here — the user explicitly asked for docs.
             if (
@@ -1312,12 +1339,15 @@ def init_command(
                 )
     else:
         if not is_interactive and provider_name is None and sys.stdin.isatty():
-            from repowise.cli.ui import interactive_provider_select as _ips
+            from repowise.cli.ui import interactive_provider_config_select as _ipcs
 
-            provider_name, model = _ips(console, model)
+            selection = _ipcs(console, model, reasoning, repo_path=repo_path)
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
 
         provider = resolve_provider(provider_name, model, repo_path)
-        # resolve_provider / interactive_provider_select may have just set
+        # resolve_provider / interactive provider selection may have just set
         # the API key in os.environ. Re-resolve the embedder so the
         # display (and the embed path below) honors the key the user just
         # pasted, rather than the pre-prompt "mock" fallback.

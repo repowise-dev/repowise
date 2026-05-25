@@ -23,6 +23,7 @@ from repowise.core.providers.llm.base import (
     BaseProvider,
     GeneratedResponse,
     ProviderError,
+    ProviderModelOption,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import REASONING_MODES, ReasoningMode, normalize_reasoning
@@ -169,6 +170,20 @@ def _catalog_supported_efforts(
     return tuple(dict.fromkeys(efforts))
 
 
+def _codex_modes_from_efforts(
+    supported_efforts: tuple[str, ...],
+) -> tuple[ReasoningMode, ...]:
+    modes: list[ReasoningMode] = ["auto"]
+    if "none" in supported_efforts:
+        modes.extend(("off", "none"))
+    if "minimal" in supported_efforts or "low" in supported_efforts:
+        modes.append("minimal")
+    for mode in ("low", "medium", "high", "xhigh", "max"):
+        if mode in supported_efforts:
+            modes.append(mode)
+    return tuple(dict.fromkeys(modes))
+
+
 def _codex_supported_reasoning_modes(
     codex_cmd: str,
     model: str,
@@ -181,15 +196,51 @@ def _codex_supported_reasoning_modes(
     if supported_efforts is None:
         return REASONING_MODES
 
-    modes: list[ReasoningMode] = ["auto"]
-    if "none" in supported_efforts:
-        modes.extend(("off", "none"))
-    if "minimal" in supported_efforts or "low" in supported_efforts:
-        modes.append("minimal")
-    for mode in ("low", "medium", "high", "xhigh", "max"):
-        if mode in supported_efforts:
-            modes.append(mode)
-    return tuple(dict.fromkeys(modes))
+    return _codex_modes_from_efforts(supported_efforts)
+
+
+def _codex_model_options(codex_cmd: str) -> tuple[ProviderModelOption, ...]:
+    catalog = _load_codex_model_catalog(codex_cmd)
+    if catalog is None:
+        return (
+            ProviderModelOption(
+                model=_DEFAULT_MODEL_LABEL,
+                label="Codex CLI default",
+                reasoning_modes=REASONING_MODES,
+                recommended=True,
+                source="fallback",
+                notes="uses Codex CLI config",
+            ),
+        )
+
+    default_efforts = _catalog_supported_efforts(catalog, None) or ()
+    options: list[ProviderModelOption] = [
+        ProviderModelOption(
+            model=_DEFAULT_MODEL_LABEL,
+            label="Codex CLI default",
+            reasoning_modes=_codex_modes_from_efforts(default_efforts),
+            recommended=True,
+            source="local",
+            notes="uses Codex CLI config",
+        )
+    ]
+    for model in sorted(catalog.values(), key=lambda item: item.slug.lower()):
+        notes = (
+            f"default {model.default_effort}"
+            if model.default_effort
+            else ""
+        )
+        options.append(
+            ProviderModelOption(
+                model=_model_label(model.slug),
+                label=model.slug,
+                reasoning_modes=_codex_modes_from_efforts(model.supported_efforts),
+                recommended=False,
+                source="local",
+                notes=notes,
+            )
+        )
+    return tuple(options)
 
 
 def _codex_reasoning_config(
@@ -322,6 +373,9 @@ class CodexCliProvider(BaseProvider):
 
     def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
         return _codex_supported_reasoning_modes(self._codex_cmd, self.model_name)
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        return _codex_model_options(self._codex_cmd)
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()

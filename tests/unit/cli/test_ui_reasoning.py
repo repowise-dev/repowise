@@ -6,6 +6,7 @@ from typing import Any
 from rich.console import Console
 
 from repowise.cli import ui
+from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.reasoning import REASONING_MODES
 
 
@@ -43,3 +44,82 @@ def test_interactive_advanced_config_uses_shared_reasoning_modes(
 
     assert captured["reasoning_choices"] == REASONING_MODES
     assert result["reasoning"] == "xhigh"
+
+
+def test_interactive_advanced_config_can_skip_reasoning_prompt(
+    monkeypatch: Any,
+) -> None:
+    def fake_confirm(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    def fake_prompt(
+        text: str,
+        *,
+        default: Any = None,
+        **_kwargs: object,
+    ) -> Any:
+        if text.strip() == "Reasoning mode":
+            raise AssertionError("reasoning prompt should be skipped")
+        if text.strip() == "Pattern":
+            return ""
+        return default
+
+    monkeypatch.setattr(ui.click, "confirm", fake_confirm)
+    monkeypatch.setattr(ui.click, "prompt", fake_prompt)
+
+    result = ui.interactive_advanced_config(
+        _silent_console(),
+        prompt_reasoning=False,
+    )
+
+    assert result["reasoning"] is None
+
+
+def test_interactive_provider_config_select_uses_model_reasoning_options(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(ui, "_detect_provider_status", lambda: {"gemini": "GEMINI_API_KEY"})
+    monkeypatch.setattr(ui, "_detect_codex_cli_status", lambda: (False, False))
+    monkeypatch.setattr(
+        ui,
+        "_provider_model_options",
+        lambda *_args, **_kwargs: (
+            ProviderModelOption(
+                model="gemini-fast",
+                reasoning_modes=("auto",),
+                recommended=True,
+                source="api",
+            ),
+            ProviderModelOption(
+                model="gemini-reasoner",
+                reasoning_modes=("auto", "low", "high"),
+                source="api",
+            ),
+        ),
+    )
+
+    prompt_answers = iter(["1", "2"])
+
+    def fake_ask(*_args: object, **_kwargs: object) -> str:
+        return next(prompt_answers)
+
+    def fake_prompt(
+        text: str,
+        *,
+        default: Any = None,
+        type: Any = None,
+        **_kwargs: object,
+    ) -> Any:
+        if text.strip() == "Reasoning":
+            assert tuple(type.choices) == ("auto", "low", "high")
+            return "high"
+        return default
+
+    monkeypatch.setattr(ui.Prompt, "ask", fake_ask)
+    monkeypatch.setattr(ui.click, "prompt", fake_prompt)
+
+    result = ui.interactive_provider_config_select(_silent_console(), None)
+
+    assert result.provider_name == "gemini"
+    assert result.model == "gemini-reasoner"
+    assert result.reasoning == "high"

@@ -11,16 +11,13 @@ Recommended models:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 import structlog
-
-# Suppress "Both GOOGLE_API_KEY and GEMINI_API_KEY are set" from google-genai SDK.
-# We resolve and pass the key explicitly, so the env-var conflict warning is noise.
-logging.getLogger("google_genai._api_client").setLevel(logging.ERROR)
-from typing import TYPE_CHECKING, Any, AsyncIterator
-
 from tenacity import (
     RetryError,
     retry,
@@ -35,20 +32,156 @@ from repowise.core.providers.llm.base import (
     ChatToolCall,
     GeneratedResponse,
     ProviderError,
+    ProviderModelOption,
     RateLimitError,
     ensure_reasoning_supported,
+    fallback_model_option,
 )
 from repowise.core.rate_limiter import RateLimiter
-from repowise.core.reasoning import ReasoningMode
+from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
+
+# Suppress "Both GOOGLE_API_KEY and GEMINI_API_KEY are set" from google-genai SDK.
+# We resolve and pass the key explicitly, so the env-var conflict warning is noise.
+logging.getLogger("google_genai._api_client").setLevel(logging.ERROR)
 
 log = structlog.get_logger(__name__)
 
 _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
 _MAX_WAIT = 4.0
+_DEFAULT_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+_GEMINI_THINKING_MODES: tuple[ReasoningMode, ...] = (
+    "minimal",
+    "low",
+    "medium",
+    "high",
+)
+_GEMINI_THINKING_MODELS_BY_BASE: dict[str, set[str]] = {}
+
+
+def _gemini_cache_key(base_url: str | None) -> str:
+    return (base_url or _DEFAULT_MODELS_URL).rstrip("/")
+
+
+def _gemini_supported_reasoning_modes(
+    model: str,
+    *,
+    base_url: str | None,
+) -> tuple[ReasoningMode, ...]:
+    if model in _GEMINI_THINKING_MODELS_BY_BASE.get(_gemini_cache_key(base_url), set()):
+        return _GEMINI_THINKING_MODES
+    return ()
+
+
+def _resolve_gemini_reasoning_mode(
+    reasoning: ReasoningMode,
+    *,
+    model: str,
+    base_url: str | None,
+) -> ReasoningMode:
+    return ensure_reasoning_supported(
+        "gemini",
+        model,
+        normalize_reasoning(reasoning),
+        _gemini_supported_reasoning_modes(model, base_url=base_url),
+        detail=(
+            "Gemini reasoning options are exposed only for models whose "
+            "models.list entry advertises thinking support."
+        ),
+    )
+
+
+def _gemini_thinking_config(reasoning: ReasoningMode, genai_types: Any) -> object | None:
+    mode = normalize_reasoning(reasoning)
+    if mode == "auto":
+        return None
+    levels = {
+        "minimal": genai_types.ThinkingLevel.MINIMAL,
+        "low": genai_types.ThinkingLevel.LOW,
+        "medium": genai_types.ThinkingLevel.MEDIUM,
+        "high": genai_types.ThinkingLevel.HIGH,
+    }
+    return genai_types.ThinkingConfig(thinking_level=levels[mode])
+
+
+def _gemini_model_options(
+    api_key: str,
+    base_url: str | None,
+    fallback_model: str,
+) -> tuple[ProviderModelOption, ...]:
+    fallback = fallback_model_option(fallback_model)
+    try:
+        import httpx
+
+        url = f"{base_url.rstrip('/')}/models" if base_url else _DEFAULT_MODELS_URL
+        models: list[dict[str, Any]] = []
+        page_token: str | None = None
+        while True:
+            params: dict[str, str | int] = {"pageSize": 1000}
+            if page_token:
+                params["pageToken"] = page_token
+            response = httpx.get(
+                url,
+                headers={"x-goog-api-key": api_key},
+                params=params,
+                timeout=5.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            raw_models = payload.get("models", [])
+            if isinstance(raw_models, list):
+                models.extend(raw for raw in raw_models if isinstance(raw, dict))
+            page_token = payload.get("nextPageToken")
+            if not isinstance(page_token, str) or not page_token:
+                break
+    except Exception:
+        return (fallback,)
+
+    options: list[ProviderModelOption] = []
+    thinking_models: set[str] = set()
+    for raw in models:
+        name = raw.get("name")
+        if not isinstance(name, str):
+            continue
+        methods = raw.get("supportedGenerationMethods")
+        if isinstance(methods, list) and "generateContent" not in methods:
+            continue
+        model_id = name.removeprefix("models/")
+        display_name = raw.get("displayName")
+        has_thinking = raw.get("thinking") is True
+        if has_thinking:
+            thinking_models.add(model_id)
+        options.append(
+            ProviderModelOption(
+                model=model_id,
+                label=display_name if isinstance(display_name, str) else model_id,
+                reasoning_modes=(
+                    "auto",
+                    *_GEMINI_THINKING_MODES,
+                )
+                if has_thinking
+                else ("auto",),
+                recommended=model_id == fallback_model,
+                source="api",
+                notes=(
+                    "generateContent; thinking advertised by models.list"
+                    if has_thinking
+                    else "generateContent"
+                ),
+            )
+        )
+
+    if thinking_models:
+        _GEMINI_THINKING_MODELS_BY_BASE[_gemini_cache_key(base_url)] = thinking_models
+
+    if not options:
+        return (fallback,)
+
+    options.sort(key=lambda option: option.model)
+    return tuple(options)
 
 
 class GeminiProvider(BaseProvider):
@@ -68,13 +201,11 @@ class GeminiProvider(BaseProvider):
         api_key: str | None = None,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
-        cost_tracker: "CostTracker | None" = None,
+        cost_tracker: CostTracker | None = None,
     ) -> None:
         self._model = model
         self._api_key = (
-            api_key
-            or os.environ.get("GEMINI_API_KEY")
-            or os.environ.get("GOOGLE_API_KEY")
+            api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         )
         if not self._api_key:
             raise ProviderError(
@@ -94,6 +225,18 @@ class GeminiProvider(BaseProvider):
     def model_name(self) -> str:
         return self._model
 
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return (
+            "auto",
+            *_gemini_supported_reasoning_modes(
+                self._model,
+                base_url=self._base_url,
+            ),
+        )
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        return _gemini_model_options(self._api_key, self._base_url, self._model)
+
     async def generate(
         self,
         system_prompt: str,
@@ -104,7 +247,16 @@ class GeminiProvider(BaseProvider):
         reasoning: ReasoningMode = "auto",
         cache_hints: tuple = (),
     ) -> GeneratedResponse:
-        ensure_reasoning_supported("gemini", self._model, reasoning)
+        if normalize_reasoning(reasoning) != "auto" and not _gemini_supported_reasoning_modes(
+            self._model,
+            base_url=self._base_url,
+        ):
+            self.available_model_options()
+        reasoning_mode = _resolve_gemini_reasoning_mode(
+            reasoning,
+            model=self._model,
+            base_url=self._base_url,
+        )
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -122,6 +274,7 @@ class GeminiProvider(BaseProvider):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 request_id=request_id,
+                reasoning=reasoning_mode,
             )
         except RetryError as exc:
             raise ProviderError(
@@ -142,6 +295,7 @@ class GeminiProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
         request_id: str | None,
+        reasoning: ReasoningMode,
     ) -> GeneratedResponse:
         # Capture self attrs for thread safety (avoids closing over self)
         model = self._model
@@ -178,16 +332,21 @@ class GeminiProvider(BaseProvider):
                     self._client = genai.Client(**client_kwargs)
             client = self._client
             try:
+                thinking_config = _gemini_thinking_config(reasoning, genai_types)
+                config_kwargs: dict[str, Any] = {
+                    "system_instruction": system_prompt,
+                    "temperature": temperature,
+                    # max_output_tokens intentionally omitted — Gemini flash
+                    # models default to 65k tokens, which is far better for
+                    # documentation generation than any low cap we'd impose.
+                }
+                if thinking_config is not None:
+                    config_kwargs["thinking_config"] = thinking_config
+
                 response = client.models.generate_content(
                     model=model,
                     contents=user_prompt,
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=temperature,
-                        # max_output_tokens intentionally omitted — Gemini flash
-                        # models default to 65k tokens, which is far better for
-                        # documentation generation than any low cap we'd impose.
-                    ),
+                    config=genai_types.GenerateContentConfig(**config_kwargs),
                 )
             except Exception as exc:
                 exc_str = str(exc)
@@ -206,7 +365,9 @@ class GeminiProvider(BaseProvider):
                     "prompt_token_count": getattr(usage, "prompt_token_count", 0) or 0,
                     "candidates_token_count": getattr(usage, "candidates_token_count", 0) or 0,
                     "total_token_count": getattr(usage, "total_token_count", 0) or 0,
-                } if usage else {},
+                }
+                if usage
+                else {},
             )
 
         try:
@@ -224,7 +385,7 @@ class GeminiProvider(BaseProvider):
         )
 
         if self._cost_tracker is not None:
-            try:
+            with contextlib.suppress(RuntimeError):
                 asyncio.get_event_loop().create_task(
                     self._cost_tracker.record(
                         model=self._model,
@@ -234,8 +395,6 @@ class GeminiProvider(BaseProvider):
                         file_path=None,
                     )
                 )
-            except RuntimeError:
-                pass  # No running event loop — skip async record
 
         return result
 
@@ -262,8 +421,6 @@ class GeminiProvider(BaseProvider):
         yielded and the caller must handle it (though this will fail on
         the next round-trip due to missing thought signatures).
         """
-        import json as _json
-
         model_name = self._model
         api_key = self._api_key
         base_url = self._base_url
@@ -300,11 +457,13 @@ class GeminiProvider(BaseProvider):
             for t in tools:
                 fn = t.get("function", t)
                 params = fn.get("parameters", {})
-                declarations.append(genai_types.FunctionDeclaration(
-                    name=fn["name"],
-                    description=fn.get("description", ""),
-                    parameters=params if params else None,
-                ))
+                declarations.append(
+                    genai_types.FunctionDeclaration(
+                        name=fn["name"],
+                        description=fn.get("description", ""),
+                        parameters=params if params else None,
+                    )
+                )
             gemini_tools = [genai_types.Tool(function_declarations=declarations)]
 
         config = genai_types.GenerateContentConfig(
@@ -414,13 +573,17 @@ def _to_gemini_contents(messages: list[dict[str, Any]]) -> list:
             # Tool result → function_response part
             content_str = msg.get("content", "{}")
             try:
-                response_data = _json.loads(content_str) if isinstance(content_str, str) else content_str
+                response_data = (
+                    _json.loads(content_str) if isinstance(content_str, str) else content_str
+                )
             except Exception:
                 response_data = {"result": content_str}
-            parts.append(genai_types.Part.from_function_response(
-                name=msg.get("name", "unknown"),
-                response=response_data,
-            ))
+            parts.append(
+                genai_types.Part.from_function_response(
+                    name=msg.get("name", "unknown"),
+                    response=response_data,
+                )
+            )
             gemini_role = "user"
         elif role == "assistant":
             text = msg.get("content")
@@ -436,10 +599,12 @@ def _to_gemini_contents(messages: list[dict[str, Any]]) -> list:
                         args = {}
                 else:
                     args = args_str
-                parts.append(genai_types.Part.from_function_call(
-                    name=fn.get("name", ""),
-                    args=args,
-                ))
+                parts.append(
+                    genai_types.Part.from_function_call(
+                        name=fn.get("name", ""),
+                        args=args,
+                    )
+                )
         else:
             parts.append(genai_types.Part.from_text(text=msg.get("content", "")))
 

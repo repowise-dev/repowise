@@ -21,7 +21,8 @@ Usage:
 from __future__ import annotations
 
 import os
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import structlog
 from openai import APIStatusError as _OpenAIAPIStatusError
@@ -40,7 +41,9 @@ from repowise.core.providers.llm.base import (
     ChatToolCall,
     GeneratedResponse,
     ProviderError,
+    ProviderModelOption,
     ensure_reasoning_supported,
+    fallback_model_option,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
@@ -60,6 +63,58 @@ def _normalize_base_url(url: str) -> str:
     if not url.endswith("/v1"):
         url += "/v1"
     return url
+
+
+def _ollama_model_options(
+    base_url: str,
+    fallback_model: str,
+) -> tuple[ProviderModelOption, ...]:
+    fallback = fallback_model_option(fallback_model)
+    try:
+        import httpx
+
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/api/tags",
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        data = response.json().get("models", [])
+    except Exception:
+        return (fallback,)
+
+    if not isinstance(data, list):
+        return (fallback,)
+
+    options: list[ProviderModelOption] = []
+    for raw in data:
+        if not isinstance(raw, dict):
+            continue
+        model_id = raw.get("name") or raw.get("model")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        details = raw.get("details")
+        notes = ""
+        if isinstance(details, dict):
+            family = details.get("family")
+            params = details.get("parameter_size")
+            parts = [part for part in (family, params) if isinstance(part, str)]
+            notes = ", ".join(parts) or notes
+        options.append(
+            ProviderModelOption(
+                model=model_id,
+                label=model_id,
+                reasoning_modes=("auto",),
+                recommended=model_id == fallback_model,
+                source="local",
+                notes=notes,
+            )
+        )
+
+    if not options:
+        return (fallback,)
+
+    options.sort(key=lambda option: option.model)
+    return tuple(options)
 
 
 class OllamaProvider(BaseProvider):
@@ -83,7 +138,10 @@ class OllamaProvider(BaseProvider):
         rate_limiter: RateLimiter | None = None,
     ) -> None:
         resolved_base_url = base_url or os.environ.get("OLLAMA_BASE_URL") or _DEFAULT_BASE_URL
-        self._client = AsyncOpenAI(api_key="ollama", base_url=_normalize_base_url(resolved_base_url))
+        self._base_url = resolved_base_url.rstrip("/")
+        self._client = AsyncOpenAI(
+            api_key="ollama", base_url=_normalize_base_url(resolved_base_url)
+        )
         self._model = model
         self._rate_limiter = rate_limiter
 
@@ -94,6 +152,9 @@ class OllamaProvider(BaseProvider):
     @property
     def model_name(self) -> str:
         return self._model
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        return _ollama_model_options(self._base_url, self._model)
 
     async def generate(
         self,
@@ -155,9 +216,7 @@ class OllamaProvider(BaseProvider):
                 ],
             )
         except _OpenAIAPIStatusError as exc:
-            raise ProviderError(
-                "ollama", str(exc), status_code=exc.status_code
-            ) from exc
+            raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
 
         usage = response.usage
         result = GeneratedResponse(
@@ -227,7 +286,11 @@ class OllamaProvider(BaseProvider):
                     for tc_delta in delta.tool_calls:
                         idx = tc_delta.index
                         if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {"id": tc_delta.id or "", "name": "", "arguments": ""}
+                            tool_calls_acc[idx] = {
+                                "id": tc_delta.id or "",
+                                "name": "",
+                                "arguments": "",
+                            }
                         acc = tool_calls_acc[idx]
                         if tc_delta.id:
                             acc["id"] = tc_delta.id

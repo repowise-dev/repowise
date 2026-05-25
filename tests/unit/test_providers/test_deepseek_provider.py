@@ -51,6 +51,47 @@ def test_custom_base_url():
     assert p.provider_name == "deepseek"
 
 
+def test_available_model_options_uses_models_endpoint(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"id": "deepseek-v4-flash"},
+                    {"id": "deepseek-v4-pro"},
+                ]
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_get(url, *, headers, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    options = DeepSeekProvider(api_key="sk-test").available_model_options()
+
+    assert captured["url"] == "https://api.deepseek.com/models"
+    assert captured["headers"] == {"Authorization": "Bearer sk-test"}
+    flash = next(option for option in options if option.model == "deepseek-v4-flash")
+    assert flash.reasoning_modes == (
+        "auto",
+        "off",
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
+    assert flash.recommended is True
+
+
 def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
     usage = MagicMock()
     usage.prompt_tokens = 120
@@ -131,13 +172,26 @@ async def test_generate_uses_correct_model_name():
         assert kwargs["model"] == "deepseek-v4-flash"
 
 
-async def test_generate_rejects_unsupported_reasoning_mode():
+async def test_generate_forwards_disabled_thinking():
     provider = DeepSeekProvider(api_key="sk-test")
+    mock_response = _make_mock_chat_response()
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
+        provider._client = mock_client.return_value
+        await provider.generate("system", "user", reasoning="off")
+
+    kwargs = mock_client.return_value.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+async def test_generate_rejects_reasoning_for_non_v4_model():
+    provider = DeepSeekProvider(api_key="sk-test", model="deepseek-chat")
 
     with patch("openai.AsyncOpenAI") as mock_client:
         provider._client = mock_client.return_value
-        with pytest.raises(ProviderError, match="reasoning='off' is not supported"):
-            await provider.generate("system", "user", reasoning="off")
+        with pytest.raises(ProviderError, match="reasoning='high' is not supported"):
+            await provider.generate("system", "user", reasoning="high")
 
     mock_client.return_value.chat.completions.create.assert_not_called()
 

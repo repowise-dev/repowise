@@ -159,6 +159,38 @@ def test_supported_reasoning_modes_reflect_codex_catalog(monkeypatch, tmp_path):
     )
 
 
+def test_available_model_options_reflect_codex_catalog(monkeypatch, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda cmd: "codex" if cmd == "codex" else None)
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.codex_cli._load_codex_model_catalog",
+        lambda _cmd: _reasoning_catalog(
+            "none",
+            "low",
+            "medium",
+            "high",
+            slug="gpt-5.5",
+            default="medium",
+        ),
+    )
+
+    options = CodexCliProvider(repo_path=tmp_path).available_model_options()
+
+    assert options[0].model == "codex_cli/default"
+    assert options[0].recommended is True
+    model_option = next(option for option in options if option.model == "codex_cli/gpt-5.5")
+    assert model_option.label == "gpt-5.5"
+    assert model_option.source == "local"
+    assert model_option.reasoning_modes == (
+        "auto",
+        "off",
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+    )
+
+
 def test_missing_cli_raises(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _cmd: None)
 
