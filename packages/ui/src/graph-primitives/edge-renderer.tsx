@@ -7,6 +7,7 @@ import {
   getBezierPath,
   type EdgeProps,
 } from "@xyflow/react";
+import { THEME } from "../c4/theme/theme-variables";
 
 export interface ArchEdgeData {
   edge_type: string;
@@ -24,13 +25,15 @@ export const EDGE_CATEGORY_COLORS: Record<string, string> = {
   semantic: "#94a3b8",
 };
 
-function getEdgeCategoryColor(category: string | undefined): string {
-  if (!category) return "#94a3b8";
-  return EDGE_CATEGORY_COLORS[category] ?? "#94a3b8";
+const EDGE_DEFAULT_COLOR = "#8b9dc3";
+
+function getEdgeColor(edgeType: string | undefined): string {
+  if (!edgeType) return EDGE_DEFAULT_COLOR;
+  return THEME.edge[edgeType] ?? EDGE_CATEGORY_COLORS[edgeType] ?? EDGE_DEFAULT_COLOR;
 }
 
 export function computeEdgeStrokeWidth(count: number): number {
-  return Math.min(1 + Math.log2(count + 1), 5);
+  return Math.min(1.5 + Math.log2(count + 1), 5);
 }
 
 function ArchEdgeRendererImpl(props: EdgeProps) {
@@ -49,7 +52,7 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
 
   const edgeData = data as ArchEdgeData | undefined;
   const count = edgeData?.count ?? 1;
-  const category = edgeData?.category;
+  const edgeType = edgeData?.edge_type;
   const isPortal = edgeData?.isPortalEdge ?? false;
   const dimmed = edgeData?.dimmed ?? false;
 
@@ -62,12 +65,13 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
     targetPosition,
   });
 
-  const baseColor = getEdgeCategoryColor(category);
+  const baseColor = getEdgeColor(edgeType);
   const stroke = selected ? "#fbbf24" : baseColor;
   const strokeWidth = dimmed ? 1 : computeEdgeStrokeWidth(count);
-  const strokeOpacity = selected ? 0.9 : dimmed ? 0.08 : 0.4;
+  const strokeOpacity = selected ? 1.0 : dimmed ? 0.06 : 0.75;
 
-  const label = count > 1 ? String(count) : "";
+  const typeLabel = (edgeType ?? "").replace(/_/g, " ");
+  const label = dimmed ? "" : count > 3 ? `${typeLabel} (${count})` : typeLabel || "";
 
   return (
     <>
@@ -78,7 +82,8 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
         style={{
           stroke,
           strokeWidth,
-          strokeDasharray: isPortal ? "6 3" : undefined,
+          strokeDasharray: isPortal ? "6 3" : "8 4",
+          animation: dimmed ? "none" : "edgeFlow 1.5s linear infinite",
           opacity: strokeOpacity,
         }}
       />
@@ -88,16 +93,17 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
             style={{
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              background: "rgba(15, 23, 42, 0.82)",
-              color: "#94a3b8",
+              background: "rgba(15, 23, 42, 0.88)",
+              color: stroke,
               padding: "2px 6px",
               borderRadius: 4,
               fontSize: 10,
-              fontWeight: 600,
+              fontWeight: 500,
+              letterSpacing: 0.3,
               pointerEvents: "none",
-              border: "1px solid rgba(148, 163, 184, 0.15)",
+              border: `1px solid ${stroke}33`,
               whiteSpace: "nowrap",
-              opacity: selected ? 1 : 0.7,
+              opacity: selected ? 1 : 0.85,
             }}
             className="nodrag nopan"
           >

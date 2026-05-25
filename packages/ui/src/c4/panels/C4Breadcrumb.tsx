@@ -27,7 +27,7 @@ export function C4Breadcrumb({
   }
   return (
     <nav
-      aria-label="C4 drill-down breadcrumb"
+      aria-label="Knowledge Graph breadcrumb"
       style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
     >
       {segments.map((seg, i) => (

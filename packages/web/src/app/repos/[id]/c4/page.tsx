@@ -28,6 +28,7 @@ import {
   CodeViewer,
   PathFinderModal,
   type Persona,
+  KEYFRAMES,
 } from "@repowise-dev/ui/c4";
 import {
   Background,
@@ -49,6 +50,7 @@ import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
 const MODE_VALUES = ["c4", "architecture"] as const;
 const VIEW_VALUES = ["overview", "detail"] as const;
 const PERSONA_VALUES = ["overview", "learn", "deep-dive"] as const;
+const SYNTHETIC_NODE_TYPES = new Set(["layerCluster", "archContainer", "portal"]);
 
 function clampLevel(n: number | null): C4Level {
   return n === 1 ? 1 : n === 3 ? 3 : 2;
@@ -169,8 +171,6 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     return () => cancelAnimationFrame(raf);
   }, [nodes, fitView]);
 
-  const SYNTHETIC_NODE_TYPES = new Set(["layerCluster", "archContainer", "portal"]);
-
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: { id: string; type?: string }) => {
       if (SYNTHETIC_NODE_TYPES.has(node.type ?? "")) return;
@@ -194,6 +194,29 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     selectNode(null);
   }, [selectNode]);
 
+  const fetchContent = useCallback(
+    async (filePath: string) => {
+      const apiBase =
+        typeof window !== "undefined"
+          ? (process.env.NEXT_PUBLIC_REPOWISE_API_URL ?? "")
+          : "";
+      const apiKey =
+        typeof window !== "undefined"
+          ? localStorage.getItem("repowise_api_key")
+          : null;
+      const res = await fetch(
+        `${apiBase}/api/repos/${repoId}/file-content?` +
+          new URLSearchParams({ file_path: filePath }).toString(),
+        { headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} },
+      );
+      if (!res.ok) {
+        throw new Error(`Failed to fetch file content (${res.status})`);
+      }
+      return res.text();
+    },
+    [repoId],
+  );
+
   const anyLoading = isLoading || layoutLoading;
 
   return (
@@ -202,7 +225,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-              Architecture
+              Knowledge Graph
             </h1>
             <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
               {repoName} — layers, nodes, and relationships.
@@ -218,6 +241,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
         </div>
       </div>
 
+      <style>{KEYFRAMES.accentPulse}{KEYFRAMES.edgeFlow}</style>
       <div className="flex-1 min-h-0 relative">
         {error && (
           <div className="absolute inset-0 flex items-center justify-center text-red-300 text-sm z-10 pointer-events-none">
@@ -226,7 +250,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
         )}
         {anyLoading && nodes.length === 0 && !error && (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--color-text-secondary)] text-sm z-10 pointer-events-none">
-            Loading architecture view...
+            Loading knowledge graph…
           </div>
         )}
 
@@ -256,29 +280,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
 
         <FilterPanel />
 
-        <CodeViewer
-          fetchContent={async (filePath: string) => {
-            const apiBase =
-              typeof window !== "undefined"
-                ? (process.env.NEXT_PUBLIC_REPOWISE_API_URL ?? "")
-                : "";
-            const apiKey =
-              typeof window !== "undefined"
-                ? localStorage.getItem("repowise_api_key")
-                : null;
-            const res = await fetch(
-              `${apiBase}/api/repos/${repoId}/file-content?` +
-                new URLSearchParams({ file_path: filePath }).toString(),
-              {
-                headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-              },
-            );
-            if (!res.ok) {
-              throw new Error(`Failed to fetch file content (${res.status})`);
-            }
-            return res.text();
-          }}
-        />
+        <CodeViewer fetchContent={fetchContent} />
 
         {pathFinderOpen && <PathFinderModal />}
       </div>
@@ -349,7 +351,7 @@ function LegacyC4View({ repoId, repoName }: { repoId: string; repoName: string }
     <>
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
         <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          C4 Architecture
+          Knowledge Graph
         </h1>
         <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
           System context, containers, and components — drill in to navigate.

@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Node, Edge } from "@xyflow/react";
+import { MarkerType, type Node, type Edge } from "@xyflow/react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import type { ArchitectureView, ArchNode, ArchEdge, ArchLayer } from "../types";
+import { PERSONA_NODE_TYPES } from "../types";
 import { buildContainers, getStandaloneNodeIds } from "../layout/containers";
 import { aggregateEdges } from "../layout/edge-aggregation";
 import {
@@ -14,6 +15,7 @@ import {
   type ContainerAtom,
   type PortalSpec,
 } from "../layout/two-stage-layout";
+import { THEME } from "../theme/theme-variables";
 
 export interface ArchitectureLayoutResult {
   nodes: Node[];
@@ -30,8 +32,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
   const persona = useArchitectureStore((s) => s.persona);
   const filters = useArchitectureStore((s) => s.filters);
   const expandedContainers = useArchitectureStore((s) => s.expandedContainers);
-  const containerLayoutCache = useArchitectureStore((s) => s.containerLayoutCache);
-  const containerSizeMemory = useArchitectureStore((s) => s.containerSizeMemory);
+  const expandedContainersVersion = useArchitectureStore((s) => s.expandedContainers.size);
   const stage1Tick = useArchitectureStore((s) => s.stage1Tick);
   const focusNodeId = useArchitectureStore((s) => s.focusNodeId);
   const selectedNodeId = useArchitectureStore((s) => s.selectedNodeId);
@@ -80,8 +81,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     persona,
     filters,
     expandedContainers,
-    containerLayoutCache,
-    containerSizeMemory,
+    expandedContainersVersion,
     stage1Tick,
     focusNodeId,
     selectedNodeId,
@@ -168,6 +168,12 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       source: agg.source,
       target: agg.target,
       type: "arch",
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        width: 14,
+        height: 14,
+        color: THEME.edge[agg.dominantType] ?? "#8b9dc3",
+      },
       data: {
         edge_type: agg.dominantType,
         count: agg.count,
@@ -179,6 +185,8 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
   }
 
   async function computeDetailLayout(currentView: ArchitectureView): Promise<ArchitectureLayoutResult> {
+    const containerLayoutCache = useArchitectureStore.getState().containerLayoutCache;
+    const containerSizeMemory = useArchitectureStore.getState().containerSizeMemory;
     const layer = currentView.layers.find((l: ArchLayer) => l.id === activeLayerId);
     if (!layer) {
       return { nodes: [], edges: [], loading: false, issues: [`Layer ${activeLayerId} not found`] };
@@ -196,6 +204,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     }
 
     const visibleNodeIds = new Set(layerNodes.map((n: ArchNode) => n.id));
+    const nodesById = new Map(currentView.nodes.map((n: ArchNode) => [n.id, n]));
 
     const containers = buildContainers(layerNodes, currentView.edges, "auto");
     const standaloneIds = getStandaloneNodeIds(layerNodes, containers);
@@ -216,7 +225,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     const aggregated = aggregateEdges(currentView.edges, nodeToBox);
 
     const standaloneLayoutNodes = standaloneIds.map((id) => {
-      const node = currentView.nodes.find((n: ArchNode) => n.id === id);
+      const node = nodesById.get(id);
       const nodeType = node?.node_type ?? "file";
       const sizes = ARCH_NODE_SIZES[nodeType as keyof typeof ARCH_NODE_SIZES] ?? ARCH_NODE_SIZES.file;
       return { id, width: sizes.width, height: sizes.height };
@@ -241,6 +250,15 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     const searchHighlightIds = new Set<string>(searchResults.map((r) => r.nodeId));
     const store = useArchitectureStore.getState();
 
+    const selectedConnectedNodes = new Set<string>();
+    if (selectedNodeId) {
+      selectedConnectedNodes.add(selectedNodeId);
+      for (const e of currentView.edges) {
+        if (e.source === selectedNodeId) selectedConnectedNodes.add(e.target);
+        if (e.target === selectedNodeId) selectedConnectedNodes.add(e.source);
+      }
+    }
+
     for (const container of containers) {
       const pos = stage1Positions.get(container.id) ?? { x: 0, y: 0, width: 0, height: 0 };
       const isExpanded = expandedContainers.has(container.id);
@@ -264,10 +282,10 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       if (isExpanded) {
         const cached = containerLayoutCache.get(container.id);
         if (cached) {
-          addChildNodes(allNodes, container, cached.positions, pos, currentView, searchHighlightIds);
+          addChildNodes(allNodes, container, cached.positions, pos, nodesById, searchHighlightIds, selectedConnectedNodes);
         } else {
           const childLayoutNodes = container.childNodeIds.map((id) => {
-            const node = currentView.nodes.find((n: ArchNode) => n.id === id);
+            const node = nodesById.get(id);
             const nodeType = node?.node_type ?? "file";
             const sizes = ARCH_NODE_SIZES[nodeType as keyof typeof ARCH_NODE_SIZES] ?? ARCH_NODE_SIZES.file;
             return { id, width: sizes.width, height: sizes.height };
@@ -296,13 +314,13 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
             store.bumpStage1Tick();
           }
 
-          addChildNodes(allNodes, container, stage2.positions, pos, currentView, searchHighlightIds);
+          addChildNodes(allNodes, container, stage2.positions, pos, nodesById, searchHighlightIds, selectedConnectedNodes);
         }
       }
     }
 
     for (const id of standaloneIds) {
-      const node = currentView.nodes.find((n: ArchNode) => n.id === id);
+      const node = nodesById.get(id);
       if (!node) continue;
       const pos = stage1Positions.get(id) ?? { x: 0, y: 0, width: 0, height: 0 };
       const sizes = ARCH_NODE_SIZES[node.node_type as keyof typeof ARCH_NODE_SIZES] ?? ARCH_NODE_SIZES.file;
@@ -310,7 +328,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         id: node.id,
         type: "archFile",
         position: { x: pos.x, y: pos.y },
-        data: buildArchFileData(node, searchHighlightIds),
+        data: buildArchFileData(node, searchHighlightIds, selectedConnectedNodes),
         width: sizes.width,
         height: sizes.height,
       });
@@ -332,15 +350,6 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       });
     }
 
-    const selectedConnectedNodes = new Set<string>();
-    if (selectedNodeId) {
-      selectedConnectedNodes.add(selectedNodeId);
-      for (const e of currentView.edges) {
-        if (e.source === selectedNodeId) selectedConnectedNodes.add(e.target);
-        if (e.target === selectedNodeId) selectedConnectedNodes.add(e.source);
-      }
-    }
-
     for (const agg of aggregated) {
       const isDimmed = selectedNodeId
         ? !selectedConnectedNodes.has(agg.source) && !selectedConnectedNodes.has(agg.target)
@@ -350,6 +359,12 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         source: agg.source,
         target: agg.target,
         type: "arch",
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 14,
+          height: 14,
+          color: THEME.edge[agg.dominantType] ?? "#8b9dc3",
+        },
         data: {
           edge_type: agg.dominantType,
           count: agg.count,
@@ -364,8 +379,9 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
   }
 
   function filterByPersona(nodes: ArchNode[]): ArchNode[] {
-    if (persona === "overview") {
-      return nodes.filter((n) => n.node_type === "file" || n.node_type === "module");
+    const allowed = PERSONA_NODE_TYPES[persona];
+    if (allowed) {
+      return nodes.filter((n) => allowed.has(n.node_type));
     }
     return nodes;
   }
@@ -407,18 +423,26 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     return focused;
   }
 
-  function buildArchFileData(node: ArchNode, searchHighlightIds: Set<string>) {
+  function buildArchFileData(
+    node: ArchNode,
+    searchHighlightIds: Set<string>,
+    connectedNodes?: Set<string>,
+  ) {
     let diffState: "changed" | "affected" | "none" = "none";
     if (diffMode) {
       if (changedNodeIds.has(node.id)) diffState = "changed";
       else if (affectedNodeIds.has(node.id)) diffState = "affected";
     }
+    const dimmed = connectedNodes && selectedNodeId
+      ? !connectedNodes.has(node.id)
+      : false;
     return {
       node,
       hasDocs: node.has_doc,
       searchHighlight: searchHighlightIds.has(node.id),
       tourHighlight: tourHighlightedNodeIds.has(node.id),
       diffState,
+      dimmed,
     };
   }
 
@@ -427,11 +451,12 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     container: ContainerAtom,
     childPositions: Map<string, { x: number; y: number }>,
     containerPos: { x: number; y: number },
-    currentView: ArchitectureView,
+    nodeIndex: Map<string, ArchNode>,
     searchHighlightIds: Set<string>,
+    connectedNodes?: Set<string>,
   ) {
     for (const childId of container.childNodeIds) {
-      const node = currentView.nodes.find((n: ArchNode) => n.id === childId);
+      const node = nodeIndex.get(childId);
       if (!node) continue;
       const childPos = childPositions.get(childId) ?? { x: 0, y: 0 };
       const sizes = ARCH_NODE_SIZES[node.node_type as keyof typeof ARCH_NODE_SIZES] ?? ARCH_NODE_SIZES.file;
@@ -439,7 +464,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         id: node.id,
         type: "archFile",
         position: { x: containerPos.x + childPos.x, y: containerPos.y + childPos.y },
-        data: buildArchFileData(node, searchHighlightIds),
+        data: buildArchFileData(node, searchHighlightIds, connectedNodes),
         width: sizes.width,
         height: sizes.height,
       });

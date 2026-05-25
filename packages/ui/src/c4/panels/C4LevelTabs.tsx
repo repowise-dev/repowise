@@ -22,7 +22,7 @@ export interface C4LevelTabsProps {
 
 export function C4LevelTabs({ level, onLevelChange, l3Enabled }: C4LevelTabsProps) {
   return (
-    <div role="tablist" aria-label="C4 level" style={{ display: "flex", gap: 4 }}>
+    <div role="tablist" aria-label="Diagram level" style={{ display: "flex", gap: 4 }}>
       {TABS.map((t) => {
         const disabled = t.level === 3 && !l3Enabled;
         const active = level === t.level;

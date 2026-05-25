@@ -4,6 +4,7 @@ import { memo } from "react";
 import { Flame, Skull, Play } from "lucide-react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell } from "../../graph-primitives/node-shell";
+import { THEME } from "../theme/theme-variables";
 import type { ArchNode } from "../types";
 
 export interface ArchFileNodeProps {
@@ -12,21 +13,17 @@ export interface ArchFileNodeProps {
   searchHighlight?: boolean | undefined;
   tourHighlight?: boolean | undefined;
   diffState?: "changed" | "affected" | "faded" | undefined;
+  dimmed?: boolean | undefined;
 }
-
-const COMPLEXITY_COLORS: Record<string, string> = {
-  simple: "#4ade80",
-  moderate: "#fbbf24",
-  complex: "#f87171",
-};
 
 function ArchFileNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: ArchFileNodeProps };
-  const { node, hasDocs, searchHighlight, tourHighlight, diffState } = data;
+  const { node, hasDocs, searchHighlight, tourHighlight, diffState, dimmed } = data;
+  const effectiveDiffState = dimmed && !diffState ? "faded" : diffState;
 
   const kindLabel = node.node_type;
 
-  const complexityColor = COMPLEXITY_COLORS[node.complexity] ?? "#94a3b8";
+  const complexityColor = THEME.complexity[node.complexity] ?? "#94a3b8";
 
   const badges = (
     <>
@@ -74,11 +71,11 @@ function ArchFileNodeImpl(props: NodeProps) {
       selected={selected}
       searchHighlight={searchHighlight}
       tourHighlight={tourHighlight}
-      diffState={diffState}
+      diffState={effectiveDiffState}
       hasDocs={hasDocs ?? node.has_doc}
       badges={badges}
-      width={260}
-      height={120}
+      width={300}
+      height={140}
     />
   );
 }

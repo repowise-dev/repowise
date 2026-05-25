@@ -194,7 +194,7 @@ function C4DiagramInner({
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         {error && <CenteredMessage tone="error" text={error.message} />}
         {!error && isLoading && nodes.length === 0 && (
-          <CenteredMessage tone="info" text="Loading C4 view…" />
+          <CenteredMessage tone="info" text="Loading knowledge graph…" />
         )}
         {!error && !isLoading && nodes.length === 0 && (
           <CenteredMessage tone="empty" text="Nothing to show at this level." />

@@ -93,7 +93,7 @@ interface GraphToolbarProps {
 
 // Scope = which subset of nodes are drawn. Mutually exclusive.
 const SCOPES: { id: Scope; icon: typeof Boxes; label: string; hint: string }[] = [
-  { id: "architecture", icon: GitFork, label: "Architecture", hint: "Detected communities" },
+  { id: "architecture", icon: GitFork, label: "Knowledge Graph", hint: "Detected communities" },
   { id: "modules", icon: Boxes, label: "Modules", hint: "Folder / package rollup" },
   { id: "full", icon: LayoutGrid, label: "Full", hint: "All files and symbols" },
 ];

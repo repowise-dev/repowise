@@ -4,18 +4,13 @@ import { memo, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell } from "../../graph-primitives/node-shell";
 import { useArchitectureStore } from "../store/use-architecture-store";
+import { THEME } from "../theme/theme-variables";
 import type { ArchLayer } from "../types";
 
 export interface LayerClusterNodeProps {
   layer: ArchLayer;
   searchHighlight?: boolean | undefined;
 }
-
-const COMPLEXITY_BAR_COLORS: Record<string, string> = {
-  simple: "#4ade80",
-  moderate: "#fbbf24",
-  complex: "#f87171",
-};
 
 function LayerClusterNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: LayerClusterNodeProps };
@@ -25,6 +20,9 @@ function LayerClusterNodeImpl(props: NodeProps) {
   const handleClick = () => {
     useArchitectureStore.getState().drillIntoLayer(layer.id);
   };
+
+  const dominantComplexity = (["complex", "moderate", "simple"] as const)
+    .find((c) => (layer.complexity_distribution[c] ?? 0) > 0) ?? "simple";
 
   const total = Object.values(layer.complexity_distribution).reduce((a, b) => a + b, 0);
 
@@ -40,7 +38,7 @@ function LayerClusterNodeImpl(props: NodeProps) {
             style={{
               width: 12,
               height: Math.max(3, pct * 16),
-              background: COMPLEXITY_BAR_COLORS[level],
+              background: THEME.complexity[level],
               borderRadius: 2,
             }}
           />
@@ -108,10 +106,21 @@ function LayerClusterNodeImpl(props: NodeProps) {
         footer={footer}
         selected={selected}
         searchHighlight={searchHighlight}
-        width={300}
-        height={180}
-        titleFontSize={16}
+        width={360}
+        height={220}
+        titleFontSize={18}
         subtitleLineClamp={2}
+        badges={
+          <span style={{
+            fontSize: 10,
+            fontWeight: 600,
+            color: THEME.complexity[dominantComplexity],
+            textTransform: "uppercase",
+            letterSpacing: 0.5,
+          }}>
+            {dominantComplexity}
+          </span>
+        }
       />
     </div>
   );

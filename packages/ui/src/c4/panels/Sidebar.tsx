@@ -54,7 +54,7 @@ export function Sidebar(props: SidebarProps) {
 
   return (
     <aside
-      aria-label="Architecture sidebar"
+      aria-label="Knowledge Graph sidebar"
       style={{
         position: "absolute",
         top: 12,

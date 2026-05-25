@@ -65,7 +65,7 @@ function repoNavItems(repoId: string): NavItem[] {
     { label: "Coverage", href: `/repos/${repoId}/health/coverage`, icon: TestTubeDiagonal },
     { label: "Refactoring", href: `/repos/${repoId}/health/refactoring-targets`, icon: Wrench },
     { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
-    { label: "C4 Diagram", href: `/repos/${repoId}/c4`, icon: Boxes },
+    { label: "Knowledge Graph", href: `/repos/${repoId}/c4`, icon: Boxes },
     { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
     { label: "Contributors", href: `/repos/${repoId}/owners`, icon: Users },
     { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },

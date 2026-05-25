@@ -77,6 +77,7 @@ export function NodeShell(props: NodeShellProps) {
         height,
         background: s.bg,
         border: `1.5px ${getBorderStyle(props)} ${getBorderColor(props, s.border)}`,
+        borderLeft: `3px solid ${selected ? "#fbbf24" : s.band}`,
         borderRadius: 8,
         color: s.text,
         overflow: "hidden",

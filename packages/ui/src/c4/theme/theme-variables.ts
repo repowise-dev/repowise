@@ -39,6 +39,14 @@ export const THEME = {
     complex: "#ef4444",
   } as Record<string, string>,
 
+  edge: {
+    imports: "#d4a754",
+    depends_on: "#e8976b",
+    contains: "#a78bfa",
+    tested_by: "#6ee7b7",
+    default: "#8b9dc3",
+  } as Record<string, string>,
+
   diff: {
     changed: "#fca5a5",
     changedAlpha: "rgba(252,165,165,0.4)",
@@ -68,6 +76,10 @@ export const KEYFRAMES = {
 @keyframes accentPulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(245, 149, 32, 0.3); }
   50% { box-shadow: 0 0 12px 4px rgba(245, 149, 32, 0.15); }
+}`,
+  edgeFlow: `
+@keyframes edgeFlow {
+  to { stroke-dashoffset: -20; }
 }`,
   fadeSlideIn: `
 @keyframes fadeSlideIn {

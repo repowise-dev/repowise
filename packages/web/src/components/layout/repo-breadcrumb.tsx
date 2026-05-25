@@ -21,6 +21,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   risk: "Risk",
   security: "Security",
   settings: "Settings",
+  c4: "Knowledge Graph",
 };
 
 export function RepoBreadcrumb({ repoName }: { repoName: string }) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import { ChevronRight, ChevronDown } from "lucide-react";
 import type { NodeProps } from "@xyflow/react";
 import { Handle, Position } from "@xyflow/react";
@@ -12,12 +12,12 @@ export interface ArchContainerNodeProps {
   childCount: number;
   expanded: boolean;
   searchHitCount?: number | undefined;
-  layerColor?: string | undefined;
 }
 
 function ArchContainerNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: ArchContainerNodeProps };
   const { containerId, label, childCount, expanded, searchHitCount } = data;
+  const [hovered, setHovered] = useState(false);
 
   const ChevronIcon = expanded ? ChevronDown : ChevronRight;
 
@@ -27,23 +27,27 @@ function ArchContainerNodeImpl(props: NodeProps) {
 
   const borderColor = selected
     ? "#fbbf24"
-    : "rgba(148, 163, 184, 0.25)";
+    : "rgba(96, 165, 250, 0.2)";
 
   return (
     <div
       onClick={handleClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         cursor: "pointer",
-        width: expanded ? 280 : 220,
+        width: expanded ? 320 : 260,
         minHeight: expanded ? undefined : 56,
-        background: "rgba(255, 255, 255, 0.02)",
+        background: hovered ? "rgba(96, 165, 250, 0.07)" : "rgba(96, 165, 250, 0.04)",
         border: `1.5px solid ${borderColor}`,
+        borderLeft: `3px solid ${selected ? "#fbbf24" : "rgba(96, 165, 250, 0.3)"}`,
         borderRadius: 12,
         padding: "10px 14px",
         display: "flex",
         flexDirection: "column",
         gap: 2,
         boxShadow: selected ? "0 0 0 2px rgba(251,191,36,0.3)" : "none",
+        transition: "background 0.15s ease",
       }}
     >
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />

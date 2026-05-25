@@ -47,10 +47,10 @@ describe("ARCH_NODE_SIZES", () => {
 
 describe("edge stroke width formula", () => {
   it("returns expected values for various counts", () => {
-    expect(computeEdgeStrokeWidth(0)).toBeCloseTo(1);
-    expect(computeEdgeStrokeWidth(1)).toBeCloseTo(2);
-    expect(computeEdgeStrokeWidth(5)).toBeCloseTo(1 + Math.log2(6));
-    expect(computeEdgeStrokeWidth(15)).toBeCloseTo(1 + Math.log2(16));
+    expect(computeEdgeStrokeWidth(0)).toBeCloseTo(1.5);
+    expect(computeEdgeStrokeWidth(1)).toBeCloseTo(2.5);
+    expect(computeEdgeStrokeWidth(5)).toBeCloseTo(1.5 + Math.log2(6));
+    expect(computeEdgeStrokeWidth(15)).toBe(5);
     expect(computeEdgeStrokeWidth(100)).toBe(5); // capped at 5
     expect(computeEdgeStrokeWidth(1000)).toBe(5); // still capped
   });
