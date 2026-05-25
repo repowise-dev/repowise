@@ -188,6 +188,8 @@ class _GenerationRun:
 
         from ..selection import SelectionInputs, select_pages
 
+        kg_scores = _compute_kg_file_scores(self.kg_ctx)
+
         selection = select_pages(
             SelectionInputs(
                 parsed_files=parsed_files_for_selection,
@@ -198,6 +200,7 @@ class _GenerationRun:
                 sccs=list(self.sccs),
                 git_meta_map=self.git_meta_map,
                 config=self.config,
+                kg_file_scores=kg_scores or None,
             )
         )
 
@@ -215,6 +218,7 @@ class _GenerationRun:
             self.sel_file_paths,
             self.pagerank,
             getattr(self.config, "tier1_top_n", None),
+            kg_file_scores=kg_scores or None,
         )
 
         # Sort code_files for stable level-2 ordering: selected files first
@@ -365,6 +369,27 @@ class _GenerationRun:
             model=self.gen._provider.model_name,
         )
         return all_pages
+
+
+def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
+    """Derive per-file KG bonus scores from tour membership and role."""
+    if not kg_ctx.available:
+        return {}
+    scores: dict[str, float] = {}
+    for layer in kg_ctx.get_layers():
+        for node_id in layer.get("nodeIds", []):
+            if node_id.startswith("file:"):
+                fp = node_id[5:]
+                fc = kg_ctx.get_file_context(fp)
+                if fc:
+                    bonus = 0.0
+                    if fc.tour_step:
+                        bonus += 0.30
+                    if fc.role == "edge_connector":
+                        bonus += 0.15
+                    if bonus > scores.get(fp, 0.0):
+                        scores[fp] = bonus
+    return scores
 
 
 def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:

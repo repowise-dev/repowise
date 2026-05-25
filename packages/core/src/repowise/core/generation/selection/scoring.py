@@ -25,6 +25,8 @@ _BONUS_ENTRY_POINT = 0.40
 _BONUS_HOTSPOT = 0.20
 _BONUS_INIT_PY_RE_EXPORTER = 0.15
 _BONUS_BETWEENNESS_BRIDGE = 0.10  # any bridge file (bet > 0)
+_BONUS_TOUR_FILE = 0.30
+_BONUS_EDGE_CONNECTOR = 0.15
 
 # Penalties — applied multiplicatively at the end. Keeps tests/trivial
 # files in the pool but ranks them below substantive code unless they
@@ -50,6 +52,7 @@ def score_file(
     max_pagerank: float,
     max_betweenness: float,
     is_hotspot: bool,
+    kg_bonus: float = 0.0,
 ) -> float:
     """Score a code file for ``file_page`` candidacy.
 
@@ -79,6 +82,8 @@ def score_file(
         base += _BONUS_BETWEENNESS_BRIDGE
     if fi.path.endswith("__init__.py") and n_symbols >= 2:
         base += _BONUS_INIT_PY_RE_EXPORTER
+
+    base += kg_bonus
 
     # Penalties.
     if fi.is_test:

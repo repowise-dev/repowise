@@ -18,6 +18,7 @@ def partition_file_tiers(
     selected_paths: set[str],
     pagerank: dict[str, float],
     tier1_top_n: int | None,
+    kg_file_scores: dict[str, float] | None = None,
 ) -> tuple[set[str], set[str]]:
     """Split selected file-page paths into (tier1, tier2) sets.
 
@@ -27,6 +28,7 @@ def partition_file_tiers(
         tier1_top_n:    Cap on the number of full-LLM (tier-1) pages. ``None``
                         or a value >= len(selected_paths) puts every page in
                         tier-1, exactly reproducing the prior behaviour.
+        kg_file_scores: Optional KG-derived bonus scores for tier ranking.
 
     Returns:
         ``(tier1_paths, tier2_paths)`` — a partition of ``selected_paths``.
@@ -36,10 +38,10 @@ def partition_file_tiers(
     if tier1_top_n <= 0:
         return set(), set(selected_paths)
 
-    # Rank by PageRank desc, then path for a deterministic tie-break.
+    kg = kg_file_scores or {}
     ranked = sorted(
         selected_paths,
-        key=lambda p: (-pagerank.get(p, 0.0), p),
+        key=lambda p: (-(pagerank.get(p, 0.0) + kg.get(p, 0.0)), p),
     )
     tier1 = set(ranked[:tier1_top_n])
     tier2 = set(ranked[tier1_top_n:])
