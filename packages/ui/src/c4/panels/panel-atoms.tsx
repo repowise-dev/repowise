@@ -34,20 +34,21 @@ export function Sub({ children, style }: { children: ReactNode; style?: React.CS
 
 export function KVList({ rows }: { rows: [string, string][] }) {
   return (
-    <div style={{ marginTop: 6 }}>
+    <div style={{ marginTop: 6, flex: 1, minWidth: 0 }}>
       {rows.map(([k, v]) => (
         <div
           key={k}
           style={{
             display: "flex",
             justifyContent: "space-between",
+            gap: 8,
             padding: "3px 0",
             borderTop: "1px solid rgba(148,163,184,0.12)",
             fontSize: 11,
           }}
         >
-          <span style={{ opacity: 0.6 }}>{k}</span>
-          <span style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)" }}>{v}</span>
+          <span style={{ opacity: 0.6, whiteSpace: "nowrap" }}>{k}</span>
+          <span style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)", textAlign: "right", whiteSpace: "nowrap" }}>{v}</span>
         </div>
       ))}
     </div>

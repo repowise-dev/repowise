@@ -461,6 +461,25 @@ def _run_workspace_generation(
             )
         )
 
+    kg = getattr(result, "knowledge_graph_result", None)
+    if kg is not None and provider is not None:
+        from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
+
+        try:
+            result.knowledge_graph_result = run_async(
+                enrich_knowledge_graph(
+                    kg_skeleton=kg,
+                    llm_client=provider,
+                    graph_builder=result.graph_builder,
+                    repo_structure=result.repo_structure,
+                    tech_stack=result.tech_stack,
+                    generated_pages=generated_pages,
+                    reasoning=gen_config.reasoning,
+                )
+            )
+        except Exception:
+            pass
+
     return generated_pages
 
 
@@ -1681,6 +1700,32 @@ def init_command(
             result.generated_pages = generated_pages
             console.print(f"  [green]✓[/green] Generated [bold]{len(generated_pages)}[/bold] pages")
 
+            kg = getattr(result, "knowledge_graph_result", None)
+            if kg is not None:
+                from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
+
+                with console.status("  Enriching knowledge graph (layers + tour)…", spinner="dots"):
+                    try:
+                        result.knowledge_graph_result = run_async(
+                            enrich_knowledge_graph(
+                                kg_skeleton=kg,
+                                llm_client=provider,
+                                graph_builder=result.graph_builder,
+                                repo_structure=result.repo_structure,
+                                tech_stack=result.tech_stack,
+                                generated_pages=generated_pages,
+                                reasoning=gen_config.reasoning,
+                            )
+                        )
+                        _enriched_kg = result.knowledge_graph_result
+                        console.print(
+                            f"  [green]✓[/green] KG enriched: "
+                            f"{len(_enriched_kg.layers)} layers, "
+                            f"{len(_enriched_kg.tour)} tour steps"
+                        )
+                    except Exception as _kg_enrich_err:
+                        console.print(f"  [yellow]KG enrichment skipped: {_kg_enrich_err}[/yellow]")
+
     # ---- Persistence ----
     # `cost_declined` short-circuits any further LLM work for the rest of
     # this run, so persistence/state below treat it as index-only.
@@ -1746,6 +1791,24 @@ def init_command(
     base_state["docs_enabled"] = not effective_index_only and provider is not None
     if phase_timings:
         base_state["phase_timings"] = phase_timings
+    kg = getattr(result, "knowledge_graph_result", None)
+    if kg is not None:
+        base_state["knowledge_graph"] = {
+            "version": "1.0.0",
+            "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
+            "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
+            "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
+            "has_summaries": any(n.get("summary") for n in kg.nodes) if hasattr(kg, "nodes") else False,
+            "fingerprint": getattr(kg, "fingerprint", ""),
+        }
+        if hasattr(kg, "to_dict"):
+            import json as _kg_json
+
+            kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
+            kg_json_path.parent.mkdir(parents=True, exist_ok=True)
+            kg_json_path.write_text(
+                _kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8"
+            )
     if effective_index_only or provider is None:
         save_state(repo_path, base_state)
 
@@ -1791,7 +1854,26 @@ def init_command(
         state["total_tokens"] = total_tokens
         if phase_timings:
             state["phase_timings"] = phase_timings
+        kg = getattr(result, "knowledge_graph_result", None)
+        if kg is not None:
+            state["knowledge_graph"] = {
+                "version": "1.0.0",
+                "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
+                "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
+                "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
+                "has_summaries": any(n.get("summary") for n in kg.nodes) if hasattr(kg, "nodes") else False,
+                "fingerprint": getattr(kg, "fingerprint", ""),
+            }
         save_state(repo_path, state)
+
+        if kg is not None and hasattr(kg, "to_dict"):
+            import json as _kg_json
+
+            kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
+            kg_json_path.parent.mkdir(parents=True, exist_ok=True)
+            kg_json_path.write_text(
+                _kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8"
+            )
 
         save_config(
             repo_path,

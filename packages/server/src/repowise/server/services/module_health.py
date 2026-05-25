@@ -19,11 +19,14 @@ from statistics import median
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import func as sa_func
+
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
     GitMetadata,
     GraphNode,
+    HealthFileMetric,
     WikiSymbol,
 )
 
@@ -31,6 +34,9 @@ from repowise.core.persistence.models import (
 def _module_of(file_path: str) -> str:
     parts = file_path.split("/", 1)
     return parts[0] if len(parts) > 1 else "root"
+
+
+module_of = _module_of
 
 
 def _under_module(file_path: str, module_path: str) -> bool:
@@ -229,6 +235,148 @@ def detail_extras(acc: _ModuleAccumulator) -> dict:
         "top_hotspots": [p for _, p in acc.top_hotspot_paths[:10]],
         "governing_decisions": acc.decision_ids,
         "contributor_count": len(acc.contributors),
+    }
+
+
+async def build_single_file_health(
+    session: AsyncSession, repo_id: str, file_path: str
+) -> dict | None:
+    """Build a ModuleHealthDetail-compatible dict for a single file.
+
+    Returns None when the file has no git_metadata row (i.e. we know
+    nothing about it).
+    """
+
+    # 1. git_metadata — required for ownership / churn / hotspot
+    git_row = (
+        await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repo_id,
+                GitMetadata.file_path == file_path,
+            )
+        )
+    ).scalar_one_or_none()
+    if git_row is None:
+        return None
+
+    # 2. health_file_metrics — optional
+    hfm = (
+        await session.execute(
+            select(HealthFileMetric.score).where(
+                HealthFileMetric.repository_id == repo_id,
+                HealthFileMetric.file_path == file_path,
+            )
+        )
+    ).scalar_one_or_none()
+
+    # 3. dead_code_findings for this file
+    dead_rows = (
+        await session.execute(
+            select(
+                sa_func.count(DeadCodeFinding.id),
+                sa_func.coalesce(sa_func.sum(DeadCodeFinding.lines), 0),
+            ).where(
+                DeadCodeFinding.repository_id == repo_id,
+                DeadCodeFinding.file_path == file_path,
+            )
+        )
+    ).one()
+    dead_code_count, dead_code_lines = int(dead_rows[0]), int(dead_rows[1])
+
+    # 4. wiki_symbols for doc coverage
+    sym_rows = (
+        await session.execute(
+            select(
+                sa_func.count(WikiSymbol.id),
+                sa_func.count(
+                    sa_func.nullif(sa_func.trim(WikiSymbol.docstring), "")
+                ),
+            ).where(
+                WikiSymbol.repository_id == repo_id,
+                WikiSymbol.file_path == file_path,
+            )
+        )
+    ).one()
+    symbol_count, doc_covered = int(sym_rows[0]), int(sym_rows[1])
+
+    # Derive values
+    churn_pct = (git_row.churn_percentile or 0.0) * 100.0
+    bus_factor = git_row.bus_factor or 0
+    is_hotspot = bool(git_row.is_hotspot)
+    primary_owner = git_row.primary_owner_name
+    primary_owner_pct = git_row.primary_owner_commit_pct or 0.0
+    is_silo = primary_owner_pct > 0.8
+    doc_coverage_pct = (doc_covered / symbol_count * 100.0) if symbol_count else 0.0
+
+    # Composite health score — use health_file_metrics score (0-10 -> 0-100)
+    # when available, otherwise derive from the same formula as _score().
+    if hfm is not None:
+        health_score = max(0.0, min(100.0, float(hfm) * 10.0))
+    else:
+        health_score = 100.0
+        if is_silo:
+            health_score -= 25
+        if is_hotspot:
+            health_score -= 20
+        dead_pct = 1.0 if dead_code_count > 0 else 0.0
+        health_score -= 25 * dead_pct
+        health_score -= 15 * (churn_pct / 100.0)
+        health_score += 15 * (doc_coverage_pct / 100.0)
+        health_score += 10 if bus_factor >= 2 else -10
+        health_score = max(0.0, min(100.0, health_score))
+
+    # Build owners list from top_authors_json
+    owners_list: list[dict] = []
+    if primary_owner:
+        owners_list.append({
+            "name": primary_owner,
+            "email": git_row.primary_owner_email,
+            "file_count": 1,
+            "pct": primary_owner_pct,
+        })
+    try:
+        for a in json.loads(git_row.top_authors_json or "[]"):
+            name = a.get("name")
+            if name and name != primary_owner:
+                owners_list.append({
+                    "name": name,
+                    "email": a.get("email"),
+                    "file_count": 1,
+                    "pct": a.get("pct", 0.0),
+                })
+    except json.JSONDecodeError:
+        pass
+
+    # Contributors
+    contributors: set[str] = set()
+    try:
+        for a in json.loads(git_row.top_authors_json or "[]"):
+            if a.get("name"):
+                contributors.add(a["name"])
+    except json.JSONDecodeError:
+        pass
+
+    return {
+        "module_path": file_path,
+        "file_count": 1,
+        "symbol_count": symbol_count,
+        "hotspot_count": 1 if is_hotspot else 0,
+        "dead_code_count": dead_code_count,
+        "dead_code_lines": dead_code_lines,
+        "avg_churn_percentile": churn_pct,
+        "median_bus_factor": float(bus_factor),
+        "min_bus_factor": bus_factor,
+        "primary_owner": primary_owner,
+        "primary_owner_pct": primary_owner_pct,
+        "is_silo": is_silo,
+        "decision_count": 0,
+        "doc_coverage_pct": doc_coverage_pct,
+        "health_score": health_score,
+        # Detail extras
+        "owners": owners_list,
+        "top_hotspots": [file_path] if is_hotspot else [],
+        "governing_decisions": [],
+        "contributor_count": len(contributors),
     }
 
 

@@ -44,7 +44,7 @@ export function HealthScoreRing({ score, size = 160, components, note }: HealthS
   const [breakdownOpen, setBreakdownOpen] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const strokeWidth = 10;
+  const strokeWidth = size <= 80 ? 4 : 10;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const progress = mounted ? (score / 100) * circumference : 0;
@@ -79,15 +79,18 @@ export function HealthScoreRing({ score, size = 160, components, note }: HealthS
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <motion.span
-            className="text-3xl font-bold tabular-nums"
-            style={{ color }}
+            className="font-bold tabular-nums"
+            style={{ color, fontSize: size <= 80 ? 16 : 30, lineHeight: 1 }}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.3 }}
           >
-            {score}
+            {Math.round(score)}
           </motion.span>
-          <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+          <span
+            className="uppercase tracking-wider text-[var(--color-text-tertiary)]"
+            style={{ fontSize: size <= 80 ? 7 : 10, lineHeight: 1.2 }}
+          >
             {getScoreLabel(score)}
           </span>
         </div>

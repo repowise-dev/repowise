@@ -250,7 +250,7 @@ function HealthSection({
           rows={[
             ["Hotspots", String(health.hotspot_count)],
             ["Dead code", String(health.dead_code_count)],
-            ["Doc coverage", `${Math.round(health.doc_coverage_pct * 100)}%`],
+            ["Doc coverage", `${Math.round(health.doc_coverage_pct)}%`],
           ]}
         />
       </div>

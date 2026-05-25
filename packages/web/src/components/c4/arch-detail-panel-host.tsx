@@ -61,7 +61,7 @@ export function ArchDetailPanelHost({ repoId }: ArchDetailPanelHostProps) {
     <Sidebar
       health={archHealth}
       contributors={contributors}
-      docContent={page?.content ?? null}
+      docContent={page ? (page.content.length > 300 ? page.content.slice(0, 300).trimEnd() + "..." : page.content) : null}
       renderDoc={(content) => <ChatMarkdown content={content} />}
       onOpenInGraph={
         filePath
@@ -70,7 +70,7 @@ export function ArchDetailPanelHost({ repoId }: ArchDetailPanelHostProps) {
       }
       onOpenDoc={() => {
         if (page) {
-          router.push(`/repos/${repoId}/docs/${encodeURIComponent(page.id)}`);
+          router.push(`/repos/${repoId}/docs?page=${encodeURIComponent(page.id)}`);
         }
       }}
     />
