@@ -234,12 +234,19 @@ class _GenerationRun:
 
     def _announce_total(self) -> None:
         counts = self.selection.counts()
+        layer_page_count = 0
+        if self.kg_ctx.available:
+            layer_page_count = sum(
+                1 for l in self.kg_ctx.get_layers()
+                if len([n for n in l.get("nodeIds", []) if n.startswith("file:")]) >= 3
+            )
         estimated_total = (
             counts["api_contract"]
             + counts["symbol_spotlight"]
             + counts["file_page"]
             + counts["scc_page"]
             + counts["module_page"]
+            + layer_page_count
             + int(self.selection.emit_repo_overview)
             + int(self.selection.emit_arch_diagram)
             + counts["infra_page"]
@@ -338,6 +345,9 @@ class _GenerationRun:
 
         # Level 4 (module_page).
         all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
+
+        # Level 5 (layer_page) — one page per KG layer.
+        all_pages.extend(await self.run_level(_levels.build_level5_coros(self), 5))
 
         # Levels 6 (repo_overview + architecture_diagram), 7 (infra_page),
         # and 8 (onboarding) share no data dependencies — run merged.

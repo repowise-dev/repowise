@@ -123,6 +123,19 @@ class ModulePageContext:
 
 
 @dataclass
+class LayerPageContext:
+    layer_name: str
+    layer_description: str
+    file_count: int
+    key_files: list[dict] = field(default_factory=list)
+    deps_out: list[dict] = field(default_factory=list)
+    deps_in: list[dict] = field(default_factory=list)
+    tour_steps: list[dict] = field(default_factory=list)
+    entry_points: list[str] = field(default_factory=list)
+    edge_connectors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SccPageContext:
     scc_id: str
     files: list[str]

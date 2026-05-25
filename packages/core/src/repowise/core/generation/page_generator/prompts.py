@@ -68,6 +68,19 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "symbols, and yields ParsedFile objects for downstream analysis.' "
         "Required sections: ## Overview, ## Public API Summary, ## Architecture Notes."
     ),
+    "layer_page": (
+        "You are repowise, an expert technical documentation generator. "
+        "Write an architectural layer overview that describes this subsystem's "
+        "responsibility, its key components, how data flows through it, and its "
+        "relationships to other layers. "
+        "Output markdown only. "
+        "\n"
+        "CRITICAL — lead-with-role rule: the FIRST sentence under ## Overview must "
+        "state what this layer does in the larger system architecture using concrete "
+        "vocabulary (ingestion layer, transport layer, persistence layer, etc.). "
+        "Required sections: ## Overview, ## Key Components, ## Data Flow, "
+        "## Architecture Notes."
+    ),
     "scc_page": (
         "You are repowise, an expert technical documentation generator. "
         "Document this circular dependency cycle and provide actionable refactoring advice. "
