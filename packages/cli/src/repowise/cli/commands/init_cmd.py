@@ -672,6 +672,9 @@ def _workspace_init(
             ) as progress_bar:
                 callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
 
+                _prev_state = load_state(repo.path)
+                _prev_kg_fp = _prev_state.get("knowledge_graph", {}).get("fingerprint") if not force else None
+
                 result = run_async(
                     run_pipeline(
                         repo.path,
@@ -681,6 +684,7 @@ def _workspace_init(
                         include_submodules=include_submodules,
                         generate_docs=False,
                         progress=callback,
+                        existing_kg_fingerprint=_prev_kg_fp,
                     )
                 )
             repo_phase_timings: dict[str, float] = callback.timings
@@ -1355,6 +1359,9 @@ def init_command(
 
         # Always run ingestion + analysis first (generate_docs=False).
         # Generation happens separately after cost confirmation.
+        _prev_state = load_state(repo_path)
+        _prev_kg_fp = _prev_state.get("knowledge_graph", {}).get("fingerprint") if not force else None
+
         result = run_async(
             run_pipeline(
                 repo_path,
@@ -1370,6 +1377,7 @@ def init_command(
                 test_run=test_run,
                 mode=orchestrator_mode,
                 progress=callback,
+                existing_kg_fingerprint=_prev_kg_fp,
             )
         )
 

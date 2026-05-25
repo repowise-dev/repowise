@@ -37,6 +37,21 @@ class KnowledgeGraphResult:
             "tour": self.tour,
         }
 
+    @classmethod
+    def from_file(cls, path: Path) -> KnowledgeGraphResult | None:
+        """Load a previously-persisted KG from JSON, or None on failure."""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        return cls(
+            project=data.get("project", {}),
+            nodes=data.get("nodes", []),
+            edges=data.get("edges", []),
+            layers=data.get("layers", []),
+            tour=data.get("tour", []),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Node classification helpers

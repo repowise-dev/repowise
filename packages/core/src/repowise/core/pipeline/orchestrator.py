@@ -224,6 +224,7 @@ async def run_pipeline(
     progress: ProgressCallback | None = None,
     cost_tracker: Any | None = None,
     generation_config: Any | None = None,
+    existing_kg_fingerprint: str | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -326,6 +327,7 @@ async def run_pipeline(
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             progress=progress,
+            existing_kg_fingerprint=existing_kg_fingerprint,
         )
 
     (
@@ -337,6 +339,7 @@ async def run_pipeline(
             graph_builder,
             traversal_stats,
             tech_items,
+            knowledge_graph_result,
         ),
         (
             git_summary,
@@ -584,11 +587,12 @@ async def _run_ingestion(
     skip_tests: bool,
     skip_infra: bool,
     progress: ProgressCallback | None,
-) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any, Any]:
+    existing_kg_fingerprint: str | None = None,
+) -> tuple[list[Any], list[Any], Any, dict[str, bytes], Any, Any, Any, Any]:
     """Traverse, parse, and build the dependency graph.
 
     Returns (parsed_files, file_infos, repo_structure, source_map,
-    graph_builder, traversal_stats, tech_items).
+    graph_builder, traversal_stats, tech_items, knowledge_graph_result).
     """
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
@@ -809,33 +813,57 @@ async def _run_ingestion(
     knowledge_graph_result = None
     try:
         from repowise.core.analysis.knowledge_graph import (
+            KnowledgeGraphResult,
             build_knowledge_graph_skeleton,
             compute_kg_fingerprint,
         )
 
-        if progress:
-            progress.on_phase_start("knowledge_graph.skeleton", None)
-        knowledge_graph_result = build_knowledge_graph_skeleton(
-            parsed_files=parsed_files,
-            graph_builder=graph_builder,
-            repo_structure=repo_structure,
-            tech_stack=[
-                {"name": t.name, "version": t.version, "category": t.category}
-                for t in tech_items
-            ],
-            external_systems=external_systems,
-            git_meta_map=git_meta_map,
-            dead_code_report=dead_code_report,
-            repo_path=repo_path,
-        )
-        knowledge_graph_result.fingerprint = compute_kg_fingerprint(graph_builder)
-        if progress:
-            progress.on_message(
-                "info",
-                f"  ↳ KG skeleton: {len(knowledge_graph_result.nodes)} nodes, "
-                f"{len(knowledge_graph_result.edges)} edges, "
-                f"{len(knowledge_graph_result.layers)} layers",
+        new_fingerprint = compute_kg_fingerprint(graph_builder)
+
+        kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
+        if (
+            existing_kg_fingerprint
+            and existing_kg_fingerprint == new_fingerprint
+            and kg_json_path.exists()
+        ):
+            knowledge_graph_result = KnowledgeGraphResult.from_file(kg_json_path)
+            if knowledge_graph_result is not None:
+                knowledge_graph_result.fingerprint = new_fingerprint
+                logger.info(
+                    "knowledge_graph.skip",
+                    reason="fingerprint_unchanged",
+                    fingerprint=new_fingerprint,
+                )
+                if progress:
+                    progress.on_message(
+                        "info",
+                        f"  ↳ KG unchanged (fingerprint {new_fingerprint[:8]}…), reusing",
+                    )
+
+        if knowledge_graph_result is None:
+            if progress:
+                progress.on_phase_start("knowledge_graph.skeleton", None)
+            knowledge_graph_result = build_knowledge_graph_skeleton(
+                parsed_files=parsed_files,
+                graph_builder=graph_builder,
+                repo_structure=repo_structure,
+                tech_stack=[
+                    {"name": t.name, "version": t.version, "category": t.category}
+                    for t in tech_items
+                ],
+                external_systems=external_systems,
+                git_meta_map=git_meta_map,
+                dead_code_report=dead_code_report,
+                repo_path=repo_path,
             )
+            knowledge_graph_result.fingerprint = new_fingerprint
+            if progress:
+                progress.on_message(
+                    "info",
+                    f"  ↳ KG skeleton: {len(knowledge_graph_result.nodes)} nodes, "
+                    f"{len(knowledge_graph_result.edges)} edges, "
+                    f"{len(knowledge_graph_result.layers)} layers",
+                )
         _phase_done(progress, "knowledge_graph.skeleton")
     except Exception as _kg_err:
         logger.warning("kg_skeleton_building_skipped", error=str(_kg_err))
@@ -886,7 +914,7 @@ async def _run_ingestion(
                 lang_str += f", other {rest_count:,}"
             progress.on_message("info", f"  Languages: {lang_str}")
 
-    return parsed_files, file_infos, repo_structure, source_map, graph_builder, stats, tech_items
+    return parsed_files, file_infos, repo_structure, source_map, graph_builder, stats, tech_items, knowledge_graph_result
 
 
 async def _run_git_indexing(
