@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, FileImage, FileType2, FileJson, Copy, Check } from "lucide-react";
 import type { Edge, Node as FlowNode } from "@xyflow/react";
-import { buildC4Svg, downloadSvg } from "./svg-exporter";
+import { buildC4Svg, downloadSvg, triggerDownload } from "./svg-exporter";
 import { downloadPng } from "./png-exporter";
 import { exportArchitectureJson } from "./json-exporter";
 import type { ArchitectureView, ArchFilters, Persona } from "../types";
@@ -99,15 +99,7 @@ export function C4ExportMenu({
   const onJson = useCallback(() => {
     if (!architectureView || !activeFilters || !activePersona) return;
     const json = exportArchitectureJson(architectureView, activeFilters, activePersona);
-    const blob = new Blob([json], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${fileNameStem}-architecture.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    triggerDownload(new Blob([json], { type: "application/json;charset=utf-8" }), `${fileNameStem}-architecture.json`);
     setOpen(false);
   }, [architectureView, activeFilters, activePersona, fileNameStem]);
 
@@ -116,15 +108,7 @@ export function C4ExportMenu({
     setStatus("working");
     try {
       const text = await fetchMermaid();
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${fileNameStem}.mmd`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      triggerDownload(new Blob([text], { type: "text/plain;charset=utf-8" }), `${fileNameStem}.mmd`);
       setStatus("idle");
       setOpen(false);
     } catch {

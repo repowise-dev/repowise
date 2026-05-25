@@ -34,7 +34,9 @@ const TAB_STYLE_BASE: React.CSSProperties = {
   cursor: "pointer",
   background: "none",
   border: "none",
-  borderBottom: "2px solid transparent",
+  borderBottomWidth: 2,
+  borderBottomStyle: "solid",
+  borderBottomColor: "transparent",
   color: "var(--color-text-secondary, #94a3b8)",
 };
 

@@ -9,6 +9,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { C4EdgeData, C4NodeData } from "../types";
 import { TONE_STYLES, type ToneName } from "../../graph-primitives/tone-styles";
+import { THEME } from "../theme/theme-variables";
 
 interface ArchFileNodeData {
   node: {
@@ -48,11 +49,6 @@ interface PortalNodeData {
   edgeCount: number;
 }
 
-const COMPLEXITY_COLORS: Record<string, string> = {
-  simple: "#4ade80",
-  moderate: "#fbbf24",
-  complex: "#f87171",
-};
 
 const PADDING = 40;
 const BAND_HEIGHT = 18;
@@ -202,7 +198,7 @@ function renderArchNode(n: Node): string {
       : nodeData.node_type.toUpperCase();
     const title = escapeXml(truncate(nodeData.name, Math.floor(w / 8)));
     const subtitle = escapeXml(truncate(nodeData.summary, Math.floor(w / 6)));
-    const complexityColor = COMPLEXITY_COLORS[nodeData.complexity] ?? "#94a3b8";
+    const complexityColor = THEME.complexity[nodeData.complexity] ?? "#94a3b8";
 
     parts.push(`<g transform="translate(${x},${y})">`);
     parts.push(`<rect width="${w}" height="${h}" rx="8" ry="8" fill="${style.bg}" stroke="${style.border}" stroke-width="1.5"/>`);

@@ -2,18 +2,13 @@
 
 import type { ArchNode } from "../types";
 import { getTone } from "../../graph-primitives/tone-styles";
+import { THEME } from "../theme/theme-variables";
 import { Badge } from "./panel-atoms";
 
 export interface NodeTooltipProps {
   node: ArchNode | null;
   position: { x: number; y: number } | null;
 }
-
-const COMPLEXITY_DOT: Record<string, string> = {
-  simple: "#22c55e",
-  moderate: "#f59e0b",
-  complex: "#ef4444",
-};
 
 const MAX_SUMMARY_LEN = 120;
 const MAX_VISIBLE_TAGS = 3;
@@ -22,7 +17,7 @@ export function NodeTooltip({ node, position }: NodeTooltipProps) {
   if (!node || !position) return null;
 
   const tone = getTone(node.node_type);
-  const dotColor = COMPLEXITY_DOT[node.complexity] ?? "#94a3b8";
+  const dotColor = THEME.complexity[node.complexity] ?? "#94a3b8";
 
   const truncatedSummary =
     node.summary.length > MAX_SUMMARY_LEN

@@ -174,6 +174,12 @@ export type Persona = "overview" | "learn" | "deep-dive";
 export type DetailLevel = "file" | "class" | "symbol";
 export type SearchMode = "fuzzy" | "semantic";
 
+export const PERSONA_NODE_TYPES: Record<Persona, Set<string> | null> = {
+  overview: new Set<string>(["file", "module"]),
+  learn: null,
+  "deep-dive": null,
+};
+
 export interface SearchResult {
   nodeId: string;
   name: string;

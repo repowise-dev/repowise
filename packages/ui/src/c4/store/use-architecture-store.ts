@@ -11,7 +11,6 @@ import type {
   NavigationLevel,
   Persona,
   DetailLevel,
-  SearchMode,
   SearchResult,
   ArchFilters,
   ContainerLayoutResult,
@@ -27,7 +26,6 @@ interface ArchitectureStoreState {
   navigationLevel: NavigationLevel;
   activeLayerId: string | null;
   selectedNodeId: string | null;
-  nodeHistory: string[];
 
   expandedContainers: Set<string>;
   containerLayoutCache: Map<string, ContainerLayoutResult>;
@@ -39,7 +37,6 @@ interface ArchitectureStoreState {
 
   searchQuery: string;
   searchResults: SearchResult[];
-  searchMode: SearchMode;
 
   filters: ArchFilters;
   nodeTypeFilters: Record<string, boolean>;
@@ -59,7 +56,6 @@ interface ArchitectureStoreState {
   codeViewerNodeId: string | null;
   codeViewerExpanded: boolean;
 
-  exportMenuOpen: boolean;
   pathFinderOpen: boolean;
   reactFlowInstance: ReactFlowInstance | null;
 }
@@ -72,7 +68,6 @@ interface ArchitectureStoreActions {
   drillOut: () => void;
 
   selectNode: (nodeId: string | null) => void;
-  goBackNode: () => void;
 
   toggleContainer: (containerId: string) => void;
   setContainerLayout: (containerId: string, layout: ContainerLayoutResult) => void;
@@ -84,7 +79,6 @@ interface ArchitectureStoreActions {
 
   setSearchQuery: (query: string) => void;
   setSearchResults: (results: SearchResult[]) => void;
-  setSearchMode: (mode: SearchMode) => void;
   clearSearch: () => void;
 
   setNodeTypeFilter: (nodeType: string, visible: boolean) => void;
@@ -110,7 +104,6 @@ interface ArchitectureStoreActions {
   closeCodeViewer: () => void;
   toggleCodeViewerExpanded: () => void;
 
-  setExportMenuOpen: (open: boolean) => void;
   setPathFinderOpen: (open: boolean) => void;
   setReactFlowInstance: (instance: ReactFlowInstance | null) => void;
 }
@@ -181,7 +174,6 @@ const INITIAL_STATE: ArchitectureStoreState = {
   navigationLevel: "overview",
   activeLayerId: null,
   selectedNodeId: null,
-  nodeHistory: [],
 
   expandedContainers: new Set(),
   containerLayoutCache: new Map(),
@@ -193,7 +185,6 @@ const INITIAL_STATE: ArchitectureStoreState = {
 
   searchQuery: "",
   searchResults: [],
-  searchMode: "fuzzy",
 
   filters: {
     nodeTypes: new Set(),
@@ -218,7 +209,6 @@ const INITIAL_STATE: ArchitectureStoreState = {
   codeViewerNodeId: null,
   codeViewerExpanded: false,
 
-  exportMenuOpen: false,
   pathFinderOpen: false,
   reactFlowInstance: null,
 };
@@ -241,7 +231,6 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           navigationLevel: "overview",
           activeLayerId: null,
           selectedNodeId: null,
-          nodeHistory: [],
           expandedContainers: new Set(),
           containerLayoutCache: new Map(),
           searchQuery: "",
@@ -281,14 +270,6 @@ export const useArchitectureStore = create<ArchitectureStore>()(
 
       selectNode: (nodeId: string | null) => {
         const state = get();
-        const history = [...state.nodeHistory];
-
-        if (state.selectedNodeId !== null) {
-          history.push(state.selectedNodeId);
-          if (history.length > 50) {
-            history.shift();
-          }
-        }
 
         if (nodeId !== null) {
           const nodeLayerId = state.nodeIdToLayerId.get(nodeId);
@@ -298,7 +279,6 @@ export const useArchitectureStore = create<ArchitectureStore>()(
               activeLayerId: nodeLayerId,
               selectedNodeId: nodeId,
               focusNodeId: null,
-              nodeHistory: history,
               expandedContainers: new Set(),
               containerLayoutCache: new Map(),
             });
@@ -306,17 +286,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           }
         }
 
-        set({ selectedNodeId: nodeId, focusNodeId: null, nodeHistory: history });
-      },
-
-      goBackNode: () => {
-        const state = get();
-        const history = [...state.nodeHistory];
-        const prev = history.pop();
-        set({
-          selectedNodeId: prev ?? null,
-          nodeHistory: history,
-        });
+        set({ selectedNodeId: nodeId, focusNodeId: null });
       },
 
       toggleContainer: (containerId: string) => {
@@ -371,10 +341,6 @@ export const useArchitectureStore = create<ArchitectureStore>()(
 
       setSearchResults: (results: SearchResult[]) => {
         set({ searchResults: results });
-      },
-
-      setSearchMode: (mode: SearchMode) => {
-        set({ searchMode: mode });
       },
 
       clearSearch: () => {
@@ -581,10 +547,6 @@ export const useArchitectureStore = create<ArchitectureStore>()(
 
       toggleCodeViewerExpanded: () => {
         set({ codeViewerExpanded: !get().codeViewerExpanded });
-      },
-
-      setExportMenuOpen: (open: boolean) => {
-        set({ exportMenuOpen: open });
       },
 
       setPathFinderOpen: (open: boolean) => {

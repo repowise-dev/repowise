@@ -25,18 +25,34 @@ from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
     GitMetadata,
-    GraphNode,
     HealthFileMetric,
     WikiSymbol,
 )
 
 
-def _module_of(file_path: str) -> str:
+def module_of(file_path: str) -> str:
     parts = file_path.split("/", 1)
     return parts[0] if len(parts) > 1 else "root"
 
 
-module_of = _module_of
+def _compute_health_score(
+    *,
+    is_silo: bool,
+    hotspot_fraction: float,
+    dead_pct: float,
+    churn_pct: float,
+    doc_pct: float,
+    bus_factor_median: float,
+) -> float:
+    score = 100.0
+    if is_silo:
+        score -= 25
+    score -= 20 * hotspot_fraction
+    score -= 25 * dead_pct
+    score -= 15 * (churn_pct / 100.0)
+    score += 15 * doc_pct
+    score += 10 if bus_factor_median >= 2 else -10
+    return max(0.0, min(100.0, score))
 
 
 def _under_module(file_path: str, module_path: str) -> bool:
@@ -90,16 +106,14 @@ def _score(acc: _ModuleAccumulator) -> dict:
     #  -15 * (avg_churn / 100)
     #  +15 * doc_pct
     #  +10 if bus_factor >= 2 median, else -10
-    score = 100.0
-    if primary_pct > 0.8:
-        score -= 25
-    if file_count:
-        score -= 20 * (hotspot_count / file_count)
-    score -= 25 * dead_pct
-    score -= 15 * (avg_churn / 100.0)
-    score += 15 * doc_pct
-    score += 10 if med_bus >= 2 else -10
-    score = max(0.0, min(100.0, score))
+    score = _compute_health_score(
+        is_silo=primary_pct > 0.8,
+        hotspot_fraction=hotspot_count / file_count if file_count else 0.0,
+        dead_pct=dead_pct,
+        churn_pct=avg_churn,
+        doc_pct=doc_pct,
+        bus_factor_median=med_bus,
+    )
 
     return {
         "file_count": file_count,
@@ -135,7 +149,7 @@ async def aggregate_modules(
     )
 
     for m in files:
-        mod = _module_of(m.file_path)
+        mod = module_of(m.file_path)
         acc = accs[mod]
         if not acc.module_path:
             acc.module_path = mod
@@ -165,7 +179,7 @@ async def aggregate_modules(
         )
     ).all()
     for path, doc in sym_rows:
-        mod = _module_of(path)
+        mod = module_of(path)
         acc = accs.get(mod)
         if acc is None:
             continue
@@ -182,7 +196,7 @@ async def aggregate_modules(
         )
     ).all()
     for path, lines in dead_rows:
-        mod = _module_of(path)
+        mod = module_of(path)
         acc = accs.get(mod)
         if acc is None:
             continue
@@ -313,17 +327,14 @@ async def build_single_file_health(
     if hfm is not None:
         health_score = max(0.0, min(100.0, float(hfm) * 10.0))
     else:
-        health_score = 100.0
-        if is_silo:
-            health_score -= 25
-        if is_hotspot:
-            health_score -= 20
-        dead_pct = 1.0 if dead_code_count > 0 else 0.0
-        health_score -= 25 * dead_pct
-        health_score -= 15 * (churn_pct / 100.0)
-        health_score += 15 * (doc_coverage_pct / 100.0)
-        health_score += 10 if bus_factor >= 2 else -10
-        health_score = max(0.0, min(100.0, health_score))
+        health_score = _compute_health_score(
+            is_silo=is_silo,
+            hotspot_fraction=1.0 if is_hotspot else 0.0,
+            dead_pct=1.0 if dead_code_count > 0 else 0.0,
+            churn_pct=churn_pct,
+            doc_pct=doc_coverage_pct / 100.0,
+            bus_factor_median=float(bus_factor),
+        )
 
     # Build owners list from top_authors_json
     owners_list: list[dict] = []
@@ -380,5 +391,3 @@ async def build_single_file_health(
     }
 
 
-# Avoid unused-import warning — GraphNode is reserved for future fan-in.
-_ = GraphNode

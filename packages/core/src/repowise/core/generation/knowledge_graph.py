@@ -96,13 +96,13 @@ async def _enrich_layers(
     for batch_start in range(0, len(layers), _LAYER_BATCH_SIZE):
         batch = layers[batch_start : batch_start + _LAYER_BATCH_SIZE]
         batch_context = []
-        for layer in batch:
+        for i, layer in enumerate(batch):
             node_ids = layer.get("nodeIds", [])
             file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
             top_files = sorted(file_paths, key=lambda p: pagerank.get(p, 0.0), reverse=True)[:20]
 
             batch_context.append({
-                "index": layers.index(layer),
+                "index": batch_start + i,
                 "heuristic_label": layer["name"],
                 "file_count": len(file_paths),
                 "top_files": top_files,

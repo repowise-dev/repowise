@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import pytest
 
 from repowise.core.analysis.knowledge_graph import (
     KnowledgeGraphResult,
     compute_kg_fingerprint,
+    should_skip_kg_rebuild,
 )
 
 
@@ -128,11 +126,9 @@ class TestFingerprintDeterminism:
 
 
 class TestSkipLogicUnit:
-    """Tests the skip decision using KnowledgeGraphResult.from_file + fingerprint comparison."""
+    """Tests the skip decision via the extracted should_skip_kg_rebuild function."""
 
     def test_skip_when_fingerprint_matches(self, tmp_path):
-        """Simulate what _run_ingestion does: if existing fingerprint matches,
-        load from file instead of building."""
         kg = KnowledgeGraphResult(
             nodes=[{"id": "file:a.py"}],
             layers=[{"id": "layer:core", "name": "Core", "nodeIds": ["file:a.py"]}],
@@ -142,17 +138,10 @@ class TestSkipLogicUnit:
         kg_path.parent.mkdir(parents=True)
         kg_path.write_text(json.dumps(kg.to_dict()), encoding="utf-8")
 
-        existing_fp = "abc123"
-        new_fp = "abc123"  # same
+        assert should_skip_kg_rebuild("abc123", "abc123", kg_path) is True
 
-        result = None
-        if existing_fp and existing_fp == new_fp and kg_path.exists():
-            result = KnowledgeGraphResult.from_file(kg_path)
-            if result is not None:
-                result.fingerprint = new_fp
-
+        result = KnowledgeGraphResult.from_file(kg_path)
         assert result is not None
-        assert result.fingerprint == "abc123"
         assert len(result.nodes) == 1
 
     def test_regenerate_when_fingerprint_differs(self, tmp_path):
@@ -160,50 +149,24 @@ class TestSkipLogicUnit:
         kg_path.parent.mkdir(parents=True)
         kg_path.write_text(json.dumps({"nodes": [], "layers": []}), encoding="utf-8")
 
-        existing_fp = "abc123"
-        new_fp = "def456"  # different
-
-        result = None
-        if existing_fp and existing_fp == new_fp and kg_path.exists():
-            result = KnowledgeGraphResult.from_file(kg_path)
-
-        assert result is None  # would proceed to build_knowledge_graph_skeleton
+        assert should_skip_kg_rebuild("abc123", "def456", kg_path) is False
 
     def test_force_bypasses_fingerprint(self, tmp_path):
-        """--force sets existing_kg_fingerprint to None, so skip never triggers."""
         kg_path = tmp_path / ".repowise" / "knowledge-graph.json"
         kg_path.parent.mkdir(parents=True)
         kg_path.write_text(json.dumps({"nodes": [{"id": "file:a.py"}]}), encoding="utf-8")
 
-        existing_fp = None  # force=True → fingerprint not passed
-        new_fp = "abc123"
-
-        result = None
-        if existing_fp and existing_fp == new_fp and kg_path.exists():
-            result = KnowledgeGraphResult.from_file(kg_path)
-
-        assert result is None  # would proceed to build
+        assert should_skip_kg_rebuild(None, "abc123", kg_path) is False
 
     def test_skip_fails_gracefully_if_file_missing(self, tmp_path):
-        existing_fp = "abc123"
-        new_fp = "abc123"
         kg_path = tmp_path / ".repowise" / "knowledge-graph.json"
-
-        result = None
-        if existing_fp and existing_fp == new_fp and kg_path.exists():
-            result = KnowledgeGraphResult.from_file(kg_path)
-
-        assert result is None  # file doesn't exist, so condition fails
+        assert should_skip_kg_rebuild("abc123", "abc123", kg_path) is False
 
     def test_skip_fails_gracefully_if_file_corrupt(self, tmp_path):
-        existing_fp = "abc123"
-        new_fp = "abc123"
         kg_path = tmp_path / ".repowise" / "knowledge-graph.json"
         kg_path.parent.mkdir(parents=True)
         kg_path.write_text("corrupt", encoding="utf-8")
 
-        result = None
-        if existing_fp and existing_fp == new_fp and kg_path.exists():
-            result = KnowledgeGraphResult.from_file(kg_path)
-
-        assert result is None  # from_file returns None for corrupt JSON
+        assert should_skip_kg_rebuild("abc123", "abc123", kg_path) is True
+        result = KnowledgeGraphResult.from_file(kg_path)
+        assert result is None

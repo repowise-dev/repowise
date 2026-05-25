@@ -126,7 +126,7 @@ async def get_c4_mermaid(
 
     if level == 2:
         view_l2 = await c4_builder.build_l2(session, repo_id)
-        repo = await c4_builder._load_repo(session, repo_id)
+        repo = await c4_builder.load_repo(session, repo_id)
         system_name = repo.name if repo is not None else repo_id
         return PlainTextResponse(to_mermaid_l2(view_l2, system_name=system_name))
 
@@ -135,7 +135,7 @@ async def get_c4_mermaid(
     view_l3 = await c4_builder.build_l3(session, repo_id, container_id)
     if view_l3 is None:
         raise HTTPException(status_code=404, detail=f"container not found: {container_id}")
-    repo = await c4_builder._load_repo(session, repo_id)
+    repo = await c4_builder.load_repo(session, repo_id)
     system_name = repo.name if repo is not None else repo_id
     return PlainTextResponse(to_mermaid_l3(view_l3, system_name=system_name))
 

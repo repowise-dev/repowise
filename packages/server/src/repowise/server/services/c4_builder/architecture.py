@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 from bisect import bisect_left
 from collections import defaultdict
@@ -13,7 +14,6 @@ from repowise.core.persistence import (
     ExternalSystem,
     GraphEdge,
     GraphNode,
-    Repository,
 )
 from repowise.core.persistence.crud import (
     get_kg_layers,
@@ -31,6 +31,8 @@ from .models import (
     ArchTourStep,
     ExternalSystemView,
 )
+
+logger = logging.getLogger(__name__)
 
 _ENTRY_POINT_NAMES = frozenset({
     "main.py", "app.py", "cli.py", "index.ts", "index.js",
@@ -51,11 +53,6 @@ _EXT_MAP = {
     ".cs": "csharp", ".rb": "ruby",
     ".swift": "swift", ".cpp": "cpp", ".c": "c",
 }
-
-
-async def _load_repo(session: AsyncSession, repo_id: str) -> Repository | None:
-    result = await session.execute(select(Repository).where(Repository.id == repo_id))
-    return result.scalar_one_or_none()
 
 
 async def _external_views(
@@ -88,12 +85,12 @@ async def _external_views(
     return views
 
 
-def _classify_complexity(symbol_count: int) -> str:
-    if symbol_count <= 5:
+def _classify_complexity(symbol_count: int, line_count: int = 0) -> str:
+    if symbol_count <= 3 and line_count < 100:
         return "simple"
-    if symbol_count <= 20:
-        return "moderate"
-    return "complex"
+    if symbol_count > 15 or line_count > 500:
+        return "complex"
+    return "moderate"
 
 
 def _tags_for(node_id: str, node_type: str, language: str) -> list[str]:
@@ -249,7 +246,6 @@ async def _migrate_kg_file_to_db(
     tour = kg.get("tour", [])
     if tour:
         await upsert_kg_tour_steps(session, repo_id, tour)
-    await session.commit()
 
 
 async def build_architecture_view(
@@ -257,7 +253,8 @@ async def build_architecture_view(
     repo_id: str,
     include_symbols: bool = False,
 ) -> ArchitectureView:
-    repo = await _load_repo(session, repo_id)
+    from . import load_repo
+    repo = await load_repo(session, repo_id)
 
     empty = ArchitectureView(
         project_name=repo.name if repo else repo_id,
@@ -276,7 +273,7 @@ async def build_architecture_view(
     result = await session.execute(node_query)
     all_nodes: list[GraphNode] = list(result.scalars())
     if not all_nodes:
-        return empty._replace() if hasattr(empty, "_replace") else empty
+        return empty
 
     node_id_set = {n.node_id for n in all_nodes}
     file_nodes = [n for n in all_nodes if n.node_type == "file"]
@@ -353,8 +350,12 @@ async def build_architecture_view(
                     kg = _load_knowledge_graph(candidate)
                     break
         if kg and kg.get("layers"):
-            with contextlib.suppress(Exception):
+            try:
                 await _migrate_kg_file_to_db(session, repo_id, kg)
+                await session.flush()
+            except Exception:
+                logger.warning("kg_file_to_db_migration_failed", exc_info=True)
+                await session.rollback()
             raw_layers = _layers_from_knowledge_graph(kg, node_id_set)
         elif any(n.community_id and n.community_id > 0 for n in file_nodes):
             raw_layers = _layers_from_communities(file_nodes)
@@ -386,7 +387,7 @@ async def build_architecture_view(
                 file_path=file_path,
                 line_range=line_range,
                 summary=summary,
-                complexity=_classify_complexity(n.symbol_count),
+                complexity=_classify_complexity(n.symbol_count, (n.end_line or 0) - (n.start_line or 0)),
                 tags=_tags_for(n.node_id, n.node_type, n.language),
                 language=n.language or None,
                 pagerank=n.pagerank,

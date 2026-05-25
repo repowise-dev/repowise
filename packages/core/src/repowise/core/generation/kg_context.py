@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import structlog
 
@@ -33,7 +32,7 @@ class KGFileContext:
 class KnowledgeGraphContext:
     """Index a knowledge-graph.json for fast per-file lookups during generation."""
 
-    def __init__(self, kg_path: Path | None):
+    def __init__(self, kg_path: Path | None, repo_root: Path | None = None):
         self._file_to_layer: dict[str, dict] = {}
         self._file_to_tour: dict[str, dict] = {}
         self._file_to_node: dict[str, dict] = {}
@@ -43,13 +42,13 @@ class KnowledgeGraphContext:
         self._edges_by_target: dict[str, list[dict]] = {}
         self._loaded = False
         if kg_path and kg_path.exists():
-            self._load(kg_path)
+            self._load(kg_path, repo_root)
 
     @property
     def available(self) -> bool:
         return self._loaded
 
-    def _load(self, path: Path) -> None:
+    def _load(self, path: Path, repo_root: Path | None = None) -> None:
         try:
             with open(path) as f:
                 kg = json.load(f)
@@ -57,7 +56,8 @@ class KnowledgeGraphContext:
             logger.warning("kg_context_load_failed", path=str(path), error=str(e))
             return
 
-        repo_root = path.parent.parent
+        if repo_root is None:
+            repo_root = path.parent.parent
 
         for node in kg.get("nodes", []):
             fp = node.get("filePath", "")

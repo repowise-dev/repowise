@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
 import { X, Code, MapPin, Layers, ExternalLink } from "lucide-react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { getTone } from "../../graph-primitives/tone-styles";
+import { THEME } from "../theme/theme-variables";
 import { HealthScoreRing } from "../../dashboard/health-score-ring";
 import { Section, Title, Sub, KVList, ActionRow, ActionButton, Badge, Pill } from "./panel-atoms";
 
@@ -24,12 +24,6 @@ export interface ArchNodeInfoProps {
   onOpenInGraph?: ((path: string) => void) | undefined;
   onOpenDoc?: ((href: string) => void) | undefined;
 }
-
-const COMPLEXITY_DOT: Record<string, string> = {
-  simple: "#22c55e",
-  moderate: "#f59e0b",
-  complex: "#ef4444",
-};
 
 export function ArchNodeInfo(props: ArchNodeInfoProps) {
   const selectedNodeId = useArchitectureStore((s) => s.selectedNodeId);
@@ -193,7 +187,7 @@ function HeaderSection({
   tone: { band: string; text: string };
   onClose: () => void;
 }) {
-  const dotColor = COMPLEXITY_DOT[node.complexity] ?? "#94a3b8";
+  const dotColor = THEME.complexity[node.complexity] ?? "#94a3b8";
 
   return (
     <header

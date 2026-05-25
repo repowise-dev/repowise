@@ -446,16 +446,13 @@ async def run_pipeline(
             KnowledgeGraphResult,
             build_knowledge_graph_skeleton,
             compute_kg_fingerprint,
+            should_skip_kg_rebuild,
         )
 
         new_fingerprint = compute_kg_fingerprint(graph_builder)
 
         kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
-        if (
-            existing_kg_fingerprint
-            and existing_kg_fingerprint == new_fingerprint
-            and kg_json_path.exists()
-        ):
+        if should_skip_kg_rebuild(existing_kg_fingerprint, new_fingerprint, kg_json_path):
             knowledge_graph_result = KnowledgeGraphResult.from_file(kg_json_path)
             if knowledge_graph_result is not None:
                 knowledge_graph_result.fingerprint = new_fingerprint
@@ -470,6 +467,11 @@ async def run_pipeline(
                         f"  ↳ KG unchanged (fingerprint {new_fingerprint[:8]}…), reusing",
                     )
 
+        tech_stack_dicts = [
+            {"name": t.name, "version": t.version, "category": t.category}
+            for t in tech_items
+        ]
+
         if knowledge_graph_result is None:
             if progress:
                 progress.on_phase_start("knowledge_graph.skeleton", None)
@@ -477,10 +479,7 @@ async def run_pipeline(
                 parsed_files=parsed_files,
                 graph_builder=graph_builder,
                 repo_structure=repo_structure,
-                tech_stack=[
-                    {"name": t.name, "version": t.version, "category": t.category}
-                    for t in tech_items
-                ],
+                tech_stack=tech_stack_dicts,
                 external_systems=external_systems,
                 git_meta_map=git_meta_map,
                 dead_code_report=dead_code_report,
@@ -495,8 +494,8 @@ async def run_pipeline(
                     f"{len(knowledge_graph_result.layers)} layers",
                 )
         _phase_done(progress, "knowledge_graph.skeleton")
-    except Exception as _kg_err:
-        logger.warning("kg_skeleton_building_skipped", error=str(_kg_err))
+    except (ValueError, KeyError, OSError, RuntimeError) as kg_err:
+        logger.error("kg_skeleton_building_failed", error=str(kg_err), exc_info=True)
 
     # ---- Phase 3: Generation (optional) ------------------------------------
     generated_pages: list[Any] | None = None
@@ -565,10 +564,7 @@ async def run_pipeline(
                 llm_client=llm_client,
                 graph_builder=graph_builder,
                 repo_structure=repo_structure,
-                tech_stack=[
-                    {"name": t.name, "version": t.version, "category": t.category}
-                    for t in tech_items
-                ],
+                tech_stack=tech_stack_dicts,
                 generated_pages=generated_pages,
                 progress=progress,
                 reasoning=_kg_reasoning,
@@ -580,8 +576,8 @@ async def run_pipeline(
                     f"{len(knowledge_graph_result.tour)} tour steps",
                 )
             _phase_done(progress, "knowledge_graph.enrich")
-        except Exception as exc:
-            logger.warning("knowledge_graph_enrichment_failed", error=str(exc))
+        except (ValueError, KeyError, OSError, RuntimeError) as exc:
+            logger.error("knowledge_graph_enrichment_failed", error=str(exc), exc_info=True)
 
     # ---- Execution flow tracing -----------------------------------------------
     execution_flow_report = None

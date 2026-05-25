@@ -58,6 +58,7 @@ class _FakeGraph:
         self._adj: dict[str, set[str]] = {}
         self._rev: dict[str, set[str]] = {}
         self._nodes: set[str] = set()
+        self._edges = edges
         for s, t in edges:
             self._adj.setdefault(s, set()).add(t)
             self._rev.setdefault(t, set()).add(s)
@@ -65,12 +66,22 @@ class _FakeGraph:
             self._nodes.add(t)
         self.nodes = MagicMock()
         self.nodes.get = MagicMock(return_value={})
-        self.nodes.__iter__ = MagicMock(return_value=iter([]))
-        self.out_edges = MagicMock(return_value=[])
-        self.in_edges = MagicMock(return_value=[])
+        self.nodes.__iter__ = MagicMock(return_value=iter(list(self._nodes)))
 
     def __contains__(self, path: str) -> bool:
         return path in self._nodes
+
+    def out_edges(self, node: str, data: bool = False) -> list:
+        targets = self._adj.get(node, set())
+        if data:
+            return [(node, t, {}) for t in targets]
+        return [(node, t) for t in targets]
+
+    def in_edges(self, node: str, data: bool = False) -> list:
+        sources = self._rev.get(node, set())
+        if data:
+            return [(s, node, {}) for s in sources]
+        return [(s, node) for s in sources]
 
     def successors(self, p: str) -> list[str]:
         return list(self._adj.get(p, []))

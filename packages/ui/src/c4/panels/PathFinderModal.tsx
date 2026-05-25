@@ -49,6 +49,7 @@ export function PathFinderModal() {
 
   return (
     <div
+      onClick={handleClose}
       style={{
         position: "fixed",
         inset: 0,
@@ -61,6 +62,7 @@ export function PathFinderModal() {
       }}
     >
       <div
+        onClick={(e) => e.stopPropagation()}
         style={{
           width: 500,
           maxHeight: "80vh",

@@ -3,12 +3,7 @@ import type {
   ArchFilters,
   Persona,
 } from "../types";
-
-const PERSONA_VISIBLE_TYPES: Record<Persona, Set<string> | null> = {
-  overview: new Set(["file", "config", "document", "service", "table", "endpoint", "pipeline", "schema", "resource", "module", "concept"]),
-  learn: null,
-  "deep-dive": null,
-};
+import { PERSONA_NODE_TYPES } from "../types";
 
 export interface ArchitectureJsonExport {
   exportDate: string;
@@ -30,7 +25,14 @@ export function exportArchitectureJson(
   filters: ArchFilters,
   persona: Persona,
 ): string {
-  const personaFilter = PERSONA_VISIBLE_TYPES[persona];
+  const personaFilter = PERSONA_NODE_TYPES[persona];
+
+  const nodeLayerMap = new Map<string, string>();
+  for (const layer of view.layers) {
+    for (const nid of layer.node_ids) {
+      nodeLayerMap.set(nid, layer.id);
+    }
+  }
 
   const visibleNodes = view.nodes.filter((node) => {
     if (personaFilter && !personaFilter.has(node.node_type)) {
@@ -43,7 +45,7 @@ export function exportArchitectureJson(
       return false;
     }
     if (filters.layerIds.size > 0) {
-      const nodeLayerId = view.layers.find((l) => l.node_ids.includes(node.id))?.id;
+      const nodeLayerId = nodeLayerMap.get(node.id);
       if (nodeLayerId && !filters.layerIds.has(nodeLayerId)) {
         return false;
       }

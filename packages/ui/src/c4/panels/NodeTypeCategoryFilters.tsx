@@ -30,15 +30,19 @@ export function NodeTypeCategoryFilters() {
       const newValue = !currentlyActive;
       const types = CATEGORY_NODE_TYPES[category];
       if (types) {
+        const state = useArchitectureStore.getState();
+        const nodeTypes = new Set(state.filters.nodeTypes);
         for (const type of types) {
-          setNodeTypeFilter(type, newValue);
+          if (newValue) nodeTypes.add(type); else nodeTypes.delete(type);
         }
+        useArchitectureStore.setState({
+          filters: { ...state.filters, nodeTypes },
+          nodeTypeFilters: { ...state.nodeTypeFilters, [category]: newValue },
+          containerLayoutCache: new Map(),
+        });
       }
-      useArchitectureStore.setState({
-        nodeTypeFilters: { ...useArchitectureStore.getState().nodeTypeFilters, [category]: newValue },
-      });
     },
-    [nodeTypeFilters, setNodeTypeFilter],
+    [nodeTypeFilters],
   );
 
   return (

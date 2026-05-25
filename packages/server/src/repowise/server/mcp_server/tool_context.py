@@ -611,6 +611,8 @@ async def _resolve_one_target(
     if target_type == "file" and file_path_for_git:
         kg_layers = await get_kg_layers(session, repo_id)
         if kg_layers:
+            for _l in kg_layers:
+                _l._parsed_node_ids = json.loads(_l.node_ids_json) if _l.node_ids_json else []
             file_layer = _find_layer_for_file(file_path_for_git, kg_layers)
             if file_layer:
                 edge_res = await session.execute(
@@ -629,6 +631,8 @@ async def _resolve_one_target(
 
             kg_tour = await get_kg_tour_steps(session, repo_id)
             if kg_tour:
+                for _s in kg_tour:
+                    _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
                 file_tour_step = _find_tour_step_for_file(file_path_for_git, kg_tour)
                 if file_tour_step:
                     result_data["tour_context"] = {
@@ -974,7 +978,9 @@ async def _resolve_health(
 
 def _find_layer_for_file(path: str, layers: list) -> Any | None:
     for layer in layers:
-        node_ids = json.loads(layer.node_ids_json) if layer.node_ids_json else []
+        node_ids = getattr(layer, "_parsed_node_ids", None)
+        if node_ids is None:
+            node_ids = json.loads(layer.node_ids_json) if layer.node_ids_json else []
         if f"file:{path}" in node_ids or path in node_ids:
             return layer
     return None
@@ -982,14 +988,19 @@ def _find_layer_for_file(path: str, layers: list) -> Any | None:
 
 def _find_tour_step_for_file(path: str, steps: list) -> Any | None:
     for step in steps:
-        node_ids = json.loads(step.node_ids_json) if step.node_ids_json else []
+        node_ids = getattr(step, "_parsed_node_ids", None)
+        if node_ids is None:
+            node_ids = json.loads(step.node_ids_json) if step.node_ids_json else []
         if f"file:{path}" in node_ids or path in node_ids:
             return step
     return None
 
 
 def _classify_file_role(path: str, layer: Any, incoming_edges: list) -> str:
-    node_ids = set(json.loads(layer.node_ids_json) if layer.node_ids_json else [])
+    raw = getattr(layer, "_parsed_node_ids", None)
+    if raw is None:
+        raw = json.loads(layer.node_ids_json) if layer.node_ids_json else []
+    node_ids = set(raw)
     cross_layer = [
         e for e in incoming_edges
         if f"file:{e.source_node_id}" not in node_ids

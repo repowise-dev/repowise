@@ -82,7 +82,7 @@ export type { C4DetailPanelProps, C4Health, C4DocSummary } from "./panels";
 export type { SidebarProps, ArchNodeInfoProps, ArchNodeHealth, NodeTooltipProps } from "./panels";
 export type { CodeViewerProps } from "./panels";
 
-export { ExecutionFlowOverlay, DiffOverlay, useDiffNodeStyle } from "./overlays";
+export { ExecutionFlowOverlay, DiffOverlay } from "./overlays";
 export type { ExecutionFlowEntry } from "./overlays";
 export { PathFinderModal } from "./panels";
 export { findShortestPath } from "./utils";

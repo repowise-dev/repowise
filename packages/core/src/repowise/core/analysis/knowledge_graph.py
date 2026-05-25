@@ -242,14 +242,13 @@ def build_knowledge_graph_skeleton(
         else:
             continue
 
+        if kg_type == "imports" and u_data.get("is_test") and not v_data.get("is_test"):
+            kg_type = "tested_by"
+
         edge_key = (source_id, target_id, kg_type)
         if edge_key in seen_edges:
             continue
         seen_edges.add(edge_key)
-
-        # Detect test→non-test pattern
-        if kg_type == "imports" and u_data.get("is_test") and not v_data.get("is_test"):
-            kg_type = "tested_by"
 
         edges.append({
             "source": source_id,
@@ -296,6 +295,18 @@ def compute_kg_fingerprint(graph_builder: Any) -> str:
         ",".join(sorted(list(cd.keys())[:100])),
     ]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def should_skip_kg_rebuild(
+    existing_fingerprint: str | None,
+    new_fingerprint: str,
+    kg_path: Path,
+) -> bool:
+    return bool(
+        existing_fingerprint
+        and existing_fingerprint == new_fingerprint
+        and kg_path.exists()
+    )
 
 
 # ---------------------------------------------------------------------------
