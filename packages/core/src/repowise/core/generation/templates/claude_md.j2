@@ -39,6 +39,25 @@ Last indexed: {{ data.indexed_at }}{% if data.indexed_commit %} (commit {{ data.
 
 {% if infra %}**Infra:** {{ infra | map(attribute="name") | join(", ") }}{% endif %}
 {% endif %}
+{% if data.kg_layers %}
+### Architectural Layers
+| Layer | Files | Purpose |
+|-------|-------|---------|
+{% for layer in data.kg_layers[:10] %}
+| {{ layer.name }} | {{ layer.file_count }} | {{ layer.description[:80] }} |
+{% endfor %}
+{% if data.kg_tour %}
+
+### Guided Tour ({{ data.kg_tour | length }} steps)
+{% for step in data.kg_tour[:6] %}
+{{ step.order }}. **{{ step.title }}**{% if step.primary_file %} — `{{ step.primary_file }}`{% endif %}
+
+{% endfor %}
+{% if data.kg_tour | length > 6 %}
+... and {{ data.kg_tour | length - 6 }} more steps
+{% endif %}
+{% endif %}
+{% endif %}
 {% if data.hotspots %}
 ### Hotspots (High Churn)
 | File | Churn | 90d Commits | Owner |

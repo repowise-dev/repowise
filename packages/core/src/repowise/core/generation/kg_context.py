@@ -38,6 +38,7 @@ class KnowledgeGraphContext:
         self._file_to_tour: dict[str, dict] = {}
         self._file_to_node: dict[str, dict] = {}
         self._layers: list[dict] = []
+        self._tour: list[dict] = []
         self._edges_by_source: dict[str, list[dict]] = {}
         self._edges_by_target: dict[str, list[dict]] = {}
         self._loaded = False
@@ -71,7 +72,8 @@ class KnowledgeGraphContext:
                     if fp not in self._file_to_layer:
                         self._file_to_layer[fp] = layer
 
-        for step in kg.get("tour", []):
+        self._tour: list[dict] = kg.get("tour", [])
+        for step in self._tour:
             for node_id in step.get("nodeIds", []):
                 if node_id.startswith("file:"):
                     fp = node_id[5:]
@@ -141,6 +143,9 @@ class KnowledgeGraphContext:
 
     def get_layers(self) -> list[dict]:
         return self._layers if self._loaded else []
+
+    def get_tour(self) -> list[dict]:
+        return self._tour if self._loaded else []
 
     def get_inter_layer_edges(self, layer: dict) -> tuple[list[dict], list[dict]]:
         """Return (deps_out, deps_in) aggregated by target/source layer."""

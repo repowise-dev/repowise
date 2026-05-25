@@ -64,6 +64,7 @@ class HowItWorksContext:
     archetype_evidence: list[str] = field(default_factory=list)
     flows: list[FlowTrace] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)
+    kg_tour_steps: list[dict] = field(default_factory=list)
 
 
 def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str]]:
@@ -142,8 +143,10 @@ def _build(signals: OnboardingSignals) -> HowItWorksContext | None:
     archetype, evidence = _classify_archetype(signals)
     flows = _collect_flows(signals)
 
-    # Gate: need either a real trace or a non-trivial archetype.
-    if not flows and archetype == "module":
+    kg_tour = list(signals.kg_tour_steps) if signals.kg_tour_steps else []
+
+    # Gate: need either a real trace, tour steps, or a non-trivial archetype.
+    if not flows and not kg_tour and archetype == "module":
         return None
 
     return HowItWorksContext(
@@ -152,6 +155,7 @@ def _build(signals: OnboardingSignals) -> HowItWorksContext | None:
         archetype_evidence=evidence,
         flows=flows,
         entry_points=list(getattr(signals.repo_structure, "entry_points", []))[:5],
+        kg_tour_steps=kg_tour[:8],
     )
 
 

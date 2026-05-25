@@ -39,3 +39,6 @@ class OnboardingSignals:
     external_systems: tuple[dict, ...] = ()
     # Summaries of pages already generated at earlier levels (target_path → blurb).
     completed_page_summaries: dict[str, str] = field(default_factory=dict)
+    # KG-derived signals for onboarding pages.
+    kg_layers: tuple[dict, ...] = ()
+    kg_tour_steps: tuple[dict, ...] = ()

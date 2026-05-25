@@ -29,6 +29,8 @@ from .data import (
     DecisionSummary,
     EditorFileData,
     HotspotFile,
+    KGLayerSummary,
+    KGTourStepSummary,
     KeyModule,
 )
 from .tech_stack import detect_build_commands, detect_tech_stack
@@ -58,6 +60,8 @@ class EditorFileDataFetcher:
         repo = await crud.get_repository(self._session, self._repo_id)
         repo_name = repo.name if repo else self._repo_path.name
 
+        kg_layers, kg_tour = await self._get_kg_data()
+
         return EditorFileData(
             repo_name=repo_name,
             indexed_at=datetime.now(UTC).strftime("%Y-%m-%d"),
@@ -71,6 +75,8 @@ class EditorFileDataFetcher:
             build_commands=detect_build_commands(self._repo_path),
             avg_confidence=await self._get_avg_confidence(),
             code_health=await self._get_code_health(),
+            kg_layers=kg_layers,
+            kg_tour=kg_tour,
         )
 
     # ------------------------------------------------------------------
@@ -297,6 +303,43 @@ class EditorFileDataFetcher:
             critical_biomarkers=critical,
             untested_hotspots=[],  # Phase 2 fills this from coverage data
         )
+
+    async def _get_kg_data(
+        self,
+    ) -> tuple[list[KGLayerSummary], list[KGTourStepSummary]]:
+        """Fetch KG layers and tour steps from the DB."""
+        import json
+
+        db_layers = await crud.get_kg_layers(self._session, self._repo_id)
+        db_tour = await crud.get_kg_tour_steps(self._session, self._repo_id)
+
+        layers = [
+            KGLayerSummary(
+                name=l.name,
+                file_count=len(json.loads(l.node_ids_json) if l.node_ids_json else []),
+                description=(l.description or "")[:80],
+            )
+            for l in db_layers
+        ]
+
+        tour = []
+        for s in db_tour:
+            node_ids = json.loads(s.node_ids_json) if s.node_ids_json else []
+            primary = ""
+            for nid in node_ids:
+                fp = nid.removeprefix("file:")
+                if fp != nid or not nid.startswith("file:"):
+                    primary = fp
+                    break
+            tour.append(
+                KGTourStepSummary(
+                    order=s.step_order,
+                    title=s.title,
+                    primary_file=primary,
+                )
+            )
+
+        return layers, tour
 
     async def _get_owners_for_paths(self, paths: list[str]) -> dict[str, str]:
         """Return {path: primary_owner_name} for the given paths."""

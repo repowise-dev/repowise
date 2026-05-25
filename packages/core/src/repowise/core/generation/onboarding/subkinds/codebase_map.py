@@ -45,6 +45,7 @@ class CodebaseMapContext:
     directories: list[DirectorySummary] = field(default_factory=list)
     # Repo-wide entry points hoisted to a dedicated section.
     entry_points: list[str] = field(default_factory=list)
+    kg_layers: list[dict] = field(default_factory=list)
 
 
 def _top_level_dir(path: str) -> str:
@@ -127,6 +128,7 @@ def _build(signals: OnboardingSignals) -> CodebaseMapContext | None:
         total_loc=getattr(signals.repo_structure, "total_loc", 0),
         directories=directories,
         entry_points=list(getattr(signals.repo_structure, "entry_points", []))[:10],
+        kg_layers=list(signals.kg_layers) if signals.kg_layers else [],
     )
 
 

@@ -353,6 +353,12 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if run.on_subphase is not None:
         with contextlib.suppress(Exception):
             run.on_subphase("onboarding", len(specs))
+    kg_layers: tuple[dict, ...] = ()
+    kg_tour_steps: tuple[dict, ...] = ()
+    if run.kg_ctx and run.kg_ctx.available:
+        kg_layers = tuple(run.kg_ctx.get_layers())
+        kg_tour_steps = tuple(run.kg_ctx.get_tour())
+
     signals = _onboarding.OnboardingSignals(
         repo_name=run.repo_name,
         repo_structure=run.repo_structure,
@@ -368,6 +374,8 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         decisions_all=tuple(run.decisions_all),
         external_systems=tuple(run.external_systems),
         completed_page_summaries=dict(run.completed_page_summaries),
+        kg_layers=kg_layers,
+        kg_tour_steps=kg_tour_steps,
     )
     for spec in specs:
         page_id = compute_page_id("onboarding", _onboarding.target_path(spec.slot))

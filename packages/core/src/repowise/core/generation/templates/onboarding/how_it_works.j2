@@ -16,6 +16,16 @@ end-to-end trace through the system, narrated phase by phase.
 {% endfor %}
 {% endif %}
 
+{% if ctx.kg_tour_steps %}
+## Guided Tour Steps (use these as the narrative spine)
+{% for step in ctx.kg_tour_steps %}
+### Step {{ step.order }}: {{ step.title }}
+{{ step.description | default("") }}
+{% if step.nodeIds %}Files: {% for nid in step.nodeIds %}{% if nid.startswith("file:") %}`{{ nid[5:] }}`{% if not loop.last %}, {% endif %}{% endif %}{% endfor %}{% endif %}
+
+{% endfor %}
+{% endif %}
+
 {% if ctx.flows %}
 ## Detected execution flows (use these as the spine of the narrative)
 {% for f in ctx.flows %}
@@ -25,7 +35,7 @@ end-to-end trace through the system, narrated phase by phase.
 {% endfor %}
 
 {% endfor %}
-{% else %}
+{% elif not ctx.kg_tour_steps %}
 *No multi-hop execution flow was detected. Build the narrative from the
 entry points and the archetype hint above.*
 {% endif %}
