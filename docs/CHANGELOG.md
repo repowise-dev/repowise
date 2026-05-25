@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] — 2026-05-25
+
+### Added
+- **Knowledge Graph visualization — full C4 revamp.** The C4 diagram page is renamed to "Knowledge Graph" across all user-facing surfaces (sidebar, breadcrumb, page headers). Edges now resolve to distinct warm-palette colors by relationship type with animated flowing dashes, relationship labels ("imports", "depends on"), and arrowhead markers. Nodes are larger with colored left accent borders via the tone system and complexity badges on layer cards. Selecting a node dims unrelated nodes to 25% opacity. Backend adds an architecture view API, DB-first layer/tour loading, a KG enrichment pipeline with fingerprint-based skip logic, and file-level health scoring (#235).
+
+### Changed
+- **Near-linear scaling restored for .NET import resolver.** Three independent algorithmic fixes — bucketing files by project reduced from O(N × M × depth) to a single parent-chain walk against a precomputed dict; type-ref ranking memoises `Path.resolve()` per source file; using-directive resolution caches the importer path. Combined dotnet phases drop ~70% wall-clock on a 2000-file synthetic repo, and scaling at 4× file count goes from ~20× to ~7.4× (#233).
+
+### Documentation
+- Condensed benchmark section to a single paragraph (#231).
+- Refreshed README, added COMMERCIAL.md, fixed layer/tool/biomarker counts (#230).
+
+---
+
 ## [0.11.0] — 2026-05-24
 
 ### Added
