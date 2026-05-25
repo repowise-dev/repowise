@@ -1228,7 +1228,7 @@ class MaybeCountColumn(ProgressColumn):
     """
 
     def render(self, task: Task) -> Text:
-        if task.total is None:
+        if task.total is None or task.total == 0:
             return Text(str(int(task.completed)), style="progress.download")
         return Text(
             f"{int(task.completed)}/{int(task.total)}",

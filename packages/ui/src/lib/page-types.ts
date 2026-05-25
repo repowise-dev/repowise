@@ -19,7 +19,7 @@ export interface PageTypeConfig {
 
 export const PAGE_TYPE_CONFIG: Record<string, PageTypeConfig> = {
   repo_overview: { label: "Overview", icon: Globe },
-  architecture_diagram: { label: "Architecture", icon: LayoutGrid },
+  architecture_diagram: { label: "Knowledge Graph", icon: LayoutGrid },
   module_page: { label: "Module", icon: FolderOpen },
   symbol_spotlight: { label: "Symbol", icon: Sparkles },
   file_page: { label: "File", icon: FileText },

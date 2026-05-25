@@ -113,7 +113,7 @@ export function extractSources(
         sources.push({
           id: `${tc.id}:arch-diagram`,
           pageId,
-          title: "Architecture Diagram",
+          title: "Knowledge Graph",
           pageType: "architecture_diagram",
           targetPath: "",
           toolName: tc.name,

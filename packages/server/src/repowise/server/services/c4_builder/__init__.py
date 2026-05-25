@@ -46,14 +46,16 @@ __all__ = [
     "Person",
     "Relation",
     "System",
+    "build_architecture_view",
     "build_l1",
     "build_l2",
     "build_l3",
     "container_id",
+    "load_repo",
 ]
 
 
-async def _load_repo(session: AsyncSession, repo_id: str) -> Repository | None:
+async def load_repo(session: AsyncSession, repo_id: str) -> Repository | None:
     result = await session.execute(select(Repository).where(Repository.id == repo_id))
     return result.scalar_one_or_none()
 
@@ -110,7 +112,7 @@ def _system_for(repo: Repository | None, repo_id: str) -> System:
 
 
 async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
-    repo = await _load_repo(session, repo_id)
+    repo = await load_repo(session, repo_id)
     system = _system_for(repo, repo_id)
     externals, _ = await _external_views(session, repo_id)
 

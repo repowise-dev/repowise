@@ -20,6 +20,7 @@ from repowise.server.schemas import (
 )
 from repowise.server.services.module_health import (
     aggregate_modules,
+    build_single_file_health,
     detail_extras,
     summarize,
 )
@@ -75,17 +76,50 @@ async def get_module_health(
     module_path: str,
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> ModuleHealthDetail:
-    accs = await aggregate_modules(session, repo_id)
-    acc = accs.get(unquote(module_path))
-    if acc is None:
-        raise HTTPException(status_code=404, detail="Module not found")
+    from repowise.server.services.module_health import module_of
 
-    base = summarize(acc)
-    extras = detail_extras(acc)
-    return ModuleHealthDetail(
-        **base,
-        owners=[ModuleHealthOwner(**o) for o in extras["owners"]],
-        top_hotspots=extras["top_hotspots"],
-        governing_decisions=extras["governing_decisions"],
-        contributor_count=extras["contributor_count"],
-    )
+    accs = await aggregate_modules(session, repo_id)
+    decoded = unquote(module_path)
+
+    # 1. Exact module match
+    acc = accs.get(decoded)
+    if acc is not None:
+        base = summarize(acc)
+        extras = detail_extras(acc)
+        return ModuleHealthDetail(
+            **base,
+            owners=[ModuleHealthOwner(**o) for o in extras["owners"]],
+            top_hotspots=extras["top_hotspots"],
+            governing_decisions=extras["governing_decisions"],
+            contributor_count=extras["contributor_count"],
+        )
+
+    # 2. Single-file health from individual DB rows
+    single = await build_single_file_health(session, repo_id, decoded)
+    if single is not None:
+        owners = single.pop("owners")
+        top_hotspots = single.pop("top_hotspots")
+        governing_decisions = single.pop("governing_decisions")
+        contributor_count = single.pop("contributor_count")
+        return ModuleHealthDetail(
+            **single,
+            owners=[ModuleHealthOwner(**o) for o in owners],
+            top_hotspots=top_hotspots,
+            governing_decisions=governing_decisions,
+            contributor_count=contributor_count,
+        )
+
+    # 3. Parent module fallback
+    acc = accs.get(module_of(decoded))
+    if acc is not None:
+        base = summarize(acc)
+        extras = detail_extras(acc)
+        return ModuleHealthDetail(
+            **base,
+            owners=[ModuleHealthOwner(**o) for o in extras["owners"]],
+            top_hotspots=extras["top_hotspots"],
+            governing_decisions=extras["governing_decisions"],
+            contributor_count=extras["contributor_count"],
+        )
+
+    raise HTTPException(status_code=404, detail="Module not found")

@@ -88,6 +88,21 @@ class _GenerationRun:
         self.dead_code_by_file = build_dead_code_map(dead_code_report)
         self.decisions_by_file, self.decisions_all = build_decision_maps(decision_report)
 
+        # ---- KG context (per-file knowledge graph lookups) ----
+        from repowise.core.generation.kg_context import KnowledgeGraphContext
+
+        kg_path = None
+        if repo_path:
+            rp = Path(repo_path) if not isinstance(repo_path, Path) else repo_path
+            for candidate in [
+                rp / ".repowise" / "knowledge-graph.json",
+                rp / ".understand-anything" / "knowledge-graph.json",
+            ]:
+                if candidate.exists():
+                    kg_path = candidate
+                    break
+        self.kg_ctx = KnowledgeGraphContext(kg_path)
+
         # ---- Run bookkeeping ----
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self.completed_page_summaries: dict[str, str] = {}
@@ -173,6 +188,8 @@ class _GenerationRun:
 
         from ..selection import SelectionInputs, select_pages
 
+        kg_scores = _compute_kg_file_scores(self.kg_ctx)
+
         selection = select_pages(
             SelectionInputs(
                 parsed_files=parsed_files_for_selection,
@@ -183,6 +200,7 @@ class _GenerationRun:
                 sccs=list(self.sccs),
                 git_meta_map=self.git_meta_map,
                 config=self.config,
+                kg_file_scores=kg_scores or None,
             )
         )
 
@@ -200,6 +218,7 @@ class _GenerationRun:
             self.sel_file_paths,
             self.pagerank,
             getattr(self.config, "tier1_top_n", None),
+            kg_file_scores=kg_scores or None,
         )
 
         # Sort code_files for stable level-2 ordering: selected files first
@@ -215,12 +234,19 @@ class _GenerationRun:
 
     def _announce_total(self) -> None:
         counts = self.selection.counts()
+        layer_page_count = 0
+        if self.kg_ctx.available:
+            layer_page_count = sum(
+                1 for l in self.kg_ctx.get_layers()
+                if len([n for n in l.get("nodeIds", []) if n.startswith("file:")]) >= 3
+            )
         estimated_total = (
             counts["api_contract"]
             + counts["symbol_spotlight"]
             + counts["file_page"]
             + counts["scc_page"]
             + counts["module_page"]
+            + layer_page_count
             + int(self.selection.emit_repo_overview)
             + int(self.selection.emit_arch_diagram)
             + counts["infra_page"]
@@ -320,6 +346,9 @@ class _GenerationRun:
         # Level 4 (module_page).
         all_pages.extend(await self.run_level(_levels.build_level4_coros(self), 4))
 
+        # Level 5 (layer_page) — one page per KG layer.
+        all_pages.extend(await self.run_level(_levels.build_level5_coros(self), 5))
+
         # Levels 6 (repo_overview + architecture_diagram), 7 (infra_page),
         # and 8 (onboarding) share no data dependencies — run merged.
         final = (
@@ -340,6 +369,18 @@ class _GenerationRun:
         except Exception as exc:
             log.debug("interlinking.failed", error=str(exc))
 
+        # Post-generation: link KG tour steps to wiki page IDs.
+        if self.kg_ctx.available and self.repo_path:
+            try:
+                from ..kg_enrichment import enrich_tour_with_wiki_links
+
+                rp = Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
+                kg_path = rp / ".repowise" / "knowledge-graph.json"
+                if kg_path.exists():
+                    enrich_tour_with_wiki_links(kg_path, all_pages)
+            except Exception as exc:
+                log.debug("kg_enrichment.failed", error=str(exc))
+
         if self.job_system is not None and self.job_id is not None:
             self.job_system.complete_job(self.job_id)
 
@@ -350,6 +391,27 @@ class _GenerationRun:
             model=self.gen._provider.model_name,
         )
         return all_pages
+
+
+def _compute_kg_file_scores(kg_ctx: Any) -> dict[str, float]:
+    """Derive per-file KG bonus scores from tour membership and role."""
+    if not kg_ctx.available:
+        return {}
+    scores: dict[str, float] = {}
+    for layer in kg_ctx.get_layers():
+        for node_id in layer.get("nodeIds", []):
+            if node_id.startswith("file:"):
+                fp = node_id[5:]
+                fc = kg_ctx.get_file_context(fp)
+                if fc:
+                    bonus = 0.0
+                    if fc.tour_step:
+                        bonus += 0.30
+                    if fc.role == "edge_connector":
+                        bonus += 0.15
+                    if bonus > scores.get(fp, 0.0):
+                        scores[fp] = bonus
+    return scores
 
 
 def _embed_item(page: GeneratedPage) -> tuple[str, str, dict]:

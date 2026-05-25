@@ -62,6 +62,18 @@ SLOT_TITLES: dict[str, str] = {
 }
 
 
+SLOT_PREREQUISITES: dict[str, tuple[str, ...]] = {
+    SLOT_PROJECT_OVERVIEW: (),
+    SLOT_ARCHITECTURE_GUIDE: (),
+    SLOT_GETTING_STARTED: (),
+    SLOT_CODEBASE_MAP: (SLOT_PROJECT_OVERVIEW,),
+    SLOT_KEY_CONCEPTS: (SLOT_PROJECT_OVERVIEW, SLOT_ARCHITECTURE_GUIDE),
+    SLOT_HOW_IT_WORKS: (SLOT_ARCHITECTURE_GUIDE, SLOT_KEY_CONCEPTS),
+    SLOT_DEVELOPMENT_GUIDE: (SLOT_GETTING_STARTED, SLOT_HOW_IT_WORKS),
+    SLOT_ACTIVE_LANDSCAPE: (SLOT_CODEBASE_MAP,),
+}
+
+
 def target_path(slot: str) -> str:
     """Canonical wiki ``target_path`` for an onboarding slot."""
     return f"onboarding/{slot}"

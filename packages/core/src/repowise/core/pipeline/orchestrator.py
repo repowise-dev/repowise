@@ -193,6 +193,9 @@ class PipelineResult:
     # for the same reason as tech_stack.
     external_systems: list[dict] = field(default_factory=list)
 
+    knowledge_graph_result: Any | None = None
+    """``KnowledgeGraphResult`` or None — populated after community detection."""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -221,6 +224,7 @@ async def run_pipeline(
     progress: ProgressCallback | None = None,
     cost_tracker: Any | None = None,
     generation_config: Any | None = None,
+    existing_kg_fingerprint: str | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -435,6 +439,64 @@ async def run_pipeline(
         progress=progress,
     )
 
+    # ---- Knowledge Graph skeleton (deterministic, no LLM) ----------------
+    knowledge_graph_result = None
+    try:
+        from repowise.core.analysis.knowledge_graph import (
+            KnowledgeGraphResult,
+            build_knowledge_graph_skeleton,
+            compute_kg_fingerprint,
+            should_skip_kg_rebuild,
+        )
+
+        new_fingerprint = compute_kg_fingerprint(graph_builder)
+
+        kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
+        if should_skip_kg_rebuild(existing_kg_fingerprint, new_fingerprint, kg_json_path):
+            knowledge_graph_result = KnowledgeGraphResult.from_file(kg_json_path)
+            if knowledge_graph_result is not None:
+                knowledge_graph_result.fingerprint = new_fingerprint
+                logger.info(
+                    "knowledge_graph.skip",
+                    reason="fingerprint_unchanged",
+                    fingerprint=new_fingerprint,
+                )
+                if progress:
+                    progress.on_message(
+                        "info",
+                        f"  ↳ KG unchanged (fingerprint {new_fingerprint[:8]}…), reusing",
+                    )
+
+        tech_stack_dicts = [
+            {"name": t.name, "version": t.version, "category": t.category}
+            for t in tech_items
+        ]
+
+        if knowledge_graph_result is None:
+            if progress:
+                progress.on_phase_start("knowledge_graph.skeleton", None)
+            knowledge_graph_result = build_knowledge_graph_skeleton(
+                parsed_files=parsed_files,
+                graph_builder=graph_builder,
+                repo_structure=repo_structure,
+                tech_stack=tech_stack_dicts,
+                external_systems=external_systems,
+                git_meta_map=git_meta_map,
+                dead_code_report=dead_code_report,
+                repo_path=repo_path,
+            )
+            knowledge_graph_result.fingerprint = new_fingerprint
+            if progress:
+                progress.on_message(
+                    "info",
+                    f"  ↳ KG skeleton: {len(knowledge_graph_result.nodes)} nodes, "
+                    f"{len(knowledge_graph_result.edges)} edges, "
+                    f"{len(knowledge_graph_result.layers)} layers",
+                )
+        _phase_done(progress, "knowledge_graph.skeleton")
+    except (ValueError, KeyError, OSError, RuntimeError) as kg_err:
+        logger.error("kg_skeleton_building_failed", error=str(kg_err), exc_info=True)
+
     # ---- Phase 3: Generation (optional) ------------------------------------
     generated_pages: list[Any] | None = None
     if generate_docs and llm_client is not None:
@@ -485,6 +547,38 @@ async def run_pipeline(
             external_systems=external_systems,
         )
 
+    # ---- Knowledge Graph LLM enrichment (layer naming + tour) -----------------
+    if (
+        knowledge_graph_result is not None
+        and generate_docs
+        and llm_client is not None
+    ):
+        try:
+            from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
+
+            if progress:
+                progress.on_phase_start("knowledge_graph.enrich", None)
+            _kg_reasoning = getattr(resolved_generation_config, "reasoning", "auto") if resolved_generation_config else "auto"
+            knowledge_graph_result = await enrich_knowledge_graph(
+                kg_skeleton=knowledge_graph_result,
+                llm_client=llm_client,
+                graph_builder=graph_builder,
+                repo_structure=repo_structure,
+                tech_stack=tech_stack_dicts,
+                generated_pages=generated_pages,
+                progress=progress,
+                reasoning=_kg_reasoning,
+            )
+            if progress:
+                progress.on_message(
+                    "info",
+                    f"  ↳ KG enriched: {len(knowledge_graph_result.layers)} layers, "
+                    f"{len(knowledge_graph_result.tour)} tour steps",
+                )
+            _phase_done(progress, "knowledge_graph.enrich")
+        except (ValueError, KeyError, OSError, RuntimeError) as exc:
+            logger.error("knowledge_graph_enrichment_failed", error=str(exc), exc_info=True)
+
     # ---- Execution flow tracing -----------------------------------------------
     execution_flow_report = None
     if progress:
@@ -519,6 +613,7 @@ async def run_pipeline(
         decision_report=decision_report,
         health_report=health_report,
         execution_flow_report=execution_flow_report,
+        knowledge_graph_result=knowledge_graph_result,
         generated_pages=generated_pages,
         traversal_stats=traversal_stats,
         repo_name=repo_path.name,

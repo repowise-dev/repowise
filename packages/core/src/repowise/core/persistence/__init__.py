@@ -24,6 +24,8 @@ from .crud import (
     bulk_upsert_decisions,
     bulk_upsert_external_systems,
     count_chat_messages,
+    get_kg_layers,
+    get_kg_tour_steps,
     create_chat_message,
     create_conversation,
     delete_conversation,
@@ -77,6 +79,8 @@ from .crud import (
     upsert_git_metadata,
     upsert_git_metadata_bulk,
     upsert_page,
+    upsert_kg_layers,
+    upsert_kg_tour_steps,
     upsert_page_from_generated,
     upsert_repository,
 )
@@ -105,6 +109,8 @@ from .models import (
     GraphEdge,
     GraphMetric,
     GraphNode,
+    KnowledgeGraphLayer,
+    KnowledgeGraphTourStep,
     Page,
     PageVersion,
     Repository,
@@ -139,6 +145,9 @@ __all__ = [
     "GraphEdge",
     "GraphMetric",
     "GraphNode",
+    # knowledge graph
+    "KnowledgeGraphLayer",
+    "KnowledgeGraphTourStep",
     # vector store
     "InMemoryVectorStore",
     "LanceDBVectorStore",
@@ -183,6 +192,9 @@ __all__ = [
     "get_db_url",
     # dead code crud
     "get_dead_code_findings",
+    # knowledge graph crud
+    "get_kg_layers",
+    "get_kg_tour_steps",
     "get_dead_code_summary",
     "get_decision",
     "get_decision_health_summary",
@@ -224,6 +236,8 @@ __all__ = [
     "update_job_status",
     "upsert_decision",
     "upsert_generation_job",
+    "upsert_kg_layers",
+    "upsert_kg_tour_steps",
     "upsert_git_metadata",
     "upsert_git_metadata_bulk",
     "upsert_page",

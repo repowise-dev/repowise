@@ -11,6 +11,8 @@ from sqlalchemy import func as sa_func, select
 from repowise.core.persistence.crud import (
     get_health_metrics as _get_health_metrics,
     get_health_summary as _get_health_summary,
+    get_kg_layers as _get_kg_layers,
+    get_kg_tour_steps as _get_kg_tour_steps,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -396,6 +398,22 @@ async def get_overview(repo: str | None = None) -> dict:
                 }
             )
 
+        # D. KG architecture layers + tour availability -------------------------
+        kg_layers = await _get_kg_layers(session, repository.id)
+        kg_tour = await _get_kg_tour_steps(session, repository.id)
+        architecture: dict[str, Any] = {}
+        if kg_layers:
+            architecture["layers"] = [
+                {
+                    "name": l.name,
+                    "description": (l.description or "")[:120],
+                    "file_count": len(json.loads(l.node_ids_json) if l.node_ids_json else []),
+                }
+                for l in kg_layers
+            ]
+            architecture["tour_available"] = bool(kg_tour)
+            architecture["tour_step_count"] = len(kg_tour)
+
         # Older indexes persisted titles like "Repository Overview: repo" because
         # repo_name was not passed through to generate_repo_overview. Substitute
         # the actual repo name back in so the response is useful without reindex.
@@ -452,6 +470,9 @@ async def get_overview(repo: str | None = None) -> dict:
             "knowledge_map": knowledge_map,
             "community_summary": community_summary,
         }
+
+        if architecture:
+            result["architecture"] = architecture
 
         # Append workspace context footer when in workspace mode
         ws_footer = _build_workspace_footer()

@@ -46,7 +46,7 @@ export function C4DetailPanelHost({
     ? {
         title: page.title,
         excerpt: page.content.split("\n").slice(0, 6).join("\n"),
-        href: `/repos/${repoId}/docs/${encodeURIComponent(page.id)}`,
+        href: `/repos/${repoId}/docs?page=${encodeURIComponent(page.id)}`,
       }
     : null;
 
@@ -58,7 +58,7 @@ export function C4DetailPanelHost({
       data={data}
       loading={isLoading}
       doc={doc}
-      docContent={page?.content ?? null}
+      docContent={page ? (page.content.length > 300 ? page.content.slice(0, 300).trimEnd() + "..." : page.content) : null}
       renderDoc={(content) => <ChatMarkdown content={content} />}
       health={
         health

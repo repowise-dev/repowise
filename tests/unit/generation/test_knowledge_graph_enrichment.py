@@ -1,0 +1,276 @@
+"""Tests for LLM-enriched knowledge graph layers and tour generation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from repowise.core.generation.knowledge_graph import (
+    _backfill_summaries,
+    _parse_json_response,
+    build_deterministic_tour,
+    enrich_knowledge_graph,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FakeKGResult:
+    project: dict = field(default_factory=dict)
+    nodes: list[dict] = field(default_factory=list)
+    edges: list[dict] = field(default_factory=list)
+    layers: list[dict] = field(default_factory=list)
+    tour: list[dict] = field(default_factory=list)
+    fingerprint: str = ""
+
+
+def _make_llm_client(response_content: str = "{}"):
+    client = AsyncMock()
+    client.generate.return_value = SimpleNamespace(
+        content=response_content,
+        input_tokens=100,
+        output_tokens=50,
+    )
+    return client
+
+
+def _make_graph_builder(pagerank: dict[str, float] | None = None):
+    builder = MagicMock()
+    builder.pagerank.return_value = pagerank or {}
+    builder.betweenness_centrality.return_value = {}
+    return builder
+
+
+def _make_repo_structure(entry_points: list[str] | None = None):
+    return SimpleNamespace(
+        is_monorepo=False,
+        entry_points=entry_points or ["src/main.py"],
+        total_files=10,
+        total_loc=1000,
+    )
+
+
+def _make_kg_skeleton(layers: list[dict] | None = None, nodes: list[dict] | None = None):
+    if layers is None:
+        layers = [
+            {"id": "layer:core", "name": "src/core", "description": "", "nodeIds": ["file:src/core.py", "file:src/utils.py"]},
+            {"id": "layer:cli", "name": "cli", "description": "", "nodeIds": ["file:src/main.py"]},
+        ]
+    if nodes is None:
+        nodes = [
+            {"id": "file:src/core.py", "type": "file", "filePath": "src/core.py", "summary": ""},
+            {"id": "file:src/utils.py", "type": "file", "filePath": "src/utils.py", "summary": ""},
+            {"id": "file:src/main.py", "type": "file", "filePath": "src/main.py", "summary": ""},
+        ]
+    return FakeKGResult(
+        layers=layers,
+        nodes=nodes,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Layer enrichment tests
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichLayers:
+    @pytest.mark.asyncio
+    async def test_enriches_layer_names(self):
+        llm = _make_llm_client(
+            '{"layers": [{"index": 0, "name": "Core Pipeline", "description": "Handles data flow"}, '
+            '{"index": 1, "name": "CLI Interface", "description": "Command line entry"}]}'
+        )
+        skeleton = _make_kg_skeleton()
+        builder = _make_graph_builder({"src/core.py": 0.5, "src/main.py": 0.3})
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert result.layers[0]["name"] == "Core Pipeline"
+        assert result.layers[0]["description"] == "Handles data flow"
+        assert result.layers[1]["name"] == "CLI Interface"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_on_llm_failure(self):
+        llm = AsyncMock()
+        llm.generate.side_effect = RuntimeError("LLM is down")
+        skeleton = _make_kg_skeleton()
+        builder = _make_graph_builder()
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert result.layers[0]["name"] == "src/core"  # heuristic label preserved
+
+    @pytest.mark.asyncio
+    async def test_falls_back_on_invalid_json(self):
+        llm = _make_llm_client("not json at all {{{ broken")
+        skeleton = _make_kg_skeleton()
+        builder = _make_graph_builder()
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert result.layers[0]["name"] == "src/core"  # heuristic preserved
+
+    @pytest.mark.asyncio
+    async def test_empty_layers_no_crash(self):
+        llm = _make_llm_client('{"tour": []}')
+        skeleton = _make_kg_skeleton(layers=[])
+        builder = _make_graph_builder()
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert result.layers == []
+
+
+# ---------------------------------------------------------------------------
+# Tour generation tests
+# ---------------------------------------------------------------------------
+
+
+class TestTourGeneration:
+    @pytest.mark.asyncio
+    async def test_tour_generated_from_llm(self):
+        tour_response = (
+            '{"tour": [{"order": 1, "title": "Start Here", '
+            '"description": "Begin with the CLI entry point.", '
+            '"files": ["src/main.py"]}]}'
+        )
+        call_count = 0
+
+        async def _side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SimpleNamespace(content='{"layers": []}', input_tokens=10, output_tokens=10)
+            return SimpleNamespace(content=tour_response, input_tokens=100, output_tokens=50)
+
+        llm = AsyncMock()
+        llm.generate.side_effect = _side_effect
+
+        skeleton = _make_kg_skeleton()
+        builder = _make_graph_builder({"src/main.py": 0.5})
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert len(result.tour) == 1
+        assert result.tour[0]["order"] == 1
+        assert result.tour[0]["title"] == "Start Here"
+        assert "file:src/main.py" in result.tour[0]["nodeIds"]
+
+    @pytest.mark.asyncio
+    async def test_tour_fallback_on_failure(self):
+        call_count = 0
+
+        async def _side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SimpleNamespace(content='{"layers": []}', input_tokens=10, output_tokens=10)
+            raise RuntimeError("Tour generation failed")
+
+        llm = AsyncMock()
+        llm.generate.side_effect = _side_effect
+
+        skeleton = _make_kg_skeleton()
+        builder = _make_graph_builder({"src/main.py": 0.5, "src/core.py": 0.3})
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert len(result.tour) >= 1  # deterministic fallback
+
+
+# ---------------------------------------------------------------------------
+# Deterministic tour fallback tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicTour:
+    def test_basic_tour(self):
+        pagerank = {"src/main.py": 0.5, "src/core.py": 0.3, "src/utils.py": 0.1}
+        entry_points = ["src/main.py"]
+        layers = [
+            {"name": "Core", "nodeIds": ["file:src/core.py", "file:src/utils.py"]},
+            {"name": "CLI", "nodeIds": ["file:src/main.py"]},
+        ]
+        tour = build_deterministic_tour(pagerank, entry_points, layers)
+        assert len(tour) >= 2
+        assert tour[0]["order"] == 1
+        assert tour[0]["title"] == "Entry Point"
+        assert "file:src/main.py" in tour[0]["nodeIds"]
+
+    def test_no_entry_points(self):
+        pagerank = {"src/core.py": 0.5}
+        layers = [{"name": "Core", "nodeIds": ["file:src/core.py"]}]
+        tour = build_deterministic_tour(pagerank, [], layers)
+        assert len(tour) >= 1
+        assert tour[0]["title"] == "Core"
+
+    def test_empty_layers(self):
+        tour = build_deterministic_tour({}, ["main.py"], [])
+        assert len(tour) == 1
+        assert tour[0]["title"] == "Entry Point"
+
+
+# ---------------------------------------------------------------------------
+# Summary backfill tests
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryBackfill:
+    def test_populates_summaries(self):
+        kg = _make_kg_skeleton()
+        pages = [
+            SimpleNamespace(target_path="src/core.py", summary="Core business logic module"),
+        ]
+        _backfill_summaries(kg, pages)
+        core_node = next(n for n in kg.nodes if n["filePath"] == "src/core.py")
+        assert core_node["summary"] == "Core business logic module"
+
+    def test_does_not_overwrite_existing(self):
+        kg = _make_kg_skeleton(nodes=[
+            {"id": "file:src/core.py", "type": "file", "filePath": "src/core.py", "summary": "Existing summary"},
+        ])
+        pages = [
+            SimpleNamespace(target_path="src/core.py", summary="New summary"),
+        ]
+        _backfill_summaries(kg, pages)
+        assert kg.nodes[0]["summary"] == "Existing summary"
+
+    def test_handles_no_pages(self):
+        kg = _make_kg_skeleton()
+        _backfill_summaries(kg, [])
+        assert all(n["summary"] == "" for n in kg.nodes)
+
+
+# ---------------------------------------------------------------------------
+# JSON parsing tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseJsonResponse:
+    def test_plain_json(self):
+        result = _parse_json_response('{"layers": []}')
+        assert result == {"layers": []}
+
+    def test_markdown_fenced(self):
+        result = _parse_json_response('```json\n{"layers": []}\n```')
+        assert result == {"layers": []}
+
+    def test_json_with_preamble(self):
+        result = _parse_json_response('Here is the result:\n{"layers": []}')
+        assert result == {"layers": []}
+
+    def test_invalid_returns_none(self):
+        result = _parse_json_response("not json at all")
+        assert result is None
+
+    def test_empty_string(self):
+        result = _parse_json_response("")
+        assert result is None

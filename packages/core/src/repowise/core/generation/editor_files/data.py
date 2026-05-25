@@ -55,6 +55,20 @@ class CodeHealthBlock:
 
 
 @dataclass(frozen=True)
+class KGLayerSummary:
+    name: str
+    file_count: int
+    description: str
+
+
+@dataclass(frozen=True)
+class KGTourStepSummary:
+    order: int
+    title: str
+    primary_file: str
+
+
+@dataclass(frozen=True)
 class EditorFileData:
     repo_name: str
     indexed_at: str  # date only: "2026-03-28"
@@ -68,6 +82,8 @@ class EditorFileData:
     build_commands: dict[str, str] = field(default_factory=dict)
     avg_confidence: float = 0.0
     code_health: CodeHealthBlock | None = None
+    kg_layers: list[KGLayerSummary] = field(default_factory=list)
+    kg_tour: list[KGTourStepSummary] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

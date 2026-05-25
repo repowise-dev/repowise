@@ -314,5 +314,7 @@ def test_base_includes_all_models():
         "coverage_files",
         "pipeline_jobs",
         "graph_metrics",
+        "knowledge_graph_layers",
+        "knowledge_graph_tour_steps",
     }
     assert expected == table_names

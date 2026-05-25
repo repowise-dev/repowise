@@ -1,0 +1,59 @@
+You are documenting the architectural layer **{{ ctx.layer_name }}**.
+
+## Layer Overview
+
+**Layer:** {{ ctx.layer_name }} | **Files:** {{ ctx.file_count }}{% if ctx.entry_points %} | **Entry points:** {{ ctx.entry_points | length }}{% endif %}{% if ctx.edge_connectors %} | **Edge connectors:** {{ ctx.edge_connectors | length }}{% endif %}
+
+{% if ctx.layer_description %}{{ ctx.layer_description }}{% endif %}
+
+{% if ctx.key_files %}
+## Key Components
+The highest-importance files in this layer — read these first to understand the subsystem.
+{% for kf in ctx.key_files %}
+- `{{ kf.path }}`{% if kf.role == "entry_point" %} *(entry point)*{% elif kf.role == "edge_connector" %} *(edge connector)*{% endif %}{% if kf.summary %} — {{ kf.summary }}{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if ctx.deps_out or ctx.deps_in %}
+## Inter-Layer Dependencies
+{% if ctx.deps_out %}
+**Depends on (outgoing):**
+{% for dep in ctx.deps_out %}
+- **{{ dep.target_layer }}** ({{ dep.edge_count }} import{{ "s" if dep.edge_count != 1 else "" }})
+{% endfor %}
+{% endif %}
+{% if ctx.deps_in %}
+**Depended on by (incoming):**
+{% for dep in ctx.deps_in %}
+- **{{ dep.source_layer }}** ({{ dep.edge_count }} import{{ "s" if dep.edge_count != 1 else "" }})
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if ctx.entry_points %}
+## Entry Points
+Files that are not imported by other files — top-level orchestrators in this layer:
+{% for ep in ctx.entry_points %}
+- `{{ ep }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.edge_connectors %}
+## Edge Connectors
+Files imported by other layers — the public interface of this subsystem:
+{% for ec in ctx.edge_connectors %}
+- `{{ ec }}`
+{% endfor %}
+{% endif %}
+
+{% if ctx.tour_steps %}
+## Codebase Tour References
+This layer is referenced in the following tour steps:
+{% for step in ctx.tour_steps %}
+- **Step {{ step.order }}: {{ step.title }}** — {{ step.description }}
+{% endfor %}
+{% endif %}
+
+Generate a complete wiki page for this architectural layer. Required sections in the
+output: ## Overview, ## Key Components, ## Data Flow, ## Architecture Notes.
+Use the supplied key files, dependencies, and tour references to ground the narrative.

@@ -106,6 +106,7 @@ class SelectionInputs:
     sccs: list[Any]
     git_meta_map: dict[str, dict] | None
     config: Any  # GenerationConfig — duck-typed to avoid the import cycle
+    kg_file_scores: dict[str, float] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +142,7 @@ def _build_file_candidates(
     max_pr = max(inputs.pagerank.values(), default=0.0)
     max_bet = max(inputs.betweenness.values(), default=0.0)
     git = inputs.git_meta_map or {}
+    kg_scores = inputs.kg_file_scores or {}
 
     scored: list[tuple[float, str]] = []
     for p in inputs.parsed_files:
@@ -155,6 +157,7 @@ def _build_file_candidates(
             max_pagerank=max_pr,
             max_betweenness=max_bet,
             is_hotspot=is_hotspot,
+            kg_bonus=kg_scores.get(path, 0.0),
         )
         if s > 0.0:
             scored.append((s, path))

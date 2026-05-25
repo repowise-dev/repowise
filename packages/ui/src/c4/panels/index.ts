@@ -11,3 +11,20 @@ export type {
   C4Health,
   C4DocSummary,
 } from "./C4DetailPanel";
+
+export { Sidebar } from "./Sidebar";
+export type { SidebarProps } from "./Sidebar";
+export { ProjectOverview } from "./ProjectOverview";
+export { ArchNodeInfo } from "./ArchNodeInfo";
+export type { ArchNodeInfoProps, ArchNodeHealth } from "./ArchNodeInfo";
+export { FileExplorer } from "./FileExplorer";
+export { SearchBar } from "./SearchBar";
+export { FilterPanel } from "./FilterPanel";
+export { NodeTypeCategoryFilters } from "./NodeTypeCategoryFilters";
+export { LearnPanel } from "./LearnPanel";
+export { PersonaSelector } from "./PersonaSelector";
+export { CodeViewer, getLanguageFromPath } from "./CodeViewer";
+export type { CodeViewerProps } from "./CodeViewer";
+export { PathFinderModal } from "./PathFinderModal";
+export { NodeTooltip } from "./NodeTooltip";
+export type { NodeTooltipProps } from "./NodeTooltip";

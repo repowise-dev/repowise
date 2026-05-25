@@ -10,10 +10,12 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, FileImage, FileType2, Copy, Check } from "lucide-react";
+import { Download, FileImage, FileType2, FileJson, Copy, Check } from "lucide-react";
 import type { Edge, Node as FlowNode } from "@xyflow/react";
-import { buildC4Svg, downloadSvg } from "./svg-exporter";
+import { buildC4Svg, downloadSvg, triggerDownload } from "./svg-exporter";
 import { downloadPng } from "./png-exporter";
+import { exportArchitectureJson } from "./json-exporter";
+import type { ArchitectureView, ArchFilters, Persona } from "../types";
 
 export interface C4ExportMenuProps {
   nodes: FlowNode[];
@@ -26,6 +28,12 @@ export interface C4ExportMenuProps {
   fetchMermaid?: () => Promise<string>;
   /** Disabled when the diagram is empty / still loading. */
   disabled?: boolean;
+  /** Architecture view data for JSON export. JSON option hidden if omitted. */
+  architectureView?: ArchitectureView;
+  /** Current active filters. Required with architectureView. */
+  activeFilters?: ArchFilters;
+  /** Current persona. Required with architectureView. */
+  activePersona?: Persona;
 }
 
 type Status = "idle" | "working" | "copied" | "error";
@@ -37,6 +45,9 @@ export function C4ExportMenu({
   title,
   fetchMermaid,
   disabled,
+  architectureView,
+  activeFilters,
+  activePersona,
 }: C4ExportMenuProps) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
@@ -85,20 +96,19 @@ export function C4ExportMenu({
     }
   }, [fetchMermaid]);
 
+  const onJson = useCallback(() => {
+    if (!architectureView || !activeFilters || !activePersona) return;
+    const json = exportArchitectureJson(architectureView, activeFilters, activePersona);
+    triggerDownload(new Blob([json], { type: "application/json;charset=utf-8" }), `${fileNameStem}-architecture.json`);
+    setOpen(false);
+  }, [architectureView, activeFilters, activePersona, fileNameStem]);
+
   const onMermaidDownload = useCallback(async () => {
     if (!fetchMermaid) return;
     setStatus("working");
     try {
       const text = await fetchMermaid();
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${fileNameStem}.mmd`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      triggerDownload(new Blob([text], { type: "text/plain;charset=utf-8" }), `${fileNameStem}.mmd`);
       setStatus("idle");
       setOpen(false);
     } catch {
@@ -163,6 +173,16 @@ export function C4ExportMenu({
                 icon={<FileType2 size={12} />}
                 label="Download Mermaid (.mmd)"
                 onClick={onMermaidDownload}
+              />
+            </>
+          )}
+          {architectureView && activeFilters && activePersona && (
+            <>
+              <Divider />
+              <MenuItem
+                icon={<FileJson size={12} />}
+                label="Download JSON"
+                onClick={onJson}
               />
             </>
           )}

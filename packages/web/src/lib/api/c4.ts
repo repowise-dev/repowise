@@ -4,7 +4,7 @@
  */
 
 import { apiGet } from "./client";
-import type { C4L1, C4L2, C4L3 } from "@repowise-dev/ui/c4";
+import type { C4L1, C4L2, C4L3, ArchitectureView } from "@repowise-dev/ui/c4";
 
 export async function getC4L1(repoId: string): Promise<C4L1> {
   return apiGet<C4L1>(`/api/graph/${repoId}/c4/l1`);
@@ -44,4 +44,13 @@ export async function getC4Mermaid(
     throw new Error(`Failed to fetch Mermaid C4 source (${res.status})`);
   }
   return res.text();
+}
+
+export async function getArchitectureView(
+  repoId: string,
+  includeSymbols: boolean = false,
+): Promise<ArchitectureView> {
+  return apiGet<ArchitectureView>(`/api/graph/${repoId}/architecture-view`, {
+    include_symbols: includeSymbols,
+  });
 }

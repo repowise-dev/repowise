@@ -184,7 +184,7 @@ function ContainerOrComponentBody(props: C4DetailPanelProps) {
           <KVList rows={[
             ["files", String(node.file_count)],
             ["symbols", String(node.symbol_count)],
-            ["doc coverage", `${Math.round(health.doc_coverage_pct * 100)}%`],
+            ["doc coverage", `${Math.round(health.doc_coverage_pct)}%`],
             ...(health.hotspot_count > 0 ? [["hotspots", String(health.hotspot_count)] as [string, string]] : []),
             ...(health.dead_code_count > 0 ? [["dead code", String(health.dead_code_count)] as [string, string]] : []),
           ]} />

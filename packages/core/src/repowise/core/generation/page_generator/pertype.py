@@ -16,7 +16,7 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
 from .. import onboarding as _onboarding
-from ..context_assembler import FilePageContext
+from ..context_assembler import FilePageContext, LayerPageContext
 from ..models import GENERATION_LEVELS, GeneratedPage, compute_source_hash
 
 log = structlog.get_logger(__name__)
@@ -304,6 +304,24 @@ class PerTypeGenerationMixin:
             slot = _onboarding.PROMOTED_SLOTS.get(page.page_type)
             if slot is not None:
                 page.metadata["onboarding_slot"] = slot
+
+    async def generate_layer_page(
+        self,
+        ctx: LayerPageContext,
+    ) -> GeneratedPage:
+        user_prompt = self._render("layer_page.j2", ctx=ctx)
+        target = f"layer:{ctx.layer_name}"
+        response = await self._call_provider(
+            "layer_page", user_prompt, str(uuid.uuid4()), target_path=target
+        )
+        return self._build_generated_page(
+            "layer_page",
+            target,
+            f"Layer: {ctx.layer_name}",
+            response,
+            compute_source_hash(user_prompt),
+            GENERATION_LEVELS["layer_page"],
+        )
 
     async def generate_infra_page(
         self,

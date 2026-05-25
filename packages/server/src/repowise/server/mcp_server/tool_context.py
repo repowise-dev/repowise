@@ -54,6 +54,8 @@ from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_node,
     get_graph_nodes_by_ids,
+    get_kg_layers,
+    get_kg_tour_steps,
     get_node_degree_counts,
 )
 from repowise.core.persistence.database import get_session
@@ -605,6 +607,40 @@ async def _resolve_one_target(
             freshness["is_stale"] = None
         result_data["freshness"] = freshness
 
+    # --- KG layer + tour context (Phase 9) ---
+    if target_type == "file" and file_path_for_git:
+        kg_layers = await get_kg_layers(session, repo_id)
+        if kg_layers:
+            for _l in kg_layers:
+                _l._parsed_node_ids = json.loads(_l.node_ids_json) if _l.node_ids_json else []
+            file_layer = _find_layer_for_file(file_path_for_git, kg_layers)
+            if file_layer:
+                edge_res = await session.execute(
+                    select(GraphEdge).where(
+                        GraphEdge.repository_id == repo_id,
+                        GraphEdge.target_node_id == file_path_for_git,
+                        GraphEdge.edge_type == "imports",
+                    )
+                )
+                incoming_edges = list(edge_res.scalars())
+                result_data["architectural_layer"] = {
+                    "name": file_layer.name,
+                    "description": (file_layer.description or "")[:200],
+                    "role": _classify_file_role(file_path_for_git, file_layer, incoming_edges),
+                }
+
+            kg_tour = await get_kg_tour_steps(session, repo_id)
+            if kg_tour:
+                for _s in kg_tour:
+                    _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
+                file_tour_step = _find_tour_step_for_file(file_path_for_git, kg_tour)
+                if file_tour_step:
+                    result_data["tour_context"] = {
+                        "step": file_tour_step.step_order,
+                        "title": file_tour_step.title,
+                        "why": (file_tour_step.description or "")[:200],
+                    }
+
     # --- Callers / Callees (replaces get_callers_callees) ---
     want_callers = bool(include and "callers" in include)
     want_callees = bool(include and "callees" in include)
@@ -938,6 +974,43 @@ async def _resolve_health(
             "branch_coverage_pct": metric.branch_coverage_pct,
         }
     result_data["health"] = health
+
+
+def _find_layer_for_file(path: str, layers: list) -> Any | None:
+    for layer in layers:
+        node_ids = getattr(layer, "_parsed_node_ids", None)
+        if node_ids is None:
+            node_ids = json.loads(layer.node_ids_json) if layer.node_ids_json else []
+        if f"file:{path}" in node_ids or path in node_ids:
+            return layer
+    return None
+
+
+def _find_tour_step_for_file(path: str, steps: list) -> Any | None:
+    for step in steps:
+        node_ids = getattr(step, "_parsed_node_ids", None)
+        if node_ids is None:
+            node_ids = json.loads(step.node_ids_json) if step.node_ids_json else []
+        if f"file:{path}" in node_ids or path in node_ids:
+            return step
+    return None
+
+
+def _classify_file_role(path: str, layer: Any, incoming_edges: list) -> str:
+    raw = getattr(layer, "_parsed_node_ids", None)
+    if raw is None:
+        raw = json.loads(layer.node_ids_json) if layer.node_ids_json else []
+    node_ids = set(raw)
+    cross_layer = [
+        e for e in incoming_edges
+        if f"file:{e.source_node_id}" not in node_ids
+        and e.source_node_id not in node_ids
+    ]
+    if cross_layer:
+        return "edge_connector"
+    if not incoming_edges:
+        return "entry_point"
+    return "internal"
 
 
 def _estimate_tokens(obj: Any) -> int:

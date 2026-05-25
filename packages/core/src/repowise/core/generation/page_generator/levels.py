@@ -143,6 +143,7 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
     coros: list[tuple[str, Any]] = []
     for p in run.code_files:
+        kg_file_ctx = run.kg_ctx.get_file_context(p.file_info.path) if run.kg_ctx.available else None
         ctx: FilePageContext = gen._assembler.assemble_file_page(
             p,
             run.graph,
@@ -154,6 +155,7 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             page_summaries=run.completed_page_summaries,
             dead_code_findings=run.dead_code_by_file.get(p.file_info.path),
             decision_records=run.decisions_by_file.get(p.file_info.path),
+            kg_context=kg_file_ctx,
         )
         run.file_page_contexts[p.file_info.path] = ctx
         path = p.file_info.path
@@ -216,6 +218,75 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                 ),
             )
         )
+    return coros
+
+
+def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
+    """Level 5 (layer_page): one page per KG layer with >= 3 files."""
+    gen = run.gen
+    coros: list[tuple[str, Any]] = []
+    if not run.kg_ctx.available:
+        return coros
+
+    from ..context_assembler import LayerPageContext
+
+    _MIN_LAYER_FILES = 3
+
+    for layer in run.kg_ctx.get_layers():
+        node_ids = layer.get("nodeIds", [])
+        file_paths = [nid[5:] for nid in node_ids if nid.startswith("file:")]
+        if len(file_paths) < _MIN_LAYER_FILES:
+            continue
+
+        layer_name = layer.get("name", "")
+        page_id = compute_page_id("layer_page", f"layer:{layer_name}")
+        if page_id in run.completed_ids:
+            continue
+
+        key_files: list[dict] = []
+        entry_points: list[str] = []
+        edge_connectors: list[str] = []
+        tour_steps_seen: set[int] = set()
+        tour_steps: list[dict] = []
+
+        ranked = sorted(
+            file_paths,
+            key=lambda p: run.pagerank.get(p, 0.0),
+            reverse=True,
+        )
+        for fp in ranked[:10]:
+            fc = run.kg_ctx.get_file_context(fp)
+            entry: dict = {
+                "path": fp,
+                "role": fc.role if fc else "internal",
+                "summary": (run.completed_page_summaries.get(fp) or "")[:200],
+            }
+            key_files.append(entry)
+            if fc:
+                if fc.role == "entry_point":
+                    entry_points.append(fp)
+                elif fc.role == "edge_connector":
+                    edge_connectors.append(fp)
+                if fc.tour_step and fc.tour_step["order"] not in tour_steps_seen:
+                    tour_steps_seen.add(fc.tour_step["order"])
+                    tour_steps.append(fc.tour_step)
+
+        deps_out, deps_in = run.kg_ctx.get_inter_layer_edges(layer)
+        tour_steps.sort(key=lambda s: s["order"])
+
+        ctx = LayerPageContext(
+            layer_name=layer_name,
+            layer_description=layer.get("description", ""),
+            file_count=len(file_paths),
+            key_files=key_files,
+            deps_out=deps_out,
+            deps_in=deps_in,
+            tour_steps=tour_steps,
+            entry_points=entry_points,
+            edge_connectors=edge_connectors,
+        )
+        coros.append((page_id, gen.generate_layer_page(ctx)))
+
     return coros
 
 
@@ -282,6 +353,12 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     if run.on_subphase is not None:
         with contextlib.suppress(Exception):
             run.on_subphase("onboarding", len(specs))
+    kg_layers: tuple[dict, ...] = ()
+    kg_tour_steps: tuple[dict, ...] = ()
+    if run.kg_ctx and run.kg_ctx.available:
+        kg_layers = tuple(run.kg_ctx.get_layers())
+        kg_tour_steps = tuple(run.kg_ctx.get_tour())
+
     signals = _onboarding.OnboardingSignals(
         repo_name=run.repo_name,
         repo_structure=run.repo_structure,
@@ -297,6 +374,8 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         decisions_all=tuple(run.decisions_all),
         external_systems=tuple(run.external_systems),
         completed_page_summaries=dict(run.completed_page_summaries),
+        kg_layers=kg_layers,
+        kg_tour_steps=kg_tour_steps,
     )
     for spec in specs:
         page_id = compute_page_id("onboarding", _onboarding.target_path(spec.slot))

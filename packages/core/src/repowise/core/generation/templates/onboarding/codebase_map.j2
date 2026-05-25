@@ -16,6 +16,14 @@ spatial. The right tone is: "if you're looking for X, go to Y."
 {% endfor %}
 {% endif %}
 
+{% if ctx.kg_layers %}
+## Architectural Layers (from Knowledge Graph)
+{% for layer in ctx.kg_layers %}
+- **{{ layer.name }}** — {{ layer.description | default("") }}{% if layer.nodeIds %} ({{ layer.nodeIds | length }} files){% endif %}
+
+{% endfor %}
+{% endif %}
+
 ## Top-level directories
 {% for d in ctx.directories %}
 ### `{{ d.path }}/`  ({{ d.file_count }} files, mostly {{ d.dominant_language }})
