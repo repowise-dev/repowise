@@ -50,14 +50,17 @@ async def enrich_knowledge_graph(
     tech_stack: list[dict],
     generated_pages: list[Any] | None = None,
     progress: Any | None = None,
+    reasoning: str = "auto",
 ) -> Any:
     """Enrich deterministic KG with LLM-generated layer names and tour."""
     enriched_layers = await _enrich_layers(
-        kg_skeleton.layers, llm_client, graph_builder, repo_structure, tech_stack
+        kg_skeleton.layers, llm_client, graph_builder, repo_structure, tech_stack,
+        reasoning=reasoning,
     )
 
     tour = await _generate_tour(
-        enriched_layers, llm_client, graph_builder, repo_structure, kg_skeleton
+        enriched_layers, llm_client, graph_builder, repo_structure, kg_skeleton,
+        reasoning=reasoning,
     )
 
     if generated_pages:
@@ -81,6 +84,7 @@ async def _enrich_layers(
     graph_builder: Any,
     repo_structure: Any,
     tech_stack: list[dict],
+    reasoning: str = "auto",
 ) -> list[dict]:
     """Batch-process layers through LLM for semantic naming."""
     if not layers:
@@ -112,6 +116,7 @@ async def _enrich_layers(
                 user_prompt,
                 max_tokens=2048,
                 temperature=0.3,
+                reasoning=reasoning,
             )
             parsed = _parse_json_response(response.content)
             if parsed and "layers" in parsed:
@@ -170,6 +175,7 @@ async def _generate_tour(
     graph_builder: Any,
     repo_structure: Any,
     kg_skeleton: Any,
+    reasoning: str = "auto",
 ) -> list[dict]:
     """Generate guided tour from enriched layers + entry points."""
     pagerank = graph_builder.pagerank()
@@ -196,6 +202,7 @@ async def _generate_tour(
             user_prompt,
             max_tokens=3000,
             temperature=0.3,
+            reasoning=reasoning,
         )
         parsed = _parse_json_response(response.content)
         if parsed and "tour" in parsed:

@@ -260,17 +260,22 @@ def build_knowledge_graph_skeleton(
         })
 
     # ---- Layers (from communities) ---------------------------------------
-    layers: list[dict] = []
+    layers_by_id: dict[str, dict] = {}
     for cid in sorted(ci.keys()):
         info = ci[cid]
         layer_id = f"layer:{_slugify(info.label)}"
-        layers.append({
-            "id": layer_id,
-            "name": info.label,
-            "description": "",
-            "nodeIds": [f"file:{m}" for m in info.members],
-            "display_order": len(layers),
-        })
+        new_nodes = [f"file:{m}" for m in info.members]
+        if layer_id in layers_by_id:
+            layers_by_id[layer_id]["nodeIds"].extend(new_nodes)
+        else:
+            layers_by_id[layer_id] = {
+                "id": layer_id,
+                "name": info.label,
+                "description": "",
+                "nodeIds": new_nodes,
+                "display_order": len(layers_by_id),
+            }
+    layers = list(layers_by_id.values())
 
     return KnowledgeGraphResult(
         project=project,
