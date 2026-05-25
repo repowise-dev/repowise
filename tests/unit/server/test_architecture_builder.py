@@ -338,6 +338,7 @@ async def test_auto_migrate_kg_file_to_db(client: AsyncClient, app) -> None:
 
     async with app.state.session_factory() as session:
         view = await build_architecture_view(session, repo_id)
+        await session.commit()
 
     assert len(view.layers) == 1
     assert view.layers[0].name == "Migrated"
