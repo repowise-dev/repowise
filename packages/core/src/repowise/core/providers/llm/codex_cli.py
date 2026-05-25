@@ -21,6 +21,7 @@ import structlog
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
+    CacheHint,
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
@@ -225,11 +226,7 @@ def _codex_model_options(codex_cmd: str) -> tuple[ProviderModelOption, ...]:
         )
     ]
     for model in sorted(catalog.values(), key=lambda item: item.slug.lower()):
-        notes = (
-            f"default {model.default_effort}"
-            if model.default_effort
-            else ""
-        )
+        notes = f"default {model.default_effort}" if model.default_effort else ""
         options.append(
             ProviderModelOption(
                 model=_model_label(model.slug),
@@ -411,6 +408,7 @@ class CodexCliProvider(BaseProvider):
         temperature: float = 0.3,
         request_id: str | None = None,
         reasoning: ReasoningMode = "auto",
+        cache_hints: tuple[CacheHint, ...] = (),
     ) -> GeneratedResponse:
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
