@@ -88,6 +88,21 @@ class _GenerationRun:
         self.dead_code_by_file = build_dead_code_map(dead_code_report)
         self.decisions_by_file, self.decisions_all = build_decision_maps(decision_report)
 
+        # ---- KG context (per-file knowledge graph lookups) ----
+        from repowise.core.generation.kg_context import KnowledgeGraphContext
+
+        kg_path = None
+        if repo_path:
+            rp = Path(repo_path) if not isinstance(repo_path, Path) else repo_path
+            for candidate in [
+                rp / ".repowise" / "knowledge-graph.json",
+                rp / ".understand-anything" / "knowledge-graph.json",
+            ]:
+                if candidate.exists():
+                    kg_path = candidate
+                    break
+        self.kg_ctx = KnowledgeGraphContext(kg_path)
+
         # ---- Run bookkeeping ----
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
         self.completed_page_summaries: dict[str, str] = {}

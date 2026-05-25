@@ -1,0 +1,170 @@
+"""Knowledge graph context for enriching wiki page generation.
+
+Indexes a knowledge-graph.json file for O(1) per-file lookups during the
+generation pipeline. Each file gets its layer assignment, role classification,
+neighbor list, and optional tour step reference.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+
+@dataclass
+class KGFileContext:
+    """KG context for a single file."""
+
+    layer_name: str
+    layer_description: str
+    role: str  # "entry_point" | "internal" | "edge_connector"
+    neighbors: list[dict] = field(default_factory=list)
+    tour_step: dict | None = None
+    tags: list[str] = field(default_factory=list)
+    node_summary: str = ""
+
+
+class KnowledgeGraphContext:
+    """Index a knowledge-graph.json for fast per-file lookups during generation."""
+
+    def __init__(self, kg_path: Path | None):
+        self._file_to_layer: dict[str, dict] = {}
+        self._file_to_tour: dict[str, dict] = {}
+        self._file_to_node: dict[str, dict] = {}
+        self._layers: list[dict] = []
+        self._edges_by_source: dict[str, list[dict]] = {}
+        self._edges_by_target: dict[str, list[dict]] = {}
+        self._loaded = False
+        if kg_path and kg_path.exists():
+            self._load(kg_path)
+
+    @property
+    def available(self) -> bool:
+        return self._loaded
+
+    def _load(self, path: Path) -> None:
+        try:
+            with open(path) as f:
+                kg = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("kg_context_load_failed", path=str(path), error=str(e))
+            return
+
+        repo_root = path.parent.parent
+
+        for node in kg.get("nodes", []):
+            fp = node.get("filePath", "")
+            if fp:
+                self._file_to_node[fp] = node
+
+        self._layers = kg.get("layers", [])
+        for layer in self._layers:
+            for node_id in layer.get("nodeIds", []):
+                if node_id.startswith("file:"):
+                    fp = node_id[5:]
+                    if fp not in self._file_to_layer:
+                        self._file_to_layer[fp] = layer
+
+        for step in kg.get("tour", []):
+            for node_id in step.get("nodeIds", []):
+                if node_id.startswith("file:"):
+                    fp = node_id[5:]
+                    if (repo_root / fp).exists():
+                        self._file_to_tour[fp] = step
+
+        for edge in kg.get("edges", []):
+            src = edge.get("source", "")
+            tgt = edge.get("target", "")
+            self._edges_by_source.setdefault(src, []).append(edge)
+            self._edges_by_target.setdefault(tgt, []).append(edge)
+
+        self._loaded = True
+        logger.info("kg_context_loaded", nodes=len(self._file_to_node), layers=len(self._layers))
+
+    def get_file_context(self, file_path: str) -> KGFileContext | None:
+        """Return KG context for a single file, or None if not in KG."""
+        if not self._loaded:
+            return None
+        layer = self._file_to_layer.get(file_path)
+        if not layer:
+            return None
+
+        node = self._file_to_node.get(file_path, {})
+        tour = self._file_to_tour.get(file_path)
+        node_id = f"file:{file_path}"
+
+        incoming = self._edges_by_target.get(node_id, [])
+        layer_node_ids = set(layer.get("nodeIds", []))
+        cross_layer_in = [
+            e for e in incoming
+            if e.get("type") == "imports" and e["source"] not in layer_node_ids
+        ]
+
+        if cross_layer_in:
+            role = "edge_connector"
+        elif not incoming:
+            role = "entry_point"
+        else:
+            role = "internal"
+
+        outgoing = self._edges_by_source.get(node_id, [])
+        neighbors: list[dict] = []
+        seen: set[str] = set()
+        for e in (incoming + outgoing)[:20]:
+            other_id = e["target"] if e["source"] == node_id else e["source"]
+            if other_id.startswith("file:") and other_id not in seen:
+                seen.add(other_id)
+                other_path = other_id[5:]
+                neighbors.append({
+                    "path": other_path,
+                    "name": other_path.rsplit("/", 1)[-1],
+                    "same_layer": other_id in layer_node_ids,
+                    "relationship": "imports" if e["source"] == node_id else "imported_by",
+                })
+
+        return KGFileContext(
+            layer_name=layer.get("name", ""),
+            layer_description=layer.get("description", ""),
+            role=role,
+            neighbors=neighbors[:10],
+            tour_step={"order": tour["order"], "title": tour["title"],
+                       "description": tour["description"][:300]} if tour else None,
+            tags=node.get("tags", []),
+            node_summary=node.get("summary", ""),
+        )
+
+    def get_layers(self) -> list[dict]:
+        return self._layers if self._loaded else []
+
+    def get_inter_layer_edges(self, layer: dict) -> tuple[list[dict], list[dict]]:
+        """Return (deps_out, deps_in) aggregated by target/source layer."""
+        layer_node_ids = set(layer.get("nodeIds", []))
+        deps_out: dict[str, int] = {}
+        deps_in: dict[str, int] = {}
+
+        for node_id in layer_node_ids:
+            for e in self._edges_by_source.get(node_id, []):
+                if e.get("type") == "imports" and e["target"] not in layer_node_ids:
+                    target_path = e["target"].removeprefix("file:")
+                    target_layer = self._file_to_layer.get(target_path, {})
+                    if target_layer:
+                        name = target_layer.get("name", "Unknown")
+                        deps_out[name] = deps_out.get(name, 0) + 1
+
+            for e in self._edges_by_target.get(node_id, []):
+                if e.get("type") == "imports" and e["source"] not in layer_node_ids:
+                    source_path = e["source"].removeprefix("file:")
+                    source_layer = self._file_to_layer.get(source_path, {})
+                    if source_layer:
+                        name = source_layer.get("name", "Unknown")
+                        deps_in[name] = deps_in.get(name, 0) + 1
+
+        out_list = [{"target_layer": k, "edge_count": v} for k, v in sorted(deps_out.items(), key=lambda x: -x[1])]
+        in_list = [{"source_layer": k, "edge_count": v} for k, v in sorted(deps_in.items(), key=lambda x: -x[1])]
+        return out_list, in_list
