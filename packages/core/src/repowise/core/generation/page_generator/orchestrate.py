@@ -369,6 +369,18 @@ class _GenerationRun:
         except Exception as exc:
             log.debug("interlinking.failed", error=str(exc))
 
+        # Post-generation: link KG tour steps to wiki page IDs.
+        if self.kg_ctx.available and self.repo_path:
+            try:
+                from ..kg_enrichment import enrich_tour_with_wiki_links
+
+                rp = Path(self.repo_path) if not isinstance(self.repo_path, Path) else self.repo_path
+                kg_path = rp / ".repowise" / "knowledge-graph.json"
+                if kg_path.exists():
+                    enrich_tour_with_wiki_links(kg_path, all_pages)
+            except Exception as exc:
+                log.debug("kg_enrichment.failed", error=str(exc))
+
         if self.job_system is not None and self.job_id is not None:
             self.job_system.complete_job(self.job_id)
 
