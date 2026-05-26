@@ -24,15 +24,16 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  // Restore selection from URL on mount / when pages load
+  // Keep the selected page in sync with the ?page= URL param. This fires on
+  // mount and whenever the param changes — including when an in-content wiki
+  // link or breadcrumb navigates via <Link href="?page=...">.
+  const pageParam = searchParams.get("page");
   useEffect(() => {
-    if (pages.length === 0) return;
-    const pageId = searchParams.get("page");
-    if (pageId && !selectedPage) {
-      const match = pages.find((p) => p.id === pageId);
-      if (match) setSelectedPage(match);
-    }
-  }, [pages, searchParams, selectedPage]);
+    if (pages.length === 0 || !pageParam) return;
+    if (selectedPage?.id === pageParam) return;
+    const match = pages.find((p) => p.id === pageParam);
+    if (match) setSelectedPage(match);
+  }, [pages, pageParam, selectedPage]);
 
   const handleSelectPage = useCallback((page: PageResponse) => {
     setSelectedPage(page);
@@ -119,7 +120,12 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
 
       {/* Viewer */}
       <div className={cn("flex-1 min-w-0", treePanelOpen ? "hidden md:block" : "block")}>
-        <DocsViewer page={selectedPage} repoId={repoId} />
+        <DocsViewer
+          page={selectedPage}
+          pages={pages}
+          repoId={repoId}
+          onSelectPage={handleSelectPage}
+        />
       </div>
     </div>
   );

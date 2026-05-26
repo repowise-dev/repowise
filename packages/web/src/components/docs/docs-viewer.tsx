@@ -1,17 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   FileText,
   Clock,
   Cpu,
-  Hash,
   ExternalLink,
   Download,
   StickyNote,
   ArrowRight,
-  RefreshCw,
+  ArrowLeft,
   Loader2,
   PanelRight,
   PanelRightClose,
@@ -21,11 +20,13 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
+import { getWikiLinks } from "@repowise-dev/ui/wiki/wiki-links-types";
+import { TableOfContents } from "@repowise-dev/ui/wiki/table-of-contents";
+import { computeDocNav } from "@repowise-dev/ui/docs/doc-nav";
+import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
 import { VersionHistoryWrapper } from "@/components/wiki/version-history";
 import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
-import { Button } from "@repowise-dev/ui/ui/button";
 import { Badge } from "@repowise-dev/ui/ui/badge";
-import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { formatRelativeTime, formatTokens } from "@repowise-dev/ui/lib/format";
 import { downloadTextFile } from "@/lib/utils/download";
@@ -164,13 +165,36 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
 
 interface DocsViewerProps {
   page: PageResponse | null;
+  /** Full page list — powers hierarchical breadcrumbs and prev/next. */
+  pages?: PageResponse[];
   repoId: string;
   isLoading?: boolean;
+  /** Select another page in-place (breadcrumb / prev-next / wiki links). */
+  onSelectPage?: (page: PageResponse) => void;
 }
 
-export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
+export function DocsViewer({
+  page,
+  pages = [],
+  repoId,
+  isLoading,
+  onSelectPage,
+}: DocsViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // In-app navigation to another page by id (used by breadcrumbs, prev/next,
+  // and resolved wiki links). Falls back to the full wiki route when the
+  // target isn't in the loaded list or no handler was supplied.
+  const goToPageId = useCallback(
+    (pageId: string) => {
+      const target = pages.find((p) => p.id === pageId);
+      if (target && onSelectPage) onSelectPage(target);
+      else
+        window.location.href = `/repos/${repoId}/wiki/${encodeURIComponent(pageId)}`;
+    },
+    [pages, onSelectPage, repoId],
+  );
 
   // Scroll to top when page changes
   useEffect(() => {
@@ -206,16 +230,105 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
   const hasTargetPath = !!page.target_path;
 
   return (
+    <DocsViewerBody
+      page={page}
+      pages={pages}
+      repoId={repoId}
+      hasTargetPath={hasTargetPath}
+      sidebarOpen={sidebarOpen}
+      setSidebarOpen={setSidebarOpen}
+      scrollRef={scrollRef}
+      goToPageId={goToPageId}
+    />
+  );
+}
+
+function DocsViewerBody({
+  page,
+  pages,
+  repoId,
+  hasTargetPath,
+  sidebarOpen,
+  setSidebarOpen,
+  scrollRef,
+  goToPageId,
+}: {
+  page: PageResponse;
+  pages: PageResponse[];
+  repoId: string;
+  hasTargetPath: boolean;
+  sidebarOpen: boolean;
+  setSidebarOpen: (fn: (o: boolean) => boolean) => void;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  goToPageId: (pageId: string) => void;
+}) {
+  // Hierarchical breadcrumb + sibling prev/next, derived from the page list.
+  const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
+  const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
+
+  const buildWikiHref = useCallback(
+    (pageId: string) =>
+      `/repos/${repoId}/docs?page=${encodeURIComponent(pageId)}`,
+    [repoId],
+  );
+
+  // Renders a resolved wiki link as an <a> with a real href (middle-click /
+  // open-in-new-tab still work) but intercepts plain clicks for in-app nav.
+  const WikiInlineLink = useMemo(() => {
+    function Comp({
+      href,
+      className,
+      title,
+      children,
+    }: {
+      href: string;
+      className?: string;
+      title?: string;
+      children: React.ReactNode;
+    }) {
+      return (
+        <a
+          href={href}
+          className={className}
+          title={title}
+          onClick={(e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+            try {
+              const u = new URL(href, window.location.origin);
+              const pid = u.searchParams.get("page");
+              if (pid) {
+                e.preventDefault();
+                goToPageId(pid);
+              }
+            } catch {
+              /* fall through to default navigation */
+            }
+          }}
+        >
+          {children}
+        </a>
+      );
+    }
+    return Comp;
+  }, [goToPageId]);
+
+  return (
     <div className="flex h-full">
       {/* Main content */}
       <div className="flex flex-col flex-1 min-w-0">
         {/* Sticky header */}
         <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-surface)]/95 backdrop-blur px-4 sm:px-6 py-2.5 flex-wrap sm:flex-nowrap shrink-0">
-          {/* Path breadcrumb */}
-          <div className="flex items-center gap-1.5 text-xs text-[var(--color-text-tertiary)] min-w-0 flex-1">
-            <span className="font-mono truncate text-[var(--color-text-secondary)]">
-              {page.target_path || page.page_type}
-            </span>
+          {/* Hierarchical breadcrumb: module / file, ancestors clickable */}
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <Breadcrumb
+              segments={nav.breadcrumbs.map((seg) => ({
+                label: seg.label,
+                ...(seg.pageId && seg.pageId !== page.id
+                  ? { href: buildWikiHref(seg.pageId) }
+                  : {}),
+              }))}
+              LinkComponent={WikiInlineLink}
+            />
           </div>
 
           {/* Confidence */}
@@ -254,7 +367,7 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
           </Link>
 
           {/* Sidebar toggle */}
-          {hasTargetPath && (
+          {(
             <button
               onClick={() => setSidebarOpen((o) => !o)}
               className={cn(
@@ -311,8 +424,53 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
 
             {/* Markdown content */}
             <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
-              <WikiMarkdown content={page.content} />
+              <WikiMarkdown
+                content={page.content}
+                wikiLinks={wikiLinks}
+                buildHref={(pid) => buildWikiHref(pid)}
+                LinkComponent={WikiInlineLink}
+              />
             </article>
+
+            {/* Sibling prev / next */}
+            {(nav.prev || nav.next) && (
+              <nav className="mt-8 flex items-stretch gap-3 border-t border-[var(--color-border-default)] pt-4">
+                {nav.prev ? (
+                  <button
+                    onClick={() => goToPageId(nav.prev!.pageId)}
+                    className="group flex flex-1 items-center gap-2 rounded-lg border border-[var(--color-border-default)] px-3 py-2 text-left transition-colors hover:border-[var(--color-border-accent)] hover:bg-[var(--color-bg-elevated)]"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)]" />
+                    <span className="min-w-0">
+                      <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                        Previous
+                      </span>
+                      <span className="block truncate text-xs text-[var(--color-text-secondary)]">
+                        {nav.prev.title}
+                      </span>
+                    </span>
+                  </button>
+                ) : (
+                  <span className="flex-1" />
+                )}
+                {nav.next && (
+                  <button
+                    onClick={() => goToPageId(nav.next!.pageId)}
+                    className="group flex flex-1 items-center justify-end gap-2 rounded-lg border border-[var(--color-border-default)] px-3 py-2 text-right transition-colors hover:border-[var(--color-border-accent)] hover:bg-[var(--color-bg-elevated)]"
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                        Next
+                      </span>
+                      <span className="block truncate text-xs text-[var(--color-text-secondary)]">
+                        {nav.next.title}
+                      </span>
+                    </span>
+                    <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)]" />
+                  </button>
+                )}
+              </nav>
+            )}
 
             {/* Version history */}
             <div className="mt-8">
@@ -342,10 +500,13 @@ export function DocsViewer({ page, repoId, isLoading }: DocsViewerProps) {
         </div>
       </div>
 
-      {/* Right sidebar — Graph Intelligence */}
-      {hasTargetPath && sidebarOpen && (
+      {/* Right sidebar — on-page contents + graph intelligence */}
+      {sidebarOpen && (
         <div className="hidden lg:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 w-[240px] overflow-auto">
-          <DocsSidebar repoId={repoId} targetPath={page.target_path} />
+          <div className="p-3">
+            <TableOfContents content={page.content} />
+          </div>
+          {hasTargetPath && <DocsSidebar repoId={repoId} targetPath={page.target_path} />}
         </div>
       )}
     </div>

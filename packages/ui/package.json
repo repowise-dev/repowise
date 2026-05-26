@@ -29,6 +29,7 @@
     "./decisions": "./src/decisions/index.ts",
     "./decisions/*": "./src/decisions/*.tsx",
     "./docs": "./src/docs/index.ts",
+    "./docs/doc-nav": "./src/docs/doc-nav.ts",
     "./docs/*": "./src/docs/*.tsx",
     "./symbols": "./src/symbols/index.ts",
     "./symbols/*": "./src/symbols/*.tsx",

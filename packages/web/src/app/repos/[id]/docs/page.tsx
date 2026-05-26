@@ -111,14 +111,16 @@ export default function DocsPage({
 
       {startHere.length > 0 && (
         <div className="px-4 sm:px-6 pt-3">
-          <details className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]">
-            <summary className="cursor-pointer list-none px-4 py-2.5 text-sm font-medium text-[var(--color-text-primary)] flex items-center gap-2 hover:bg-[var(--color-bg-elevated)] transition-colors">
+          <div className="rounded-lg border border-[var(--color-border-accent)] bg-[var(--color-accent-muted)]/30">
+            <div className="flex items-center gap-2 px-4 pt-3 pb-1">
               <span className="text-[var(--color-accent-primary)]">✨</span>
-              Start here
-              <span className="text-[10px] font-normal text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                first {startHere.length} files to read
+              <span className="text-sm font-medium text-[var(--color-text-primary)]">
+                Start here
               </span>
-            </summary>
+              <span className="text-[10px] font-normal text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                the first {startHere.length} files to read
+              </span>
+            </div>
             <div className="px-3 pb-3 pt-1">
               <FirstFiveFiles
                 files={startHere}
@@ -131,7 +133,7 @@ export default function DocsPage({
                 }}
               />
             </div>
-          </details>
+          </div>
         </div>
       )}
 

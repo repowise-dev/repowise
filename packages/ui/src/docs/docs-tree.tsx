@@ -9,6 +9,11 @@ import {
   Folder,
   Search,
   Filter,
+  FolderTree,
+  Network,
+  Layers,
+  BookOpen,
+  FileText,
 } from "lucide-react";
 import {
   ALL_PAGE_TYPES,
@@ -237,6 +242,171 @@ function buildTree(pages: DocPage[]): TreeNode[] {
 }
 
 // ---------------------------------------------------------------------------
+// Domain (semantic) tree
+// ---------------------------------------------------------------------------
+//
+// A narrative spine grouped by *meaning* rather than folder structure:
+//
+//   Guided Tour  → onboarding slots in canonical reading order
+//   Architecture → layer / knowledge-graph / SCC pages (the zoom-out)
+//   Modules      → each module_page with its files nested underneath
+//   Reference    → loose files, symbols, API contracts, infra
+//
+// Section keys are namespaced with "@section:" so they never collide with a
+// real target_path and get their own icon in TreeItem.
+
+const SECTION_KEYS = {
+  tour: "@section:tour",
+  architecture: "@section:architecture",
+  modules: "@section:modules",
+  reference: "@section:reference",
+} as const;
+
+export const DOMAIN_SECTION_KEYS = Object.values(SECTION_KEYS);
+
+function parentDirOf(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
+
+function buildDomainTree(pages: DocPage[]): TreeNode[] {
+  const sections: TreeNode[] = [];
+
+  // ---- Guided Tour (reuse the canonical onboarding ordering) ----
+  const onboarding = buildOnboardingFolder(pages);
+  const tourIds = new Set<string>();
+  const tourChildren: TreeNode[] = onboarding ? [...onboarding.children] : [];
+  for (const c of tourChildren) if (c.page) tourIds.add(c.page.id);
+
+  // Guarantee the repo overview heads the tour even when it wasn't promoted
+  // into an onboarding slot — it's the canonical front door.
+  const overview = pages.find((p) => p.page_type === "repo_overview");
+  if (overview && !tourIds.has(overview.id)) {
+    tourChildren.unshift({
+      name: overview.title || "Overview",
+      path: overview.id,
+      isDir: false,
+      page: overview,
+      children: [],
+    });
+    tourIds.add(overview.id);
+  }
+
+  if (tourChildren.length > 0) {
+    sections.push({
+      name: "Guided Tour",
+      path: SECTION_KEYS.tour,
+      isDir: true,
+      children: tourChildren,
+    });
+  }
+
+  // ---- Architecture (layers / knowledge graph / strongly-connected) ----
+  const archTypes = new Set(["layer_page", "architecture_diagram", "scc_page"]);
+  const archChildren: TreeNode[] = pages
+    .filter((p) => archTypes.has(p.page_type) && !tourIds.has(p.id))
+    .sort((a, b) => a.title.localeCompare(b.title))
+    .map((p) => ({ name: p.title, path: p.id, isDir: false, page: p, children: [] }));
+  if (archChildren.length > 0) {
+    sections.push({
+      name: "Architecture",
+      path: SECTION_KEYS.architecture,
+      isDir: true,
+      children: archChildren,
+    });
+  }
+
+  // ---- Modules (each module_page with the files it contains) ----
+  const modulePages = pages
+    .filter((p) => p.page_type === "module_page" && p.target_path)
+    .sort((a, b) => a.target_path.localeCompare(b.target_path));
+  const modulePaths = new Set(modulePages.map((p) => p.target_path));
+  const claimedFileIds = new Set<string>();
+
+  const moduleChildren: TreeNode[] = modulePages.map((mod) => {
+    const files = pages
+      .filter(
+        (p) =>
+          p.page_type === "file_page" &&
+          p.target_path &&
+          parentDirOf(p.target_path) === mod.target_path,
+      )
+      .sort((a, b) => a.target_path.localeCompare(b.target_path));
+    for (const f of files) claimedFileIds.add(f.id);
+    return {
+      name: mod.title || mod.target_path.split("/").pop() || mod.target_path,
+      path: mod.id,
+      isDir: true,
+      page: mod,
+      children: files.map((f) => ({
+        name: f.target_path.split("/").pop() || f.target_path,
+        path: f.id,
+        isDir: false,
+        page: f,
+        children: [],
+      })),
+    };
+  });
+  if (moduleChildren.length > 0) {
+    sections.push({
+      name: "Modules",
+      path: SECTION_KEYS.modules,
+      isDir: true,
+      children: moduleChildren,
+    });
+  }
+
+  // ---- Reference (everything not already surfaced above) ----
+  const surfacedTypes = new Set([
+    "module_page",
+    "repo_overview",
+    ...archTypes,
+  ]);
+  const refChildren: TreeNode[] = pages
+    .filter(
+      (p) =>
+        !tourIds.has(p.id) &&
+        !claimedFileIds.has(p.id) &&
+        !surfacedTypes.has(p.page_type) &&
+        // module-claimed dirs are not pages themselves; skip module dirs
+        !modulePaths.has(p.target_path),
+    )
+    .sort((a, b) => (a.target_path || a.title).localeCompare(b.target_path || b.title))
+    .map((p) => ({
+      name: p.target_path ? p.target_path.split("/").pop() || p.target_path : p.title,
+      path: p.id,
+      isDir: false,
+      page: p,
+      children: [],
+    }));
+  if (refChildren.length > 0) {
+    sections.push({
+      name: "Reference",
+      path: SECTION_KEYS.reference,
+      isDir: true,
+      children: refChildren,
+    });
+  }
+
+  return sections;
+}
+
+function sectionIcon(path: string) {
+  switch (path) {
+    case SECTION_KEYS.tour:
+      return Compass;
+    case SECTION_KEYS.architecture:
+      return Layers;
+    case SECTION_KEYS.modules:
+      return Network;
+    case SECTION_KEYS.reference:
+      return FileText;
+    default:
+      return BookOpen;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Filter helpers
 // ---------------------------------------------------------------------------
 
@@ -335,7 +505,12 @@ function TreeItem({
           ) : (
             <span className="w-3 shrink-0" />
           )}
-          {node.path === ONBOARDING_DIR_KEY ? (
+          {node.path.startsWith("@section:") ? (
+            (() => {
+              const SectionIcon = sectionIcon(node.path);
+              return <SectionIcon className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />;
+            })()
+          ) : node.path === ONBOARDING_DIR_KEY ? (
             <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />
           ) : isExpanded ? (
             <FolderOpen className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)] opacity-70" />
@@ -345,7 +520,10 @@ function TreeItem({
           <span
             className={cn(
               "truncate font-medium",
-              node.path === ONBOARDING_DIR_KEY && "text-[var(--color-text-primary)]",
+              (node.path === ONBOARDING_DIR_KEY || node.path.startsWith("@section:")) &&
+                "text-[var(--color-text-primary)]",
+              node.path.startsWith("@section:") &&
+                "text-[11px] uppercase tracking-wider",
             )}
           >
             {node.name}
@@ -415,13 +593,19 @@ function FreshnessDot({ status }: { status: FreshnessStatus }) {
 // Main DocsTree component
 // ---------------------------------------------------------------------------
 
+type ViewMode = "domain" | "folder";
+
 export function DocsTree({ pages, selectedPageId, onSelectPage, className }: DocsTreeProps) {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [freshnessFilter, setFreshnessFilter] = useState<FreshnessFilter>("all");
+  // Default to the semantic "By domain" spine — overview/architecture/modules
+  // first, filesystem second. The folder view is a toggle for power users.
+  const [viewMode, setViewMode] = useState<ViewMode>("domain");
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
-    // Auto-expand first two levels, plus the Onboarding folder if present.
-    const dirs = new Set<string>();
+    // Auto-expand first two levels, the Onboarding folder, and every domain
+    // section so both views open in a useful state.
+    const dirs = new Set<string>(DOMAIN_SECTION_KEYS);
     dirs.add(ONBOARDING_DIR_KEY);
     for (const page of pages) {
       const parts = page.target_path.split("/");
@@ -431,7 +615,10 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   });
   const [showFilters, setShowFilters] = useState(true);
 
-  const tree = useMemo(() => buildTree(pages), [pages]);
+  const tree = useMemo(
+    () => (viewMode === "domain" ? buildDomainTree(pages) : buildTree(pages)),
+    [pages, viewMode],
+  );
   const filteredTree = useMemo(
     () => filterTree(tree, search, typeFilter, freshnessFilter),
     [tree, search, typeFilter, freshnessFilter],
@@ -454,6 +641,27 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
     <div className={cn("flex flex-col h-full", className)}>
       {/* Search + filter bar */}
       <div className="p-3 space-y-2 border-b border-[var(--color-border-default)]">
+        {/* View mode: semantic spine vs. raw filesystem */}
+        <div className="flex items-center gap-1 rounded-md bg-[var(--color-bg-elevated)] p-0.5">
+          {([
+            { mode: "domain" as const, label: "By domain", Icon: Network },
+            { mode: "folder" as const, label: "By folder", Icon: FolderTree },
+          ]).map(({ mode, label, Icon }) => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors",
+                viewMode === mode
+                  ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-sm"
+                  : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
+              )}
+            >
+              <Icon className="h-3 w-3" />
+              {label}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-2">
           <div className="flex-1 flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1.5">
             <Search className="h-3.5 w-3.5 text-[var(--color-text-tertiary)] shrink-0" />

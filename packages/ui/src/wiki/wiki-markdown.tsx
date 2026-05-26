@@ -4,9 +4,27 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import { MermaidDiagram } from "./mermaid-diagram";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Copy, Check } from "lucide-react";
 import { cn } from "../lib/cn";
+import {
+  buildAnchorIndex,
+  type WikiLinkKind,
+  type WikiLinkRef,
+} from "./wiki-links-types";
+
+/**
+ * Resolves an inline backtick ref to an internal wiki page href, or null
+ * when the ref doesn't map to a known page (renders as a plain code span).
+ */
+type WikiLinkLookup = (anchor: string) => { href: string; kind: WikiLinkKind } | null;
+
+type WikiLinkComponent = React.ElementType<{
+  href: string;
+  className?: string;
+  title?: string;
+  children: React.ReactNode;
+}>;
 
 function slugify(text: string): string {
   return text
@@ -85,7 +103,12 @@ function ClientCodeBlock({ code, language }: { code: string; language: string })
   );
 }
 
-const components: Components = {
+function buildComponents(
+  resolveLink: WikiLinkLookup | null,
+  LinkComponent: WikiLinkComponent,
+): Components {
+  const Link = LinkComponent;
+  return {
   h1: ({ children }) => {
     const text = typeof children === "string" ? children : extractText(children);
     const id = slugify(text);
@@ -145,6 +168,23 @@ const components: Components = {
       return <ClientCodeBlock code={trimmed} language={lang} />;
     }
 
+    // Inline code: if the ref resolves to a known wiki page, render it as
+    // a clickable internal link instead of a dead code span. We already
+    // computed these targets in interlinking.py — just surface them.
+    const text = typeof children === "string" ? children : extractText(children);
+    const resolved = resolveLink ? resolveLink(text.trim()) : null;
+    if (resolved) {
+      return (
+        <Link
+          href={resolved.href}
+          title={`Go to ${text.trim()}`}
+          className="rounded bg-[var(--color-accent-muted)] px-1.5 py-0.5 text-xs font-mono text-[var(--color-accent-primary)] underline decoration-dotted underline-offset-2 hover:bg-[var(--color-accent-primary)] hover:text-white transition-colors"
+        >
+          {children}
+        </Link>
+      );
+    }
+
     return (
       <code
         className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs font-mono text-[var(--color-accent-primary)]"
@@ -196,7 +236,8 @@ const components: Components = {
       {children}
     </strong>
   ),
-};
+  };
+}
 
 function extractText(node: unknown): string {
   if (typeof node === "string") return node;
@@ -210,9 +251,37 @@ function extractText(node: unknown): string {
 
 interface WikiMarkdownProps {
   content: string;
+  /**
+   * Resolved forward links for this page (``page.metadata.wiki_links``).
+   * When provided alongside ``buildHref``, inline backtick refs that match
+   * a link anchor render as clickable internal links.
+   */
+  wikiLinks?: WikiLinkRef[];
+  /** Maps a resolved ``{ pageId, kind }`` to an in-app href. */
+  buildHref?: (pageId: string, kind: WikiLinkKind) => string;
+  /** Router-aware link (e.g. Next.js ``Link``). Defaults to a plain ``<a>``. */
+  LinkComponent?: WikiLinkComponent;
 }
 
-export function WikiMarkdown({ content }: WikiMarkdownProps) {
+export function WikiMarkdown({
+  content,
+  wikiLinks,
+  buildHref,
+  LinkComponent = "a",
+}: WikiMarkdownProps) {
+  const components = useMemo(() => {
+    let resolveLink: WikiLinkLookup | null = null;
+    if (wikiLinks && wikiLinks.length > 0 && buildHref) {
+      const index = buildAnchorIndex(wikiLinks);
+      resolveLink = (anchor) => {
+        const hit = index.get(anchor);
+        if (!hit) return null;
+        return { href: buildHref(hit.pageId, hit.kind), kind: hit.kind };
+      };
+    }
+    return buildComponents(resolveLink, LinkComponent);
+  }, [wikiLinks, buildHref, LinkComponent]);
+
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
       {content}

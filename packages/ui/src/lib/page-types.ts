@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Server,
   Compass,
+  Layers,
 } from "lucide-react";
 import type { DocPage } from "@repowise-dev/types/docs";
 
@@ -20,6 +21,7 @@ export interface PageTypeConfig {
 export const PAGE_TYPE_CONFIG: Record<string, PageTypeConfig> = {
   repo_overview: { label: "Overview", icon: Globe },
   architecture_diagram: { label: "Knowledge Graph", icon: LayoutGrid },
+  layer_page: { label: "Layer", icon: Layers },
   module_page: { label: "Module", icon: FolderOpen },
   symbol_spotlight: { label: "Symbol", icon: Sparkles },
   file_page: { label: "File", icon: FileText },
