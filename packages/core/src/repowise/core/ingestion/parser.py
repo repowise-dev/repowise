@@ -380,6 +380,22 @@ class ASTParser:
                 for sibling in def_node.parent.children:
                     if sibling.type == "decorator":
                         modifier_texts.append(_node_text(sibling, src))
+
+            # Rust: outer attributes (#[...]) are preceding siblings of the item
+            rust_attrs: list[str] = []
+            if file_info.language == "rust" and def_node.parent is not None:
+                siblings = def_node.parent.children
+                for j, sib in enumerate(siblings):
+                    if sib.id == def_node.id:
+                        k = j - 1
+                        while k >= 0 and siblings[k].type == "attribute_item":
+                            attr_text = _node_text(siblings[k], src).strip()
+                            # Strip #[ and ] to get the inner attribute text
+                            if attr_text.startswith("#[") and attr_text.endswith("]"):
+                                rust_attrs.append(attr_text[2:-1])
+                            k -= 1
+                        break
+
             visibility = config.visibility_fn(name, modifier_texts)
             is_exported_symbol = False
             # C/C++ visibility is dictated by AST context (access
@@ -429,7 +445,7 @@ class ASTParser:
                     start_line=start_line,
                     end_line=def_node.end_point[0] + 1,
                     docstring=docstring,
-                    decorators=[m for m in modifier_texts if m.startswith("@")],
+                    decorators=[m for m in modifier_texts if m.startswith("@")] + rust_attrs,
                     visibility=visibility,  # type: ignore[arg-type]
                     is_async=is_async,
                     language=file_info.language,
@@ -514,14 +530,24 @@ class ASTParser:
             if not module_text:
                 continue
 
-            # Rust #[path = "..."] attribute overrides module file location
+            # Rust #[path = "..."] attribute overrides module file location.
+            # In tree-sitter-rust, outer attributes are preceding siblings of
+            # the item, not children.
             if file_info.language == "rust" and stmt_node.type == "mod_item":
-                for child in stmt_node.children:
-                    if child.type == "attribute_item":
-                        attr_text = _node_text(child, src)
-                        path_match = re.search(r'path\s*=\s*"([^"]+)"', attr_text)
-                        if path_match:
-                            module_text = path_match.group(1)
+                parent = stmt_node.parent
+                if parent is not None:
+                    siblings = parent.children
+                    for j, sib in enumerate(siblings):
+                        if sib.id == stmt_node.id:
+                            # Walk backward through preceding attribute_item siblings
+                            k = j - 1
+                            while k >= 0 and siblings[k].type == "attribute_item":
+                                attr_text = _node_text(siblings[k], src)
+                                path_match = re.search(r'path\s*=\s*"([^"]+)"', attr_text)
+                                if path_match:
+                                    module_text = path_match.group(1)
+                                    break
+                                k -= 1
                             break
 
             # Language-specific import name + binding extraction

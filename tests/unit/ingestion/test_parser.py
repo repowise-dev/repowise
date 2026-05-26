@@ -654,6 +654,24 @@ class TestRustParser:
         result = parser.parse_file(fi, RUST_SOURCE)
         assert len(result.imports) >= 1
 
+    def test_path_attribute_preceding_sibling(self, parser: ASTParser) -> None:
+        """#[path = "..."] is a preceding sibling, not a child of mod_item."""
+        src = b'#[path = "csv.rs"]\nmod csv_;\n'
+        fi = _make_file_info("rust_pkg/src/lib.rs", "rust")
+        result = parser.parse_file(fi, src)
+        mod_imports = [i for i in result.imports if i.raw_statement.startswith("mod")]
+        assert len(mod_imports) == 1
+        assert mod_imports[0].module_path == "csv.rs"
+
+    def test_path_attribute_not_applied_to_wrong_mod(self, parser: ASTParser) -> None:
+        """An attribute on one mod must not leak to an unrelated mod."""
+        src = b'#[path = "csv.rs"]\nmod csv_;\nmod normal;\n'
+        fi = _make_file_info("rust_pkg/src/lib.rs", "rust")
+        result = parser.parse_file(fi, src)
+        normal = [i for i in result.imports if "normal" in i.raw_statement]
+        assert len(normal) == 1
+        assert normal[0].module_path == "normal"
+
 
 # ---------------------------------------------------------------------------
 # Java

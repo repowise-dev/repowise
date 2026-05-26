@@ -282,6 +282,19 @@
   )
 ) @call.site
 
+; Scoped identifier in struct field initializer: Foo { field: module::func }
+; Captures the final identifier as a reference to prevent false dead code flags.
+(field_initializer
+  value: (scoped_identifier
+    name: (identifier) @call.target
+  )
+) @call.site
+
+; Plain identifier in struct field initializer: Foo { field: my_func }
+(field_initializer
+  value: (identifier) @call.target
+) @call.site
+
 ; ---------------------------------------------------------------------------
 ; Fields
 ; ---------------------------------------------------------------------------
