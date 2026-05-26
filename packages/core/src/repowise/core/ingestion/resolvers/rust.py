@@ -10,7 +10,17 @@ from .context import ResolverContext
 
 def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a Rust ``use`` path to a repo-relative file."""
+    # Strip `as <alias>` suffix from aliased imports (e.g. "typst_syntax as syntax")
+    if " as " in module_path:
+        module_path = module_path.split(" as ")[0].strip()
+
     parts = module_path.split("::")
+    if not parts:
+        return None
+
+    # Strip brace-grouped imports: "crate::diag::{A, B}" → "crate::diag"
+    if parts and parts[-1].startswith("{"):
+        parts = parts[:-1]
     if not parts:
         return None
 
@@ -44,10 +54,22 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
     if resolved is not None:
         return resolved
 
-    # Cargo workspace sibling crate: `use sibling_crate::...`
     from .rust_workspace import get_or_build_cargo_workspace_index
 
     ws_index = get_or_build_cargo_workspace_index(ctx)
+
+    # Try workspace-aware crate root for the importer.
+    # _find_rust_crate_root is a heuristic and may return the wrong root;
+    # if the workspace index can identify the importer's own crate, use that
+    # src_dir as a second probe base before falling through to sibling lookup.
+    if ws_index is not None:
+        importer_crate = ws_index.lookup_crate_for_file(importer_path)
+        if importer_crate and importer_crate.src_dir != crate_root:
+            resolved = _probe_rust_path(importer_crate.src_dir, parts, ctx.path_set)
+            if resolved is not None:
+                return resolved
+
+    # Cargo workspace sibling crate: `use sibling_crate::...`
     if ws_index is not None:
         sibling_src = ws_index.lookup(prefix)
         if sibling_src is not None and sibling_src != crate_root:
@@ -89,31 +111,35 @@ def _find_rust_crate_root(importer_path: str, ctx: ResolverContext) -> str:
     return _find_rust_crate_root_cached(importer_path, frozenset(parsed_files.keys()))
 
 
+@lru_cache(maxsize=8192)
+def _probe_rust_path_cached(
+    base_dir: str,
+    path_parts: tuple[str, ...],
+    path_set_frozen: frozenset[str],
+) -> str | None:
+    """Cached probe (pure function with hashable args)."""
+    if not path_parts:
+        return None
+    base = Path(base_dir)
+    for depth in range(len(path_parts), 0, -1):
+        module_parts = path_parts[:depth]
+        module_dir = base
+        for p in module_parts[:-1]:
+            module_dir = module_dir / p
+        last = module_parts[-1]
+        candidate = (module_dir / f"{last}.rs").as_posix()
+        if candidate in path_set_frozen:
+            return candidate
+        candidate = (module_dir / last / "mod.rs").as_posix()
+        if candidate in path_set_frozen:
+            return candidate
+    return None
+
+
 def _probe_rust_path(
     base_dir: str,
     path_parts: list[str],
     path_set: set[str],
 ) -> str | None:
     """Probe for a Rust module path, trying ``.rs`` and ``mod.rs`` variants."""
-    if not path_parts:
-        return None
-
-    base = Path(base_dir)
-
-    for depth in range(len(path_parts), 0, -1):
-        module_parts = path_parts[:depth]
-        module_dir = base
-        for p in module_parts[:-1]:
-            module_dir = module_dir / p
-
-        last = module_parts[-1]
-        # Try <dir>/<last>.rs
-        candidate = (module_dir / f"{last}.rs").as_posix()
-        if candidate in path_set:
-            return candidate
-        # Try <dir>/<last>/mod.rs
-        candidate = (module_dir / last / "mod.rs").as_posix()
-        if candidate in path_set:
-            return candidate
-
-    return None
+    return _probe_rust_path_cached(base_dir, tuple(path_parts), frozenset(path_set))

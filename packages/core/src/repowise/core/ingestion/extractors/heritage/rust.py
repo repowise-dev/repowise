@@ -17,7 +17,12 @@ def _extract_rust_heritage(
         type_node = def_node.child_by_field_name("type")
         if trait_node and type_node:
             trait_name = node_text(trait_node, src).strip().rsplit("::", 1)[-1]
+            if "<" in trait_name:
+                trait_name = trait_name[:trait_name.index("<")]
             type_name = node_text(type_node, src).strip()
+            # Strip generic parameters: "Sides<T>" → "Sides"
+            if "<" in type_name:
+                type_name = type_name[:type_name.index("<")]
             if trait_name and type_name:
                 out.append(
                     HeritageRelation(

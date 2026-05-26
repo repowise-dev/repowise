@@ -462,6 +462,16 @@ class ASTParser:
                         ancestor.child_by_field_name("type")  # Rust impl_item
                     )
                     if name_node:
+                        # For Rust impl blocks with generic types (e.g. impl<T> Foo<T>),
+                        # extract only the base type name, not the full generic signature.
+                        if name_node.type == "generic_type":
+                            inner = name_node.child_by_field_name("type")
+                            if inner and inner.type == "type_identifier":
+                                name_node = inner
+                        elif name_node.type == "scoped_type_identifier":
+                            inner = name_node.child_by_field_name("name")
+                            if inner and inner.type == "type_identifier":
+                                name_node = inner
                         return _node_text(name_node, src)
                 ancestor = ancestor.parent
             return None

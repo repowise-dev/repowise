@@ -59,6 +59,38 @@
   type: (type_identifier) @symbol.name
 ) @symbol.def
 
+; impl with generic type target: impl<T> Foo<T> { }
+(impl_item
+  type: (generic_type
+    type: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; impl with scoped type target: impl Trait for path::Foo
+(impl_item
+  type: (scoped_type_identifier
+    name: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; impl with reference type target: impl Trait for &Foo
+(impl_item
+  type: (reference_type
+    type: (type_identifier) @symbol.name
+  )
+) @symbol.def
+
+; union_item WITH visibility
+(union_item
+  (visibility_modifier) @symbol.modifiers
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
+; union_item WITHOUT visibility
+(union_item
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
 ; const_item WITH visibility
 (const_item
   (visibility_modifier) @symbol.modifiers
@@ -171,6 +203,52 @@
   function: (field_expression
     value: (call_expression)
     field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Method call on self: self.method(args)
+(call_expression
+  function: (field_expression
+    value: (self) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Method call on field access: expr.field.method(args)
+(call_expression
+  function: (field_expression
+    value: (field_expression) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Turbofish function call: foo::<T>(args)
+(call_expression
+  function: (generic_function
+    function: (identifier) @call.target
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Turbofish method call: obj.method::<T>(args)
+(call_expression
+  function: (generic_function
+    function: (field_expression
+      field: (field_identifier) @call.target
+    )
+  )
+  arguments: (arguments) @call.arguments
+) @call.site
+
+; Turbofish scoped call: module::func::<T>(args)
+(call_expression
+  function: (generic_function
+    function: (scoped_identifier
+      name: (identifier) @call.target
+    )
   )
   arguments: (arguments) @call.arguments
 ) @call.site

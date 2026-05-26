@@ -160,6 +160,51 @@ class TestRustWorkspaceResolution:
         assert result is not None and result.startswith("external:")
 
 
+class TestAliasedAndBraceImports:
+    def test_aliased_import_strips_as_suffix(self, tmp_path: Path) -> None:
+        """``use typst_syntax as syntax`` should resolve the same as ``typst_syntax``."""
+        _write_workspace(tmp_path, ["crates/typst", "crates/typst-syntax"])
+        _write_member_crate(tmp_path, "crates/typst", "typst")
+        _write_member_crate(tmp_path, "crates/typst-syntax", "typst-syntax")
+
+        ctx = _ctx(tmp_path, [
+            "crates/typst/src/lib.rs",
+            "crates/typst-syntax/src/lib.rs",
+        ])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+
+        # Aliased form should resolve to the same target as the bare form
+        aliased = resolve_rust_import(
+            "typst_syntax as syntax", "crates/typst/src/lib.rs", ctx
+        )
+        bare = resolve_rust_import(
+            "typst_syntax", "crates/typst/src/lib.rs", ctx
+        )
+        assert aliased == bare
+        assert aliased == "crates/typst-syntax/src/lib.rs"
+
+    def test_brace_import_resolves_base_module(self, tmp_path: Path) -> None:
+        """``use crate::diag::{A, B}`` should resolve to ``diag.rs``."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "lib.rs").write_text("// root\n")
+        (tmp_path / "src" / "diag.rs").write_text("pub struct A; pub struct B;\n")
+
+        ctx = _ctx(tmp_path, ["src/lib.rs", "src/diag.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+
+        result = resolve_rust_import("crate::diag::{A, B}", "src/lib.rs", ctx)
+        assert result == "src/diag.rs"
+
+    def test_brace_only_import_returns_none(self, tmp_path: Path) -> None:
+        """``{A, B}`` (no base path) should return None gracefully without crashing."""
+        ctx = _ctx(tmp_path, ["src/lib.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+
+        result = resolve_rust_import("{A, B}", "src/lib.rs", ctx)
+        # After stripping the brace segment all parts are gone — None is correct.
+        assert result is None
+
+
 class TestSuperChainedResolution:
     def test_single_super(self, tmp_path: Path) -> None:
         (tmp_path / "a").mkdir(parents=True)

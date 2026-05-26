@@ -91,6 +91,10 @@ class EdgesMixin:
                 hint_source=e.hint_source,
                 weight=e.weight,
             )
+            # Propagate test marker: if hint_source ends with ":test", tag the
+            # source file node as is_test so downstream consumers can filter it.
+            if e.hint_source and e.hint_source.endswith(":test"):
+                self._graph.nodes[e.source]["is_test"] = True
 
     def add_framework_edges(self, tech_stack: list[str] | None = None) -> int:
         """Add synthetic edges for framework-mediated relationships.

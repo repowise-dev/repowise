@@ -95,6 +95,13 @@ _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
         # Conditional compilation
         '#[cfg(target_',
         '#[cfg(feature',
+        # Proc-macro registration (called by the compiler, not by user code)
+        '#[proc_macro]',
+        '#[proc_macro_derive',
+        '#[proc_macro_attribute',
+        # Doc-hidden items are intentionally not part of the public API surface
+        # but may still be used by downstream crates or macros via re-exports.
+        '#[doc(hidden)]',
     ),
     ".cs": (
         # Reflection-driven type loading

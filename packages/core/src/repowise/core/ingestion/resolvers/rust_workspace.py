@@ -42,6 +42,7 @@ class CargoCrate:
     name: str  # package name as it appears in Cargo.toml (may contain "-")
     src_dir: str  # repo-relative POSIX path to the crate's src/ directory
     dependencies: tuple[CargoDep, ...] = ()
+    is_proc_macro: bool = False  # True if [lib] proc-macro = true
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,11 @@ class CargoWorkspaceIndex:
                 best = crate
                 best_len = len(crate_prefix)
         return best
+
+    def is_file_in_proc_macro_crate(self, file_path: str) -> bool:
+        """Check if a file belongs to a proc-macro crate."""
+        crate = self.lookup_crate_for_file(file_path)
+        return crate is not None and crate.is_proc_macro
 
 
 def get_or_build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
@@ -187,6 +193,11 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
             name = pkg.get("name")
             if not name:
                 continue
+            # Check if this is a proc-macro crate
+            lib_section = member_data.get("lib", {})
+            is_proc_macro = bool(
+                lib_section.get("proc-macro", False) or lib_section.get("proc_macro", False)
+            )
             src_dir = f"{member_rel}/src" if member_rel else "src"
             member_deps = _parse_deps(
                 {**member_data.get("dependencies", {}),
@@ -195,7 +206,12 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
                 member_path,
                 repo,
             )
-            crates.append(CargoCrate(name=str(name), src_dir=src_dir, dependencies=member_deps))
+            crates.append(CargoCrate(
+                name=str(name),
+                src_dir=src_dir,
+                dependencies=member_deps,
+                is_proc_macro=is_proc_macro,
+            ))
 
     if not crates:
         return None

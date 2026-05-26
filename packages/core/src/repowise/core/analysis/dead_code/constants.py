@@ -178,21 +178,40 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ---- Rust / Cargo conventions ----------------------------------------
     # Build scripts (executed by Cargo at compile time, never imported)
     "**/build.rs",
+    "build.rs",
     # Examples (run via `cargo run --example <name>`)
     "**/examples/*.rs",
     "**/examples/**/*.rs",
+    "examples/*.rs",
+    "examples/**/*.rs",
     # Benchmarks (run via `cargo bench`)
     "**/benches/*.rs",
     "**/benches/**/*.rs",
+    "benches/*.rs",
+    "benches/**/*.rs",
     # Integration tests (run via `cargo test`)
+    # Note: fnmatch **/ requires at least one leading directory component, so
+    # we also add bare patterns for repos where tests/ sits at the root.
     "**/tests/*.rs",
     "**/tests/**/*.rs",
+    "tests/*.rs",
+    "tests/**/*.rs",
     # Binary targets (separate executables in a crate)
     "**/src/bin/*.rs",
     "**/src/bin/**/*.rs",
-    # Fuzz targets
+    # Fuzz targets (various layouts: fuzz/src/, fuzz_targets/, fuzz/fuzz_targets/)
     "**/fuzz/src/**/*.rs",
     "**/fuzz_targets/**/*.rs",
+    "**/fuzz/fuzz_targets/**/*.rs",
+    "fuzz/src/**/*.rs",
+    "fuzz_targets/**/*.rs",
+    "fuzz/fuzz_targets/**/*.rs",
+    # Derive macro crates (proc-macro, consumed at compile time)
+    "**/derive/src/*.rs",
+    # Generated code
+    "**/generated/**/*.rs",
+    # Protocol buffer generated code
+    "**/proto/**/*.rs",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
@@ -314,6 +333,11 @@ _NEVER_PACKAGE_DIRS: frozenset[str] = frozenset({
     "assets",
     "static",
     "public",
+    "tests",
+    "test",
+    "benches",
+    "bench",
+    "fuzz",
 })
 
 
