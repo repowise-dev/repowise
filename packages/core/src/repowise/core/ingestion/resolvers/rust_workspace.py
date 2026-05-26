@@ -88,28 +88,44 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
     if root_pkg.get("name"):
         crates.append(CargoCrate(name=str(root_pkg["name"]), src_dir="src"))
 
-    for member in members:
-        if not isinstance(member, str):
+    # Parse exclude patterns
+    exclude_patterns = workspace.get("exclude", [])
+    excluded_paths: set[Path] = set()
+    for pattern in exclude_patterns:
+        if isinstance(pattern, str):
+            excluded_paths.update(p.resolve() for p in repo.glob(pattern))
+
+    for member_pattern in members:
+        if not isinstance(member_pattern, str):
             continue
-        member_path = (repo / member).resolve()
-        try:
-            member_rel = member_path.relative_to(repo).as_posix()
-        except ValueError:
-            continue
-        member_toml = member_path / "Cargo.toml"
-        if not member_toml.exists():
-            continue
-        try:
-            with open(member_toml, "rb") as f:
-                member_data = tomllib.load(f)
-        except (OSError, tomllib.TOMLDecodeError):
-            continue
-        pkg = member_data.get("package") or {}
-        name = pkg.get("name")
-        if not name:
-            continue
-        src_dir = f"{member_rel}/src" if member_rel else "src"
-        crates.append(CargoCrate(name=str(name), src_dir=src_dir))
+        matched_paths = sorted(repo.glob(member_pattern))
+        if not matched_paths:
+            # Fallback to literal path for backward compat
+            matched_paths = [(repo / member_pattern).resolve()]
+        for member_path in matched_paths:
+            member_path = member_path.resolve()
+            if not member_path.is_dir():
+                continue
+            if member_path in excluded_paths:
+                continue
+            try:
+                member_rel = member_path.relative_to(repo).as_posix()
+            except ValueError:
+                continue
+            member_toml = member_path / "Cargo.toml"
+            if not member_toml.exists():
+                continue
+            try:
+                with open(member_toml, "rb") as f:
+                    member_data = tomllib.load(f)
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            pkg = member_data.get("package") or {}
+            name = pkg.get("name")
+            if not name:
+                continue
+            src_dir = f"{member_rel}/src" if member_rel else "src"
+            crates.append(CargoCrate(name=str(name), src_dir=src_dir))
 
     if not crates:
         return None

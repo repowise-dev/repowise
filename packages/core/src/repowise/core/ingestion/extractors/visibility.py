@@ -40,7 +40,16 @@ def go_visibility(name: str, _mods: list[str]) -> str:
 
 
 def rust_visibility(_name: str, mods: list[str]) -> str:
-    return "public" if any("pub" in m for m in mods) else "private"
+    combined = " ".join(mods).strip()
+    if not combined:
+        return "private"
+    if "pub(crate)" in combined:
+        return "internal"
+    if "pub(super)" in combined or "pub(in " in combined:
+        return "protected"
+    if "pub" in combined:
+        return "public"
+    return "private"
 
 
 def java_visibility(_name: str, mods: list[str]) -> str:

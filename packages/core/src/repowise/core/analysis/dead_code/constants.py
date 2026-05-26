@@ -175,6 +175,24 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/stdafx.cpp",
     "*ClassFactory.cpp",
     "*ClassFactory.h",
+    # ---- Rust / Cargo conventions ----------------------------------------
+    # Build scripts (executed by Cargo at compile time, never imported)
+    "**/build.rs",
+    # Examples (run via `cargo run --example <name>`)
+    "**/examples/*.rs",
+    "**/examples/**/*.rs",
+    # Benchmarks (run via `cargo bench`)
+    "**/benches/*.rs",
+    "**/benches/**/*.rs",
+    # Integration tests (run via `cargo test`)
+    "**/tests/*.rs",
+    "**/tests/**/*.rs",
+    # Binary targets (separate executables in a crate)
+    "**/src/bin/*.rs",
+    "**/src/bin/**/*.rs",
+    # Fuzz targets
+    "**/fuzz/src/**/*.rs",
+    "**/fuzz_targets/**/*.rs",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)

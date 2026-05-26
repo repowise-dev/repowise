@@ -73,6 +73,29 @@ _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
         "runtimeMirror(",
         "reflect.runtime",
     ),
+    ".rs": (
+        # Trait object construction (runtime dispatch)
+        "Box<dyn ",
+        "Arc<dyn ",
+        "Rc<dyn ",
+        "&dyn ",
+        # FFI exports (called from C, no Rust callers)
+        '#[no_mangle]',
+        'extern "C"',
+        # Plugin/inventory registration (resolved at link time)
+        "inventory::submit!",
+        "linkme::distributed_slice!",
+        # Dynamic dispatch through function pointers
+        "Box::new(",
+        "Arc::new(",
+        # Serde (generates field access code)
+        '#[derive(Serialize',
+        '#[derive(Deserialize',
+        '#[serde(',
+        # Conditional compilation
+        '#[cfg(target_',
+        '#[cfg(feature',
+    ),
     ".cs": (
         # Reflection-driven type loading
         "Type.GetType(",

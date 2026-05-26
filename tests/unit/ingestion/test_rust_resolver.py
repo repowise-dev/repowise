@@ -67,6 +67,47 @@ class TestCargoWorkspaceIndex:
         assert get_or_build_cargo_workspace_index(ctx) is None
 
 
+class TestCargoWorkspaceGlobExpansion:
+    def test_glob_member_pattern(self, tmp_path: Path) -> None:
+        """Glob pattern members = ["crates/*"] should discover all crate directories."""
+        _write_workspace(tmp_path, ["crates/*"])
+        _write_member_crate(tmp_path, "crates/foo", "foo")
+        _write_member_crate(tmp_path, "crates/bar", "bar-utils")
+        ctx = _ctx(tmp_path, [
+            "crates/foo/src/lib.rs",
+            "crates/bar/src/lib.rs",
+        ])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        assert idx.lookup("foo") == "crates/foo/src"
+        assert idx.lookup("bar_utils") == "crates/bar/src"
+
+    def test_exclude_pattern(self, tmp_path: Path) -> None:
+        """Workspace exclude patterns should skip matching crates."""
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/*"]\nexclude = ["crates/ignored"]\n'
+        )
+        _write_member_crate(tmp_path, "crates/foo", "foo")
+        _write_member_crate(tmp_path, "crates/ignored", "ignored")
+        ctx = _ctx(tmp_path, [
+            "crates/foo/src/lib.rs",
+            "crates/ignored/src/lib.rs",
+        ])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        assert idx.lookup("foo") == "crates/foo/src"
+        assert idx.lookup("ignored") is None
+
+
+def test_rust_visibility_levels():
+    from repowise.core.ingestion.extractors.visibility import rust_visibility
+    assert rust_visibility("foo", ["pub"]) == "public"
+    assert rust_visibility("foo", ["pub(crate)"]) == "internal"
+    assert rust_visibility("foo", ["pub(super)"]) == "protected"
+    assert rust_visibility("foo", ["pub(in crate::module)"]) == "protected"
+    assert rust_visibility("foo", []) == "private"
+
+
 class TestRustWorkspaceResolution:
     def test_use_sibling_crate_resolves_to_module_file(self, tmp_path: Path) -> None:
         _write_workspace(tmp_path, ["crates/foo", "crates/bar"])
