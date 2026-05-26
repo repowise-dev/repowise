@@ -179,3 +179,25 @@
 (macro_invocation
   macro: (identifier) @call.target
 ) @call.site
+
+; Scoped macro invocation: module::macro!(...)
+(macro_invocation
+  macro: (scoped_identifier
+    name: (identifier) @call.target
+  )
+) @call.site
+
+; ---------------------------------------------------------------------------
+; Fields
+; ---------------------------------------------------------------------------
+
+; Struct fields (named) WITH visibility
+(field_declaration
+  (visibility_modifier) @symbol.modifiers
+  name: (field_identifier) @symbol.name
+) @symbol.def
+
+; Struct fields (named) WITHOUT visibility
+(field_declaration
+  name: (field_identifier) @symbol.name
+) @symbol.def
