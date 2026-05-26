@@ -1546,6 +1546,8 @@ async def bulk_upsert_decisions(
     session: AsyncSession,
     repository_id: str,
     decisions: list[dict],
+    *,
+    vector_store: Any | None = None,
 ) -> None:
     """Upsert decisions, accreting provenance instead of discarding losers.
 
@@ -1559,6 +1561,15 @@ async def bulk_upsert_decisions(
     Idempotent: a full re-index converges (evidence rows upsert on their
     natural key); an incremental update adds new evidence and re-derives the
     headline + confidence from the union.
+
+    When *vector_store* (the shared page-generator store) is supplied, a
+    Phase-2C semantic pass augments the cheap normalized-title match: an
+    incoming group that matched no existing record by title is looked up in the
+    store, and if its nearest ``decision:`` neighbour clears the cosine
+    threshold it is folded into that record as additional evidence — so
+    paraphrases ("Use Redis" vs "Adopt Redis cache") collapse into one record.
+    Every touched record is (re-)embedded into the store, so decisions are
+    matchable next run *and* discoverable via ``search_codebase``.
     """
     # Group incoming decisions by normalized title.
     groups: dict[str, list[dict]] = {}
@@ -1584,6 +1595,17 @@ async def bulk_upsert_decisions(
         if prior is None or rank_for_source(rec.source) > rank_for_source(prior.source):
             existing_by_norm[norm] = rec
 
+    # Phase 2C semantic dedup runs against the shared vector store. ``id_to_rec``
+    # lets a store hit (which returns a decision id) resolve back to the live
+    # record, and is grown as records are created so paraphrases *within* one
+    # batch also collapse.
+    id_to_rec: dict[str, DecisionRecord] = {rec.id: rec for rec in existing_by_norm.values()}
+    if vector_store is not None:
+        from repowise.core.analysis.decision_semantic_match import (
+            find_duplicate_decision,
+            upsert_decision_vector,
+        )
+
     for norm, members in groups.items():
         # Headline candidate: highest source rank, tie-break by confidence.
         headline = max(
@@ -1591,6 +1613,19 @@ async def bulk_upsert_decisions(
             key=lambda d: (rank_for_source(d.get("source", "")), d.get("confidence", 0.0)),
         )
         rec = existing_by_norm.get(norm)
+
+        # No title match → ask the store whether a semantically-equivalent
+        # decision already exists, and fold into it if so (cheap title dedup
+        # stays the first pass; this only runs on the residual).
+        if rec is None and vector_store is not None:
+            match_id = await find_duplicate_decision(
+                vector_store,
+                title=headline.get("title", ""),
+                decision=headline.get("decision") or "",
+            )
+            if match_id is not None and match_id in id_to_rec:
+                rec = id_to_rec[match_id]
+                existing_by_norm[norm] = rec
 
         if rec is None:
             rec = DecisionRecord(
@@ -1615,6 +1650,7 @@ async def bulk_upsert_decisions(
             session.add(rec)
             await session.flush()
             existing_by_norm[norm] = rec
+            id_to_rec[rec.id] = rec
         elif rank_for_source(headline.get("source", "")) >= rank_for_source(rec.source):
             # A new contributor at least as authoritative as the current
             # headline → promote its fields (provenance still accretes below).
@@ -1659,6 +1695,18 @@ async def bulk_upsert_decisions(
             rec.confidence = compute_confidence(top_rank, len(distinct_sources), best_ver)
             rec.verification = best_ver
         rec.updated_at = _now_utc()
+
+        # (Re-)embed the record into the shared store so it's matchable by
+        # later groups in this batch + future runs, and discoverable via
+        # search_codebase. Best-effort — never blocks the SQL upsert.
+        if vector_store is not None:
+            await upsert_decision_vector(
+                vector_store,
+                rec.id,
+                title=rec.title,
+                decision=rec.decision or "",
+                evidence_file=rec.evidence_file,
+            )
 
     await session.flush()
 

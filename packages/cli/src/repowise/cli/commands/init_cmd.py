@@ -102,9 +102,7 @@ def _offer_hook_install(
             result = install(rp)
             console_obj.print(f"  [green]✓[/green] {label}: {result}")
         else:
-            console_obj.print(
-                "  [dim]Skipped. Run 'repowise hook install' later to set up.[/dim]"
-            )
+            console_obj.print("  [dim]Skipped. Run 'repowise hook install' later to set up.[/dim]")
     else:
         # Workspace: show checkboxes-style selection
         console_obj.print("  Select repos (enter numbers, comma-separated, or 'all'):")
@@ -244,6 +242,32 @@ async def _persist_result(
 # ---------------------------------------------------------------------------
 
 
+def _build_embedder(embedder_name_resolved: str) -> Any:
+    """Construct the configured embedder, falling back to MockEmbedder.
+
+    Shared by the generation flows and the decision semantic-dedup wiring so
+    the same backend selection logic isn't duplicated. Real providers fall
+    back to the deterministic mock when their SDK/credentials are unavailable.
+    """
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    if embedder_name_resolved == "gemini":
+        try:
+            from repowise.core.providers.embedding.gemini import GeminiEmbedder
+
+            return GeminiEmbedder()
+        except Exception:
+            return MockEmbedder()
+    if embedder_name_resolved == "openai":
+        try:
+            from repowise.core.providers.embedding.openai import OpenAIEmbedder
+
+            return OpenAIEmbedder()
+        except Exception:
+            return MockEmbedder()
+    return MockEmbedder()
+
+
 def _run_workspace_generation(
     *,
     repo_path: Path,
@@ -259,6 +283,7 @@ def _run_workspace_generation(
     reasoning: str = "auto",
     onboarding: bool = True,
     coverage_pct: float | None = None,
+    harvest_decisions: bool = True,
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -288,26 +313,9 @@ def _run_workspace_generation(
     )
     from repowise.core.persistence.vector_store import InMemoryVectorStore
     from repowise.core.pipeline import run_generation
-    from repowise.core.providers.embedding.base import MockEmbedder
 
     # Build embedder
-    embedder_impl: Any
-    if embedder_name_resolved == "gemini":
-        try:
-            from repowise.core.providers.embedding.gemini import GeminiEmbedder
-
-            embedder_impl = GeminiEmbedder()
-        except Exception:
-            embedder_impl = MockEmbedder()
-    elif embedder_name_resolved == "openai":
-        try:
-            from repowise.core.providers.embedding.openai import OpenAIEmbedder
-
-            embedder_impl = OpenAIEmbedder()
-        except Exception:
-            embedder_impl = MockEmbedder()
-    else:
-        embedder_impl = MockEmbedder()
+    embedder_impl: Any = _build_embedder(embedder_name_resolved)
 
     # Build vector store
     lance_dir = repo_path / ".repowise" / "lancedb"
@@ -318,6 +326,11 @@ def _run_workspace_generation(
         vector_store: Any = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
     except ImportError:
         vector_store = InMemoryVectorStore(embedder_impl)
+
+    # Stash the store on the result so persist's Phase-2C decision dedup
+    # matches against — and embeds decisions into — the same store the pages
+    # land in (surfacing decisions in search_codebase).
+    result.vector_store = vector_store
 
     # Coverage chooser — interactive when TTY, falls back to the
     # ``coverage`` flag (or the default of 20%) for non-TTY / CI runs.
@@ -330,10 +343,9 @@ def _run_workspace_generation(
         max_concurrency=concurrency,
         reasoning=resolve_reasoning(reasoning),
         enable_onboarding=onboarding,
+        harvest_decisions=harvest_decisions,
     )
-    use_interactive_coverage = (
-        sys.stdin.isatty() and coverage_pct is None and not yes
-    )
+    use_interactive_coverage = sys.stdin.isatty() and coverage_pct is None and not yes
     if use_interactive_coverage:
         options = compute_coverage_options(
             parsed_files=result.parsed_files,
@@ -374,9 +386,7 @@ def _run_workspace_generation(
     # so the page generator's selection layer honors the user's pick.
     from dataclasses import replace as _replace_cfg
 
-    gen_config = _replace_cfg(
-        gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct
-    )
+    gen_config = _replace_cfg(gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct)
 
     if est.cost_range is not None:
         cost_str = (
@@ -397,9 +407,7 @@ def _run_workspace_generation(
     if (
         est.estimated_cost_usd > 2.00
         and not yes
-        and not _confirm_cost_gate(
-            f"    Cost for {repo_path.name} exceeds $2.00. Continue?"
-        )
+        and not _confirm_cost_gate(f"    Cost for {repo_path.name} exceeds $2.00. Continue?")
     ):
         console.print(
             "    [yellow]Skipped.[/yellow] "
@@ -513,6 +521,7 @@ def _workspace_init(
     force: bool = False,
     onboarding: bool = True,
     coverage_pct: float | None = None,
+    harvest_decisions: bool = True,
 ) -> None:
     """Multi-repo workspace initialization.
 
@@ -635,7 +644,9 @@ def _workspace_init(
             if resolved_reasoning != "auto":
                 console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]\n")
         except Exception as exc:
-            console.print(f"  [yellow]Provider setup failed ({exc}); falling back to index-only.[/yellow]")
+            console.print(
+                f"  [yellow]Provider setup failed ({exc}); falling back to index-only.[/yellow]"
+            )
             index_only = True
             provider = None
 
@@ -692,7 +703,9 @@ def _workspace_init(
                 callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
 
                 _prev_state = load_state(repo.path)
-                _prev_kg_fp = _prev_state.get("knowledge_graph", {}).get("fingerprint") if not force else None
+                _prev_kg_fp = (
+                    _prev_state.get("knowledge_graph", {}).get("fingerprint") if not force else None
+                )
 
                 result = run_async(
                     run_pipeline(
@@ -750,8 +763,11 @@ def _workspace_init(
                         reasoning=resolved_reasoning,
                         onboarding=onboarding,
                         coverage_pct=coverage_pct,
+                        harvest_decisions=harvest_decisions,
                     )
                     result.generated_pages = generated_pages
+                    # (result.vector_store is set inside _run_workspace_generation
+                    # so the Phase-2C decision dedup can reuse the same store.)
                     total_pages += len(generated_pages)
                     console.print(
                         f"    [green]\u2713[/green] Generated {len(generated_pages)} pages\n"
@@ -795,7 +811,9 @@ def _workspace_init(
                 "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
                 "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
                 "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
-                "has_summaries": any(n.get("summary") for n in kg.nodes) if hasattr(kg, "nodes") else False,
+                "has_summaries": any(n.get("summary") for n in kg.nodes)
+                if hasattr(kg, "nodes")
+                else False,
                 "fingerprint": getattr(kg, "fingerprint", ""),
             }
         save_state(repo.path, state)
@@ -805,9 +823,7 @@ def _workspace_init(
 
             kg_json_path = repo.path / ".repowise" / "knowledge-graph.json"
             kg_json_path.parent.mkdir(parents=True, exist_ok=True)
-            kg_json_path.write_text(
-                _kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8"
-            )
+            kg_json_path.write_text(_kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8")
 
         # Update workspace config with indexing metadata
         from datetime import datetime, timezone
@@ -840,10 +856,7 @@ def _workspace_init(
     ws_config.save(root)
 
     # Step 5: Cross-repo analysis (co-changes, package deps, contracts)
-    indexed_aliases = [
-        repo.alias for repo in selected
-        if repo.alias not in [e[0] for e in errors]
-    ]
+    indexed_aliases = [repo.alias for repo in selected if repo.alias not in [e[0] for e in errors]]
     if len(indexed_aliases) >= 2:
         console.print("  Running cross-repo analysis...")
         try:
@@ -897,9 +910,7 @@ def _workspace_init(
     # Honest docs status — print a per-repo summary listing exactly which
     # repos generated pages and which were skipped, so the user never has
     # to discover empty Docs/Overview in the web UI on their own.
-    docs_skipped = [
-        (alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason
-    ]
+    docs_skipped = [(alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason]
     docs_generated = [
         (alias, count) for alias, (count, reason) in docs_outcomes.items() if not reason
     ]
@@ -911,9 +922,7 @@ def _workspace_init(
                     f"  [yellow]✗[/yellow] {alias:<20} [yellow]skipped[/yellow]  [dim]({reason})[/dim]"
                 )
             else:
-                console.print(
-                    f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]"
-                )
+                console.print(f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]")
         if docs_skipped:
             first = docs_skipped[0][0]
             console.print()
@@ -924,10 +933,7 @@ def _workspace_init(
         console.print()
 
     # Offer to install post-commit hooks
-    indexed_repos = [
-        repo for repo in selected
-        if repo.alias not in [e[0] for e in errors]
-    ]
+    indexed_repos = [repo for repo in selected if repo.alias not in [e[0] for e in errors]]
     if indexed_repos:
         _offer_hook_install(
             console,
@@ -1063,6 +1069,17 @@ def _workspace_init(
         "interactive: prompt; otherwise 0.20."
     ),
 )
+@click.option(
+    "--harvest-decisions/--no-harvest-decisions",
+    "harvest_decisions",
+    default=True,
+    help=(
+        "Harvest candidate architectural decisions from LLM page generation "
+        "(file pages). Each harvested decision is verified against the file's "
+        "source before storage. The model emits a decision only on a genuine "
+        "hit, so the token cost lands only on files that carry one. Default: on."
+    ),
+)
 def init_command(
     path: str | None,
     provider_name: str | None,
@@ -1087,6 +1104,7 @@ def init_command(
     init_all: bool,
     onboarding: bool,
     coverage_pct: float | None,
+    harvest_decisions: bool,
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -1155,6 +1173,7 @@ def init_command(
             force=force,
             onboarding=onboarding,
             coverage_pct=coverage_pct,
+            harvest_decisions=harvest_decisions,
         )
         return
 
@@ -1357,9 +1376,7 @@ def init_command(
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.pipeline.modes import OrchestratorMode
 
-    orchestrator_mode = (
-        OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
-    )
+    orchestrator_mode = OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
 
     with Progress(
         SpinnerColumn(),
@@ -1379,7 +1396,9 @@ def init_command(
         # Always run ingestion + analysis first (generate_docs=False).
         # Generation happens separately after cost confirmation.
         _prev_state = load_state(repo_path)
-        _prev_kg_fp = _prev_state.get("knowledge_graph", {}).get("fingerprint") if not force else None
+        _prev_kg_fp = (
+            _prev_state.get("knowledge_graph", {}).get("fingerprint") if not force else None
+        )
 
         result = run_async(
             run_pipeline(
@@ -1482,6 +1501,7 @@ def init_command(
             reasoning=resolved_reasoning,
             enable_onboarding=onboarding,
             tier1_top_n=tier1_top_n,
+            harvest_decisions=harvest_decisions,
         )
         if sys.stdin.isatty() and coverage_pct is None and not yes:
             options = compute_coverage_options(
@@ -1499,9 +1519,7 @@ def init_command(
             plans = chosen.plans
             est = chosen.estimate
         else:
-            chosen_pct = (
-                coverage_pct if coverage_pct is not None else gen_config.coverage_pct
-            )
+            chosen_pct = coverage_pct if coverage_pct is not None else gen_config.coverage_pct
             gen_config_for_plan = _replace_cfg(
                 gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct
             )
@@ -1519,9 +1537,7 @@ def init_command(
                 repo_path=repo_path,
             )
 
-        gen_config = _replace_cfg(
-            gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct
-        )
+        gen_config = _replace_cfg(gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct)
 
         table = Table(title="Generation Plan", border_style=BRAND)
         table.add_column("Page Type", style="cyan")
@@ -1587,25 +1603,8 @@ def init_command(
         if not cost_declined:
             # Build embedder + vector store
             from repowise.core.persistence.vector_store import InMemoryVectorStore
-            from repowise.core.providers.embedding.base import MockEmbedder
 
-            embedder_impl: Any
-            if embedder_name_resolved == "gemini":
-                try:
-                    from repowise.core.providers.embedding.gemini import GeminiEmbedder
-
-                    embedder_impl = GeminiEmbedder()
-                except Exception:
-                    embedder_impl = MockEmbedder()
-            elif embedder_name_resolved == "openai":
-                try:
-                    from repowise.core.providers.embedding.openai import OpenAIEmbedder
-
-                    embedder_impl = OpenAIEmbedder()
-                except Exception:
-                    embedder_impl = MockEmbedder()
-            else:
-                embedder_impl = MockEmbedder()
+            embedder_impl: Any = _build_embedder(embedder_name_resolved)
 
             lance_dir = repo_path / ".repowise" / "lancedb"
             try:
@@ -1698,6 +1697,10 @@ def init_command(
                 )
 
             result.generated_pages = generated_pages
+            # Thread the shared vector store onto the result so the decision
+            # semantic-dedup pass (Phase 2C) matches against it + embeds
+            # decisions into it (also surfacing them in search_codebase).
+            result.vector_store = vector_store
             console.print(f"  [green]✓[/green] Generated [bold]{len(generated_pages)}[/bold] pages")
 
             kg = getattr(result, "knowledge_graph_result", None)
@@ -1798,7 +1801,9 @@ def init_command(
             "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
             "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
             "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
-            "has_summaries": any(n.get("summary") for n in kg.nodes) if hasattr(kg, "nodes") else False,
+            "has_summaries": any(n.get("summary") for n in kg.nodes)
+            if hasattr(kg, "nodes")
+            else False,
             "fingerprint": getattr(kg, "fingerprint", ""),
         }
         if hasattr(kg, "to_dict"):
@@ -1806,9 +1811,7 @@ def init_command(
 
             kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
             kg_json_path.parent.mkdir(parents=True, exist_ok=True)
-            kg_json_path.write_text(
-                _kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8"
-            )
+            kg_json_path.write_text(_kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8")
     if effective_index_only or provider is None:
         save_state(repo_path, base_state)
 
@@ -1861,7 +1864,9 @@ def init_command(
                 "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
                 "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
                 "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
-                "has_summaries": any(n.get("summary") for n in kg.nodes) if hasattr(kg, "nodes") else False,
+                "has_summaries": any(n.get("summary") for n in kg.nodes)
+                if hasattr(kg, "nodes")
+                else False,
                 "fingerprint": getattr(kg, "fingerprint", ""),
             }
         save_state(repo_path, state)
@@ -1871,9 +1876,7 @@ def init_command(
 
             kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
             kg_json_path.parent.mkdir(parents=True, exist_ok=True)
-            kg_json_path.write_text(
-                _kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8"
-            )
+            kg_json_path.write_text(_kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8")
 
         save_config(
             repo_path,

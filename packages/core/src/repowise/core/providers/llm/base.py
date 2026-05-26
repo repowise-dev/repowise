@@ -60,6 +60,14 @@ class GeneratedResponse:
         cached_tokens: Tokens served from the provider's prompt cache (if any).
                        Normalised across providers by the adapter.
         usage:         Provider-specific usage dict (stored as-is for auditing).
+        decisions:     Optional structured side-channel: candidate architectural
+                       decisions the model surfaced while writing the page
+                       (Phase-2 LLM-docs harvest). Populated by the generator
+                       from a trailing JSON block (or native structured output)
+                       and stripped from ``content`` before storage; ``None``
+                       when nothing was harvested. Each item is a raw dict
+                       carrying at least ``title`` + ``source_quote``; the
+                       generator gates them against the file source before use.
     """
 
     content: str
@@ -67,6 +75,7 @@ class GeneratedResponse:
     output_tokens: int
     cached_tokens: int = 0
     usage: dict[str, Any] = field(default_factory=dict)
+    decisions: list[dict] | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -234,7 +243,9 @@ class ChatStreamEvent:
     output_tokens: int = 0
 
 
-ToolExecutor = Any  # Callable[[str, dict], Awaitable[dict]] — but kept as Any to avoid import cycles
+ToolExecutor = (
+    Any  # Callable[[str, dict], Awaitable[dict]] — but kept as Any to avoid import cycles
+)
 
 
 @runtime_checkable

@@ -34,6 +34,11 @@ from ..models import (
     compute_page_id,
     compute_source_hash,
 )
+from .decision_harvest import (
+    HARVEST_DIRECTIVE,
+    HARVESTABLE_PAGE_TYPES,
+    harvest_decisions,
+)
 from .helpers import _extract_summary, _now_iso
 from .pertype import PerTypeGenerationMixin
 from .prompts import _LANGUAGE_NAMES, SYSTEM_PROMPTS
@@ -209,9 +214,7 @@ class PageGenerator(PerTypeGenerationMixin):
         #   1. ``enable_rag_context`` config flag (off → fully skip).
         #   2. ``rag_min_store_size`` — early pages run against an empty
         #      or near-empty store and the search returns nothing useful.
-        if self._vector_store is not None and getattr(
-            self._config, "enable_rag_context", True
-        ):
+        if self._vector_store is not None and getattr(self._config, "enable_rag_context", True):
             min_store_size = max(0, int(getattr(self._config, "rag_min_store_size", 10) or 0))
             store_ok = True
             if min_store_size > 0:
@@ -234,18 +237,27 @@ class PageGenerator(PerTypeGenerationMixin):
                         )
                         self_id = f"file_page:{parsed.file_info.path}"
                         ctx.rag_context = [
-                            f"[{r.page_id}]\n{r.snippet}"
-                            for r in results
-                            if r.page_id != self_id
+                            f"[{r.page_id}]\n{r.snippet}" for r in results if r.page_id != self_id
                         ]
                     except Exception as e:
-                        log.debug(
-                            "rag.search_failed", path=parsed.file_info.path, error=str(e)
-                        )
+                        log.debug("rag.search_failed", path=parsed.file_info.path, error=str(e))
         user_prompt = self._render("file_page.j2", ctx=ctx)
         response = await self._call_provider(
             "file_page", user_prompt, str(uuid.uuid4()), target_path=parsed.file_info.path
         )
+        # Phase-2 harvest: pull any trailing decision block out of the page
+        # before it is wrapped + stored. The gate verifies each quote against
+        # ``file_source_snippet`` — exactly what the model was shown — so a
+        # quote it can't have seen is dropped. Stored on page.metadata for the
+        # persistence layer to fold into the evidence pipeline.
+        harvested: list[dict] = []
+        if self._config.harvest_decisions:
+            clean_content, harvested = harvest_decisions(
+                response.content,
+                source_text=ctx.file_source_snippet or "",
+                evidence_file=parsed.file_info.path,
+            )
+            response.content = clean_content
         page = self._build_generated_page(
             "file_page",
             parsed.file_info.path,
@@ -254,6 +266,8 @@ class PageGenerator(PerTypeGenerationMixin):
             compute_source_hash(user_prompt),
             GENERATION_LEVELS["file_page"],
         )
+        if harvested:
+            page.metadata["harvested_decisions"] = harvested
         # Cross-check LLM output against actual symbols
         hal_warnings = _validate_symbol_references(response.content, parsed)
         if hal_warnings:
@@ -369,6 +383,11 @@ class PageGenerator(PerTypeGenerationMixin):
 
     def _build_system_prompt(self, page_type: str) -> str:
         base_system = SYSTEM_PROMPTS[page_type]
+        # Phase-2 decision harvest: extend the (otherwise constant) system
+        # prompt with the harvest directive on the page types we harvest from.
+        # The directive is constant per run, so prefix caching still holds.
+        if self._config.harvest_decisions and page_type in HARVESTABLE_PAGE_TYPES:
+            base_system = base_system + HARVEST_DIRECTIVE
         # Sanitize the configured language code: lower, strip, drop anything that isn't
         # alphanumeric or underscore. Prevents user-supplied config from injecting
         # newlines or extra instructions into the system prompt.

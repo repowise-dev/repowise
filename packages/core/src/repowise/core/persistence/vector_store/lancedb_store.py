@@ -23,9 +23,7 @@ class LanceDBVectorStore(VectorStore):
 
     _TABLE_NAME = "wiki_pages"
 
-    def __init__(
-        self, db_path: str, embedder: Embedder, table_name: str | None = None
-    ) -> None:
+    def __init__(self, db_path: str, embedder: Embedder, table_name: str | None = None) -> None:
         self._db_path = db_path
         self._embedder = embedder
         self._table_name = table_name or self._TABLE_NAME
@@ -134,12 +132,15 @@ class LanceDBVectorStore(VectorStore):
         q_vecs = await self._embedder.embed([query])
         q_vec = [float(v) for v in q_vecs[0]]
 
-        raw = (
-            await self._table.query()  # type: ignore[union-attr]
-            .nearest_to(q_vec)
-            .limit(limit)
-            .to_list()
-        )
+        # Query with explicit cosine distance so ``_distance`` is a cosine
+        # distance (1 - cos); we return ``1 - _distance`` = cosine similarity.
+        # This makes the score semantics match the other backends
+        # (InMemory/pgvector both return cosine similarity, higher = better),
+        # so callers can apply a single similarity threshold uniformly.
+        query_builder = self._table.query().nearest_to(q_vec)  # type: ignore[union-attr]
+        if hasattr(query_builder, "distance_type"):
+            query_builder = query_builder.distance_type("cosine")
+        raw = await query_builder.limit(limit).to_list()
 
         return [
             SearchResult(
@@ -147,7 +148,7 @@ class LanceDBVectorStore(VectorStore):
                 title=r.get("title", ""),
                 page_type=r.get("page_type", ""),
                 target_path=r.get("target_path", ""),
-                score=float(r.get("_distance", 0.0)),
+                score=1.0 - float(r.get("_distance", 1.0)),
                 snippet=r.get("content_snippet", ""),
                 search_type="vector",
             )

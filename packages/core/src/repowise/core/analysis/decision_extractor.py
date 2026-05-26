@@ -30,7 +30,7 @@ from typing import Any
 
 import structlog
 
-from repowise.core.analysis.decision_provenance import normalize_text, verify_quote
+from repowise.core.analysis.decision_gate import apply_substring_gate
 
 logger = structlog.get_logger(__name__)
 
@@ -1353,63 +1353,13 @@ class DecisionExtractor:
     def _apply_substring_gate(
         self, decisions: list[ExtractedDecision]
     ) -> tuple[list[ExtractedDecision], int]:
-        """Drop LLM fields not grounded in their source span; reject the empties.
+        """Run the shared anti-hallucination gate over extracted decisions.
 
-        Every produced ``decision`` / ``rationale`` / ``source_quote`` must
-        substring- or token-match the verbatim ``source_text`` the extractor
-        recorded. Unverifiable fields are cleared; a decision whose every
-        produced field is unverifiable is rejected. ``verification`` is stamped
-        with the strongest surviving verdict. A decision with no ``source_text``
-        (nothing to check against) is kept but left ``unverified`` — we never
-        fabricate a rejection we cannot justify.
-
-        Returns ``(kept, rejected_count)``.
+        Thin wrapper around :func:`decision_gate.apply_substring_gate` — the
+        gate orchestration is factored out so the Phase-2 LLM-docs harvest path
+        enforces the *same* grounding rules. See that module for the contract.
         """
-        kept: list[ExtractedDecision] = []
-        rejected = 0
-        for d in decisions:
-            src = d.source_text or ""
-            if not src:
-                d.verification = "unverified"
-                d.source_text = ""
-                kept.append(d)
-                continue
-
-            # Normalize the (possibly large) source span once per decision and
-            # reuse it across the three field checks — verify_quote re-normalizes
-            # its second arg, but normalizing an already-collapsed string is a
-            # cheap no-op, so this keeps the gate O(source span) per decision.
-            norm_src = normalize_text(src)
-
-            verdicts: list[str] = []
-            produced_any = False
-            grounded_any = False
-            for fname in ("decision", "rationale", "source_quote"):
-                val = (getattr(d, fname, "") or "").strip()
-                if not val:
-                    continue
-                produced_any = True
-                verdict = verify_quote(val, norm_src)
-                if verdict == "unverified":
-                    setattr(d, fname, "")  # drop the hallucinated field
-                else:
-                    grounded_any = True
-                    verdicts.append(verdict)
-
-            if produced_any and not grounded_any:
-                rejected += 1
-                continue
-
-            if "exact" in verdicts:
-                d.verification = "exact"
-            elif "fuzzy" in verdicts:
-                d.verification = "fuzzy"
-            else:
-                d.verification = "unverified"
-            d.source_text = ""  # transient — don't carry into persistence
-            kept.append(d)
-
-        return kept, rejected
+        return apply_substring_gate(decisions)
 
     # ------------------------------------------------------------------
     # Staleness computation (static method)

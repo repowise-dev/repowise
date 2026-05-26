@@ -103,9 +103,7 @@ async def persist_graph_nodes(
     # repos can serve metric reads from SQL without recomputing the NetworkX
     # centrality kernels. Additive to graph_nodes; never changes node rows.
     try:
-        await batch_upsert_graph_metrics(
-            session, repo_id, graph_builder.file_metrics_snapshot()
-        )
+        await batch_upsert_graph_metrics(session, repo_id, graph_builder.file_metrics_snapshot())
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
 
@@ -254,11 +252,29 @@ async def persist_pipeline_result(
             logger.warning("health_snapshot_skipped", error=str(_snap_err))
 
     # ---- Decision records ----------------------------------------------------
+    # Two contributors merge into one upsert: the multi-source extractor
+    # (decision_report) and the Phase-2 LLM-docs harvest (ridden on each
+    # generated page's metadata, already gated at generation time). Folding
+    # them into a single bulk_upsert lets harvested candidates corroborate
+    # extracted decisions (extra evidence row + confidence bump) or stand alone
+    # as low-rank ``proposed`` records awaiting review.
+    decision_dicts: list[dict] = []
     if result.decision_report and result.decision_report.decisions:
+        decision_dicts.extend(dataclasses.asdict(d) for d in result.decision_report.decisions)
+    if result.generated_pages:
+        for page in result.generated_pages:
+            harvested = page.metadata.get("harvested_decisions")
+            if harvested:
+                decision_dicts.extend(harvested)
+
+    if decision_dicts:
+        # Reuse the run's shared vector store for semantic (paraphrase) dedup
+        # and to make decisions searchable; title dedup still runs when None.
         await bulk_upsert_decisions(
             session,
             repo_id,
-            [dataclasses.asdict(d) for d in result.decision_report.decisions],
+            decision_dicts,
+            vector_store=getattr(result, "vector_store", None),
         )
         # Recompute staleness scores using git metadata.
         if result.git_metadata_list:

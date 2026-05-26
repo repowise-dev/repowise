@@ -405,7 +405,11 @@ async def test_generate_all_level_values_in_range():
 
 
 def _gen(language: str = "en") -> PageGenerator:
-    config = GenerationConfig(max_tokens=256, token_budget=500, max_concurrency=1)
+    # Harvest disabled here so these assert the language-prefix logic in
+    # isolation; the harvest-directive suffix is covered in test_decision_harvest.
+    config = GenerationConfig(
+        max_tokens=256, token_budget=500, max_concurrency=1, harvest_decisions=False
+    )
     provider = MockProvider()
     assembler = ContextAssembler(config)
     return PageGenerator(provider, assembler, config, language=language)
@@ -441,4 +445,6 @@ def test_build_system_prompt_strips_control_chars_from_language():
 def test_compute_cache_key_varies_by_language():
     gen_en = _gen("en")
     gen_ru = _gen("ru")
-    assert gen_en._compute_cache_key("file_page", "x") != gen_ru._compute_cache_key("file_page", "x")
+    assert gen_en._compute_cache_key("file_page", "x") != gen_ru._compute_cache_key(
+        "file_page", "x"
+    )

@@ -196,6 +196,13 @@ class PipelineResult:
     knowledge_graph_result: Any | None = None
     """``KnowledgeGraphResult`` or None — populated after community detection."""
 
+    vector_store: Any | None = None
+    """The shared page-generator vector store used this run, threaded to
+    persistence so the decision semantic-dedup pass (Phase 2C) can match
+    against it and embed decisions into it (also surfacing them in
+    search_codebase). None when no store was configured (semantic dedup is
+    then skipped; title dedup still runs)."""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -468,8 +475,7 @@ async def run_pipeline(
                     )
 
         tech_stack_dicts = [
-            {"name": t.name, "version": t.version, "category": t.category}
-            for t in tech_items
+            {"name": t.name, "version": t.version, "category": t.category} for t in tech_items
         ]
 
         if knowledge_graph_result is None:
@@ -548,17 +554,17 @@ async def run_pipeline(
         )
 
     # ---- Knowledge Graph LLM enrichment (layer naming + tour) -----------------
-    if (
-        knowledge_graph_result is not None
-        and generate_docs
-        and llm_client is not None
-    ):
+    if knowledge_graph_result is not None and generate_docs and llm_client is not None:
         try:
             from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
 
             if progress:
                 progress.on_phase_start("knowledge_graph.enrich", None)
-            _kg_reasoning = getattr(resolved_generation_config, "reasoning", "auto") if resolved_generation_config else "auto"
+            _kg_reasoning = (
+                getattr(resolved_generation_config, "reasoning", "auto")
+                if resolved_generation_config
+                else "auto"
+            )
             knowledge_graph_result = await enrich_knowledge_graph(
                 kg_skeleton=knowledge_graph_result,
                 llm_client=llm_client,
@@ -625,6 +631,7 @@ async def run_pipeline(
             {"name": t.name, "version": t.version, "category": t.category} for t in tech_items
         ],
         external_systems=external_systems,
+        vector_store=vector_store,
     )
 
 
