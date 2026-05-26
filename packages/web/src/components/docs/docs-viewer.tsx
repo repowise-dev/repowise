@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import useSWR from "swr";
 import {
   FileText,
   Clock,
@@ -17,8 +18,12 @@ import {
   Network,
   Activity,
   GitBranch,
+  Layers,
+  Flame,
+  FileInput,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
+import { getGitMetadata } from "@/lib/api/git";
 import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
 import { getBacklinks, getWikiLinks } from "@repowise-dev/ui/wiki/wiki-links-types";
 import { TableOfContents } from "@repowise-dev/ui/wiki/table-of-contents";
@@ -165,6 +170,74 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
   );
 }
 
+/**
+ * Consolidated "At a glance" signals for a file page — hotspot, ownership,
+ * churn, bus factor — pulled from the existing git-metadata endpoint so the
+ * reader doesn't have to leave the wiki to learn how risky/owned a file is.
+ * Renders nothing for non-file pages or files without git history.
+ */
+function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string }) {
+  const isFile =
+    !!targetPath &&
+    !targetPath.includes("::") &&
+    !targetPath.startsWith("onboarding/") &&
+    !targetPath.startsWith("layer:");
+  const { data } = useSWR(
+    isFile ? `git-meta:${repoId}:${targetPath}` : null,
+    () => getGitMetadata(repoId, targetPath),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+  if (!data || data.commit_count_total === 0) return null;
+
+  const churnTop = Math.max(1, 100 - Math.round(data.churn_percentile));
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 mb-2">
+        <Flame className="h-3 w-3 text-[var(--color-text-tertiary)]" />
+        <span className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+          At a glance
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {data.is_hotspot && (
+          <Badge variant="outline" className="text-[10px] border-amber-400/40 text-amber-300/90">
+            <Flame className="h-2.5 w-2.5 mr-1" />
+            Hotspot · top {churnTop}%
+          </Badge>
+        )}
+        {data.is_stable && !data.is_hotspot && (
+          <Badge variant="outline" className="text-[10px]">Stable</Badge>
+        )}
+        {data.bus_factor === 1 && (
+          <Badge variant="outline" className="text-[10px] border-amber-400/40 text-amber-300/90">
+            Bus factor 1
+          </Badge>
+        )}
+      </div>
+      <div className="mt-2 space-y-1 text-[11px] text-[var(--color-text-secondary)]">
+        {data.primary_owner_name && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[var(--color-text-tertiary)]">Owner</span>
+            <span className="truncate" title={data.primary_owner_name}>
+              {data.primary_owner_name}
+              {data.primary_owner_commit_pct != null &&
+                ` · ${Math.round(data.primary_owner_commit_pct * 100)}%`}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[var(--color-text-tertiary)]">Commits (90d)</span>
+          <span className="font-mono">{data.commit_count_90d}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[var(--color-text-tertiary)]">Contributors</span>
+          <span className="font-mono">{data.contributor_count}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface DocsViewerProps {
   page: PageResponse | null;
   /** Full page list — powers hierarchical breadcrumbs and prev/next. */
@@ -302,6 +375,37 @@ function DocsViewerBody({
     return out;
   }, [wikiLinks, pages, page.id]);
 
+  // KG layer this file belongs to (P1.4 "layer Y" chip). Links to the layer
+  // page when one was generated, otherwise renders as a static chip.
+  const layerName =
+    typeof page.metadata?.layer_name === "string" ? page.metadata.layer_name : "";
+  const layerPage = useMemo(
+    () =>
+      layerName
+        ? pages.find(
+            (p) =>
+              p.page_type === "layer_page" &&
+              p.target_path === `layer:${layerName}`,
+          )
+        : undefined,
+    [pages, layerName],
+  );
+
+  // Provenance: the inputs this page was synthesised from (metadata.sources).
+  // Each is linked to its own page when one exists.
+  const sources = useMemo(() => {
+    const raw = page.metadata?.sources;
+    if (!Array.isArray(raw)) return [];
+    const byPath = new Map(pages.map((p) => [p.target_path, p]));
+    return (raw as Array<{ path?: string; kind?: string }>)
+      .map((s) => {
+        const path = typeof s?.path === "string" ? s.path : "";
+        return { path, kind: s?.kind ?? "", pageId: byPath.get(path)?.id };
+      })
+      .filter((s) => s.path)
+      .slice(0, 8);
+  }, [page.metadata, pages]);
+
   // Renders a resolved wiki link as an <a> with a real href (middle-click /
   // open-in-new-tab still work) but intercepts plain clicks for in-app nav.
   const WikiInlineLink = useMemo(() => {
@@ -438,6 +542,21 @@ function DocsViewerBody({
                   in {moduleSeg.label}
                 </button>
               )}
+              {layerName &&
+                (layerPage ? (
+                  <button
+                    onClick={() => goToPageId(layerPage.id)}
+                    className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border-default)] px-2 py-0.5 text-[10px] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-accent)] hover:text-[var(--color-accent-primary)]"
+                  >
+                    <Layers className="h-2.5 w-2.5" />
+                    {layerName}
+                  </button>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-bg-elevated)] px-2 py-0.5 text-[10px] text-[var(--color-text-tertiary)]">
+                    <Layers className="h-2.5 w-2.5" />
+                    {layerName}
+                  </span>
+                ))}
             </div>
 
             {/* Low-confidence flag */}
@@ -557,11 +676,48 @@ function DocsViewerBody({
       {/* Right sidebar — on-page contents + graph intelligence */}
       {sidebarOpen && (
         <div className="hidden lg:flex flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 w-[240px] overflow-auto">
+          {hasTargetPath && (
+            <div className="p-3 pb-0">
+              <AtAGlance repoId={repoId} targetPath={page.target_path} />
+            </div>
+          )}
           <div className="p-3">
             <TableOfContents content={page.content} />
           </div>
-          {(relatedLinks.length > 0 || hasTargetPath) && (
+          {(relatedLinks.length > 0 || sources.length > 0 || hasTargetPath) && (
             <div className="space-y-4 p-3 pt-0">
+              {sources.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <FileInput className="h-3 w-3 text-[var(--color-text-tertiary)]" />
+                    <span className="text-[11px] font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
+                      Built from
+                    </span>
+                  </div>
+                  <ul className="space-y-1">
+                    {sources.map((s) => (
+                      <li key={s.path} className="text-[11px]">
+                        {s.pageId ? (
+                          <button
+                            onClick={() => goToPageId(s.pageId!)}
+                            className="truncate text-left font-mono text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors w-full"
+                            title={`${s.path} (${s.kind})`}
+                          >
+                            {s.path}
+                          </button>
+                        ) : (
+                          <span
+                            className="block truncate font-mono text-[var(--color-text-tertiary)]"
+                            title={`${s.path} (${s.kind})`}
+                          >
+                            {s.path}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {relatedLinks.length > 0 && (
                 <div>
                   <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">

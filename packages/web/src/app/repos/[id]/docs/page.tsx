@@ -9,6 +9,7 @@ import { FirstFiveFiles, type FirstFiveFile } from "@repowise-dev/ui/onboarding/
 import { DocsCommandPalette } from "@repowise-dev/ui/docs/command-palette";
 import { DocsExplorer } from "@/components/docs/docs-explorer";
 import { listAllPages, listPages } from "@/lib/api/pages";
+import { search as searchPages } from "@/lib/api/search";
 import { getGraph } from "@/lib/api/graph";
 import type { DocPage } from "@repowise-dev/types/docs";
 import { downloadTextFile } from "@/lib/utils/download";
@@ -44,6 +45,20 @@ export default function DocsPage({
     `docs-list:${repoId}`,
     () => listPages(repoId, { limit: 1000 }),
     { revalidateOnFocus: false },
+  );
+
+  // Server-backed search for the ⌘K palette: hit the semantic/full-text
+  // endpoint, then map results back to the loaded page objects so selection
+  // behaves identically to a client-side hit. Unknown ids (rare) are dropped.
+  const searchFn = useCallback(
+    async (q: string) => {
+      const results = await searchPages(q, { repo_id: repoId, limit: 30 });
+      const byId = new Map((docPages ?? []).map((p) => [p.id, p]));
+      return results
+        .map((r) => byId.get(r.page_id))
+        .filter((p): p is DocPage => p !== undefined);
+    },
+    [repoId, docPages],
   );
 
   const pageByPath = useMemo(() => {
@@ -172,6 +187,7 @@ export default function DocsPage({
         open={searchOpen}
         onOpenChange={setSearchOpen}
         onSelect={(p) => openPage(p.id)}
+        searchFn={searchFn}
       />
     </div>
   );

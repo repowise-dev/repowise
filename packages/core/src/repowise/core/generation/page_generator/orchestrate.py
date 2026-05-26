@@ -361,6 +361,17 @@ class _GenerationRun:
         self.gen._tag_promoted_pages(final_pages)
         all_pages.extend(final_pages)
 
+        # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
+        # labels in LLM output don't break the whole diagram in the renderer.
+        try:
+            from ..mermaid_safety import sanitize_pages
+
+            fixed = sanitize_pages(all_pages)
+            if fixed:
+                log.info("mermaid_safety.applied", pages_changed=fixed)
+        except Exception as exc:
+            log.debug("mermaid_safety.failed", error=str(exc))
+
         # Post-generation: resolve backtick refs into wiki links + backlinks.
         try:
             from ..interlinking import attach_wiki_links_and_backlinks

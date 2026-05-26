@@ -391,6 +391,15 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
   return sections;
 }
 
+// Ordinal shown next to each domain section so the spine reads as a numbered
+// 1 → 4 reading order (Guided Tour → Architecture → Modules → Reference).
+const SECTION_NUMBER: Record<string, number> = {
+  [SECTION_KEYS.tour]: 1,
+  [SECTION_KEYS.architecture]: 2,
+  [SECTION_KEYS.modules]: 3,
+  [SECTION_KEYS.reference]: 4,
+};
+
 function sectionIcon(path: string) {
   switch (path) {
     case SECTION_KEYS.tour:
@@ -508,7 +517,17 @@ function TreeItem({
           {node.path.startsWith("@section:") ? (
             (() => {
               const SectionIcon = sectionIcon(node.path);
-              return <SectionIcon className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />;
+              const num = SECTION_NUMBER[node.path];
+              return (
+                <>
+                  {num != null && (
+                    <span className="shrink-0 font-mono text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
+                      {num}
+                    </span>
+                  )}
+                  <SectionIcon className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />
+                </>
+              );
             })()
           ) : node.path === ONBOARDING_DIR_KEY ? (
             <Compass className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)]" />

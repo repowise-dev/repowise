@@ -45,6 +45,36 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
+    """Surface KG layer + the inputs a file page was synthesised from.
+
+    Reads only already-assembled context (no new work), so it is cheap and
+    safe for both the LLM and the deterministic tier-2 path. The frontend
+    renders ``layer_name`` as a zoom-out chip and ``sources`` as a "built
+    from" provenance list.
+    """
+    if ctx.kg_layer_name:
+        page.metadata["layer_name"] = ctx.kg_layer_name
+        if ctx.kg_layer_role:
+            page.metadata["layer_role"] = ctx.kg_layer_role
+
+    sources: list[dict[str, str]] = []
+    seen: set[str] = set()
+    # Direct dependencies are the upstream files this doc draws on.
+    for dep in ctx.dependencies[:10]:
+        if dep and dep not in seen:
+            seen.add(dep)
+            sources.append({"path": dep, "kind": "dependency"})
+    # Architectural decisions cite their own evidence file.
+    for rec in ctx.decision_records[:5]:
+        ev = rec.get("evidence_file") or rec.get("source")
+        if ev and ev not in seen:
+            seen.add(ev)
+            sources.append({"path": ev, "kind": "decision"})
+    if sources:
+        page.metadata["sources"] = sources
+
+
 @dataclass(frozen=True)
 class PriorPage:
     """Snapshot of a previously-generated page used for cross-run reuse.
@@ -227,6 +257,7 @@ class PageGenerator(PerTypeGenerationMixin):
                 refs=hal_warnings[:5],
             )
             page.metadata["hallucination_warnings"] = hal_warnings
+        _attach_file_provenance(page, ctx)
         return page
 
     async def _generate_file_page_tier2(
@@ -262,6 +293,7 @@ class PageGenerator(PerTypeGenerationMixin):
             updated_at=now,
         )
         page.metadata["doc_tier"] = 2
+        _attach_file_provenance(page, ctx)
         return page
 
     # ------------------------------------------------------------------

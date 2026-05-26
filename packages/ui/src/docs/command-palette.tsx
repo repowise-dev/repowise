@@ -13,6 +13,14 @@ interface CommandPaletteProps {
   /** Controlled open state. Omit for self-managed (⌘K only). */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Optional server-backed search (semantic / full-text). When provided, its
+   * results are merged in *after* strong local title/path matches, so the
+   * palette stays instant while also surfacing meaning-based hits that the
+   * client-side substring filter can't find. Should resolve to `DocPage`s
+   * (the caller maps the search endpoint's hits back to loaded pages).
+   */
+  searchFn?: (query: string) => Promise<DocPage[]>;
 }
 
 interface Hit {
@@ -51,6 +59,7 @@ export function DocsCommandPalette({
   onSelect,
   open: controlledOpen,
   onOpenChange,
+  searchFn,
 }: CommandPaletteProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const isControlled = controlledOpen !== undefined;
@@ -89,7 +98,7 @@ export function DocsCommandPalette({
     }
   }, [open]);
 
-  const hits = useMemo<Hit[]>(() => {
+  const clientHits = useMemo<Hit[]>(() => {
     const q = debounced.trim().toLowerCase();
     if (q.length < 2) return [];
     const out: Hit[] = [];
@@ -98,8 +107,58 @@ export function DocsCommandPalette({
       if (hit) out.push(hit);
     }
     out.sort((a, b) => a.rank - b.rank || a.page.title.localeCompare(b.page.title));
-    return out.slice(0, 40);
+    return out;
   }, [debounced, pages]);
+
+  // Server-backed (semantic / full-text) results, fetched only when a
+  // searchFn is supplied. Failures fall back silently to the client layer.
+  const [serverPages, setServerPages] = useState<DocPage[]>([]);
+  useEffect(() => {
+    const q = debounced.trim();
+    if (!searchFn || q.length < 2) {
+      setServerPages([]);
+      return;
+    }
+    let cancelled = false;
+    searchFn(q)
+      .then((r) => {
+        if (!cancelled) setServerPages(r);
+      })
+      .catch(() => {
+        if (!cancelled) setServerPages([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debounced, searchFn]);
+
+  // Strong local matches (title/path) lead for instant feel; server hits
+  // (which can match by meaning or body across all pages) fill in after,
+  // then the remaining weaker local body matches. Deduped by page id.
+  const hits = useMemo<Hit[]>(() => {
+    if (!searchFn) return clientHits.slice(0, 40);
+    const seen = new Set<string>();
+    const merged: Hit[] = [];
+    for (const h of clientHits) {
+      if (h.rank <= 2) {
+        merged.push(h);
+        seen.add(h.page.id);
+      }
+    }
+    for (const p of serverPages) {
+      if (!seen.has(p.id)) {
+        merged.push({ page: p, rank: 3 });
+        seen.add(p.id);
+      }
+    }
+    for (const h of clientHits) {
+      if (!seen.has(h.page.id)) {
+        merged.push(h);
+        seen.add(h.page.id);
+      }
+    }
+    return merged.slice(0, 40);
+  }, [clientHits, serverPages, searchFn]);
 
   useEffect(() => {
     if (active >= hits.length) setActive(0);
