@@ -31,9 +31,13 @@ from .enrich import (
 from .file_history import index_file
 from .indexer import GitIndexer
 from .records import (
+    _FIELD_SEP,
+    _LOG_FORMAT,
+    _RECORD_SEP,
     GitIndexSummary,
     _CommitRec,
     _extract_rename_paths,
+    _parse_commit_record,
     _should_skip_index,
 )
 from .tiers import GitIndexTier
@@ -41,12 +45,16 @@ from .tiers import GitIndexTier
 __all__ = [
     "BACKFILL_PHASE",
     "HOTSPOT_HALFLIFE_DAYS",
+    # Re-exported for ``git_commit_index`` which builds the shared commit index.
+    "_FIELD_SEP",
+    "_LOG_FORMAT",
+    "_RECORD_SEP",
     "GitIndexSummary",
     "GitIndexTier",
     "GitIndexer",
-    # Re-exported for ``git_commit_index`` which builds the shared commit index.
     "_CommitRec",
     "_extract_rename_paths",
+    "_parse_commit_record",
     "_should_skip_index",
     "backfill_full_tier",
     "compute_co_changes",

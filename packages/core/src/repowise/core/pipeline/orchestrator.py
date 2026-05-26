@@ -1117,9 +1117,9 @@ async def _run_decision_extraction(
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
-        # Three sources run concurrently inside extract_all(); drive a
+        # Seven sources run concurrently inside extract_all(); drive a
         # determinate bar so users see live progress.
-        _DECISION_STEPS = 3
+        _DECISION_STEPS = 7
         if progress:
             progress.on_phase_start("decisions", _DECISION_STEPS)
 
@@ -1141,13 +1141,18 @@ async def _run_decision_extraction(
         )
 
         if progress:
-            inline = report.by_source.get("inline_marker", 0)
-            readme = report.by_source.get("readme_mining", 0)
-            git_arch = report.by_source.get("git_archaeology", 0)
-            total_decisions = inline + readme + git_arch
+            bs = report.by_source
+            total_decisions = report.total_found
             progress.on_message(
                 "info",
-                f"→ {total_decisions} decisions: {inline} inline · {readme} from docs · {git_arch} from git",
+                f"→ {total_decisions} decisions: "
+                f"{bs.get('inline_marker', 0)} inline · "
+                f"{bs.get('adr', 0)} ADR · "
+                f"{bs.get('changelog', 0)} changelog · "
+                f"{bs.get('pr', 0)} PR · "
+                f"{bs.get('git_archaeology', 0)} git · "
+                f"{bs.get('comment', 0)} comments · "
+                f"{bs.get('readme_mining', 0)} docs",
             )
 
         _phase_done(progress, "decisions")

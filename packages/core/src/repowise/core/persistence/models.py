@@ -237,7 +237,10 @@ class GraphEdge(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "repository_id", "source_node_id", "target_node_id", "edge_type",
+            "repository_id",
+            "source_node_id",
+            "target_node_id",
+            "edge_type",
             name="uq_graph_edge_typed",
         ),
     )
@@ -441,6 +444,14 @@ class DecisionRecord(Base):
     evidence_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
 
+    # Verification (anti-hallucination gate, Phase 1D). Aggregate over the
+    # decision's evidence rows: "exact" if any headline field is a verbatim
+    # quote of its source span, "fuzzy" if only token-overlap matched,
+    # "unverified" if nothing could be grounded.
+    verification: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unverified"
+    )  # exact | fuzzy | unverified
+
     # Staleness
     last_code_change: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -453,6 +464,55 @@ class DecisionRecord(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class DecisionEvidence(Base):
+    """One verbatim provenance row supporting a :class:`DecisionRecord`.
+
+    Provenance accretes rather than overwrites: when two sources describe the
+    same decision they merge into one ``DecisionRecord`` with N evidence rows.
+    The decision's headline fields come from the highest-``source_rank`` row;
+    its confidence is a function of the best rank plus corroboration count.
+    """
+
+    __tablename__ = "decision_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "decision_id",
+            "source",
+            "evidence_file",
+            "evidence_commit",
+            name="uq_decision_evidence",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    decision_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("decision_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Provenance — which source attested to this decision, and how trusted it is.
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # The verbatim span this evidence was drawn from.
+    evidence_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_quote: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    # Per-evidence confidence + substring-gate verdict.
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    verification: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unverified"
+    )  # exact | fuzzy | unverified
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
 
@@ -499,9 +559,7 @@ class LlmCost(Base):
     repository_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
-    ts: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_now_utc
-    )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now_utc)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     operation: Mapped[str] = mapped_column(String(50), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -657,9 +715,7 @@ class CoverageFile(Base):
     )
     ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
-    __table_args__ = (
-        UniqueConstraint("repository_id", "file_path", name="uq_coverage_files"),
-    )
+    __table_args__ = (UniqueConstraint("repository_id", "file_path", name="uq_coverage_files"),)
 
 
 class AnswerCache(Base):
@@ -695,9 +751,7 @@ class AnswerCache(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
-    __table_args__ = (
-        UniqueConstraint("repository_id", "question_hash", name="uq_answer_cache_q"),
-    )
+    __table_args__ = (UniqueConstraint("repository_id", "question_hash", name="uq_answer_cache_q"),)
 
 
 class KnowledgeGraphLayer(Base):

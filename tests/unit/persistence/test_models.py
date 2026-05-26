@@ -302,6 +302,7 @@ def test_base_includes_all_models():
         "git_metadata",
         "dead_code_findings",
         "decision_records",
+        "decision_evidence",
         "conversations",
         "chat_messages",
         "llm_costs",

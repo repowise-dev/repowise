@@ -21,15 +21,51 @@ import structlog
 
 from ._constants import (
     _COMMIT_CATEGORIES,
+    _DECISION_SIGNAL_WORDS,
     _MAX_BLAME_SIZE_BYTES,
+    _MAX_COMMIT_BODY_BYTES,
     _MAX_SIGNIFICANT_COMMITS,
     _MAX_TOP_AUTHORS,
+    _PR_BODY_MARKERS,
     _PR_NUMBER_RE,
     HOTSPOT_HALFLIFE_DAYS,
 )
 from .enrich import detect_original_path, get_blame_ownership, is_significant_commit
-from .function_blame import BlameIndex, build_blame_index, ownership_from_blame
-from .records import _CommitRec, _extract_rename_paths
+from .function_blame import build_blame_index, ownership_from_blame
+from .records import (
+    _LOG_FORMAT,
+    _RECORD_SEP,
+    _CommitRec,
+    _extract_rename_paths,
+    _parse_commit_record,
+)
+
+
+def _body_carries_decision(subject: str, body: str) -> bool:
+    """Whether a commit body is worth retaining for decision mining.
+
+    The body is stored once per file the commit touched, so retaining it
+    indiscriminately bloats the index. Keep it only when the subject/body shows
+    decision intent — a decision-signal keyword or a PR-description marker — i.e.
+    exactly the commits the PR / git-archaeology miners would consume.
+    """
+    if not body:
+        return False
+    blob = f"{subject}\n{body}".lower()
+    if any(marker in blob for marker in _PR_BODY_MARKERS):
+        return True
+    return any(word in blob for word in _DECISION_SIGNAL_WORDS)
+
+
+def _truncate_body(body: str) -> str:
+    """Trim *body* to the byte ceiling, never splitting a UTF-8 sequence."""
+    if not body:
+        return ""
+    encoded = body.encode("utf-8")
+    if len(encoded) <= _MAX_COMMIT_BODY_BYTES:
+        return body
+    return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
+
 
 logger = structlog.get_logger(__name__)
 
@@ -91,7 +127,7 @@ def _parse_per_file_log(
     log_args += [
         f"-{commit_limit}",
         "--numstat",
-        "--format=%x00%H%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%s",
+        f"--format={_LOG_FORMAT}",
         "--",
         file_path,
     ]
@@ -110,40 +146,41 @@ def _parse_per_file_log(
         if orig_path:
             known_paths.add(orig_path)
 
+    # Split on the NUL record separator rather than newlines so multi-line
+    # commit bodies (``%b``) don't get mistaken for numstat rows.
     commits: list[_CommitRec] = []
-    current: _CommitRec | None = None
-    for line in raw.splitlines():
-        if line.startswith("\x00"):
-            parts = line.lstrip("\x00").split("\x1f")
-            if len(parts) >= 6:
-                sha, an, ae, ct, parents, subj = parts[:6]
-                try:
-                    ts = int(ct)
-                except ValueError:
-                    ts = 0
-                current = _CommitRec(
-                    sha=sha,
-                    author_name=an or "unknown",
-                    author_email=ae,
-                    ts=ts,
-                    is_merge=len(parents.split()) > 1,
-                    subject=subj,
-                )
-                commits.append(current)
-        elif current is not None and line.strip():
+    for record in raw.split(_RECORD_SEP):
+        if not record.strip():
+            continue
+        parsed = _parse_commit_record(record)
+        if parsed is None:
+            continue
+        header, numstat_lines = parsed
+        current = _CommitRec(
+            sha=header["sha"],
+            author_name=header["author_name"],
+            author_email=header["author_email"],
+            ts=header["ts"],
+            is_merge=header["is_merge"],
+            subject=header["subject"],
+            body=header["body"],
+        )
+        commits.append(current)
+        for line in numstat_lines:
             numstat_parts = line.split("\t")
-            if len(numstat_parts) >= 3:
-                stat_path = numstat_parts[2]
-                match_path = stat_path
-                if "=>" in stat_path:
-                    _old, _new = _extract_rename_paths(stat_path, known_paths)
-                    match_path = _new or stat_path
-                if match_path in known_paths or match_path == file_path:
-                    try:
-                        current.added += int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
-                        current.deleted += int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
-                    except ValueError:
-                        pass
+            if len(numstat_parts) < 3:
+                continue
+            stat_path = numstat_parts[2]
+            match_path = stat_path
+            if "=>" in stat_path:
+                _old, _new = _extract_rename_paths(stat_path, known_paths)
+                match_path = _new or stat_path
+            if match_path in known_paths or match_path == file_path:
+                try:
+                    current.added += int(numstat_parts[0]) if numstat_parts[0] != "-" else 0
+                    current.deleted += int(numstat_parts[1]) if numstat_parts[1] != "-" else 0
+                except ValueError:
+                    pass
     return commits, orig_path
 
 
@@ -326,6 +363,16 @@ def index_file(
                 if pr_match:
                     pr_num = pr_match.group(1) or pr_match.group(2) or pr_match.group(3)
                     entry["pr_number"] = int(pr_num)
+                # Retain the commit body (byte-capped) only for significant
+                # commits whose body shows decision intent — squash-merge repos
+                # carry the full rationale here, which the PR/squash miner
+                # consumes. The decision gate + cap keep the per-file JSON from
+                # ballooning (the body is duplicated across every touched file).
+                raw_body = getattr(c, "body", "") or ""
+                if _body_carries_decision(c.subject, raw_body):
+                    body = _truncate_body(raw_body)
+                    if body:
+                        entry["body"] = body
                 sig_commits.append(entry)
                 if len(sig_commits) >= _MAX_SIGNIFICANT_COMMITS:
                     sig_full = True

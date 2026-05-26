@@ -19,28 +19,21 @@ input file, not retro-fittable from a repo-wide log.
 
 from __future__ import annotations
 
-import structlog
 from typing import TYPE_CHECKING
+
+import structlog
 
 if TYPE_CHECKING:
     from .git_indexer import _CommitRec
 
 logger = structlog.get_logger(__name__)
 
-# Git log record separator (NUL byte) and field separator (US, 0x1f) —
-# chosen so they can't appear in any commit metadata. Subjects can
-# legally contain anything else, so we cannot use printable separators.
-_RECORD_SEP = "\x00"
-_FIELD_SEP = "\x1f"
-
-_LOG_FORMAT = f"{_RECORD_SEP}%H{_FIELD_SEP}%an{_FIELD_SEP}%ae{_FIELD_SEP}%ct{_FIELD_SEP}%P{_FIELD_SEP}%s"
-
 
 def load_commit_index(
     repo: object,
     commit_limit: int,
     indexable_files: set[str],
-) -> dict[str, list["_CommitRec"]]:
+) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
     *commit_limit* caps the depth (newest first); *indexable_files* is
@@ -58,9 +51,15 @@ def load_commit_index(
     Failures (git unavailable, corrupt log output, etc.) return an
     empty dict so the caller can fall back to per-file indexing.
     """
-    # Imported here to avoid a circular import — _CommitRec lives in
-    # git_indexer and this module is imported from there.
-    from .git_indexer import _CommitRec, _extract_rename_paths
+    # Imported here to avoid a circular import — these live in git_indexer's
+    # records module and this module is imported from there.
+    from .git_indexer import (
+        _LOG_FORMAT,
+        _RECORD_SEP,
+        _CommitRec,
+        _extract_rename_paths,
+        _parse_commit_record,
+    )
 
     try:
         raw = repo.git.log(  # type: ignore[attr-defined]
@@ -77,72 +76,66 @@ def load_commit_index(
         return {}
 
     bucket: dict[str, list[_CommitRec]] = {}
-    current_meta: tuple[str, str, str, int, bool, str] | None = None
+    commits_parsed = 0
 
-    for line in raw.splitlines():
-        if line.startswith(_RECORD_SEP):
-            parts = line.lstrip(_RECORD_SEP).split(_FIELD_SEP)
-            if len(parts) < 6:
-                current_meta = None
+    # Split on the NUL record separator rather than newlines: commit bodies
+    # (``%b``) are multi-line, so a line-based scan would mistake body lines
+    # for numstat rows. The first chunk before the leading separator is empty.
+    for record in raw.split(_RECORD_SEP):
+        if not record.strip():
+            continue
+        parsed = _parse_commit_record(record)
+        if parsed is None:
+            continue
+        header, numstat_lines = parsed
+        commits_parsed += 1
+
+        for line in numstat_lines:
+            cols = line.split("\t")
+            if len(cols) < 3:
                 continue
-            sha, an, ae, ct, parents, subj = parts[:6]
+
+            stat_path = cols[2]
+            # Handle rename markers — ``{old => new}`` resolves to a new
+            # path. Without ``--follow`` git still emits these for moves
+            # detected via the rename heuristic; we add both names but
+            # attribute the churn to the new path.
+            if "=>" in stat_path:
+                seen: set[str] = set()
+                _old_path, new_path = _extract_rename_paths(stat_path, seen)
+                target = new_path or stat_path
+            else:
+                target = stat_path
+
+            if target not in indexable_files:
+                continue
+
             try:
-                ts = int(ct)
+                added = int(cols[0]) if cols[0] != "-" else 0
+                deleted = int(cols[1]) if cols[1] != "-" else 0
             except ValueError:
-                ts = 0
-            is_merge = len(parents.split()) > 1
-            current_meta = (sha, an or "unknown", ae, ts, is_merge, subj)
-            continue
+                added = 0
+                deleted = 0
 
-        if current_meta is None or not line.strip():
-            continue
-
-        # numstat line: added\tdeleted\tpath
-        cols = line.split("\t")
-        if len(cols) < 3:
-            continue
-
-        stat_path = cols[2]
-        # Handle rename markers — ``{old => new}`` resolves to a new
-        # path. Without ``--follow`` git still emits these for moves
-        # detected via the rename heuristic; we add both names but
-        # attribute the churn to the new path.
-        if "=>" in stat_path:
-            seen: set[str] = set()
-            old_path, new_path = _extract_rename_paths(stat_path, seen)
-            target = new_path or stat_path
-        else:
-            target = stat_path
-
-        if target not in indexable_files:
-            continue
-
-        try:
-            added = int(cols[0]) if cols[0] != "-" else 0
-            deleted = int(cols[1]) if cols[1] != "-" else 0
-        except ValueError:
-            added = 0
-            deleted = 0
-
-        sha, an, ae, ts, is_merge, subj = current_meta
-        # Each commit becomes one record per file it touched — the
-        # per-file analyzer treats this list as the file's own history.
-        bucket.setdefault(target, []).append(
-            _CommitRec(
-                sha=sha,
-                author_name=an,
-                author_email=ae,
-                ts=ts,
-                is_merge=is_merge,
-                subject=subj,
-                added=added,
-                deleted=deleted,
+            # Each commit becomes one record per file it touched — the
+            # per-file analyzer treats this list as the file's own history.
+            bucket.setdefault(target, []).append(
+                _CommitRec(
+                    sha=header["sha"],
+                    author_name=header["author_name"],
+                    author_email=header["author_email"],
+                    ts=header["ts"],
+                    is_merge=header["is_merge"],
+                    subject=header["subject"],
+                    body=header["body"],
+                    added=added,
+                    deleted=deleted,
+                )
             )
-        )
 
     logger.debug(
         "repo_commit_index_built",
-        commits_parsed=raw.count(_RECORD_SEP),
+        commits_parsed=commits_parsed,
         files_with_history=len(bucket),
         indexable_files=len(indexable_files),
     )

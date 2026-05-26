@@ -70,6 +70,34 @@ _DEFAULT_COMMIT_LIMIT: int = 500
 _MAX_TOP_AUTHORS: int = 50
 _MAX_SIGNIFICANT_COMMITS: int = 50
 
+# Byte ceiling for the commit body (``%b``) retained on a significant-commit
+# entry. Squash-merge repos put the whole "why" in the body, which unlocks
+# PR/squash decision mining. But the body is stored once *per file the commit
+# touched*, so a wide squash commit duplicates it many times — measuring a real
+# repo showed a 2 KB cap inflating ``significant_commits_json`` ~8x. 1 KB holds
+# the decision-bearing lead of a PR description (## Why / ## Motivation /
+# before-after) while halving that overhead, and bodies are further gated to
+# commits that actually look like decisions (see ``_body_carries_decision``).
+# Truncation is byte-accurate (UTF-8) so the cap is a real storage ceiling.
+_MAX_COMMIT_BODY_BYTES: int = 1024
+
+# PR/squash-description markers — a body containing one of these reads like a
+# real PR write-up worth retaining for decision mining (mirrors the extractor's
+# ``_PR_BODY_MARKERS``; kept here to avoid a cross-package import at index time).
+_PR_BODY_MARKERS: tuple[str, ...] = (
+    "## why",
+    "## motivation",
+    "## what",
+    "## changes",
+    "## context",
+    "## summary",
+    "closes #",
+    "fixes #",
+    "resolves #",
+    "before:",
+    "after:",
+)
+
 # Co-change pair extraction widens the window because individual files
 # may only co-change a handful of times in 500 commits — well below the
 # ``min_count`` threshold. On low-churn repos the 500-commit window
