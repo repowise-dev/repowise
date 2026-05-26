@@ -334,3 +334,97 @@ class TestFileToCrateMapping:
         idx = get_or_build_cargo_workspace_index(ctx)
         assert idx is not None
         assert idx.lookup_crate_for_file("unknown/path/file.rs") is None
+
+
+class TestBareIdentifierProbesImporterDir:
+    """Fix 2: single-segment bare identifiers (from ``mod foo;``) should probe
+    the importer's directory before the crate root."""
+
+    def test_mod_in_subdir_resolves_locally(self, tmp_path: Path) -> None:
+        """``mod foo;`` in ``crates/typst/src/eval/mod.rs`` should find
+        ``crates/typst/src/eval/foo.rs``, not ``crates/typst/src/foo.rs``."""
+        (tmp_path / "crates/typst/src/eval").mkdir(parents=True)
+        (tmp_path / "crates/typst/src/lib.rs").write_text("// root\n")
+        (tmp_path / "crates/typst/src/eval/mod.rs").write_text("mod foo;\n")
+        (tmp_path / "crates/typst/src/eval/foo.rs").write_text("pub fn run(){}\n")
+        # Also create foo.rs at crate root so both candidates exist
+        (tmp_path / "crates/typst/src/foo.rs").write_text("pub fn other(){}\n")
+
+        ctx = _ctx(tmp_path, [
+            "crates/typst/src/lib.rs",
+            "crates/typst/src/eval/mod.rs",
+            "crates/typst/src/eval/foo.rs",
+            "crates/typst/src/foo.rs",
+        ])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("foo", "crates/typst/src/eval/mod.rs", ctx)
+        assert result == "crates/typst/src/eval/foo.rs"
+
+    def test_mod_in_crate_root_still_works(self, tmp_path: Path) -> None:
+        """``mod foo;`` in ``crates/typst/src/lib.rs`` should find
+        ``crates/typst/src/foo.rs``."""
+        (tmp_path / "crates/typst/src").mkdir(parents=True)
+        (tmp_path / "crates/typst/src/lib.rs").write_text("mod foo;\n")
+        (tmp_path / "crates/typst/src/foo.rs").write_text("pub fn hello(){}\n")
+
+        ctx = _ctx(tmp_path, [
+            "crates/typst/src/lib.rs",
+            "crates/typst/src/foo.rs",
+        ])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("foo", "crates/typst/src/lib.rs", ctx)
+        assert result == "crates/typst/src/foo.rs"
+
+    def test_mod_resolves_to_mod_rs_variant(self, tmp_path: Path) -> None:
+        """``mod foo;`` should also match ``foo/mod.rs``."""
+        (tmp_path / "src/foo").mkdir(parents=True)
+        (tmp_path / "src/lib.rs").write_text("mod foo;\n")
+        (tmp_path / "src/foo/mod.rs").write_text("pub fn hello(){}\n")
+
+        ctx = _ctx(tmp_path, [
+            "src/lib.rs",
+            "src/foo/mod.rs",
+        ])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("foo", "src/lib.rs", ctx)
+        assert result == "src/foo/mod.rs"
+
+
+class TestPathAttributeResolution:
+    """Fix 3: ``#[path = "custom.rs"] mod foo;`` should resolve the path
+    relative to the importer's directory."""
+
+    def test_rs_suffix_resolves_relative_to_importer(self, tmp_path: Path) -> None:
+        (tmp_path / "crates/foo/src").mkdir(parents=True)
+        (tmp_path / "crates/foo/src/lib.rs").write_text("// root\n")
+        (tmp_path / "crates/foo/src/custom.rs").write_text("pub fn hello(){}\n")
+
+        ctx = _ctx(tmp_path, [
+            "crates/foo/src/lib.rs",
+            "crates/foo/src/custom.rs",
+        ])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("custom.rs", "crates/foo/src/lib.rs", ctx)
+        assert result == "crates/foo/src/custom.rs"
+
+    def test_rs_suffix_nonexistent_returns_none(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, ["src/lib.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("nonexistent.rs", "src/lib.rs", ctx)
+        assert result is None
+
+    def test_rs_suffix_in_subdir(self, tmp_path: Path) -> None:
+        """Path attribute from a file in a subdirectory."""
+        (tmp_path / "src/sub").mkdir(parents=True)
+        (tmp_path / "src/lib.rs").write_text("// root\n")
+        (tmp_path / "src/sub/mod.rs").write_text("// mod\n")
+        (tmp_path / "src/sub/impl_file.rs").write_text("pub fn run(){}\n")
+
+        ctx = _ctx(tmp_path, [
+            "src/lib.rs",
+            "src/sub/mod.rs",
+            "src/sub/impl_file.rs",
+        ])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("impl_file.rs", "src/sub/mod.rs", ctx)
+        assert result == "src/sub/impl_file.rs"

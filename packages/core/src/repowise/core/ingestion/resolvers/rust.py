@@ -14,6 +14,14 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
     if " as " in module_path:
         module_path = module_path.split(" as ")[0].strip()
 
+    # #[path = "..."] attribute — resolve relative to importer
+    if module_path.endswith(".rs"):
+        importer_dir = str(Path(importer_path).parent.as_posix())
+        candidate = f"{importer_dir}/{module_path}"
+        if candidate in ctx.path_set:
+            return candidate
+        return None
+
     parts = module_path.split("::")
     if not parts:
         return None
@@ -46,6 +54,15 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
         if not parts[idx:]:
             return None
         return _probe_rust_path(str(parent.as_posix()), parts[idx:], ctx.path_set)
+
+    # --- Single-segment bare identifier (e.g. from `mod foo;`) ---
+    # Probe the importer's directory first — `mod foo;` resolves relative
+    # to the declaring file, not the crate root.
+    if len(parts) == 1:
+        importer_dir = str(Path(importer_path).parent.as_posix())
+        resolved = _probe_rust_path(importer_dir, parts, ctx.path_set)
+        if resolved is not None:
+            return resolved
 
     # --- External crate (no prefix or unknown crate name) ---
     # Check if it might be a local module at the crate root first

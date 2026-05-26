@@ -511,6 +511,12 @@ class DeadCodeAnalyzer:
                     continue
                 if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
                     continue
+                # Rust proc-macro entry points — invoked by the compiler,
+                # not by call edges in the dependency graph.
+                if sym.get("language") == "rust":
+                    decorators = sym.get("decorators") or []
+                    if any(d.startswith("proc_macro") for d in decorators):
+                        continue
                 # Explicit language-level export markers (C/C++
                 # ``__declspec(dllexport)``, GCC ``visibility("default")``)
                 # signal "called from outside this translation unit /
@@ -669,6 +675,11 @@ class DeadCodeAnalyzer:
 
         for node, node_data in self.graph.nodes(data=True):
             if node_data.get("node_type") != "symbol":
+                continue
+            # Rust: the graph builder does not yet emit intra-file call
+            # edges, so every private Rust function appears "uncalled".
+            # Skip the entire language until call-edge support lands.
+            if node_data.get("language") == "rust":
                 continue
             if node_data.get("visibility") not in ("private", "internal"):
                 continue

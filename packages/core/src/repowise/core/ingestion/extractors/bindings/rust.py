@@ -9,7 +9,12 @@ from ..helpers import node_text
 
 
 def extract_rust_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
-    """Extract bindings from Rust use declarations."""
+    """Extract bindings from Rust use declarations and mod items."""
+    # `mod foo;` (without body) declares a child module — treat as wildcard
+    # import because all public symbols become accessible via `foo::Name`.
+    if stmt_node.type == "mod_item":
+        return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
+
     arg_node = stmt_node.child_by_field_name("argument")
     if arg_node is None:
         for child in stmt_node.children:

@@ -265,6 +265,23 @@
   )
 ) @call.site
 
+; Function pointer / callback argument: register(my_handler), vec.iter().map(process)
+; Captures top-level identifier arguments in call expressions as references
+; to prevent false-positive dead code flags on functions passed by name.
+(call_expression
+  arguments: (arguments
+    (identifier) @call.target
+  )
+) @call.site
+
+; Type argument in turbofish: func::<MyType>(...), Channel::<MyType>::new()
+; Creates a reference edge so MyType is not flagged as unused.
+(generic_function
+  type_arguments: (type_arguments
+    (type_identifier) @call.target
+  )
+) @call.site
+
 ; ---------------------------------------------------------------------------
 ; Fields
 ; ---------------------------------------------------------------------------

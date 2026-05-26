@@ -77,14 +77,25 @@ def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
                 break
         return "\n".join(lines) if lines else None
     elif lang == "rust":
-        # //! inner doc comments or /// outer doc comments at top
+        # //! inner doc comments or /*! block inner doc comments at top
+        inner_lines: list[str] = []
         for child in root.children:
-            if child.type in ("line_comment", "block_comment"):
+            if child.type == "line_comment":
                 text = node_text(child, src).strip()
-                if text.startswith("//!") or text.startswith("/*!"):
-                    return text.lstrip("/!* ").strip()
+                if text.startswith("//!"):
+                    inner_lines.append(text[3:].strip())
+                    continue
+            elif child.type == "block_comment":
+                text = node_text(child, src).strip()
+                if text.startswith("/*!"):
+                    inner = text[3:]
+                    if inner.endswith("*/"):
+                        inner = inner[:-2]
+                    return inner.strip()
             else:
                 break
+        if inner_lines:
+            return "\n".join(inner_lines)
     elif lang in ("cpp", "c"):
         # Doxygen: first /** ... */ block comment before any declaration
         for child in root.children:
@@ -243,7 +254,9 @@ def extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
         return "\n".join(lines) if lines else None
 
     elif lang == "rust":
-        # /// doc comments before the item
+        # /// doc comments or /** block doc comments before the item.
+        # Attributes (#[...]) may appear between the doc comment and the
+        # item, so we skip over attribute_item nodes when walking backward.
         parent = def_node.parent
         if parent is None:
             return None
@@ -251,12 +264,21 @@ def extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
         idx = next((i for i, s in enumerate(siblings) if s.id == def_node.id), -1)
         if idx <= 0:
             return None
-        lines: list[str] = []
+        # Walk backward, skipping attribute_item nodes
         i = idx - 1
-        while i >= 0 and siblings[i].type in ("line_comment", "block_comment"):
+        while i >= 0 and siblings[i].type == "attribute_item":
+            i -= 1
+        # Check for /** block doc comment first
+        if i >= 0 and siblings[i].type == "block_comment":
+            text = node_text(siblings[i], src).strip()
+            if text.startswith("/**"):
+                return clean_jsdoc(text)
+        # Collect consecutive /// line doc comments
+        lines: list[str] = []
+        while i >= 0 and siblings[i].type == "line_comment":
             text = node_text(siblings[i], src).strip()
             if text.startswith("///"):
-                lines.insert(0, text.lstrip("/ ").strip())
+                lines.insert(0, text[3:].strip())
                 i -= 1
             else:
                 break

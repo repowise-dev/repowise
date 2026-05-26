@@ -24,6 +24,7 @@ Capture-name conventions (shared across ALL .scm files):
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -512,6 +513,16 @@ class ASTParser:
             module_text = _node_text(module_nodes[0], src).strip().strip("\"'` ")
             if not module_text:
                 continue
+
+            # Rust #[path = "..."] attribute overrides module file location
+            if file_info.language == "rust" and stmt_node.type == "mod_item":
+                for child in stmt_node.children:
+                    if child.type == "attribute_item":
+                        attr_text = _node_text(child, src)
+                        path_match = re.search(r'path\s*=\s*"([^"]+)"', attr_text)
+                        if path_match:
+                            module_text = path_match.group(1)
+                            break
 
             # Language-specific import name + binding extraction
             imported_names, bindings = extract_import_bindings(stmt_node, src, file_info.language)
