@@ -61,6 +61,8 @@ class CallResolver:
         self,
         parsed_files: dict[str, ParsedFile],
         import_targets: dict[str, set[str]],
+        *,
+        repo_path: str | None = None,
     ) -> None:
         # Per-file symbol index: {file_path: {symbol_name: symbol_id}}
         self._file_symbols: dict[str, dict[str, str]] = {}
@@ -92,6 +94,10 @@ class CallResolver:
         # Keep reference for cross-language checks in Tier 3
         self._parsed_files = parsed_files
 
+        # Rust cross-crate resolution
+        self._repo_path = repo_path
+        self._rust_crate_src: dict[str, str] | None = None  # lazy
+
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
 
@@ -108,6 +114,28 @@ class CallResolver:
             for name, source_file in name_to_file.items():
                 if name not in file_syms:
                     self._barrel_origins[path][name] = source_file
+
+    def _get_rust_crate_src(self) -> dict[str, str]:
+        """Lazily build a mapping from normalised crate name to src/ dir."""
+        if self._rust_crate_src is not None:
+            return self._rust_crate_src
+        self._rust_crate_src = {}
+        if not self._repo_path:
+            return self._rust_crate_src
+        from .resolvers.rust_workspace import get_or_build_cargo_workspace_index
+
+        class _Ctx:
+            def __init__(self, rp, pf):
+                self.repo_path = rp
+                self.parsed_files = pf
+
+        ctx = _Ctx(self._repo_path, self._parsed_files)
+        ws = get_or_build_cargo_workspace_index(ctx)
+        if ws:
+            for crate in ws.crates:
+                normalized = crate.name.replace("-", "_")
+                self._rust_crate_src[normalized] = crate.src_dir
+        return self._rust_crate_src
 
     def _build_indices(self, parsed_files: dict[str, ParsedFile]) -> None:
         """Build all lookup indices from parsed file data."""
@@ -269,6 +297,16 @@ class CallResolver:
             source_syms = self._file_symbols.get(source_file, {})
             if method_name in source_syms:
                 return ResolvedCall(caller_id, source_syms[method_name], 0.88, call.line)
+
+        # Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module)
+        # The receiver is a crate name, the target is a symbol in that crate's lib.rs
+        crate_src = self._get_rust_crate_src().get(receiver_name)
+        if crate_src:
+            for root_file in ("lib.rs", "main.rs"):
+                crate_root = f"{crate_src}/{root_file}"
+                root_syms = self._file_symbols.get(crate_root, {})
+                if method_name in root_syms:
+                    return ResolvedCall(caller_id, root_syms[method_name], 0.88, call.line)
 
         # Strategy 2: receiver is a known class name → look for method on that class
         # Check same-file classes first

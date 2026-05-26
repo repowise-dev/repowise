@@ -101,7 +101,7 @@ class ResolveMixin:
         """Run three-tier call resolution and add CALLS edges to the graph."""
         from ..call_resolver import CallResolver
 
-        resolver = CallResolver(self._parsed_files, import_targets)
+        resolver = CallResolver(self._parsed_files, import_targets, repo_path=str(self._repo_path) if self._repo_path else None)
         total_resolved = 0
 
         files_with_calls = [

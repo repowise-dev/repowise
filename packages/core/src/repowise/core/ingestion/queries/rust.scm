@@ -193,6 +193,7 @@
 ; Scoped function call: module::function(args)
 (call_expression
   function: (scoped_identifier
+    path: (_) @call.receiver
     name: (identifier) @call.target
   )
   arguments: (arguments) @call.arguments
@@ -247,6 +248,7 @@
 (call_expression
   function: (generic_function
     function: (scoped_identifier
+      path: (_) @call.receiver
       name: (identifier) @call.target
     )
   )
@@ -261,6 +263,7 @@
 ; Scoped macro invocation: module::macro!(...)
 (macro_invocation
   macro: (scoped_identifier
+    path: (_) @call.receiver
     name: (identifier) @call.target
   )
 ) @call.site
@@ -286,6 +289,7 @@
 ; Captures the final identifier as a reference to prevent false dead code flags.
 (field_initializer
   value: (scoped_identifier
+    path: (_) @call.receiver
     name: (identifier) @call.target
   )
 ) @call.site
@@ -293,6 +297,49 @@
 ; Plain identifier in struct field initializer: Foo { field: my_func }
 (field_initializer
   value: (identifier) @call.target
+) @call.site
+
+; ---------------------------------------------------------------------------
+; Type references — track types used in signatures to prevent false dead code
+; ---------------------------------------------------------------------------
+
+; Type reference in function parameter: fn foo(x: MyType)
+(parameter
+  type: (type_identifier) @call.target
+) @call.site
+
+; Type reference via &dyn: fn foo(x: &dyn MyTrait)
+(parameter
+  type: (reference_type
+    type: (dynamic_type
+      (type_identifier) @call.target
+    )
+  )
+) @call.site
+
+; Type reference via impl Trait: fn foo(x: impl MyTrait)
+(parameter
+  type: (abstract_type
+    (type_identifier) @call.target
+  )
+) @call.site
+
+; Trait bound in generic parameter: fn foo<T: MyTrait>()
+; Also matches where clauses: where T: MyTrait + OtherTrait
+(trait_bounds
+  (type_identifier) @call.target
+) @call.site
+
+; Return type reference: fn foo() -> MyType
+(function_item
+  return_type: (type_identifier) @call.target
+) @call.site
+
+; dyn Trait in type arguments: Box<dyn MyTrait>, Arc<dyn MyTrait>
+(type_arguments
+  (dynamic_type
+    (type_identifier) @call.target
+  )
 ) @call.site
 
 ; ---------------------------------------------------------------------------
