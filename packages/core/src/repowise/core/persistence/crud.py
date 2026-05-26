@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decision_provenance import compute_confidence, rank_for_source
 
+from .decision_graph import sync_decision_node_links
 from .models import (
     ChatMessage,
     Conversation,
@@ -1548,7 +1549,7 @@ async def bulk_upsert_decisions(
     decisions: list[dict],
     *,
     vector_store: Any | None = None,
-) -> None:
+) -> list[str]:
     """Upsert decisions, accreting provenance instead of discarding losers.
 
     Decisions with near-identical normalized titles are merged into a single
@@ -1570,6 +1571,10 @@ async def bulk_upsert_decisions(
     paraphrases ("Use Redis" vs "Adopt Redis cache") collapse into one record.
     Every touched record is (re-)embedded into the store, so decisions are
     matchable next run *and* discoverable via ``search_codebase``.
+
+    Returns the ids of every record touched (created or updated) this call, so
+    a caller can run the Phase-3 supersession/conflict detection over just the
+    records that changed.
     """
     # Group incoming decisions by normalized title.
     groups: dict[str, list[dict]] = {}
@@ -1580,7 +1585,7 @@ async def bulk_upsert_decisions(
         groups.setdefault(norm, []).append(d)
 
     if not groups:
-        return
+        return []
 
     # Map existing records (this repo) by normalized title so cross-run merges
     # land on the same row. On a title collision keep the most authoritative
@@ -1605,6 +1610,8 @@ async def bulk_upsert_decisions(
             find_duplicate_decision,
             upsert_decision_vector,
         )
+
+    touched_ids: list[str] = []
 
     for norm, members in groups.items():
         # Headline candidate: highest source rank, tie-break by confidence.
@@ -1695,6 +1702,18 @@ async def bulk_upsert_decisions(
             rec.confidence = compute_confidence(top_rank, len(distinct_sources), best_ver)
             rec.verification = best_ver
         rec.updated_at = _now_utc()
+        touched_ids.append(rec.id)
+
+        # Mirror the JSON file/module arrays into first-class decision→code
+        # links so the graph is traversable both directions (Phase 3A). The
+        # JSON stays the cheap read cache; these rows are the queryable truth.
+        await sync_decision_node_links(
+            session,
+            repository_id,
+            rec.id,
+            files=json.loads(rec.affected_files_json or "[]"),
+            modules=json.loads(rec.affected_modules_json or "[]"),
+        )
 
         # (Re-)embed the record into the shared store so it's matchable by
         # later groups in this batch + future runs, and discoverable via
@@ -1709,6 +1728,7 @@ async def bulk_upsert_decisions(
             )
 
     await session.flush()
+    return touched_ids
 
 
 async def recompute_decision_staleness(
@@ -1806,11 +1826,32 @@ async def get_decision_health_summary(
     hotspot_files = {row[0] for row in hotspot_result.all()}
     ungoverned = sorted(hotspot_files - governed_files)
 
+    # Phase 3B: surface contradictory active decisions (conflicts_with edges).
+    from .decision_graph import list_conflict_edges
+
+    by_id = {d.id: d for d in all_decisions}
+    conflicts: list[dict] = []
+    for edge in await list_conflict_edges(session, repository_id):
+        src = by_id.get(edge.src_decision_id)
+        dst = by_id.get(edge.dst_decision_id)
+        if src is None or dst is None:
+            continue
+        conflicts.append(
+            {
+                "src": {"id": src.id, "title": src.title, "status": src.status},
+                "dst": {"id": dst.id, "title": dst.title, "status": dst.status},
+                "confidence": edge.confidence,
+                "evidence": edge.evidence,
+            }
+        )
+    counts["conflicts"] = len(conflicts)
+
     return {
         "summary": counts,
         "stale_decisions": stale_decisions,
         "proposed_awaiting_review": proposed_decisions,
         "ungoverned_hotspots": ungoverned,
+        "conflicts": conflicts,
     }
 
 

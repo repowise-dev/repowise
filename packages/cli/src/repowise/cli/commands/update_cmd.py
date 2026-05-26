@@ -6,7 +6,6 @@ import time
 from typing import Any
 
 import click
-from rich.table import Table
 
 from repowise.cli.helpers import (
     CommandTarget,
@@ -25,7 +24,6 @@ from repowise.cli.helpers import (
     resolve_command_target,
     resolve_provider,
     resolve_reasoning,
-    resolve_repo_path,
     rotate_update_log_if_needed,
     run_async,
     save_state,
@@ -51,6 +49,34 @@ def _infer_legacy_docs_enabled(state: dict) -> bool:
     if state.get("provider") or state.get("model"):
         return True
     return False
+
+
+def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
+    """Build the shared page/decision vector store for the update path.
+
+    Phase-2 follow-up + Phase-3 requirement: ``repowise update`` historically
+    upserted decisions *without* a vector store, so semantic dedup, decision
+    search visibility, and supersession detection were all off on incremental
+    runs. We mirror ``init``'s store construction (LanceDB at
+    ``.repowise/lancedb`` so previously-embedded decisions are matchable; the
+    in-memory store is a degraded fallback that only sees this run's vectors).
+    Returns ``None`` on any failure — the decision upsert still works without it.
+    """
+    try:
+        from repowise.cli.commands.init_cmd import _build_embedder, _resolve_embedder
+        from repowise.core.persistence.vector_store import InMemoryVectorStore
+
+        embedder = _build_embedder(_resolve_embedder(cfg.get("embedder")))
+        lance_dir = repo_path / ".repowise" / "lancedb"
+        try:
+            from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+            lance_dir.mkdir(parents=True, exist_ok=True)
+            return LanceDBVectorStore(str(lance_dir), embedder=embedder)
+        except ImportError:
+            return InMemoryVectorStore(embedder)
+    except Exception:
+        return None
 
 
 def _resolve_index_only_mode(
@@ -107,7 +133,7 @@ async def _persist_partial_health(session: Any, repo_id: str, report: Any) -> No
 
 
 def _workspace_update(
-    target: "CommandTarget",
+    target: CommandTarget,
     *,
     dry_run: bool = False,
 ) -> None:
@@ -160,7 +186,7 @@ def _workspace_update(
     def _on_start(alias: str) -> None:
         console.print(f"  Updating [bold]{alias}[/bold]...")
 
-    def _on_done(result: "RepoUpdateResult") -> None:
+    def _on_done(result: RepoUpdateResult) -> None:
         if result.error:
             console.print(f"    [red]\u2717 {result.alias}: {result.error}[/red]")
         elif result.skipped_reason == "in_flight":
@@ -732,6 +758,87 @@ def update_command(
     except Exception as exc:
         console.print(f"[yellow]Decision re-scan skipped: {exc}[/yellow]")
 
+    # Build the shared vector store once: reused by the supersession detector
+    # below and by the decision upsert in _persist (semantic dedup + search).
+    decision_vector_store = _build_update_vector_store(repo_path, cfg)
+
+    # --- Two-pass decision evolution (Phase 3C), BEFORE page regeneration ----
+    # Cross-reference the diff + new commit bodies against existing decisions
+    # governing the changed files (Pass 1, cheap) then ask the LLM whether each
+    # survivor is amended/superseded/reaffirmed (Pass 2, gated). Governed pages
+    # of an evolved decision are folded into ``affected.regenerate`` so they
+    # re-render in this same run — the cascade-coupling the design calls for.
+    try:
+        import json as _json_evo
+
+        evidence_by_file: dict[str, str] = {}
+        for fd in file_diffs:
+            if fd.status not in ("added", "modified"):
+                continue
+            parts: list[str] = []
+            if fd.trigger_commit_message:
+                parts.append(fd.trigger_commit_message)
+            if fd.diff_text:
+                parts.append(fd.diff_text)
+            meta = git_meta_map.get(fd.path)
+            if meta:
+                for c in _json_evo.loads(meta.get("significant_commits_json", "[]") or "[]"):
+                    msg = c.get("message") or ""
+                    body = c.get("body") or ""
+                    if msg or body:
+                        parts.append(f"{msg}\n{body}")
+            if parts:
+                evidence_by_file[fd.path] = "\n\n".join(parts)
+
+        changed_set = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
+        if changed_set:
+            from repowise.core.analysis.decision_evolution import run_update_evolution
+
+            async def _run_evolution() -> dict:
+                from repowise.cli.helpers import get_db_url_for_repo
+                from repowise.core.persistence import (
+                    create_engine,
+                    create_session_factory,
+                    get_session,
+                    init_db,
+                    upsert_repository,
+                )
+
+                url = get_db_url_for_repo(repo_path)
+                engine = create_engine(url)
+                await init_db(engine)
+                sf = create_session_factory(engine)
+                async with get_session(sf) as session:
+                    repo = await upsert_repository(
+                        session, name=repo_path.name, local_path=str(repo_path)
+                    )
+                    res = await run_update_evolution(
+                        session,
+                        repo.id,
+                        changed_files=changed_set,
+                        evidence_by_file=evidence_by_file,
+                        provider=provider,
+                    )
+                await engine.dispose()
+                return res
+
+            evo = run_async(_run_evolution())
+            evo_regen = evo.get("regen_files") or set()
+            if evo_regen:
+                # page_id == file path for file pages, so adding the governed
+                # file paths schedules their pages for regeneration.
+                affected.regenerate = list(
+                    dict.fromkeys([*affected.regenerate, *sorted(evo_regen)])
+                )
+                console.print(
+                    f"Decision evolution: [cyan]{evo.get('superseded', 0)} superseded[/cyan], "
+                    f"[cyan]{evo.get('amended', 0)} amended[/cyan], "
+                    f"[green]{evo.get('reaffirmed', 0)} reaffirmed[/green]; "
+                    f"+{len(evo_regen)} governed page(s) queued for regen."
+                )
+    except Exception as exc:
+        console.print(f"[yellow]Decision evolution skipped: {exc}[/yellow]")
+
     # Filter to only affected files
     regen_set = set(affected.regenerate)
     affected_parsed = [pf for pf in parsed_files if pf.file_info.path in regen_set]
@@ -821,19 +928,45 @@ def update_command(
             except Exception:
                 pass  # git persistence is best-effort
 
-        # Decision records: persist new markers + recompute staleness
+        # Decision records: persist new markers + harvested decisions, detect
+        # supersession, recompute staleness.
         try:
+            decision_dicts: list[dict] = []
             if new_decision_markers:
                 import dataclasses as _dc
 
+                decision_dicts.extend(_dc.asdict(d) for d in new_decision_markers)
+            # Phase-2 follow-up: also harvest decisions emitted by the page
+            # generator during this update (each gated at generation time).
+            for page in generated_pages:
+                harvested = page.metadata.get("harvested_decisions")
+                if harvested:
+                    decision_dicts.extend(harvested)
+
+            if decision_dicts:
                 from repowise.core.persistence.crud import bulk_upsert_decisions
 
                 async with get_session(sf) as session:
-                    await bulk_upsert_decisions(
+                    touched_ids = await bulk_upsert_decisions(
                         session,
                         repo_id,
-                        [_dc.asdict(d) for d in new_decision_markers],
+                        decision_dicts,
+                        vector_store=decision_vector_store,
                     )
+                    # Phase 3B: supersede/conflict detection over the touched
+                    # records (gated LLM judge available on this path).
+                    if touched_ids and decision_vector_store is not None:
+                        from repowise.core.analysis.decision_evolution import (
+                            detect_supersessions_and_conflicts,
+                        )
+
+                        await detect_supersessions_and_conflicts(
+                            session,
+                            repo_id,
+                            touched_ids=touched_ids,
+                            vector_store=decision_vector_store,
+                            provider=provider,
+                        )
 
             if git_meta_map:
                 from repowise.core.persistence.crud import recompute_decision_staleness
@@ -944,7 +1077,6 @@ def update_command(
 
             ws_config = WorkspaceConfig.load(ws_root)
             # Find this repo's alias in the workspace config
-            from pathlib import Path as _P
 
             repo_abs = repo_path.resolve()
             alias = None

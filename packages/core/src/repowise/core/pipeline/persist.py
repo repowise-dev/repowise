@@ -270,12 +270,33 @@ async def persist_pipeline_result(
     if decision_dicts:
         # Reuse the run's shared vector store for semantic (paraphrase) dedup
         # and to make decisions searchable; title dedup still runs when None.
-        await bulk_upsert_decisions(
+        store = getattr(result, "vector_store", None)
+        touched_ids = await bulk_upsert_decisions(
             session,
             repo_id,
             decision_dicts,
-            vector_store=getattr(result, "vector_store", None),
+            vector_store=store,
         )
+        # Phase 3B: detect supersession/conflict among the just-upserted
+        # decisions and record typed edges (auto-flipping the older only above
+        # the high-confidence threshold). Heuristic-only here (no provider on
+        # the persist path); the update path adds the gated LLM tiebreaker.
+        if touched_ids and store is not None:
+            try:
+                from repowise.core.analysis.decision_evolution import (
+                    detect_supersessions_and_conflicts,
+                )
+
+                evo = await detect_supersessions_and_conflicts(
+                    session,
+                    repo_id,
+                    touched_ids=touched_ids,
+                    vector_store=store,
+                )
+                if any(evo.values()):
+                    logger.info("decision_supersession_detected", **evo)
+            except Exception as _evo_err:
+                logger.debug("supersession_detection_skipped", error=str(_evo_err))
         # Recompute staleness scores using git metadata.
         if result.git_metadata_list:
             try:

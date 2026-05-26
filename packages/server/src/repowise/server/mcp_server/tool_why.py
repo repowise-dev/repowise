@@ -1,4 +1,4 @@
-﻿"""MCP Tool 4: get_why — intent archaeology and decision search."""
+"""MCP Tool 4: get_why — intent archaeology and decision search."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
 )
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _build_origin_story,
     _compute_alignment,
@@ -25,7 +26,6 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.core.registry import mcp_tool_registry as mcp
 
 
 @mcp.tool()
@@ -76,16 +76,18 @@ async def get_why(
                 for d in res.scalars().all():
                     text = f"{d.title} {d.decision} {d.rationale} {d.context}".lower()
                     if any(w in text for w in query.lower().split()):
-                        merged.append({
-                            "repo": ctx.alias,
-                            "id": d.id,
-                            "title": d.title,
-                            "status": d.status,
-                            "decision": d.decision,
-                            "rationale": d.rationale,
-                            "source": d.source,
-                            "confidence": d.confidence,
-                        })
+                        merged.append(
+                            {
+                                "repo": ctx.alias,
+                                "id": d.id,
+                                "title": d.title,
+                                "status": d.status,
+                                "decision": d.decision,
+                                "rationale": d.rationale,
+                                "source": d.source,
+                                "confidence": d.confidence,
+                            }
+                        )
         return {
             "mode": "search",
             "query": query,
@@ -135,6 +137,7 @@ async def get_why(
                     for d in proposed[:10]
                 ],
                 "ungoverned_hotspots": ungoverned[:15],
+                "conflicts": health.get("conflicts", [])[:10],
                 "_meta": _build_meta(repository=repository),
             }
 
@@ -167,11 +170,16 @@ async def get_why(
             )
             all_git_meta = all_git_res.scalars().all()
 
+            from repowise.core.persistence.decision_graph import build_lineage_chain
+
             governing = []
             for d in all_decisions:
                 affected_files = json.loads(d.affected_files_json)
                 affected_modules = json.loads(d.affected_modules_json)
                 if query in affected_files or query in affected_modules:
+                    # Walk supersedes/refines back to roots so the answer is a
+                    # lineage chain (sessions → JWT → OAuth2), not a flat list.
+                    lineage = await build_lineage_chain(session, d.id)
                     governing.append(
                         {
                             "id": d.id,
@@ -186,6 +194,7 @@ async def get_why(
                             "source": d.source,
                             "confidence": d.confidence,
                             "staleness_score": d.staleness_score,
+                            "lineage": lineage if len(lineage) > 1 else [],
                         }
                     )
 
@@ -283,6 +292,18 @@ async def get_why(
         with contextlib.suppress(Exception):
             doc_results = await ctx.fts.search(query, limit=3)
 
+    # Lineage for the keyword matches: walk supersedes/refines back to roots so
+    # a "why is X structured this way?" answer renders the chain, not a flat list.
+    from repowise.core.persistence.decision_graph import build_lineage_chain
+
+    lineage_by_id: dict[str, list[dict]] = {}
+    if keyword_matches:
+        async with get_session(ctx.session_factory) as session3:
+            for d in keyword_matches:
+                chain = await build_lineage_chain(session3, d.id)
+                if len(chain) > 1:
+                    lineage_by_id[d.id] = chain
+
     # Merge keyword matches with semantic results (dedup by ID)
     seen_ids: set[str] = set()
     merged_decisions = []
@@ -301,6 +322,7 @@ async def get_why(
                     "affected_files": json.loads(d.affected_files_json),
                     "source": d.source,
                     "confidence": d.confidence,
+                    "lineage": lineage_by_id.get(d.id, []),
                 }
             )
 
@@ -545,9 +567,13 @@ async def _run_git_log(
             if safe_stem and len(safe_stem) >= 3:
                 proc2 = subprocess.run(
                     [
-                        "git", "log", "--all",
-                        "--grep", safe_stem,
-                        "--format=%H\t%an\t%ai\t%s", "-10",
+                        "git",
+                        "log",
+                        "--all",
+                        "--grep",
+                        safe_stem,
+                        "--format=%H\t%an\t%ai\t%s",
+                        "-10",
                         "--",  # end of options — prevent argument injection
                     ],
                     cwd=repo_path,

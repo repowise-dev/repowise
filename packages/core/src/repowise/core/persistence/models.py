@@ -516,6 +516,99 @@ class DecisionEvidence(Base):
     )
 
 
+class DecisionEdge(Base):
+    """A typed, directed edge between two :class:`DecisionRecord` rows.
+
+    The decision graph (Phase 3): decisions are nodes, time/relationships are
+    edges. ``kind`` is one of:
+
+    - ``supersedes``     — ``src`` replaces ``dst`` (e.g. JWT supersedes sessions).
+    - ``refines``        — ``src`` narrows/extends ``dst`` without reversing it.
+    - ``relates_to``     — same topic, no ordering implied.
+    - ``conflicts_with`` — two *active* decisions that contradict; neither
+      clearly supersedes the other (a governance smell surfaced in health).
+
+    Edges accrete (propose-don't-clobber): a detected supersession always
+    records the edge; the older decision's status is only auto-flipped to
+    ``superseded`` above a high confidence threshold, leaving everything else a
+    reviewable proposal.
+    """
+
+    __tablename__ = "decision_edges"
+    __table_args__ = (
+        UniqueConstraint(
+            "src_decision_id",
+            "dst_decision_id",
+            "kind",
+            name="uq_decision_edge",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    src_decision_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False
+    )
+    dst_decision_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("decision_records.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # supersedes | refines | relates_to | conflicts_with
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
+class DecisionNodeLink(Base):
+    """A first-class decision→code link (file or module governed by a decision).
+
+    Promotes the linkage that ``DecisionRecord.affected_files_json`` /
+    ``affected_modules_json`` hold as a denormalized cache into rows that are
+    indexed on both ``decision_id`` and ``node_id`` — so the graph can be walked
+    in either direction (file → governing decisions, decision → governed code).
+    Kept in sync from the JSON arrays on every ``bulk_upsert_decisions``.
+    """
+
+    __tablename__ = "decision_node_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "decision_id",
+            "node_id",
+            "link_type",
+            name="uq_decision_node_link",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    decision_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("decision_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    node_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    link_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="file"
+    )  # file | module
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
 class Conversation(Base):
     """A chat conversation for a repository."""
 

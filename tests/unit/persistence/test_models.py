@@ -303,6 +303,8 @@ def test_base_includes_all_models():
         "dead_code_findings",
         "decision_records",
         "decision_evidence",
+        "decision_edges",
+        "decision_node_links",
         "conversations",
         "chat_messages",
         "llm_costs",

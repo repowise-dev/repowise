@@ -33,6 +33,7 @@ __all__ = [
     "DEFAULT_DEDUP_TAU",
     "decision_match_text",
     "find_duplicate_decision",
+    "find_related_decisions",
     "upsert_decision_vector",
 ]
 
@@ -139,3 +140,49 @@ async def find_duplicate_decision(
         # match; if not, nothing closer exists, so there is no duplicate.
         return decision_id if getattr(r, "score", 0.0) >= tau else None
     return None
+
+
+async def find_related_decisions(
+    store: Any,
+    *,
+    title: str,
+    decision: str = "",
+    lo: float,
+    hi: float = 1.01,
+    exclude_ids: set[str] | None = None,
+    limit: int = 25,
+) -> list[tuple[str, float]]:
+    """Return ``(decision_id, similarity)`` for decisions *about the same topic*.
+
+    Powers Phase-3 supersession/conflict detection. Where
+    :func:`find_duplicate_decision` returns the single nearest neighbour above
+    the dedup threshold (a *merge*), this returns every ``decision:`` neighbour
+    whose cosine similarity sits in the band ``[lo, hi)`` — high enough to be
+    the same topic, but (by default) *below* the dedup threshold so they were
+    not collapsed into one record. Those are exactly the candidates that might
+    contradict / supersede each other. Ordered best-first; store errors degrade
+    to an empty list.
+    """
+    query = decision_match_text(title, decision)
+    if not query:
+        return []
+    exclude = exclude_ids or set()
+    try:
+        results = await store.search(query, limit=_SEARCH_FETCH)
+    except Exception:
+        return []
+
+    out: list[tuple[str, float]] = []
+    for r in results:
+        page_id = getattr(r, "page_id", "")
+        if not page_id.startswith(DECISION_VECTOR_PREFIX):
+            continue
+        decision_id = page_id[len(DECISION_VECTOR_PREFIX) :]
+        if decision_id in exclude:
+            continue
+        score = getattr(r, "score", 0.0)
+        if lo <= score < hi:
+            out.append((decision_id, score))
+        if len(out) >= limit:
+            break
+    return out
