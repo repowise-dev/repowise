@@ -106,6 +106,18 @@ repowise init .      # scans for git repos, indexes each, runs cross-repo analys
 repowise serve       # workspace dashboard + per-repo pages
 ```
 
+### Resuming an interrupted index
+
+If `repowise init` is interrupted (timeout, crash, Ctrl+C), you can resume from where it stopped:
+
+```bash
+repowise init . --resume
+```
+
+The `--resume` flag checks the vector store for already-generated pages and continues generation for only the missing pages. Pro tip: Always use `--resume` when re-running init on a large repo — it's a safe no-op if the repo is fully indexed.
+
+**How it works:** Pages are written to LanceDB incrementally during generation, but the SQL `generation_jobs` row only finalizes at the end. A hard interrupt can leave LanceDB ahead of SQL — `--resume` is the supported recovery path, and `repowise doctor` will flag any drift.
+
 That's it. `repowise init` automatically registers the MCP server, installs PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and offers to install a post-commit git hook that keeps everything in sync after every commit. See [Auto-Sync](docs/AUTO_SYNC.md) for all sync methods (hooks, file watcher, GitHub/GitLab webhooks, polling).
 
 To manually add the MCP server to another editor:
