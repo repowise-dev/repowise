@@ -8,10 +8,11 @@ SPEC = LanguageSpec(
     extensions=frozenset({".rs"}),
     grammar_package="tree_sitter_rust",
     scm_file="rust.scm",
-    heritage_node_types=frozenset({"impl_item", "trait_item", "struct_item", "enum_item"}),
+    heritage_node_types=frozenset({"impl_item", "trait_item", "struct_item", "enum_item", "function_item"}),
     entry_point_patterns=("main.rs", "lib.rs"),
     manifest_files=("Cargo.toml",),
     lock_files=("Cargo.lock",),
+    generated_suffixes=(".generated.rs", ".pb.rs", ".flatbuffers_generated.rs"),
     blocked_dirs=("target",),
     builtin_calls=frozenset(
         {

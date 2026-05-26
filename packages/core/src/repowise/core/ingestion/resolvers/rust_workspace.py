@@ -26,11 +26,22 @@ log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
+class CargoDep:
+    """A dependency declared in Cargo.toml."""
+
+    name: str  # import name (may differ from package name)
+    package: str  # actual crate name on crates.io
+    is_path: bool  # True if path dependency
+    path: str | None  # resolved repo-relative path for path deps
+
+
+@dataclass(frozen=True)
 class CargoCrate:
     """A workspace member crate."""
 
     name: str  # package name as it appears in Cargo.toml (may contain "-")
     src_dir: str  # repo-relative POSIX path to the crate's src/ directory
+    dependencies: tuple[CargoDep, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,6 +49,7 @@ class CargoWorkspaceIndex:
     """Cargo workspace member index. Map from crate-import-name → src dir."""
 
     crates: tuple[CargoCrate, ...]
+    workspace_dependencies: tuple[CargoDep, ...] = ()
 
     def lookup(self, import_prefix: str) -> str | None:
         """Find the src/ dir for a crate referenced as ``import_prefix::...``."""
@@ -47,6 +59,18 @@ class CargoWorkspaceIndex:
             if normalised == import_prefix:
                 return crate.src_dir
         return None
+
+    def lookup_crate_for_file(self, file_path: str) -> CargoCrate | None:
+        """Find the crate owning a given file path (longest prefix match)."""
+        best: CargoCrate | None = None
+        best_len = -1
+        for crate in self.crates:
+            # crate.src_dir is like "crates/foo/src"; check the parent dir
+            crate_prefix = crate.src_dir.rsplit("/src", 1)[0] + "/"
+            if file_path.startswith(crate_prefix) and len(crate_prefix) > best_len:
+                best = crate
+                best_len = len(crate_prefix)
+        return best
 
 
 def get_or_build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
@@ -58,6 +82,35 @@ def get_or_build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
     index = _build_cargo_workspace_index(ctx)
     setattr(ctx, "_cargo_workspace_index", index)
     return index
+
+
+def _parse_deps(
+    raw: dict, crate_dir: Path, repo: Path
+) -> tuple[CargoDep, ...]:
+    """Parse a ``[dependencies]`` / ``[dev-dependencies]`` table into ``CargoDep`` tuples."""
+    deps: list[CargoDep] = []
+    for name, spec in raw.items():
+        if isinstance(spec, str):
+            deps.append(CargoDep(name=name, package=name, is_path=False, path=None))
+        elif isinstance(spec, dict):
+            package = spec.get("package", name)
+            path_str = spec.get("path")
+            resolved_path: str | None = None
+            if path_str:
+                abs_path = (crate_dir / path_str).resolve()
+                try:
+                    resolved_path = abs_path.relative_to(repo).as_posix()
+                except ValueError:
+                    resolved_path = None
+            deps.append(
+                CargoDep(
+                    name=name,
+                    package=package,
+                    is_path=path_str is not None,
+                    path=resolved_path,
+                )
+            )
+    return tuple(deps)
 
 
 def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
@@ -86,7 +139,17 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
     # Single-crate repo with a [package] at the root: still index it.
     root_pkg = root_data.get("package") or {}
     if root_pkg.get("name"):
-        crates.append(CargoCrate(name=str(root_pkg["name"]), src_dir="src"))
+        root_deps = _parse_deps(
+            {**root_data.get("dependencies", {}),
+             **root_data.get("dev-dependencies", {}),
+             **root_data.get("build-dependencies", {})},
+            Path(repo_path),
+            repo,
+        )
+        crates.append(CargoCrate(name=str(root_pkg["name"]), src_dir="src", dependencies=root_deps))
+
+    # Parse workspace-level shared dependencies
+    ws_deps = _parse_deps(workspace.get("dependencies", {}), Path(repo_path), repo)
 
     # Parse exclude patterns
     exclude_patterns = workspace.get("exclude", [])
@@ -125,9 +188,16 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
             if not name:
                 continue
             src_dir = f"{member_rel}/src" if member_rel else "src"
-            crates.append(CargoCrate(name=str(name), src_dir=src_dir))
+            member_deps = _parse_deps(
+                {**member_data.get("dependencies", {}),
+                 **member_data.get("dev-dependencies", {}),
+                 **member_data.get("build-dependencies", {})},
+                member_path,
+                repo,
+            )
+            crates.append(CargoCrate(name=str(name), src_dir=src_dir, dependencies=member_deps))
 
     if not crates:
         return None
     log.debug("Built Cargo workspace index", crate_count=len(crates))
-    return CargoWorkspaceIndex(crates=tuple(crates))
+    return CargoWorkspaceIndex(crates=tuple(crates), workspace_dependencies=ws_deps)

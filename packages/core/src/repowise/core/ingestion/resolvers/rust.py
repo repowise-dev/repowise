@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 from .context import ResolverContext
@@ -65,19 +66,27 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
     return ctx.add_external_node(module_path)
 
 
-def _find_rust_crate_root(importer_path: str, ctx: ResolverContext) -> str:
-    """Find the ``src/`` directory containing the importer (Rust crate root)."""
-    parsed_files = ctx.parsed_files or {}
+@lru_cache(maxsize=4096)
+def _find_rust_crate_root_cached(
+    importer_path: str, parsed_file_keys: frozenset[str]
+) -> str:
+    """Cached crate-root lookup (pure function with hashable args)."""
     parts = Path(importer_path).parts
     for i in range(len(parts) - 1, -1, -1):
         candidate_dir = Path(*parts[:i]) if i > 0 else Path(".")
         for root_file in ("lib.rs", "main.rs"):
             root_path = (candidate_dir / root_file).as_posix()
-            if root_path in parsed_files:
+            if root_path in parsed_file_keys:
                 return candidate_dir.as_posix()
         if parts[i] == "src" and i > 0:
             return candidate_dir.as_posix()
     return Path(importer_path).parent.as_posix()
+
+
+def _find_rust_crate_root(importer_path: str, ctx: ResolverContext) -> str:
+    """Find the ``src/`` directory containing the importer (Rust crate root)."""
+    parsed_files = ctx.parsed_files or {}
+    return _find_rust_crate_root_cached(importer_path, frozenset(parsed_files.keys()))
 
 
 def _probe_rust_path(

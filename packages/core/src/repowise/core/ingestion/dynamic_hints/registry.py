@@ -25,6 +25,7 @@ from .c import CDynamicHints
 from .django import DjangoDynamicHints
 from .dotnet import DotNetDynamicHints
 from .go import GoDynamicHints
+from .rust import RustDynamicHints
 from .luau import LuauDynamicHints
 from .node import NodeDynamicHints
 from .php import PhpDynamicHints
@@ -66,6 +67,7 @@ class HintRegistry:
             CDynamicHints(),
             LuauDynamicHints(),
             GoDynamicHints(),
+            RustDynamicHints(),
         ]
         self._max_workers = max_workers or min(_DEFAULT_MAX_WORKERS, len(self._extractors))
 

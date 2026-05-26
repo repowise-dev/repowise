@@ -9,6 +9,9 @@ import networkx as nx
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.rust import resolve_rust_import
 from repowise.core.ingestion.resolvers.rust_workspace import (
+    CargoCrate,
+    CargoDep,
+    CargoWorkspaceIndex,
     get_or_build_cargo_workspace_index,
 )
 
@@ -180,3 +183,109 @@ class TestSuperChainedResolution:
         ctx.parsed_files = {p: None for p in ctx.path_set}
         result = resolve_rust_import("super::super", "a/b/bar.rs", ctx)
         assert result is None
+
+
+class TestCargoDependencyParsing:
+    def test_dependencies_parsed(self, tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/foo"]\n'
+        )
+        crate_dir = tmp_path / "crates" / "foo"
+        crate_dir.mkdir(parents=True)
+        (crate_dir / "Cargo.toml").write_text(
+            '[package]\nname = "foo"\nversion = "0.1.0"\n\n'
+            '[dependencies]\nserde = "1.0"\n\n'
+            '[dependencies.bar]\npath = "../bar"\npackage = "bar-impl"\n'
+        )
+        (crate_dir / "src").mkdir()
+        (crate_dir / "src" / "lib.rs").write_text("// root\n")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        # Find the "foo" crate
+        foo = next(c for c in idx.crates if c.name == "foo")
+        assert any(d.name == "serde" and not d.is_path for d in foo.dependencies)
+        assert any(
+            d.name == "bar" and d.is_path and d.package == "bar-impl"
+            for d in foo.dependencies
+        )
+
+    def test_dev_dependencies_parsed(self, tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/foo"]\n'
+        )
+        crate_dir = tmp_path / "crates" / "foo"
+        crate_dir.mkdir(parents=True)
+        (crate_dir / "Cargo.toml").write_text(
+            '[package]\nname = "foo"\nversion = "0.1.0"\n\n'
+            '[dev-dependencies]\ntokio = "1.0"\n'
+        )
+        (crate_dir / "src").mkdir()
+        (crate_dir / "src" / "lib.rs").write_text("// root\n")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        foo = next(c for c in idx.crates if c.name == "foo")
+        assert any(d.name == "tokio" for d in foo.dependencies)
+
+    def test_workspace_dependencies(self, tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = []\n\n'
+            '[workspace.dependencies]\nserde = "1.0"\n'
+        )
+        ctx = _ctx(tmp_path, [])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        # No crates means None is returned (empty workspace)
+        # We need at least one crate to get a non-None result
+        assert idx is None
+
+    def test_workspace_dependencies_with_member(self, tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/foo"]\n\n'
+            '[workspace.dependencies]\nserde = "1.0"\n'
+        )
+        crate_dir = tmp_path / "crates" / "foo"
+        crate_dir.mkdir(parents=True)
+        (crate_dir / "Cargo.toml").write_text(
+            '[package]\nname = "foo"\nversion = "0.1.0"\n'
+        )
+        (crate_dir / "src").mkdir()
+        (crate_dir / "src" / "lib.rs").write_text("// root\n")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        assert any(d.name == "serde" for d in idx.workspace_dependencies)
+
+
+class TestFileToCrateMapping:
+    def test_lookup_crate_for_file(self, tmp_path: Path) -> None:
+        _write_workspace(tmp_path, ["crates/*"])
+        _write_member_crate(tmp_path, "crates/foo", "foo")
+        _write_member_crate(tmp_path, "crates/bar", "bar")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs", "crates/bar/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        foo_crate = idx.lookup_crate_for_file("crates/foo/src/lib.rs")
+        assert foo_crate is not None
+        assert foo_crate.name == "foo"
+        bar_crate = idx.lookup_crate_for_file("crates/bar/src/lib.rs")
+        assert bar_crate is not None
+        assert bar_crate.name == "bar"
+
+    def test_lookup_nested_file(self, tmp_path: Path) -> None:
+        _write_workspace(tmp_path, ["crates/*"])
+        _write_member_crate(tmp_path, "crates/foo", "foo")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs", "crates/foo/src/utils/helper.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        crate = idx.lookup_crate_for_file("crates/foo/src/utils/helper.rs")
+        assert crate is not None
+        assert crate.name == "foo"
+
+    def test_lookup_unknown_file(self, tmp_path: Path) -> None:
+        _write_workspace(tmp_path, ["crates/*"])
+        _write_member_crate(tmp_path, "crates/foo", "foo")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        assert idx.lookup_crate_for_file("unknown/path/file.rs") is None
