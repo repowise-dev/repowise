@@ -49,7 +49,7 @@ Your git history turned into signals: hotspot files (high churn × high complexi
 An LLM-generated wiki for every module and file, rebuilt incrementally on every commit. Coverage tracking. Freshness scoring per page. Semantic search via RAG. Confidence scores show how current each page is relative to the underlying code.
 
 ### ◈ Decision Intelligence
-The layer nobody else has. Architectural decisions captured from git history, inline markers, and explicit CLI — linked to the graph nodes they govern, tracked for staleness as code evolves.
+The layer nobody else has. Architectural decisions mined from **eight sources** — ADR files (Nygard/MADR), CHANGELOG entries, PR and squash-commit bodies, inline markers, git archaeology, README/docs, centrality-bounded code comments, and the LLM doc-generation pass itself — linked to the graph nodes they govern and tracked for staleness as code evolves.
 
 ```python
 # WHY: JWT chosen over sessions — API must be stateless for k8s horizontal scaling
@@ -57,7 +57,9 @@ The layer nobody else has. Architectural decisions captured from git history, in
 # TRADEOFF: Accepted eventual consistency in preferences for write throughput
 ```
 
-These become structured decision records, queryable by Claude Code via `get_why()`.
+Every decision is **evidence-backed**: each rationale traces to a verbatim source span (ADR quote, commit body, code comment), and an anti-hallucination substring gate stamps each as **verified / fuzzy / unverified** — corroborating sources raise confidence rather than overwrite each other. Decisions form a **graph**: typed edges (`supersedes` / `refines` / `relates_to` / `conflicts_with`) let `get_why()` answer *"why is auth structured this way?"* with a lineage chain (sessions → JWT → OAuth2), auto-detect when a new commit reverses an old decision, and flag two active decisions that contradict each other.
+
+These structured records surface everywhere your agent already looks — `get_why()` for the full archaeology, but also as governing decisions in `get_context()`, a `governance_risk` flag in `get_risk()` PR review, a Key Decisions section in `get_overview()`, and as `ungoverned_hotspot` / `stale_governance` / `contradictory_decision` findings in the code-health layer.
 
 ### ◈ Code Health Intelligence
 Fifteen deterministic biomarkers compute a 1–10 health score per file — McCabe complexity, deep nesting, brain methods, native Rabin–Karp duplication detection, untested hotspots, primitive obsession, developer congestion, knowledge loss, blame-based function hotspots, code-age volatility, and more. **Zero LLM calls, zero new runtime dependencies** — pure Python over tree-sitter and git data, designed to finish in under 30 seconds on a 3 000-file repo.
@@ -173,11 +175,11 @@ Most tools are designed around data entities — one module, one file, one symbo
 |---|---|---|
 | `get_overview()` | Architecture summary, module map, entry points, git health, community summary | First call on any unfamiliar codebase |
 | `get_answer(question)` | Hybrid retrieval (FTS + vector merged via RRF) plus PageRank bias and 1-hop graph expansion, synthesised into a cited answer with a calibrated `retrieval_quality` reported separately from `confidence`. On low confidence returns a structured `best_guesses` list with one-line per-file justifications instead of an empty answer. Decision records are fused in for "why"-shaped questions. | First call on any code question — collapses search → read → reason into one round-trip |
-| `get_context(targets, include?)` | Triage card for files / modules / symbols: title, summary, signatures, `hotspot` bit, `decision_records` titles, and `symbol_id`s the agent pipes into `get_symbol`. NOT source bytes. `include` opens richer data: `"callers"`/`"callees"`, `"ownership"`, `"last_change"`, `"metrics"`, `"community"`, `"decisions"`, `"full_doc"`. Batch multiple targets. | Before reading or modifying code. Pass all relevant targets in one call. |
+| `get_context(targets, include?)` | Triage card for files / modules / symbols: title, summary, signatures, `hotspot` bit, `governing_decisions` (status + staleness + verified/fuzzy trust badge), and `symbol_id`s the agent pipes into `get_symbol`. NOT source bytes. `include` opens richer data: `"callers"`/`"callees"`, `"ownership"`, `"last_change"`, `"metrics"`, `"community"`, `"decisions"`, `"full_doc"`. Batch multiple targets. | Before reading or modifying code. Pass all relevant targets in one call. |
 | `get_symbol("path/to/file.py::Name")` | Raw source bytes for one indexed symbol with exact line bounds — cheaper and safer than `Read` + offset math. Bounded at ~400 lines, normalises `::` / `.` / `/` separators across languages, deterministic resolution on overloads. | When you need the body of one function or class. Use the `symbol_id` returned by `get_context`. |
 | `search_codebase(query, kind?)` | Semantic search over the wiki. Each result tags its `search_method` (`"embedding"` vs `"bm25"` fallback) and is filterable by `kind` (`implementation` / `test` / `config` / `doc`). Surfaces a Grep hint when the query is a bareword identifier. | When `get_answer` returned low confidence and you need to discover candidate pages by topic |
-| `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → response carries a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`) for one-glance review plus cross-repo blast radius. | Before modifying files — understand what could break |
-| `get_why(query?, targets?)` | Architectural decision records, their status (active / proposed / deprecated / superseded), and the commits that are evidence for them. Falls back to git archaeology when no ADRs exist for a file. | Before architectural changes — understand existing intent |
+| `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → response carries a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `governance_risk` — files governed by a stale, superseded, or contradicted decision) for one-glance review plus cross-repo blast radius. | Before modifying files — understand what could break |
+| `get_why(query?, targets?)` | Architectural decision records, their status (active / proposed / deprecated / superseded), the evidence spans behind them (verified / fuzzy / unverified), and the supersession **lineage chain** for "why is X like this?" questions. Falls back to git archaeology when no ADRs exist for a file. | Before architectural changes — understand existing intent |
 | `get_dead_code(min_confidence?, include_internals?)` | Unreachable code sorted by confidence tier with cleanup impact estimates. In workspace mode, cross-repo consumer detection lowers confidence on findings that other repos import. | Cleanup tasks |
 | `get_health(targets?, include?)` | Fifteen deterministic biomarker scores per file. Dashboard mode returns KPIs + the lowest-scoring files + a per-module NLOC-weighted rollup; targeted mode returns per-file findings. `include` flags layer richer data: `"coverage"`, `"refactoring"` (rule-based suggestions), `"trend"` (snapshot diff + declining/predicted-decline alerts). `module:foo` targets expand to a module's file set. | Before refactoring — find the worst-scoring files and what to fix first |
 
@@ -244,7 +246,7 @@ This is what happens when an AI agent has real codebase intelligence.
 | **Module Health** | Per-module rollup with a composite health score (churn / ownership / docs / dead code / bus factor), sortable list, and a per-module detail page showing owners, top hotspots, and governing decisions |
 | **Hotspots** | Ranked by trend-weighted score (180-day decay) and churn. Paginated load-more; each row expands inline to the most important symbols in that file |
 | **Dead Code** | Unused code with confidence scores, owner leaderboard, and bulk actions |
-| **Decisions** | Architectural decisions with staleness monitoring. Decision detail has a writable module-linkage editor so a decision's governance scope can be edited and shows up on the linked module's health page |
+| **Decisions** | Architectural decisions with staleness monitoring and verified/fuzzy/unverified trust badges. Decision detail shows the **evidence drawer** (every source span behind a decision), the **evolution timeline** (supersession lineage, root → current), and a writable module-linkage editor; a **decision-graph view** renders decision→decision and decision→code edges with conflicts highlighted |
 | **Costs** | LLM spend by day, model, or operation, with running session totals |
 | **Blast Radius** | Paste a PR file list, see transitive impact, test gaps, and a ranked reviewer-suggestions panel weighted by direct authorship, co-change history, and recency |
 | **Security** | Local regex-based scan for dangerous patterns — `eval`/`exec`/`pickle.loads`/`shell=True`/`os.system`, hardcoded secrets, f-string and concat SQL, `verify=False`, weak hashes — surfaced with severity and grouped by directory. Runs in seconds, no LLM, no network |
@@ -422,7 +424,7 @@ repowise decision health
     → payments/processor.ts — 47 commits/month, no architectural decisions recorded
 ```
 
-Decisions are linked to graph nodes, tracked for staleness as code evolves, and surfaced by `get_why()` whenever Claude Code touches governed files.
+Decisions are linked to graph nodes, tracked for staleness as code evolves, connected by typed `supersedes` / `refines` / `conflicts_with` edges, and surfaced by `get_why()` (with the full lineage chain) whenever Claude Code touches governed files. An incremental `repowise update` re-checks decisions against the diff: a commit that reverses one auto-records a supersession edge and re-renders the pages it governed in the same run.
 
 The "why" usually walks out the door — when a teammate leaves, or when you reopen your own repo six months later. Decision intelligence keeps it in the codebase.
 
