@@ -282,9 +282,15 @@ export function WikiMarkdown({
     return buildComponents(resolveLink, LinkComponent);
   }, [wikiLinks, buildHref, LinkComponent]);
 
-  return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-      {content}
-    </ReactMarkdown>
+  // Parsing + reconciling a large markdown document is the dominant cost when a
+  // page opens. Memoize the rendered tree on (content, components) so unrelated
+  // parent re-renders — sidebar toggles, hover state, etc. — don't re-parse it.
+  return useMemo(
+    () => (
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        {content}
+      </ReactMarkdown>
+    ),
+    [content, components],
   );
 }

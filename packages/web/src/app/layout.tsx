@@ -9,6 +9,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
 import { ContextDrawerShell } from "@/components/layout/context-drawer-provider";
+import { SWRProvider } from "@/components/layout/swr-provider";
 import { listRepos } from "@/lib/api/repos";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceResponse } from "@/lib/api/types";
@@ -55,6 +56,7 @@ export default async function RootLayout({
           Skip to content
         </a>
         <NuqsAdapter>
+        <SWRProvider>
         <TooltipProvider delayDuration={300}>
           <Suspense fallback={null}>
             <ContextDrawerShell>
@@ -71,6 +73,7 @@ export default async function RootLayout({
             </ContextDrawerShell>
           </Suspense>
         </TooltipProvider>
+        </SWRProvider>
         </NuqsAdapter>
         <Toaster
           theme="dark"
