@@ -554,7 +554,10 @@ class ASTParser:
             )
 
         # Delegate to special handlers for non-tree-sitter formats
-        if lang in ("openapi", "dockerfile", "makefile"):
+        if lang == "sql":
+            from .special_handlers.sql import parse_sql_file
+            return parse_sql_file(file_info, source)
+        elif lang in ("openapi", "dockerfile", "makefile"):
             from .special_handlers import parse_special
 
             return parse_special(file_info, source, lang)

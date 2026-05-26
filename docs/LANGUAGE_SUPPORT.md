@@ -71,6 +71,7 @@ resolvers for each language.
 | **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` with SPM `Package.swift` `targets:` → directory mapping |
 | **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.{A, B => C}` with SBT `build.sbt` / Mill `build.sc` multi-project parsing |
 | **PHP** | `.php` | `index.php` `public/index.php` | `use Foo\Bar\Baz` with composer.json `autoload.psr-4` longest-prefix resolution |
+| **SQL** | `.sql` | -- | No imports/heritage; sqlglot parser handles T-SQL, PostgreSQL, MySQL |
 
 ### Config / Data
 
@@ -89,7 +90,6 @@ endpoints or targets where applicable.
 | **JSON** | `.json` | -- |
 | **TOML** | `.toml` | -- |
 | **Markdown** | `.md` `.mdx` | -- |
-| **SQL** | `.sql` | -- |
 | **Shell** | `.sh` `.bash` `.zsh` | -- |
 
 ### Partial (Luau — Roblox)

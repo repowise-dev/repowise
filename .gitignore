@@ -117,6 +117,12 @@ ehthumbs.db
 # Claude Code
 .claude/
 
+# Serena MCP server
+.serena/
+
+# Superpowers planning docs
+docs/superpowers/
+
 # repowise API keys (local)
 .repowise/.env
 
