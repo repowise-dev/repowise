@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -279,10 +280,15 @@ async def get_why(
     scored_decisions.sort(key=lambda t: t[0], reverse=True)
     keyword_matches = [d for _, d in scored_decisions[:8]]
 
-    # Semantic search over decision vector store
+    # Semantic search over the shared page store, filtered to the decision: namespace.
+    # Over-fetch because decisions are a small slice of a page-dominated store.
     decision_results = []
     with contextlib.suppress(Exception):
-        decision_results = await ctx.decision_store.search(query, limit=5)
+        if ctx.vector_store is not None:
+            _raw = await ctx.vector_store.search(query, limit=50)
+            decision_results = [
+                r for r in _raw if getattr(r, "page_id", "").startswith(DECISION_VECTOR_PREFIX)
+            ][:5]
 
     # Semantic search over documentation
     doc_results = []
@@ -327,11 +333,13 @@ async def get_why(
             )
 
     for r in decision_results:
-        if r.page_id not in seen_ids:
-            seen_ids.add(r.page_id)
+        # Strip the "decision:" prefix so the returned id matches the SQL primary key.
+        real_id = r.page_id[len(DECISION_VECTOR_PREFIX) :]
+        if real_id not in seen_ids:
+            seen_ids.add(real_id)
             merged_decisions.append(
                 {
-                    "id": r.page_id,
+                    "id": real_id,
                     "title": r.title,
                     "snippet": r.snippet,
                     "relevance_score": r.score,

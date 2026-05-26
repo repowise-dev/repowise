@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -106,9 +107,7 @@ class RepoRegistry:
         # Validate alias exists
         if self._ws_config.get_repo(repo) is None:
             available = self.get_all_aliases()
-            raise ValueError(
-                f"Unknown repo '{repo}'. Available: {available}"
-            )
+            raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
         return repo
 
     async def get(self, alias: str) -> RepoContext:
@@ -155,6 +154,16 @@ class RepoRegistry:
         if not db_path.exists():
             _log.warning("No wiki.db for repo '%s' at %s", alias, db_path)
 
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession as _AsyncSession,
+        )
+        from sqlalchemy.ext.asyncio import (
+            async_sessionmaker as _async_sessionmaker,
+        )
+        from sqlalchemy.ext.asyncio import (
+            create_async_engine,
+        )
+
         from repowise.core.persistence.database import (
             get_db_url,
             init_db,
@@ -162,11 +171,6 @@ class RepoRegistry:
         from repowise.core.persistence.search import FullTextSearch
         from repowise.core.persistence.vector_store import InMemoryVectorStore
         from repowise.core.providers.embedding.base import MockEmbedder
-        from sqlalchemy.ext.asyncio import (
-            AsyncSession as _AsyncSession,
-            async_sessionmaker as _async_sessionmaker,
-            create_async_engine,
-        )
 
         db_url = get_db_url(f"sqlite:///{db_path.as_posix()}")
 
@@ -177,16 +181,19 @@ class RepoRegistry:
         await init_db(engine)
 
         session_factory = _async_sessionmaker(
-            engine, expire_on_commit=False, class_=_AsyncSession,
+            engine,
+            expire_on_commit=False,
+            class_=_AsyncSession,
         )
 
         fts = FullTextSearch(engine)
         await fts.ensure_index()
 
-        # Seed placeholder vector stores
+        # Seed placeholder vector stores.
+        # decision_store is repointed to the shared page store — decisions are
+        # embedded under the "decision:" namespace, no separate LanceDB table.
         embedder = self._embedder_factory() if self._embedder_factory else MockEmbedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
-        decision_store: Any = InMemoryVectorStore(embedder=embedder)
 
         vs_ready = asyncio.Event()
 
@@ -196,7 +203,7 @@ class RepoRegistry:
             session_factory=session_factory,
             fts=fts,
             vector_store=vector_store,
-            decision_store=decision_store,
+            decision_store=vector_store,  # same store, decision: namespace
             vector_store_ready=vs_ready,
             _engine=engine,
         )
@@ -225,13 +232,11 @@ class RepoRegistry:
                 lance_dir = repo_path / ".repowise" / "lancedb"
                 if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                    ds = LanceDBVectorStore(
-                        str(lance_dir), embedder=embedder, table_name="decision_records",
-                    )
                     await vs._ensure_connected()
-                    await ds._ensure_connected()
+                    # Repoint both stores to the same LanceDB table.
+                    # Decisions live under the "decision:" page-id namespace.
                     ctx.vector_store = vs
-                    ctx.decision_store = ds
+                    ctx.decision_store = vs
             except ImportError:
                 pass
             except Exception:
@@ -261,10 +266,7 @@ class RepoRegistry:
         # Find the alias with the oldest access time
         # Never evict the default repo
         default_alias = self.get_default_alias()
-        candidates = {
-            a: t for a, t in self._access_order.items()
-            if a != default_alias
-        }
+        candidates = {a: t for a, t in self._access_order.items() if a != default_alias}
         if not candidates:
             return  # Only default loaded, can't evict
 
@@ -294,7 +296,6 @@ class RepoRegistry:
                 await ctx._engine.dispose()
             if hasattr(ctx.vector_store, "close"):
                 await ctx.vector_store.close()
-            if hasattr(ctx.decision_store, "close"):
-                await ctx.decision_store.close()
+            # decision_store is an alias for vector_store — already closed above.
         except Exception:
             _log.warning("Error disposing context for '%s'", alias, exc_info=True)

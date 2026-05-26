@@ -1,4 +1,4 @@
-﻿"""MCP Tool: get_context — relationships and triage signals for files / modules / symbols.
+"""MCP Tool: get_context — relationships and triage signals for files / modules / symbols.
 
 Workhorse for "what is this and what touches it" questions. Returns a triage
 card by default (title, summary, signatures, hotspot bit, top callers, pointers
@@ -59,6 +59,7 @@ from repowise.core.persistence.crud import (
     get_node_degree_counts,
 )
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
     CoverageFile,
     DecisionRecord,
@@ -465,26 +466,36 @@ async def _resolve_one_target(
         triage_meta = triage_meta_res.scalar_one_or_none()
         result_data["hotspot"] = bool(triage_meta) if triage_meta is not None else False
 
-        decision_titles_res = await session.execute(
-            select(DecisionRecord.title, DecisionRecord.affected_files_json).where(
-                DecisionRecord.repository_id == repo_id,
-            )
-        )
-        titles: list[str] = []
-        for title, affected_json in decision_titles_res.all():
-            try:
-                affected = json.loads(affected_json or "[]")
-            except (json.JSONDecodeError, TypeError):
-                affected = []
-            if triage_path in affected or target in affected:
-                titles.append(title)
-                if len(titles) >= 5:
-                    break
-        if titles:
-            result_data["decision_records"] = titles
+        # Bounded graph-link query — replaces full Python scan over all rows.
+        governing: list[DecisionRecord] = []
+        seen_ids: set[str] = set()
+        for lookup_node in dict.fromkeys(
+            [triage_path, target] if triage_path != target else [triage_path]
+        ):
+            if not lookup_node:
+                continue
+            for dr in await get_governing_decisions(session, repo_id, lookup_node):
+                if dr.id not in seen_ids:
+                    seen_ids.add(dr.id)
+                    governing.append(dr)
+        if governing:
+            result_data["decision_records"] = [dr.title for dr in governing[:5]]
             result_data["decision_records_hint"] = (
                 "Decisions touch this file. Call get_why(targets=[...]) for rationale."
             )
+            # Compact enriched list — highest-confidence first, capped at 5.
+            governing_sorted = sorted(governing, key=lambda d: -(d.confidence or 0.0))
+            result_data["governing_decisions"] = [
+                {
+                    "id": dr.id,
+                    "title": dr.title,
+                    "status": dr.status,
+                    "staleness_score": dr.staleness_score,
+                    "verification": dr.verification,
+                    "stale": bool(dr.status == "active" and (dr.staleness_score or 0.0) >= 0.5),
+                }
+                for dr in governing_sorted[:5]
+            ]
 
     # --- Ownership ---
     if include is None or "ownership" in include:
@@ -1002,9 +1013,9 @@ def _classify_file_role(path: str, layer: Any, incoming_edges: list) -> str:
         raw = json.loads(layer.node_ids_json) if layer.node_ids_json else []
     node_ids = set(raw)
     cross_layer = [
-        e for e in incoming_edges
-        if f"file:{e.source_node_id}" not in node_ids
-        and e.source_node_id not in node_ids
+        e
+        for e in incoming_edges
+        if f"file:{e.source_node_id}" not in node_ids and e.source_node_id not in node_ids
     ]
     if cross_layer:
         return "edge_connector"

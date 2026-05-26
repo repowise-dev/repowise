@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from repowise.core.persistence import crud
+from repowise.core.persistence import crud, decision_graph
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
+    DecisionCodeEdge,
     DecisionCreate,
+    DecisionEvidenceResponse,
+    DecisionGraphEdge,
+    DecisionGraphNode,
+    DecisionGraphResponse,
+    DecisionLineageEntry,
     DecisionRecordResponse,
     DecisionStatusUpdate,
 )
@@ -69,6 +75,59 @@ async def decision_health(
 
 
 @router.get(
+    "/api/repos/{repo_id}/decisions/graph",
+    response_model=DecisionGraphResponse,
+)
+async def get_decision_graph(
+    repo_id: str,
+    limit: int = Query(200, ge=1, le=500),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> DecisionGraphResponse:
+    """Return the full decision graph for a repository.
+
+    Nodes are capped at *limit* (default 200), preferring active + superseded +
+    proposed statuses. Decision→decision typed edges and decision→code links are
+    returned without an additional cap (they scale with the node set).
+    """
+    # Fetch decisions ordered by staleness (most relevant first): active, then
+    # superseded/proposed, then deprecated. Use list_decisions without status
+    # filter so we get all statuses, capped.
+    all_decisions = await crud.list_decisions(
+        session,
+        repo_id,
+        include_proposed=True,
+        limit=limit,
+        offset=0,
+    )
+
+    nodes = [DecisionGraphNode.from_orm(d) for d in all_decisions]
+
+    raw_edges = await decision_graph.list_all_decision_edges(session, repo_id)
+    decision_edges = [
+        DecisionGraphEdge(
+            src=e.src_decision_id,
+            dst=e.dst_decision_id,
+            kind=e.kind,
+            confidence=e.confidence,
+            evidence=e.evidence,
+        )
+        for e in raw_edges
+    ]
+
+    raw_links = await decision_graph.list_decision_node_links(session, repo_id)
+    code_edges = [
+        DecisionCodeEdge(
+            decision_id=lnk.decision_id,
+            node_id=lnk.node_id,
+            link_type=lnk.link_type,
+        )
+        for lnk in raw_links
+    ]
+
+    return DecisionGraphResponse(nodes=nodes, decision_edges=decision_edges, code_edges=code_edges)
+
+
+@router.get(
     "/api/repos/{repo_id}/decisions/{decision_id}",
     response_model=DecisionRecordResponse,
 )
@@ -82,6 +141,49 @@ async def get_decision(
     if rec is None or rec.repository_id != repo_id:
         raise HTTPException(status_code=404, detail="Decision not found")
     return DecisionRecordResponse.from_orm(rec)
+
+
+@router.get(
+    "/api/repos/{repo_id}/decisions/{decision_id}/evidence",
+)
+async def list_decision_evidence(
+    repo_id: str,
+    decision_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Return provenance evidence rows for a single decision record.
+
+    Returns ``{"evidence": [...]}`` where each item carries the verbatim source
+    quote, evidence file/line/commit, per-source confidence, and verification
+    badge (``exact`` | ``fuzzy`` | ``unverified``). 404 if the decision does not
+    exist or belongs to a different repository.
+    """
+    rec = await crud.get_decision(session, decision_id)
+    if rec is None or rec.repository_id != repo_id:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    rows = await crud.list_decision_evidence(session, decision_id)
+    return {"evidence": [DecisionEvidenceResponse.from_orm(r) for r in rows]}
+
+
+@router.get(
+    "/api/repos/{repo_id}/decisions/{decision_id}/lineage",
+)
+async def get_decision_lineage(
+    repo_id: str,
+    decision_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> dict:
+    """Return the lineage chain for a decision (root → … → current).
+
+    Walks ``supersedes``/``refines`` edges back to the earliest ancestor so the
+    UI can render a timeline. An isolated decision returns a single-entry chain.
+    404 if the decision does not exist or belongs to a different repository.
+    """
+    rec = await crud.get_decision(session, decision_id)
+    if rec is None or rec.repository_id != repo_id:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    chain = await decision_graph.build_lineage_chain(session, decision_id)
+    return {"lineage": [DecisionLineageEntry(**entry) for entry in chain]}
 
 
 @router.post(

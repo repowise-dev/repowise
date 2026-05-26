@@ -103,6 +103,23 @@ _TEMPLATES: dict[str, str] = {
         "still on the team or write down the design intent before "
         "the next change."
     ),
+    "ungoverned_hotspot": (
+        "This churn hotspot has no governing decision — capture an ADR "
+        "with `repowise decision add` so future changes have a rationale "
+        "to check against."
+    ),
+    "stale_governance": (
+        "The architectural decision governing this file has gone stale: "
+        "the code has changed but the decision hasn't been reviewed. "
+        "Update or supersede the decision via `repowise decision edit` "
+        "so the rationale reflects the current implementation."
+    ),
+    "contradictory_decision": (
+        "Two active decisions make contradictory claims that affect this "
+        "file. Resolve the conflict by superseding one with the other "
+        "(`repowise decision supersede`) or by adding a 'relates_to' edge "
+        "with a clarifying rationale."
+    ),
 }
 
 

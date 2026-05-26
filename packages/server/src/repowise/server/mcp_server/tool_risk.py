@@ -1,4 +1,4 @@
-﻿"""MCP Tool 3: get_risk — modification risk assessment."""
+"""MCP Tool 3: get_risk — modification risk assessment."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.database import get_session
+from repowise.core.persistence.decision_graph import get_governing_decisions, list_conflict_edges
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphEdge,
@@ -142,10 +143,12 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
 
     # Test files don't need tests — skip the check entirely
     node_res = await session.execute(
-        select(GraphNode.is_test).where(
+        select(GraphNode.is_test)
+        .where(
             GraphNode.repository_id == repo_id,
             GraphNode.node_id == target,
-        ).limit(1)
+        )
+        .limit(1)
     )
     row = node_res.scalar_one_or_none()
     if row is True:
@@ -157,20 +160,20 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
     patterns = [f"%test_{base}%", f"%{base}_test%", f"%{base}.spec.{ext}%"]
     for pat in patterns:
         res = await session.execute(
-            select(GraphNode).where(
+            select(GraphNode)
+            .where(
                 GraphNode.repository_id == repo_id,
                 GraphNode.is_test == True,  # noqa: E712
                 GraphNode.node_id.like(pat),
-            ).limit(1)
+            )
+            .limit(1)
         )
         if res.scalar_one_or_none() is not None:
             return False
     return True
 
 
-async def _get_security_signals(
-    session: AsyncSession, repo_id: str, target: str
-) -> list[dict]:
+async def _get_security_signals(session: AsyncSession, repo_id: str, target: str) -> list[dict]:
     """Fetch stored security findings for *target* from security_findings table."""
     try:
         rows = await session.execute(
@@ -181,10 +184,7 @@ async def _get_security_signals(
             ),
             {"repo_id": repo_id, "fp": target},
         )
-        return [
-            {"kind": r[0], "severity": r[1], "snippet": r[2]}
-            for r in rows.all()
-        ]
+        return [{"kind": r[0], "severity": r[1], "snippet": r[2]} for r in rows.all()]
     except Exception:
         return []
 
@@ -477,12 +477,8 @@ async def get_risk(
 
             # Contract links (Phase 4)
             if enricher.has_contract_data:
-                provider_links = enricher.get_contract_links_as_provider(
-                    ctx.alias, target
-                )
-                consumer_links = enricher.get_contract_links_as_consumer(
-                    ctx.alias, target
-                )
+                provider_links = enricher.get_contract_links_as_provider(ctx.alias, target)
+                consumer_links = enricher.get_contract_links_as_consumer(ctx.alias, target)
                 if provider_links or consumer_links:
                     impact = r.setdefault("cross_repo_impact", {})
                     if provider_links:
@@ -495,9 +491,7 @@ async def get_risk(
                             }
                             for lk in provider_links[:5]
                         ]
-                        r["dependents_count"] = (
-                            r.get("dependents_count", 0) + len(provider_links)
-                        )
+                        r["dependents_count"] = r.get("dependents_count", 0) + len(provider_links)
                     if consumer_links:
                         impact["contract_providers"] = [
                             {
@@ -550,12 +544,14 @@ async def get_risk(
                     lst = top_by_file.setdefault(f.file_path, [])
                     if len(lst) >= 3:
                         continue
-                    lst.append({
-                        "biomarker_type": f.biomarker_type,
-                        "severity": f.severity,
-                        "function_name": f.function_name,
-                        "impact": round(f.health_impact, 2),
-                    })
+                    lst.append(
+                        {
+                            "biomarker_type": f.biomarker_type,
+                            "severity": f.severity,
+                            "function_name": f.function_name,
+                            "impact": round(f.health_impact, 2),
+                        }
+                    )
 
             for r in results:
                 path = r.get("target")
@@ -612,28 +608,74 @@ async def get_risk(
             return None
 
         will_break = [
-            p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", []))
-            if p
+            p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p
         ][:5]
         missing_cochanges = [
-            p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", []))
-            if p
+            p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p
         ][:3]
-        missing_tests = [
-            p for p in (_as_path(e) for e in trimmed_blast.get("test_gaps", []))
-            if p
-        ][:3]
+        missing_tests = [p for p in (_as_path(e) for e in trimmed_blast.get("test_gaps", [])) if p][
+            :3
+        ]
 
+        # Governance risk — bounded query over changed_files (small set).
+        governance_risk: list[dict[str, Any]] = []
+        try:
+            async with get_session(ctx.session_factory) as _gr_session:
+                _gr_repo = await _get_repo(_gr_session)
+                _gr_repo_id = _gr_repo.id
+                conflict_edges = await list_conflict_edges(_gr_session, _gr_repo_id)
+                conflict_decision_ids: set[str] = set()
+                for ce in conflict_edges:
+                    conflict_decision_ids.add(ce.src_decision_id)
+                    conflict_decision_ids.add(ce.dst_decision_id)
+                seen_dr_ids: set[str] = set()
+                for cf in changed_files:
+                    for dr in await get_governing_decisions(_gr_session, _gr_repo_id, cf):
+                        if dr.id in seen_dr_ids:
+                            continue
+                        seen_dr_ids.add(dr.id)
+                        staleness = dr.staleness_score or 0.0
+                        is_stale = dr.status == "active" and staleness >= 0.5
+                        is_superseded = dr.status == "superseded"
+                        is_conflicted = dr.id in conflict_decision_ids
+                        if is_stale:
+                            reason = "stale_governance"
+                        elif is_superseded:
+                            reason = "superseded_decision"
+                        elif is_conflicted:
+                            reason = "contradicted_decision"
+                        else:
+                            continue
+                        governance_risk.append(
+                            {
+                                "file": cf,
+                                "decision_id": dr.id,
+                                "title": dr.title,
+                                "status": dr.status,
+                                "reason": reason,
+                            }
+                        )
+                        if len(governance_risk) >= 5:
+                            break
+                    if len(governance_risk) >= 5:
+                        break
+        except Exception:
+            pass
+
+        gov_count = len(governance_risk)
+        gov_suffix = f" {gov_count} governance risk(s) detected." if gov_count > 0 else ""
         response["directive"] = {
             "will_break": will_break,
             "missing_cochanges": missing_cochanges,
             "missing_tests": missing_tests,
+            "governance_risk": governance_risk,
             "overall_risk_score": trimmed_blast.get("overall_risk_score"),
             "summary": (
                 f"PR touches {len(changed_files)} file(s). "
                 f"~{len(will_break)} downstream file(s) likely affected, "
                 f"{len(missing_cochanges)} historical co-changer(s) missing, "
                 f"{len(missing_tests)} file(s) without tests."
+                f"{gov_suffix}"
             ),
         }
     else:

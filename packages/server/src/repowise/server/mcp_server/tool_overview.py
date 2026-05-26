@@ -1,4 +1,4 @@
-﻿"""MCP Tool 1: get_overview — repository architecture overview."""
+"""MCP Tool 1: get_overview — repository architecture overview."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from repowise.core.generation.onboarding.slots import (
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
+    DecisionEdge,
+    DecisionRecord,
     GitMetadata,
     GraphNode,
     Page,
@@ -424,9 +426,7 @@ async def get_overview(repo: str | None = None) -> dict:
         ro_result = await session.execute(
             select(Page).where(
                 Page.repository_id == repository.id,
-                Page.page_type.in_(
-                    ["onboarding", *PROMOTED_SLOTS.keys()]
-                ),
+                Page.page_type.in_(["onboarding", *PROMOTED_SLOTS.keys()]),
             )
         )
         slot_to_page: dict[str, Page] = {}
@@ -487,6 +487,77 @@ async def get_overview(repo: str | None = None) -> dict:
         except Exception:
             code_health = {}
 
+        # F. Key decisions + recent reversals (Phase 4A) -----------------------
+        key_decisions_section: dict[str, Any] = {}
+        try:
+            top_decisions_res = await session.execute(
+                select(DecisionRecord)
+                .where(
+                    DecisionRecord.repository_id == repository.id,
+                    DecisionRecord.status == "active",
+                )
+                .order_by(DecisionRecord.confidence.desc())
+                .limit(5)
+            )
+            top_decisions = top_decisions_res.scalars().all()
+            if top_decisions:
+                key_decisions_list = []
+                for dr in top_decisions:
+                    try:
+                        affected_files = json.loads(dr.affected_files_json or "[]")[:3]
+                    except (json.JSONDecodeError, TypeError):
+                        affected_files = []
+                    key_decisions_list.append(
+                        {
+                            "id": dr.id,
+                            "title": dr.title,
+                            "status": dr.status,
+                            "confidence": dr.confidence,
+                            "verification": dr.verification,
+                            "affected_files": affected_files,
+                        }
+                    )
+                recent_reversals: list[dict[str, Any]] = []
+                supersede_edges_res = await session.execute(
+                    select(DecisionEdge)
+                    .where(
+                        DecisionEdge.repository_id == repository.id,
+                        DecisionEdge.kind == "supersedes",
+                    )
+                    .order_by(DecisionEdge.created_at.desc())
+                    .limit(5)
+                )
+                supersede_edges = supersede_edges_res.scalars().all()
+                if supersede_edges:
+                    all_edge_ids = list(
+                        {e.src_decision_id for e in supersede_edges}
+                        | {e.dst_decision_id for e in supersede_edges}
+                    )
+                    edge_recs_res = await session.execute(
+                        select(DecisionRecord).where(DecisionRecord.id.in_(all_edge_ids))
+                    )
+                    edge_recs = {r.id: r for r in edge_recs_res.scalars().all()}
+                    for edge in supersede_edges:
+                        src = edge_recs.get(edge.src_decision_id)
+                        dst = edge_recs.get(edge.dst_decision_id)
+                        if src and dst:
+                            recent_reversals.append(
+                                {
+                                    "newer": {"id": src.id, "title": src.title},
+                                    "older": {
+                                        "id": dst.id,
+                                        "title": dst.title,
+                                        "status": dst.status,
+                                    },
+                                }
+                            )
+                key_decisions_section = {
+                    "top_active": key_decisions_list,
+                    "recent_reversals": recent_reversals,
+                }
+        except Exception:
+            key_decisions_section = {}
+
         result = {
             "title": title,
             "content_md": overview_page.content if overview_page else "No overview generated yet.",
@@ -511,6 +582,9 @@ async def get_overview(repo: str | None = None) -> dict:
 
         if architecture:
             result["architecture"] = architecture
+
+        if key_decisions_section:
+            result["key_decisions"] = key_decisions_section
 
         if reading_order:
             result["reading_order"] = reading_order

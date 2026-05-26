@@ -46,6 +46,11 @@ _SEVERITY_DEDUCTION: dict[Severity, float] = {
 # severity deduction BEFORE category capping. Lets stronger empirical
 # predictors deduct more without re-tuning the severity table itself.
 # Unknown biomarkers fall back to 1.0.
+# Governance biomarkers (contradictory_decision, stale_governance,
+# ungoverned_hotspot) are listed here for documentation intent — their
+# findings are written by the additive governance pass (governance.py)
+# after the per-file score pass has already completed, so these weights
+# do not affect HealthFileMetric.score in the current pipeline.
 _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "developer_congestion": 1.5,
     "untested_hotspot": 1.3,
@@ -53,6 +58,10 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "code_age_volatility": 1.1,
     "hidden_coupling": 1.0,
     "knowledge_loss": 0.4,
+    # Governance — additive pass, weights are informational
+    "contradictory_decision": 1.0,
+    "stale_governance": 0.9,
+    "ungoverned_hotspot": 0.7,
 }
 
 # Map biomarker name → category. Kept here (single source of truth)
@@ -74,6 +83,10 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "hidden_coupling": "organizational",
     "function_hotspot": "organizational",
     "code_age_volatility": "organizational",
+    # Governance biomarkers — written by the additive governance pass
+    "ungoverned_hotspot": "organizational",
+    "stale_governance": "organizational",
+    "contradictory_decision": "organizational",
 }
 
 

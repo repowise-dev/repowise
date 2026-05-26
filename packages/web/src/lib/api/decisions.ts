@@ -1,7 +1,12 @@
 import { apiGet, apiPost, apiPatch } from "./client";
 import type {
   DecisionCreate,
+  DecisionEvidence,
+  DecisionEvidenceResponse,
+  DecisionGraph,
   DecisionHealthResponse,
+  DecisionLineageEntry,
+  DecisionLineageResponse,
   DecisionRecordResponse,
   DecisionStatusUpdate,
 } from "./types";
@@ -53,4 +58,28 @@ export async function getDecisionHealth(
   return apiGet<DecisionHealthResponse>(
     `/api/repos/${repoId}/decisions/health`,
   );
+}
+
+export async function getDecisionEvidence(
+  repoId: string,
+  decisionId: string,
+): Promise<DecisionEvidence[]> {
+  const res = await apiGet<DecisionEvidenceResponse>(
+    `/api/repos/${repoId}/decisions/${decisionId}/evidence`,
+  );
+  return res.evidence;
+}
+
+export async function getDecisionLineage(
+  repoId: string,
+  decisionId: string,
+): Promise<DecisionLineageEntry[]> {
+  const res = await apiGet<DecisionLineageResponse>(
+    `/api/repos/${repoId}/decisions/${decisionId}/lineage`,
+  );
+  return res.lineage;
+}
+
+export async function getDecisionGraph(repoId: string): Promise<DecisionGraph> {
+  return apiGet<DecisionGraph>(`/api/repos/${repoId}/decisions/graph`);
 }

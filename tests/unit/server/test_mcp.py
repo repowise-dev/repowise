@@ -1077,6 +1077,59 @@ async def test_get_why_module_path(setup_mcp):
     assert any(d["title"] == "SQLAlchemy as ORM" for d in result["decisions"])
 
 
+@pytest.mark.asyncio
+async def test_get_why_semantic_decision_namespace_filtering(setup_mcp):
+    """Mode 3 semantic path: over-fetch from page store, keep only decision: hits.
+
+    Upserts a decision vector under the 'decision:' prefix and a noise page
+    without the prefix into the shared vector store.  Confirms that get_why
+    surfaces the decision hit with the prefix stripped, and excludes the noise
+    page from the decisions list.
+    """
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
+    from repowise.server.mcp_server import get_why
+
+    vs = mcp_mod._vector_store
+
+    # Insert a decision under the decision: namespace
+    await vs.embed_and_upsert(
+        f"{DECISION_VECTOR_PREFIX}dec-vec-1",
+        "Use Redis for caching to reduce latency",
+        {
+            "title": "Use Redis for caching",
+            "page_type": "decision_record",
+            "target_path": "",
+            "content": "Use Redis for caching to reduce latency",
+        },
+    )
+
+    # Insert a noise page (no decision: prefix) with similar text
+    await vs.embed_and_upsert(
+        "file_page:src/cache/redis.py",
+        "Redis caching implementation module",
+        {
+            "title": "Redis Cache Module",
+            "page_type": "file_page",
+            "target_path": "src/cache/redis.py",
+            "content": "Redis caching implementation module",
+        },
+    )
+
+    result = await get_why("why use Redis for caching")
+    assert result["mode"] == "search"
+
+    decision_ids = [d["id"] for d in result["decisions"]]
+    # The semantic decision hit should appear with the prefix stripped
+    assert "dec-vec-1" in decision_ids, (
+        f"Expected 'dec-vec-1' in decisions; got {decision_ids}"
+    )
+    # The noise page must not appear in decisions
+    assert not any(
+        d.get("id", "").startswith("file_page:") for d in result["decisions"]
+    ), "Noise page should not appear in decisions list"
+
+
 # ---- Tool 5: search_codebase ----
 
 

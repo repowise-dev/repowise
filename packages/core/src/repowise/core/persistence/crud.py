@@ -2254,6 +2254,88 @@ async def save_health_findings(
         await session.flush()
 
 
+_GOVERNANCE_BIOMARKER_TYPES = frozenset(
+    {"ungoverned_hotspot", "stale_governance", "contradictory_decision"}
+)
+
+
+async def replace_governance_findings(
+    session: AsyncSession,
+    repository_id: str,
+    findings: list[Any],
+) -> None:
+    """Idempotent additive write of governance-layer health findings.
+
+    Deletes any existing ``health_findings`` rows whose ``biomarker_type``
+    is one of ``ungoverned_hotspot``, ``stale_governance``, or
+    ``contradictory_decision`` for *repository_id*, then inserts the new
+    *findings* in batches.
+
+    This function deliberately does **not** recompute ``HealthFileMetric.score``
+    — that pass has already completed in the upstream health-analysis phase.
+    Governance findings surface through the findings layer (``get_risk``
+    ``top_biomarkers``, ``get_context`` health block) rather than the numeric
+    score.  A second score-recomputation pass would require re-loading the full
+    per-file results table; the conservative choice is to leave scores as-is
+    and let findings carry the governance signal.
+
+    Composable with ``save_health_findings``: the delete is scoped to only
+    the three governance biomarker types, so structural findings written by
+    ``save_health_findings`` are untouched.
+
+    Accepts ``HealthFindingData`` dataclasses or plain dicts (same protocol
+    as ``save_health_findings``).
+    """
+    # Delete existing governance findings for this repo only.
+    existing = await session.execute(
+        select(HealthFinding).where(
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.biomarker_type.in_(list(_GOVERNANCE_BIOMARKER_TYPES)),
+        )
+    )
+    for row in existing.scalars().all():
+        await session.delete(row)
+    await session.flush()
+
+    if not findings:
+        return
+
+    for i in range(0, len(findings), _BATCH_SIZE):
+        batch = findings[i : i + _BATCH_SIZE]
+        for f in batch:
+            if hasattr(f, "biomarker_type"):
+                severity = f.severity
+                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
+                data = {
+                    "file_path": f.file_path,
+                    "biomarker_type": f.biomarker_type,
+                    "severity": severity_str,
+                    "function_name": f.function_name,
+                    "line_start": f.line_start,
+                    "line_end": f.line_end,
+                    "details_json": json.dumps(f.details or {}),
+                    "health_impact": float(f.health_impact),
+                    "reason": f.reason or "",
+                }
+            else:
+                data = dict(f)
+                if "details" in data:
+                    data["details_json"] = json.dumps(data.pop("details") or {})
+
+            session.add(
+                HealthFinding(
+                    id=_new_uuid(),
+                    repository_id=repository_id,
+                    **{
+                        k: v
+                        for k, v in data.items()
+                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
+                    },
+                )
+            )
+        await session.flush()
+
+
 async def save_health_metrics(
     session: AsyncSession,
     repository_id: str,

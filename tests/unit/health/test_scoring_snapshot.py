@@ -44,6 +44,11 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     "code_age_volatility": 1.1,
     "hidden_coupling": 1.0,
     "knowledge_loss": 0.4,
+    # Phase 4B governance biomarkers (informational — surfaced as findings,
+    # not fed back into the score pass, which has already run upstream).
+    "contradictory_decision": 1.0,
+    "stale_governance": 0.9,
+    "ungoverned_hotspot": 0.7,
 }
 
 _EXPECTED_BIOMARKER_CATEGORY = {
@@ -62,6 +67,10 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "hidden_coupling": "organizational",
     "function_hotspot": "organizational",
     "code_age_volatility": "organizational",
+    # Phase 4B governance biomarkers.
+    "ungoverned_hotspot": "organizational",
+    "stale_governance": "organizational",
+    "contradictory_decision": "organizational",
 }
 
 

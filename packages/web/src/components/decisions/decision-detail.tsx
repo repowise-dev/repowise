@@ -6,11 +6,18 @@ import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 import { toast } from "sonner";
 import Link from "next/link";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, FileSearch } from "lucide-react";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
 import { ModuleLinkEditor } from "@repowise-dev/ui/decisions/module-link-editor";
-import { patchDecision } from "@/lib/api/decisions";
+import { VerificationBadge } from "@repowise-dev/ui/decisions/verification-badge";
+import { DecisionEvidenceDrawer } from "@repowise-dev/ui/decisions/decision-evidence-drawer";
+import { DecisionLineage } from "@repowise-dev/ui/decisions/decision-lineage";
+import {
+  getDecisionEvidence,
+  getDecisionLineage,
+  patchDecision,
+} from "@/lib/api/decisions";
 import { listModuleHealth } from "@/lib/api/modules";
 import type { DecisionRecordResponse } from "@/lib/api/types";
 
@@ -48,6 +55,25 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
   const [linkedModules, setLinkedModules] = React.useState(decision.affected_modules);
   const [linkedFiles, setLinkedFiles] = React.useState(decision.affected_files);
   const [linkageSaving, setLinkageSaving] = React.useState(false);
+  const [evidenceOpen, setEvidenceOpen] = React.useState(false);
+
+  // Lineage: cheap, load eagerly so the Evolution timeline renders when present.
+  const { data: lineage } = useSWR(
+    `decision-lineage:${repoId}:${decision.id}`,
+    () => getDecisionLineage(repoId, decision.id),
+    { revalidateOnFocus: false },
+  );
+
+  // Evidence: lazy — only fetched once the drawer is opened.
+  const {
+    data: evidence,
+    error: evidenceError,
+    isLoading: evidenceLoading,
+  } = useSWR(
+    evidenceOpen ? `decision-evidence:${repoId}:${decision.id}` : null,
+    () => getDecisionEvidence(repoId, decision.id),
+    { revalidateOnFocus: false },
+  );
 
   // Suggestions for the module autocomplete — top-level modules indexed for
   // this repo. Loaded once; cheap to cache.
@@ -158,11 +184,22 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
       </Link>
       {/* Header */}
       <div className="space-y-2">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">
             {decision.title}
           </h1>
           <Badge variant={STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>
+          {decision.verification && (
+            <VerificationBadge verification={decision.verification} />
+          )}
+          <button
+            type="button"
+            onClick={() => setEvidenceOpen(true)}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]"
+          >
+            <FileSearch className="h-3.5 w-3.5" />
+            Evidence
+          </button>
         </div>
         <div className="flex gap-4 text-sm text-[var(--color-text-tertiary)]">
           <span>Source: {decision.source}</span>
@@ -181,6 +218,11 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
         <div className="rounded-md border border-amber-400/30 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
           This decision may be stale — affected files have changed significantly since it was recorded.
         </div>
+      )}
+
+      {/* Evolution / lineage chain */}
+      {lineage && lineage.length > 1 && (
+        <DecisionLineage lineage={lineage} repoId={repoId} LinkComponent={Link} />
       )}
 
       {/* Content sections */}
@@ -285,6 +327,15 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
           onConfirm={() => applyStatusChange(pendingStatus!)}
         />
       )}
+
+      <DecisionEvidenceDrawer
+        open={evidenceOpen}
+        onClose={() => setEvidenceOpen(false)}
+        evidence={evidence}
+        isLoading={evidenceLoading}
+        error={evidenceError}
+        decisionTitle={decision.title}
+      />
     </div>
   );
 }

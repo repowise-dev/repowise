@@ -40,6 +40,8 @@ export interface DecisionRecord {
   staleness_score: number;
   superseded_by: string | null;
   last_code_change: string | null;
+  /** Trust tier of the decision's primary supporting evidence. Optional for back-compat. */
+  verification?: DecisionVerification;
   created_at: string;
   updated_at: string;
 }
@@ -78,4 +80,78 @@ export interface DecisionHealth {
   stale_decisions: DecisionRecord[];
   proposed_awaiting_review: DecisionRecord[];
   ungoverned_hotspots: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4C: evidence / lineage / decision-graph
+// ---------------------------------------------------------------------------
+
+/**
+ * Trust level of a decision's supporting evidence. `exact` = the source quote
+ * was found verbatim in the cited file/commit; `fuzzy` = a near-match;
+ * `unverified` = the quote could not be located (LLM-derived, treat with care).
+ */
+export type DecisionVerification = "exact" | "fuzzy" | "unverified";
+
+/** One supporting evidence row for a decision. */
+export interface DecisionEvidence {
+  id: string;
+  source: string;
+  source_rank: number;
+  evidence_file: string | null;
+  evidence_line: number | null;
+  evidence_commit: string | null;
+  source_quote: string;
+  confidence: number;
+  verification: DecisionVerification;
+  created_at: string;
+}
+
+/**
+ * One hop in a decision's supersession/evolution chain. The chain is ordered
+ * root -> current; `relation` describes how the NEWER decision related to this
+ * one ("supersedes" | "refines" | null for the terminal/current entry).
+ */
+export interface DecisionLineageEntry {
+  id: string;
+  title: string;
+  status: DecisionStatus;
+  source: string;
+  relation: string | null;
+}
+
+export interface DecisionGraphNode {
+  id: string;
+  title: string;
+  status: DecisionStatus;
+  source: string;
+  confidence: number;
+  staleness_score: number;
+  verification: DecisionVerification;
+}
+
+export type DecisionEdgeKind =
+  | "supersedes"
+  | "refines"
+  | "relates_to"
+  | "conflicts_with";
+
+export interface DecisionGraphEdge {
+  src: string;
+  dst: string;
+  kind: DecisionEdgeKind;
+  confidence: number;
+  evidence: string;
+}
+
+export interface DecisionCodeEdge {
+  decision_id: string;
+  node_id: string;
+  link_type: "file" | "module";
+}
+
+export interface DecisionGraph {
+  nodes: DecisionGraphNode[];
+  decision_edges: DecisionGraphEdge[];
+  code_edges: DecisionCodeEdge[];
 }

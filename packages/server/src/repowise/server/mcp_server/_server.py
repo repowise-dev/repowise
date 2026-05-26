@@ -47,7 +47,9 @@ def _resolve_embedder():
             dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
             return GeminiEmbedder(output_dimensionality=dims)
         except Exception:
-            _log.warning("Failed to initialise Gemini embedder — falling back to mock", exc_info=True)
+            _log.warning(
+                "Failed to initialise Gemini embedder — falling back to mock", exc_info=True
+            )
     if name == "openai":
         try:
             from repowise.core.providers.embedding.openai import OpenAIEmbedder
@@ -55,7 +57,9 @@ def _resolve_embedder():
             model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "text-embedding-3-small")
             return OpenAIEmbedder(model=model)
         except Exception:
-            _log.warning("Failed to initialise OpenAI embedder — falling back to mock", exc_info=True)
+            _log.warning(
+                "Failed to initialise OpenAI embedder — falling back to mock", exc_info=True
+            )
     return MockEmbedder()
 
 
@@ -82,7 +86,6 @@ async def _load_vector_stores(repo_path: str | None) -> None:
     try:
         embedder = _resolve_embedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
-        decision_store: Any = InMemoryVectorStore(embedder=embedder)
 
         try:
             # Step 1 — import lancedb in a thread to keep event loop free.
@@ -96,25 +99,23 @@ async def _load_vector_stores(repo_path: str | None) -> None:
                 lance_dir = Path(repo_path) / ".repowise" / "lancedb"
                 if lance_dir.exists():
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
-                    ds = LanceDBVectorStore(
-                        str(lance_dir), embedder=embedder, table_name="decision_records"
-                    )
                     # Step 2 — pre-connect so first search() is instant.
                     await vs._ensure_connected()
-                    await ds._ensure_connected()
                     vector_store = vs
-                    decision_store = ds
         except ImportError:
             pass
         except Exception:
             _log.warning("LanceDB pre-connect failed — using InMemory fallback")
 
+        # decision_store is repointed to the shared page store — decisions are
+        # now embedded under the "decision:" namespace within the same table.
         _state._vector_store = vector_store
-        _state._decision_store = decision_store
+        _state._decision_store = vector_store
     except Exception:
         _log.exception("Failed to load vector stores — falling back to MockEmbedder")
-        _state._vector_store = InMemoryVectorStore(embedder=MockEmbedder())
-        _state._decision_store = InMemoryVectorStore(embedder=MockEmbedder())
+        _fallback = InMemoryVectorStore(embedder=MockEmbedder())
+        _state._vector_store = _fallback
+        _state._decision_store = _fallback
     finally:
         if _state._vector_store_ready is not None:
             _state._vector_store_ready.set()
@@ -177,7 +178,6 @@ async def _lifespan(server: FastMCP):
 
     if ws_root is not None and ws_config is not None:
         # Workspace mode — use RepoRegistry for multi-repo serving
-        from pathlib import Path as _Path
 
         from repowise.core.workspace.registry import RepoRegistry
 
@@ -212,9 +212,7 @@ async def _lifespan(server: FastMCP):
 
             cross_repo_path = ws_root / WORKSPACE_DATA_DIR / "cross_repo_edges.json"
             contracts_path = ws_root / WORKSPACE_DATA_DIR / CONTRACTS_FILENAME
-            enricher = CrossRepoEnricher(
-                cross_repo_path, contracts_path=contracts_path
-            )
+            enricher = CrossRepoEnricher(cross_repo_path, contracts_path=contracts_path)
             if enricher.has_data:
                 _state._cross_repo_enricher = enricher
                 _log.info(
@@ -276,10 +274,12 @@ async def _lifespan(server: FastMCP):
     _state._fts = FullTextSearch(engine)
     await _state._fts.ensure_index()
 
-    # Seed InMemory placeholders so tools that don't need vector search
+    # Seed InMemory placeholder so tools that don't need vector search
     # can start immediately, before the background load completes.
-    _state._vector_store = InMemoryVectorStore(embedder=MockEmbedder())
-    _state._decision_store = InMemoryVectorStore(embedder=MockEmbedder())
+    # decision_store is repointed to the same store — no separate table.
+    _placeholder = InMemoryVectorStore(embedder=MockEmbedder())
+    _state._vector_store = _placeholder
+    _state._decision_store = _placeholder
 
     # Defer embedder resolution + LanceDB open to a background task so
     # the server starts accepting connections without blocking on disk I/O.
@@ -294,9 +294,8 @@ async def _lifespan(server: FastMCP):
         await _bg_task
 
     await engine.dispose()
+    # _decision_store is an alias for _vector_store — close only once.
     await _state._vector_store.close()
-    if _state._decision_store is not None:
-        await _state._decision_store.close()
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,9 @@ __all__ = [
     "get_decision_edges",
     "get_governed_nodes",
     "get_governing_decisions",
+    "list_all_decision_edges",
     "list_conflict_edges",
+    "list_decision_node_links",
     "sync_decision_node_links",
     "upsert_decision_edge",
 ]
@@ -300,3 +302,49 @@ async def build_lineage_chain(
             }
         )
     return chain
+
+
+# ---------------------------------------------------------------------------
+# Repo-wide list queries (used by the graph REST endpoint)
+# ---------------------------------------------------------------------------
+
+
+async def list_all_decision_edges(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[DecisionEdge]:
+    """Return all decision→decision edges for a repository.
+
+    Used by the graph REST endpoint to render the full decision graph. Bounded
+    by the natural size of a repo's decision graph (no pagination needed at
+    realistic scales; the endpoint caps decisions at 200).
+    """
+    return list(
+        (
+            await session.execute(
+                select(DecisionEdge).where(DecisionEdge.repository_id == repository_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def list_decision_node_links(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[DecisionNodeLink]:
+    """Return all decision→code links for a repository.
+
+    Used by the graph REST endpoint to render decision↔file/module edges. Each
+    row maps one decision to one file or module path.
+    """
+    return list(
+        (
+            await session.execute(
+                select(DecisionNodeLink).where(DecisionNodeLink.repository_id == repository_id)
+            )
+        )
+        .scalars()
+        .all()
+    )

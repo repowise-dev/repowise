@@ -973,6 +973,32 @@ def update_command(
 
                 async with get_session(sf) as session:
                     await recompute_decision_staleness(session, repo_id, git_meta_map)
+
+            # Governance findings pass: runs after decisions + staleness are
+            # up to date. Best-effort — never breaks the update.
+            try:
+                from sqlalchemy import select as _sel_dec
+
+                from repowise.core.analysis.health.governance import build_governance_findings
+                from repowise.core.persistence.crud import (
+                    get_decision_health_summary,
+                    replace_governance_findings,
+                )
+                from repowise.core.persistence.models import DecisionRecord
+
+                async with get_session(sf) as session:
+                    _dr = await session.execute(
+                        _sel_dec(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
+                    )
+                    _decisions = list(_dr.scalars().all())
+                    _summary = await get_decision_health_summary(session, repo_id)
+                    _gov = build_governance_findings(
+                        health_summary=_summary,
+                        decisions=_decisions,
+                    )
+                    await replace_governance_findings(session, repo_id, _gov)
+            except Exception:
+                pass  # governance findings are best-effort
         except Exception:
             pass  # never fail update due to decision processing
 

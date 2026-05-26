@@ -83,11 +83,6 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     lance_dir.mkdir(parents=True, exist_ok=True)
     vector_store = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
 
-    # Also create a decision store for decision records
-    decision_store = LanceDBVectorStore(
-        str(lance_dir), embedder=embedder_impl, table_name="decision_records"
-    )
-
     # --- Open database ---
     db_url = get_db_url_for_repo(repo_path)
     connect_args = {}
@@ -103,6 +98,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         pages = list(result.scalars().all())
 
     # --- Load decision records ---
+    from repowise.core.analysis.decision_semantic_match import upsert_decision_vector
     from repowise.core.persistence.models import DecisionRecord
 
     async with factory() as session:
@@ -157,21 +153,18 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                         )
                 progress.advance(task)
 
-        # Decision records
+        # Decision records — embedded into the shared page store under the decision: namespace
         progress.update(task, description="Indexing decisions...")
         for i in range(0, len(decisions), batch_size):
             batch = decisions[i : i + batch_size]
             for d in batch:
                 try:
-                    text = f"{d.title}\n{d.decision}\n{d.rationale}"
-                    await decision_store.embed_and_upsert(
+                    await upsert_decision_vector(
+                        vector_store,
                         d.id,
-                        text,
-                        {
-                            "title": d.title or "",
-                            "page_type": "decision_record",
-                            "target_path": "",
-                        },
+                        title=d.title or "",
+                        decision=d.decision or "",
+                        evidence_file=getattr(d, "evidence_file", None),
                     )
                     indexed += 1
                 except Exception as exc:
@@ -183,7 +176,6 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 progress.advance(task)
 
     await vector_store.close()
-    await decision_store.close()
     await engine.dispose()
 
     console.print(

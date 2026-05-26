@@ -313,6 +313,38 @@ async def persist_pipeline_result(
             except Exception as _stale_err:
                 logger.debug("staleness_scoring_skipped", error=str(_stale_err))
 
+    # ---- Governance findings (additive pass, after decisions are persisted) ----
+    # Runs after bulk_upsert_decisions + detect_supersessions_and_conflicts so
+    # the decision graph is complete. Best-effort — never breaks persist.
+    try:
+        from sqlalchemy import select as _select
+
+        from repowise.core.analysis.health.governance import build_governance_findings
+        from repowise.core.persistence.crud import (
+            get_decision_health_summary,
+            replace_governance_findings,
+        )
+        from repowise.core.persistence.models import DecisionRecord
+
+        _dr_result = await session.execute(
+            _select(DecisionRecord).where(DecisionRecord.repository_id == repo_id)
+        )
+        _decisions = list(_dr_result.scalars().all())
+        _health_summary = await get_decision_health_summary(session, repo_id)
+        _gov_findings = build_governance_findings(
+            health_summary=_health_summary,
+            decisions=_decisions,
+        )
+        await replace_governance_findings(session, repo_id, _gov_findings)
+        if _gov_findings:
+            logger.info(
+                "governance_findings_persisted",
+                repo_id=repo_id,
+                count=len(_gov_findings),
+            )
+    except Exception as _gov_err:
+        logger.debug("governance_findings_skipped", error=str(_gov_err))
+
     # ---- Knowledge graph layers & tour steps -----------------------------------
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:

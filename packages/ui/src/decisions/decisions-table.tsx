@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Badge } from "../ui/badge";
+import { VerificationBadge } from "./verification-badge";
 import type {
   DecisionRecord,
   DecisionStatus,
@@ -105,6 +106,7 @@ export function DecisionsTable({
               <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Title</th>
               <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Status</th>
               <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Source</th>
+              <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Trust</th>
               <th scope="col" className="px-4 py-2.5 text-right font-medium text-[var(--color-text-secondary)]">Confidence</th>
               <th scope="col" className="px-4 py-2.5 text-left font-medium text-[var(--color-text-secondary)]">Tags</th>
               <th scope="col" className="px-4 py-2.5 text-right font-medium text-[var(--color-text-secondary)]">Staleness</th>
@@ -132,6 +134,13 @@ export function DecisionsTable({
                 </td>
                 <td className="px-4 py-2.5 text-[var(--color-text-secondary)]">
                   {SOURCE_LABEL[d.source] ?? d.source}
+                </td>
+                <td className="px-4 py-2.5">
+                  {d.verification ? (
+                    <VerificationBadge verification={d.verification} iconOnly />
+                  ) : (
+                    <span className="text-[var(--color-text-tertiary)]">—</span>
+                  )}
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums text-[var(--color-text-secondary)]">
                   {Math.round(d.confidence * 100)}%
@@ -169,7 +178,7 @@ export function DecisionsTable({
             ))}
             {!decisions?.length && Boolean(error) && !isLoading && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-[var(--color-outdated)]">
+                <td colSpan={7} className="px-4 py-8 text-center text-[var(--color-outdated)]">
                   Couldn&apos;t load decisions.{" "}
                   {onRetry && (
                     <button
@@ -184,7 +193,7 @@ export function DecisionsTable({
             )}
             {!decisions?.length && !error && !isLoading && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-[var(--color-text-tertiary)]">
+                <td colSpan={7} className="px-4 py-8 text-center text-[var(--color-text-tertiary)]">
                   No decisions found
                 </td>
               </tr>
