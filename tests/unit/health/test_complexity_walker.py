@@ -73,6 +73,35 @@ def test_javascript_nested_depth():
     assert deep.max_nesting >= 4
 
 
+def test_rust_flat_match_complexity():
+    """A flat match (all arms are simple expressions) should count as 1 CCN
+    point for the match itself; individual arms should NOT add CCN."""
+    results = _walk("rust/flat_match.rs", "rust")
+    flat = _find(results, "flat_match")
+    if flat is None:
+        pytest.skip("rust function not detected")
+    # flat_match: base CCN 1 + match 1 = 2
+    assert flat.ccn == 2, f"flat match CCN expected 2, got {flat.ccn}"
+
+    cplx = _find(results, "complex_match")
+    if cplx is None:
+        pytest.skip("rust complex_match not detected")
+    # complex_match: match has an arm with nested `if`, so arms count
+    # individually. CCN = 1 (base) + 3 arms + 1 (if in arm) = 5
+    assert cplx.ccn > flat.ccn, (
+        f"complex match CCN ({cplx.ccn}) should exceed flat match CCN ({flat.ccn})"
+    )
+
+    multi = _find(results, "multi_stmt_match")
+    if multi is None:
+        pytest.skip("rust multi_stmt_match not detected")
+    # multi_stmt_match: arm with multi-statement block → complex match
+    # CCN = 1 (base) + 3 arms = 4
+    assert multi.ccn > flat.ccn, (
+        f"multi-stmt match CCN ({multi.ccn}) should exceed flat match CCN ({flat.ccn})"
+    )
+
+
 def test_unsupported_language_returns_empty():
     results = walk_file_complexity("/tmp/x.unknown", "klingon", b"")
     assert results == []

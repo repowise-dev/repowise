@@ -155,3 +155,28 @@ class TestRustWorkspaceResolution:
         ctx.parsed_files = {p: None for p in ctx.path_set}
         result = resolve_rust_import("serde::Serialize", "src/main.rs", ctx)
         assert result is not None and result.startswith("external:")
+
+
+class TestSuperChainedResolution:
+    def test_single_super(self, tmp_path: Path) -> None:
+        (tmp_path / "a").mkdir(parents=True)
+        (tmp_path / "a/b").mkdir(parents=True)
+        (tmp_path / "a/foo.rs").write_text("pub fn hello(){}")
+        ctx = _ctx(tmp_path, ["a/foo.rs", "a/b/bar.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("super::foo", "a/b/bar.rs", ctx)
+        assert result == "a/foo.rs"
+
+    def test_double_super(self, tmp_path: Path) -> None:
+        (tmp_path / "a/b").mkdir(parents=True)
+        (tmp_path / "foo.rs").write_text("pub fn hello(){}")
+        ctx = _ctx(tmp_path, ["foo.rs", "a/b/deep.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("super::super::foo", "a/b/deep.rs", ctx)
+        assert result == "foo.rs"
+
+    def test_bare_super_returns_none(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, ["a/b/bar.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("super::super", "a/b/bar.rs", ctx)
+        assert result is None

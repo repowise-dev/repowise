@@ -25,10 +25,16 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
         importer_dir = str(Path(importer_path).parent.as_posix())
         return _probe_rust_path(importer_dir, parts[1:], ctx.path_set)
 
-    # --- super:: — resolve from the parent directory ---
+    # --- super:: — resolve from the parent directory (supports chained super::super::) ---
     if prefix == "super":
-        parent_dir = str(Path(importer_path).parent.parent.as_posix())
-        return _probe_rust_path(parent_dir, parts[1:], ctx.path_set)
+        parent = Path(importer_path).parent
+        idx = 0
+        while idx < len(parts) and parts[idx] == "super":
+            parent = parent.parent
+            idx += 1
+        if not parts[idx:]:
+            return None
+        return _probe_rust_path(str(parent.as_posix()), parts[idx:], ctx.path_set)
 
     # --- External crate (no prefix or unknown crate name) ---
     # Check if it might be a local module at the crate root first

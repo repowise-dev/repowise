@@ -99,6 +99,22 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; static_item WITH visibility
+(static_item
+  (visibility_modifier) @symbol.modifiers
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; static_item WITHOUT visibility
+(static_item
+  name: (identifier) @symbol.name
+) @symbol.def
+
+; Enum variants (inherit visibility from parent enum)
+(enum_variant
+  name: (identifier) @symbol.name
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports
 ; ---------------------------------------------------------------------------

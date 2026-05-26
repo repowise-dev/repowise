@@ -196,6 +196,65 @@ def _condition_subtrees(node: Node) -> list[Node]:
     return out
 
 
+def _collect_case_children(node: Node, lmap: LanguageNodeMap) -> list[Node]:
+    """Collect all case/arm nodes from a switch/match node.
+
+    In Rust, ``match_expression`` contains a ``match_block`` which in
+    turn holds the ``match_arm`` nodes. Other languages may place cases
+    directly under the switch node.  This helper handles both layouts.
+    """
+    cases: list[Node] = []
+    for child in node.children:
+        if child.type in lmap.case_kinds:
+            cases.append(child)
+        else:
+            # Descend one level into intermediate wrapper nodes (e.g.
+            # ``match_block``) that are not themselves control flow.
+            for grandchild in child.children:
+                if grandchild.type in lmap.case_kinds:
+                    cases.append(grandchild)
+    return cases
+
+
+def _is_flat_match(node: Node, lmap: LanguageNodeMap) -> bool:
+    """Return True if *node* is a match/switch with only simple arms.
+
+    A "flat" match has arms whose bodies are single expressions without
+    nested control flow (no ``if``, ``match``, ``for``, ``while``,
+    ``loop``, ``if_let``, ``while_let`` expressions, and no ``block``
+    with multiple statements).  Flat matches contribute 1 CCN point for
+    the match keyword itself but do NOT count each arm individually.
+    """
+    complex_types = lmap.branch_kinds | lmap.loop_kinds | lmap.switch_kinds
+    cases = _collect_case_children(node, lmap)
+    if not cases:
+        return False
+    for arm in cases:
+        if _subtree_contains_complex(arm, complex_types):
+            return False
+    return True
+
+
+def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> bool:
+    """Return True if *arm_node*'s subtree contains complex control flow.
+
+    A ``block`` with more than one statement is also considered complex.
+    """
+    stack: list[Node] = list(arm_node.children)
+    while stack:
+        cur = stack.pop()
+        if cur.type in complex_types:
+            return True
+        # A block with multiple named children (statements) is complex.
+        if cur.type == "block":
+            named_children = [c for c in cur.children if c.is_named]
+            if len(named_children) > 1:
+                return True
+        for child in cur.children:
+            stack.append(child)
+    return False
+
+
 def _walk_function_body(
     body_node: Node,
     lmap: LanguageNodeMap,
@@ -223,6 +282,10 @@ def _walk_function_body(
     bumps = 0
     conditions: list[ConditionComplexity] = []
 
+    # Track match_expression nodes identified as "flat" so their arms
+    # are not individually counted as branch points.
+    flat_match_ids: set[int] = set()
+
     def _recurse(node: Node, depth: int) -> None:
         nonlocal ccn, max_nesting, cognitive
 
@@ -235,7 +298,21 @@ def _walk_function_body(
         nesting_increment = 0
         ccn_increment = 0
 
-        if (
+        # Check if this is a case/arm inside a flat match — skip it.
+        # In Rust the parent chain is match_arm → match_block → match_expression,
+        # so we check both parent and grandparent.
+        _parent = node.parent
+        is_flat_match_arm = False
+        if node.type in lmap.case_kinds and _parent is not None:
+            if _parent.id in flat_match_ids:
+                is_flat_match_arm = True
+            elif _parent.parent is not None and _parent.parent.id in flat_match_ids:
+                is_flat_match_arm = True
+
+        if is_flat_match_arm:
+            # Flat match arms: no CCN increment, no nesting increment.
+            pass
+        elif (
             node.type in lmap.branch_kinds
             or node.type in lmap.loop_kinds
             or node.type in lmap.case_kinds
@@ -262,6 +339,12 @@ def _walk_function_body(
             # TRY opens a nesting level but does not branch on its own.
             nesting_increment = 1
         elif node.type in lmap.switch_kinds:
+            # Detect flat match: all arms are simple single-expression arms.
+            if _is_flat_match(node, lmap):
+                flat_match_ids.add(node.id)
+                # Flat match: count 1 CCN point for the match itself,
+                # open a nesting level, but arms won't be counted.
+                ccn_increment = 1
             # Switch opens nesting; each case contributes its own +1.
             nesting_increment = 1
         elif _is_boolean_operator(node, lmap):
