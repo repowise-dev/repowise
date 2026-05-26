@@ -155,6 +155,40 @@ def _save_global_embedder(embedder: str, api_key: str) -> None:
         pass  # Non-fatal — user just gets prompted again next time.
 
 
+def _load_local_provider_config() -> None:
+    """Load ``.repowise/.env`` and seed the chat provider from ``config.yaml``.
+
+    The API server runs in-process here, so env vars set now are inherited by
+    the provider-resolution code. ``load_dotenv`` never overwrites an existing
+    var, and we only set ``REPOWISE_PROVIDER``/``REPOWISE_MODEL`` when unset, so
+    explicit environment configuration always wins.
+    """
+    from repowise.cli.helpers import load_config
+    from repowise.cli.ui import load_dotenv
+
+    cwd = Path.cwd()
+    if not (cwd / ".repowise").exists():
+        return
+
+    # 1) API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, …) from .repowise/.env
+    load_dotenv(cwd)
+
+    # 2) Provider/model from .repowise/config.yaml → env vars the server reads
+    cfg = load_config(cwd)
+    provider = cfg.get("provider")
+    if provider and not os.environ.get("REPOWISE_PROVIDER"):
+        os.environ["REPOWISE_PROVIDER"] = str(provider)
+        model = cfg.get("model")
+        if model and not os.environ.get("REPOWISE_MODEL"):
+            os.environ["REPOWISE_MODEL"] = str(model)
+        console.print(f"[dim]Using provider from config: {provider}[/dim]")
+
+    # 3) Embedder from config so chat/search work without an interactive prompt.
+    embedder = cfg.get("embedder")
+    if embedder and embedder != "mock" and not os.environ.get("REPOWISE_EMBEDDER"):
+        os.environ["REPOWISE_EMBEDDER"] = str(embedder)
+
+
 _GITHUB_REPO = "repowise-dev/repowise"
 _WEB_CACHE_DIR = Path.home() / ".repowise" / "web"
 _MARKER_FILE = _WEB_CACHE_DIR / ".version"
@@ -394,6 +428,14 @@ def serve_command(
     except ImportError:
         console.print("[red]uvicorn is not installed. Install it with: pip install repowise[/red]")
         raise SystemExit(1) from None
+
+    # Load the local .repowise/.env (API keys written by `repowise init`) and
+    # seed the chat/search provider + embedder from .repowise/config.yaml. This
+    # runs before _setup_embedder so a configured embedder/key is detected
+    # instead of re-prompting, and so the in-process API server starts with a
+    # working provider (otherwise chat fails even though `init` saved a key).
+    # Existing env vars always take precedence.
+    _load_local_provider_config()
 
     _setup_embedder()
 

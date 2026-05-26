@@ -163,7 +163,18 @@ def list_provider_status() -> dict[str, Any]:
     active_id = config.get("active_provider")
     active_model = config.get("active_model")
 
-    # Auto-detect active if not set
+    # Honour the repo's configured provider/model (``.repowise/config.yaml``,
+    # surfaced as env vars by ``repowise serve``) when nothing has been
+    # explicitly selected through the UI/config file yet.
+    if not active_id:
+        env_provider = os.environ.get("REPOWISE_PROVIDER")
+        if env_provider and env_provider in _CATALOG_BY_ID:
+            active_id = env_provider
+            active_model = os.environ.get("REPOWISE_MODEL") or _CATALOG_BY_ID[
+                env_provider
+            ]["default_model"]
+
+    # Auto-detect active if still unset
     if not active_id:
         for p in PROVIDER_CATALOG:
             if _get_key_for_provider(p["id"]) or not p["requires_key"]:
