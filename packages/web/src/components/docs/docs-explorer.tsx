@@ -29,10 +29,18 @@ export function DocsExplorer({ repoId }: DocsExplorerProps) {
   // link or breadcrumb navigates via <Link href="?page=...">.
   const pageParam = searchParams.get("page");
   useEffect(() => {
-    if (pages.length === 0 || !pageParam) return;
-    if (selectedPage?.id === pageParam) return;
-    const match = pages.find((p) => p.id === pageParam);
-    if (match) setSelectedPage(match);
+    if (pages.length === 0) return;
+    if (pageParam) {
+      if (selectedPage?.id === pageParam) return;
+      const match = pages.find((p) => p.id === pageParam);
+      if (match) setSelectedPage(match);
+      return;
+    }
+    // No ?page= in the URL — open the repo overview by default (falling back
+    // to the first page) so the viewer never lands on an empty state.
+    if (selectedPage) return;
+    const overview = pages.find((p) => p.page_type === "repo_overview");
+    setSelectedPage(overview ?? pages[0]);
   }, [pages, pageParam, selectedPage]);
 
   const handleSelectPage = useCallback((page: PageResponse) => {

@@ -9,9 +9,10 @@ import { HotspotsTab } from "@/components/risk/hotspots-tab";
 import { DeadCodeTab } from "@/components/risk/dead-code-tab";
 import { ImpactTab } from "@/components/risk/impact-tab";
 import { ModulesTab } from "@/components/risk/modules-tab";
+import { SecurityTab } from "@/components/risk/security-tab";
 import { RiskSummaryStrip } from "@/components/risk/risk-summary-strip";
 
-const TABS = ["heatmap", "hotspots", "modules", "dead-code", "impact"] as const;
+const TABS = ["heatmap", "hotspots", "modules", "dead-code", "impact", "security"] as const;
 type TabId = (typeof TABS)[number];
 
 export default function RiskPage() {
@@ -56,6 +57,7 @@ export default function RiskPage() {
           <TabsTrigger value="modules">Modules</TabsTrigger>
           <TabsTrigger value="dead-code">Dead code</TabsTrigger>
           <TabsTrigger value="impact">Impact analyzer</TabsTrigger>
+          <TabsTrigger value="security">Security</TabsTrigger>
         </TabsList>
 
         <TabsContent value="heatmap" className="space-y-6">
@@ -72,6 +74,9 @@ export default function RiskPage() {
         </TabsContent>
         <TabsContent value="impact" className="space-y-6">
           <ImpactTab repoId={repoId} />
+        </TabsContent>
+        <TabsContent value="security" className="space-y-6">
+          <SecurityTab repoId={repoId} />
         </TabsContent>
       </Tabs>
     </div>

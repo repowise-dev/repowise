@@ -8,7 +8,7 @@ import { Button } from "@repowise-dev/ui/ui/button";
 import { FirstFiveFiles, type FirstFiveFile } from "@repowise-dev/ui/onboarding/first-five-files";
 import { DocsCommandPalette } from "@repowise-dev/ui/docs/command-palette";
 import { DocsExplorer } from "@/components/docs/docs-explorer";
-import { listAllPages, listPages } from "@/lib/api/pages";
+import { listAllPages } from "@/lib/api/pages";
 import { search as searchPages } from "@/lib/api/search";
 import { getGraph } from "@/lib/api/graph";
 import type { DocPage } from "@repowise-dev/types/docs";
@@ -41,9 +41,11 @@ export default function DocsPage({
     { revalidateOnFocus: false, revalidateOnReconnect: false },
   );
 
+  // Share the exact SWR key the explorer's `usePages` uses so the (large) full
+  // page list — content included — is fetched once and deduped, not twice.
   const { data: docPages } = useSWR<DocPage[]>(
-    `docs-list:${repoId}`,
-    () => listPages(repoId, { limit: 1000 }),
+    `pages:${repoId}:all`,
+    () => listAllPages(repoId) as Promise<DocPage[]>,
     { revalidateOnFocus: false },
   );
 
@@ -150,29 +152,18 @@ export default function DocsPage({
 
       {startHere.length > 0 && (
         <div className="px-4 sm:px-6 pt-3">
-          <div className="rounded-lg border border-[var(--color-border-accent)] bg-[var(--color-accent-muted)]/30">
-            <div className="flex items-center gap-2 px-4 pt-3 pb-1">
-              <span className="text-[var(--color-accent-primary)]">✨</span>
-              <span className="text-sm font-medium text-[var(--color-text-primary)]">
-                Start here
-              </span>
-              <span className="text-[10px] font-normal text-[var(--color-text-tertiary)] uppercase tracking-wider">
-                the first {startHere.length} files to read
-              </span>
-            </div>
-            <div className="px-3 pb-3 pt-1">
-              <FirstFiveFiles
-                files={startHere}
-                title="Start here"
-                hrefFor={(f) => {
-                  const pageId = (f as FirstFiveFile & { page_id?: string }).page_id;
-                  return pageId
-                    ? `/repos/${repoId}/docs?page=${encodeURIComponent(pageId)}`
-                    : undefined;
-                }}
-              />
-            </div>
-          </div>
+          <FirstFiveFiles
+            files={startHere}
+            title="Start here"
+            collapsible
+            defaultCollapsed
+            hrefFor={(f) => {
+              const pageId = (f as FirstFiveFile & { page_id?: string }).page_id;
+              return pageId
+                ? `/repos/${repoId}/docs?page=${encodeURIComponent(pageId)}`
+                : undefined;
+            }}
+          />
         </div>
       )}
 

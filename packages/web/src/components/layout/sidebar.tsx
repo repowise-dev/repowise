@@ -25,9 +25,6 @@ import {
   Users,
   Boxes,
   HeartPulse,
-  TestTubeDiagonal,
-  Wrench,
-  TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
@@ -59,19 +56,15 @@ function repoNavItems(repoId: string): NavItem[] {
   return [
     { label: "Overview", href: `/repos/${repoId}/overview`, icon: Activity },
     { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare, exact: true },
+    { label: "Wiki", href: `/repos/${repoId}/docs`, icon: BookOpen },
     { label: "Risk", href: `/repos/${repoId}/risk`, icon: ShieldAlert },
     { label: "Health", href: `/repos/${repoId}/health`, icon: HeartPulse, exact: true },
-    { label: "Trend", href: `/repos/${repoId}/health/trend`, icon: TrendingUp },
-    { label: "Coverage", href: `/repos/${repoId}/health/coverage`, icon: TestTubeDiagonal },
-    { label: "Refactoring", href: `/repos/${repoId}/health/refactoring-targets`, icon: Wrench },
     { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
     { label: "Knowledge Graph", href: `/repos/${repoId}/c4`, icon: Boxes },
     { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
     { label: "Contributors", href: `/repos/${repoId}/owners`, icon: Users },
     { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },
-    { label: "Docs", href: `/repos/${repoId}/docs`, icon: BookOpen },
     { label: "Costs", href: `/repos/${repoId}/costs`, icon: DollarSign },
-    { label: "Security", href: `/repos/${repoId}/security`, icon: ShieldAlert },
     { label: "Settings", href: `/repos/${repoId}/settings`, icon: Settings },
   ];
 }

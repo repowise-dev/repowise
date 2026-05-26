@@ -9,7 +9,6 @@ import { GraphDocPanel } from "@/components/graph/graph-doc-panel";
 import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-banner";
 import { getGraph } from "@/lib/api/graph";
 import type { GraphExportResponse } from "@/lib/api/types";
-import { HealthRisksPanel } from "@/components/health/health-risks-panel";
 
 const VALID_VIEW_MODES = new Set(["module", "full", "architecture", "dead", "hotfiles", "unified"]);
 
@@ -111,15 +110,6 @@ export default function GraphPage({
               nodeId={docNodeId}
               onClose={() => setDocNodeId(null)}
             />
-          )}
-          {!docNodeId && (
-            <div className="absolute bottom-3 right-3 w-72 pointer-events-auto">
-              <HealthRisksPanel
-                repoId={repoId}
-                title="Health risks"
-                limit={5}
-              />
-            </div>
           )}
         </div>
       </div>
