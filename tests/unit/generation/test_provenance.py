@@ -29,6 +29,7 @@ def _page() -> GeneratedPage:
 
 def _ctx(**over):
     base = dict(
+        file_path="pkg/foo.py",
         kg_layer_name="",
         kg_layer_role="",
         dependencies=[],
@@ -45,10 +46,14 @@ def test_layer_metadata_attached():
     assert page.metadata["layer_role"] == "entry_point"
 
 
-def test_no_layer_means_no_layer_keys():
+def test_no_kg_layer_falls_back_to_inferred_layer():
+    # Every file page must carry a layer_name so the Architecture tree can
+    # group it; with no KG layer it is inferred from the path.
     page = _page()
-    _attach_file_provenance(page, _ctx())
-    assert "layer_name" not in page.metadata
+    _attach_file_provenance(page, _ctx(file_path="src/api/users.py"))
+    assert page.metadata["layer_name"] == "API"
+    # No KG role is invented for the fallback path.
+    assert "layer_role" not in page.metadata
 
 
 def test_sources_from_dependencies_and_decisions():

@@ -17,6 +17,7 @@ import structlog
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
+from ..tour import DEFAULT_MAX_LANDMARKS, tour_landmark_paths
 from .budget import BucketAllocation, allocate_budget, compute_budget
 from .scoring import (
     score_api_contract,
@@ -305,6 +306,29 @@ def _coverage_pct(cfg: Any) -> float:
     return float(getattr(cfg, "coverage_pct", None) or getattr(cfg, "max_pages_pct", 0.20))
 
 
+def _ensure_landmarks(selected: list[str], landmarks: list[str]) -> list[str]:
+    """Guarantee every *landmark* is in *selected*, keeping the count honest.
+
+    For each landmark not already chosen, drop the lowest-scored *non-landmark*
+    file from the tail (``selected`` is score-ordered descending) and append the
+    landmark — so the total file_page count is unchanged. The only case the
+    count can grow is when there is nothing left to displace (e.g. a near-zero
+    budget where every selected file is itself a landmark); that overage is
+    bounded by ``len(landmarks)`` (at most ``DEFAULT_MAX_LANDMARKS``).
+    """
+    sel = list(selected)
+    landmark_set = set(landmarks)
+    for m in landmarks:
+        if m in sel:
+            continue
+        for i in range(len(sel) - 1, -1, -1):
+            if sel[i] not in landmark_set:
+                sel.pop(i)
+                break
+        sel.append(m)
+    return sel
+
+
 def select_pages(inputs: SelectionInputs) -> Selection:
     """Return the allow-set of pages to generate for one run.
 
@@ -339,8 +363,25 @@ def select_pages(inputs: SelectionInputs) -> Selection:
         n_files=len(inputs.parsed_files),
     )
 
+    # The guided tour wants its highest-value entry points to land on real
+    # pages. Force those landmarks into the file_page allow-set, displacing the
+    # lowest-scored picks so the budget total stays honest (see _ensure_landmarks).
+    selected_files = [p for _, p in files[: allocation.file_page]]
+    if selected_files or allocation.file_page > 0:
+        file_candidate_set = {p for _, p in files}
+        landmarks = [
+            p
+            for p in tour_landmark_paths(
+                inputs.parsed_files,
+                inputs.pagerank,
+                max_landmarks=DEFAULT_MAX_LANDMARKS,
+            )
+            if p in file_candidate_set
+        ]
+        selected_files = _ensure_landmarks(selected_files, landmarks)
+
     sel = Selection(
-        file_page_paths=[p for _, p in files[: allocation.file_page]],
+        file_page_paths=selected_files,
         symbol_spotlights=[t for _, t in symbols[: allocation.symbol_spotlight]],
         module_groups=[m for _, m in modules[: allocation.module_page]],
         api_contract_paths=[p for _, p in apis[: allocation.api_contract]],

@@ -376,6 +376,8 @@ def build_level8_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
         completed_page_summaries=dict(run.completed_page_summaries),
         kg_layers=kg_layers,
         kg_tour_steps=kg_tour_steps,
+        tour_stops=tuple(run.tour_stops),
+        layer_order=tuple(run.layer_order),
     )
     for spec in specs:
         page_id = compute_page_id("onboarding", _onboarding.target_path(spec.slot))

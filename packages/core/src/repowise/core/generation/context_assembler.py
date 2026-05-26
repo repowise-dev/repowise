@@ -22,6 +22,7 @@ import structlog
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
+from .categories import file_category
 from .models import GenerationConfig
 
 log = structlog.get_logger(__name__)
@@ -56,6 +57,9 @@ class FilePageContext:
     is_test: bool
     parse_errors: list[str]
     estimated_tokens: int
+    # Documentation category (code/config/doc/data/pipeline) — the file_page
+    # template adapts its summary guidance to this.
+    file_category: str = "code"
     rag_context: list[str] = field(default_factory=list)
     git_metadata: dict | None = None
     co_change_pages: list[dict] = field(default_factory=list)
@@ -373,6 +377,11 @@ class ContextAssembler:
             is_api_contract=parsed.file_info.is_api_contract,
             is_entry_point=parsed.file_info.is_entry_point,
             is_test=parsed.file_info.is_test,
+            file_category=file_category(
+                path,
+                parsed.file_info.language,
+                is_config=getattr(parsed.file_info, "is_config", False),
+            ),
             parse_errors=parsed.parse_errors,
             estimated_tokens=used,
             git_metadata=git_meta,

@@ -57,6 +57,13 @@ def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
         page.metadata["layer_name"] = ctx.kg_layer_name
         if ctx.kg_layer_role:
             page.metadata["layer_role"] = ctx.kg_layer_role
+    else:
+        # Guarantee every file page carries a layer so the Architecture tree
+        # can group it. When the knowledge graph has no layer, fall back to
+        # path-based inference.
+        from ..layers import infer_layer
+
+        page.metadata["layer_name"] = infer_layer(ctx.file_path)
 
     sources: list[dict[str, str]] = []
     seen: set[str] = set()

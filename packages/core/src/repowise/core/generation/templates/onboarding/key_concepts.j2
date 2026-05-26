@@ -12,6 +12,15 @@ explain how they fit together.
 {% endif %}
 {% endfor %}
 
+{% if ctx.layer_order %}
+## Architectural layers (top → bottom by dependency direction)
+Group the concepts by which layer they belong to when it clarifies the mental
+model; higher layers depend on lower ones.
+{% for layer in ctx.layer_order %}
+{{ loop.index }}. {{ layer }}
+{% endfor %}
+{% endif %}
+
 {% if ctx.community_labels %}
 ## Architectural clusters present
 The codebase organises into these clusters (detected via dependency

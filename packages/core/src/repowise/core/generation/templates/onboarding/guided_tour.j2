@@ -1,0 +1,60 @@
+You are writing the "Guided Tour" page for `{{ ctx.repo_name }}` — a single,
+ordered walk that takes a new contributor from the entry points inward, one
+stop at a time, and closes on how the system is built and deployed.
+
+The stops below are ALREADY ORDERED by graph topology (entry points first,
+then the files they import, depth by depth, with infrastructure last). Each
+stop names a real wiki page and its one-line summary. Your job is the
+*connective tissue*: for each stop write 2–4 sentences that say what the
+reader is looking at, why it matters at this point in the walk, and — crucially
+— how it relates to the stops BEFORE it. The tour must read like a tour, not a
+glossary: explicitly back-reference earlier steps ("the parser introduced in
+Step 2 hands its output to…").
+
+{% if ctx.layer_order %}
+## Layer spine (top → bottom by dependency direction)
+The system stacks as: {{ ctx.layer_order | join(" → ") }}. Use this to orient
+the reader as the walk descends from entry points toward foundations.
+{% endif %}
+
+## The ordered stops (narrate these IN THIS ORDER — do not reorder)
+{% for s in ctx.stops %}
+### Step {{ s.order }}: {{ s.title }}  ({{ s.kind }})
+- Page: `{{ s.target_path }}` ({{ s.page_type }})
+- Why this stop: {{ s.reason }}
+{% if s.summary %}- What it does: {{ s.summary }}{% endif %}
+
+{% endfor %}
+
+## What to write
+Produce a markdown page with this structure:
+
+1. **## How to take this tour** — one short paragraph: this is an ordered walk
+   from the entry points inward; each step builds on the last.
+2. **## The tour** — one `### Step N: <title>` subsection per stop above, in
+   order. For each step:
+   - Open with one sentence stating the file/page's role (lead with the role:
+     "orchestrator", "entry point", "parser", "adapter", "deploy manifest", …).
+   - Then 1–3 sentences of connective narration that reference at least one
+     earlier step by number where it makes sense.
+   - End the sentence that names the page with the path in backticks (e.g.
+     `{{ ctx.stops[0].target_path }}`) so the reader can click through.
+3. **## Where to go next** — 2–3 bullets pointing past the tour (the layer
+   pages, the module pages, or the search), each with a half-sentence reason.
+
+Style — make every step concrete, like these:
+- Bad:  "This is the Dockerfile."
+  Good: "The Dockerfile defines how the application is packaged into a container
+        image — a multi-stage build that compiles the sources from Step 3 and
+        copies only the output into a slim runtime image."
+- Bad:  "These are the database models."
+  Good: "The data models define the core entities; the `User` model here is the
+        one the request handler in Step 2 loads on every authenticated call."
+
+Hard rules:
+- Narrate the stops in the given order; never invent stops, paths, or files
+  that are not listed above.
+- If a stop's summary is missing, describe its role from its title and kind
+  rather than inventing internals.
+- Output markdown only. No preamble, no apologies, no closing summary section
+  beyond "Where to go next".

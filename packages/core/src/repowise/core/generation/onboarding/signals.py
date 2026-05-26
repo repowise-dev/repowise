@@ -42,3 +42,8 @@ class OnboardingSignals:
     # KG-derived signals for onboarding pages.
     kg_layers: tuple[dict, ...] = ()
     kg_tour_steps: tuple[dict, ...] = ()
+    # Topology-driven guided-tour stops (ordered), each referencing an
+    # already-generated page. Empty when no tour could be built.
+    tour_stops: tuple[dict, ...] = ()
+    # Layers ordered top→bottom by dependency direction (the grouping spine).
+    layer_order: tuple[str, ...] = ()

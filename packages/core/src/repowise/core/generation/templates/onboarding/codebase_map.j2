@@ -16,6 +16,15 @@ spatial. The right tone is: "if you're looking for X, go to Y."
 {% endfor %}
 {% endif %}
 
+{% if ctx.layer_order %}
+## Architectural layers (top → bottom by dependency direction)
+The codebase stacks into these layers; higher layers depend on lower ones.
+Use this ordering to frame the tour through the directories below.
+{% for layer in ctx.layer_order %}
+{{ loop.index }}. {{ layer }}
+{% endfor %}
+{% endif %}
+
 {% if ctx.kg_layers %}
 ## Architectural Layers (from Knowledge Graph)
 {% for layer in ctx.kg_layers %}

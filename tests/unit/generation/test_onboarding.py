@@ -104,6 +104,9 @@ def _signals(
     decisions: tuple[dict, ...] = (),
     community: dict[str, int] | None = None,
     entry_points: list[str] | None = None,
+    tour_stops: tuple[dict, ...] = (),
+    layer_order: tuple[str, ...] = (),
+    completed_page_summaries: dict[str, str] | None = None,
 ) -> OnboardingSignals:
     paths = [f.file_info.path for f in files]
     pr = pagerank or {p: 0.1 for p in paths}
@@ -135,7 +138,9 @@ def _signals(
         dead_code_by_file={},
         decisions_all=decisions,
         external_systems=external_systems,
-        completed_page_summaries={},
+        completed_page_summaries=completed_page_summaries or {},
+        tour_stops=tour_stops,
+        layer_order=layer_order,
     )
 
 
@@ -144,14 +149,16 @@ def _signals(
 # ---------------------------------------------------------------------------
 
 
-def test_six_subkinds_registered_in_canonical_order() -> None:
+def test_subkinds_registered_in_canonical_order() -> None:
     specs = onboarding.iter_specs()
     slots = [s.slot for s in specs]
     # Promoted slots are excluded from iter_specs even though they're in
     # ONBOARDING_ORDER.
     expected = [s for s in ONBOARDING_ORDER if s not in PROMOTED_SLOTS.values()]
     assert slots == expected
-    assert len(slots) == 6
+    # Six templated subkinds + the topology-driven guided tour.
+    assert len(slots) == 7
+    assert "guided_tour" in slots
 
 
 def test_onboarding_level_is_eight() -> None:
@@ -433,6 +440,50 @@ def test_tag_promoted_pages_sets_onboarding_slot() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Guided tour — gated on having a real (multi-stop) tour
+# ---------------------------------------------------------------------------
+
+
+def _tour_stops(n: int) -> tuple[dict, ...]:
+    return tuple(
+        {
+            "order": i + 1,
+            "target_path": f"src/file_{i}.py",
+            "page_type": "file_page",
+            "title": f"file_{i}.py",
+            "depth": i,
+            "kind": "code",
+            "reason": "reason",
+        }
+        for i in range(n)
+    )
+
+
+def test_guided_tour_skipped_without_enough_stops() -> None:
+    spec = onboarding.get_spec("guided_tour")
+    assert spec is not None
+    sig = _signals(files=[_file("src/main.py", is_entry_point=True)], tour_stops=_tour_stops(1))
+    assert spec.build_context(sig) is None
+
+
+def test_guided_tour_builds_with_stops_and_summaries() -> None:
+    spec = onboarding.get_spec("guided_tour")
+    assert spec is not None
+    sig = _signals(
+        files=[_file("src/main.py", is_entry_point=True)],
+        tour_stops=_tour_stops(3),
+        layer_order=("API", "Service", "Data"),
+        completed_page_summaries={"src/file_0.py": "Entry orchestrator."},
+    )
+    ctx = spec.build_context(sig)
+    assert ctx is not None
+    assert len(ctx.stops) == 3
+    assert ctx.layer_order == ["API", "Service", "Data"]
+    # Summary is attached to the matching stop.
+    assert ctx.stops[0].summary == "Entry orchestrator."
+
+
+# ---------------------------------------------------------------------------
 # Templates render
 # ---------------------------------------------------------------------------
 
@@ -517,6 +568,17 @@ def _jinja_env() -> jinja2.Environment:
                 _signals(
                     files=[_file("src/main.py", is_entry_point=True)],
                     external_systems=({"name": "fastapi", "ecosystem": "pypi"},),
+                )
+            ),
+        ),
+        (
+            "guided_tour",
+            lambda: onboarding.get_spec("guided_tour").build_context(
+                _signals(
+                    files=[_file("src/main.py", is_entry_point=True)],
+                    tour_stops=_tour_stops(3),
+                    layer_order=("API", "Service"),
+                    completed_page_summaries={"src/file_0.py": "Entry orchestrator."},
                 )
             ),
         ),

@@ -56,6 +56,7 @@ export function getPageTypeLabel(pageType: string): string {
 export const ONBOARDING_ORDER = [
   "project_overview",
   "architecture_guide",
+  "guided_tour",
   "getting_started",
   "codebase_map",
   "key_concepts",
@@ -69,6 +70,7 @@ export type OnboardingSlot = (typeof ONBOARDING_ORDER)[number];
 export const ONBOARDING_SLOT_TITLES: Record<OnboardingSlot, string> = {
   project_overview: "Project Overview",
   architecture_guide: "Architecture Guide",
+  guided_tour: "Guided Tour",
   getting_started: "Getting Started",
   codebase_map: "Codebase Map",
   key_concepts: "Key Concepts",

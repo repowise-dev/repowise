@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import {
   FileText,
@@ -31,6 +32,13 @@ import { computeDocNav } from "@repowise-dev/ui/docs/doc-nav";
 import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
 import { BacklinksPanel } from "@repowise-dev/ui/wiki/backlinks-panel";
 import { getPageTypeLabel } from "@repowise-dev/ui/lib/page-types";
+import {
+  DEFAULT_PERSONA,
+  READER_PERSONAS,
+  type ReaderPersona,
+  filterMarkdownByPersona,
+  isReaderPersona,
+} from "@repowise-dev/ui/docs/reader-persona";
 import { VersionHistoryWrapper } from "@/components/wiki/version-history";
 import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
 import { Badge } from "@repowise-dev/ui/ui/badge";
@@ -258,6 +266,23 @@ export function DocsViewer({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
+  // Reader persona — a client-side section filter, persisted in the URL
+  // (?reader=) so a chosen depth is shareable and survives navigation.
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const readerParam = searchParams.get("reader");
+  const persona: ReaderPersona = isReaderPersona(readerParam) ? readerParam : DEFAULT_PERSONA;
+  const setPersona = useCallback(
+    (next: ReaderPersona) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (next === DEFAULT_PERSONA) params.delete("reader");
+      else params.set("reader", next);
+      const qs = params.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
   // In-app navigation to another page by id (used by breadcrumbs, prev/next,
   // and resolved wiki links). Falls back to the full wiki route when the
   // target isn't in the loaded list or no handler was supplied.
@@ -314,6 +339,8 @@ export function DocsViewer({
       setSidebarOpen={setSidebarOpen}
       scrollRef={scrollRef}
       goToPageId={goToPageId}
+      persona={persona}
+      setPersona={setPersona}
     />
   );
 }
@@ -327,6 +354,8 @@ function DocsViewerBody({
   setSidebarOpen,
   scrollRef,
   goToPageId,
+  persona,
+  setPersona,
 }: {
   page: PageResponse;
   pages: PageResponse[];
@@ -336,10 +365,19 @@ function DocsViewerBody({
   setSidebarOpen: (fn: (o: boolean) => boolean) => void;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   goToPageId: (pageId: string) => void;
+  persona: ReaderPersona;
+  setPersona: (next: ReaderPersona) => void;
 }) {
   // Hierarchical breadcrumb + sibling prev/next, derived from the page list.
   const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
   const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
+
+  // Persona-filtered markdown — hides reference-heavy sections for the lighter
+  // reading levels. The TOC + download still operate on the full content.
+  const visibleContent = useMemo(
+    () => filterMarkdownByPersona(page.content, persona),
+    [page.content, persona],
+  );
 
   // Nearest ancestor that maps to a module page — the "zoom out" chip target.
   const moduleSeg = useMemo(
@@ -500,6 +538,29 @@ function DocsViewerBody({
             <ExternalLink className="h-3.5 w-3.5" />
           </Link>
 
+          {/* Reader persona — Overview / Contributor / Deep section filter */}
+          <div
+            className="hidden md:inline-flex items-center rounded-md border border-[var(--color-border-default)] p-0.5 shrink-0"
+            role="group"
+            aria-label="Reader level"
+          >
+            {READER_PERSONAS.map((p) => (
+              <button
+                key={p.value}
+                onClick={() => setPersona(p.value)}
+                title={p.hint}
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                  persona === p.value
+                    ? "bg-[var(--color-accent-primary)] text-white"
+                    : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]",
+                )}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
           {/* Sidebar toggle */}
           {(
             <button
@@ -598,7 +659,7 @@ function DocsViewerBody({
             {/* Markdown content */}
             <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
               <WikiMarkdown
-                content={page.content}
+                content={visibleContent}
                 wikiLinks={wikiLinks}
                 buildHref={(pid) => buildWikiHref(pid)}
                 LinkComponent={WikiInlineLink}

@@ -269,8 +269,41 @@ function parentDirOf(path: string): string {
   return i === -1 ? "" : path.slice(0, i);
 }
 
+// Layers ordered top→bottom by dependency direction, persisted on the repo
+// overview page at generation time. Used to order the Architecture section and
+// the Modules section so the tree reads as a dependency hierarchy rather than
+// alphabetically. Returns a rank lookup (lower = closer to the top).
+function layerRankLookup(pages: DocPage[]): (layer: string) => number {
+  const overview = pages.find((p) => p.page_type === "repo_overview");
+  const raw = overview?.metadata?.["layer_order"];
+  const order = Array.isArray(raw) ? (raw.filter((x) => typeof x === "string") as string[]) : [];
+  const index = new Map(order.map((name, i) => [name, i]));
+  return (layer: string) => index.get(layer) ?? Number.MAX_SAFE_INTEGER;
+}
+
+// The layer a module belongs to = the most common layer_name across its files.
+function dominantLayer(files: DocPage[]): string {
+  const counts = new Map<string, number>();
+  for (const f of files) {
+    const layer = f.metadata?.["layer_name"];
+    if (typeof layer === "string" && layer) {
+      counts.set(layer, (counts.get(layer) ?? 0) + 1);
+    }
+  }
+  let best = "";
+  let bestN = 0;
+  for (const [layer, n] of counts) {
+    if (n > bestN) {
+      best = layer;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
 function buildDomainTree(pages: DocPage[]): TreeNode[] {
   const sections: TreeNode[] = [];
+  const rankOf = layerRankLookup(pages);
 
   // ---- Guided Tour (reuse the canonical onboarding ordering) ----
   const onboarding = buildOnboardingFolder(pages);
@@ -305,7 +338,13 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
   const archTypes = new Set(["layer_page", "architecture_diagram", "scc_page"]);
   const archChildren: TreeNode[] = pages
     .filter((p) => archTypes.has(p.page_type) && !tourIds.has(p.id))
-    .sort((a, b) => a.title.localeCompare(b.title))
+    // Order layer pages top→bottom by dependency direction; other arch pages
+    // (knowledge graph, SCCs) fall after, alphabetically.
+    .sort((a, b) => {
+      const ra = a.page_type === "layer_page" ? rankOf(a.title.replace(/^Layer:\s*/, "")) : Number.MAX_SAFE_INTEGER;
+      const rb = b.page_type === "layer_page" ? rankOf(b.title.replace(/^Layer:\s*/, "")) : Number.MAX_SAFE_INTEGER;
+      return ra - rb || a.title.localeCompare(b.title);
+    })
     .map((p) => ({ name: p.title, path: p.id, isDir: false, page: p, children: [] }));
   if (archChildren.length > 0) {
     sections.push({
@@ -346,6 +385,13 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
         children: [],
       })),
     };
+  });
+  // Order modules top→bottom by the dependency layer of their files, so the
+  // module list mirrors the architecture spine instead of sorting by path.
+  moduleChildren.sort((a, b) => {
+    const la = dominantLayer(a.children.map((c) => c.page).filter(Boolean) as DocPage[]);
+    const lb = dominantLayer(b.children.map((c) => c.page).filter(Boolean) as DocPage[]);
+    return rankOf(la) - rankOf(lb) || a.name.localeCompare(b.name);
   });
   if (moduleChildren.length > 0) {
     sections.push({

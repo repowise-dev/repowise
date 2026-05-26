@@ -520,6 +520,40 @@ async def get_overview(repo: str | None = None) -> dict:
                 "new contributor would."
             )
 
+        # Topology-driven guided tour — the ordered, page-by-page walk derived
+        # from the import graph (entry points first, then inward, infra last).
+        # Persisted on the repo_overview page metadata at generation time.
+        if overview_page:
+            from repowise.core.generation.models import compute_page_id
+
+            try:
+                ov_meta = json.loads(overview_page.metadata_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                ov_meta = {}
+            tour = ov_meta.get("guided_tour") or []
+            if tour:
+                result["guided_tour"] = [
+                    {
+                        "order": s.get("order"),
+                        "title": s.get("title"),
+                        "kind": s.get("kind"),
+                        "reason": s.get("reason"),
+                        "target_path": s.get("target_path"),
+                        "page_id": compute_page_id(
+                            s.get("page_type", "file_page"), s.get("target_path", "")
+                        ),
+                    }
+                    for s in tour
+                ]
+                result["guided_tour_hint"] = (
+                    "Topology-ordered walk of the codebase: read these page_ids "
+                    "in order — entry points first, then the files they import, "
+                    "with infrastructure last. Each step builds on the previous."
+                )
+            layer_order = ov_meta.get("layer_order") or []
+            if layer_order:
+                result.setdefault("architecture", {})["layer_order"] = layer_order
+
         # Append workspace context footer when in workspace mode
         ws_footer = _build_workspace_footer()
         if ws_footer:

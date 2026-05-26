@@ -20,6 +20,7 @@ from __future__ import annotations
 
 SLOT_PROJECT_OVERVIEW = "project_overview"
 SLOT_ARCHITECTURE_GUIDE = "architecture_guide"
+SLOT_GUIDED_TOUR = "guided_tour"
 SLOT_GETTING_STARTED = "getting_started"
 SLOT_CODEBASE_MAP = "codebase_map"
 SLOT_KEY_CONCEPTS = "key_concepts"
@@ -32,6 +33,7 @@ SLOT_ACTIVE_LANDSCAPE = "active_landscape"
 ONBOARDING_ORDER: tuple[str, ...] = (
     SLOT_PROJECT_OVERVIEW,
     SLOT_ARCHITECTURE_GUIDE,
+    SLOT_GUIDED_TOUR,
     SLOT_GETTING_STARTED,
     SLOT_CODEBASE_MAP,
     SLOT_KEY_CONCEPTS,
@@ -53,6 +55,7 @@ PROMOTED_SLOTS: dict[str, str] = {
 SLOT_TITLES: dict[str, str] = {
     SLOT_PROJECT_OVERVIEW: "Project Overview",
     SLOT_ARCHITECTURE_GUIDE: "Architecture Guide",
+    SLOT_GUIDED_TOUR: "Guided Tour",
     SLOT_GETTING_STARTED: "Getting Started",
     SLOT_CODEBASE_MAP: "Codebase Map",
     SLOT_KEY_CONCEPTS: "Key Concepts",
@@ -65,6 +68,7 @@ SLOT_TITLES: dict[str, str] = {
 SLOT_PREREQUISITES: dict[str, tuple[str, ...]] = {
     SLOT_PROJECT_OVERVIEW: (),
     SLOT_ARCHITECTURE_GUIDE: (),
+    SLOT_GUIDED_TOUR: (SLOT_PROJECT_OVERVIEW,),
     SLOT_GETTING_STARTED: (),
     SLOT_CODEBASE_MAP: (SLOT_PROJECT_OVERVIEW,),
     SLOT_KEY_CONCEPTS: (SLOT_PROJECT_OVERVIEW, SLOT_ARCHITECTURE_GUIDE),

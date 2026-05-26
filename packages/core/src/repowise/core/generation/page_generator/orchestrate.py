@@ -110,6 +110,12 @@ class _GenerationRun:
         self.job_id: str | None = None
         self.file_page_contexts: dict[str, FilePageContext] = {}
 
+        # Guided-tour ordering + the layer spine, both derived after selection
+        # and reused by level-8 onboarding, the repo overview, and the agent
+        # surface. Empty until _compute_ia() runs.
+        self.tour_stops: list[dict] = []
+        self.layer_order: list[str] = []
+
         # Selection allow-sets (populated by _compute_selection).
         self.selection: Any = None
         self.code_files: list[Any] = []
@@ -257,6 +263,49 @@ class _GenerationRun:
         if self.job_system is not None and self.job_id is not None:
             self.job_system.start_job(self.job_id, estimated_total)
 
+    def _file_import_edges(self) -> list[tuple[str, str]]:
+        """``(src, dst)`` import edges between file nodes (src imports dst)."""
+        edges: list[tuple[str, str]] = []
+        try:
+            for src, dst in self.graph.edges():
+                if isinstance(src, str) and isinstance(dst, str):
+                    edges.append((src, dst))
+        except Exception:
+            pass
+        return edges
+
+    def _compute_ia(self) -> None:
+        """Derive the guided-tour ordering and the layer spine after selection.
+
+        Both reuse already-computed signals (selection allow-sets, PageRank,
+        the import graph) and reference only pages that will exist, so neither
+        spawns new LLM work.
+        """
+        from ..layers import compute_layer_order, infer_layer
+        from ..tour import build_tour
+
+        import_edges = self._file_import_edges()
+
+        # Tour: ordered stops over the selected file/infra pages + overview.
+        stops = build_tour(
+            self.parsed_files,
+            self.pagerank,
+            import_edges,
+            file_page_paths=self.sel_file_paths,
+            infra_paths=self.sel_infra_paths,
+            repo_name=self.repo_name,
+        )
+        self.tour_stops = [s.as_dict() for s in stops]
+
+        # Layer spine: every documented file gets a layer (KG when present,
+        # path-based inference otherwise), then layers are ordered top→bottom
+        # by inter-layer dependency direction.
+        file_layers: dict[str, str] = {}
+        for path in self.sel_file_paths:
+            kg_fc = self.kg_ctx.get_file_context(path) if self.kg_ctx.available else None
+            file_layers[path] = (kg_fc.layer_name if kg_fc and kg_fc.layer_name else "") or infer_layer(path)
+        self.layer_order = compute_layer_order(file_layers, import_edges)
+
     # ------------------------------------------------------------------
     # Level runner
     # ------------------------------------------------------------------
@@ -328,6 +377,7 @@ class _GenerationRun:
         await self._seed_resume()
         self._compute_selection()
         self._announce_total()
+        self._compute_ia()
 
         all_pages: list[GeneratedPage] = []
 
@@ -360,6 +410,17 @@ class _GenerationRun:
         # Tag promoted onboarding slots (repo_overview / architecture_diagram).
         self.gen._tag_promoted_pages(final_pages)
         all_pages.extend(final_pages)
+
+        # Attach the IA spine to the repo overview so the web reader and the
+        # MCP get_overview both expose the topology tour order + ordered layers.
+        if self.tour_stops or self.layer_order:
+            for page in final_pages:
+                if page.page_type == "repo_overview":
+                    if self.tour_stops:
+                        page.metadata["guided_tour"] = self.tour_stops
+                    if self.layer_order:
+                        page.metadata["layer_order"] = self.layer_order
+                    break
 
         # Post-generation: repair mermaid diagrams so illegal node IDs / unquoted
         # labels in LLM output don't break the whole diagram in the renderer.

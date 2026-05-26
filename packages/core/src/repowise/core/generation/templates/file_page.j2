@@ -1,5 +1,28 @@
 You are documenting the file `{{ ctx.file_path }}` (language: {{ ctx.language }}).
 
+{% if ctx.file_category == "config" %}
+This is a **configuration** file. Document what it configures and which
+components read it, what each meaningful key/section controls, and the
+operational effect of changing values — not its syntax. Lead with the system
+it configures.
+{% elif ctx.file_category == "data" %}
+This is a **data / schema** file (model, migration, or schema definition).
+Document the entities, tables, columns, and relationships it defines, what the
+data means, and — for a migration — what it changes and why. Lead with the
+data model, and name the foreign keys / relationships that connect it to the
+rest of the system.
+{% elif ctx.file_category == "pipeline" %}
+This is a **pipeline / CI-CD** file. Document the stages it runs, their order,
+the triggers and conditions, and the artifacts or deployments it produces.
+Lead with what the pipeline accomplishes end-to-end.
+{% elif ctx.file_category == "doc" %}
+This is a **documentation** file. Summarise what it explains and who should
+read it; do not restate it verbatim.
+{% else %}
+This is a **code** file. Lead with its architectural role and what it produces
+or consumes (see the lead-with-role rule).
+{% endif %}
+
 ## File Overview
 
 **Path:** `{{ ctx.file_path }}` | **Language:** {{ ctx.language }}{% if ctx.is_test %} | test file{% endif %}{% if ctx.is_api_contract %} | API contract{% endif %}

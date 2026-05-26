@@ -9,6 +9,7 @@ re-orders to ``ONBOARDING_ORDER`` for iteration.
 """
 
 # Side-effect imports — each module calls register() at import time.
+from . import guided_tour  # noqa: F401
 from . import codebase_map  # noqa: F401
 from . import getting_started  # noqa: F401
 from . import key_concepts  # noqa: F401

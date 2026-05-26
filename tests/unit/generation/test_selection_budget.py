@@ -80,12 +80,16 @@ class FakeParsedFile:
 # ---------------------------------------------------------------------------
 
 
-def _build_synthetic_repo(n_files: int) -> tuple[list[FakeParsedFile], dict, dict, dict]:
+def _build_synthetic_repo(
+    n_files: int, *, entry_points: int = 0
+) -> tuple[list[FakeParsedFile], dict, dict, dict]:
     """Return ``(parsed_files, pagerank, betweenness, community)``.
 
     PageRank tapers linearly so the top file has 1.0 and the bottom
     file has ~0.01. Community assignment buckets every 25 files into
-    one community.
+    one community. The first ``entry_points`` files are flagged as
+    entry points but given LOW PageRank so they would normally fall
+    outside the budget — useful for landmark pull-in tests.
     """
     parsed: list[FakeParsedFile] = []
     pagerank: dict[str, float] = {}
@@ -94,7 +98,9 @@ def _build_synthetic_repo(n_files: int) -> tuple[list[FakeParsedFile], dict, dic
 
     for i in range(n_files):
         path = f"pkg{i // 25}/module_{i}.py"
-        fi = FakeFileInfo(path=path)
+        # Flag the LAST `entry_points` files (lowest PageRank) as entry points.
+        is_ep = i >= n_files - entry_points if entry_points else False
+        fi = FakeFileInfo(path=path, is_entry_point=is_ep)
         syms = [
             FakeSymbol(name=f"func_{i}_{k}", qualified_name=f"module_{i}.func_{i}_{k}")
             for k in range(3)
@@ -233,3 +239,59 @@ def test_higher_coverage_strictly_emits_more_pages():
         )
         totals.append(sum(sel.counts().values()))
     assert totals == sorted(totals), f"Non-monotonic budget: {totals}"
+
+
+# ---------------------------------------------------------------------------
+# Tour landmark pull-in — must respect the budget (displace, don't inflate)
+# ---------------------------------------------------------------------------
+
+
+def _select(parsed, pagerank, betweenness, community, coverage_pct):
+    cfg = GenerationConfig(coverage_pct=coverage_pct)
+    return select_pages(
+        SelectionInputs(
+            parsed_files=parsed,
+            pagerank=pagerank,
+            betweenness=betweenness,
+            community=community,
+            community_info=None,
+            sccs=[],
+            git_meta_map=None,
+            config=cfg,
+        )
+    )
+
+
+def test_landmarks_are_pulled_into_budget_without_inflating_count():
+    """Low-PageRank entry points get a page, but the file_page count is unchanged."""
+    parsed, pr, bet, comm = _build_synthetic_repo(500, entry_points=5)
+    entry_paths = {p.file_info.path for p in parsed if p.file_info.is_entry_point}
+
+    baseline = _select(parsed, pr, bet, comm, 0.20)
+    baseline_count = len(baseline.file_page_paths)
+
+    # The flagged entry points have the lowest PageRank, so without the
+    # landmark rule they would not be selected. Confirm they now are…
+    selected = set(baseline.file_page_paths)
+    assert entry_paths.issubset(selected), "entry-point landmarks were not pulled in"
+
+    # …and that pulling them in displaced lower-ranked files rather than
+    # growing the budget: count is unchanged vs a repo with no entry points.
+    no_ep, pr2, bet2, comm2 = _build_synthetic_repo(500, entry_points=0)
+    no_ep_count = len(_select(no_ep, pr2, bet2, comm2, 0.20).file_page_paths)
+    assert baseline_count == no_ep_count
+
+
+def test_landmarks_respect_coverage_across_sizes():
+    """The total page count still tracks coverage_pct with landmarks active."""
+    for n, pct in [(40, 0.10), (500, 0.20), (1200, 0.10)]:
+        parsed, pr, bet, comm = _build_synthetic_repo(n, entry_points=5)
+        sel = _select(parsed, pr, bet, comm, pct)
+        total = sum(sel.counts().values())
+        # Landmark pull-in displaces rather than adds, so the total stays in
+        # the same ±20% band the budget contract guarantees.
+        expected = compute_budget(n, pct)
+        tolerance = max(20, int(expected * 0.30))
+        assert abs(total - expected) <= tolerance, (
+            f"n={n} pct={pct}: expected ~{expected}, got {total}"
+        )

@@ -46,6 +46,8 @@ class CodebaseMapContext:
     # Repo-wide entry points hoisted to a dedicated section.
     entry_points: list[str] = field(default_factory=list)
     kg_layers: list[dict] = field(default_factory=list)
+    # Layers ordered top→bottom by dependency direction (the grouping spine).
+    layer_order: list[str] = field(default_factory=list)
 
 
 def _top_level_dir(path: str) -> str:
@@ -129,6 +131,7 @@ def _build(signals: OnboardingSignals) -> CodebaseMapContext | None:
         directories=directories,
         entry_points=list(getattr(signals.repo_structure, "entry_points", []))[:10],
         kg_layers=list(signals.kg_layers) if signals.kg_layers else [],
+        layer_order=list(signals.layer_order),
     )
 
 

@@ -45,6 +45,7 @@ class KeyConceptsContext:
     concept_symbols: list[ConceptSymbol] = field(default_factory=list)
     community_labels: list[str] = field(default_factory=list)
     decision_titles: list[str] = field(default_factory=list)
+    layer_order: list[str] = field(default_factory=list)
 
 
 def _pagerank_threshold(pagerank: dict[str, float]) -> float:
@@ -164,6 +165,7 @@ def _build(signals: OnboardingSignals) -> KeyConceptsContext | None:
         concept_symbols=concept_symbols,
         community_labels=community_labels,
         decision_titles=decision_titles,
+        layer_order=list(signals.layer_order),
     )
 
 
