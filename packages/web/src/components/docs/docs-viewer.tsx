@@ -20,10 +20,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
-import { getWikiLinks } from "@repowise-dev/ui/wiki/wiki-links-types";
+import { getBacklinks, getWikiLinks } from "@repowise-dev/ui/wiki/wiki-links-types";
 import { TableOfContents } from "@repowise-dev/ui/wiki/table-of-contents";
 import { computeDocNav } from "@repowise-dev/ui/docs/doc-nav";
 import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
+import { BacklinksPanel } from "@repowise-dev/ui/wiki/backlinks-panel";
+import { getPageTypeLabel } from "@repowise-dev/ui/lib/page-types";
 import { VersionHistoryWrapper } from "@/components/wiki/version-history";
 import { ConfidenceBadge } from "@repowise-dev/ui/wiki/confidence-badge";
 import { Badge } from "@repowise-dev/ui/ui/badge";
@@ -266,11 +268,39 @@ function DocsViewerBody({
   const nav = useMemo(() => computeDocNav(page, pages), [page, pages]);
   const wikiLinks = useMemo(() => getWikiLinks(page.metadata), [page.metadata]);
 
+  // Nearest ancestor that maps to a module page — the "zoom out" chip target.
+  const moduleSeg = useMemo(
+    () =>
+      [...nav.breadcrumbs]
+        .slice(0, -1)
+        .reverse()
+        .find((s) => s.pageId && s.pageId !== page.id),
+    [nav.breadcrumbs, page.id],
+  );
+
   const buildWikiHref = useCallback(
     (pageId: string) =>
       `/repos/${repoId}/docs?page=${encodeURIComponent(pageId)}`,
     [repoId],
   );
+
+  // Forward "Related" links: distinct wiki-link targets resolved to titles
+  // from the loaded page list. Pure metadata — no extra request.
+  const relatedLinks = useMemo(() => {
+    const byId = new Map(pages.map((p) => [p.id, p]));
+    const seen = new Set<string>();
+    const out: { id: string; title: string }[] = [];
+    for (const link of wikiLinks) {
+      const target = link.target_page_id;
+      if (target === page.id || seen.has(target)) continue;
+      const hit = byId.get(target);
+      if (!hit) continue;
+      seen.add(target);
+      out.push({ id: hit.id, title: hit.title });
+      if (out.length >= 8) break;
+    }
+    return out;
+  }, [wikiLinks, pages, page.id]);
 
   // Renders a resolved wiki link as an <a> with a real href (middle-click /
   // open-in-new-tab still work) but intercepts plain clicks for in-app nav.
@@ -395,6 +425,30 @@ function DocsViewerBody({
               {page.title}
             </h1>
 
+            {/* Context chips: page type + "in module" (zoom-out) */}
+            <div className="flex flex-wrap items-center gap-1.5 mb-2">
+              <span className="rounded-full bg-[var(--color-bg-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                {getPageTypeLabel(page.page_type)}
+              </span>
+              {moduleSeg && (
+                <button
+                  onClick={() => goToPageId(moduleSeg.pageId!)}
+                  className="rounded-full border border-[var(--color-border-default)] px-2 py-0.5 text-[10px] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-accent)] hover:text-[var(--color-accent-primary)]"
+                >
+                  in {moduleSeg.label}
+                </button>
+              )}
+            </div>
+
+            {/* Low-confidence flag */}
+            {page.confidence > 0 && page.confidence < 0.5 && (
+              <div className="mb-4 flex items-start gap-1.5 rounded-md border border-amber-400/30 bg-amber-50/5 px-3 py-2">
+                <span className="text-xs text-amber-300/90">
+                  This page was generated with low confidence — verify against the source before relying on it.
+                </span>
+              </div>
+            )}
+
             {/* Meta row */}
             <div className="flex items-center gap-3 text-[10px] text-[var(--color-text-tertiary)] mb-6">
               <span className="flex items-center gap-1">
@@ -506,6 +560,37 @@ function DocsViewerBody({
           <div className="p-3">
             <TableOfContents content={page.content} />
           </div>
+          {(relatedLinks.length > 0 || hasTargetPath) && (
+            <div className="space-y-4 p-3 pt-0">
+              {relatedLinks.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
+                    Related ({relatedLinks.length})
+                  </p>
+                  <ul className="space-y-1.5">
+                    {relatedLinks.map((r) => (
+                      <li key={r.id} className="text-xs">
+                        <button
+                          onClick={() => goToPageId(r.id)}
+                          className="truncate text-left text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors w-full"
+                          title={r.title}
+                        >
+                          {r.title}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <BacklinksPanel
+                backlinks={getBacklinks(page.metadata)}
+                repoId={repoId}
+                buildHref={(rid, pid) =>
+                  `/repos/${rid}/docs?page=${encodeURIComponent(pid)}`
+                }
+              />
+            </div>
+          )}
           {hasTargetPath && <DocsSidebar repoId={repoId} targetPath={page.target_path} />}
         </div>
       )}

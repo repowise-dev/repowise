@@ -1,10 +1,12 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import { use, useCallback, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { Download, FolderArchive, Loader2 } from "lucide-react";
+import { Download, FolderArchive, Loader2, Search } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { FirstFiveFiles, type FirstFiveFile } from "@repowise-dev/ui/onboarding/first-five-files";
+import { DocsCommandPalette } from "@repowise-dev/ui/docs/command-palette";
 import { DocsExplorer } from "@/components/docs/docs-explorer";
 import { listAllPages, listPages } from "@/lib/api/pages";
 import { getGraph } from "@/lib/api/graph";
@@ -19,6 +21,18 @@ export default function DocsPage({
 }) {
   const { id: repoId } = use(params);
   const [isExporting, setIsExporting] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const openPage = useCallback(
+    (pageId: string) => {
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("page", pageId);
+      router.replace(`?${next.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
 
   const { data: graphData } = useSWR<GraphExportResponse>(
     `graph:${repoId}`,
@@ -87,6 +101,16 @@ export default function DocsPage({
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
+          >
+            <Search className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Search</span>
+            <kbd className="hidden rounded border border-[var(--color-border-default)] px-1 py-0.5 text-[10px] sm:inline">
+              ⌘K
+            </kbd>
+          </button>
           <Button
             variant="outline"
             size="sm"
@@ -141,6 +165,14 @@ export default function DocsPage({
       <div className="flex-1 min-h-0">
         <DocsExplorer repoId={repoId} />
       </div>
+
+      {/* ⌘K full-text command palette over loaded pages */}
+      <DocsCommandPalette
+        pages={docPages ?? []}
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        onSelect={(p) => openPage(p.id)}
+      />
     </div>
   );
 }
