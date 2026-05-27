@@ -166,6 +166,19 @@ class TestGoHints:
         targets = {e.target for e in edges if e.hint_source == "go:reflect_typeof"}
         assert "types.go" in targets
 
+    def test_reflect_new_and_valueof(self, tmp_path: Path) -> None:
+        (tmp_path / "types.go").write_text(
+            "package x\ntype Bar struct{}\ntype Baz struct{}\n"
+        )
+        (tmp_path / "use.go").write_text(
+            "package x\nimport \"reflect\"\n"
+            "var _ = reflect.New(Bar{})\n"
+            "var _ = reflect.ValueOf(Baz{})\n"
+        )
+        edges = GoDynamicHints().extract(tmp_path)
+        targets = {e.target for e in edges if e.hint_source == "go:reflect_typeof"}
+        assert "types.go" in targets
+
     def test_plugin_open_emits_external(self, tmp_path: Path) -> None:
         (tmp_path / "main.go").write_text(
             "package main\nimport \"plugin\"\nfunc main(){ plugin.Open(\"./p.so\") }\n"

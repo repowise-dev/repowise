@@ -93,6 +93,77 @@ class TestGinRoutes:
         assert not graph.has_edge("main.go", "main.go")
 
 
+class TestNetHTTP:
+    def test_handlefunc_pkg_function(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")
+        h = tmp_path / "handlers"
+        h.mkdir()
+        (h / "users.go").write_text(
+            "package handlers\n\nimport \"net/http\"\n\n"
+            "func Index(w http.ResponseWriter, r *http.Request) {}\n"
+        )
+        (tmp_path / "main.go").write_text(
+            "package main\n\nimport (\n  \"net/http\"\n  \"example.com/app/handlers\"\n)\n\n"
+            "func main() {\n"
+            "  http.HandleFunc(\"/users\", handlers.Index)\n"
+            "  http.ListenAndServe(\":8080\", nil)\n"
+            "}\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        added = add_framework_edges(graph, parsed, ctx, tech_stack=[])
+        assert added >= 1
+        assert graph.has_edge("main.go", "handlers/users.go")
+
+    def test_mux_handle_local_function(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")
+        (tmp_path / "routes.go").write_text(
+            "package main\n\nimport \"net/http\"\n\n"
+            "func register(mux *http.ServeMux) {\n"
+            "  mux.Handle(\"/health\", health)\n"
+            "}\n"
+        )
+        (tmp_path / "health.go").write_text(
+            "package main\n\nimport \"net/http\"\n\n"
+            "var health http.Handler\n\n"
+            "func HealthHandler(w http.ResponseWriter, r *http.Request) {}\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        # Should not crash; `health` is a var, not a function — no false edge.
+        add_framework_edges(graph, parsed, ctx, tech_stack=[])
+
+
+class TestGoGRPC:
+    def test_register_server_to_impl_file(self, tmp_path: Path) -> None:
+        (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")
+        (tmp_path / "server.go").write_text(
+            "package main\n\n"
+            "type greeterServer struct{}\n\n"
+            "func (s *greeterServer) SayHello() string { return \"hi\" }\n"
+        )
+        (tmp_path / "main.go").write_text(
+            "package main\n\nimport \"google.golang.org/grpc\"\n\n"
+            "func main() {\n"
+            "  s := grpc.NewServer()\n"
+            "  RegisterGreeterServer(s, &greeterServer{})\n"
+            "}\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["grpc"])
+        assert graph.has_edge("main.go", "server.go")
+
+
 class TestGoRouterGate:
     def test_non_router_unaffected(self, tmp_path: Path) -> None:
         (tmp_path / "main.go").write_text(

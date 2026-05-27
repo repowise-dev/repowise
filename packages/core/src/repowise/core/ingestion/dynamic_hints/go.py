@@ -9,8 +9,12 @@ from .base import DynamicEdge, DynamicHintExtractor
 
 _SKIP_DIRS = {"vendor", "node_modules", ".git", "bin"}
 
-# reflect.TypeOf(Foo{}) / reflect.New(reflect.TypeOf(Foo{}))
-_REFLECT_TYPEOF_RE = re.compile(r"reflect\.TypeOf\s*\(\s*([A-Za-z_]\w*)")
+# reflect.TypeOf(Foo{}) / reflect.New(Foo{}) / reflect.ValueOf(Foo{}) — and
+# the pointer-nil idiom reflect.TypeOf((*Foo)(nil)). Capture the bare or
+# package-qualified type/value head; the qualifier is dropped at resolve time.
+_REFLECT_USE_RE = re.compile(
+    r"reflect\.(?:TypeOf|New|ValueOf)\s*\(\s*(?:&|\(\s*\*)?\s*([A-Za-z_][\w.]*)"
+)
 # plugin.Open("./plugin.so")
 _PLUGIN_OPEN_RE = re.compile(r"plugin\.Open\s*\(\s*[\"']([^\"']+)[\"']")
 # plugin.Lookup("Foo")
@@ -56,8 +60,12 @@ class GoDynamicHints(DynamicHintExtractor):
             except ValueError:
                 continue
 
-            for match in _REFLECT_TYPEOF_RE.finditer(text):
-                target = type_to_file.get(match.group(1))
+            for match in _REFLECT_USE_RE.finditer(text):
+                # Drop any package qualifier (``pkg.Foo`` → ``Foo``); reflect
+                # arguments are values/types whose defining file we look up by
+                # bare name.
+                bare = match.group(1).split(".")[-1]
+                target = type_to_file.get(bare) or func_to_file.get(bare)
                 if target and target != rel:
                     edges.append(DynamicEdge(
                         source=rel, target=target,
