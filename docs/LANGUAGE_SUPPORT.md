@@ -365,7 +365,10 @@ ingestion/
     scala.py           #   package-to-directory mapping
     php.py             #   namespace/PSR-4 resolution
     generic.py         #   stem-matching fallback
-  framework_edges.py   # Django, FastAPI, Flask, pytest, ASP.NET, Rails, Laravel, TYPO3, Spring, Express, Gin, Axum detection
+  framework_edges/     # Framework convention edges (one module per framework + base.py)
+                       #   __init__.py re-exports add_framework_edges; iterates FrameworkHandler list
+                       #   django/fastapi/flask/aspnet/rails/laravel/spring/express/go/rust/typo3
+                       #   + pytest_edges (conftest); base.py = read_text, _add_edge_if_new, name→file maps
   dynamic_hints/       # Per-language dynamic-edge extractors
     base.py            #   DynamicHintExtractor + DynamicEdge
     registry.py        #   HintRegistry
