@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 import structlog
 
@@ -98,6 +99,12 @@ class CallResolver:
         self._repo_path = repo_path
         self._rust_crate_src: dict[str, str] | None = None  # lazy
 
+        # Go package-scoped resolution (lazy GoPackageIndex). ``_go_index``
+        # holds the built index; ``_go_index_built`` distinguishes "not yet
+        # built" from "built but unavailable" (no repo_path / no go files).
+        self._go_index: Any = None
+        self._go_index_built = False
+
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
 
@@ -165,6 +172,95 @@ class CallResolver:
                 normalized = crate.name.replace("-", "_")
                 self._rust_crate_src[normalized] = crate.src_dir
         return self._rust_crate_src
+
+    def _get_go_index(self) -> Any:
+        """Lazily build the GoPackageIndex (or None if unavailable).
+
+        Mirrors ``_get_rust_crate_src``: the resolver runs without a
+        ``ResolverContext``, so it constructs a minimal stand-in and rebuilds
+        the package index. The build is one walk over the ``.go`` files; the
+        result is cached for the lifetime of the resolver.
+        """
+        if self._go_index_built:
+            return self._go_index
+        self._go_index_built = True
+        if not self._repo_path:
+            return None
+        from pathlib import Path
+
+        from .resolvers.go_workspace import build_go_package_index
+
+        class _Ctx:
+            def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
+                self.repo_path = Path(rp)
+                self.path_set = set(pf.keys())
+                self.parsed_files = pf
+                self.go_modules: tuple[tuple[str, str], ...] = ()
+                self.go_module_path: str | None = None
+
+        self._go_index = build_go_package_index(_Ctx(self._repo_path, self._parsed_files))
+        return self._go_index
+
+    def _is_go(self, file_path: str) -> bool:
+        parsed = self._parsed_files.get(file_path)
+        return bool(parsed and parsed.file_info.language == "go")
+
+    def _resolve_go_package_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve ``pkg.Func()`` against *every* file in the package.
+
+        The legacy module-alias strategy resolves only against the single
+        representative file the import resolved to; a function defined in a
+        sibling file of that package is missed. Look it up across the whole
+        package directory via the GoPackageIndex.
+        """
+        index = self._get_go_index()
+        if index is None:
+            return None
+        module_file = self._module_aliases.get(file_path, {}).get(call.receiver_name)
+        if not module_file:
+            return None
+        pkg = index.package_for_file(module_file)
+        if pkg is None:
+            return None
+        for sibling in pkg.files:
+            syms = self._file_symbols.get(sibling, {})
+            sym_id = syms.get(call.target_name)
+            if sym_id is not None and sym_id != caller_id:
+                return ResolvedCall(caller_id, sym_id, 0.88, call.line)
+        return None
+
+    def _resolve_go_same_package(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve a bare call to a function defined in a sibling file.
+
+        Files in the same Go package share a namespace with no import
+        statement, so a bare ``Helper()`` may be defined in any sibling
+        file. Search the package directory (excluding the caller's own
+        file, already covered by the same-file tier).
+        """
+        index = self._get_go_index()
+        if index is None:
+            return None
+        pkg = index.package_for_file(file_path)
+        if pkg is None:
+            return None
+        for sibling in pkg.files:
+            if sibling == file_path:
+                continue
+            syms = self._file_symbols.get(sibling, {})
+            sym_id = syms.get(call.target_name)
+            if sym_id is not None and sym_id != caller_id:
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line)
+        return None
 
     def _build_indices(self, parsed_files: dict[str, ParsedFile]) -> None:
         """Build all lookup indices from parsed file data."""
@@ -257,6 +353,14 @@ class CallResolver:
             if callee_id != caller_id:  # no self-recursion edges for now
                 return ResolvedCall(caller_id, callee_id, 0.95, call.line)
 
+        # Go: a bare call may target a function defined in a sibling file of
+        # the same package (shared namespace, no import). Resolve against the
+        # package before the weaker import/global tiers.
+        if self._is_go(file_path):
+            go_same_pkg = self._resolve_go_same_package(file_path, call, caller_id)
+            if go_same_pkg is not None:
+                return go_same_pkg
+
         # Tier 2: import-scoped
         # 2a: Check specific imported name → source file (binding-aware)
         binding = self._import_bindings.get(file_path, {}).get(target_name)
@@ -311,6 +415,15 @@ class CallResolver:
         receiver_name = call.receiver_name
         method_name = call.target_name
         assert receiver_name is not None
+
+        # Go: ``pkg.Func()`` where ``pkg`` is an import alias resolves to the
+        # function in *any* file of that package, not just the single
+        # representative the import resolved to. Try this first for Go so a
+        # multi-file package's exported funcs are reached correctly.
+        if self._is_go(file_path):
+            go_pkg_call = self._resolve_go_package_call(file_path, call, caller_id)
+            if go_pkg_call is not None:
+                return go_pkg_call
 
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
