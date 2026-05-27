@@ -30,3 +30,16 @@ class TestJsNeverFlagPatterns:
     def test_ordinary_js_not_flagged(self):
         assert not _matches("docs/assets/js/explorer.js")
         assert not _matches("src/app.js")
+
+
+class TestVendoredCNeverFlag:
+    def test_deps_vendor_third_party(self):
+        assert _matches("internal/warpc/deps/parson/parson.c")
+        assert _matches("internal/warpc/deps/parson/parson.h")
+        assert _matches("vendor/json/json.c")
+        assert _matches("third_party/lib/foo.h")
+
+    def test_live_c_not_flagged(self):
+        # Hand-written C outside a vendored dir must still be analysable.
+        assert not _matches("internal/warpc/genavif/avif.c")
+        assert not _matches("src/main.c")
