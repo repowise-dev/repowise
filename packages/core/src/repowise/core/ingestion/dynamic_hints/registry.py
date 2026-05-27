@@ -28,6 +28,7 @@ from .go import GoDynamicHints
 from .luau import LuauDynamicHints
 from .node import NodeDynamicHints
 from .php import PhpDynamicHints
+from .python_imports import PythonDynamicHints
 from .pytest_hints import PytestDynamicHints
 from .ruby import RubyDynamicHints
 from .scala import ScalaDynamicHints
@@ -53,6 +54,7 @@ class HintRegistry:
         self._extractors = extractors or [
             DjangoDynamicHints(),
             PytestDynamicHints(),
+            PythonDynamicHints(),
             NodeDynamicHints(),
             DotNetDynamicHints(),
             XamlDynamicHints(),
@@ -80,24 +82,18 @@ class HintRegistry:
             return edges
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
-            futures = {
-                pool.submit(self._run_one, ex, repo_root): ex for ex in self._extractors
-            }
+            futures = {pool.submit(self._run_one, ex, repo_root): ex for ex in self._extractors}
             for future in as_completed(futures):
                 ex = futures[future]
                 try:
                     got = future.result()
                 except Exception as e:
-                    log.warning(
-                        "dynamic_hints_failed", extractor=ex.name, error=str(e)
-                    )
+                    log.warning("dynamic_hints_failed", extractor=ex.name, error=str(e))
                     continue
                 edges.extend(got)
                 log.debug("dynamic_hints", extractor=ex.name, count=len(got))
         return edges
 
     @staticmethod
-    def _run_one(
-        extractor: DynamicHintExtractor, repo_root: Path
-    ) -> list[DynamicEdge]:
+    def _run_one(extractor: DynamicHintExtractor, repo_root: Path) -> list[DynamicEdge]:
         return extractor.extract(repo_root)

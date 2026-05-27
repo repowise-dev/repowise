@@ -38,7 +38,17 @@ def extract_python_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[
                 exported = node_text(name_node, src)
                 local = node_text(alias_node, src) if alias_node else exported
                 if is_from_import:
-                    names.append(local)
+                    # ``imported_names`` must carry the *exported* name — the
+                    # name as it exists in the target module — because that's
+                    # what downstream matches against: the dead-code analyzer
+                    # compares it to the source symbol / submodule name, and
+                    # ``expand_bare_relative_imports`` uses it to locate the
+                    # submodule file. The local alias is preserved on the
+                    # binding (``local_name``) for call resolution. Recording
+                    # the alias here instead made ``from . import levels as
+                    # _levels`` resolve to a non-existent ``_levels`` module
+                    # and hid every ``levels.py`` symbol from reachability.
+                    names.append(exported)
                     bindings.append(
                         NamedBinding(local_name=local, exported_name=exported, source_file=None)
                     )
@@ -107,10 +117,13 @@ def expand_bare_relative_imports(imports: list[Import]) -> list[Import]:
             continue
 
         dots = imp.module_path  # e.g. ".", ".."
-        bindings_by_name = {b.local_name: b for b in imp.bindings}
+        # ``imported_names`` holds exported (original) submodule names, so key
+        # the bindings by exported name — keeping the alias-preserving binding
+        # for ``from . import sub as alias`` instead of dropping it.
+        bindings_by_name = {(b.exported_name or b.local_name): b for b in imp.bindings}
         for name in imp.imported_names:
             binding = bindings_by_name.get(name) or NamedBinding(
-                local_name=name, exported_name=None, source_file=None, is_module_alias=True
+                local_name=name, exported_name=name, source_file=None, is_module_alias=True
             )
             out.append(
                 Import(

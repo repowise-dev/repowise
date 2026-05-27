@@ -51,7 +51,7 @@ All eight languages support:
 - Heritage extraction (class/interface/trait/record inheritance chains)
 - Docstring extraction (Python, JSDoc, GoDoc, Rustdoc, Javadoc, Doxygen, XML doc)
 - Framework-aware edges (Django, FastAPI, Flask for Python; tsconfig path aliases for TS/JS; pytest fixture detection; ASP.NET controllers / minimal API / EF Core DbContext for C#; Spring Boot DI + `@Bean` factories for Java/Kotlin; Rails routes + ActiveRecord relationships; Laravel routes + service providers + Eloquent; TYPO3 convention files (`ext_localconf.php`, `Configuration/TCA/*`, `JavaScriptModules.php` registrations) for PHP; Express `app.use(router)` + NestJS `@Module` arrays; Gin/Echo/Chi router → handler files for Go; Axum/Actix `.route` → handler files for Rust)
-- Per-language dynamic-hint extractors (Django/Pytest/Node for Python+JS/TS; .NET DI/Activator/InternalsVisibleTo for C#; Spring `getBean`/`@Bean` factories for Java/Kotlin; Ruby `send`/`const_get`/`define_method`/`delegate`; PHP `call_user_func`/`ReflectionClass`/container `get`; Scala `Class.forName`/`given`/`implicit val`; Swift `NSClassFromString`/`Selector`/`#selector`/KVC; C function-pointer assignment + `dlopen`/`dlsym`; Luau `game:GetService`/`setmetatable __index`; Go `reflect.TypeOf`/`plugin.Open`/`plugin.Lookup`)
+- Per-language dynamic-hint extractors (Django/Pytest/Node/`importlib` string-import registries for Python+JS/TS; .NET DI/Activator/InternalsVisibleTo for C#; Spring `getBean`/`@Bean` factories for Java/Kotlin; Ruby `send`/`const_get`/`define_method`/`delegate`; PHP `call_user_func`/`ReflectionClass`/container `get`; Scala `Class.forName`/`given`/`implicit val`; Swift `NSClassFromString`/`Selector`/`#selector`/KVC; C function-pointer assignment + `dlopen`/`dlsym`; Luau `game:GetService`/`setmetatable __index`; Go `reflect.TypeOf`/`plugin.Open`/`plugin.Lookup`)
 - For C# only: MSBuild project graph (`<ProjectReference>` / `<PackageReference>`), namespace → file mapping across projects, `global using` / `using static` / `using alias` propagation, ASP.NET HTTP and gRPC-dotnet contract extraction in workspace mode, cross-repo `<ProjectReference>` and internal-NuGet detection, host-builder extension method resolution (`app.MapCatalogApi()` / `services.AddCatalogServices()` on any C# repo, not just ASP.NET), `nameof(Type)` references resolved as dynamic uses, local `var x = new T()` property reads bound to the defining file, and CommunityToolkit MVVM source-generator synthesis (`[ObservableProperty]` fields → PascalCase property, `[RelayCommand]` methods → `<Name>Command`)
 - For C/C++ only: visibility tracked from access specifiers (`public:` / `private:` / `protected:`), `static` file-scope storage class, and export attributes (`__declspec(dllexport)`, `__attribute__((visibility("default")))`); COM / I-prefixed bases emit `implements` edges (rest are `extends`); Windows DLL entry points (`DllMain`, `DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, `DllUnregisterServer`, `DllGetActivationFactory`) are never flagged as dead
 - For XAML only: `<ResourceDictionary Source="..."/>` and `MergedDictionaries` entries resolve across `pack://application:,,,/`, `ms-appx:///`, repo-rooted and relative URIs, emitting xaml→xaml `dynamic_uses` edges
@@ -143,7 +143,9 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
                 |
                 v
         GraphBuilder resolves imports:
-          Python: dotted module paths, __init__.py, src/ layout
+          Python: dotted module paths via a source-root-aware module index
+                  (src/ + monorepo packages/*/src + PEP 420 namespace
+                  packages), __init__.py re-export barrels, stem fallback
           TS/JS:  relative paths, tsconfig aliases, node_modules
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
@@ -316,6 +318,7 @@ into each subpackage rather than editing monoliths.
 ```
 ingestion/
   languages/           # LanguageRegistry + LanguageSpec (identity data)
+    python_modules.py  #   dotted-module ↔ file index (src / monorepo / PEP 420)
   extractors/          # Per-language AST extraction
     visibility.py      #   symbol visibility (public/private/protected)
     signatures.py      #   human-readable signature building
@@ -329,7 +332,8 @@ ingestion/
       python.py  ts_js.py  java.py  go.py    rust.py  cpp.py
       kotlin.py  ruby.py   swift.py csharp.py scala.py php.py
   resolvers/           # Per-language import resolution
-    python.py          #   dotted imports, __init__.py, src/ layout
+    python.py          #   dotted imports via module index: __init__.py
+                       #   barrels, src/ + monorepo packages/*/src, namespace pkgs
     typescript.py      #   multi-ext probe, tsconfig aliases
     go.py              #   go.mod module path stripping
     rust.py            #   crate::/self::/super::, mod.rs probing
@@ -345,7 +349,7 @@ ingestion/
   dynamic_hints/       # Per-language dynamic-edge extractors
     base.py            #   DynamicHintExtractor + DynamicEdge
     registry.py        #   HintRegistry
-    django.py  pytest_hints.py  node.py  dotnet.py
+    django.py  pytest_hints.py  python_imports.py  node.py  dotnet.py
     spring.py  ruby.py  php.py  scala.py  swift.py  c.py  luau.py  go.py
   parser.py            # ASTParser (language-agnostic orchestration)
   graph.py             # GraphBuilder (import/call/heritage resolution)
