@@ -12,6 +12,7 @@ Recommended models (as of 2026):
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -184,20 +185,20 @@ class AnthropicProvider(BaseProvider):
         )
 
         if self._cost_tracker is not None:
-            import asyncio
-
-            try:
-                asyncio.get_event_loop().create_task(
-                    self._cost_tracker.record(
-                        model=self._model,
-                        input_tokens=result.input_tokens,
-                        output_tokens=result.output_tokens,
-                        operation="doc_generation",
-                        file_path=None,
-                    )
+            # Await the cost record inline rather than spawning a detached
+            # task. A fire-and-forget create_task can still be flushing its
+            # aiosqlite write when the event loop is torn down (e.g. the
+            # asyncio.run teardown after doc generation), which surfaces as a
+            # noisy "Event loop is closed" worker-thread traceback. record()
+            # swallows its own persistence errors, so generation is unaffected.
+            with contextlib.suppress(Exception):
+                await self._cost_tracker.record(
+                    model=self._model,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    operation="doc_generation",
+                    file_path=None,
                 )
-            except RuntimeError:
-                pass  # No running event loop — skip async record
 
         return result
 
