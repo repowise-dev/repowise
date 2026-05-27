@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from .spec import LanguageSpec
-from .specs_data import _SPECS
+from .specs import ALL_SPECS as _SPECS
 
 # =========================================================================
 # LanguageRegistry

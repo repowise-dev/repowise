@@ -167,13 +167,19 @@ centralised `LanguageRegistry`, per-language extraction logic lives in
 `extractors/`, and per-language import resolution lives in `resolvers/`.
 Adding a new language touches these places:
 
-### Step 1: Add a `LanguageSpec` to the registry
+### Step 1: Add a `LanguageSpec` module
 
-Edit `packages/core/src/repowise/core/ingestion/languages/registry.py` and
-add a new `LanguageSpec(...)` entry to the `_SPECS` tuple:
+Language identity data lives in the `languages/specs/` package — **one module
+per language**. Create
+`packages/core/src/repowise/core/ingestion/languages/specs/mylang.py` exporting
+a single `SPEC`:
 
 ```python
-LanguageSpec(
+"""LanguageSpec for mylang."""
+
+from ..spec import LanguageSpec
+
+SPEC = LanguageSpec(
     tag="mylang",
     display_name="MyLang",
     extensions=frozenset({".ml"}),
@@ -188,6 +194,13 @@ LanguageSpec(
     color_hex="#AB47BC",
 )
 ```
+
+Then register it in `languages/specs/__init__.py` by importing the module and
+slotting it into the `ALL_SPECS` tuple. **Order matters** — `LanguageRegistry`
+builds its extension map first-spec-wins, so place more specific languages
+ahead of ones that share an extension (e.g. TypeScript before JavaScript).
+The `LanguageRegistry` in `registry.py` consumes `ALL_SPECS`; you never edit
+the registry itself to add a language.
 
 ### Step 2: Add the `LanguageTag`
 
@@ -218,7 +231,8 @@ Look at existing `.scm` files for examples --- `python.scm` and
 ### Step 4: Add a `LanguageConfig` entry
 
 Add a parser configuration to `LANGUAGE_CONFIGS` in
-`packages/core/src/repowise/core/ingestion/parser.py`:
+`packages/core/src/repowise/core/ingestion/language_configs.py` (re-exported
+from `parser.py` for back-compat):
 
 ```python
 "mylang": LanguageConfig(
@@ -319,6 +333,11 @@ into each subpackage rather than editing monoliths.
 ```
 ingestion/
   languages/           # LanguageRegistry + LanguageSpec (identity data)
+    spec.py            #   LanguageSpec dataclass (the schema)
+    registry.py        #   LanguageRegistry lookup interface + REGISTRY singleton
+    specs/             #   one module per language, each exporting `SPEC`
+      __init__.py      #     aggregates every SPEC into ordered `ALL_SPECS`
+      python.py  typescript.py  go.py  rust.py  csharp.py  …  (44 languages)
     python_modules.py  #   dotted-module ↔ file index (src / monorepo / PEP 420)
   extractors/          # Per-language AST extraction
     visibility.py      #   symbol visibility (public/private/protected)
