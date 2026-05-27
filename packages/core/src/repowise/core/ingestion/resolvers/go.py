@@ -104,3 +104,34 @@ def resolve_go_import(module_path: str, importer_path: str, ctx: ResolverContext
 
     # External package
     return ctx.add_external_node(module_path)
+
+
+def resolve_go_import_all(
+    module_path: str, importer_path: str, ctx: ResolverContext
+) -> tuple[str, ...]:
+    """Resolve a Go import to **every** ``.go`` file in the target package.
+
+    Go imports name a package *directory*; the package's symbols are spread
+    across all its sibling ``.go`` files with no per-file import. The
+    legacy :func:`resolve_go_import` returns a single representative file,
+    which leaves the package's other files with ``in_degree == 0`` and
+    mis-flagged as unreachable. This variant consults the
+    :class:`GoPackageIndex` and returns the full file set so the builder
+    can fan an IMPORTS edge out to each one.
+
+    External packages (no local ``go.mod`` match) resolve to a single
+    external node — exactly as :func:`resolve_go_import` would — and are
+    returned as a one-tuple. Returns an empty tuple only when nothing at
+    all resolves.
+    """
+    from .go_workspace import get_or_build_go_index
+
+    index = get_or_build_go_index(ctx)
+    files = index.files_for_import(module_path)
+    if files:
+        return files
+
+    # Not a known local package directory — defer to the single-target
+    # resolver (handles longest-prefix stem matches and external nodes).
+    single = resolve_go_import(module_path, importer_path, ctx)
+    return (single,) if single else ()

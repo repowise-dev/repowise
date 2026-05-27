@@ -10,6 +10,7 @@ from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.go import (
     read_go_modules,
     resolve_go_import,
+    resolve_go_import_all,
 )
 
 
@@ -82,3 +83,30 @@ class TestResolveGoImport:
         ctx = _ctx(tmp_path, ["pkg/util.go"])
         result = resolve_go_import("github.com/external/lib", "main.go", ctx)
         assert result == "external:github.com/external/lib"
+
+
+class TestResolveGoImportAll:
+    def _write(self, repo: Path, rel: str, body: str = "package p\n") -> None:
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+
+    def test_returns_all_files_in_package(self, tmp_path: Path) -> None:
+        files = [
+            "cache/filecache/filecache.go",
+            "cache/filecache/filecache_config.go",
+            "cache/filecache/filecache_pruner.go",
+        ]
+        for f in files:
+            self._write(tmp_path, f, "package filecache\n")
+        ctx = _ctx(tmp_path, files, go_modules=(("", "github.com/gohugoio/hugo"),))
+        result = resolve_go_import_all(
+            "github.com/gohugoio/hugo/cache/filecache", "main.go", ctx
+        )
+        assert set(result) == set(files)
+
+    def test_external_is_single_node(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "main.go", "package main\n")
+        ctx = _ctx(tmp_path, ["main.go"], go_modules=(("", "github.com/me/app"),))
+        result = resolve_go_import_all("github.com/spf13/cobra", "main.go", ctx)
+        assert result == ("external:github.com/spf13/cobra",)

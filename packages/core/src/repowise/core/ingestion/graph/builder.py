@@ -232,9 +232,20 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             _t0 = _t.monotonic()
             file_imports: set[str] = set()
             for imp in parsed.imports:
-                target = resolve_import(imp.module_path, path, parsed.file_info.language, ctx)
-                if target:
-                    imp.resolved_file = target
+                # Go imports name a package *directory*; fan the edge out to
+                # every ``.go`` file in the resolved package so sibling files
+                # share importers (otherwise they look unreachable). Other
+                # languages resolve to a single representative target.
+                if _lang == "go":
+                    from ..resolvers.go import resolve_go_import_all
+
+                    targets = resolve_go_import_all(imp.module_path, path, ctx)
+                else:
+                    single = resolve_import(imp.module_path, path, _lang, ctx)
+                    targets = (single,) if single else ()
+                if targets:
+                    imp.resolved_file = targets[0]
+                for target in targets:
                     file_imports.add(target)
                     # Aggregate imported_names on parallel edges
                     if self._graph.has_edge(path, target):
