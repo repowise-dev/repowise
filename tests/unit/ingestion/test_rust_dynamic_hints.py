@@ -59,3 +59,31 @@ class TestRustDynamicHints:
         (tmp_path / "plain.rs").write_text('fn add(a: i32, b: i32) -> i32 { a + b }')
         edges = RustDynamicHints().extract(tmp_path)
         assert len(edges) == 0
+
+    def test_detects_proc_macro(self, tmp_path: Path) -> None:
+        (tmp_path / "lib.rs").write_text(
+            '#[proc_macro]\npub fn my_macro(input: TokenStream) -> TokenStream { input }'
+        )
+        edges = RustDynamicHints().extract(tmp_path)
+        assert any(e.hint_source == "rust:entry_point" for e in edges)
+
+    def test_detects_proc_macro_derive(self, tmp_path: Path) -> None:
+        (tmp_path / "lib.rs").write_text(
+            '#[proc_macro_derive(MyDerive)]\npub fn derive_my(input: TokenStream) -> TokenStream { input }'
+        )
+        edges = RustDynamicHints().extract(tmp_path)
+        assert any(e.hint_source == "rust:entry_point" for e in edges)
+
+    def test_detects_proc_macro_attribute(self, tmp_path: Path) -> None:
+        (tmp_path / "lib.rs").write_text(
+            '#[proc_macro_attribute]\npub fn my_attr(attr: TokenStream, item: TokenStream) -> TokenStream { item }'
+        )
+        edges = RustDynamicHints().extract(tmp_path)
+        assert any(e.hint_source == "rust:entry_point" for e in edges)
+
+    def test_detects_rocket_scoped_route(self, tmp_path: Path) -> None:
+        (tmp_path / "handler.rs").write_text(
+            '#[rocket::get("/health")]\nfn health() -> &str { "ok" }'
+        )
+        edges = RustDynamicHints().extract(tmp_path)
+        assert any(e.hint_source == "rust:route_macro" for e in edges)

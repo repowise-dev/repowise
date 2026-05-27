@@ -43,6 +43,7 @@ class CargoCrate:
     src_dir: str  # repo-relative POSIX path to the crate's src/ directory
     dependencies: tuple[CargoDep, ...] = ()
     is_proc_macro: bool = False  # True if [lib] proc-macro = true
+    bin_paths: tuple[str, ...] = ()  # repo-relative POSIX paths to [[bin]] entry points
 
 
 @dataclass(frozen=True)
@@ -91,14 +92,33 @@ def get_or_build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
 
 
 def _parse_deps(
-    raw: dict, crate_dir: Path, repo: Path
+    raw: dict,
+    crate_dir: Path,
+    repo: Path,
+    ws_deps: dict | None = None,
 ) -> tuple[CargoDep, ...]:
-    """Parse a ``[dependencies]`` / ``[dev-dependencies]`` table into ``CargoDep`` tuples."""
+    """Parse a ``[dependencies]`` / ``[dev-dependencies]`` table into ``CargoDep`` tuples.
+
+    When *ws_deps* is provided (the raw ``[workspace.dependencies]`` table),
+    entries with ``workspace = true`` inherit their spec from it (Cargo 1.64+).
+    """
     deps: list[CargoDep] = []
     for name, spec in raw.items():
         if isinstance(spec, str):
             deps.append(CargoDep(name=name, package=name, is_path=False, path=None))
         elif isinstance(spec, dict):
+            # Workspace inheritance: { workspace = true } pulls from
+            # [workspace.dependencies] in the root Cargo.toml.
+            if spec.get("workspace") and ws_deps is not None:
+                ws_spec = ws_deps.get(name, {})
+                if isinstance(ws_spec, str):
+                    deps.append(CargoDep(name=name, package=name, is_path=False, path=None))
+                    continue
+                elif isinstance(ws_spec, dict):
+                    spec = {**ws_spec, **{k: v for k, v in spec.items() if k != "workspace"}}
+                else:
+                    continue
+
             package = spec.get("package", name)
             path_str = spec.get("path")
             resolved_path: str | None = None
@@ -117,6 +137,22 @@ def _parse_deps(
                 )
             )
     return tuple(deps)
+
+
+def _parse_bin_targets(cargo_data: dict, member_rel: str, repo: Path) -> tuple[str, ...]:
+    """Extract ``[[bin]]`` entry-point paths from Cargo.toml data."""
+    bins = cargo_data.get("bin", [])
+    if not isinstance(bins, list):
+        return ()
+    paths: list[str] = []
+    for entry in bins:
+        if not isinstance(entry, dict):
+            continue
+        path_str = entry.get("path")
+        if path_str:
+            rel = f"{member_rel}/{path_str}" if member_rel else path_str
+            paths.append(Path(rel).as_posix())
+    return tuple(paths)
 
 
 def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
@@ -143,6 +179,9 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
     repo = Path(repo_path).resolve()
 
     # Single-crate repo with a [package] at the root: still index it.
+    # Raw workspace deps table for { workspace = true } inheritance
+    ws_deps_raw = workspace.get("dependencies", {})
+
     root_pkg = root_data.get("package") or {}
     if root_pkg.get("name"):
         root_deps = _parse_deps(
@@ -151,11 +190,16 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
              **root_data.get("build-dependencies", {})},
             Path(repo_path),
             repo,
+            ws_deps=ws_deps_raw,
         )
-        crates.append(CargoCrate(name=str(root_pkg["name"]), src_dir="src", dependencies=root_deps))
+        root_bins = _parse_bin_targets(root_data, "", repo)
+        crates.append(CargoCrate(
+            name=str(root_pkg["name"]), src_dir="src",
+            dependencies=root_deps, bin_paths=root_bins,
+        ))
 
     # Parse workspace-level shared dependencies
-    ws_deps = _parse_deps(workspace.get("dependencies", {}), Path(repo_path), repo)
+    ws_deps = _parse_deps(ws_deps_raw, Path(repo_path), repo)
 
     # Parse exclude patterns
     exclude_patterns = workspace.get("exclude", [])
@@ -205,12 +249,15 @@ def _build_cargo_workspace_index(ctx) -> CargoWorkspaceIndex | None:
                  **member_data.get("build-dependencies", {})},
                 member_path,
                 repo,
+                ws_deps=ws_deps_raw,
             )
+            bin_paths = _parse_bin_targets(member_data, member_rel, repo)
             crates.append(CargoCrate(
                 name=str(name),
                 src_dir=src_dir,
                 dependencies=member_deps,
                 is_proc_macro=is_proc_macro,
+                bin_paths=bin_paths,
             ))
 
     if not crates:

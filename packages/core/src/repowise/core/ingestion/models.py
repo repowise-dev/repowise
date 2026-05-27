@@ -187,6 +187,7 @@ class Import:
     is_relative: bool
     resolved_file: str | None  # absolute path if successfully resolved
     bindings: list[NamedBinding] = field(default_factory=list)
+    is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
 
 
 @dataclass

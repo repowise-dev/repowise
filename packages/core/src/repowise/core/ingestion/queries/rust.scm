@@ -161,6 +161,11 @@
   !body
 ) @import.statement
 
+;; extern crate foo; / extern crate foo as bar;
+(extern_crate_declaration
+  name: (identifier) @import.module
+) @import.statement
+
 ; ---------------------------------------------------------------------------
 ; Re-exports (pub use)
 ; ---------------------------------------------------------------------------

@@ -90,6 +90,103 @@ class TestActix:
         assert graph.has_edge("main.rs", "handlers.rs")
 
 
+class TestAxumNest:
+    def test_nest_to_handler(self, tmp_path: Path) -> None:
+        (tmp_path / "api.rs").write_text(
+            "pub fn api_routes() -> Router { Router::new() }\n"
+        )
+        (tmp_path / "main.rs").write_text(
+            "use axum::Router;\n"
+            "fn app() -> Router {\n"
+            '  Router::new().nest("/api", api_routes)\n'
+            "}\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["axum"])
+        assert graph.has_edge("main.rs", "api.rs")
+
+
+class TestAxumLayerAndFallback:
+    def test_layer_to_middleware(self, tmp_path: Path) -> None:
+        (tmp_path / "middleware.rs").write_text(
+            "pub async fn auth_layer() {}\n"
+        )
+        (tmp_path / "main.rs").write_text(
+            "use axum::Router;\n"
+            "fn app() -> Router {\n"
+            "  Router::new().layer(auth_layer)\n"
+            "}\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["axum"])
+        assert graph.has_edge("main.rs", "middleware.rs")
+
+    def test_fallback_to_handler(self, tmp_path: Path) -> None:
+        (tmp_path / "fallback.rs").write_text(
+            "pub async fn not_found() -> &'static str { \"404\" }\n"
+        )
+        (tmp_path / "main.rs").write_text(
+            "use axum::Router;\n"
+            "fn app() -> Router {\n"
+            "  Router::new().fallback(not_found)\n"
+            "}\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["axum"])
+        assert graph.has_edge("main.rs", "fallback.rs")
+
+
+class TestRocketMount:
+    def test_rocket_mount_routes(self, tmp_path: Path) -> None:
+        (tmp_path / "routes.rs").write_text(
+            '#[rocket::get("/health")]\n'
+            "pub fn health() -> &'static str { \"ok\" }\n"
+        )
+        (tmp_path / "main.rs").write_text(
+            "use rocket;\n"
+            "fn rocket() -> rocket::Rocket {\n"
+            '  rocket::build().mount("/", routes![health])\n'
+            "}\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["rocket"])
+        assert graph.has_edge("main.rs", "routes.rs")
+
+    def test_rocket_mount_multiple_handlers(self, tmp_path: Path) -> None:
+        (tmp_path / "routes.rs").write_text(
+            "pub fn index() {}\npub fn about() {}\n"
+        )
+        (tmp_path / "main.rs").write_text(
+            "use rocket;\n"
+            "fn rocket() -> rocket::Rocket {\n"
+            '  rocket::build().mount("/", routes![index, about])\n'
+            "}\n"
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        ctx = _ctx(tmp_path, parsed)
+        add_framework_edges(graph, parsed, ctx, tech_stack=["rocket"])
+        assert graph.has_edge("main.rs", "routes.rs")
+
+
 class TestRustGate:
     def test_non_router_unaffected(self, tmp_path: Path) -> None:
         (tmp_path / "main.rs").write_text("fn main() {}\n")

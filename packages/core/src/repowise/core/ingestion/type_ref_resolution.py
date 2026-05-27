@@ -123,6 +123,81 @@ def _resolve_csharp_type_refs(
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Rust
+# ---------------------------------------------------------------------------
+
+_RUST_BUILTIN_TYPES = frozenset({
+    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize",
+    "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
+    "String", "Vec", "Option", "Result", "Box", "Arc", "Rc",
+    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Cow",
+    "Pin", "Future", "Send", "Sync", "Sized", "Copy", "Clone",
+    "Debug", "Display", "Default", "Iterator", "IntoIterator",
+    "From", "Into", "TryFrom", "TryInto", "AsRef", "AsMut",
+    "Fn", "FnMut", "FnOnce", "Drop", "Deref", "DerefMut",
+    "Self", "self",
+})
+
+
+def _resolve_rust_type_refs(
+    parsed: ParsedFile,
+    ctx: "ResolverContext",
+    graph: "nx.DiGraph",
+) -> int:
+    """Resolve Rust ``@param.type`` captures via stem map + import graph."""
+    if not parsed.type_refs:
+        return 0
+
+    from_path = parsed.file_info.path
+    emitted = 0
+
+    import_targets: set[str] = set()
+    for imp in parsed.imports:
+        if imp.resolved_file and not imp.resolved_file.startswith("external:"):
+            import_targets.add(imp.resolved_file)
+
+    for ref in parsed.type_refs:
+        type_name = ref.type_name
+        if not type_name or type_name in _RUST_BUILTIN_TYPES:
+            continue
+        bare = type_name.rsplit("::", 1)[-1]
+        if bare in _RUST_BUILTIN_TYPES:
+            continue
+
+        target = _find_rust_type_file(bare, from_path, import_targets, ctx, graph)
+        if target is None:
+            continue
+        _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
+                                    type_name=bare, origin=ref.origin)
+        emitted += 1
+    return emitted
+
+
+def _find_rust_type_file(
+    type_name: str,
+    from_path: str,
+    import_targets: set[str],
+    ctx: "ResolverContext",
+    graph: "nx.DiGraph",
+) -> str | None:
+    """Find the file defining *type_name*, preferring imported files."""
+    for imp_file in import_targets:
+        if not graph.has_node(imp_file):
+            continue
+        for succ in graph.successors(imp_file):
+            nd = graph.nodes.get(succ, {})
+            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
+                return imp_file
+
+    candidates = ctx.stem_map.get(type_name.lower(), [])
+    if len(candidates) == 1 and candidates[0] != from_path:
+        if graph.has_node(candidates[0]):
+            return candidates[0]
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------------------
 
@@ -133,6 +208,7 @@ Strategy = Callable[[ParsedFile, "ResolverContext", "nx.DiGraph"], int]
 # index, never share resolver state across languages.
 _STRATEGIES: dict[str, Strategy] = {
     "csharp": _resolve_csharp_type_refs,
+    "rust": _resolve_rust_type_refs,
 }
 
 

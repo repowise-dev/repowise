@@ -44,6 +44,7 @@ _NODE_ATTR_KEYS = (
     "end_line",
     "visibility",
     "signature",
+    "docstring",
     "parent_symbol_id",
 )
 

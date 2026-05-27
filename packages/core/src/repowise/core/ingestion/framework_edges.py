@@ -964,6 +964,11 @@ _RUST_AXUM_ROUTE_RE = re.compile(
 _RUST_ACTIX_TO_RE = re.compile(r"web::\s*(?:get|post|put|delete|patch|head)\(\)\s*\.\s*to\s*\(\s*([\w:]+)\s*\)")
 _RUST_ACTIX_SERVICE_RE = re.compile(r"\.\s*service\s*\(\s*([\w:]+)\s*\)")
 _RUST_SCOPE_CONFIGURE_RE = re.compile(r"\.\s*configure\s*\(\s*([\w:]+)\s*\)")
+_RUST_NEST_RE = re.compile(r"\.\s*nest\s*\(\s*[\"'][^\"']*[\"']\s*,\s*([\w:]+)\s*\)")
+_RUST_LAYER_RE = re.compile(r"\.\s*layer\s*\(\s*(?:axum::middleware::from_fn\s*\(\s*)?([\w:]+)\s*\)")
+_RUST_FALLBACK_RE = re.compile(r"\.\s*fallback\s*\(\s*([\w:]+)\s*\)")
+_RUST_WITH_STATE_RE = re.compile(r"\.\s*with_state\s*\(\s*([\w:]+)\s*\)")
+_RUST_ROCKET_MOUNT_RE = re.compile(r"\.\s*mount\s*\(\s*[\"'][^\"']*[\"']\s*,\s*routes!\s*\[([^\]]+)\]")
 
 
 def _has_rust_router_imports(parsed_files: dict[str, Any]) -> bool:
@@ -972,7 +977,7 @@ def _has_rust_router_imports(parsed_files: dict[str, Any]) -> bool:
             continue
         for imp in parsed.imports:
             mp = imp.module_path
-            if mp.startswith("axum") or mp.startswith("actix_web") or mp.startswith("actix-web"):
+            if mp.startswith(("axum", "actix_web", "actix-web", "rocket")):
                 return True
     return False
 
@@ -1000,11 +1005,24 @@ def _add_rust_router_edges(
             _RUST_ACTIX_TO_RE,
             _RUST_ACTIX_SERVICE_RE,
             _RUST_SCOPE_CONFIGURE_RE,
+            _RUST_NEST_RE,
+            _RUST_LAYER_RE,
+            _RUST_FALLBACK_RE,
+            _RUST_WITH_STATE_RE,
         ):
             for m in regex.finditer(text):
                 for target in _resolve(m.group(1)):
                     if target != path and target in path_set and _add_edge_if_new(graph, path, target):
                         count += 1
+
+        # Rocket routes![] macro lists multiple handlers comma-separated
+        for m in _RUST_ROCKET_MOUNT_RE.finditer(text):
+            for handler in m.group(1).split(","):
+                handler = handler.strip()
+                if handler:
+                    for target in _resolve(handler):
+                        if target != path and target in path_set and _add_edge_if_new(graph, path, target):
+                            count += 1
 
     return count
 

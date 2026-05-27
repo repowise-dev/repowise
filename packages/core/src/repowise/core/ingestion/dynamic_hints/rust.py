@@ -16,8 +16,14 @@ _ENTRY_ATTRS = (
     "#[async_std::main]",
     "#[rocket::main]",
     "#[tauri::command]",
+    "#[proc_macro]",
+    "#[proc_macro_derive",
+    "#[proc_macro_attribute]",
 )
-_ROUTE_RE = re.compile(r"#\[(get|post|put|delete|patch|head|options)\s*\(")
+_ROUTE_RE = re.compile(
+    r"#\[(?:(?:rocket|actix_web|axum)::)?"
+    r"(?:get|post|put|delete|patch|head|options)\s*\("
+)
 
 # Test markers
 _TEST_MARKERS = ("#[test]", "#[tokio::test]", "#[cfg(test)]", "#[rstest]", "#[bench]")

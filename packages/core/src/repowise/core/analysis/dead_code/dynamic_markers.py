@@ -102,6 +102,11 @@ _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
         # Doc-hidden items are intentionally not part of the public API surface
         # but may still be used by downstream crates or macros via re-exports.
         '#[doc(hidden)]',
+        # Explicitly suppressed warnings — the author knows it looks unused.
+        '#[allow(dead_code)]',
+        '#[allow(unused)]',
+        # Deprecated items are intentionally present but winding down.
+        '#[deprecated',
     ),
     ".cs": (
         # Reflection-driven type loading

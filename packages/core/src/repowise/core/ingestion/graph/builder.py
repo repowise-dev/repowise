@@ -113,6 +113,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             has_error=bool(parsed.parse_errors),
             is_test=parsed.file_info.is_test,
             is_entry_point=parsed.file_info.is_entry_point,
+            docstring=parsed.docstring,
         )
 
         # --- Symbol nodes ---
@@ -133,6 +134,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 signature=sym.signature,
                 decorators=sym.decorators,
                 is_exported_symbol=sym.is_exported_symbol,
+                docstring=sym.docstring,
             )
 
             # DEFINES edge: file → symbol
@@ -164,6 +166,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             end_line=0,
             visibility="private",
             language=parsed.file_info.language,
+            docstring=parsed.docstring,
         )
         self._graph.add_edge(path, module_sym_id, edge_type="defines")
 

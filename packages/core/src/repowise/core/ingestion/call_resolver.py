@@ -106,14 +106,43 @@ class CallResolver:
 
         A barrel file imports a name and re-exports it without defining it
         locally (e.g., ``__init__.py`` with ``from .calculator import Calculator``).
-        When downstream code imports from the barrel, we follow one hop to
+        When downstream code imports from the barrel, we follow chains to
         find the actual defining file.
         """
+        # First pass: identify direct barrel origins
         for path, name_to_file in self._import_names.items():
             file_syms = self._file_symbols.get(path, {})
             for name, source_file in name_to_file.items():
                 if name not in file_syms:
                     self._barrel_origins[path][name] = source_file
+
+        # Also track Rust pub-use re-exports that use wildcard (*) bindings.
+        # When a file has `pub use foo::*`, all symbols from foo are
+        # transitively available through this file.
+        for path, parsed in self._parsed_files.items():
+            for imp in parsed.imports:
+                if not imp.is_reexport or not imp.resolved_file:
+                    continue
+                if imp.resolved_file.startswith("external:"):
+                    continue
+                resolved = imp.resolved_file
+                source_syms = self._file_symbols.get(resolved, {})
+                file_syms = self._file_symbols.get(path, {})
+                for sym_name in source_syms:
+                    if sym_name not in file_syms:
+                        self._barrel_origins[path][sym_name] = resolved
+
+        # Multi-hop: follow chains up to 5 hops
+        for _ in range(4):
+            changed = False
+            for path, origins in list(self._barrel_origins.items()):
+                for name, source in list(origins.items()):
+                    deeper = self._barrel_origins.get(source, {}).get(name)
+                    if deeper and deeper != source:
+                        origins[name] = deeper
+                        changed = True
+            if not changed:
+                break
 
     def _get_rust_crate_src(self) -> dict[str, str]:
         """Lazily build a mapping from normalised crate name to src/ dir."""
@@ -322,6 +351,15 @@ class CallResolver:
             imp_methods = self._file_methods.get(imported_file, {})
             if key in imp_methods:
                 return ResolvedCall(caller_id, imp_methods[key], 0.88, call.line)
+
+        # Strategy 2b: trait method dispatch — receiver is a type that
+        # implements a trait; the method may be defined on the trait's
+        # impl block in another file.
+        for _path, methods in self._file_methods.items():
+            if _path == file_path:
+                continue
+            if key in methods:
+                return ResolvedCall(caller_id, methods[key], 0.75, call.line)
 
         # Strategy 3: receiver is "self" or "this" — look in same class
         if receiver_name in ("self", "this"):

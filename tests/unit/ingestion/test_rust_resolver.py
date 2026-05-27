@@ -428,3 +428,139 @@ class TestPathAttributeResolution:
         ctx.parsed_files = {p: None for p in ctx.path_set}
         result = resolve_rust_import("impl_file.rs", "src/sub/mod.rs", ctx)
         assert result == "src/sub/impl_file.rs"
+
+
+class TestTrailingUnderscoreFallback:
+    """#[path]-renamed modules use trailing-underscore names (e.g. ``export_``)
+    backed by files without the underscore (e.g. ``export.rs``)."""
+
+    def test_self_import_with_trailing_underscore(self, tmp_path: Path) -> None:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "lib.rs").write_text("// root\n")
+        (tmp_path / "src" / "export.rs").write_text("pub struct BundleOptions;\n")
+
+        ctx = _ctx(tmp_path, ["src/lib.rs", "src/export.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("self::export_", "src/lib.rs", ctx)
+        assert result == "src/export.rs"
+
+    def test_crate_import_with_trailing_underscore(self, tmp_path: Path) -> None:
+        (tmp_path / "src/model").mkdir(parents=True)
+        (tmp_path / "src" / "lib.rs").write_text("// root\n")
+        (tmp_path / "src/model" / "enum.rs").write_text("pub enum MyEnum {}\n")
+
+        ctx = _ctx(tmp_path, ["src/lib.rs", "src/model/enum.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("crate::model::enum_", "src/lib.rs", ctx)
+        assert result == "src/model/enum.rs"
+
+    def test_no_false_positive_on_regular_module(self, tmp_path: Path) -> None:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "lib.rs").write_text("// root\n")
+        (tmp_path / "src" / "my_module.rs").write_text("pub fn hello(){}\n")
+
+        ctx = _ctx(tmp_path, ["src/lib.rs", "src/my_module.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("crate::my_module", "src/lib.rs", ctx)
+        assert result == "src/my_module.rs"
+
+    def test_trailing_underscore_with_mod_rs(self, tmp_path: Path) -> None:
+        (tmp_path / "src/export").mkdir(parents=True)
+        (tmp_path / "src" / "lib.rs").write_text("// root\n")
+        (tmp_path / "src/export" / "mod.rs").write_text("pub fn run(){}\n")
+
+        ctx = _ctx(tmp_path, ["src/lib.rs", "src/export/mod.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import("self::export_", "src/lib.rs", ctx)
+        assert result == "src/export/mod.rs"
+
+    def test_brace_import_with_trailing_underscore(self, tmp_path: Path) -> None:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "lib.rs").write_text("// root\n")
+        (tmp_path / "src" / "export.rs").write_text("pub struct BundleOptions;\n")
+
+        ctx = _ctx(tmp_path, ["src/lib.rs", "src/export.rs"])
+        ctx.parsed_files = {p: None for p in ctx.path_set}
+        result = resolve_rust_import(
+            "self::export_::{BundleOptions, export}", "src/lib.rs", ctx
+        )
+        assert result == "src/export.rs"
+
+
+class TestWorkspaceDepInheritance:
+    """Cargo 1.64+ ``{ workspace = true }`` dependency inheritance."""
+
+    def test_member_inherits_workspace_dep(self, tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/foo"]\n\n'
+            '[workspace.dependencies]\n'
+            'bar = { path = "../bar", package = "bar-impl" }\n'
+        )
+        crate_dir = tmp_path / "crates" / "foo"
+        crate_dir.mkdir(parents=True)
+        (crate_dir / "Cargo.toml").write_text(
+            '[package]\nname = "foo"\nversion = "0.1.0"\n\n'
+            '[dependencies]\nbar = { workspace = true }\n'
+        )
+        (crate_dir / "src").mkdir()
+        (crate_dir / "src" / "lib.rs").write_text("// root\n")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        foo = next(c for c in idx.crates if c.name == "foo")
+        assert any(
+            d.name == "bar" and d.is_path and d.package == "bar-impl"
+            for d in foo.dependencies
+        )
+
+    def test_member_inherits_simple_version(self, tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/foo"]\n\n'
+            '[workspace.dependencies]\nserde = "1.0"\n'
+        )
+        crate_dir = tmp_path / "crates" / "foo"
+        crate_dir.mkdir(parents=True)
+        (crate_dir / "Cargo.toml").write_text(
+            '[package]\nname = "foo"\nversion = "0.1.0"\n\n'
+            '[dependencies]\nserde = { workspace = true }\n'
+        )
+        (crate_dir / "src").mkdir()
+        (crate_dir / "src" / "lib.rs").write_text("// root\n")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        foo = next(c for c in idx.crates if c.name == "foo")
+        assert any(d.name == "serde" and not d.is_path for d in foo.dependencies)
+
+
+class TestBinTargetDiscovery:
+    """``[[bin]]`` section parsing in Cargo.toml."""
+
+    def test_bin_paths_parsed(self, tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/foo"]\n'
+        )
+        crate_dir = tmp_path / "crates" / "foo"
+        crate_dir.mkdir(parents=True)
+        (crate_dir / "Cargo.toml").write_text(
+            '[package]\nname = "foo"\nversion = "0.1.0"\n\n'
+            '[[bin]]\nname = "cli"\npath = "src/bin/cli.rs"\n\n'
+            '[[bin]]\nname = "server"\npath = "src/bin/server.rs"\n'
+        )
+        (crate_dir / "src").mkdir()
+        (crate_dir / "src" / "lib.rs").write_text("// root\n")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        foo = next(c for c in idx.crates if c.name == "foo")
+        assert "crates/foo/src/bin/cli.rs" in foo.bin_paths
+        assert "crates/foo/src/bin/server.rs" in foo.bin_paths
+
+    def test_no_bin_section(self, tmp_path: Path) -> None:
+        _write_workspace(tmp_path, ["crates/foo"])
+        _write_member_crate(tmp_path, "crates/foo", "foo")
+        ctx = _ctx(tmp_path, ["crates/foo/src/lib.rs"])
+        idx = get_or_build_cargo_workspace_index(ctx)
+        assert idx is not None
+        foo = next(c for c in idx.crates if c.name == "foo")
+        assert foo.bin_paths == ()

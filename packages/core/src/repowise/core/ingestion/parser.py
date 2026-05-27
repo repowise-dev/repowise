@@ -557,6 +557,13 @@ class ASTParser:
                 or module_text.startswith(("self::", "super::", "crate::"))
             )
 
+            is_reexport = False
+            if file_info.language == "rust" and stmt_node.type == "use_declaration":
+                for child in stmt_node.children:
+                    if child.type == "visibility_modifier":
+                        is_reexport = True
+                        break
+
             imports.append(
                 Import(
                     raw_statement=raw,
@@ -565,6 +572,7 @@ class ASTParser:
                     is_relative=is_relative,
                     resolved_file=None,
                     bindings=bindings,
+                    is_reexport=is_reexport,
                 )
             )
 

@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from repowise.core.ingestion.graph import GraphBuilder
-from repowise.core.ingestion.models import FileInfo, Import, ParsedFile
+from repowise.core.ingestion.models import FileInfo, Import, ParsedFile, Symbol
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -118,6 +118,66 @@ class TestAddFile:
         g = b.graph()
         # 2 file nodes + 2 synthetic __module__ symbol nodes
         assert g.number_of_nodes() == 4
+
+
+# ---------------------------------------------------------------------------
+# Docstring propagation
+# ---------------------------------------------------------------------------
+
+
+def _sym(
+    path: str,
+    name: str,
+    docstring: str | None = None,
+    kind: str = "function",
+) -> Symbol:
+    return Symbol(
+        id=f"{path}::{name}",
+        name=name,
+        qualified_name=name,
+        kind=kind,
+        signature=f"def {name}()",
+        start_line=1,
+        end_line=5,
+        docstring=docstring,
+        language="python",
+    )
+
+
+class TestDocstringPropagation:
+    def test_symbol_docstring_in_graph_node(self) -> None:
+        b = GraphBuilder()
+        sym = _sym("src/calc.py", "add", docstring="Adds two numbers.")
+        parsed = _parsed("src/calc.py")
+        parsed.symbols = [sym]
+        b.add_file(parsed)
+        g = b.graph()
+        assert g.nodes[sym.id]["docstring"] == "Adds two numbers."
+
+    def test_file_docstring_in_graph_node(self) -> None:
+        b = GraphBuilder()
+        parsed = _parsed("src/calc.py")
+        parsed.docstring = "Calculator utilities."
+        b.add_file(parsed)
+        g = b.graph()
+        assert g.nodes["src/calc.py"]["docstring"] == "Calculator utilities."
+
+    def test_module_node_carries_file_docstring(self) -> None:
+        b = GraphBuilder()
+        parsed = _parsed("src/calc.py")
+        parsed.docstring = "Module doc."
+        b.add_file(parsed)
+        g = b.graph()
+        assert g.nodes["src/calc.py::__module__"]["docstring"] == "Module doc."
+
+    def test_none_docstring_preserved(self) -> None:
+        b = GraphBuilder()
+        sym = _sym("src/calc.py", "add", docstring=None)
+        parsed = _parsed("src/calc.py")
+        parsed.symbols = [sym]
+        b.add_file(parsed)
+        g = b.graph()
+        assert g.nodes[sym.id]["docstring"] is None
 
 
 # ---------------------------------------------------------------------------
