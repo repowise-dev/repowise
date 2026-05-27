@@ -40,10 +40,17 @@ def _warmup_dotnet(ctx: "ResolverContext") -> None:
     get_or_build_index(ctx)
 
 
+def _warmup_go(ctx: "ResolverContext") -> None:
+    from .resolvers.go_workspace import get_or_build_go_index
+
+    get_or_build_go_index(ctx)
+
+
 # Map language tag → (phase-event name, warmup function). The phase
 # name shows up in the CLI progress bar and in ``state.json`` timings.
 _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "csharp": ("graph.dotnet_index", _warmup_dotnet),
+    "go": ("graph.go_index", _warmup_go),
 }
 
 
