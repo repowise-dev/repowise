@@ -220,6 +220,252 @@ def _workspace_update(
 
 
 # ---------------------------------------------------------------------------
+# Single-repo update — phase helpers (called by update_command)
+# ---------------------------------------------------------------------------
+
+
+def _rebuild_graph_and_git(
+    repo_path: Any,
+    file_diffs: list,
+    cfg: dict,
+    exclude_patterns: list[str],
+) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
+    """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
+    re-index git metadata for the changed files.
+
+    Returns ``(parsed_files, source_map, graph_builder, repo_structure,
+    file_count, git_meta_map)``.
+    """
+    from pathlib import Path as PathlibPath
+
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    # Full re-ingest for graph (needed for cascade analysis)
+    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
+    file_infos = list(traverser.traverse())
+    repo_structure = traverser.get_repo_structure()
+
+    parser = ASTParser()
+    parsed_files: list = []
+    source_map: dict[str, bytes] = {}
+    graph_builder = GraphBuilder(repo_path)
+
+    for fi in file_infos:
+        try:
+            source = PathlibPath(fi.abs_path).read_bytes()
+            parsed = parser.parse_file(fi, source)
+            parsed_files.append(parsed)
+            source_map[fi.path] = source
+            graph_builder.add_file(parsed)
+        except Exception:
+            pass
+    graph_builder.build()
+
+    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
+    try:
+        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+
+        tech_items = detect_tech_stack(repo_path)
+        fw_count = graph_builder.add_framework_edges([item.name for item in tech_items])
+        if fw_count:
+            console.print(f"Framework edges added: [cyan]{fw_count}[/cyan]")
+    except Exception:
+        pass  # framework edge detection is best-effort
+
+    # Re-index git metadata for changed files
+    git_meta_map: dict[str, dict] = {}
+    try:
+        from repowise.core.ingestion.git_indexer import GitIndexer
+
+        _commit_limit = cfg.get("commit_limit")
+        _follow_renames = cfg.get("follow_renames", False)
+        git_indexer = GitIndexer(
+            repo_path,
+            commit_limit=_commit_limit,
+            follow_renames=_follow_renames,
+        )
+        changed_paths = [fd.path for fd in file_diffs]
+        updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
+        git_meta_map = {m["file_path"]: m for m in updated_meta}
+        graph_builder.update_co_change_edges(git_meta_map)
+    except Exception as exc:
+        console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
+
+    return parsed_files, source_map, graph_builder, repo_structure, len(file_infos), git_meta_map
+
+
+def _run_partial_analysis(
+    repo_path: Any,
+    graph_builder: Any,
+    git_meta_map: dict,
+    parsed_files: list,
+    file_diffs: list,
+) -> tuple[Any, Any]:
+    """Run partial code-health + dead-code analysis for the changed files.
+
+    Returns ``(partial_health_report, dead_code_report)`` — either may be
+    ``None`` if its analysis failed (both are best-effort).
+    """
+    # Run partial code-health analysis up front so both the index-only
+    # and full paths can upsert findings/metrics for changed files only.
+    # The full file-list is needed because duplication is cross-file —
+    # but only files in ``changed_paths`` produce new findings/metrics.
+    partial_health_report = None
+    try:
+        from repowise.core.analysis.health import HealthAnalyzer
+        from repowise.core.analysis.health.config import HealthConfig
+
+        _health_analyzer = HealthAnalyzer(
+            graph_builder.graph(),
+            git_meta_map=git_meta_map,
+            parsed_files=parsed_files,
+        )
+        _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
+        if _health_changed:
+            _hcfg = HealthConfig.load(repo_path)
+            _analyzer_config = (
+                _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
+                if (_hcfg.disabled_biomarkers or _hcfg.rules)
+                else None
+            )
+            partial_health_report = _health_analyzer.analyze(
+                _analyzer_config, changed_files=_health_changed
+            )
+            console.print(
+                f"Health analysis (partial): [cyan]{len(_health_changed)} files[/cyan], "
+                f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
+            )
+    except Exception as exc:
+        console.print(f"[yellow]Health analysis skipped: {exc}[/yellow]")
+
+    # Run partial dead-code analysis up front so both branches can
+    # persist its results. Previously this sat below the ``if index_only``
+    # short-circuit, which left the closure's reference to
+    # ``dead_code_report`` unbound and crashed every ``--index-only`` run.
+    dead_code_report = None
+    try:
+        from repowise.core.analysis.dead_code import DeadCodeAnalyzer
+
+        _analyzer_partial = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+        _changed_paths_partial = [fd.path for fd in file_diffs]
+        dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)
+        if dead_code_report.total_findings:
+            console.print(
+                f"Dead code findings (partial): [yellow]{dead_code_report.total_findings}[/yellow]"
+            )
+    except Exception as exc:
+        console.print(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
+
+    return partial_health_report, dead_code_report
+
+
+def _persist_index_only_update(
+    repo_path: Any,
+    graph_builder: Any,
+    git_meta_map: dict,
+    dead_code_report: Any,
+    partial_health_report: Any,
+    state: dict,
+    head: str | None,
+    start: float,
+) -> None:
+    """Persist the index-only update (graph + git + dead-code + health), save
+    state, and print the completion line. No LLM regeneration."""
+
+    async def _persist_index_only() -> None:
+        from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+
+        url = get_db_url_for_repo(repo_path)
+        engine = create_engine(url)
+        await init_db(engine)
+        sf = create_session_factory(engine)
+
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+            repo_id = repo.id
+
+            if git_meta_map:
+                try:
+                    from repowise.core.persistence.crud import (
+                        recompute_git_percentiles,
+                        upsert_git_metadata_bulk,
+                    )
+
+                    await upsert_git_metadata_bulk(session, repo_id, list(git_meta_map.values()))
+                    await recompute_git_percentiles(session, repo_id)
+                except Exception as exc:
+                    console.print(f"[yellow]Git persist skipped: {exc}[/yellow]")
+
+            if dead_code_report is not None:
+                try:
+                    from repowise.core.persistence.crud import (
+                        save_dead_code_findings,
+                    )
+
+                    await save_dead_code_findings(session, repo_id, dead_code_report.findings)
+                except Exception as exc:
+                    console.print(f"[yellow]Dead-code persist skipped: {exc}[/yellow]")
+
+            if partial_health_report is not None:
+                try:
+                    await _persist_partial_health(session, repo_id, partial_health_report)
+                except Exception as exc:
+                    console.print(f"[yellow]Health persist skipped: {exc}[/yellow]")
+
+            # Re-persist graph_nodes so symbol-level PageRank /
+            # betweenness / community ids stay in sync with the
+            # current graph build. Without this, ``repowise update``
+            # leaves stale per-symbol metrics from the original init
+            # and the UI shows "Not indexed in graph" for every
+            # symbol on existing repos.
+            try:
+                from repowise.core.pipeline.persist import persist_graph_nodes
+
+                await persist_graph_nodes(session, repo_id, graph_builder)
+            except Exception as exc:
+                console.print(f"[yellow]Graph nodes persist skipped: {exc}[/yellow]")
+
+    run_async(_persist_index_only())
+    save_state(repo_path, {**state, "last_sync_commit": head})
+    elapsed = time.monotonic() - start
+    console.print(
+        f"[green]Index-only update complete[/green] in {elapsed:.1f}s — "
+        "graph + git + dead-code refreshed; LLM pages unchanged."
+    )
+
+
+def _render_update_report(
+    generated_pages: list,
+    affected: Any,
+    new_decision_markers: list,
+    elapsed: float,
+) -> None:
+    """Render the incremental-update generation report (with a plain fallback)."""
+    try:
+        from repowise.core.generation.report import GenerationReport, render_report
+
+        report = GenerationReport.from_pages(
+            generated_pages,
+            stale_count=len(affected.decay_only),
+            decisions_count=len(new_decision_markers),
+            elapsed=elapsed,
+        )
+        render_report(report, console)
+    except Exception:
+        # Fallback to simple message if report fails
+        console.print(
+            f"[bold green]Updated {len(generated_pages)} pages in {elapsed:.1f}s[/bold green]"
+        )
+
+
+# ---------------------------------------------------------------------------
 # CLI command
 # ---------------------------------------------------------------------------
 
@@ -478,10 +724,7 @@ def update_command(
         console.print(f"  [{color}]{fd.status:>10}[/{color}]  {fd.path}")
 
     # Re-parse changed files and rebuild graph for affected pages
-    from pathlib import Path as PathlibPath
-
     from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
     cfg = load_config(repo_path)
     language = cfg.get("language", "en")
@@ -499,62 +742,15 @@ def update_command(
     # Read exclude patterns from config (set during init or via web UI)
     exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
 
-    # Full re-ingest for graph (needed for cascade analysis)
-    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
-    file_infos = list(traverser.traverse())
-    repo_structure = traverser.get_repo_structure()
-
-    parser = ASTParser()
-    parsed_files = []
-    source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(repo_path)
-
-    for fi in file_infos:
-        try:
-            source = PathlibPath(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            parsed_files.append(parsed)
-            source_map[fi.path] = source
-            graph_builder.add_file(parsed)
-        except Exception:
-            pass
-    graph_builder.build()
-
-    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
-    try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
-
-        tech_items = detect_tech_stack(repo_path)
-        fw_count = graph_builder.add_framework_edges([item.name for item in tech_items])
-        if fw_count:
-            console.print(f"Framework edges added: [cyan]{fw_count}[/cyan]")
-    except Exception:
-        pass  # framework edge detection is best-effort
-
-    # Re-index git metadata for changed files
-    git_meta_map: dict[str, dict] = {}
-    try:
-        from repowise.core.ingestion.git_indexer import GitIndexer
-
-        _commit_limit = cfg.get("commit_limit")
-        _follow_renames = cfg.get("follow_renames", False)
-        git_indexer = GitIndexer(
-            repo_path,
-            commit_limit=_commit_limit,
-            follow_renames=_follow_renames,
-        )
-        changed_paths = [fd.path for fd in file_diffs]
-        updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
-        git_meta_map = {m["file_path"]: m for m in updated_meta}
-        graph_builder.update_co_change_edges(git_meta_map)
-    except Exception as exc:
-        console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
+    parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map = (
+        _rebuild_graph_and_git(repo_path, file_diffs, cfg, exclude_patterns)
+    )
 
     # Determine affected pages (auto-scale budget if not explicitly set)
     if cascade_budget is None:
         from repowise.core.ingestion.change_detector import compute_adaptive_budget
 
-        cascade_budget = compute_adaptive_budget(file_diffs, len(file_infos))
+        cascade_budget = compute_adaptive_budget(file_diffs, file_count)
         console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
     affected = detector.get_affected_pages(file_diffs, graph_builder.graph(), cascade_budget)
 
@@ -566,130 +762,20 @@ def update_command(
         console.print("[yellow]Dry run — no pages regenerated.[/yellow]")
         return
 
-    # Run partial code-health analysis up front so both the index-only
-    # and full paths can upsert findings/metrics for changed files only.
-    # The full file-list is needed because duplication is cross-file —
-    # but only files in ``changed_paths`` produce new findings/metrics.
-    partial_health_report = None
-    try:
-        from repowise.core.analysis.health import HealthAnalyzer
-        from repowise.core.analysis.health.config import HealthConfig
-
-        _health_analyzer = HealthAnalyzer(
-            graph_builder.graph(),
-            git_meta_map=git_meta_map,
-            parsed_files=parsed_files,
-        )
-        _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
-        if _health_changed:
-            _hcfg = HealthConfig.load(repo_path)
-            _analyzer_config = (
-                _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-                if (_hcfg.disabled_biomarkers or _hcfg.rules)
-                else None
-            )
-            partial_health_report = _health_analyzer.analyze(
-                _analyzer_config, changed_files=_health_changed
-            )
-            console.print(
-                f"Health analysis (partial): [cyan]{len(_health_changed)} files[/cyan], "
-                f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
-            )
-    except Exception as exc:
-        console.print(f"[yellow]Health analysis skipped: {exc}[/yellow]")
-
-    # Run partial dead-code analysis up front so both branches can
-    # persist its results. Previously this sat below the ``if index_only``
-    # short-circuit, which left the closure's reference to
-    # ``dead_code_report`` unbound and crashed every ``--index-only`` run.
-    dead_code_report = None
-    try:
-        from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-
-        _analyzer_partial = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
-        _changed_paths_partial = [fd.path for fd in file_diffs]
-        dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)
-        if dead_code_report.total_findings:
-            console.print(
-                f"Dead code findings (partial): [yellow]{dead_code_report.total_findings}[/yellow]"
-            )
-    except Exception as exc:
-        console.print(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
+    partial_health_report, dead_code_report = _run_partial_analysis(
+        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs
+    )
 
     if index_only:
-        # Refresh graph, git metadata, and dead-code artifacts without
-        # paying for LLM regeneration. Persist what we already computed
-        # above and skip provider/decision/page-generation work.
-        async def _persist_index_only() -> None:
-            from repowise.cli.helpers import get_db_url_for_repo
-            from repowise.core.persistence import (
-                create_engine,
-                create_session_factory,
-                get_session,
-                init_db,
-                upsert_repository,
-            )
-
-            url = get_db_url_for_repo(repo_path)
-            engine = create_engine(url)
-            await init_db(engine)
-            sf = create_session_factory(engine)
-
-            async with get_session(sf) as session:
-                repo = await upsert_repository(
-                    session, name=repo_path.name, local_path=str(repo_path)
-                )
-                repo_id = repo.id
-
-                if git_meta_map:
-                    try:
-                        from repowise.core.persistence.crud import (
-                            recompute_git_percentiles,
-                            upsert_git_metadata_bulk,
-                        )
-
-                        await upsert_git_metadata_bulk(
-                            session, repo_id, list(git_meta_map.values())
-                        )
-                        await recompute_git_percentiles(session, repo_id)
-                    except Exception as exc:
-                        console.print(f"[yellow]Git persist skipped: {exc}[/yellow]")
-
-                if dead_code_report is not None:
-                    try:
-                        from repowise.core.persistence.crud import (
-                            save_dead_code_findings,
-                        )
-
-                        await save_dead_code_findings(session, repo_id, dead_code_report.findings)
-                    except Exception as exc:
-                        console.print(f"[yellow]Dead-code persist skipped: {exc}[/yellow]")
-
-                if partial_health_report is not None:
-                    try:
-                        await _persist_partial_health(session, repo_id, partial_health_report)
-                    except Exception as exc:
-                        console.print(f"[yellow]Health persist skipped: {exc}[/yellow]")
-
-                # Re-persist graph_nodes so symbol-level PageRank /
-                # betweenness / community ids stay in sync with the
-                # current graph build. Without this, ``repowise update``
-                # leaves stale per-symbol metrics from the original init
-                # and the UI shows "Not indexed in graph" for every
-                # symbol on existing repos.
-                try:
-                    from repowise.core.pipeline.persist import persist_graph_nodes
-
-                    await persist_graph_nodes(session, repo_id, graph_builder)
-                except Exception as exc:
-                    console.print(f"[yellow]Graph nodes persist skipped: {exc}[/yellow]")
-
-        run_async(_persist_index_only())
-        save_state(repo_path, {**state, "last_sync_commit": head})
-        elapsed = time.monotonic() - start
-        console.print(
-            f"[green]Index-only update complete[/green] in {elapsed:.1f}s — "
-            "graph + git + dead-code refreshed; LLM pages unchanged."
+        _persist_index_only_update(
+            repo_path,
+            graph_builder,
+            git_meta_map,
+            dead_code_report,
+            partial_health_report,
+            state,
+            head,
+            start,
         )
         return
 
@@ -1090,20 +1176,4 @@ def update_command(
         pass  # cross-repo hooks must never fail the update
 
     elapsed = time.monotonic() - start
-
-    # Print generation report
-    try:
-        from repowise.core.generation.report import GenerationReport, render_report
-
-        report = GenerationReport.from_pages(
-            generated_pages,
-            stale_count=len(affected.decay_only),
-            decisions_count=len(new_decision_markers),
-            elapsed=elapsed,
-        )
-        render_report(report, console)
-    except Exception:
-        # Fallback to simple message if report fails
-        console.print(
-            f"[bold green]Updated {len(generated_pages)} pages in {elapsed:.1f}s[/bold green]"
-        )
+    _render_update_report(generated_pages, affected, new_decision_markers, elapsed)

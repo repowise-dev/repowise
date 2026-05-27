@@ -27,6 +27,18 @@ def work_repo(tmp_path, sample_repo_path, monkeypatch):
     return dest
 
 
+def _git(args, cwd):
+    import subprocess
+
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e.x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e.x",
+    }
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, env={**env})
+
+
 @pytest.fixture
 def workspace_root(tmp_path, sample_repo_path, monkeypatch):
     """A directory holding two git-initialized copies of sample_repo.
@@ -35,30 +47,34 @@ def workspace_root(tmp_path, sample_repo_path, monkeypatch):
     into the workspace flow) and uses its own repo-local DB — so we must NOT set
     REPOWISE_DB_URL here.
     """
-    import subprocess
-
     monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
     root = tmp_path / "ws"
     root.mkdir()
     for name in ("alpha", "beta"):
         dest = root / name
         shutil.copytree(sample_repo_path, dest)
-        env = {
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@e.x",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@e.x",
-        }
-        subprocess.run(["git", "init"], cwd=dest, check=True, capture_output=True)
-        subprocess.run(["git", "add", "-A"], cwd=dest, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "init"],
-            cwd=dest,
-            check=True,
-            capture_output=True,
-            env={**env},
-        )
+        _git(["init"], dest)
+        _git(["add", "-A"], dest)
+        _git(["commit", "-m", "init"], dest)
     return root
+
+
+@pytest.fixture
+def git_work_repo(tmp_path, sample_repo_path, monkeypatch):
+    """A git-backed copy of sample_repo (one commit), with a repo-local DB.
+
+    ``repowise update`` diffs HEAD against the last synced commit, so the
+    update path needs a real git repo with history.
+    """
+    dest = tmp_path / "gitrepo"
+    shutil.copytree(sample_repo_path, dest)
+    db_path = dest / ".repowise" / "wiki.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite+aiosqlite:///{db_path}")
+    _git(["init"], dest)
+    _git(["add", "-A"], dest)
+    _git(["commit", "-m", "init"], dest)
+    return dest
 
 
 # ---------------------------------------------------------------------------
@@ -223,3 +239,79 @@ class TestExportMarkdown:
         # Should have created some .md files
         md_files = list(export_dir.glob("*.md"))
         assert len(md_files) > 0, f"No markdown files in {export_dir}"
+
+
+class TestUpdateIndexOnly:
+    def test_advances_sync_commit(self, runner, git_work_repo):
+        import json
+
+        # Index first (index-only — no LLM needed).
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        state0 = json.loads(
+            (git_work_repo / ".repowise" / "state.json").read_text(encoding="utf-8")
+        )
+        base_commit = state0["last_sync_commit"]
+        assert base_commit
+
+        # Make a change and commit it so update has a diff to process.
+        (git_work_repo / "new_module.py").write_text(
+            "def added():\n    return 1\n", encoding="utf-8"
+        )
+        _git(["add", "-A"], git_work_repo)
+        _git(["commit", "-m", "add module"], git_work_repo)
+
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Index-only update complete" in r1.output
+
+        state1 = json.loads(
+            (git_work_repo / ".repowise" / "state.json").read_text(encoding="utf-8")
+        )
+        assert state1["last_sync_commit"] != base_commit
+
+
+class TestUpdateFullMock:
+    def test_regenerates_pages(self, runner, git_work_repo):
+        import json
+
+        r0 = runner.invoke(
+            cli,
+            ["init", str(git_work_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert r0.exit_code == 0, r0.output
+
+        (git_work_repo / "new_module.py").write_text(
+            "def added():\n    return 1\n", encoding="utf-8"
+        )
+        _git(["add", "-A"], git_work_repo)
+        _git(["commit", "-m", "add module"], git_work_repo)
+
+        r1 = runner.invoke(
+            cli,
+            ["update", str(git_work_repo), "--provider", "mock", "--docs"],
+            catch_exceptions=False,
+        )
+        assert r1.exit_code == 0, r1.output
+        # State advanced and docs stayed enabled through a full update.
+        state = json.loads((git_work_repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert state.get("docs_enabled") is True
+
+
+class TestUpdateNoChanges:
+    def test_already_up_to_date(self, runner, git_work_repo):
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        # No new commits since init → update is a no-op.
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Already up to date" in r1.output
