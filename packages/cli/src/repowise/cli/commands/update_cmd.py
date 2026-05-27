@@ -63,18 +63,10 @@ def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
     Returns ``None`` on any failure — the decision upsert still works without it.
     """
     try:
-        from repowise.cli.commands.init_cmd import _build_embedder, _resolve_embedder
-        from repowise.core.persistence.vector_store import InMemoryVectorStore
+        from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
-        embedder = _build_embedder(_resolve_embedder(cfg.get("embedder")))
-        lance_dir = repo_path / ".repowise" / "lancedb"
-        try:
-            from repowise.core.persistence.vector_store import LanceDBVectorStore
-
-            lance_dir.mkdir(parents=True, exist_ok=True)
-            return LanceDBVectorStore(str(lance_dir), embedder=embedder)
-        except ImportError:
-            return InMemoryVectorStore(embedder)
+        embedder = build_embedder(resolve_embedder(cfg.get("embedder")))
+        return build_vector_store(repo_path, embedder)
     except Exception:
         return None
 
@@ -708,29 +700,9 @@ def update_command(
     # table — matching what `repowise init` already does. Without this,
     # `repowise costs` only ever reflects the initial index and shows $0 for
     # all subsequent updates.
-    from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.core.generation.cost_tracker import CostTracker
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        get_session,
-        init_db,
-        upsert_repository,
-    )
+    from repowise.cli.providers import build_cost_tracker
 
-    async def _make_cost_tracker() -> CostTracker:
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-            return CostTracker(session_factory=sf, repo_id=repo.id)
-
-    try:
-        cost_tracker = run_async(_make_cost_tracker())
-    except Exception:
-        cost_tracker = CostTracker()
+    cost_tracker = build_cost_tracker(repo_path, repo_path.name)
     provider._cost_tracker = cost_tracker
 
     # (dead_code_report computed above, before the index-only branch)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ import click
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
+from repowise.cli._setup import setup_logging_silence
 from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
 from repowise.cli.editor_integrations.defaults import get_default_disabled_project_files
 from repowise.cli.editor_setup import (
@@ -32,6 +34,13 @@ from repowise.cli.helpers import (
     save_config,
     save_state,
 )
+from repowise.cli.providers import (
+    build_cost_tracker,
+    build_embedder,
+    build_vector_store,
+    resolve_embedder,
+)
+from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import MaybeCountColumn
 
 # ---------------------------------------------------------------------------
@@ -138,17 +147,12 @@ def _offer_hook_install(
             )
 
 
-def _resolve_embedder(embedder_flag: str | None) -> str:
-    """Auto-detect embedder from env vars, or use the flag value."""
-    if embedder_flag:
-        return embedder_flag
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini"
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return "openrouter"
-    return "mock"
+# ``_resolve_embedder`` / ``_build_embedder`` now live in
+# ``cli.providers.embedders``. They keep their leading-underscore aliases here
+# because several sibling commands (update/reindex/search) import them from
+# this module — the aliases preserve that import surface.
+_resolve_embedder = resolve_embedder
+_build_embedder = build_embedder
 
 
 # ---------------------------------------------------------------------------
@@ -242,32 +246,6 @@ async def _persist_result(
 # ---------------------------------------------------------------------------
 
 
-def _build_embedder(embedder_name_resolved: str) -> Any:
-    """Construct the configured embedder, falling back to MockEmbedder.
-
-    Shared by the generation flows and the decision semantic-dedup wiring so
-    the same backend selection logic isn't duplicated. Real providers fall
-    back to the deterministic mock when their SDK/credentials are unavailable.
-    """
-    from repowise.core.providers.embedding.base import MockEmbedder
-
-    if embedder_name_resolved == "gemini":
-        try:
-            from repowise.core.providers.embedding.gemini import GeminiEmbedder
-
-            return GeminiEmbedder()
-        except Exception:
-            return MockEmbedder()
-    if embedder_name_resolved == "openai":
-        try:
-            from repowise.core.providers.embedding.openai import OpenAIEmbedder
-
-            return OpenAIEmbedder()
-        except Exception:
-            return MockEmbedder()
-    return MockEmbedder()
-
-
 def _run_workspace_generation(
     *,
     repo_path: Path,
@@ -292,40 +270,13 @@ def _run_workspace_generation(
     workspace run.
     """
     from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
-    from repowise.cli.helpers import get_db_url_for_repo
     from repowise.cli.ui import RichProgressCallback
     from repowise.core.generation import GenerationConfig
-    from repowise.core.generation.cost_tracker import CostTracker
-    from repowise.core.persistence import (
-        create_engine as _ce,
-    )
-    from repowise.core.persistence import (
-        create_session_factory as _csf,
-    )
-    from repowise.core.persistence import (
-        get_session as _gs,
-    )
-    from repowise.core.persistence import (
-        init_db as _idb,
-    )
-    from repowise.core.persistence import (
-        upsert_repository as _ur,
-    )
-    from repowise.core.persistence.vector_store import InMemoryVectorStore
     from repowise.core.pipeline import run_generation
 
-    # Build embedder
-    embedder_impl: Any = _build_embedder(embedder_name_resolved)
-
-    # Build vector store
-    lance_dir = repo_path / ".repowise" / "lancedb"
-    try:
-        from repowise.core.persistence.vector_store import LanceDBVectorStore
-
-        lance_dir.mkdir(parents=True, exist_ok=True)
-        vector_store: Any = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
-    except ImportError:
-        vector_store = InMemoryVectorStore(embedder_impl)
+    # Build embedder + vector store
+    embedder_impl: Any = build_embedder(embedder_name_resolved)
+    vector_store: Any = build_vector_store(repo_path, embedder_impl)
 
     # Stash the store on the result so persist's Phase-2C decision dedup
     # matches against — and embeds decisions into — the same store the pages
@@ -422,21 +373,7 @@ def _run_workspace_generation(
     # Cost tracker (DB-backed when possible)
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
-    async def _make_cost_tracker() -> CostTracker:
-        url = get_db_url_for_repo(repo_path)
-        engine = _ce(url)
-        await _idb(engine)
-        sf = _csf(engine)
-        async with _gs(sf) as _sess:
-            _repo = await _ur(_sess, name=result.repo_name, local_path=str(repo_path))
-            _repo_id = _repo.id
-        return CostTracker(session_factory=sf, repo_id=_repo_id)
-
-    try:
-        cost_tracker = run_async(_make_cost_tracker())
-    except Exception:
-        cost_tracker = CostTracker()
-
+    cost_tracker = build_cost_tracker(repo_path, result.repo_name)
     provider._cost_tracker = cost_tracker
 
     with Progress(
@@ -530,24 +467,7 @@ def _workspace_init(
     advanced mode (interactively) or passes an explicit provider, also runs
     LLM generation per repo.
     """
-    import logging
-
-    logging.getLogger("httpx").setLevel(logging.ERROR)
-    logging.getLogger("httpcore").setLevel(logging.ERROR)
-    for _logger_name in ("repowise.core", "repowise.server"):
-        logging.getLogger(_logger_name).setLevel(logging.ERROR)
-    try:
-        import structlog
-
-        # cache_logger_on_first_use=False: see init_command for rationale —
-        # otherwise module-level ``structlog.get_logger`` calls hold a logger
-        # snapshotted before configure() and bypass this filter.
-        structlog.configure(
-            wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
-            cache_logger_on_first_use=False,
-        )
-    except ImportError:
-        pass
+    setup_logging_silence()
 
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
@@ -806,31 +726,18 @@ def _workspace_init(
             state["phase_timings"] = repo_phase_timings
         kg = getattr(result, "knowledge_graph_result", None)
         if kg is not None:
-            state["knowledge_graph"] = {
-                "version": "1.0.0",
-                "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
-                "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
-                "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
-                "has_summaries": any(n.get("summary") for n in kg.nodes)
-                if hasattr(kg, "nodes")
-                else False,
-                "fingerprint": getattr(kg, "fingerprint", ""),
-            }
+            state["knowledge_graph"] = build_kg_state(kg)
         save_state(repo.path, state)
 
-        if kg is not None and hasattr(kg, "to_dict"):
-            import json as _kg_json
-
-            kg_json_path = repo.path / ".repowise" / "knowledge-graph.json"
-            kg_json_path.parent.mkdir(parents=True, exist_ok=True)
-            kg_json_path.write_text(_kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8")
+        if kg is not None:
+            save_knowledge_graph_json(repo.path, kg)
 
         # Update workspace config with indexing metadata
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         entry = ws_config.get_repo(repo.alias)
         if entry is not None:
-            entry.indexed_at = datetime.now(timezone.utc).isoformat()
+            entry.indexed_at = datetime.now(UTC).isoformat()
             entry.last_commit_at_index = head
 
         # MCP config + editor setup files per repo
@@ -1186,27 +1093,7 @@ def init_command(
     load_dotenv(repo_path)
 
     # Suppress library/structlog output — progress bars are the only output needed.
-    import logging
-
-    logging.getLogger("httpx").setLevel(logging.ERROR)
-    logging.getLogger("httpcore").setLevel(logging.ERROR)
-    for _logger_name in ("repowise.core", "repowise.server"):
-        logging.getLogger(_logger_name).setLevel(logging.ERROR)
-
-    try:
-        import structlog
-
-        # Without cache_logger_on_first_use=False, modules that called
-        # ``structlog.get_logger(__name__)`` at import time hold a bound logger
-        # snapshotted before this configure ran — so debug lines from
-        # ``core/ingestion/*`` (graph, traverser, parser, …) would leak past
-        # the ERROR filter on the first ``init`` of a session.
-        structlog.configure(
-            wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
-            cache_logger_on_first_use=False,
-        )
-    except ImportError:
-        pass
+    setup_logging_silence()
 
     # ---- Interactive mode (TTY, no explicit flags) ----
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
@@ -1491,6 +1378,7 @@ def init_command(
         # ``--coverage`` flag was passed; otherwise the configured
         # percentage drives a single non-interactive estimate.
         from dataclasses import replace as _replace_cfg
+
         from repowise.cli.cost_estimator import compute_coverage_options
         from repowise.cli.coverage_select import interactive_coverage_select
         from repowise.core.generation import GenerationConfig
@@ -1602,18 +1490,8 @@ def init_command(
 
         if not cost_declined:
             # Build embedder + vector store
-            from repowise.core.persistence.vector_store import InMemoryVectorStore
-
-            embedder_impl: Any = _build_embedder(embedder_name_resolved)
-
-            lance_dir = repo_path / ".repowise" / "lancedb"
-            try:
-                from repowise.core.persistence.vector_store import LanceDBVectorStore
-
-                lance_dir.mkdir(parents=True, exist_ok=True)
-                vector_store: Any = LanceDBVectorStore(str(lance_dir), embedder=embedder_impl)
-            except ImportError:
-                vector_store = InMemoryVectorStore(embedder_impl)
+            embedder_impl: Any = build_embedder(embedder_name_resolved)
+            vector_store: Any = build_vector_store(repo_path, embedder_impl)
 
             # Run generation via the pipeline's generation function
             from repowise.core.pipeline import run_generation
@@ -1630,48 +1508,10 @@ def init_command(
                 gen_callback = RichProgressCallback(gen_progress, console)
 
                 # Construct a CostTracker backed by the real DB so every LLM call
-                # is persisted to the llm_costs table.  We need the repo_id from the
-                # database row that was created/upserted during _persist_result
-                # (which has not run yet), so we look it up or fall back to in-memory.
-                from repowise.cli.helpers import get_db_url_for_repo
-                from repowise.core.generation.cost_tracker import CostTracker
-                from repowise.core.persistence import (
-                    create_engine as _create_engine,
-                )
-                from repowise.core.persistence import (
-                    create_session_factory as _create_sf,
-                )
-                from repowise.core.persistence import (
-                    get_session as _get_session,
-                )
-                from repowise.core.persistence import (
-                    init_db as _init_db,
-                )
-                from repowise.core.persistence import (
-                    upsert_repository as _upsert_repo,
-                )
-
-                async def _make_cost_tracker() -> CostTracker:
-                    url = get_db_url_for_repo(repo_path)
-                    engine = _create_engine(url)
-                    await _init_db(engine)
-                    sf = _create_sf(engine)
-                    async with _get_session(sf) as _sess:
-                        _repo = await _upsert_repo(
-                            _sess,
-                            name=result.repo_name,
-                            local_path=str(repo_path),
-                        )
-                        _repo_id = _repo.id
-                    # Keep engine alive for the duration of generation — it will be
-                    # disposed by _persist_result's own engine later.
-                    return CostTracker(session_factory=sf, repo_id=_repo_id)
-
-                try:
-                    cost_tracker = run_async(_make_cost_tracker())
-                except Exception:
-                    # Fallback to in-memory tracker if DB setup fails
-                    cost_tracker = CostTracker()
+                # is persisted to the llm_costs table.  The engine stays open for
+                # the duration of generation and is disposed by _persist_result's
+                # own engine later. Falls back to an in-memory tracker on failure.
+                cost_tracker = build_cost_tracker(repo_path, result.repo_name)
 
                 # Attach tracker to provider unconditionally (all providers now
                 # accept _cost_tracker as an attribute)
@@ -1796,22 +1636,8 @@ def init_command(
         base_state["phase_timings"] = phase_timings
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
-        base_state["knowledge_graph"] = {
-            "version": "1.0.0",
-            "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
-            "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
-            "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
-            "has_summaries": any(n.get("summary") for n in kg.nodes)
-            if hasattr(kg, "nodes")
-            else False,
-            "fingerprint": getattr(kg, "fingerprint", ""),
-        }
-        if hasattr(kg, "to_dict"):
-            import json as _kg_json
-
-            kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
-            kg_json_path.parent.mkdir(parents=True, exist_ok=True)
-            kg_json_path.write_text(_kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8")
+        base_state["knowledge_graph"] = build_kg_state(kg)
+        save_knowledge_graph_json(repo_path, kg)
     if effective_index_only or provider is None:
         save_state(repo_path, base_state)
 
@@ -1859,24 +1685,11 @@ def init_command(
             state["phase_timings"] = phase_timings
         kg = getattr(result, "knowledge_graph_result", None)
         if kg is not None:
-            state["knowledge_graph"] = {
-                "version": "1.0.0",
-                "node_count": len(kg.nodes) if hasattr(kg, "nodes") else 0,
-                "layer_count": len(kg.layers) if hasattr(kg, "layers") else 0,
-                "tour_steps": len(kg.tour) if hasattr(kg, "tour") else 0,
-                "has_summaries": any(n.get("summary") for n in kg.nodes)
-                if hasattr(kg, "nodes")
-                else False,
-                "fingerprint": getattr(kg, "fingerprint", ""),
-            }
+            state["knowledge_graph"] = build_kg_state(kg)
         save_state(repo_path, state)
 
-        if kg is not None and hasattr(kg, "to_dict"):
-            import json as _kg_json
-
-            kg_json_path = repo_path / ".repowise" / "knowledge-graph.json"
-            kg_json_path.parent.mkdir(parents=True, exist_ok=True)
-            kg_json_path.write_text(_kg_json.dumps(kg.to_dict(), indent=2), encoding="utf-8")
+        if kg is not None:
+            save_knowledge_graph_json(repo_path, kg)
 
         save_config(
             repo_path,
