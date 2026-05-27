@@ -61,6 +61,16 @@ _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
         "reflect.New(",
         "reflect.TypeOf(",
         "reflect.ValueOf(",
+        # Compiler / linker directives. Files that drive code generation
+        # (``//go:generate``), embed assets (``//go:embed``), or link to a
+        # symbol defined elsewhere (``//go:linkname``) participate in the
+        # build outside the import graph — treat their package as dynamic.
+        # (Struct tags like ``json:"…"`` were considered but rejected: they
+        # appear in nearly every Go file, so they are too broad to be a
+        # useful dynamic signal.)
+        "//go:generate",
+        "//go:embed",
+        "//go:linkname",
     ),
     ".swift": (
         "NSClassFromString(",
