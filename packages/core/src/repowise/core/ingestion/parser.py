@@ -24,8 +24,6 @@ Capture-name conventions (shared across ALL .scm files):
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -45,20 +43,8 @@ from .extractors import (
 )
 from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.synthetic_symbols import extract_synthetic_symbols
-from .extractors.visibility import (
-    csharp_visibility,
-    go_visibility,
-    java_visibility,
-    kotlin_visibility,
-    php_visibility,
-    public_by_default,
-    py_visibility,
-    refine_cpp_visibility,
-    rust_visibility,
-    scala_visibility,
-    swift_visibility,
-    ts_visibility,
-)
+from .extractors.visibility import refine_cpp_visibility
+from .language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
     CallSite,
@@ -67,6 +53,18 @@ from .models import (
     ParsedFile,
     Symbol,
     TypeReference,
+)
+from .parser_helpers import (
+    _build_qualified_name,
+    _classify_param_origin,
+    _collect_error_nodes,
+    _count_arguments,
+    _find_enclosing_symbol,
+    _has_callable_ancestor,
+    _head_type_identifier,
+    _is_async_node,
+    _qualified_cpp_parent,
+    _run_query,
 )
 
 log = structlog.get_logger(__name__)
@@ -117,6 +115,7 @@ def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | 
     except Exception as exc:
         log.warning("Failed to compile query", language=lang, error=str(exc))
         return None
+
 
 # Languages that intentionally have no AST parser.  Derived from the
 # centralised LanguageRegistry — only non-code passthrough languages are
@@ -189,319 +188,8 @@ def _get_language(tag: str) -> Language | None:
     return _LANGUAGE_REGISTRY.get(tag)
 
 
-# ---------------------------------------------------------------------------
-# LanguageConfig
-# ---------------------------------------------------------------------------
-
 # Private alias for internal use (kept for compatibility with _find_parent)
 _node_text = node_text
-
-
-@dataclass
-class LanguageConfig:
-    """Per-language metadata used by ASTParser.
-
-    The ASTParser itself contains no language-specific if/elif logic.
-    All branching happens through these configs and the .scm query files.
-    """
-
-    # Maps tree-sitter node type → our canonical SymbolKind string
-    symbol_node_types: dict[str, str]
-
-    # tree-sitter node types that carry import information (doc purposes)
-    import_node_types: list[str]
-
-    # tree-sitter node types that export symbols (doc purposes)
-    export_node_types: list[str]
-
-    # (name: str, modifier_texts: list[str]) → "public" | "private" | ...
-    visibility_fn: Callable[[str, list[str]], str]
-
-    # How to determine a method's parent class:
-    #   "nesting"  — walk up AST; parent class types in parent_class_types
-    #   "receiver" — extract from @symbol.receiver capture (Go)
-    #   "impl"     — look for impl_item ancestor (Rust)
-    #   "none"     — no parent tracking
-    parent_extraction: str = "nesting"
-
-    # Node types that indicate a class context (used with "nesting" mode)
-    parent_class_types: frozenset[str] = field(default_factory=frozenset)
-
-    # Entry-point filename patterns for this language
-    entry_point_patterns: list[str] = field(default_factory=list)
-
-
-LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
-    "python": LanguageConfig(
-        symbol_node_types={
-            "function_definition": "function",
-            "class_definition": "class",
-        },
-        import_node_types=["import_statement", "import_from_statement"],
-        export_node_types=[],
-        visibility_fn=py_visibility,
-        parent_extraction="nesting",
-        parent_class_types=frozenset({"class_definition"}),
-        entry_point_patterns=["main.py", "app.py", "__main__.py", "manage.py", "wsgi.py"],
-    ),
-    "typescript": LanguageConfig(
-        symbol_node_types={
-            "function_declaration": "function",
-            "generator_function_declaration": "function",
-            "arrow_function": "function",
-            "class_declaration": "class",
-            "abstract_class_declaration": "class",
-            "interface_declaration": "interface",
-            "type_alias_declaration": "type_alias",
-            "enum_declaration": "enum",
-            "method_definition": "method",
-            "lexical_declaration": "function",  # const foo = () => {}
-        },
-        import_node_types=["import_statement"],
-        export_node_types=["export_statement"],
-        visibility_fn=ts_visibility,
-        parent_extraction="nesting",
-        parent_class_types=frozenset({"class_declaration", "abstract_class_declaration"}),
-        entry_point_patterns=["index.ts", "main.ts", "app.ts", "server.ts"],
-    ),
-    "javascript": LanguageConfig(
-        symbol_node_types={
-            "function_declaration": "function",
-            "generator_function_declaration": "function",
-            "arrow_function": "function",
-            "class_declaration": "class",
-            "method_definition": "method",
-            "lexical_declaration": "function",
-        },
-        import_node_types=["import_statement"],
-        export_node_types=["export_statement"],
-        visibility_fn=public_by_default,
-        parent_extraction="nesting",
-        parent_class_types=frozenset({"class_declaration"}),
-        entry_point_patterns=["index.js", "main.js", "app.js", "server.js"],
-    ),
-    "go": LanguageConfig(
-        symbol_node_types={
-            "function_declaration": "function",
-            "method_declaration": "method",
-            "type_spec": "struct",  # refined in post-processing
-            "const_spec": "variable",  # const MaxRetries = 3
-            "var_spec": "variable",  # var ErrNotFound = errors.New(...)
-        },
-        import_node_types=["import_declaration"],
-        export_node_types=[],
-        visibility_fn=go_visibility,
-        parent_extraction="receiver",
-        parent_class_types=frozenset(),
-        entry_point_patterns=["main.go", "cmd/main.go"],
-    ),
-    "rust": LanguageConfig(
-        symbol_node_types={
-            "function_item": "function",
-            "struct_item": "struct",
-            "enum_item": "enum",
-            "trait_item": "trait",
-            "impl_item": "impl",
-            "const_item": "constant",
-            "type_item": "type_alias",
-            "mod_item": "module",
-            "macro_definition": "function",  # macro_rules! my_macro { ... }
-        },
-        import_node_types=["use_declaration"],
-        export_node_types=[],
-        visibility_fn=rust_visibility,
-        parent_extraction="impl",
-        parent_class_types=frozenset({"impl_item"}),
-        entry_point_patterns=["main.rs", "lib.rs"],
-    ),
-    "java": LanguageConfig(
-        symbol_node_types={
-            "class_declaration": "class",
-            "interface_declaration": "interface",
-            "enum_declaration": "enum",
-            "record_declaration": "class",  # Java 16+ records
-            "method_declaration": "method",
-            "constructor_declaration": "function",
-        },
-        import_node_types=["import_declaration"],
-        export_node_types=[],
-        visibility_fn=java_visibility,
-        parent_extraction="nesting",
-        parent_class_types=frozenset(
-            {"class_declaration", "interface_declaration", "enum_declaration", "record_declaration"}
-        ),
-        entry_point_patterns=["Main.java", "Application.java"],
-    ),
-    "cpp": LanguageConfig(
-        symbol_node_types={
-            "function_definition": "function",
-            "class_specifier": "class",
-            "struct_specifier": "struct",
-            "enum_specifier": "enum",
-            "namespace_definition": "module",
-            "template_declaration": "class",  # template<> class/struct/function
-            "type_definition": "struct",  # typedef struct { ... } Name;
-            "preproc_def": "variable",  # #define MACRO value
-            "preproc_function_def": "function",  # #define MACRO(x) ...
-            "declaration": "function",  # forward declarations
-        },
-        import_node_types=["preproc_include"],
-        export_node_types=[],
-        visibility_fn=public_by_default,
-        parent_extraction="nesting",
-        parent_class_types=frozenset({"class_specifier", "struct_specifier"}),
-        entry_point_patterns=["main.cpp", "main.cc"],
-    ),
-    "c": LanguageConfig(
-        symbol_node_types={
-            "function_definition": "function",
-            "struct_specifier": "struct",
-            "enum_specifier": "enum",
-            "type_definition": "struct",  # typedef struct { ... } Name;
-            "preproc_def": "variable",  # #define MACRO value
-            "preproc_function_def": "function",  # #define MACRO(x) ...
-            "declaration": "function",  # forward declarations
-        },
-        import_node_types=["preproc_include"],
-        export_node_types=[],
-        visibility_fn=public_by_default,
-        parent_extraction="none",
-        parent_class_types=frozenset(),
-        entry_point_patterns=["main.c"],
-    ),
-    "kotlin": LanguageConfig(
-        symbol_node_types={
-            "function_declaration": "function",
-            "class_declaration": "class",
-            "object_declaration": "class",
-            "type_alias": "type_alias",
-            "property_declaration": "variable",
-        },
-        import_node_types=["import"],
-        export_node_types=[],
-        visibility_fn=kotlin_visibility,
-        parent_extraction="nesting",
-        parent_class_types=frozenset({"class_declaration", "object_declaration"}),
-        entry_point_patterns=["Main.kt", "Application.kt"],
-    ),
-    "ruby": LanguageConfig(
-        symbol_node_types={
-            "method": "function",
-            "singleton_method": "function",
-            "class": "class",
-            "module": "module",
-            "assignment": "constant",
-        },
-        import_node_types=["call"],
-        export_node_types=[],
-        visibility_fn=public_by_default,
-        parent_extraction="nesting",
-        parent_class_types=frozenset({"class", "module"}),
-        entry_point_patterns=["main.rb", "app.rb", "config.ru"],
-    ),
-    "csharp": LanguageConfig(
-        symbol_node_types={
-            "class_declaration": "class",
-            "interface_declaration": "interface",
-            "struct_declaration": "struct",
-            "enum_declaration": "enum",
-            "enum_member_declaration": "variable",
-            "method_declaration": "method",
-            "constructor_declaration": "function",
-            "property_declaration": "variable",
-            "field_declaration": "variable",
-            "record_declaration": "class",
-            "delegate_declaration": "function",
-            "event_declaration": "variable",
-            "event_field_declaration": "variable",
-            "namespace_declaration": "module",
-            "file_scoped_namespace_declaration": "module",
-        },
-        import_node_types=["using_directive", "global_using_directive"],
-        export_node_types=[],
-        visibility_fn=csharp_visibility,
-        parent_extraction="nesting",
-        parent_class_types=frozenset(
-            {
-                "class_declaration",
-                "interface_declaration",
-                "struct_declaration",
-                "enum_declaration",
-                "record_declaration",
-                "namespace_declaration",
-                "file_scoped_namespace_declaration",
-            }
-        ),
-        entry_point_patterns=["Program.cs", "Startup.cs"],
-    ),
-    "swift": LanguageConfig(
-        symbol_node_types={
-            "class_declaration": "class",
-            "protocol_declaration": "interface",
-            "function_declaration": "function",
-            "protocol_function_declaration": "function",
-            "property_declaration": "variable",
-            "subscript_declaration": "method",
-        },
-        import_node_types=["import_declaration"],
-        export_node_types=[],
-        visibility_fn=swift_visibility,
-        parent_extraction="nesting",
-        parent_class_types=frozenset({"class_declaration", "protocol_declaration"}),
-        entry_point_patterns=["main.swift", "App.swift"],
-    ),
-    "scala": LanguageConfig(
-        symbol_node_types={
-            "class_definition": "class",
-            "trait_definition": "trait",
-            "object_definition": "class",
-            "function_definition": "function",
-            "function_declaration": "function",
-            "val_definition": "variable",
-            "var_definition": "variable",
-            "enum_definition": "enum",
-            "given_definition": "variable",
-        },
-        import_node_types=["import_declaration"],
-        export_node_types=[],
-        visibility_fn=scala_visibility,
-        parent_extraction="nesting",
-        parent_class_types=frozenset({"class_definition", "trait_definition", "object_definition"}),
-        entry_point_patterns=["Main.scala", "App.scala"],
-    ),
-    "php": LanguageConfig(
-        symbol_node_types={
-            "class_declaration": "class",
-            "interface_declaration": "interface",
-            "trait_declaration": "trait",
-            "enum_declaration": "enum",
-            "method_declaration": "method",
-            "function_definition": "function",
-            "const_declaration": "constant",
-            "property_declaration": "variable",
-        },
-        import_node_types=["namespace_use_declaration"],
-        export_node_types=[],
-        visibility_fn=php_visibility,
-        parent_extraction="nesting",
-        parent_class_types=frozenset(
-            {"class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"}
-        ),
-        entry_point_patterns=["index.php", "public/index.php"],
-    ),
-    "luau": LanguageConfig(
-        symbol_node_types={
-            "function_declaration": "function",
-            "type_definition": "type_alias",
-        },
-        import_node_types=["function_call"],
-        export_node_types=[],
-        visibility_fn=public_by_default,
-        parent_extraction="none",
-        parent_class_types=frozenset(),
-        entry_point_patterns=["init.luau", "init.lua"],
-    ),
-}
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +296,9 @@ class ASTParser:
     # Query loading
     # ------------------------------------------------------------------
 
-    def _get_query(self, lang: str, language: Language, grammar_tag: str | None = None) -> object | None:
+    def _get_query(
+        self, lang: str, language: Language, grammar_tag: str | None = None
+    ) -> object | None:
         """Load and cache the compiled tree-sitter Query for *lang*."""
         return _load_compiled_query(lang, grammar_tag)
 
@@ -673,7 +363,11 @@ class ASTParser:
                 kind = refine_go_type_kind(def_node, src)
 
             # Refine "class" kind for Kotlin (interface / enum class share class_declaration)
-            if kind == "class" and file_info.language == "kotlin" and def_node.type == "class_declaration":
+            if (
+                kind == "class"
+                and file_info.language == "kotlin"
+                and def_node.type == "class_declaration"
+            ):
                 kind = refine_kotlin_class_kind(def_node)
 
             # Params signature text
@@ -691,9 +385,7 @@ class ASTParser:
             # specifiers / storage class / export attributes), not by
             # modifier text. Refine after the generic fn ran.
             if file_info.language in ("cpp", "c"):
-                visibility, is_exported_symbol = refine_cpp_visibility(
-                    def_node, visibility, src
-                )
+                visibility, is_exported_symbol = refine_cpp_visibility(def_node, visibility, src)
 
             # Parent class detection
             parent_name = self._find_parent(def_node, config, receiver_nodes, src)
@@ -703,11 +395,7 @@ class ASTParser:
             # parent of the name node. Without this resolution, every
             # ``Class::method`` lands as a free function and bloats the
             # unused_export pass with thousands of method symbols.
-            if (
-                parent_name is None
-                and file_info.language in ("cpp", "c")
-                and name_nodes
-            ):
+            if parent_name is None and file_info.language in ("cpp", "c") and name_nodes:
                 parent_name = _qualified_cpp_parent(name_nodes[0], src)
 
             # Upgrade function → method when a parent class is detected
@@ -984,266 +672,3 @@ def parse_file(file_info: FileInfo, source: bytes) -> ParsedFile:
     if _DEFAULT_PARSER is None:
         _DEFAULT_PARSER = ASTParser()
     return _DEFAULT_PARSER.parse_file(file_info, source)
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _run_query(query: object, root_node: Node) -> list[dict[str, list[Node]]]:
-    """Execute a tree-sitter query and return a list of capture dicts."""
-    results: list[dict[str, list[Node]]] = []
-    try:
-        from tree_sitter import QueryCursor  # type: ignore[attr-defined]
-
-        cursor = QueryCursor(query)  # type: ignore[call-arg]
-        for match in cursor.matches(root_node):
-            if hasattr(match, "captures"):
-                results.append(match.captures)
-            elif isinstance(match, tuple) and len(match) == 2:
-                _, caps = match
-                results.append(caps)
-    except Exception:
-        try:
-            for item in query.matches(root_node):  # type: ignore[attr-defined]
-                if isinstance(item, tuple) and len(item) == 2:
-                    _, caps = item
-                    results.append(caps)
-        except Exception as exc:
-            log.warning("query.matches() failed", error=str(exc))
-    return results
-
-
-def _collect_error_nodes(root: Node) -> list[str]:
-    """Return error descriptions for any ERROR nodes in the tree."""
-    errors: list[str] = []
-
-    def _walk(node: Node) -> None:
-        if node.type == "ERROR":
-            errors.append(f"Parse error at line {node.start_point[0] + 1}")
-        for child in node.children:
-            _walk(child)
-
-    _walk(root)
-    return errors
-
-
-def _is_async_node(node: Node, src: str) -> bool:
-    return node.type == "async_function_definition" or any(c.type == "async" for c in node.children)
-
-
-_CALLABLE_KINDS: frozenset[str] = frozenset({"function", "method"})
-
-
-def _has_callable_ancestor(node: Node, symbol_kinds: dict[str, str]) -> bool:
-    """True if ``node`` has any function/method ancestor in the AST.
-
-    Used to filter out helpers defined inside another function's body
-    (React event handlers, async-method-local coroutines, JS closures)
-    from the top-level symbol list. Class bodies don't count — methods
-    inside classes have only a ``class`` ancestor before the module root.
-    """
-    ancestor = node.parent
-    while ancestor is not None:
-        if symbol_kinds.get(ancestor.type) in _CALLABLE_KINDS:
-            return True
-        ancestor = ancestor.parent
-    return False
-
-
-def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
-    """Return the parent class for a C/C++ ``Class::method`` definition.
-
-    The captured ``@symbol.name`` for a qualified function definition
-    is the bare ``method`` identifier whose parent is a
-    ``qualified_identifier`` carrying the class / namespace as its
-    ``scope`` field. For multi-level qualifications (``NS::Foo::method``)
-    the relevant parent is still the innermost qualifier — namespaces
-    above it are not the symbol's containing type. Tree-sitter-cpp
-    represents this by nesting ``qualified_identifier`` left-recursively,
-    so the immediate parent's ``scope`` is always the right answer.
-
-    Returns ``None`` when the name node is not inside a qualified
-    identifier (i.e. plain free function).
-    """
-    parent = name_node.parent
-    if parent is None or parent.type != "qualified_identifier":
-        return None
-    scope = parent.child_by_field_name("scope")
-    if scope is None:
-        return None
-    text = src[scope.start_byte : scope.end_byte].strip()
-    # ``scope`` may itself be a qualified path (``NS::Foo``); take the
-    # last component — that's the immediate enclosing type.
-    return text.rsplit("::", 1)[-1] or None
-
-
-def _build_qualified_name(file_path: str, parent_name: str | None, name: str) -> str:
-    module = Path(file_path).with_suffix("").as_posix().replace("/", ".")
-    if parent_name:
-        return f"{module}.{parent_name}.{name}"
-    return f"{module}.{name}"
-
-
-# ---------------------------------------------------------------------------
-# Type reference helpers (used by _extract_type_refs)
-# ---------------------------------------------------------------------------
-
-# Type expressions that never resolve to a user-defined .NET type. Skipping
-# these here avoids polluting the resolver with hopeless lookups. Generic
-# args inside `IList<T>` are stripped before this check is applied.
-_BUILTIN_CSHARP_TYPES: frozenset[str] = frozenset({
-    "void", "bool", "byte", "sbyte", "char", "short", "ushort", "int",
-    "uint", "long", "ulong", "float", "double", "decimal", "string",
-    "object", "nint", "nuint", "dynamic", "var",
-    # Frequently appearing BCL types that are always external — listing
-    # them here is purely a performance optimisation (one dict miss
-    # avoided per occurrence).
-    "Task", "ValueTask", "CancellationToken", "Action", "Func",
-    "Type", "Exception", "DateTime", "DateTimeOffset", "TimeSpan",
-    "Guid", "Uri", "Stream",
-})
-
-_PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
-    "constructor_declaration": "ctor_param",
-    "method_declaration": "method_param",
-    "delegate_declaration": "delegate_param",
-    "record_declaration": "ctor_param",
-    "class_declaration": "ctor_param",
-    "struct_declaration": "ctor_param",
-}
-
-
-def _head_type_identifier(type_node: Node, src: str) -> str | None:
-    """Return the head identifier of a C# type expression, or None.
-
-    Examples:
-        ``IBasketService``                  → "IBasketService"
-        ``IList<Basket>``                   → "IList"
-        ``Acme.Catalog.IRepository<T>``     → "IRepository"
-        ``ref readonly Span<byte>``         → "Span"
-        ``string``                          → None (built-in)
-        ``int?``                            → None
-        ``T``                               → None (likely a generic param)
-
-    The point of returning the head identifier is that the
-    DotNetProjectIndex type-name lookup is keyed by unqualified type
-    name. Generic-arg recursion is intentionally NOT done here — each
-    generic arg is captured in its own ``@param.type`` if it's a real
-    parameter type, and the resolver doesn't currently track generic
-    instantiation graphs.
-    """
-    head_node: Node | None = type_node
-
-    # Unwrap modifier wrappers: nullable_type, ref_type, pointer_type,
-    # array_type, tuple_type. tree-sitter-c-sharp puts the inner type
-    # at field "type" or as the first non-trivia child.
-    for _ in range(6):
-        if head_node is None:
-            return None
-        if head_node.type in ("nullable_type", "ref_type", "pointer_type", "array_type"):
-            inner = head_node.child_by_field_name("type")
-            if inner is None:
-                # Fall back to first identifier-bearing child
-                inner = next(
-                    (c for c in head_node.children if c.type not in (",", "?", "*", "&", "ref", "out", "in", "[", "]")),
-                    None,
-                )
-            head_node = inner
-            continue
-        break
-
-    if head_node is None:
-        return None
-
-    if head_node.type == "identifier":
-        text = _node_text(head_node, src)
-    elif head_node.type == "predefined_type":
-        text = _node_text(head_node, src)
-    elif head_node.type == "generic_name":
-        name_child = head_node.child_by_field_name("name") or next(
-            (c for c in head_node.children if c.type == "identifier"), None,
-        )
-        text = _node_text(name_child, src) if name_child else ""
-    elif head_node.type == "qualified_name":
-        # `Foo.Bar.Baz` — take the rightmost identifier
-        idents = [c for c in head_node.children if c.type == "identifier"]
-        text = _node_text(idents[-1], src) if idents else ""
-    elif head_node.type == "tuple_type":
-        return None  # Tuple elements aren't single types
-    else:
-        # Unknown shape — fall back to first identifier in the subtree
-        ident = _first_descendant(head_node, "identifier")
-        text = _node_text(ident, src) if ident else ""
-
-    if not text or not text[0].isalpha() and text[0] != "_":
-        return None
-    if text in _BUILTIN_CSHARP_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic params (T, K, V).
-    # Skipping them avoids spurious lookups against a type-name index that
-    # would never contain them.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
-
-
-def _first_descendant(node: Node, type_name: str) -> Node | None:
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        if current.type == type_name:
-            return current
-        stack.extend(current.children)
-    return None
-
-
-def _classify_param_origin(type_node: Node) -> str:
-    """Walk up to find the enclosing declaration and map to an origin tag.
-
-    The walk stops at the first matching ancestor or after a small depth
-    cap. Falling off the cap means the capture was outside a recognised
-    declaration shape (shouldn't happen given the query patterns, but
-    guards against grammar drift); we tag those ``method_param``.
-    """
-    cur: Node | None = type_node
-    for _ in range(8):
-        if cur is None:
-            break
-        origin = _PARAM_ORIGIN_BY_ANCESTOR.get(cur.type)
-        if origin is not None:
-            return origin
-        cur = cur.parent
-    return "method_param"
-
-
-# ---------------------------------------------------------------------------
-# Call extraction helpers
-# ---------------------------------------------------------------------------
-
-
-def _count_arguments(arg_node: Node) -> int:
-    """Count the number of arguments in an argument/argument_list node."""
-    skip_types = frozenset({"(", ")", ",", "[", "]"})
-    return sum(1 for child in arg_node.children if child.type not in skip_types)
-
-
-def _find_enclosing_symbol(
-    line: int,
-    symbol_ranges: list[tuple[int, int, str]],
-) -> str | None:
-    """Find the innermost symbol whose line range contains *line*."""
-    best_id: str | None = None
-    best_span = float("inf")
-
-    for start, end, sym_id in symbol_ranges:
-        if start > line:
-            break
-        if start <= line <= end:
-            span = end - start
-            if span < best_span:
-                best_span = span
-                best_id = sym_id
-
-    return best_id
