@@ -9,7 +9,6 @@ import {
   type ReactNode,
 } from "react";
 import { ChevronRight, Home } from "lucide-react";
-import Fuse from "fuse.js";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
 import { GraphProvider, type GraphContextValue, type Signal } from "./context";
@@ -17,6 +16,11 @@ import { groupNodesAsModules, type FileNodeData, type ModuleNodeData } from "./e
 
 const EMPTY_STRING_SET = new Set<string>();
 import { useExpandedModules } from "./use-expanded-modules";
+import { traceToEdgeKeys } from "./graph-flow-helpers";
+import { useGraphContextMenu } from "./use-graph-context-menu";
+import { useGraphSearch } from "./use-graph-search";
+import { useCommunityFilter } from "./use-community-filter";
+import { useGraphKeyboardShortcuts } from "./use-graph-keyboard-shortcuts";
 import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
 import { GraphContextMenu } from "./graph-context-menu";
@@ -160,10 +164,8 @@ export function GraphFlow(props: GraphFlowProps) {
     onExpandedModulesChange?.(expandedModules);
   }, [expandedModules, onExpandedModulesChange]);
 
-  // Context menu
-  const [ctxMenu, setCtxMenu] = useState<{
-    x: number; y: number; nodeId: string; nodeType: string;
-  } | null>(null);
+  // Context menu (state + dismiss-on-click/Escape lifecycle)
+  const { ctxMenu, setCtxMenu } = useGraphContextMenu();
 
   // Path finder pre-fill
   const [pathFrom, setPathFrom] = useState("");
@@ -173,19 +175,12 @@ export function GraphFlow(props: GraphFlowProps) {
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
-  // Search
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchDimmedNodes, setSearchDimmedNodes] = useState<Set<string> | null>(null);
-  const [searchResults, setSearchResults] = useState<string[]>([]);
-  const [searchResultIndex, setSearchResultIndex] = useState(0);
-
   // Execution flows
   const [activeFlowIdx, setActiveFlowIdx] = useState<number | null>(null);
   const [showFlows, setShowFlows] = useState(false);
 
-  // Community panel & filtering
+  // Community detail panel (the filter state itself lives in useCommunityFilter)
   const [communityPanelId, setCommunityPanelId] = useState<number | null>(null);
-  const [activeCommunities, setActiveCommunities] = useState<Set<number> | null>(null);
 
   // Wrap the setter so legend-driven opens notify the host page; this lets
   // the page dismiss competing right-rail panels (doc panel) and keep the
@@ -466,67 +461,28 @@ export function GraphFlow(props: GraphFlowProps) {
   const effectiveNodeDataMap = sigmaNodeMaps?.fileMap ?? new Map<string, FileNodeData>();
   const effectiveModuleDataMap = sigmaNodeMaps?.modMap ?? new Map<string, ModuleNodeData>();
 
-  // Community dimming
-  const communityDimmedNodes = useMemo(() => {
-    if (!activeCommunities) return null;
-    const dimmed = new Set<string>();
-    if (sigmaGraph) {
-      sigmaGraph.forEachNode((nodeId, attrs) => {
-        if (attrs.nodeType === "file" && !activeCommunities.has(attrs.communityId)) {
-          dimmed.add(nodeId);
-        }
-      });
+  const panToNode = useCallback((nodeId: string) => {
+    sigmaRef.current?.focusNode(nodeId);
+  }, []);
+
+  // Search (Fuse index + debounced query + result navigation)
+  const { searchQuery, setSearchQuery, searchResults, searchDimmedNodes, handleSearchKeyDown } =
+    useGraphSearch({ sigmaGraph, hideTests, panToNode, setSelectedNodeId });
+
+  // Community filter (active communities + dimming + legend toggles)
+  const { activeCommunities, communityDimmedNodes, handleCommunityToggle, handleToggleAllCommunities } =
+    useCommunityFilter(sigmaGraph);
+
+  // Switch from the module overview into the flat file view. Shared by the
+  // execution-flow highlighter and the path-finder result handler, which both
+  // need a file-level graph before they can highlight a trace.
+  const enterFullViewFromModule = useCallback(() => {
+    if (viewMode === "module") {
+      setViewMode("full");
+      setModulePath([]);
+      onViewModeChange?.("full");
     }
-    return dimmed.size > 0 ? dimmed : null;
-  }, [activeCommunities, sigmaGraph]);
-
-  // Search
-  const fuseIndex = useMemo(() => {
-    if (!sigmaGraph) return new Fuse<{ id: string; label: string }>([], { keys: ["id", "label"], threshold: 0.4 });
-    const items: { id: string; label: string }[] = [];
-    sigmaGraph.forEachNode((id, attrs) => {
-      if (hideTests && attrs.isTest) return;
-      items.push({ id, label: attrs.label });
-    });
-    return new Fuse(items, { keys: ["id", "label"], threshold: 0.4 });
-  }, [sigmaGraph, hideTests]);
-
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => {
-    if (!searchQuery || searchQuery.length < 2) {
-      clearTimeout(searchTimerRef.current);
-      setSearchDimmedNodes(null);
-      setSearchResults([]);
-      setSearchResultIndex(0);
-      return;
-    }
-    clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = setTimeout(() => {
-      const results = fuseIndex.search(searchQuery);
-      const matchIds = new Set(results.map((r) => r.item.id));
-      const ids = results.map((r) => r.item.id);
-      const dimmed = new Set<string>();
-
-      if (sigmaGraph) {
-        sigmaGraph.forEachNode((nodeId) => {
-          if (!matchIds.has(nodeId)) dimmed.add(nodeId);
-        });
-      }
-
-      setSearchDimmedNodes(dimmed);
-      setSearchResults(ids);
-      setSearchResultIndex(0);
-
-      if (ids.length === 1) {
-        setSelectedNodeId(ids[0]!);
-      }
-
-      if (ids.length > 0 && ids.length <= 20) {
-        sigmaRef.current?.focusNode(ids[0]!);
-      }
-    }, 150);
-    return () => clearTimeout(searchTimerRef.current);
-  }, [searchQuery, fuseIndex, sigmaGraph]);
+  }, [viewMode, onViewModeChange]);
 
   // Execution flow highlighting
   useEffect(() => {
@@ -539,20 +495,10 @@ export function GraphFlow(props: GraphFlowProps) {
     }
     const flow = executionFlows.flows[activeFlowIdx];
     if (!flow) return;
-    const pathSet = new Set(flow.trace);
-    const edgeKeys = new Set<string>();
-    for (let i = 0; i < flow.trace.length - 1; i++) {
-      edgeKeys.add(`${flow.trace[i]}→${flow.trace[i + 1]}`);
-      edgeKeys.add(`${flow.trace[i + 1]}→${flow.trace[i]}`);
-    }
-    setHighlightedPath(pathSet);
-    setHighlightedEdges(edgeKeys);
+    setHighlightedPath(new Set(flow.trace));
+    setHighlightedEdges(traceToEdgeKeys(flow.trace));
 
-    if (viewMode === "module") {
-      setViewMode("full");
-      setModulePath([]);
-      onViewModeChange?.("full");
-    }
+    enterFullViewFromModule();
 
     clearTimeout(focusTimerRef.current);
     focusTimerRef.current = setTimeout(() => {
@@ -622,79 +568,25 @@ export function GraphFlow(props: GraphFlowProps) {
         nodeType: nodeType === "module" ? "moduleGroup" : "fileNode",
       });
     },
-    [],
+    [setCtxMenu],
   );
 
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("click", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [ctxMenu]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
-
-      switch (e.key) {
-        case "f":
-          e.preventDefault();
-          sigmaRef.current?.fitView();
-          break;
-        case "Escape":
-          setSelectedNodeId(null);
-          setEgoDepth(0);
-          setSearchQuery("");
-          setCtxMenu(null);
-          setCommunityPanelId(null);
-          break;
-        case "1":
-          setColorMode("language");
-          break;
-        case "2":
-          setColorMode("community");
-          break;
-        case "3":
-          setColorMode("risk");
-          break;
-        case "/":
-          e.preventDefault();
-          document.querySelector<HTMLInputElement>('[aria-label="Search graph nodes"]')?.focus();
-          break;
-      }
-
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        document.querySelector<HTMLInputElement>('[aria-label="Search graph nodes"]')?.focus();
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  // Global keyboard shortcuts (f/Escape/1-3//, cmd+k)
+  useGraphKeyboardShortcuts({
+    sigmaRef,
+    setSelectedNodeId,
+    setEgoDepth,
+    setSearchQuery,
+    setCtxMenu,
+    setCommunityPanelId,
+    setColorMode,
+  });
 
   const handlePathFound = useCallback(
     (pathNodes: string[]) => {
       setHighlightedPath(new Set(pathNodes));
-      const edgeKeys = new Set<string>();
-      for (let i = 0; i < pathNodes.length - 1; i++) {
-        edgeKeys.add(`${pathNodes[i]}→${pathNodes[i + 1]}`);
-        edgeKeys.add(`${pathNodes[i + 1]}→${pathNodes[i]}`);
-      }
-      setHighlightedEdges(edgeKeys);
-      if (viewMode === "module") {
-        setViewMode("full");
-        setModulePath([]);
-        onViewModeChange?.("full");
-      }
+      setHighlightedEdges(traceToEdgeKeys(pathNodes));
+      enterFullViewFromModule();
       clearTimeout(focusTimerRef.current);
       focusTimerRef.current = setTimeout(() => {
         if (pathNodes.length > 0) {
@@ -702,7 +594,7 @@ export function GraphFlow(props: GraphFlowProps) {
         }
       }, 800);
     },
-    [viewMode, onViewModeChange],
+    [enterFullViewFromModule],
   );
 
   const handlePathClear = useCallback(() => {
@@ -753,10 +645,6 @@ export function GraphFlow(props: GraphFlowProps) {
     });
   }, []);
 
-  const panToNode = useCallback((nodeId: string) => {
-    sigmaRef.current?.focusNode(nodeId);
-  }, []);
-
   const initialNodeApplied = useRef(false);
   useEffect(() => {
     if (initialNodeApplied.current || !initialSelectedNode || !sigmaGraph) return;
@@ -766,63 +654,6 @@ export function GraphFlow(props: GraphFlowProps) {
       setTimeout(() => panToNode(initialSelectedNode), 300);
     }
   }, [initialSelectedNode, sigmaGraph, panToNode]);
-
-  const handleSearchKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (searchResults.length === 0) {
-      if (e.key === "Escape") { setSearchQuery(""); }
-      return;
-    }
-    switch (e.key) {
-      case "ArrowDown": {
-        e.preventDefault();
-        const next = (searchResultIndex + 1) % searchResults.length;
-        setSearchResultIndex(next);
-        panToNode(searchResults[next]!);
-        break;
-      }
-      case "ArrowUp": {
-        e.preventDefault();
-        const prev = (searchResultIndex - 1 + searchResults.length) % searchResults.length;
-        setSearchResultIndex(prev);
-        panToNode(searchResults[prev]!);
-        break;
-      }
-      case "Enter": {
-        e.preventDefault();
-        const id = searchResults[searchResultIndex];
-        if (id) { setSelectedNodeId(id); panToNode(id); }
-        break;
-      }
-      case "Escape":
-        setSearchQuery("");
-        break;
-    }
-  }, [searchResults, searchResultIndex, panToNode]);
-
-  // Community filter handlers
-  const allCommunityIds = useMemo(() => {
-    const ids = new Set<number>();
-    if (sigmaGraph) {
-      sigmaGraph.forEachNode((_nodeId, attrs) => {
-        if (attrs.nodeType === "file") ids.add(attrs.communityId);
-      });
-    }
-    return ids;
-  }, [sigmaGraph]);
-
-  const handleCommunityToggle = useCallback((cid: number) => {
-    setActiveCommunities((prev) => {
-      const current = prev ?? new Set(allCommunityIds);
-      const next = new Set(current);
-      if (next.has(cid)) next.delete(cid); else next.add(cid);
-      if (next.size === allCommunityIds.size) return null;
-      return next;
-    });
-  }, [allCommunityIds]);
-
-  const handleToggleAllCommunities = useCallback((selectAll: boolean) => {
-    setActiveCommunities(selectAll ? null : new Set<number>());
-  }, []);
 
   const handleInspectNavigate = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId);
@@ -855,7 +686,7 @@ export function GraphFlow(props: GraphFlowProps) {
   const handleCtxViewDocs = useCallback(() => {
     if (ctxMenu) onNodeViewDocs?.(ctxMenu.nodeId);
     setCtxMenu(null);
-  }, [ctxMenu, onNodeViewDocs]);
+  }, [ctxMenu, onNodeViewDocs, setCtxMenu]);
 
   const handleCtxExplore = useCallback(() => {
     if (ctxMenu) {
@@ -866,17 +697,17 @@ export function GraphFlow(props: GraphFlowProps) {
       }
     }
     setCtxMenu(null);
-  }, [ctxMenu, isModuleView, onNodeClick]);
+  }, [ctxMenu, isModuleView, onNodeClick, setCtxMenu]);
 
   const handleCtxPathFrom = useCallback(() => {
     if (ctxMenu) { setPathFrom(ctxMenu.nodeId); setShowPathFinder(true); }
     setCtxMenu(null);
-  }, [ctxMenu]);
+  }, [ctxMenu, setCtxMenu]);
 
   const handleCtxPathTo = useCallback(() => {
     if (ctxMenu) { setPathTo(ctxMenu.nodeId); setShowPathFinder(true); }
     setCtxMenu(null);
-  }, [ctxMenu]);
+  }, [ctxMenu, setCtxMenu]);
 
   if (isLoading) return <Skeleton className="h-full w-full rounded-lg" />;
 
@@ -1118,4 +949,3 @@ export function GraphFlow(props: GraphFlowProps) {
     </GraphProvider>
   );
 }
-
