@@ -244,6 +244,25 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_string.go",
     "*zz_generated*.go",
     "*bindata.go",
+    # ---- JavaScript conventions ------------------------------------------
+    # ``fnmatch`` ``*`` spans ``/`` (see the Go note above), so leading-``*``
+    # suffix globs match nested asset paths too.
+    # esbuild / rollup / webpack bundle outputs and minified artifacts are
+    # build products served to the browser, not module-imported by name.
+    "*.bundle.js",
+    "*.min.js",
+    "*.bundle.mjs",
+    # LiveReload ships a generated browser-global script set (IIFE /
+    # ``window.LiveReload =``) under ``livereload/gen/`` plus the
+    # ``livereload.js`` shim — loaded via a ``<script>`` tag, never imported.
+    "*/livereload/gen/*",
+    "livereload/gen/*",
+    "*/livereload/livereload.js",
+    "livereload/livereload.js",
+    # Hugo embeds a WASM toolchain whose JS glue under ``internal/warpc/js``
+    # is shipped as a bundle and loaded by the Go side via ``go:embed``,
+    # never by a JS importer.
+    "*wasm_exec.js",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
