@@ -12,6 +12,7 @@ from repowise.cli.helpers import (
     resolve_command_target,
     resolve_repo_path,
     run_async,
+    silence_logs_for_machine_output,
 )
 
 
@@ -86,6 +87,9 @@ def dead_code_command(
     --repo <alias> to target a different repo. Cross-repo dead-code
     detection is not yet supported — run once per repo for now.
     """
+    if fmt != "table":
+        silence_logs_for_machine_output()
+
     from pathlib import Path as PathlibPath
 
     from repowise.core.analysis.dead_code import DeadCodeAnalyzer

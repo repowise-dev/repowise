@@ -17,6 +17,7 @@ from repowise.cli.helpers import (
     err_console,
     resolve_command_target,
     run_async,
+    silence_logs_for_machine_output,
 )
 
 
@@ -110,6 +111,12 @@ def health_command(
     from repowise.core.analysis.health import HealthAnalyzer
     from repowise.core.analysis.health.coverage import parse as parse_coverage
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    # Silence structlog/stdlib info+debug lines when the user asked for a
+    # machine-readable format so stdout is pure JSON/Markdown and safe to
+    # pipe into jq or other tools (e.g. `repowise health --format json | jq .kpis`).
+    if fmt != "table":
+        silence_logs_for_machine_output()
 
     # Status output goes to stderr when the user asked for a machine-readable
     # format — otherwise rich's banner pollutes stdout and breaks

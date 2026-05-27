@@ -31,6 +31,41 @@ REPOWISE_DIR = ".repowise"
 
 
 # ---------------------------------------------------------------------------
+# Logging / structlog helpers
+# ---------------------------------------------------------------------------
+
+
+def silence_logs_for_machine_output() -> None:
+    """Suppress info/debug log output when stdout is machine-readable (JSON/md).
+
+    Structlog and stdlib loggers write to stdout by default. When a command
+    emits JSON or Markdown, those lines corrupt the output for downstream
+    consumers (e.g. ``repowise health --format json | jq .kpis``).
+
+    Call this at the top of any command that supports ``--format json`` or
+    ``--format md`` before the ingestion pipeline starts.
+    """
+    import logging
+
+    logging.getLogger("httpx").setLevel(logging.ERROR)
+    logging.getLogger("httpcore").setLevel(logging.ERROR)
+    for _name in ("repowise.core", "repowise.server"):
+        logging.getLogger(_name).setLevel(logging.ERROR)
+    try:
+        import structlog
+
+        # cache_logger_on_first_use=False is required: module-level
+        # ``structlog.get_logger`` calls snapshot the logger before configure()
+        # runs and would bypass this filter without it.
+        structlog.configure(
+            wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
+            cache_logger_on_first_use=False,
+        )
+    except ImportError:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Async bridge
 # ---------------------------------------------------------------------------
 
