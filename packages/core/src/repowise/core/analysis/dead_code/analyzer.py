@@ -28,6 +28,7 @@ from .constants import (
     _is_fixture_path,
 )
 from .contract_methods import is_contract_method
+from .go_reachability import build_go_package_files, is_go_file_reachable
 
 # Symbol kinds that cannot be independently imported by name in any
 # supported language. Flagging them as "unused exports" is a guaranteed
@@ -89,6 +90,12 @@ _NON_IMPORTABLE_SYMBOL_KINDS: frozenset[str] = _UNIVERSAL_NON_IMPORTABLE | froze
 _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
     "Main",                # C#, Java, Kotlin, Go, Rust, Swift, Scala
     "main",                # most others
+    # ---- Go runtime / test conventions ------------------------------
+    # ``func init`` is run by the Go runtime when the package is linked —
+    # never called by name, so it has no inbound call edge. ``TestMain``
+    # is the test-binary entry the ``go test`` runner invokes by reflection.
+    "init",
+    "TestMain",
     "MauiProgram",         # .NET MAUI
     "Program",             # C# top-level / classic console
     "Startup",             # ASP.NET Core legacy
@@ -200,6 +207,15 @@ class DeadCodeAnalyzer:
         self._dynamic_import_files = find_dynamic_import_files(
             parsed_files or {}
         ) | find_dynamic_edge_files(graph)
+        # Lazily-built ``.go`` package-directory → file-node map, used by the
+        # Go package-granular reachability hook (see ``go_reachability``).
+        self._go_package_files: dict[str, list[str]] | None = None
+
+    def _go_packages(self) -> dict[str, list[str]]:
+        """Return the cached Go package map, building it on first use."""
+        if self._go_package_files is None:
+            self._go_package_files = build_go_package_files(self.graph)
+        return self._go_package_files
 
     def analyze(
         self,
@@ -342,8 +358,14 @@ class DeadCodeAnalyzer:
             if self._is_api_contract(node_data):
                 continue
 
-            in_deg = self.graph.in_degree(node)
-            if in_deg > 0:
+            # Go reachability is package-granular: a file with no direct
+            # importer can still be live (entry-package sibling next to
+            # main.go, or a package whose siblings carry the import). Delegate
+            # to the Go helper instead of the raw file-level in_degree check.
+            if str(node).endswith(".go"):
+                if is_go_file_reachable(str(node), self.graph, self._go_packages()):
+                    continue
+            elif self.graph.in_degree(node) > 0:
                 continue
 
             finding = self._make_unreachable_finding(str(node), node_data, dynamic_patterns)
@@ -680,6 +702,15 @@ class DeadCodeAnalyzer:
             # edges, so every private Rust function appears "uncalled".
             # Skip the entire language until call-edge support lands.
             if node_data.get("language") == "rust":
+                continue
+            # Go: same gap as Rust pre-parity — package-qualified and
+            # same-package call resolution is incomplete, so private symbols
+            # used only across sibling files in their package read as
+            # "uncalled". Exempt the language until Phase 3 (call & type-ref
+            # resolution) lands robust Go call edges.
+            # TODO(go-parity Phase 3): remove this exemption once
+            # ``call_resolver`` resolves package-scoped Go calls.
+            if node_data.get("language") == "go":
                 continue
             if node_data.get("visibility") not in ("private", "internal"):
                 continue
