@@ -20,6 +20,7 @@ from pathlib import Path
 
 import structlog
 
+from .alpine import AlpineDynamicHints
 from .base import DynamicEdge, DynamicHintExtractor
 from .c import CDynamicHints
 from .django import DjangoDynamicHints
@@ -57,6 +58,7 @@ class HintRegistry:
             PytestDynamicHints(),
             PythonDynamicHints(),
             NodeDynamicHints(),
+            AlpineDynamicHints(),
             DotNetDynamicHints(),
             XamlDynamicHints(),
             SpringDynamicHints(),
