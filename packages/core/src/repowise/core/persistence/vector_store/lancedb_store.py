@@ -47,11 +47,32 @@ class LanceDBVectorStore(VectorStore):
         else:
             self._table = None  # will be created on first upsert
 
-    async def _ensure_table(self, sample_vector: list[float]) -> None:
-        """Create the LanceDB table if it does not exist yet."""
-        if self._table is not None:
-            return
+    @staticmethod
+    def _existing_vector_dim(schema) -> int | None:
+        """Return the fixed-length dimension of the ``vector`` field, or None.
 
+        Returns None when the field is absent or not a fixed-size list (in
+        which case we can't meaningfully compare dimensions).
+        """
+        try:
+            field = schema.field("vector")
+        except KeyError:
+            return None
+        list_size = getattr(field.type, "list_size", None)
+        # pyarrow uses ``list_size == -1`` for variable-length lists.
+        if isinstance(list_size, int) and list_size > 0:
+            return list_size
+        return None
+
+    async def _ensure_table(self, sample_vector: list[float]) -> None:
+        """Create the LanceDB table if it does not exist yet.
+
+        If a table already exists but its vector dimension differs from the
+        current embedder's output (e.g. the embedder was switched from
+        ``mock`` (dim 8) to ``openai`` (dim 1536) between reindexes), the stale
+        table is dropped and recreated. Otherwise every write would fail deep
+        inside LanceDB with an opaque IO error that never mentions dimensions.
+        """
         try:
             import pyarrow as pa  # type: ignore[import]
         except ImportError as exc:
@@ -61,6 +82,15 @@ class LanceDBVectorStore(VectorStore):
             ) from exc
 
         dim = len(sample_vector)
+
+        if self._table is not None:
+            existing_dim = self._existing_vector_dim(await self._table.schema())
+            if existing_dim is None or existing_dim == dim:
+                return
+            # Embedder changed dimensions — the old vectors are unusable.
+            await self._db.drop_table(self._table_name)  # type: ignore[union-attr]
+            self._table = None
+
         schema = pa.schema(
             [
                 pa.field("page_id", pa.string()),

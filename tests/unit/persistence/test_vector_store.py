@@ -354,3 +354,56 @@ async def test_lancedb_embed_batch(tmp_path, mock_embedder):
         assert ids == {"p1", "p2"}
     finally:
         await store.close()
+
+
+class _FixedDimEmbedder:
+    """Deterministic embedder with a configurable output dimension."""
+
+    def __init__(self, dimensions: int) -> None:
+        self.dimensions = dimensions
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        out: list[list[float]] = []
+        for i, _ in enumerate(texts):
+            vec = [0.0] * self.dimensions
+            vec[i % self.dimensions] = 1.0  # unit-length
+            out.append(vec)
+        return out
+
+
+@pytest.mark.asyncio
+async def test_lancedb_reindex_recreates_table_on_dimension_change(tmp_path, mock_embedder):
+    """Switching embedders (mock dim 8 → dim 1536) must recreate the table.
+
+    Regression test for #234: the stale wiki_pages table kept the old vector
+    schema, so every write failed with an opaque LanceDB IO error instead of
+    being transparently rebuilt for the new embedder.
+    """
+    lancedb = pytest.importorskip("lancedb")  # noqa: F841
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    db_path = str(tmp_path / "lance")
+
+    # First index with the 8-dim mock embedder.
+    store = LanceDBVectorStore(db_path, mock_embedder)
+    try:
+        await store.embed_and_upsert(
+            "p1", "old content", {"target_path": "a.py", "content": "old content"}
+        )
+    finally:
+        await store.close()
+
+    # Reindex against the same path with a different-dimension embedder.
+    big_embedder = _FixedDimEmbedder(1536)
+    store = LanceDBVectorStore(db_path, big_embedder)
+    try:
+        await store.embed_and_upsert(
+            "p2", "new content", {"target_path": "b.py", "content": "new content"}
+        )
+        # The old 8-dim row is gone; the table now holds only the new write.
+        ids = await store.list_page_ids()
+        assert ids == {"p2"}
+        results = await store.search("new content", limit=5)
+        assert {r.page_id for r in results} == {"p2"}
+    finally:
+        await store.close()
