@@ -5,7 +5,8 @@ Validates that Go-specific dead-code semantics hold:
 - ``func init`` does NOT rescue an otherwise-unimported package,
 - Go never-flag path patterns and entry-symbol names,
 - Go dynamic-import markers,
-- the temporary ``unused_internal`` language exemption.
+- ``unused_internal`` now applies to Go (the Phase 2 exemption was lifted in
+  Phase 3 once package-aware call edges landed).
 """
 from __future__ import annotations
 
@@ -213,31 +214,89 @@ class TestGoDynamicMarkers:
         assert "//go:linkname" in go_markers
 
 
-class TestGoUnusedInternalsExempt:
-    def test_private_go_symbol_not_flagged(self):
-        """Go is exempted from unused_internal until Phase 3 call edges land."""
-        g = _build_graph(
-            nodes={
-                "pkg/util/util.go": _go_file(
-                    symbol_count=1,
-                    symbols=[{
-                        "name": "helper",
-                        "kind": "function",
-                        "language": "go",
-                        "visibility": "private",
-                        "start_line": 1,
-                        "end_line": 10,
-                    }],
-                ),
-            }
-        )
-        report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
+class TestGoUnusedInternals:
+    """Phase 3 lifted the blanket Go exemption: private Go symbols are now
+    subject to unused_internal, gated on real ``calls`` edges from the
+    package-aware call resolver."""
+
+    def _analyze(self, g: nx.DiGraph):
+        return DeadCodeAnalyzer(g, git_meta_map={}).analyze(
             {
                 "detect_unreachable_files": False,
                 "detect_unused_exports": False,
                 "detect_zombie_packages": False,
+                "detect_unused_internals": True,
                 "min_confidence": 0.0,
             }
         )
+
+    def _sym(self) -> dict:
+        return {
+            "name": "helper",
+            "kind": "function",
+            "language": "go",
+            "visibility": "private",
+            "start_line": 1,
+            "end_line": 10,
+        }
+
+    def test_uncalled_private_go_symbol_is_flagged(self):
+        """No callers → flagged now that the exemption is lifted."""
+        g = _build_graph(
+            nodes={"pkg/util/util.go": _go_file(symbol_count=1, symbols=[self._sym()])}
+        )
+        report = self._analyze(g)
+        internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
+        assert any(f.symbol_name == "helper" for f in internals)
+
+    def test_private_type_kinds_not_flagged_as_internal(self):
+        """Non-callable type kinds (struct/interface) are excluded from the
+        call-graph internal pass — they have no call edges and their type
+        usage isn't observable as a symbol-level edge."""
+        g = _build_graph(
+            nodes={
+                "pkg/util/util.go": _go_file(
+                    symbol_count=2,
+                    symbols=[
+                        {"name": "config", "kind": "struct", "language": "go",
+                         "visibility": "private", "start_line": 1, "end_line": 5},
+                        {"name": "provider", "kind": "interface", "language": "go",
+                         "visibility": "private", "start_line": 6, "end_line": 9},
+                    ],
+                ),
+            }
+        )
+        report = self._analyze(g)
+        names = {
+            f.symbol_name for f in report.findings
+            if f.kind == DeadCodeKind.UNUSED_INTERNAL
+        }
+        assert "config" not in names
+        assert "provider" not in names
+
+    def test_called_private_go_symbol_not_flagged(self):
+        """A ``calls`` edge from a sibling keeps the symbol live."""
+        g = _build_graph(
+            nodes={
+                "pkg/util/util.go": _go_file(symbol_count=1, symbols=[self._sym()]),
+                "pkg/util/caller.go": _go_file(
+                    symbol_count=1,
+                    symbols=[{
+                        "name": "Run",
+                        "kind": "function",
+                        "language": "go",
+                        "visibility": "public",
+                        "start_line": 1,
+                        "end_line": 5,
+                    }],
+                ),
+            },
+            edges=[(
+                "pkg/util/caller.go::Run",
+                "pkg/util/util.go::helper",
+                {"edge_type": "calls"},
+            )],
+        )
+        report = self._analyze(g)
         internals = [f for f in report.findings if f.kind == DeadCodeKind.UNUSED_INTERNAL]
         assert all(f.symbol_name != "helper" for f in internals)
