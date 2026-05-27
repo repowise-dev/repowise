@@ -1001,13 +1001,28 @@ class DecisionExtractor:
         return decisions
 
     def _find_changelog(self) -> Path | None:
-        """Locate a top-level CHANGELOG/HISTORY/NEWS file (any extension)."""
-        for p in sorted(self._repo_path.glob("*")):
-            if not p.is_file():
+        """Locate a CHANGELOG/HISTORY/NEWS file (any extension).
+
+        Checks the repo root first, then the conventional documentation
+        subdirectories (``docs/``, ``doc/``, ``.github/``). Many projects keep
+        their changelog under ``docs/`` rather than at the root, so a root-only
+        scan silently skips this source.
+        """
+        search_dirs = [
+            self._repo_path,
+            self._repo_path / "docs",
+            self._repo_path / "doc",
+            self._repo_path / ".github",
+        ]
+        for directory in search_dirs:
+            if not directory.is_dir():
                 continue
-            stem = re.sub(r"[^a-z]", "", p.stem.lower())
-            if stem in _CHANGELOG_NAMES:
-                return p
+            for p in sorted(directory.glob("*")):
+                if not p.is_file():
+                    continue
+                stem = re.sub(r"[^a-z]", "", p.stem.lower())
+                if stem in _CHANGELOG_NAMES:
+                    return p
         return None
 
     def _parse_changelog(self, content: str) -> list[tuple[str, str]]:

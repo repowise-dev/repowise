@@ -106,6 +106,20 @@ async def test_mine_changelog_extracts_decision_sections(tmp_path):
     assert all(d.source == "changelog" for d in decisions)
 
 
+async def test_mine_changelog_finds_changelog_under_docs(tmp_path):
+    # Many projects keep the changelog under docs/ rather than at the root.
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "CHANGELOG.md").write_text(_CHANGELOG, encoding="utf-8")
+
+    ex = DecisionExtractor(repo_path=tmp_path)  # no provider → raw bullets
+    decisions = await ex.mine_changelog()
+
+    texts = [d.decision for d in decisions]
+    assert any("Migrate the auth layer" in t for t in texts)
+    assert all(d.source == "changelog" for d in decisions)
+
+
 async def test_extract_all_runs_deterministic_sources_and_gates(tmp_path):
     adr_dir = tmp_path / "docs" / "adr"
     adr_dir.mkdir(parents=True)
