@@ -259,7 +259,10 @@ class TypeReference:
 
     type_name: str  # head identifier (e.g. "IBasketService" from "IBasketService<T>")
     line: int  # 1-indexed source line
-    origin: Literal["ctor_param", "method_param", "delegate_param"] = "ctor_param"
+    origin: Literal[
+        "ctor_param", "method_param", "delegate_param",  # C#
+        "param_type", "field_type", "composite_literal",  # Go
+    ] = "ctor_param"
 
 
 @dataclass

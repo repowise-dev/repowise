@@ -66,6 +66,7 @@ from .parser_helpers import (
     _is_async_node,
     _qualified_cpp_parent,
     _run_query,
+    TYPE_HEAD_EXTRACTORS,
 )
 
 log = structlog.get_logger(__name__)
@@ -270,7 +271,7 @@ class ASTParser:
         heritage = extract_heritage(tree, query, config, file_info, src, run_query=_run_query)
         exports = self._derive_exports(symbols, config, src)
         docstring = extract_module_docstring(root, src, lang)
-        type_refs = self._extract_type_refs(tree, query, src)
+        type_refs = self._extract_type_refs(tree, query, src, lang)
 
         if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
             log.warning(
@@ -678,22 +679,28 @@ class ASTParser:
         tree: object,
         query: object,
         src: str,
+        lang: str = "",
     ) -> list[TypeReference]:
         """Collect ``@param.type`` captures into TypeReference records.
 
-        Currently only the C# query emits these captures (constructor /
-        method / delegate / primary-ctor parameter types). The graph
+        C# emits these from constructor / method / delegate / primary-ctor
+        parameter types; Go emits them from parameter, struct-field, return,
+        and composite-literal type positions (see ``go.scm``). The graph
         builder resolves each reference to a defining file via the
         language-specific resolver index and emits a file-level edge.
 
-        Capture origin is inferred from the parameter's enclosing node:
-        ``constructor_declaration`` → ``ctor_param`` (highest signal:
-        canonical DI vector), ``method_declaration`` → ``method_param``,
-        ``delegate_declaration`` → ``delegate_param``. Primary
-        constructors on records / classes also resolve to ``ctor_param``.
+        The head-identifier extractor is language-specific (Go unwraps
+        ``*T`` / ``[]T`` / ``map[K]V`` / ``pkg.T``); see
+        ``TYPE_HEAD_EXTRACTORS``. Capture origin is inferred from the
+        enclosing node: ``constructor_declaration`` → ``ctor_param``,
+        ``method_declaration`` → ``method_param`` (C#);
+        ``field_declaration`` → ``field_type``, ``composite_literal`` →
+        ``composite_literal`` (Go).
         """
         if query is None:
             return []
+
+        head_of = TYPE_HEAD_EXTRACTORS.get(lang, _head_type_identifier)
 
         refs: list[TypeReference] = []
         seen: set[tuple[str, int]] = set()
@@ -703,7 +710,7 @@ class ASTParser:
             if not type_nodes:
                 continue
             for type_node in type_nodes:
-                head = _head_type_identifier(type_node, src)
+                head = head_of(type_node, src)
                 if not head:
                     continue
                 line = type_node.start_point[0] + 1

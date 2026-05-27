@@ -9,6 +9,7 @@ this one holds the free functions it calls. No state, no imports from
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import structlog
@@ -172,6 +173,12 @@ _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
     "record_declaration": "ctor_param",
     "class_declaration": "ctor_param",
     "struct_declaration": "ctor_param",
+    # Go type positions — node types are Go-only so they never collide with
+    # the C# entries above. The origin is provenance only; resolution treats
+    # all type-use edges equally.
+    "field_declaration": "field_type",
+    "parameter_declaration": "param_type",
+    "composite_literal": "composite_literal",
 }
 
 
@@ -281,6 +288,103 @@ def _classify_param_origin(type_node: Node) -> str:
             return origin
         cur = cur.parent
     return "method_param"
+
+
+# ---------------------------------------------------------------------------
+# Go type-reference head extraction
+# ---------------------------------------------------------------------------
+
+# Predeclared Go type names — never resolve to a user-defined type, so they
+# are dropped before the resolver lookup. ``error``/``any``/``comparable``
+# are predeclared identifiers, not keywords, but behave as builtins here.
+_GO_BUILTIN_TYPES: frozenset[str] = frozenset(
+    {
+        "string", "bool", "byte", "rune", "error", "any", "comparable",
+        "int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+        "float32", "float64", "complex64", "complex128",
+    }
+)
+
+
+def _go_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head type name of a Go type expression, or None.
+
+    Unwraps the modifier shells Go layers around a named type so the
+    resolver sees the bare identifier it indexes by:
+
+        ``Options``                 → "Options"
+        ``*Cache``                  → "Cache"
+        ``[]Partition``             → "Partition"
+        ``map[string]Config``       → "Config"   (value type; string filtered)
+        ``chan Event``              → "Event"
+        ``dynacache.Cache``         → "Cache"     (qualifier dropped)
+        ``List[Inner]``             → "List"      (generic head)
+        ``string`` / ``int``        → None        (builtin)
+        ``(Foo, error)``            → None        (parameter_list; the inner
+                                                   declarations are captured
+                                                   separately)
+        ``interface{...}`` / ``struct{...}`` / ``func(...)`` → None (anonymous)
+
+    The qualifier in ``pkg.Cache`` is intentionally dropped: the Go type-ref
+    strategy resolves the bare name against same-package siblings and
+    imported package files, mirroring the Rust strategy. Keeping the head
+    name unqualified matches the symbol-index keys.
+    """
+    node: Node | None = type_node
+    text = ""
+    for _ in range(8):
+        if node is None:
+            return None
+        kind = node.type
+        if kind == "type_identifier":
+            text = _node_text(node, src)
+            break
+        if kind == "qualified_type":
+            name = node.child_by_field_name("name") or next(
+                (c for c in reversed(node.children) if c.type == "type_identifier"),
+                None,
+            )
+            text = _node_text(name, src) if name else ""
+            break
+        if kind == "generic_type":
+            node = node.child_by_field_name("type")
+            continue
+        if kind in ("slice_type", "array_type"):
+            node = node.child_by_field_name("element")
+            continue
+        if kind == "map_type":
+            node = node.child_by_field_name("value")
+            continue
+        if kind == "channel_type":
+            node = node.child_by_field_name("value")
+            continue
+        if kind in ("pointer_type", "parenthesized_type"):
+            # No field name on the inner type — take the first named child.
+            node = node.named_children[0] if node.named_children else None
+            continue
+        # parameter_list (multi-return), interface_type, struct_type,
+        # function_type, and anything else: no single named type to resolve.
+        return None
+    else:
+        return None
+
+    if not text or (not text[0].isalpha() and text[0] != "_"):
+        return None
+    if text in _GO_BUILTIN_TYPES:
+        return None
+    # Single-uppercase-letter heads are overwhelmingly generic type params.
+    if len(text) == 1 and text.isupper():
+        return None
+    return text
+
+
+# Per-language head-identifier extractor for ``@param.type`` captures.
+# Defaults to the C#-shaped extractor; languages with a differently-shaped
+# type grammar register their own here.
+TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
+    "go": _go_head_type_identifier,
+}
 
 
 # ---------------------------------------------------------------------------

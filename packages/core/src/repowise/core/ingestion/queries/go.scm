@@ -76,3 +76,33 @@
   )
   arguments: (argument_list) @call.arguments
 ) @call.site
+
+; ---------------------------------------------------------------------------
+; Type references — drive file-level ``type_use`` edges
+; ---------------------------------------------------------------------------
+; Go places a large share of its dependency surface in type positions that
+; carry no import statement: a struct field of type ``pkg.Config``, a
+; parameter or return of a sibling-package type, a ``pkg.Options{}``
+; composite literal. The single ``@param.type`` capture name is reused
+; across languages (see parser._extract_type_refs); the Go-specific head
+; extractor unwraps ``*T`` / ``[]T`` / ``map[K]V`` / ``pkg.T`` / ``T[U]``.
+
+; Parameter and receiver types: func f(o Options), func (c *Cache) ...
+(parameter_declaration
+  type: (_) @param.type)
+
+; Struct field types: struct { Inner *Partition }
+(field_declaration
+  type: (_) @param.type)
+
+; Single return type: func New() *Cache  (multi-returns are parameter_lists,
+; already covered by the parameter_declaration pattern above)
+(function_declaration
+  result: (_) @param.type)
+(method_declaration
+  result: (_) @param.type)
+
+; Composite-literal type: Options{...}, pkg.Cache{...} — the key signal that
+; rescues struct types used only as values, never imported by name.
+(composite_literal
+  type: (_) @param.type)
