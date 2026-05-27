@@ -212,6 +212,38 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "**/generated/**/*.rs",
     # Protocol buffer generated code
     "**/proto/**/*.rs",
+    # ---- Go conventions --------------------------------------------------
+    # ``fnmatch`` does not treat ``/`` specially, so a leading ``*`` already
+    # spans directory separators; the ``*/`` + bare pairs below match both
+    # nested and repo-root locations.
+    # Test files are compiled and run by ``go test`` via the runner, never
+    # imported by other packages.
+    "*_test.go",
+    # ``package main`` entry points — invoked by the Go toolchain / OS, never
+    # imported. Covers ``cmd/<name>/main.go`` and a repo-root ``main.go``.
+    "*/main.go",
+    "main.go",
+    # Package documentation stubs (the ``doc.go`` / ``docs.go`` convention):
+    # a file holding only the package-level doc comment, frequently the sole
+    # file in an aggregating directory, so it has no importer by design.
+    "*/doc.go",
+    "doc.go",
+    "*/docs.go",
+    "docs.go",
+    # Mage build files (``//go:build mage``, ``package main``) — run by the
+    # ``mage`` tool, excluded from normal builds, never imported.
+    "*/magefile.go",
+    "magefile.go",
+    # Generated code: stringer (``*_string.go``), protobuf (``*.pb.go``),
+    # gRPC (``*_grpc.pb.go``), go-bindata (``*bindata.go``), and the
+    # Kubernetes ``zz_generated*`` / generic ``*_gen.go`` / ``*.gen.go``
+    # conventions. Wired in at build time, no static importer.
+    "*.gen.go",
+    "*_gen.go",
+    "*.pb.go",
+    "*_string.go",
+    "*zz_generated*.go",
+    "*bindata.go",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
