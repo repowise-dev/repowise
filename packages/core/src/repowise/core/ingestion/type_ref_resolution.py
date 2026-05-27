@@ -198,6 +198,85 @@ def _find_rust_type_file(
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Go
+# ---------------------------------------------------------------------------
+
+def _resolve_go_type_refs(
+    parsed: ParsedFile,
+    ctx: "ResolverContext",
+    graph: "nx.DiGraph",
+) -> int:
+    """Resolve Go ``@param.type`` captures via the Go package index.
+
+    Go references a type either bare (same package — no import) or
+    package-qualified (``pkg.Type`` — the qualifier was already stripped by
+    the head extractor). The candidate set is therefore the file's own
+    package siblings plus every ``.go`` file in each imported local package.
+    The type name is matched against the symbols those files define, and a
+    file-level ``type_use`` edge is emitted — which is what lets the
+    unused-export pass see a struct used only as a field/param/return type.
+    """
+    if not parsed.type_refs:
+        return 0
+
+    from .parser_helpers import _GO_BUILTIN_TYPES
+    from .resolvers.go_workspace import get_or_build_go_index
+
+    index = get_or_build_go_index(ctx)
+    from_path = parsed.file_info.path
+
+    # Candidate defining files: same-package siblings (referenced with no
+    # import) + every file in each imported local package (Phase 1 fan-out
+    # means a single import already maps to all of a package's files).
+    candidates: set[str] = set()
+    own_pkg = index.package_for_file(from_path)
+    if own_pkg:
+        candidates.update(own_pkg.files)
+    for imp in parsed.imports:
+        files = index.files_for_import(imp.module_path)
+        if files:
+            candidates.update(files)
+        elif imp.resolved_file and not imp.resolved_file.startswith("external:"):
+            candidates.add(imp.resolved_file)
+    candidates.discard(from_path)
+    if not candidates:
+        return 0
+
+    emitted = 0
+    seen_targets: set[tuple[str, str]] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name or name in _GO_BUILTIN_TYPES:
+            continue
+        target = _find_go_type_file(name, candidates, graph)
+        if target is None or target == from_path:
+            continue
+        if (name, target) in seen_targets:
+            continue
+        seen_targets.add((name, target))
+        _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
+                                    type_name=name, origin=ref.origin)
+        emitted += 1
+    return emitted
+
+
+def _find_go_type_file(
+    type_name: str,
+    candidate_files: set[str],
+    graph: "nx.DiGraph",
+) -> str | None:
+    """Return a candidate file that defines a type named *type_name*."""
+    for cand in candidate_files:
+        if not graph.has_node(cand):
+            continue
+        for succ in graph.successors(cand):
+            nd = graph.nodes.get(succ, {})
+            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
+                return cand
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------------------
 
@@ -209,6 +288,7 @@ Strategy = Callable[[ParsedFile, "ResolverContext", "nx.DiGraph"], int]
 _STRATEGIES: dict[str, Strategy] = {
     "csharp": _resolve_csharp_type_refs,
     "rust": _resolve_rust_type_refs,
+    "go": _resolve_go_type_refs,
 }
 
 
@@ -256,24 +336,25 @@ def _add_or_merge_type_use_edge(
     (dead-code's ``in_degree`` check, PageRank, blast-radius) operate
     across edge types and still pick it up.
 
-    If a stronger ``imports`` edge from a real ``using`` directive
-    already connects the same files, leave it alone — the directive is
-    strictly stronger evidence — and just record the type name in
-    ``type_uses`` for traceability. Likewise, parallel type_use edges
-    between the same pair of files are merged into one row with the
-    full list of referenced types in ``imported_names``.
+    If a stronger ``imports`` edge from a real ``using``/package directive
+    already connects the same files, leave its ``edge_type`` and confidence
+    alone — the directive is strictly stronger evidence — but still record
+    the referenced type in both ``type_uses`` (provenance) and
+    ``imported_names``. The latter matters because the unused-export pass
+    treats ``imported_names`` as the set of names used from a file: a type
+    referenced as a field/param/return is genuinely used, and Go's package
+    import fan-out means the defining file almost always already carries an
+    ``imports`` edge keyed by the *package* alias, not the type name —
+    without this the type would still read as an unused export.
     """
     if graph.has_edge(src, dst):
         data = graph[src][dst]
         type_uses = data.setdefault("type_uses", [])
         if type_name not in type_uses:
             type_uses.append(type_name)
-        # Keep imported_names in sync so the unused-export analyzer can
-        # see the referenced type name as evidence of import-like usage.
-        if data.get("edge_type") == "type_use":
-            names = data.setdefault("imported_names", [])
-            if type_name not in names:
-                names.append(type_name)
+        names = data.setdefault("imported_names", [])
+        if type_name not in names:
+            names.append(type_name)
         return
     graph.add_edge(
         src,
