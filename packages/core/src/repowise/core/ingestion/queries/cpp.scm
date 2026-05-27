@@ -176,3 +176,26 @@
   )
   arguments: (argument_list) @call.arguments
 ) @call.site
+
+; ---------------------------------------------------------------------------
+; Type references — drive file-level ``type_use`` edges
+; ---------------------------------------------------------------------------
+; A struct / class / typedef declared in a header and used as a field /
+; parameter / return type in a translation unit that ``#include``s it
+; carries no import statement naming the type — only the ``#include``.
+; Without these captures every header type reads as an unused export. The
+; shared ``@param.type`` capture name routes through the C head extractor
+; (see parser_helpers.TYPE_HEAD_EXTRACTORS); pointer/array declarator
+; wrapping lives on the declarator side, and primitive builtins are filtered.
+
+; Parameter types: void f(Widget *w)
+(parameter_declaration
+  type: (_) @param.type)
+
+; Struct / class field types
+(field_declaration
+  type: (_) @param.type)
+
+; Function return type: Widget * make(...)
+(function_definition
+  type: (_) @param.type)

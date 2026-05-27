@@ -277,6 +277,80 @@ def _find_go_type_file(
 
 
 # ---------------------------------------------------------------------------
+# Strategy: C / C++
+# ---------------------------------------------------------------------------
+
+def _resolve_c_type_refs(
+    parsed: ParsedFile,
+    ctx: "ResolverContext",
+    graph: "nx.DiGraph",
+) -> int:
+    """Resolve C / C++ ``@param.type`` captures via ``#include`` + stem map.
+
+    A struct or typedef declared in a header and used as a field / param /
+    return type in a ``.c`` that ``#include``s the header has no statement
+    naming the type — the ``#include`` resolves to the header *file*, but
+    the type itself never lands in ``imported_names``. This mirrors the Go
+    type-ref strategy for ``.go`` and the Rust one for ``.rs``: resolve the
+    bare type name against the files this translation unit includes, falling
+    back to a unique global stem match, and emit a ``type_use`` edge so the
+    unused-export pass sees the header type as used.
+    """
+    if not parsed.type_refs:
+        return 0
+
+    from .parser_helpers import _C_BUILTIN_TYPES
+
+    from_path = parsed.file_info.path
+
+    import_targets: set[str] = set()
+    for imp in parsed.imports:
+        if imp.resolved_file and not imp.resolved_file.startswith("external:"):
+            import_targets.add(imp.resolved_file)
+
+    emitted = 0
+    seen_targets: set[tuple[str, str]] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name or name in _C_BUILTIN_TYPES:
+            continue
+        target = _find_c_type_file(name, from_path, import_targets, ctx, graph)
+        if target is None or target == from_path:
+            continue
+        if (name, target) in seen_targets:
+            continue
+        seen_targets.add((name, target))
+        _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
+                                    type_name=name, origin=ref.origin)
+        emitted += 1
+    return emitted
+
+
+def _find_c_type_file(
+    type_name: str,
+    from_path: str,
+    import_targets: set[str],
+    ctx: "ResolverContext",
+    graph: "nx.DiGraph",
+) -> str | None:
+    """Find the file defining *type_name*, preferring ``#include``d headers."""
+    for imp_file in import_targets:
+        if not graph.has_node(imp_file):
+            continue
+        for succ in graph.successors(imp_file):
+            nd = graph.nodes.get(succ, {})
+            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
+                return imp_file
+
+    candidates = ctx.stem_map.get(type_name.lower(), [])
+    if len(candidates) == 1 and candidates[0] != from_path:
+        if graph.has_node(candidates[0]):
+            return candidates[0]
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------------------
 
@@ -289,6 +363,8 @@ _STRATEGIES: dict[str, Strategy] = {
     "csharp": _resolve_csharp_type_refs,
     "rust": _resolve_rust_type_refs,
     "go": _resolve_go_type_refs,
+    "c": _resolve_c_type_refs,
+    "cpp": _resolve_c_type_refs,
 }
 
 

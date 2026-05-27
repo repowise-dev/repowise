@@ -379,11 +379,91 @@ def _go_head_type_identifier(type_node: Node, src: str) -> str | None:
     return text
 
 
+# ---------------------------------------------------------------------------
+# C / C++ type-reference head extraction
+# ---------------------------------------------------------------------------
+
+# Predeclared / standard-library scalar types that never resolve to a
+# user-defined struct, so they're dropped before the resolver lookup.
+# ``primitive_type`` / ``sized_type_specifier`` nodes are filtered
+# structurally below; this set catches the ``<stdint.h>`` / ``<stddef.h>``
+# typedefs that the grammar surfaces as plain ``type_identifier`` nodes.
+_C_BUILTIN_TYPES: frozenset[str] = frozenset(
+    {
+        "void", "char", "short", "int", "long", "float", "double",
+        "signed", "unsigned", "bool", "_Bool", "_Complex",
+        "size_t", "ssize_t", "rsize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
+        "int8_t", "int16_t", "int32_t", "int64_t",
+        "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+        "intmax_t", "uintmax_t", "wchar_t", "wint_t", "char16_t", "char32_t",
+        "va_list", "FILE",
+    }
+)
+
+
+def _c_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head type name of a C / C++ type expression, or None.
+
+    In C the pointer / array shells wrap the *declarator*, not the type,
+    so the captured ``type:`` field is the bare type node:
+
+        ``JSON_Value``                  → "JSON_Value"
+        ``struct JSON_Object``          → "JSON_Object"  (named struct ref)
+        ``int`` / ``unsigned long``     → None           (primitive)
+        ``size_t``                      → None           (stdlib typedef)
+        ``Acme::Widget`` (C++)          → "Widget"       (rightmost name)
+        ``std::vector<T>`` (C++)        → "vector"       (template head)
+        anonymous ``struct {...}``      → None
+    """
+    node: Node | None = type_node
+    text = ""
+    for _ in range(6):
+        if node is None:
+            return None
+        kind = node.type
+        if kind == "type_identifier":
+            text = _node_text(node, src)
+            break
+        if kind in ("primitive_type", "sized_type_specifier"):
+            return None
+        if kind in ("struct_specifier", "union_specifier", "enum_specifier", "class_specifier"):
+            name = node.child_by_field_name("name")
+            if name is None:
+                return None  # anonymous aggregate — no named type to resolve
+            text = _node_text(name, src)
+            break
+        if kind == "template_type":
+            node = node.child_by_field_name("name")
+            continue
+        if kind == "qualified_identifier":
+            # ``NS::Type`` — take the rightmost name component.
+            name = node.child_by_field_name("name")
+            node = name if name is not None else (
+                node.named_children[-1] if node.named_children else None
+            )
+            continue
+        # type_qualifier (const/volatile) wrappers and anything else:
+        # descend into the first named child.
+        node = node.named_children[0] if node.named_children else None
+    else:
+        return None
+
+    if not text or (not text[0].isalpha() and text[0] != "_"):
+        return None
+    if text in _C_BUILTIN_TYPES:
+        return None
+    if len(text) == 1 and text.isupper():
+        return None
+    return text
+
+
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
 TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
     "go": _go_head_type_identifier,
+    "c": _c_head_type_identifier,
+    "cpp": _c_head_type_identifier,
 }
 
 

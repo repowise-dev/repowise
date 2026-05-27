@@ -96,3 +96,27 @@
   )
   arguments: (argument_list) @call.arguments
 ) @call.site
+
+; ---------------------------------------------------------------------------
+; Type references — drive file-level ``type_use`` edges
+; ---------------------------------------------------------------------------
+; A struct / typedef declared in a header (``parson.h``) and used as a
+; field / parameter / return type in a ``.c`` that ``#include``s it carries
+; no import statement naming the type — only the ``#include`` of the header.
+; Without these captures every header struct reads as an unused export. The
+; shared ``@param.type`` capture name routes through the C head extractor
+; (see parser_helpers.TYPE_HEAD_EXTRACTORS), which drops the pointer/array
+; declarator wrapping (it lives on the declarator side in C, not the type)
+; and filters primitive builtins. Mirrors the Go / C# captures.
+
+; Parameter types: void f(JSON_Object *obj)
+(parameter_declaration
+  type: (_) @param.type)
+
+; Struct / union field types: struct { JSON_Value *vals; }
+(field_declaration
+  type: (_) @param.type)
+
+; Function return type: JSON_Value * json_parse(...)
+(function_definition
+  type: (_) @param.type)
