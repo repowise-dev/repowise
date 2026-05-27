@@ -129,6 +129,20 @@ _CPP_EXPORT_MARKERS: tuple[str, ...] = (
     "__declspec( dllexport )",
     'visibility("default")',
     "visibility(\"default\")",
+    # WebAssembly / emscripten / WASI export surfaces. A function compiled
+    # to WASM and called across the JS<->WASM boundary carries one of these
+    # markers; without them the export reads as an unused symbol because no
+    # in-binary caller exists in the static graph (the caller is the host
+    # runtime). ``EMSCRIPTEN_KEEPALIVE`` / ``WASM_EXPORT`` appear as a bare
+    # macro token preceding the return type (parsed as the function's
+    # leading ``type_identifier``); ``export_name(...)`` / ``used`` appear
+    # inside an ``__attribute__((...))`` specifier — both are caught by the
+    # leading-children scan in ``_has_export_marker``.
+    "EMSCRIPTEN_KEEPALIVE",
+    "WASM_EXPORT",
+    "export_name(",
+    "__attribute__((used))",
+    "__attribute__((visibility(\"default\")))",
 )
 
 
