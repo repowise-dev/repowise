@@ -306,6 +306,12 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # --- Phase 2: Resolve heritage (extends/implements) ---
         self._resolve_heritage(import_targets, progress=progress)
 
+        # --- Phase 2b: Resolve Go structural interface satisfaction ---
+        # Go has no `implements` keyword; connect concrete types to the
+        # interfaces their method set satisfies so interfaces reached only
+        # through implementors are not flagged as dead exports.
+        self._resolve_go_interface_satisfaction(progress=progress)
+
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets, progress=progress)
 

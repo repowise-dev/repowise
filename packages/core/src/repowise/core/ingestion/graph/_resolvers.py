@@ -93,6 +93,40 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
+    def _resolve_go_interface_satisfaction(self, progress: Any | None = None) -> None:
+        """Emit ``method_implements`` edges for Go structural interface
+        satisfaction.
+
+        Go has no nominal ``implements`` clause, so interfaces reached only
+        through their concrete implementors look like unreferenced exports.
+        This pass connects each concrete type to the interfaces its method
+        set satisfies, landing a usage signal on the interface symbol. Runs
+        after heritage so the interface / type symbols already exist as nodes.
+        """
+        from ..languages.go_interface_satisfaction import (
+            resolve_go_interface_satisfaction,
+        )
+
+        has_go = any(
+            pf.file_info.language == "go" for pf in self._parsed_files.values()
+        )
+        if not has_go:
+            return
+
+        phase = "graph.go_interfaces"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            added = resolve_go_interface_satisfaction(self._graph, self._parsed_files)
+            log.info("interface_satisfaction_edges", language="go", added=added)
+        except Exception as exc:
+            log.warning("go_interface_satisfaction_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
     def _resolve_calls(
         self,
         import_targets: dict[str, set[str]],
