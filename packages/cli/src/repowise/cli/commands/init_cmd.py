@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,28 @@ from repowise.cli.providers import (
     resolve_embedder,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
-from repowise.cli.ui import MaybeCountColumn
+from repowise.cli.ui import (
+    BRAND,
+    MaybeCountColumn,
+    RichProgressCallback,
+    build_analysis_summary_panel,
+    build_completion_panel,
+    build_contextual_next_steps,
+    format_elapsed,
+    interactive_advanced_config,
+    interactive_fast_mode_offer,
+    interactive_mode_select,
+    interactive_primary_select,
+    interactive_provider_select,
+    interactive_repo_select,
+    load_dotenv,
+    print_banner,
+    print_index_only_intro,
+    print_phase_header,
+    print_scan_summary,
+    quick_repo_scan,
+    should_offer_fast_mode,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers (kept in this file; _resolve_embedder also imported by other cmds)
@@ -433,6 +455,293 @@ def _run_workspace_generation(
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _WorkspaceCtx:
+    """Run-wide settings shared across per-repo indexing in a workspace init."""
+
+    provider: Any
+    ws_config: Any
+    editor_options: Any
+    index_only: bool
+    dry_run: bool
+    force: bool
+    follow_renames: bool
+    include_submodules: bool
+    exclude_patterns: list[str]
+    skip_tests: bool
+    skip_infra: bool
+    concurrency: int
+    test_run: bool
+    yes: bool
+    resume: bool
+    onboarding: bool
+    coverage_pct: float | None
+    harvest_decisions: bool
+    resolved_reasoning: str
+    embedder_name_resolved: str
+    resolved_commit_limit: int
+
+
+@dataclass
+class _RepoOutcome:
+    """Result of indexing a single repo within a workspace."""
+
+    error: str | None = None
+    file_count: int = 0
+    symbol_count: int = 0
+    pages_generated: int = 0
+    docs_outcome: tuple[int, str | None] = (0, None)
+
+
+def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCtx) -> _RepoOutcome:
+    """Index (and optionally generate docs for) one repo in a workspace init.
+
+    Returns a :class:`_RepoOutcome`; on pipeline failure the outcome carries
+    ``error`` and nothing is persisted (mirrors the per-repo try/except + continue
+    the workspace loop used to do inline).
+    """
+    from datetime import datetime
+
+    from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
+
+    console.print(
+        f"  [{BRAND}][{idx}/{total}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name})..."
+    )
+    ensure_repowise_dir(repo.path)
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MaybeCountColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress_bar:
+            callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
+
+            _prev_state = load_state(repo.path)
+            _prev_kg_fp = (
+                _prev_state.get("knowledge_graph", {}).get("fingerprint") if not ctx.force else None
+            )
+
+            result = run_async(
+                run_pipeline(
+                    repo.path,
+                    commit_depth=ctx.resolved_commit_limit,
+                    follow_renames=ctx.follow_renames,
+                    exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
+                    include_submodules=ctx.include_submodules,
+                    generate_docs=False,
+                    progress=callback,
+                    existing_kg_fingerprint=_prev_kg_fp,
+                )
+            )
+        repo_phase_timings: dict[str, float] = callback.timings
+        console.print(
+            f"    [green]✓[/green] {result.file_count} files, {result.symbol_count:,} symbols"
+        )
+    except Exception as exc:
+        console.print(f"    [red]✗ Failed: {exc}[/red]\n")
+        return _RepoOutcome(error=str(exc))
+
+    provider = ctx.provider
+    index_only = ctx.index_only
+
+    # Generation phase (per-repo, only when not index-only).
+    # Track per-repo whether the user declined cost so state.docs_enabled
+    # reflects the actual choice instead of the original init mode.
+    repo_docs_enabled = not index_only and provider is not None
+    skip_reason: str | None = None
+    if index_only:
+        skip_reason = "index-only mode"
+    elif provider is None:
+        skip_reason = "no provider configured"
+    pages_generated = 0
+    if not index_only and provider is not None:
+        if ctx.dry_run:
+            console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
+            skip_reason = "dry run"
+            repo_docs_enabled = False
+        else:
+            try:
+                generated_pages = _run_workspace_generation(
+                    repo_path=repo.path,
+                    result=result,
+                    provider=provider,
+                    embedder_name_resolved=ctx.embedder_name_resolved,
+                    concurrency=ctx.concurrency,
+                    yes=ctx.yes,
+                    resume=ctx.resume,
+                    skip_tests=ctx.skip_tests,
+                    skip_infra=ctx.skip_infra,
+                    test_run=ctx.test_run,
+                    reasoning=ctx.resolved_reasoning,
+                    onboarding=ctx.onboarding,
+                    coverage_pct=ctx.coverage_pct,
+                    harvest_decisions=ctx.harvest_decisions,
+                )
+                result.generated_pages = generated_pages
+                # (result.vector_store is set inside _run_workspace_generation
+                # so the Phase-2C decision dedup can reuse the same store.)
+                pages_generated = len(generated_pages)
+                console.print(f"    [green]✓[/green] Generated {len(generated_pages)} pages\n")
+            except CostGateDeclined:
+                repo_docs_enabled = False
+                result.generated_pages = []
+                skip_reason = "cost gate declined"
+            except Exception as gen_exc:
+                console.print(f"    [yellow]Generation failed: {gen_exc}[/yellow]\n")
+                skip_reason = f"generation error: {gen_exc}"
+                repo_docs_enabled = False
+    else:
+        console.print()
+
+    docs_outcome = (
+        len(result.generated_pages or []),
+        None if repo_docs_enabled else skip_reason,
+    )
+
+    # Persist to repo-local DB
+    run_async(_persist_result(result, repo.path))
+
+    # Write state.json so `repowise update` knows the base commit
+    head = get_head_commit(repo.path)
+    pages_count = len(result.generated_pages or [])
+    state: dict[str, Any] = {
+        "last_sync_commit": head,
+        "total_pages": pages_count,
+        "docs_enabled": repo_docs_enabled,
+    }
+    if repo_docs_enabled and provider is not None:
+        state["provider"] = provider.provider_name
+        state["model"] = provider.model_name
+    if repo_phase_timings:
+        state["phase_timings"] = repo_phase_timings
+    kg = getattr(result, "knowledge_graph_result", None)
+    if kg is not None:
+        state["knowledge_graph"] = build_kg_state(kg)
+    save_state(repo.path, state)
+
+    if kg is not None:
+        save_knowledge_graph_json(repo.path, kg)
+
+    # Update workspace config with indexing metadata
+    entry = ctx.ws_config.get_repo(repo.alias)
+    if entry is not None:
+        entry.indexed_at = datetime.now(UTC).isoformat()
+        entry.last_commit_at_index = head
+
+    # MCP config + editor setup files per repo
+    write_editor_project_files(
+        console,
+        repo.path,
+        options=ctx.editor_options,
+    )
+
+    # Persist provider/model config per-repo when doing full generation
+    if not index_only and provider is not None:
+        save_config(
+            repo.path,
+            provider.provider_name,
+            provider.model_name,
+            ctx.embedder_name_resolved,
+            exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
+            commit_limit=ctx.resolved_commit_limit,
+            reasoning=ctx.resolved_reasoning,
+        )
+
+    return _RepoOutcome(
+        file_count=result.file_count,
+        symbol_count=result.symbol_count,
+        pages_generated=pages_generated,
+        docs_outcome=docs_outcome,
+    )
+
+
+def _run_cross_repo_analysis(ws_config: Any, root: Any, selected: list[Any], errors: list) -> None:
+    """Run cross-repo analysis (co-changes, package deps, contracts) when ≥2 repos indexed."""
+    indexed_aliases = [repo.alias for repo in selected if repo.alias not in [e[0] for e in errors]]
+    if len(indexed_aliases) >= 2:
+        console.print("  Running cross-repo analysis...")
+        try:
+            from repowise.core.workspace.update import run_cross_repo_hooks
+
+            run_async(run_cross_repo_hooks(ws_config, root, indexed_aliases))
+            console.print("  [green]✓[/green] Cross-repo analysis complete")
+        except Exception as exc:
+            console.print(f"  [yellow]⚠ Cross-repo analysis failed: {exc}[/yellow]")
+
+
+def _show_workspace_completion(
+    *,
+    selected: list[Any],
+    errors: list,
+    total_files: int,
+    total_symbols: int,
+    total_pages: int,
+    primary_alias: str,
+    elapsed: float,
+    index_only: bool,
+    provider: Any,
+    docs_outcomes: dict[str, tuple[int, str | None]],
+) -> None:
+    """Render the workspace completion panel + per-repo docs status."""
+    metrics: list[tuple[str, str]] = [
+        ("Repositories", f"{len(selected) - len(errors)} indexed"),
+        ("Total files", str(total_files)),
+        ("Total symbols", f"{total_symbols:,}"),
+        ("Primary repo", primary_alias),
+        ("Elapsed", format_elapsed(elapsed)),
+    ]
+    if not index_only and provider is not None:
+        metrics.insert(3, ("Pages generated", str(total_pages)))
+        metrics.insert(4, ("Provider", f"{provider.provider_name} / {provider.model_name}"))
+    if errors:
+        metrics.append(("Errors", f"{len(errors)} repos failed"))
+
+    if index_only or provider is None:
+        next_steps = [
+            ("repowise mcp <repo-path>", "start MCP server for a repo"),
+            ("repowise status --workspace", "show workspace status"),
+            ("repowise init <repo> --provider gemini", "generate full docs for a repo"),
+        ]
+    else:
+        next_steps = [
+            ("repowise mcp <repo-path>", "start MCP server for a repo"),
+            ("repowise status --workspace", "show workspace status"),
+            ("repowise search <query>", "search across all indexed repos"),
+        ]
+
+    console.print()
+    console.print(
+        build_completion_panel("repowise workspace init complete", metrics, next_steps=next_steps)
+    )
+    console.print()
+
+    # Honest docs status — print a per-repo summary listing exactly which
+    # repos generated pages and which were skipped, so the user never has
+    # to discover empty Docs/Overview in the web UI on their own.
+    docs_skipped = [(alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason]
+    if docs_outcomes:
+        console.print("[bold]Docs status[/bold]")
+        for alias, (count, reason) in docs_outcomes.items():
+            if reason:
+                console.print(
+                    f"  [yellow]✗[/yellow] {alias:<20} [yellow]skipped[/yellow]  [dim]({reason})[/dim]"
+                )
+            else:
+                console.print(f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]")
+        if docs_skipped:
+            first = docs_skipped[0][0]
+            console.print()
+            console.print(
+                f"  Run [bold]repowise update --repo {first} --docs[/bold] "
+                "to generate docs for a skipped repo."
+            )
+        console.print()
+
+
 def _workspace_init(
     *,
     scan: Any,
@@ -469,22 +778,6 @@ def _workspace_init(
     """
     setup_logging_silence()
 
-    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-
-    from repowise.cli.ui import (
-        BRAND,
-        RichProgressCallback,
-        build_completion_panel,
-        format_elapsed,
-        interactive_advanced_config,
-        interactive_mode_select,
-        interactive_primary_select,
-        interactive_provider_select,
-        interactive_repo_select,
-        load_dotenv,
-        print_banner,
-    )
-    from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.workspace import RepoEntry, WorkspaceConfig
 
     start = time.monotonic()
@@ -605,174 +898,45 @@ def _workspace_init(
         ),
     )
 
+    ctx = _WorkspaceCtx(
+        provider=provider,
+        ws_config=ws_config,
+        editor_options=editor_options,
+        index_only=index_only,
+        dry_run=dry_run,
+        force=force,
+        follow_renames=follow_renames,
+        include_submodules=include_submodules,
+        exclude_patterns=exclude_patterns,
+        skip_tests=skip_tests,
+        skip_infra=skip_infra,
+        concurrency=concurrency,
+        test_run=test_run,
+        yes=yes,
+        resume=resume,
+        onboarding=onboarding,
+        coverage_pct=coverage_pct,
+        harvest_decisions=harvest_decisions,
+        resolved_reasoning=resolved_reasoning,
+        embedder_name_resolved=embedder_name_resolved,
+        resolved_commit_limit=resolved_commit_limit,
+    )
+
     for i, repo in enumerate(selected, 1):
-        console.print(
-            f"  [{BRAND}][{i}/{len(selected)}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name})..."
-        )
-        ensure_repowise_dir(repo.path)
-
-        try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                MaybeCountColumn(),
-                TimeElapsedColumn(),
-                console=console,
-            ) as progress_bar:
-                callback = PhaseTimingRecorder(RichProgressCallback(progress_bar, console))
-
-                _prev_state = load_state(repo.path)
-                _prev_kg_fp = (
-                    _prev_state.get("knowledge_graph", {}).get("fingerprint") if not force else None
-                )
-
-                result = run_async(
-                    run_pipeline(
-                        repo.path,
-                        commit_depth=resolved_commit_limit,
-                        follow_renames=follow_renames,
-                        exclude_patterns=exclude_patterns if exclude_patterns else None,
-                        include_submodules=include_submodules,
-                        generate_docs=False,
-                        progress=callback,
-                        existing_kg_fingerprint=_prev_kg_fp,
-                    )
-                )
-            repo_phase_timings: dict[str, float] = callback.timings
-
-            total_files += result.file_count
-            total_symbols += result.symbol_count
-            console.print(
-                f"    [green]\u2713[/green] {result.file_count} files, "
-                f"{result.symbol_count:,} symbols"
-            )
-
-        except Exception as exc:
-            errors.append((repo.alias, str(exc)))
-            console.print(f"    [red]\u2717 Failed: {exc}[/red]\n")
+        outcome = _ingest_and_generate_repo(repo, i, len(selected), ctx)
+        if outcome.error:
+            errors.append((repo.alias, outcome.error))
             continue
-
-        # Generation phase (per-repo, only when not index-only).
-        # Track per-repo whether the user declined cost so state.docs_enabled
-        # reflects the actual choice instead of the original init mode.
-        repo_docs_enabled = not index_only and provider is not None
-        skip_reason: str | None = None
-        if index_only:
-            skip_reason = "index-only mode"
-        elif provider is None:
-            skip_reason = "no provider configured"
-        if not index_only and provider is not None:
-            if dry_run:
-                console.print("    [yellow]Dry run — skipping generation for this repo.[/yellow]\n")
-                skip_reason = "dry run"
-                repo_docs_enabled = False
-            else:
-                try:
-                    generated_pages = _run_workspace_generation(
-                        repo_path=repo.path,
-                        result=result,
-                        provider=provider,
-                        embedder_name_resolved=embedder_name_resolved,
-                        concurrency=concurrency,
-                        yes=yes,
-                        resume=resume,
-                        skip_tests=skip_tests,
-                        skip_infra=skip_infra,
-                        test_run=test_run,
-                        reasoning=resolved_reasoning,
-                        onboarding=onboarding,
-                        coverage_pct=coverage_pct,
-                        harvest_decisions=harvest_decisions,
-                    )
-                    result.generated_pages = generated_pages
-                    # (result.vector_store is set inside _run_workspace_generation
-                    # so the Phase-2C decision dedup can reuse the same store.)
-                    total_pages += len(generated_pages)
-                    console.print(
-                        f"    [green]\u2713[/green] Generated {len(generated_pages)} pages\n"
-                    )
-                except CostGateDeclined:
-                    repo_docs_enabled = False
-                    result.generated_pages = []
-                    skip_reason = "cost gate declined"
-                except Exception as gen_exc:
-                    console.print(f"    [yellow]Generation failed: {gen_exc}[/yellow]\n")
-                    skip_reason = f"generation error: {gen_exc}"
-                    repo_docs_enabled = False
-        else:
-            console.print()
-
-        docs_outcomes[repo.alias] = (
-            len(result.generated_pages or []),
-            None if repo_docs_enabled else skip_reason,
-        )
-
-        # Persist to repo-local DB
-        run_async(_persist_result(result, repo.path))
-
-        # Write state.json so `repowise update` knows the base commit
-        head = get_head_commit(repo.path)
-        pages_count = len(result.generated_pages or [])
-        state: dict[str, Any] = {
-            "last_sync_commit": head,
-            "total_pages": pages_count,
-            "docs_enabled": repo_docs_enabled,
-        }
-        if repo_docs_enabled and provider is not None:
-            state["provider"] = provider.provider_name
-            state["model"] = provider.model_name
-        if repo_phase_timings:
-            state["phase_timings"] = repo_phase_timings
-        kg = getattr(result, "knowledge_graph_result", None)
-        if kg is not None:
-            state["knowledge_graph"] = build_kg_state(kg)
-        save_state(repo.path, state)
-
-        if kg is not None:
-            save_knowledge_graph_json(repo.path, kg)
-
-        # Update workspace config with indexing metadata
-        from datetime import datetime
-
-        entry = ws_config.get_repo(repo.alias)
-        if entry is not None:
-            entry.indexed_at = datetime.now(UTC).isoformat()
-            entry.last_commit_at_index = head
-
-        # MCP config + editor setup files per repo
-        write_editor_project_files(
-            console,
-            repo.path,
-            options=editor_options,
-        )
-
-        # Persist provider/model config per-repo when doing full generation
-        if not index_only and provider is not None:
-            save_config(
-                repo.path,
-                provider.provider_name,
-                provider.model_name,
-                embedder_name_resolved,
-                exclude_patterns=exclude_patterns if exclude_patterns else None,
-                commit_limit=resolved_commit_limit,
-                reasoning=resolved_reasoning,
-            )
+        total_files += outcome.file_count
+        total_symbols += outcome.symbol_count
+        total_pages += outcome.pages_generated
+        docs_outcomes[repo.alias] = outcome.docs_outcome
 
     # Save workspace config with updated timestamps
     ws_config.save(root)
 
     # Step 5: Cross-repo analysis (co-changes, package deps, contracts)
-    indexed_aliases = [repo.alias for repo in selected if repo.alias not in [e[0] for e in errors]]
-    if len(indexed_aliases) >= 2:
-        console.print("  Running cross-repo analysis...")
-        try:
-            from repowise.core.workspace.update import run_cross_repo_hooks
-
-            run_async(run_cross_repo_hooks(ws_config, root, indexed_aliases))
-            console.print("  [green]✓[/green] Cross-repo analysis complete")
-        except Exception as exc:
-            console.print(f"  [yellow]⚠ Cross-repo analysis failed: {exc}[/yellow]")
+    _run_cross_repo_analysis(ws_config, root, selected, errors)
 
     # Step 6: Register primary repo with configured editor clients
     primary_entry = ws_config.get_primary()
@@ -782,62 +946,18 @@ def _workspace_init(
 
     # Step 7: Completion summary
     elapsed = time.monotonic() - start
-    metrics: list[tuple[str, str]] = [
-        ("Repositories", f"{len(selected) - len(errors)} indexed"),
-        ("Total files", str(total_files)),
-        ("Total symbols", f"{total_symbols:,}"),
-        ("Primary repo", primary_alias),
-        ("Elapsed", format_elapsed(elapsed)),
-    ]
-    if not index_only and provider is not None:
-        metrics.insert(3, ("Pages generated", str(total_pages)))
-        metrics.insert(4, ("Provider", f"{provider.provider_name} / {provider.model_name}"))
-    if errors:
-        metrics.append(("Errors", f"{len(errors)} repos failed"))
-
-    if index_only or provider is None:
-        next_steps = [
-            ("repowise mcp <repo-path>", "start MCP server for a repo"),
-            ("repowise status --workspace", "show workspace status"),
-            ("repowise init <repo> --provider gemini", "generate full docs for a repo"),
-        ]
-    else:
-        next_steps = [
-            ("repowise mcp <repo-path>", "start MCP server for a repo"),
-            ("repowise status --workspace", "show workspace status"),
-            ("repowise search <query>", "search across all indexed repos"),
-        ]
-
-    console.print()
-    console.print(
-        build_completion_panel("repowise workspace init complete", metrics, next_steps=next_steps)
+    _show_workspace_completion(
+        selected=selected,
+        errors=errors,
+        total_files=total_files,
+        total_symbols=total_symbols,
+        total_pages=total_pages,
+        primary_alias=primary_alias,
+        elapsed=elapsed,
+        index_only=index_only,
+        provider=provider,
+        docs_outcomes=docs_outcomes,
     )
-    console.print()
-
-    # Honest docs status — print a per-repo summary listing exactly which
-    # repos generated pages and which were skipped, so the user never has
-    # to discover empty Docs/Overview in the web UI on their own.
-    docs_skipped = [(alias, reason) for alias, (count, reason) in docs_outcomes.items() if reason]
-    docs_generated = [
-        (alias, count) for alias, (count, reason) in docs_outcomes.items() if not reason
-    ]
-    if docs_outcomes:
-        console.print("[bold]Docs status[/bold]")
-        for alias, (count, reason) in docs_outcomes.items():
-            if reason:
-                console.print(
-                    f"  [yellow]✗[/yellow] {alias:<20} [yellow]skipped[/yellow]  [dim]({reason})[/dim]"
-                )
-            else:
-                console.print(f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]")
-        if docs_skipped:
-            first = docs_skipped[0][0]
-            console.print()
-            console.print(
-                f"  Run [bold]repowise update --repo {first} --docs[/bold] "
-                "to generate docs for a skipped repo."
-            )
-        console.print()
 
     # Offer to install post-commit hooks
     indexed_repos = [repo for repo in selected if repo.alias not in [e[0] for e in errors]]
@@ -848,6 +968,498 @@ def _workspace_init(
             aliases=[r.alias for r in indexed_repos],
         )
     console.print()
+
+
+# ---------------------------------------------------------------------------
+# Single-repo init — phase helpers (called by init_command)
+# ---------------------------------------------------------------------------
+
+
+def _show_analysis_summary(console: Any, result: Any) -> None:
+    """Render the analysis-complete interstitial shown before generation."""
+    _graph = result.graph_builder.graph()
+    _dc_unreachable_pre = sum(
+        1
+        for f in (result.dead_code_report.findings if result.dead_code_report else [])
+        if f.kind.value == "unreachable_file"
+    )
+    _dc_unused_pre = sum(
+        1
+        for f in (result.dead_code_report.findings if result.dead_code_report else [])
+        if f.kind.value == "unused_export"
+    )
+    _dc_lines_pre = result.dead_code_report.deletable_lines if result.dead_code_report else 0
+    _n_decisions_pre = (
+        sum(result.decision_report.by_source.values()) if result.decision_report else 0
+    )
+    _lang_dist = result.repo_structure.root_language_distribution
+    _lang_summary = ""
+    if _lang_dist:
+        _top = sorted(_lang_dist.items(), key=lambda x: -x[1])[:4]
+        _lang_summary = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top)
+        if len(_lang_dist) > 4:
+            _lang_summary += f" +{len(_lang_dist) - 4} more"
+
+    # Community count (best-effort)
+    _community_count = 0
+    try:
+        if hasattr(result.graph_builder, "communities"):
+            _community_count = len(result.graph_builder.communities())
+    except Exception:
+        pass
+
+    console.print()
+    console.print(
+        build_analysis_summary_panel(
+            file_count=result.file_count,
+            symbol_count=result.symbol_count,
+            graph_nodes=_graph.number_of_nodes(),
+            graph_edges=_graph.number_of_edges(),
+            dead_unreachable=_dc_unreachable_pre,
+            dead_unused=_dc_unused_pre,
+            dead_lines=_dc_lines_pre,
+            decision_count=_n_decisions_pre,
+            git_files=result.git_summary.files_indexed if result.git_summary else 0,
+            hotspot_count=result.git_summary.hotspots
+            if result.git_summary and hasattr(result.git_summary, "hotspots")
+            else 0,
+            community_count=_community_count,
+            lang_summary=_lang_summary,
+        )
+    )
+
+
+def _run_generation_phase(
+    *,
+    repo_path: Path,
+    result: Any,
+    provider: Any,
+    total_phases: int,
+    concurrency: int,
+    language: str,
+    resolved_reasoning: str,
+    onboarding: bool,
+    tier1_top_n: int | None,
+    harvest_decisions: bool,
+    coverage_pct: float | None,
+    yes: bool,
+    dry_run: bool,
+    skip_tests: bool,
+    skip_infra: bool,
+    embedder_name_resolved: str,
+    resume: bool,
+) -> tuple[bool, bool]:
+    """Run the LLM generation phase for a single-repo init.
+
+    Returns ``(stop, cost_declined)``: ``stop`` is True when this was a dry run
+    and the caller should return immediately; ``cost_declined`` is True when the
+    user declined the cost gate (generation skipped, index still saved). Mutates
+    ``result`` in place with the generated pages, vector store, and enriched KG.
+    """
+    print_phase_header(
+        console,
+        3,
+        total_phases,
+        "Generation",
+        f"Generating wiki pages with {provider.provider_name} / {provider.model_name}",
+    )
+
+    # Cost estimation + coverage selection. The coverage chooser
+    # is rendered interactively when stdin is a TTY and no explicit
+    # ``--coverage`` flag was passed; otherwise the configured
+    # percentage drives a single non-interactive estimate.
+    from dataclasses import replace as _replace_cfg
+
+    from repowise.cli.cost_estimator import compute_coverage_options
+    from repowise.cli.coverage_select import interactive_coverage_select
+    from repowise.core.generation import GenerationConfig
+
+    gen_config = GenerationConfig(
+        max_concurrency=concurrency,
+        language=language,
+        reasoning=resolved_reasoning,
+        enable_onboarding=onboarding,
+        tier1_top_n=tier1_top_n,
+        harvest_decisions=harvest_decisions,
+    )
+    if sys.stdin.isatty() and coverage_pct is None and not yes:
+        options = compute_coverage_options(
+            parsed_files=result.parsed_files,
+            graph_builder=result.graph_builder,
+            base_config=gen_config,
+            provider_name=provider.provider_name,
+            model_name=provider.model_name,
+            repo_path=repo_path,
+            skip_tests=skip_tests,
+            skip_infra=skip_infra,
+        )
+        chosen = interactive_coverage_select(console, options)
+        chosen_pct = chosen.pct
+        plans = chosen.plans
+        est = chosen.estimate
+    else:
+        chosen_pct = coverage_pct if coverage_pct is not None else gen_config.coverage_pct
+        gen_config_for_plan = _replace_cfg(
+            gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct
+        )
+        plans = build_generation_plan(
+            result.parsed_files,
+            result.graph_builder,
+            gen_config_for_plan,
+            skip_tests,
+            skip_infra,
+        )
+        est = estimate_cost(
+            plans,
+            provider.provider_name,
+            provider.model_name,
+            repo_path=repo_path,
+        )
+
+    gen_config = _replace_cfg(gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct)
+
+    table = Table(title="Generation Plan", border_style=BRAND)
+    table.add_column("Page Type", style="cyan")
+    table.add_column("Count", justify="right")
+    table.add_column("Level", justify="right")
+    for plan in est.plans:
+        table.add_row(plan.page_type, str(plan.count), str(plan.level))
+    table.add_section()
+    table.add_row("[bold]Total[/bold]", f"[bold]{est.total_pages}[/bold]", "")
+    console.print(table)
+
+    # Language breakdown
+    lang_dist = result.repo_structure.root_language_distribution
+    if lang_dist:
+        lang_items = sorted(lang_dist.items(), key=lambda x: -x[1])[:6]
+        lang_parts = [f"{lang} {pct:.0%}" for lang, pct in lang_items]
+        console.print(f"  Languages: {', '.join(lang_parts)}")
+
+    if est.cost_range is not None:
+        cost_str = (
+            f"${est.cost_range.low:.2f} - ${est.cost_range.high:.2f} USD "
+            f"(median ${est.estimated_cost_usd:.2f})"
+        )
+        if est.is_calibrated:
+            cost_str += " [calibrated]"
+    else:
+        cost_str = f"${est.estimated_cost_usd:.2f} USD"
+
+    console.print(
+        f"  Coverage: {int(chosen_pct * 100)}% / "
+        f"~{est.estimated_input_tokens + est.estimated_output_tokens:,} tokens "
+        f"({cost_str})"
+    )
+    if onboarding:
+        console.print(
+            "  [cyan]Onboarding collection:[/cyan] "
+            "[dim]up to 8 curated pages — Project Overview, Architecture Guide, "
+            "Getting Started, Codebase Map, Key Concepts, How It Works, "
+            "Development Guide, Active Landscape "
+            "(slots without enough signal are skipped).[/dim]"
+        )
+    else:
+        console.print("  [dim]Onboarding collection: disabled (--no-onboarding).[/dim]")
+    console.print()
+
+    if dry_run:
+        console.print("[yellow]Dry run — no pages generated.[/yellow]")
+        return True, False
+
+    cost_declined = (
+        est.estimated_cost_usd > 2.00
+        and not yes
+        and not _confirm_cost_gate("  Estimated cost exceeds $2.00. Continue?")
+    )
+    if cost_declined:
+        console.print(
+            "[yellow]Skipped LLM generation.[/yellow] "
+            "[dim]Index/graph/git/dead-code will be saved; future "
+            "`repowise update` runs default to index-only so the "
+            "post-commit hook won't trigger LLM regen.[/dim]"
+        )
+
+    if not cost_declined:
+        # Build embedder + vector store
+        embedder_impl: Any = build_embedder(embedder_name_resolved)
+        vector_store: Any = build_vector_store(repo_path, embedder_impl)
+
+        # Run generation via the pipeline's generation function
+        from repowise.core.pipeline import run_generation
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MaybeCountColumn(),
+            TimeElapsedColumn(),
+            TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
+            console=console,
+        ) as gen_progress:
+            gen_callback = RichProgressCallback(gen_progress, console)
+
+            # Construct a CostTracker backed by the real DB so every LLM call
+            # is persisted to the llm_costs table.  The engine stays open for
+            # the duration of generation and is disposed by _persist_result's
+            # own engine later. Falls back to an in-memory tracker on failure.
+            cost_tracker = build_cost_tracker(repo_path, result.repo_name)
+
+            # Attach tracker to provider unconditionally (all providers now
+            # accept _cost_tracker as an attribute)
+            provider._cost_tracker = cost_tracker
+
+            generated_pages = run_async(
+                run_generation(
+                    repo_path=repo_path,
+                    parsed_files=result.parsed_files,
+                    source_map=result.source_map,
+                    graph_builder=result.graph_builder,
+                    repo_structure=result.repo_structure,
+                    git_meta_map=result.git_meta_map,
+                    llm_client=provider,
+                    embedder=embedder_impl,
+                    vector_store=vector_store,
+                    concurrency=concurrency,
+                    progress=gen_callback,
+                    resume=resume,
+                    cost_tracker=cost_tracker,
+                    generation_config=gen_config,
+                )
+            )
+
+        result.generated_pages = generated_pages
+        # Thread the shared vector store onto the result so the decision
+        # semantic-dedup pass (Phase 2C) matches against it + embeds
+        # decisions into it (also surfacing them in search_codebase).
+        result.vector_store = vector_store
+        console.print(f"  [green]✓[/green] Generated [bold]{len(generated_pages)}[/bold] pages")
+
+        kg = getattr(result, "knowledge_graph_result", None)
+        if kg is not None:
+            from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
+
+            with console.status("  Enriching knowledge graph (layers + tour)…", spinner="dots"):
+                try:
+                    result.knowledge_graph_result = run_async(
+                        enrich_knowledge_graph(
+                            kg_skeleton=kg,
+                            llm_client=provider,
+                            graph_builder=result.graph_builder,
+                            repo_structure=result.repo_structure,
+                            tech_stack=result.tech_stack,
+                            generated_pages=generated_pages,
+                            reasoning=gen_config.reasoning,
+                        )
+                    )
+                    _enriched_kg = result.knowledge_graph_result
+                    console.print(
+                        f"  [green]✓[/green] KG enriched: "
+                        f"{len(_enriched_kg.layers)} layers, "
+                        f"{len(_enriched_kg.tour)} tour steps"
+                    )
+                except Exception as _kg_enrich_err:
+                    console.print(f"  [yellow]KG enrichment skipped: {_kg_enrich_err}[/yellow]")
+
+    return False, cost_declined
+
+
+def _save_full_state_and_config(
+    *,
+    repo_path: Path,
+    result: Any,
+    provider: Any,
+    phase_timings: dict[str, float],
+    embedder_name_resolved: str,
+    exclude_patterns: list[str],
+    commit_limit: int | None,
+    resolved_commit_limit: int,
+    resolved_reasoning: str,
+) -> None:
+    """Persist state.json + config for a completed full-mode (docs) init run."""
+
+    async def _count_db_pages() -> int:
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+
+        from repowise.cli.helpers import get_db_url_for_repo as _get_url
+        from repowise.core.persistence import create_engine, create_session_factory, get_session
+        from repowise.core.persistence.models import Page, Repository
+
+        _engine = create_engine(_get_url(repo_path))
+        _sf = create_session_factory(_engine)
+        async with get_session(_sf) as _sess:
+            repo_result = await _sess.execute(
+                sa_select(Repository.id).where(Repository.local_path == str(repo_path))
+            )
+            _repo_id = repo_result.scalar_one_or_none()
+            if _repo_id is None:
+                await _engine.dispose()
+                return len(result.generated_pages or [])
+
+            count_result = await _sess.execute(
+                sa_select(sa_func.count()).select_from(Page).where(Page.repository_id == _repo_id)
+            )
+            count = count_result.scalar_one()
+        await _engine.dispose()
+        return count
+
+    head = get_head_commit(repo_path)
+    state = load_state(repo_path)
+    state["last_sync_commit"] = head
+    state["total_pages"] = run_async(_count_db_pages())
+    state["provider"] = provider.provider_name
+    state["model"] = provider.model_name
+    state["docs_enabled"] = True
+    total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
+    state["total_tokens"] = total_tokens
+    if phase_timings:
+        state["phase_timings"] = phase_timings
+    kg = getattr(result, "knowledge_graph_result", None)
+    if kg is not None:
+        state["knowledge_graph"] = build_kg_state(kg)
+    save_state(repo_path, state)
+
+    if kg is not None:
+        save_knowledge_graph_json(repo_path, kg)
+
+    save_config(
+        repo_path,
+        provider.provider_name,
+        provider.model_name,
+        embedder_name_resolved,
+        exclude_patterns=exclude_patterns if exclude_patterns else None,
+        commit_limit=resolved_commit_limit if commit_limit is not None else None,
+        reasoning=resolved_reasoning,
+    )
+
+
+def _show_completion(
+    *,
+    repo_path: Path,
+    result: Any,
+    start: float,
+    effective_index_only: bool,
+    run_mode: str,
+    provider: Any,
+) -> None:
+    """Render the final completion panel (index-only or full mode)."""
+    elapsed = time.monotonic() - start
+
+    _graph_final = result.graph_builder.graph()
+    _dc_unreachable = sum(
+        1
+        for f in (result.dead_code_report.findings if result.dead_code_report else [])
+        if f.kind.value == "unreachable_file"
+    )
+    _dc_unused = sum(
+        1
+        for f in (result.dead_code_report.findings if result.dead_code_report else [])
+        if f.kind.value == "unused_export"
+    )
+    _n_decisions = sum(result.decision_report.by_source.values()) if result.decision_report else 0
+    _hotspot_count_final = (
+        result.git_summary.hotspots
+        if result.git_summary and hasattr(result.git_summary, "hotspots")
+        else 0
+    )
+
+    # Find top hotspot file for contextual next steps
+    _top_hotspot = ""
+    if result.git_meta_map:
+        _by_churn = sorted(
+            result.git_meta_map.items(),
+            key=lambda x: x[1].get("commit_count", 0),
+            reverse=True,
+        )
+        if _by_churn:
+            _top_hotspot = _by_churn[0][0]
+            # Shorten to basename for display
+            if "/" in _top_hotspot:
+                _top_hotspot = _top_hotspot.rsplit("/", 1)[-1]
+
+    # Build a compact language summary for the completion panel
+    _lang_dist_final = result.repo_structure.root_language_distribution
+    if _lang_dist_final:
+        _top_final = sorted(_lang_dist_final.items(), key=lambda x: -x[1])[:4]
+        _lang_summary_final = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top_final)
+        if len(_lang_dist_final) > 4:
+            _lang_summary_final += f" +{len(_lang_dist_final) - 4} more"
+    else:
+        _lang_summary_final = str(len(result.languages))
+
+    if effective_index_only:
+        metrics: list[tuple[str, str]] = [
+            ("Files indexed", str(result.file_count)),
+            ("Symbols", f"{result.symbol_count:,}"),
+            ("Languages", _lang_summary_final),
+            ("Elapsed", format_elapsed(elapsed)),
+            ("", ""),
+            (
+                "Graph",
+                f"{_graph_final.number_of_nodes()} nodes · {_graph_final.number_of_edges()} edges",
+            ),
+            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
+            ("Decisions", str(_n_decisions)),
+        ]
+        if result.git_summary:
+            metrics.append(
+                (
+                    "Git history",
+                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
+                )
+            )
+
+        next_steps = build_contextual_next_steps(
+            index_only=True,
+            fast_mode=(run_mode == "fast"),
+            dead_unreachable=_dc_unreachable,
+            dead_unused=_dc_unused,
+            hotspot_count=_hotspot_count_final,
+            decision_count=_n_decisions,
+            top_hotspot=_top_hotspot,
+        )
+        console.print()
+        console.print(
+            build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
+        )
+        console.print()
+    else:
+        total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
+        metrics = [
+            ("Pages generated", str(len(result.generated_pages or []))),
+            ("Total tokens", f"{total_tokens:,}"),
+            ("Provider", f"{provider.provider_name} / {provider.model_name}"),
+            ("Elapsed", format_elapsed(elapsed)),
+            ("", ""),
+            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
+            ("Decisions", str(_n_decisions)),
+        ]
+        if result.git_summary:
+            metrics.append(
+                (
+                    "Git history",
+                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
+                )
+            )
+
+        next_steps = build_contextual_next_steps(
+            index_only=False,
+            dead_unreachable=_dc_unreachable,
+            dead_unused=_dc_unused,
+            hotspot_count=_hotspot_count_final,
+            decision_count=_n_decisions,
+            top_hotspot=_top_hotspot,
+        )
+
+        from repowise.cli.mcp_config import format_setup_instructions
+
+        console.print()
+        console.print(
+            build_completion_panel("repowise init complete", metrics, next_steps=next_steps)
+        )
+        console.print()
+        console.print(format_setup_instructions(repo_path))
+        console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -1024,26 +1636,6 @@ def init_command(
     # the git tier to ESSENTIAL.
     if run_mode == "fast":
         index_only = True
-    from repowise.cli.ui import (
-        BRAND,
-        RichProgressCallback,
-        build_analysis_summary_panel,
-        build_completion_panel,
-        build_contextual_next_steps,
-        format_elapsed,
-        interactive_advanced_config,
-        interactive_fast_mode_offer,
-        interactive_mode_select,
-        interactive_provider_select,
-        load_dotenv,
-        print_banner,
-        print_index_only_intro,
-        print_phase_header,
-        print_scan_summary,
-        quick_repo_scan,
-        should_offer_fast_mode,
-    )
-
     start = time.monotonic()
     repo_path = resolve_repo_path(path)
 
@@ -1312,262 +1904,31 @@ def init_command(
     phase_timings: dict[str, float] = callback.timings
 
     # ---- Analysis summary (shown between analysis and generation) ----
-    _graph = result.graph_builder.graph()
-    _dc_unreachable_pre = sum(
-        1
-        for f in (result.dead_code_report.findings if result.dead_code_report else [])
-        if f.kind.value == "unreachable_file"
-    )
-    _dc_unused_pre = sum(
-        1
-        for f in (result.dead_code_report.findings if result.dead_code_report else [])
-        if f.kind.value == "unused_export"
-    )
-    _dc_lines_pre = result.dead_code_report.deletable_lines if result.dead_code_report else 0
-    _n_decisions_pre = (
-        sum(result.decision_report.by_source.values()) if result.decision_report else 0
-    )
-    _lang_dist = result.repo_structure.root_language_distribution
-    _lang_summary = ""
-    if _lang_dist:
-        _top = sorted(_lang_dist.items(), key=lambda x: -x[1])[:4]
-        _lang_summary = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top)
-        if len(_lang_dist) > 4:
-            _lang_summary += f" +{len(_lang_dist) - 4} more"
-
-    # Community count (best-effort)
-    _community_count = 0
-    try:
-        if hasattr(result.graph_builder, "communities"):
-            _community_count = len(result.graph_builder.communities())
-    except Exception:
-        pass
-
-    console.print()
-    console.print(
-        build_analysis_summary_panel(
-            file_count=result.file_count,
-            symbol_count=result.symbol_count,
-            graph_nodes=_graph.number_of_nodes(),
-            graph_edges=_graph.number_of_edges(),
-            dead_unreachable=_dc_unreachable_pre,
-            dead_unused=_dc_unused_pre,
-            dead_lines=_dc_lines_pre,
-            decision_count=_n_decisions_pre,
-            git_files=result.git_summary.files_indexed if result.git_summary else 0,
-            hotspot_count=result.git_summary.hotspots
-            if result.git_summary and hasattr(result.git_summary, "hotspots")
-            else 0,
-            community_count=_community_count,
-            lang_summary=_lang_summary,
-        )
-    )
+    _show_analysis_summary(console, result)
 
     # ---- Phase 3: Generation (full mode only) ----
     if not index_only:
-        print_phase_header(
-            console,
-            3,
-            total_phases,
-            "Generation",
-            f"Generating wiki pages with {provider.provider_name} / {provider.model_name}",
-        )
-
-        # Cost estimation + coverage selection. The coverage chooser
-        # is rendered interactively when stdin is a TTY and no explicit
-        # ``--coverage`` flag was passed; otherwise the configured
-        # percentage drives a single non-interactive estimate.
-        from dataclasses import replace as _replace_cfg
-
-        from repowise.cli.cost_estimator import compute_coverage_options
-        from repowise.cli.coverage_select import interactive_coverage_select
-        from repowise.core.generation import GenerationConfig
-
-        gen_config = GenerationConfig(
-            max_concurrency=concurrency,
+        gen_stop, cost_declined = _run_generation_phase(
+            repo_path=repo_path,
+            result=result,
+            provider=provider,
+            total_phases=total_phases,
+            concurrency=concurrency,
             language=language,
-            reasoning=resolved_reasoning,
-            enable_onboarding=onboarding,
+            resolved_reasoning=resolved_reasoning,
+            onboarding=onboarding,
             tier1_top_n=tier1_top_n,
             harvest_decisions=harvest_decisions,
+            coverage_pct=coverage_pct,
+            yes=yes,
+            dry_run=dry_run,
+            skip_tests=skip_tests,
+            skip_infra=skip_infra,
+            embedder_name_resolved=embedder_name_resolved,
+            resume=resume,
         )
-        if sys.stdin.isatty() and coverage_pct is None and not yes:
-            options = compute_coverage_options(
-                parsed_files=result.parsed_files,
-                graph_builder=result.graph_builder,
-                base_config=gen_config,
-                provider_name=provider.provider_name,
-                model_name=provider.model_name,
-                repo_path=repo_path,
-                skip_tests=skip_tests,
-                skip_infra=skip_infra,
-            )
-            chosen = interactive_coverage_select(console, options)
-            chosen_pct = chosen.pct
-            plans = chosen.plans
-            est = chosen.estimate
-        else:
-            chosen_pct = coverage_pct if coverage_pct is not None else gen_config.coverage_pct
-            gen_config_for_plan = _replace_cfg(
-                gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct
-            )
-            plans = build_generation_plan(
-                result.parsed_files,
-                result.graph_builder,
-                gen_config_for_plan,
-                skip_tests,
-                skip_infra,
-            )
-            est = estimate_cost(
-                plans,
-                provider.provider_name,
-                provider.model_name,
-                repo_path=repo_path,
-            )
-
-        gen_config = _replace_cfg(gen_config, coverage_pct=chosen_pct, max_pages_pct=chosen_pct)
-
-        table = Table(title="Generation Plan", border_style=BRAND)
-        table.add_column("Page Type", style="cyan")
-        table.add_column("Count", justify="right")
-        table.add_column("Level", justify="right")
-        for plan in est.plans:
-            table.add_row(plan.page_type, str(plan.count), str(plan.level))
-        table.add_section()
-        table.add_row("[bold]Total[/bold]", f"[bold]{est.total_pages}[/bold]", "")
-        console.print(table)
-
-        # Language breakdown
-        lang_dist = result.repo_structure.root_language_distribution
-        if lang_dist:
-            lang_items = sorted(lang_dist.items(), key=lambda x: -x[1])[:6]
-            lang_parts = [f"{lang} {pct:.0%}" for lang, pct in lang_items]
-            console.print(f"  Languages: {', '.join(lang_parts)}")
-
-        if est.cost_range is not None:
-            cost_str = (
-                f"${est.cost_range.low:.2f} - ${est.cost_range.high:.2f} USD "
-                f"(median ${est.estimated_cost_usd:.2f})"
-            )
-            if est.is_calibrated:
-                cost_str += " [calibrated]"
-        else:
-            cost_str = f"${est.estimated_cost_usd:.2f} USD"
-
-        console.print(
-            f"  Coverage: {int(chosen_pct * 100)}% / "
-            f"~{est.estimated_input_tokens + est.estimated_output_tokens:,} tokens "
-            f"({cost_str})"
-        )
-        if onboarding:
-            console.print(
-                "  [cyan]Onboarding collection:[/cyan] "
-                "[dim]up to 8 curated pages — Project Overview, Architecture Guide, "
-                "Getting Started, Codebase Map, Key Concepts, How It Works, "
-                "Development Guide, Active Landscape "
-                "(slots without enough signal are skipped).[/dim]"
-            )
-        else:
-            console.print("  [dim]Onboarding collection: disabled (--no-onboarding).[/dim]")
-        console.print()
-
-        if dry_run:
-            console.print("[yellow]Dry run — no pages generated.[/yellow]")
+        if gen_stop:
             return
-
-        cost_declined = (
-            est.estimated_cost_usd > 2.00
-            and not yes
-            and not _confirm_cost_gate("  Estimated cost exceeds $2.00. Continue?")
-        )
-        if cost_declined:
-            console.print(
-                "[yellow]Skipped LLM generation.[/yellow] "
-                "[dim]Index/graph/git/dead-code will be saved; future "
-                "`repowise update` runs default to index-only so the "
-                "post-commit hook won't trigger LLM regen.[/dim]"
-            )
-
-        if not cost_declined:
-            # Build embedder + vector store
-            embedder_impl: Any = build_embedder(embedder_name_resolved)
-            vector_store: Any = build_vector_store(repo_path, embedder_impl)
-
-            # Run generation via the pipeline's generation function
-            from repowise.core.pipeline import run_generation
-
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                MaybeCountColumn(),
-                TimeElapsedColumn(),
-                TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
-                console=console,
-            ) as gen_progress:
-                gen_callback = RichProgressCallback(gen_progress, console)
-
-                # Construct a CostTracker backed by the real DB so every LLM call
-                # is persisted to the llm_costs table.  The engine stays open for
-                # the duration of generation and is disposed by _persist_result's
-                # own engine later. Falls back to an in-memory tracker on failure.
-                cost_tracker = build_cost_tracker(repo_path, result.repo_name)
-
-                # Attach tracker to provider unconditionally (all providers now
-                # accept _cost_tracker as an attribute)
-                provider._cost_tracker = cost_tracker
-
-                generated_pages = run_async(
-                    run_generation(
-                        repo_path=repo_path,
-                        parsed_files=result.parsed_files,
-                        source_map=result.source_map,
-                        graph_builder=result.graph_builder,
-                        repo_structure=result.repo_structure,
-                        git_meta_map=result.git_meta_map,
-                        llm_client=provider,
-                        embedder=embedder_impl,
-                        vector_store=vector_store,
-                        concurrency=concurrency,
-                        progress=gen_callback,
-                        resume=resume,
-                        cost_tracker=cost_tracker,
-                        generation_config=gen_config,
-                    )
-                )
-
-            result.generated_pages = generated_pages
-            # Thread the shared vector store onto the result so the decision
-            # semantic-dedup pass (Phase 2C) matches against it + embeds
-            # decisions into it (also surfacing them in search_codebase).
-            result.vector_store = vector_store
-            console.print(f"  [green]✓[/green] Generated [bold]{len(generated_pages)}[/bold] pages")
-
-            kg = getattr(result, "knowledge_graph_result", None)
-            if kg is not None:
-                from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
-
-                with console.status("  Enriching knowledge graph (layers + tour)…", spinner="dots"):
-                    try:
-                        result.knowledge_graph_result = run_async(
-                            enrich_knowledge_graph(
-                                kg_skeleton=kg,
-                                llm_client=provider,
-                                graph_builder=result.graph_builder,
-                                repo_structure=result.repo_structure,
-                                tech_stack=result.tech_stack,
-                                generated_pages=generated_pages,
-                                reasoning=gen_config.reasoning,
-                            )
-                        )
-                        _enriched_kg = result.knowledge_graph_result
-                        console.print(
-                            f"  [green]✓[/green] KG enriched: "
-                            f"{len(_enriched_kg.layers)} layers, "
-                            f"{len(_enriched_kg.tour)} tour steps"
-                        )
-                    except Exception as _kg_enrich_err:
-                        console.print(f"  [yellow]KG enrichment skipped: {_kg_enrich_err}[/yellow]")
 
     # ---- Persistence ----
     # `cost_declined` short-circuits any further LLM work for the rest of
@@ -1643,182 +2004,27 @@ def init_command(
 
     # ---- State + config (full mode only) ----
     if not effective_index_only and provider:
-
-        async def _count_db_pages() -> int:
-            from sqlalchemy import func as sa_func
-            from sqlalchemy import select as sa_select
-
-            from repowise.cli.helpers import get_db_url_for_repo as _get_url
-            from repowise.core.persistence import create_engine, create_session_factory, get_session
-            from repowise.core.persistence.models import Page, Repository
-
-            _engine = create_engine(_get_url(repo_path))
-            _sf = create_session_factory(_engine)
-            async with get_session(_sf) as _sess:
-                repo_result = await _sess.execute(
-                    sa_select(Repository.id).where(Repository.local_path == str(repo_path))
-                )
-                _repo_id = repo_result.scalar_one_or_none()
-                if _repo_id is None:
-                    await _engine.dispose()
-                    return len(result.generated_pages or [])
-
-                count_result = await _sess.execute(
-                    sa_select(sa_func.count())
-                    .select_from(Page)
-                    .where(Page.repository_id == _repo_id)
-                )
-                count = count_result.scalar_one()
-            await _engine.dispose()
-            return count
-
-        head = get_head_commit(repo_path)
-        state = load_state(repo_path)
-        state["last_sync_commit"] = head
-        state["total_pages"] = run_async(_count_db_pages())
-        state["provider"] = provider.provider_name
-        state["model"] = provider.model_name
-        state["docs_enabled"] = True
-        total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
-        state["total_tokens"] = total_tokens
-        if phase_timings:
-            state["phase_timings"] = phase_timings
-        kg = getattr(result, "knowledge_graph_result", None)
-        if kg is not None:
-            state["knowledge_graph"] = build_kg_state(kg)
-        save_state(repo_path, state)
-
-        if kg is not None:
-            save_knowledge_graph_json(repo_path, kg)
-
-        save_config(
-            repo_path,
-            provider.provider_name,
-            provider.model_name,
-            embedder_name_resolved,
-            exclude_patterns=exclude_patterns if exclude_patterns else None,
-            commit_limit=resolved_commit_limit if commit_limit is not None else None,
-            reasoning=resolved_reasoning,
+        _save_full_state_and_config(
+            repo_path=repo_path,
+            result=result,
+            provider=provider,
+            phase_timings=phase_timings,
+            embedder_name_resolved=embedder_name_resolved,
+            exclude_patterns=exclude_patterns,
+            commit_limit=commit_limit,
+            resolved_commit_limit=resolved_commit_limit,
+            resolved_reasoning=resolved_reasoning,
         )
 
     # ---- Completion panel ----
-    elapsed = time.monotonic() - start
-
-    _graph_final = result.graph_builder.graph()
-    _dc_unreachable = sum(
-        1
-        for f in (result.dead_code_report.findings if result.dead_code_report else [])
-        if f.kind.value == "unreachable_file"
+    _show_completion(
+        repo_path=repo_path,
+        result=result,
+        start=start,
+        effective_index_only=effective_index_only,
+        run_mode=run_mode,
+        provider=provider,
     )
-    _dc_unused = sum(
-        1
-        for f in (result.dead_code_report.findings if result.dead_code_report else [])
-        if f.kind.value == "unused_export"
-    )
-    _n_decisions = sum(result.decision_report.by_source.values()) if result.decision_report else 0
-    _hotspot_count_final = (
-        result.git_summary.hotspots
-        if result.git_summary and hasattr(result.git_summary, "hotspots")
-        else 0
-    )
-
-    # Find top hotspot file for contextual next steps
-    _top_hotspot = ""
-    if result.git_meta_map:
-        _by_churn = sorted(
-            result.git_meta_map.items(),
-            key=lambda x: x[1].get("commit_count", 0),
-            reverse=True,
-        )
-        if _by_churn:
-            _top_hotspot = _by_churn[0][0]
-            # Shorten to basename for display
-            if "/" in _top_hotspot:
-                _top_hotspot = _top_hotspot.rsplit("/", 1)[-1]
-
-    # Build a compact language summary for the completion panel
-    _lang_dist_final = result.repo_structure.root_language_distribution
-    if _lang_dist_final:
-        _top_final = sorted(_lang_dist_final.items(), key=lambda x: -x[1])[:4]
-        _lang_summary_final = ", ".join(f"{lang} {pct:.0%}" for lang, pct in _top_final)
-        if len(_lang_dist_final) > 4:
-            _lang_summary_final += f" +{len(_lang_dist_final) - 4} more"
-    else:
-        _lang_summary_final = str(len(result.languages))
-
-    if effective_index_only:
-        metrics: list[tuple[str, str]] = [
-            ("Files indexed", str(result.file_count)),
-            ("Symbols", f"{result.symbol_count:,}"),
-            ("Languages", _lang_summary_final),
-            ("Elapsed", format_elapsed(elapsed)),
-            ("", ""),
-            (
-                "Graph",
-                f"{_graph_final.number_of_nodes()} nodes · {_graph_final.number_of_edges()} edges",
-            ),
-            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
-            ("Decisions", str(_n_decisions)),
-        ]
-        if result.git_summary:
-            metrics.append(
-                (
-                    "Git history",
-                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
-                )
-            )
-
-        next_steps = build_contextual_next_steps(
-            index_only=True,
-            fast_mode=(run_mode == "fast"),
-            dead_unreachable=_dc_unreachable,
-            dead_unused=_dc_unused,
-            hotspot_count=_hotspot_count_final,
-            decision_count=_n_decisions,
-            top_hotspot=_top_hotspot,
-        )
-        console.print()
-        console.print(
-            build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
-        )
-        console.print()
-    else:
-        total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
-        metrics = [
-            ("Pages generated", str(len(result.generated_pages or []))),
-            ("Total tokens", f"{total_tokens:,}"),
-            ("Provider", f"{provider.provider_name} / {provider.model_name}"),
-            ("Elapsed", format_elapsed(elapsed)),
-            ("", ""),
-            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
-            ("Decisions", str(_n_decisions)),
-        ]
-        if result.git_summary:
-            metrics.append(
-                (
-                    "Git history",
-                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
-                )
-            )
-
-        next_steps = build_contextual_next_steps(
-            index_only=False,
-            dead_unreachable=_dc_unreachable,
-            dead_unused=_dc_unused,
-            hotspot_count=_hotspot_count_final,
-            decision_count=_n_decisions,
-            top_hotspot=_top_hotspot,
-        )
-
-        from repowise.cli.mcp_config import format_setup_instructions
-
-        console.print()
-        console.print(
-            build_completion_panel("repowise init complete", metrics, next_steps=next_steps)
-        )
-        console.print()
-        console.print(format_setup_instructions(repo_path))
-        console.print()
 
     # Offer to install post-commit hook (both index-only and full modes)
     _offer_hook_install(console, [repo_path])

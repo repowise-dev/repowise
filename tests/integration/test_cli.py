@@ -27,9 +27,59 @@ def work_repo(tmp_path, sample_repo_path, monkeypatch):
     return dest
 
 
+@pytest.fixture
+def workspace_root(tmp_path, sample_repo_path, monkeypatch):
+    """A directory holding two git-initialized copies of sample_repo.
+
+    Each sub-repo is a real git repo (so the scanner detects >1 repo and routes
+    into the workspace flow) and uses its own repo-local DB — so we must NOT set
+    REPOWISE_DB_URL here.
+    """
+    import subprocess
+
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    root = tmp_path / "ws"
+    root.mkdir()
+    for name in ("alpha", "beta"):
+        dest = root / name
+        shutil.copytree(sample_repo_path, dest)
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@e.x",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@e.x",
+        }
+        subprocess.run(["git", "init"], cwd=dest, check=True, capture_output=True)
+        subprocess.run(["git", "add", "-A"], cwd=dest, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=dest,
+            check=True,
+            capture_output=True,
+            env={**env},
+        )
+    return root
+
+
 # ---------------------------------------------------------------------------
 # Gate tests
 # ---------------------------------------------------------------------------
+
+
+class TestWorkspaceInitIndexOnly:
+    def test_indexes_each_repo(self, runner, workspace_root):
+        result = runner.invoke(
+            cli,
+            ["init", str(workspace_root), "--all", "--index-only"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "workspace init complete" in result.output
+        # Each sub-repo got its own index + state, and a workspace config exists.
+        for name in ("alpha", "beta"):
+            assert (workspace_root / name / ".repowise" / "wiki.db").exists()
+            assert (workspace_root / name / ".repowise" / "state.json").exists()
+        assert (workspace_root / ".repowise-workspace.yaml").exists()
 
 
 class TestInitDryRun:
@@ -57,6 +107,26 @@ class TestInitFullMock:
         assert (work_repo / ".repowise" / "wiki.db").exists()
         assert (work_repo / ".repowise" / "state.json").exists()
         assert "init complete" in result.output
+
+
+class TestInitIndexOnly:
+    def test_index_only_creates_db_and_state_no_pages(self, runner, work_repo):
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--index-only"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert (work_repo / ".repowise" / "wiki.db").exists()
+        assert (work_repo / ".repowise" / "state.json").exists()
+        assert "index complete" in result.output
+
+        import json
+
+        state = json.loads((work_repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+        assert state.get("docs_enabled") is False
+        # No pages generated in index-only mode.
+        assert state.get("total_pages", 0) == 0
 
 
 class TestInitDefaultDbLocation:
