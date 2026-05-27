@@ -149,6 +149,24 @@ from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 
 logger = structlog.get_logger(__name__)
 
+# Re-export barrel filenames. Skipped in the *unreachable-file* pass only:
+# a barrel aggregates other modules' symbols and is reached by importing
+# those names (or, for a package's public entry, via package.json
+# ``exports``/``main``), so a barrel with no inbound graph edge is not dead.
+# They are NOT skipped in the unused-export pass — a genuine symbol defined
+# in a barrel that nobody imports should still be flagged.
+_BARREL_FILENAMES: frozenset[str] = frozenset({
+    "__init__.py",
+    "index.ts",
+    "index.tsx",
+    "index.js",
+    "index.jsx",
+    "index.mts",
+    "index.cts",
+    "index.mjs",
+    "index.cjs",
+})
+
 
 def _is_synthetic_node(node: str) -> bool:
     """True for non-file graph nodes that should be skipped in 'is this dead?' passes.
@@ -315,6 +333,11 @@ class DeadCodeAnalyzer:
             if _is_fixture_path(str(node)):
                 continue
             if self._should_never_flag(str(node), whitelist):
+                continue
+            # Re-export barrels (index.* / __init__.py) are reached by the
+            # names they forward or via package ``exports``/``main`` — a barrel
+            # with no inbound graph edge is not dead code.
+            if Path(str(node)).name in _BARREL_FILENAMES:
                 continue
             if self._is_api_contract(node_data):
                 continue

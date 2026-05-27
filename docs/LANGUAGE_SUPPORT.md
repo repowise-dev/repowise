@@ -36,7 +36,7 @@ call resolution, named bindings, heritage extraction, and docstrings.
 | Language | Extensions | Entry Points | Import Style |
 |----------|-----------|-------------|-------------|
 | **Python** | `.py` `.pyi` | `main.py` `app.py` `__main__.py` `manage.py` `wsgi.py` `asgi.py` | `import x` / `from x import y` |
-| **TypeScript** | `.ts` `.tsx` | `index.ts` `main.ts` `app.ts` `server.ts` | `import { x } from 'y'` / `require()` with tsconfig path aliases, npm/yarn/pnpm `workspaces`, and optional `.vue`/`.svelte`/`.astro` SFC probing |
+| **TypeScript** | `.ts` `.tsx` | `index.ts` `main.ts` `app.ts` `server.ts` | `import { x } from 'y'` / `export { x } from 'y'` & `export * from 'y'` re-export barrels / `require()` with tsconfig path aliases, npm/yarn/pnpm `workspaces`, and optional `.vue`/`.svelte`/`.astro` SFC probing |
 | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `index.js` `main.js` `app.js` `server.js` | `import` / `require()` |
 | **Java** | `.java` | `Main.java` `Application.java` | `import pkg.Class` |
 | **Go** | `.go` | `main.go` `cmd/main.go` | `import "path"` with multi-module `go.mod` discovery (longest-prefix match) |
@@ -146,7 +146,8 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           Python: dotted module paths via a source-root-aware module index
                   (src/ + monorepo packages/*/src + PEP 420 namespace
                   packages), __init__.py re-export barrels, stem fallback
-          TS/JS:  relative paths, tsconfig aliases, node_modules
+          TS/JS:  relative paths, tsconfig aliases, workspace exports,
+                  `export ... from` re-export barrels, node_modules
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories

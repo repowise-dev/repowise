@@ -9,11 +9,49 @@ from ..helpers import node_text
 
 
 def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[NamedBinding]]:
-    """Extract bindings from TypeScript/JavaScript import statements."""
+    """Extract bindings from TypeScript/JavaScript import and re-export statements.
+
+    Handles both ``import ... from`` and barrel ``export ... from`` (re-export)
+    statements — the query tags re-exports carrying a ``source`` as
+    ``@import.statement`` so they flow through the same pipeline. For a
+    re-export, ``imported_names`` carries the name as it exists in the *source*
+    module (``export { A as B } from`` records ``A``), so the dead-code
+    analyzer can match it to the re-exported symbol and an ``index.ts`` barrel
+    no longer hides every component it forwards.
+    """
     names: list[str] = []
     bindings: list[NamedBinding] = []
 
+    is_reexport = stmt_node.type == "export_statement"
+
     for child in stmt_node.children:
+        # --- Re-export (barrel) clauses: ``export { X } from`` / ``export *`` ---
+        if is_reexport:
+            if child.type == "export_clause":
+                for spec in child.children:
+                    if spec.type != "export_specifier":
+                        continue
+                    name_node = spec.child_by_field_name("name") or (
+                        spec.children[0] if spec.children else None
+                    )
+                    alias_node = spec.child_by_field_name("alias")
+                    if name_node:
+                        exported = node_text(name_node, src)
+                        local = node_text(alias_node, src) if alias_node else exported
+                        names.append(exported)
+                        bindings.append(
+                            NamedBinding(
+                                local_name=local, exported_name=exported, source_file=None
+                            )
+                        )
+            elif child.type == "namespace_export":
+                # ``export * as ns from "x"`` — forwards the whole module.
+                names.append("*")
+                bindings.append(
+                    NamedBinding(local_name="*", exported_name=None, source_file=None)
+                )
+            continue
+
         if child.type != "import_clause":
             continue
         for sub in child.children:
@@ -60,5 +98,12 @@ def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[N
                     bindings.append(
                         NamedBinding(local_name="*", exported_name=None, source_file=None)
                     )
+
+    # ``export * from "x"`` carries neither an export_clause nor a
+    # namespace_export — just the source. Treat it as a wildcard so every
+    # symbol the barrel forwards is reachable.
+    if is_reexport and not names:
+        names.append("*")
+        bindings.append(NamedBinding(local_name="*", exported_name=None, source_file=None))
 
     return names, bindings

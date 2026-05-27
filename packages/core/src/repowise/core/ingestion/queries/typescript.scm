@@ -77,6 +77,18 @@
   source: (string) @import.module
 ) @import.statement
 
+; Re-export (barrel) statements — only those with a `source` are imports of
+; another module's symbols. Captured as @import.statement so the existing
+; import pipeline resolves the edge and carries the re-exported names:
+;   export { A, B } from "./module"
+;   export { A as B } from "./module"
+;   export * from "./module"
+;   export * as ns from "./module"
+;   export type { T } from "./types"
+(export_statement
+  source: (string) @import.module
+) @import.statement
+
 ; ---------------------------------------------------------------------------
 ; Calls
 ; ---------------------------------------------------------------------------
