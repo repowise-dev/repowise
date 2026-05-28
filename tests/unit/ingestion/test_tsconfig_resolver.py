@@ -76,6 +76,26 @@ class TestBasicAliasResolution:
         result = resolver.resolve("services/api", _importer(tmp_path, "src/app.tsx"))
         assert result == "src/services/api.ts"
 
+    def test_multi_dot_specifier_resolves_to_tsx(self, tmp_path: Path) -> None:
+        """``@/app/layout.config`` must resolve to ``app/layout.config.tsx``
+        — not ``app/layout.tsx``. The earlier ``Path.with_suffix`` probe
+        would clobber the ``.config`` segment.
+        """
+        resolver = _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {
+                    "compilerOptions": {
+                        "baseUrl": ".",
+                        "paths": {"@/*": ["./*"]},
+                    }
+                }
+            },
+            path_set={"app/layout.tsx", "app/layout.config.tsx"},
+        )
+        result = resolver.resolve("@/app/layout.config", _importer(tmp_path, "app/page.tsx"))
+        assert result == "app/layout.config.tsx"
+
     def test_exact_non_wildcard_mapping(self, tmp_path: Path) -> None:
         """paths: {'utils': ['./src/utils/index.ts']} — exact key, no wildcard."""
         resolver = _make_resolver(

@@ -382,9 +382,14 @@ class TsconfigResolver:
         if rel is not None and rel in self._path_set:
             return rel
 
-        # 2. Direct extensions.
+        # 2. Direct extensions. ``Path.with_suffix`` *replaces* the last
+        # ``.``-component, so for specifiers like ``app/layout.config``
+        # Python's pathlib would clobber ``.config`` and probe
+        # ``app/layout.tsx`` — yielding the wrong file. Append the
+        # extension as a string instead so multi-dot module names
+        # (``layout.config``, ``site.metadata``, ``foo.test``) resolve.
         for ext in _TS_EXTENSIONS:
-            rel = self._to_repo_relative(base.with_suffix(ext))
+            rel = self._to_repo_relative(Path(str(base) + ext))
             if rel is not None and rel in self._path_set:
                 return rel
 

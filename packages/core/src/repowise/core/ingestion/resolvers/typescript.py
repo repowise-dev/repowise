@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 from pathlib import Path
 
 from .context import ResolverContext
@@ -13,21 +14,33 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
     importer_dir = Path(importer_path).parent
 
     if module_path.startswith("."):
-        base = importer_dir / module_path
+        # Join + normalize via posixpath so ``../../helper/html`` collapses
+        # against the importer's directory. ``pathlib`` doesn't normalize
+        # ``..`` segments unless the path exists on disk; without this
+        # step, every cross-directory relative import silently fails to
+        # resolve and reads as an external dep.
+        base_posix = posixpath.normpath(
+            posixpath.join(importer_dir.as_posix(), module_path)
+        )
         exts: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js")
         if ctx.has_sfc_files:
             exts = exts + (".vue", ".svelte", ".astro")
         for ext in exts:
-            candidate = Path(str(base) + ext).as_posix()
+            candidate = base_posix + ext
             if candidate in ctx.path_set:
                 return candidate
-            candidate = (
-                base.with_suffix(ext).as_posix()
-                if not ext.startswith("/")
-                else (base / "index.ts").as_posix()
-            )
-            if candidate in ctx.path_set:
-                return candidate
+        # Legacy fallback: ``.with_suffix``-style replacement only kicks
+        # in when the specifier already carries a fake extension that
+        # users intended to be stripped (``./foo.js`` resolving to
+        # ``./foo.ts`` under TS rewrite rules). Guarded so it never
+        # clobbers a real multi-dot stem (``foo.config``, ``site.meta``).
+        stem_dot = base_posix.rfind(".")
+        if stem_dot > base_posix.rfind("/"):
+            real_stem = base_posix[:stem_dot]
+            for ext in (".ts", ".tsx"):
+                candidate = real_stem + ext
+                if candidate in ctx.path_set:
+                    return candidate
         return None
 
     # Non-relative: try tsconfig path-alias resolution first.
