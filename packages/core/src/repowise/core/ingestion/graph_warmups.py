@@ -110,41 +110,107 @@ def _warmup_cpp(ctx: "ResolverContext") -> None:
     against the workspace's discovered macro set. This keeps the parser
     stateless w.r.t. the workspace while still surfacing the right
     visibility on the graph nodes the dead-code analyzer reads.
+
+    A second pass scans each translation unit for *registration-macro*
+    markers — ``PYBIND11_MODULE``, ``REGISTER_OP``,
+    ``RCLCPP_COMPONENTS_REGISTER_NODE``, ``BOOST_CLASS_EXPORT``,
+    ``LLVMFuzzerTestOneInput``, ``Q_OBJECT``, ``__attribute__((constructor))``,
+    ``[[gnu::retain]]`` / ``[[gnu::used]]`` and the like — and stamps
+    ``is_entry_point=True`` on the file node. These macros wire the file
+    into a runtime registry at static-init time, so a static call edge
+    will never exist; without this rescue, every such TU reads as
+    ``unreachable_file``.
     """
     from .resolvers.cpp_workspace import get_or_build_cpp_index
 
     index = get_or_build_cpp_index(ctx)
     graph = getattr(ctx, "graph", None)
-    if graph is None or not index.project_export_macros:
+    if graph is None:
         return
 
     macros = index.project_export_macros
     parsed_files = getattr(ctx, "parsed_files", None) or {}
-    for path, parsed in parsed_files.items():
-        if not path.endswith((".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
-                              ".c", ".cc", ".cpp", ".cxx", ".c++")):
-            continue
-        for sym in parsed.symbols:
-            sig = sym.signature or ""
-            if not sig:
+
+    if macros:
+        for path, parsed in parsed_files.items():
+            if not path.endswith((".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
+                                  ".c", ".cc", ".cpp", ".cxx", ".c++")):
                 continue
-            # Check macro presence as a token — cheap substring with a
-            # word-boundary check to avoid false matches inside other
-            # identifiers.
-            for macro in macros:
-                idx = sig.find(macro)
-                if idx == -1:
+            for sym in parsed.symbols:
+                sig = sym.signature or ""
+                if not sig:
                     continue
-                before_ok = idx == 0 or not (sig[idx - 1].isalnum() or sig[idx - 1] == "_")
-                end = idx + len(macro)
-                after_ok = end >= len(sig) or not (sig[end].isalnum() or sig[end] == "_")
-                if before_ok and after_ok:
-                    node = graph.nodes.get(sym.id)
-                    if node is not None:
-                        node["is_exported_symbol"] = True
-                        if node.get("visibility") == "private":
-                            node["visibility"] = "public"
-                    break
+                # Check macro presence as a token — cheap substring with a
+                # word-boundary check to avoid false matches inside other
+                # identifiers.
+                for macro in macros:
+                    idx = sig.find(macro)
+                    if idx == -1:
+                        continue
+                    before_ok = idx == 0 or not (sig[idx - 1].isalnum() or sig[idx - 1] == "_")
+                    end = idx + len(macro)
+                    after_ok = end >= len(sig) or not (sig[end].isalnum() or sig[end] == "_")
+                    if before_ok and after_ok:
+                        node = graph.nodes.get(sym.id)
+                        if node is not None:
+                            node["is_exported_symbol"] = True
+                            if node.get("visibility") == "private":
+                                node["visibility"] = "public"
+                        break
+
+    _mark_cpp_entry_point_files(parsed_files, graph)
+
+
+# Tokens whose presence means the surrounding TU wires itself into a
+# runtime registry at static-init time. Every match marks the file node
+# as an entry point so the dead-code analyzer treats it as live.
+_CPP_ENTRY_MARKERS = (
+    "PYBIND11_MODULE",
+    "BOOST_PYTHON_MODULE",
+    "NAPI_MODULE",
+    "REGISTER_OP",
+    "REGISTER_KERNEL_BUILDER",
+    "BOOST_CLASS_EXPORT",
+    "PLUGINLIB_EXPORT_CLASS",
+    "RCLCPP_COMPONENTS_REGISTER_NODE",
+    "LLVMFuzzerTestOneInput",
+    "Q_OBJECT",
+    "Q_GADGET",
+    "Q_NAMESPACE",
+    "QML_ELEMENT",
+    "QML_NAMED_ELEMENT",
+    "__attribute__((constructor))",
+    "__attribute__((used))",
+    "[[gnu::retain]]",
+    "[[gnu::used]]",
+    "JNI_OnLoad",
+)
+
+
+def _mark_cpp_entry_point_files(parsed_files: dict, graph: Any) -> None:
+    """Stamp ``is_entry_point=True`` on TU file nodes matching an entry marker."""
+    for path, parsed in parsed_files.items():
+        lang = parsed.file_info.language
+        if lang not in ("cpp", "c"):
+            continue
+        # The parser already loaded the source; reuse it via the
+        # ParsedFile (avoids a second filesystem read).
+        src = getattr(parsed, "source", None) or getattr(parsed.file_info, "source", None)
+        if src is None:
+            # ParsedFile doesn't always carry the source — fall back to disk.
+            abs_path = getattr(parsed.file_info, "abs_path", None)
+            if not abs_path:
+                continue
+            try:
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                    src = f.read()
+            except OSError:
+                continue
+        if not any(tok in src for tok in _CPP_ENTRY_MARKERS):
+            continue
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_entry_point"] = True
 
 
 def _warmup_dotnet(ctx: "ResolverContext") -> None:
