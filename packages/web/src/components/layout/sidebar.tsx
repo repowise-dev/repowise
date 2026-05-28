@@ -332,7 +332,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
       {!isIconOnly && (
         <div className="border-t border-[var(--color-border-default)] px-4 py-3">
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            repowise v0.13.0
+            repowise v0.14.0
           </p>
         </div>
       )}
