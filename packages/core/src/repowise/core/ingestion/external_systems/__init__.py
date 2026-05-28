@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
-from . import cargo, go, maven, npm, nuget, pypi
+from . import bazel, cargo, cmake, go, maven, npm, nuget, pypi
 from .base import ExternalSystemRecord, ManifestParser
 
 __all__ = [
@@ -27,7 +27,7 @@ __all__ = [
     "extract_external_systems",
 ]
 
-_PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven)
+_PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, cmake, bazel)
 
 # Map exact filename → parser module
 _FILENAME_PARSERS: dict[str, ModuleType] = {
