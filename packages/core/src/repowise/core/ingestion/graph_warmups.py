@@ -61,6 +61,43 @@ def _warmup_jvm(ctx: "ResolverContext") -> None:
             if node is not None:
                 node["is_entry_point"] = True
 
+    # Stamp every JVM source file under a non-``main`` Gradle source-set
+    # (``testFixtures``, ``integrationTest``, ``javaPoet``, ``jcstress``,
+    # ``jmh``, ``benchmarks``, …) as ``is_never_flag``. Gradle declares
+    # these as first-class source sets that the build runs through their
+    # own tasks; from a "source-imported by main code" perspective they
+    # always look orphan. The build-script-discovered list generalises
+    # beyond the hardcoded never-flag globs and picks up arbitrary
+    # repo-defined names (Caffeine's ``javaPoet`` and ``jcstress`` are
+    # not Gradle-builtin conventions). The check uses the workspace
+    # source-set ``src_dirs`` discovered by ``jvm_gradle.py``.
+    try:
+        from .resolvers.jvm_gradle import get_or_build_jvm_gradle_index
+
+        gradle_index = get_or_build_jvm_gradle_index(ctx)
+    except Exception:
+        gradle_index = None
+
+    if gradle_index is not None:
+        non_main_prefixes: list[str] = []
+        for project in gradle_index.projects.values():
+            base = project.root_dir.rstrip("/")
+            for ss in project.source_sets.values():
+                if ss.is_main:
+                    continue
+                for src_dir in ss.src_dirs:
+                    prefix = f"{base}/{src_dir}/" if base else f"{src_dir}/"
+                    non_main_prefixes.append(prefix)
+        if non_main_prefixes:
+            for node_name in list(graph.nodes()):
+                s = str(node_name)
+                if not (s.endswith(".java") or s.endswith(".kt")):
+                    continue
+                if any(s.startswith(p) for p in non_main_prefixes):
+                    nd = graph.nodes.get(node_name)
+                    if nd is not None:
+                        nd["is_never_flag"] = True
+
 
 def _warmup_dotnet(ctx: "ResolverContext") -> None:
     from .resolvers.dotnet import get_or_build_index
