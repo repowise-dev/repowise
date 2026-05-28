@@ -232,14 +232,21 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             _t0 = _t.monotonic()
             file_imports: set[str] = set()
             for imp in parsed.imports:
-                # Go imports name a package *directory*; fan the edge out to
-                # every ``.go`` file in the resolved package so sibling files
-                # share importers (otherwise they look unreachable). Other
-                # languages resolve to a single representative target.
+                # Go and JVM imports name a package *directory*; fan the edge
+                # out to every file in the resolved package so sibling files
+                # share importers (otherwise they look unreachable).
                 if _lang == "go":
                     from ..resolvers.go import resolve_go_import_all
 
                     targets = resolve_go_import_all(imp.module_path, path, ctx)
+                elif _lang == "java":
+                    from ..resolvers.java import resolve_java_import_all
+
+                    targets = resolve_java_import_all(imp.module_path, path, ctx)
+                elif _lang == "kotlin":
+                    from ..resolvers.kotlin import resolve_kotlin_import_all
+
+                    targets = resolve_kotlin_import_all(imp.module_path, path, ctx)
                 else:
                     single = resolve_import(imp.module_path, path, _lang, ctx)
                     targets = (single,) if single else ()

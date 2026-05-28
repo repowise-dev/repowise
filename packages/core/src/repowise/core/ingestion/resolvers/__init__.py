@@ -9,6 +9,7 @@ from .cpp import resolve_cpp_import
 from .csharp import resolve_csharp_import
 from .generic import resolve_generic_import
 from .go import resolve_go_import
+from .java import resolve_java_import
 from .kotlin import resolve_kotlin_import
 from .luau import resolve_luau_import
 from .php import resolve_php_import
@@ -29,6 +30,7 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "rust": resolve_rust_import,
     "cpp": resolve_cpp_import,
     "c": resolve_cpp_import,
+    "java": resolve_java_import,
     "kotlin": resolve_kotlin_import,
     "luau": resolve_luau_import,
     "ruby": resolve_ruby_import,
