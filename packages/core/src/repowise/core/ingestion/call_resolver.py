@@ -109,6 +109,10 @@ class CallResolver:
         self._jvm_index: Any = None
         self._jvm_index_built = False
 
+        # C/C++ same-target resolution (lazy CppWorkspaceIndex)
+        self._cpp_index: Any = None
+        self._cpp_index_built = False
+
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
 
@@ -212,6 +216,54 @@ class CallResolver:
     def _is_jvm(self, file_path: str) -> bool:
         parsed = self._parsed_files.get(file_path)
         return bool(parsed and parsed.file_info.language in ("java", "kotlin"))
+
+    def _is_cpp_family(self, file_path: str) -> bool:
+        parsed = self._parsed_files.get(file_path)
+        return bool(parsed and parsed.file_info.language in ("cpp", "c"))
+
+    def _get_cpp_index(self) -> Any:
+        """Lazily build a CppWorkspaceIndex via a minimal stand-in context."""
+        if self._cpp_index_built:
+            return self._cpp_index
+        self._cpp_index_built = True
+        if not self._repo_path:
+            return None
+        from pathlib import Path
+
+        from .resolvers.cpp_workspace import build_cpp_workspace_index
+
+        class _Ctx:
+            def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
+                self.repo_path = Path(rp)
+                self.path_set = set(pf.keys())
+                self.parsed_files = pf
+                self.stem_map: dict[str, list[str]] = {}
+
+        self._cpp_index = build_cpp_workspace_index(_Ctx(self._repo_path, self._parsed_files))
+        return self._cpp_index
+
+    def _resolve_cpp_same_target(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve a bare call against the workspace target's source list.
+
+        C++ files in the same CMake/Bazel target share a build unit — an
+        unqualified ``Helper(...)`` may be defined in any sibling
+        ``.cc``/``.cpp`` in the same target with no ``#include`` line.
+        """
+        index = self._get_cpp_index()
+        if index is None:
+            return None
+        siblings = index.siblings_in_targets(file_path)
+        for sibling in siblings:
+            syms = self._file_symbols.get(sibling, {})
+            sym_id = syms.get(call.target_name)
+            if sym_id is not None and sym_id != caller_id:
+                return ResolvedCall(caller_id, sym_id, 0.85, call.line)
+        return None
 
     def _get_jvm_index(self) -> Any:
         """Lazily build the JvmWorkspaceIndex (or None if unavailable)."""
@@ -418,6 +470,14 @@ class CallResolver:
             jvm_same_pkg = self._resolve_jvm_same_package(file_path, call, caller_id)
             if jvm_same_pkg is not None:
                 return jvm_same_pkg
+
+        # C/C++: same-target unqualified access — a bare call may target a
+        # function declared in a header consumed by the importer's CMake/
+        # Bazel target and defined in any sibling TU of that target.
+        if self._is_cpp_family(file_path):
+            cpp_same_target = self._resolve_cpp_same_target(file_path, call, caller_id)
+            if cpp_same_target is not None:
+                return cpp_same_target
 
         # Tier 2: import-scoped
         # 2a: Check specific imported name → source file (binding-aware)
