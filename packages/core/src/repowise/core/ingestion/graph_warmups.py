@@ -99,6 +99,54 @@ def _warmup_jvm(ctx: "ResolverContext") -> None:
                         nd["is_never_flag"] = True
 
 
+def _warmup_cpp(ctx: "ResolverContext") -> None:
+    """Build the C/C++ workspace index and propagate workspace-discovered
+    export macros back into the graph.
+
+    The parser runs before the warmup, so symbols on public headers that
+    are tagged with a project-defined export macro (``LEVELDB_EXPORT``,
+    ``SEASTAR_API``, …) land as ``is_exported_symbol=False``. We re-mark
+    them here by reading each symbol's signature text and checking it
+    against the workspace's discovered macro set. This keeps the parser
+    stateless w.r.t. the workspace while still surfacing the right
+    visibility on the graph nodes the dead-code analyzer reads.
+    """
+    from .resolvers.cpp_workspace import get_or_build_cpp_index
+
+    index = get_or_build_cpp_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    if graph is None or not index.project_export_macros:
+        return
+
+    macros = index.project_export_macros
+    parsed_files = getattr(ctx, "parsed_files", None) or {}
+    for path, parsed in parsed_files.items():
+        if not path.endswith((".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
+                              ".c", ".cc", ".cpp", ".cxx", ".c++")):
+            continue
+        for sym in parsed.symbols:
+            sig = sym.signature or ""
+            if not sig:
+                continue
+            # Check macro presence as a token — cheap substring with a
+            # word-boundary check to avoid false matches inside other
+            # identifiers.
+            for macro in macros:
+                idx = sig.find(macro)
+                if idx == -1:
+                    continue
+                before_ok = idx == 0 or not (sig[idx - 1].isalnum() or sig[idx - 1] == "_")
+                end = idx + len(macro)
+                after_ok = end >= len(sig) or not (sig[end].isalnum() or sig[end] == "_")
+                if before_ok and after_ok:
+                    node = graph.nodes.get(sym.id)
+                    if node is not None:
+                        node["is_exported_symbol"] = True
+                        if node.get("visibility") == "private":
+                            node["visibility"] = "public"
+                    break
+
+
 def _warmup_dotnet(ctx: "ResolverContext") -> None:
     from .resolvers.dotnet import get_or_build_index
 
@@ -169,6 +217,8 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "go": ("graph.go_index", _warmup_go),
     "typescript": ("graph.ts_index", _warmup_typescript),
     "javascript": ("graph.ts_index", _warmup_typescript),
+    "cpp": ("graph.cpp_index", _warmup_cpp),
+    "c": ("graph.cpp_index", _warmup_cpp),
 }
 
 
