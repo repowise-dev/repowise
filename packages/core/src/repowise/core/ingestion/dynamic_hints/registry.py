@@ -34,6 +34,7 @@ from .python_imports import PythonDynamicHints
 from .pytest_hints import PytestDynamicHints
 from .ruby import RubyDynamicHints
 from .scala import ScalaDynamicHints
+from .jvm import JvmDynamicHints
 from .spring import SpringDynamicHints
 from .swift import SwiftDynamicHints
 from .xaml import XamlDynamicHints
@@ -62,6 +63,7 @@ class HintRegistry:
             DotNetDynamicHints(),
             XamlDynamicHints(),
             SpringDynamicHints(),
+            JvmDynamicHints(),
             RubyDynamicHints(),
             PhpDynamicHints(),
             ScalaDynamicHints(),

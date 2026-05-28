@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from . import (
+    android_manifest,
     aspnet,
     django,
     express,
@@ -25,9 +26,12 @@ from . import (
     flask,
     go,
     hono,
+    jakarta,
     laravel,
+    micronaut,
     next_app,
     pytest_edges,
+    quarkus,
     rails,
     remix,
     rust,
@@ -54,6 +58,10 @@ _HANDLERS: list[FrameworkHandler] = [
     *rails.HANDLERS,
     *laravel.HANDLERS,
     *spring.HANDLERS,
+    *jakarta.HANDLERS,
+    *quarkus.HANDLERS,
+    *micronaut.HANDLERS,
+    *android_manifest.HANDLERS,
     *express.HANDLERS,
     *next_app.HANDLERS,
     *hono.HANDLERS,
