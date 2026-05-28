@@ -247,6 +247,16 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.kotlin import resolve_kotlin_import_all
 
                     targets = resolve_kotlin_import_all(imp.module_path, path, ctx)
+                elif _lang in ("cpp", "c"):
+                    # Fan-out across sibling TUs in the same CMake/Bazel
+                    # target so a public header reached by one ``.cc`` is
+                    # also marked imported by the other ``.cc`` files in
+                    # the library — rescues every public-header symbol
+                    # whose only declared import lives in one sibling
+                    # without the workspace edge.
+                    from ..resolvers.cpp import resolve_cpp_import_all
+
+                    targets = resolve_cpp_import_all(imp.module_path, path, ctx)
                 else:
                     single = resolve_import(imp.module_path, path, _lang, ctx)
                     targets = (single,) if single else ()
