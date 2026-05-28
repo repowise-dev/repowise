@@ -26,6 +26,9 @@ from typing import TYPE_CHECKING
 
 from ...models import FileInfo, Symbol
 from .csharp_mvvm import csharp_synthetic_symbols
+from .java_records import java_record_synthetic_symbols
+from .jvm_codegen import jvm_codegen_synthetic_symbols
+from .kotlin_jvm import kotlin_synthetic_symbols
 from .lombok import lombok_synthetic_symbols
 
 if TYPE_CHECKING:
@@ -39,7 +42,12 @@ _Provider = Callable[["Node", str, FileInfo], list[Symbol]]
 
 _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
     "csharp": [csharp_synthetic_symbols],
-    "java": [lombok_synthetic_symbols],
+    "java": [
+        lombok_synthetic_symbols,
+        java_record_synthetic_symbols,
+        jvm_codegen_synthetic_symbols,
+    ],
+    "kotlin": [kotlin_synthetic_symbols],
 }
 
 
