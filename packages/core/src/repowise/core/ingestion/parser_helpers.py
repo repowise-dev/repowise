@@ -196,14 +196,18 @@ _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
     "extends_clause": "extends",
     "extends_type_clause": "extends",
     "implements_clause": "implements",
-    # JVM (Java + Kotlin) type positions.
+    # JVM (Java + Kotlin) type positions. Note: ``parameter`` is NOT
+    # mapped here because tree-sitter-c-sharp also uses ``parameter``
+    # for ctor params and adding it would override C#'s walk to the
+    # enclosing ``constructor_declaration``. Kotlin function-parameter
+    # origin therefore falls through to ``function_declaration`` →
+    # "return_type" (imprecise but harmless — origin is provenance only).
     "formal_parameter": "param_type",
     "object_creation_expression": "composite_literal",
     "local_variable_declaration": "field_type",
     "superclass": "extends",
     "super_interfaces": "implements",
     "type_list": "implements",
-    "parameter": "param_type",  # Kotlin function parameter
     "class_parameter": "ctor_param",  # Kotlin primary-ctor parameter
     "variable_declaration": "field_type",  # Kotlin property declaration
     "delegation_specifier": "extends",  # Kotlin class : Bar()
