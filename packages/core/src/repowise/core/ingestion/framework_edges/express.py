@@ -8,12 +8,13 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..resolvers import ResolverContext, resolve_import
+from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
     FrameworkHandler,
     _add_edge_if_new,
     _build_class_to_file,
+    _build_ts_var_to_file,
     read_text,
 )
 
@@ -55,18 +56,7 @@ def _add_express_edges(
         if not text:
             continue
 
-        # Build local var → source file map for this file
-        var_to_file: dict[str, str] = {}
-        for imp in parsed.imports:
-            for name in imp.imported_names:
-                resolved = resolve_import(
-                    imp.module_path,
-                    path,
-                    parsed.file_info.language,
-                    ctx,
-                )
-                if resolved and resolved in path_set:
-                    var_to_file[name] = resolved
+        var_to_file = _build_ts_var_to_file(parsed, path, ctx, path_set)
 
         if "express" in text or any(imp.module_path == "express" for imp in parsed.imports):
             for m in _EXPRESS_USE_RE.finditer(text):

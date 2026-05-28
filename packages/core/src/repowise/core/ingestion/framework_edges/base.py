@@ -99,3 +99,30 @@ def _build_function_to_file(
             if sym.kind in ("function", "method"):
                 result.setdefault(sym.name, []).append(path)
     return result
+
+
+def _build_ts_var_to_file(
+    parsed: Any, path: str, ctx: ResolverContext, path_set: set[str]
+) -> dict[str, str]:
+    """Map identifiers imported into a TS/JS file → their source file path.
+
+    The TS/JS framework handlers (Express, Hono, Fastify, …) all need to
+    resolve a bare identifier (``handler``, ``router``) used in a router
+    DSL back to the file that exports it, so a synthetic edge from the
+    DSL call site to the handler module can be emitted. Pulling this
+    builder up to ``base`` avoids three near-identical copies.
+    """
+    from ..resolvers import resolve_import
+
+    var_to_file: dict[str, str] = {}
+    for imp in parsed.imports:
+        for name in imp.imported_names:
+            resolved = resolve_import(
+                imp.module_path,
+                path,
+                parsed.file_info.language,
+                ctx,
+            )
+            if resolved and resolved in path_set:
+                var_to_file[name] = resolved
+    return var_to_file
