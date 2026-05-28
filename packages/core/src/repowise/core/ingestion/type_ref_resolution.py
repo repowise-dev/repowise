@@ -351,6 +351,130 @@ def _find_c_type_file(
 
 
 # ---------------------------------------------------------------------------
+# Strategy: TypeScript / JavaScript
+# ---------------------------------------------------------------------------
+
+def _resolve_ts_type_refs(
+    parsed: ParsedFile,
+    ctx: "ResolverContext",
+    graph: "nx.DiGraph",
+) -> int:
+    """Resolve TS/JS ``@param.type`` captures via import bindings + stem map.
+
+    TypeScript has no central type-name registry the way C# has the
+    project's type-map; the canonical place to learn ``Foo``'s defining
+    file is the file's own ``import`` statements. The resolution order
+    mirrors how ``tsc`` itself reasons about names:
+
+        1. ``import { Foo } from './x'``    — bound name; the import's
+           ``resolved_file`` is the answer.
+        2. ``import * as ns from './x'``    — ``ns.Foo`` strips to ``Foo``;
+           the namespace alias points at the module.
+        3. Stem-map fallback                — unique global file whose
+           basename matches the type name; matches Rust's strategy.
+        4. Same-file definitions are skipped silently (no edge needed).
+
+    This emits ``type_use`` edges at file granularity — the dead-code
+    analyzer's unused-export pass consumes ``imported_names`` on either
+    edge type, so an ``interface Foo`` referenced only as a field type
+    in a sibling module is no longer flagged.
+    """
+    if not parsed.type_refs:
+        return 0
+
+    from_path = parsed.file_info.path
+
+    # name -> (resolved_file, exported_name) for direct imports.
+    name_to_source: dict[str, str] = {}
+    # alias -> resolved_file for namespace / module imports.
+    namespace_to_source: dict[str, str] = {}
+    for imp in parsed.imports:
+        if not imp.resolved_file or imp.resolved_file.startswith("external:"):
+            continue
+        for binding in imp.bindings:
+            if binding.local_name == "*":
+                continue
+            if binding.is_module_alias:
+                namespace_to_source[binding.local_name] = imp.resolved_file
+            else:
+                name_to_source[binding.local_name] = imp.resolved_file
+
+    # Symbol names defined in this file — used to filter same-file refs.
+    local_names: set[str] = {s.name for s in parsed.symbols if s.name}
+
+    # Stamp same-file type references on the file node so the dead-code
+    # analyzer can treat an ``interface Foo`` referenced as ``bar: Foo``
+    # inside its own file as live, even though we never emit a self-loop
+    # edge. The C#/Go strategies don't need this because their resolvers
+    # rely on package-level symbol indexes and reach types through value
+    # imports; TS commonly defines a private interface beside the class
+    # that consumes it (``src/context.ts::Get`` is the canonical case).
+    same_file_refs: set[str] = set()
+
+    emitted = 0
+    seen: set[tuple[str, str]] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name:
+            continue
+        if name in local_names:
+            same_file_refs.add(name)
+            continue
+        target = name_to_source.get(name) or namespace_to_source.get(name)
+        if target is None:
+            target = _find_ts_type_in_stem_map(name, from_path, ctx, graph)
+        if target is None or target == from_path:
+            continue
+        if (name, target) in seen:
+            continue
+        seen.add((name, target))
+        if not graph.has_node(target):
+            continue
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=name, origin=ref.origin
+        )
+        emitted += 1
+
+    if same_file_refs and graph.has_node(from_path):
+        existing = graph.nodes[from_path].get("local_type_uses")
+        if existing is None:
+            graph.nodes[from_path]["local_type_uses"] = same_file_refs
+        else:
+            existing.update(same_file_refs)
+
+    return emitted
+
+
+def _find_ts_type_in_stem_map(
+    type_name: str,
+    from_path: str,
+    ctx: "ResolverContext",
+    graph: "nx.DiGraph",
+) -> str | None:
+    """Locate ``type_name`` via the global stem map.
+
+    Used when no import binds the name — common when a sibling module
+    in the same package augments a global ``namespace`` or when a type
+    is reached via a tsconfig-paths alias whose binding wasn't extracted
+    (rare but possible). A match is only accepted if exactly one file
+    in the workspace defines a top-level symbol by that name.
+    """
+    candidates = ctx.stem_map.get(type_name.lower(), [])
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    if candidate == from_path or not graph.has_node(candidate):
+        return None
+    # Verify the candidate file actually exports a symbol matching name —
+    # avoids accidentally matching ``utils.ts`` to a type called ``Utils``.
+    for succ in graph.successors(candidate):
+        nd = graph.nodes.get(succ, {})
+        if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
+            return candidate
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------------------
 
@@ -365,6 +489,8 @@ _STRATEGIES: dict[str, Strategy] = {
     "go": _resolve_go_type_refs,
     "c": _resolve_c_type_refs,
     "cpp": _resolve_c_type_refs,
+    "typescript": _resolve_ts_type_refs,
+    "javascript": _resolve_ts_type_refs,
 }
 
 

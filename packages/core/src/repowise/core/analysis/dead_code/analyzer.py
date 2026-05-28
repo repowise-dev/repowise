@@ -698,6 +698,21 @@ class DeadCodeAnalyzer:
                 if self._name_matches_dynamic(sym_name, dynamic_patterns):
                     continue
 
+                # Same-file type-position usage rescue (TS/JS): the
+                # type-ref strategy stamps ``local_type_uses`` on a file
+                # node with every type name referenced inside its own
+                # source — parameter / field / return / heritage /
+                # generic-constraint / type-alias-RHS positions. An
+                # ``interface DefaultRenderer`` consumed only as a
+                # ``type Renderer = ... : DefaultRenderer`` annotation in
+                # the same module is genuinely live; without this rescue
+                # the whole class of intra-module type protocols (Hono's
+                # ``Get``/``Set`` generics, AWS Lambda's per-adapter
+                # event-shape interfaces) reads as dead exports.
+                local_type_uses = node_data.get("local_type_uses")
+                if local_type_uses and sym_name in local_type_uses:
+                    continue
+
                 is_deprecated = any(
                     sym_name.endswith(suffix) for suffix in ("_DEPRECATED", "_LEGACY", "_COMPAT")
                 )
