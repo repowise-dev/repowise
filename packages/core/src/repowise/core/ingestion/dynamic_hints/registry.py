@@ -23,6 +23,7 @@ import structlog
 from .alpine import AlpineDynamicHints
 from .base import DynamicEdge, DynamicHintExtractor
 from .c import CDynamicHints
+from .cpp import CppDynamicHints
 from .django import DjangoDynamicHints
 from .dotnet import DotNetDynamicHints
 from .go import GoDynamicHints
@@ -69,6 +70,7 @@ class HintRegistry:
             ScalaDynamicHints(),
             SwiftDynamicHints(),
             CDynamicHints(),
+            CppDynamicHints(),
             LuauDynamicHints(),
             GoDynamicHints(),
             RustDynamicHints(),
