@@ -562,6 +562,14 @@ class DeadCodeAnalyzer:
             node_data = self.graph.nodes[node]
             if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
                 continue
+            # Framework-instantiated files (Spring stereotypes, JAX-RS
+            # resources, Quarkus components, Spring Data repos, …) have
+            # no source-level caller; the runtime constructs them via
+            # classpath scanning. Mirror the entry-point skip the
+            # ``_detect_unreachable_files`` pass already does so an
+            # ``@RestController`` class isn't reported as unused.
+            if node_data.get("is_entry_point", False):
+                continue
             if node_data.get("is_test", False):
                 continue
             if _is_fixture_path(str(node)):

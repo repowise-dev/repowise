@@ -206,10 +206,14 @@ def _add_spring_edges(
         if not is_bean:
             continue
 
-        # Stamp the framework role on the file node for downstream consumers.
+        # Stamp the framework role + entry-point flag. Spring instantiates
+        # every stereotype-annotated class at startup via classpath scanning,
+        # so no source caller exists; the file must read as live regardless
+        # of in_degree.
         node = graph.nodes.get(path)
         if node is not None:
             node["framework_role"] = node.get("framework_role") or "spring_stereotype"
+            node["is_entry_point"] = True
 
         # 2a. Field injection (@Autowired / @Inject / @Resource)
         for m in _SPRING_INJECT_FIELD_RE.finditer(text):
