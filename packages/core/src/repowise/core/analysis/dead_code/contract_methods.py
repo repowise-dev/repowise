@@ -107,6 +107,81 @@ _JVM_CONTRACT_METHOD_NAMES = _JVM_CONTRACT_METHOD_NAMES | frozenset(
 _JVM_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin"})
 
 
+# Method / function names reserved by the C++ language, the STL
+# customization-point protocol, the coroutine machinery, and standard
+# library traits. Each is dispatched by the compiler, the standard
+# library, or a hidden friend lookup — never via a static call edge the
+# graph can observe. A user class overriding ``operator==`` or
+# providing ``begin()`` / ``end()`` for range-for support is live even
+# when the explicit call sites read as ``std::sort(v.begin(), v.end())``
+# in another TU.
+#
+# ``<ctor>`` / ``<dtor>`` are sentinel placeholders — the analyzer
+# matches constructors and destructors by symbol *kind* rather than by
+# name, because the parser emits the bare class name for constructors
+# and ``~ClassName`` for destructors.
+_CPP_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
+    # ---- Comparison & arithmetic operator overloads -----------------
+    "operator=",
+    "operator==", "operator!=",
+    "operator<", "operator<=", "operator>", "operator>=", "operator<=>",
+    "operator+", "operator-", "operator*", "operator/", "operator%",
+    "operator&", "operator|", "operator^", "operator~",
+    "operator!", "operator&&", "operator||",
+    "operator++", "operator--",
+    "operator+=", "operator-=", "operator*=", "operator/=", "operator%=",
+    "operator&=", "operator|=", "operator^=",
+    "operator<<", "operator>>", "operator<<=", "operator>>=",
+    "operator,",
+    # ---- Indexing / call / member-access operators ------------------
+    "operator[]",
+    "operator()",
+    "operator->",
+    "operator->*",
+    "operator*",                 # also dereference; deduped by set
+    # ---- Allocation operators (overloaded new/delete) ---------------
+    "operator new",
+    "operator new[]",
+    "operator delete",
+    "operator delete[]",
+    # ---- Conversion operators (typed by the parser as operator T) ----
+    "operator bool",
+    "operator int",
+    "operator double",
+    "operator float",
+    # ---- STL container / iteration customization points -------------
+    "begin", "end",
+    "cbegin", "cend",
+    "rbegin", "rend",
+    "crbegin", "crend",
+    "size", "max_size", "empty",
+    "data", "swap",
+    "hash_value",
+    "to_string",
+    # ---- Hash specialization customization (called via std::hash) ----
+    # ``operator()`` already covered above.
+    # ---- Coroutine customization points -----------------------------
+    "await_ready", "await_suspend", "await_resume",
+    "promise_type",
+    "get_return_object",
+    "initial_suspend", "final_suspend",
+    "return_void", "return_value",
+    "unhandled_exception",
+    "yield_value",
+    # ---- std::format / std::print customization ---------------------
+    "format", "format_to", "parse",
+    # ---- std::error_code / std::error_category interface ------------
+    "message", "name", "default_error_condition",
+    # ---- Standard library tag / trait override methods --------------
+    "value_type", "key_type", "mapped_type",
+    "iterator", "const_iterator",
+    "reference", "const_reference",
+})
+
+
+_CPP_LANGUAGES: frozenset[str] = frozenset({"cpp", "c"})
+
+
 def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None) -> bool:
     """Return True if *sym_name* is a reserved contract-method name in *language*.
 
@@ -118,10 +193,29 @@ def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None
     # class body (e.g. ``STDMETHODIMP CFoo::QueryInterface(...)``) as
     # kind=function rather than method. Accept both — the name + COM
     # language combination is restrictive enough on its own.
+    if sym_kind in ("constructor", "destructor"):
+        # The parser emits constructors as ``kind="method"`` with the
+        # bare class name, and destructors as ``kind="method"`` with a
+        # leading ``~``. Either way, the language runtime dispatches
+        # them (construction site / object teardown / RAII unwind), not
+        # a static caller. Treat both as contract methods for C/C++.
+        if language in _CPP_LANGUAGES:
+            return True
     if sym_kind not in ("method", "function"):
         return False
     if language in _COM_LANGUAGES and sym_name in _COM_CONTRACT_METHOD_NAMES:
         return True
     if language in _JVM_LANGUAGES and sym_name in _JVM_CONTRACT_METHOD_NAMES:
         return True
+    if language in _CPP_LANGUAGES:
+        if sym_name in _CPP_CONTRACT_METHOD_NAMES:
+            return True
+        # Destructor names land as ``~ClassName`` in the symbol name —
+        # match by prefix so we don't have to enumerate every class.
+        if sym_name.startswith("~"):
+            return True
+        # Generic conversion operator: ``operator Foo`` where ``Foo`` is
+        # a user type. The prefix is sufficient evidence.
+        if sym_name.startswith("operator "):
+            return True
     return False
