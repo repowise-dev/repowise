@@ -37,7 +37,29 @@ Warmup = Callable[["ResolverContext"], None]
 def _warmup_jvm(ctx: "ResolverContext") -> None:
     from .resolvers.jvm_workspace import get_or_build_jvm_index
 
-    get_or_build_jvm_index(ctx)
+    index = get_or_build_jvm_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+
+    # Collect every FQN that is reached by a *resource* mechanism the
+    # graph cannot see: META-INF/services lines, JPMS ``provides ... with``
+    # directives (both merged into ``index.services``), and Spring Boot
+    # autoconfig imports (Boot-2 ``spring.factories``, Boot-3 ``.imports``).
+    # Stamp the defining file node as ``is_entry_point`` so the
+    # unreachable-file pass treats it as live without a per-language
+    # check on every node.
+    entry_fqns: set[str] = set()
+    for impls in index.services.values():
+        entry_fqns.update(impls)
+    for fqns in index.autoconfig_imports.values():
+        entry_fqns.update(fqns)
+
+    for fqn in entry_fqns:
+        for path in index.files_for_fqn(fqn):
+            node = graph.nodes.get(path)
+            if node is not None:
+                node["is_entry_point"] = True
 
 
 def _warmup_dotnet(ctx: "ResolverContext") -> None:
