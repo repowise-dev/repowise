@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from ...models import FileInfo, Symbol
 from .csharp_mvvm import csharp_synthetic_symbols
+from .lombok import lombok_synthetic_symbols
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -38,6 +39,7 @@ _Provider = Callable[["Node", str, FileInfo], list[Symbol]]
 
 _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
     "csharp": [csharp_synthetic_symbols],
+    "java": [lombok_synthetic_symbols],
 }
 
 
