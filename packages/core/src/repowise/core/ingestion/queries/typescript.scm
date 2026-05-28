@@ -122,3 +122,70 @@
   constructor: (identifier) @call.target
   arguments: (arguments) @call.arguments
 ) @call.site
+
+; ---------------------------------------------------------------------------
+; Type references (non-import positions)
+;
+; Mirrors the C# / Go pattern: a single ``@param.type`` capture name fans
+; in every position where a user-defined type appears outside an import
+; statement. The TypeScript head extractor in parser_helpers.py unwraps
+; ``Foo[]`` / ``Promise<Foo>`` / ``ns.Foo`` / ``Foo | Bar`` shells and
+; filters TS builtins (``string`` / ``number`` / ``Promise`` / ...). The
+; result lets the dead-code analyzer see an ``interface Foo`` referenced
+; as ``bar: Foo`` in another file even when no value-import binds ``Foo``.
+; ---------------------------------------------------------------------------
+
+; Function / method parameter types: (x: Qux) / (y?: Quux)
+(required_parameter
+  type: (type_annotation (_) @param.type))
+(optional_parameter
+  type: (type_annotation (_) @param.type))
+
+; Interface field types: { bar: Baz }
+(property_signature
+  type: (type_annotation (_) @param.type))
+
+; Class field types: class C { f: Field }
+(public_field_definition
+  type: (type_annotation (_) @param.type))
+
+; Return types on function / method / arrow / call-signature declarations
+(function_declaration
+  return_type: (type_annotation (_) @param.type))
+(method_definition
+  return_type: (type_annotation (_) @param.type))
+(method_signature
+  return_type: (type_annotation (_) @param.type))
+(arrow_function
+  return_type: (type_annotation (_) @param.type))
+(function_signature
+  return_type: (type_annotation (_) @param.type))
+
+; Generic-parameter constraints: <T extends Constraint>
+(type_parameter
+  (constraint (_) @param.type))
+
+; Type alias RHS: type Alias = OtherType
+(type_alias_declaration
+  value: (_) @param.type)
+
+; Class heritage — file-level type_use edges complement the symbol-level
+; ``extends`` / ``implements`` edges the heritage extractor emits, so a
+; concrete class importing an interface only to implement it counts as a
+; consumer of the interface's file for unused-export purposes.
+(extends_clause
+  value: (_) @param.type)
+(implements_clause
+  (_) @param.type)
+; Interface extends: interface A extends B
+(extends_type_clause
+  (_) @param.type)
+
+; Compound type expressions — descend so the leaf type names inside
+; ``A | B``, ``A & B`` and conditional types (``X extends Y ? A : B``)
+; are reachable. Without these patterns ``type R = X | DefaultRenderer``
+; would never surface ``DefaultRenderer`` as a type reference because
+; the head extractor refuses to pick a single name out of a union.
+(union_type (_) @param.type)
+(intersection_type (_) @param.type)
+(conditional_type (_) @param.type)

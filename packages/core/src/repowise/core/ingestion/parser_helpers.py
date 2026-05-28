@@ -179,6 +179,23 @@ _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
     "field_declaration": "field_type",
     "parameter_declaration": "param_type",
     "composite_literal": "composite_literal",
+    # TypeScript / JavaScript type positions. Walk-up matches the nearest
+    # enclosing declaration; the parameter / field / heritage nodes sit
+    # closer than ``class_declaration`` so this dispatch is unambiguous.
+    "required_parameter": "param_type",
+    "optional_parameter": "param_type",
+    "property_signature": "field_type",
+    "public_field_definition": "field_type",
+    "function_declaration": "return_type",
+    "method_definition": "return_type",
+    "method_signature": "return_type",
+    "arrow_function": "return_type",
+    "function_signature": "return_type",
+    "type_alias_declaration": "type_alias",
+    "type_parameter": "generic_constraint",
+    "extends_clause": "extends",
+    "extends_type_clause": "extends",
+    "implements_clause": "implements",
 }
 
 
@@ -457,6 +474,158 @@ def _c_head_type_identifier(type_node: Node, src: str) -> str | None:
     return text
 
 
+# ---------------------------------------------------------------------------
+# TypeScript / JavaScript type-reference head extraction
+# ---------------------------------------------------------------------------
+
+# Predeclared / lib.dom / lib.es type names that never resolve to a user-
+# defined symbol in the workspace. Filtering them before the resolver
+# lookup avoids polluting the graph with edges for ubiquitous globals
+# (``string``, ``Promise``, ``Pick``) the dead-code analyzer does not
+# care about. The list intentionally errs on the side of inclusion: a
+# user type colliding with one of these names will fail to resolve via
+# the type-ref path, but cross-file usage still surfaces through the
+# value-import + call path.
+_TS_BUILTIN_TYPES: frozenset[str] = frozenset(
+    {
+        # Primitives + structural
+        "string", "number", "boolean", "bigint", "symbol",
+        "void", "null", "undefined", "never", "unknown", "any",
+        "object", "this", "Object",
+        # Built-in containers / wrappers. ``Map`` / ``Set`` / ``WeakMap``
+        # / ``WeakSet`` are intentionally **not** listed: they're routinely
+        # shadowed by user-defined types (Hono ``interface Set<E>`` /
+        # ``interface Get<E>`` is the canonical case) and filtering them
+        # at extraction time hides the same-file rescue.
+        "Array", "ReadonlyArray", "Promise", "Awaited", "WeakRef",
+        "Date", "RegExp", "Error", "TypeError", "RangeError",
+        "SyntaxError", "ReferenceError", "EvalError",
+        "Function", "CallableFunction", "NewableFunction",
+        "ArrayBuffer", "SharedArrayBuffer", "DataView",
+        "Int8Array", "Uint8Array", "Uint8ClampedArray",
+        "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
+        "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
+        "Iterable", "AsyncIterable", "Iterator", "AsyncIterator",
+        "IterableIterator", "AsyncIterableIterator",
+        "Generator", "AsyncGenerator", "GeneratorFunction",
+        "Proxy", "Reflect", "JSON", "Math",
+        # Utility types
+        "Record", "Partial", "Required", "Readonly",
+        "Pick", "Omit", "Exclude", "Extract", "NonNullable",
+        "Parameters", "ConstructorParameters", "ReturnType",
+        "InstanceType", "ThisType", "ThisParameterType", "OmitThisParameter",
+        "Uppercase", "Lowercase", "Capitalize", "Uncapitalize",
+        # Common DOM / Node globals that show up everywhere as parameter
+        # types — listing here is a perf optimisation, not correctness.
+        "URL", "URLSearchParams", "Request", "Response", "Headers",
+        "Blob", "File", "FormData", "FileReader",
+        "AbortController", "AbortSignal", "AbortError",
+        "EventTarget", "Event", "CustomEvent", "MessageEvent",
+        "Element", "HTMLElement", "Node", "Document", "Window",
+        "Buffer", "NodeJS",
+    }
+)
+
+
+def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head identifier of a TypeScript/JavaScript type, or None.
+
+    Unwraps the modifier shells TS layers around a named type so the
+    resolver sees the bare identifier:
+
+        ``Foo``                 → "Foo"
+        ``Foo[]``               → "Foo"      (array_type)
+        ``Promise<Foo>``        → "Promise"  → filtered (builtin)
+        ``ns.Foo``              → "Foo"      (nested_type_identifier)
+        ``Foo | null``          → None       (union — ambiguous head)
+        ``(x: A) => B``         → None       (function_type — A/B are
+                                              captured separately as their
+                                              own param/return positions)
+        ``{ x: number }``       → None       (anonymous object type)
+        ``string`` / ``number`` → None       (predefined / builtin)
+        ``T``                   → None       (single-uppercase generic)
+
+    Union / intersection / function / object types return None because
+    the head isn't a single name; the underlying parameter / field
+    captures for each leaf already produced their own ``@param.type``
+    captures so the bare leaves are still resolved.
+    """
+    node: Node | None = type_node
+    text = ""
+    for _ in range(8):
+        if node is None:
+            return None
+        kind = node.type
+        if kind == "type_identifier":
+            text = _node_text(node, src)
+            break
+        if kind == "identifier":
+            # ``extends_clause`` of a class uses ``identifier`` (E in
+            # ``class D extends E``); treat it as a type name.
+            text = _node_text(node, src)
+            break
+        if kind == "predefined_type":
+            return None
+        if kind in ("union_type", "intersection_type", "function_type",
+                    "constructor_type", "object_type", "literal_type",
+                    "tuple_type", "conditional_type", "mapped_type",
+                    "index_type_query", "type_query", "lookup_type",
+                    "template_literal_type", "infer_type", "readonly_type"):
+            return None
+        if kind == "generic_type":
+            # ``Foo<T>`` — descend to the bare name; generic args are
+            # captured separately if they hold user types.
+            inner = node.child_by_field_name("name") or next(
+                (c for c in node.named_children if c.type != "type_arguments"),
+                None,
+            )
+            node = inner
+            continue
+        if kind == "nested_type_identifier":
+            # ``ns.Foo`` — rightmost name component is the type itself.
+            name = node.child_by_field_name("name") or next(
+                (c for c in reversed(node.named_children)
+                 if c.type == "type_identifier"),
+                None,
+            )
+            node = name
+            continue
+        if kind == "array_type":
+            # ``T[]`` — element is the first named child.
+            node = next(iter(node.named_children), None)
+            continue
+        if kind == "parenthesized_type":
+            node = next(iter(node.named_children), None)
+            continue
+        if kind == "type_annotation":
+            # Shouldn't be reached given the query strips the annotation,
+            # but defensive: descend past the colon to the type itself.
+            node = next(iter(node.named_children), None)
+            continue
+        if kind == "constraint":
+            # ``extends Cons`` inside a type_parameter — the constraint
+            # node wraps the actual constraint type.
+            node = next(iter(node.named_children), None)
+            continue
+        # Anything else (type_predicate, asserts, type_assertion, ...)
+        # — descend into the first named child and re-classify.
+        node = next(iter(node.named_children), None)
+    else:
+        return None
+
+    # JS/TS identifiers may start with `$` or `_` in addition to a
+    # letter — Zod's ``$ZSF`` interface family is the canonical case.
+    if not text or (not text[0].isalpha() and text[0] not in ("_", "$")):
+        return None
+    if text in _TS_BUILTIN_TYPES:
+        return None
+    # Single-uppercase-letter heads are overwhelmingly generic type params
+    # (T, K, V, U). Skipping them avoids spurious lookups.
+    if len(text) == 1 and text.isupper():
+        return None
+    return text
+
+
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
@@ -464,6 +633,8 @@ TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
     "go": _go_head_type_identifier,
     "c": _c_head_type_identifier,
     "cpp": _c_head_type_identifier,
+    "typescript": _ts_head_type_identifier,
+    "javascript": _ts_head_type_identifier,
 }
 
 
