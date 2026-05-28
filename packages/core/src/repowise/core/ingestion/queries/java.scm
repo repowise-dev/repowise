@@ -92,3 +92,44 @@
   type: (type_identifier) @call.target
   arguments: (argument_list) @call.arguments
 ) @call.site
+
+; ---------------------------------------------------------------------------
+; Type references — drive file-level ``type_use`` edges
+; ---------------------------------------------------------------------------
+; Java buries a large share of its dependency surface in type positions
+; that carry no import statement: a constructor or method parameter of an
+; injected service type, a field of a sibling-package class, the return
+; type of a factory, the element type of ``new Foo()``. The single
+; ``@param.type`` capture is reused across languages
+; (see parser._extract_type_refs); the Java head extractor in
+; parser_helpers.py unwraps ``T[]`` / ``Foo<...>`` / ``ns.Foo`` / annotated
+; types and filters primitives plus the most ubiquitous ``java.lang`` /
+; ``java.util`` / ``java.util.function`` builtins.
+
+; Constructor / method / lambda formal parameters
+(formal_parameter type: (_) @param.type)
+
+; Field declarations (instance + static)
+(field_declaration type: (_) @param.type)
+
+; Method return types
+(method_declaration type: (_) @param.type)
+
+; Constructor invocation type: ``new Foo<...>(args)``
+(object_creation_expression type: (_) @param.type)
+
+; Local variable types — rescues Spring-style ``Foo foo = svc.lookup();``
+(local_variable_declaration type: (_) @param.type)
+
+; Heritage clauses — emit file-level ``type_use`` edges that complement
+; the symbol-level extends/implements edges the heritage extractor
+; produces. A class that imports an interface only to implement it
+; counts as a consumer of the interface's file for unused-export
+; purposes.
+(superclass (_) @param.type)
+(super_interfaces (type_list (_) @param.type))
+
+; Generic type arguments inside any of the above — without this an
+; ``Optional<UserPreferences>`` field would only register ``Optional``
+; (a builtin) and never the user type ``UserPreferences``.
+(type_arguments (_) @param.type)
