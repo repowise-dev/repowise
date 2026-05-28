@@ -34,6 +34,12 @@ if TYPE_CHECKING:
 Warmup = Callable[["ResolverContext"], None]
 
 
+def _warmup_jvm(ctx: "ResolverContext") -> None:
+    from .resolvers.jvm_workspace import get_or_build_jvm_index
+
+    get_or_build_jvm_index(ctx)
+
+
 def _warmup_dotnet(ctx: "ResolverContext") -> None:
     from .resolvers.dotnet import get_or_build_index
 
@@ -98,6 +104,8 @@ def _warmup_typescript(ctx: "ResolverContext") -> None:
 # same for both languages. The dispatcher registers under each tag so
 # a JS-only repo still triggers the index build.
 _WARMUPS: dict[str, tuple[str, Warmup]] = {
+    "java": ("graph.jvm_index", _warmup_jvm),
+    "kotlin": ("graph.jvm_index", _warmup_jvm),
     "csharp": ("graph.dotnet_index", _warmup_dotnet),
     "go": ("graph.go_index", _warmup_go),
     "typescript": ("graph.ts_index", _warmup_typescript),
