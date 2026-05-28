@@ -93,6 +93,13 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Method reference: Foo::bar — treat as a use of Foo.bar so the referenced
+; method is not flagged unused. The argument list is empty (no @call.arguments).
+(method_reference
+  . (identifier) @call.receiver
+  (identifier) @call.target
+) @call.site
+
 ; ---------------------------------------------------------------------------
 ; Type references — drive file-level ``type_use`` edges
 ; ---------------------------------------------------------------------------

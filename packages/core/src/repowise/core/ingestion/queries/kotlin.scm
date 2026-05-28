@@ -71,15 +71,6 @@
 ) @call.site
 
 ; ---------------------------------------------------------------------------
-; Symbols — companion objects and top-level functions
-; ---------------------------------------------------------------------------
-
-; Companion objects: `companion object { ... }` or `companion object Foo { ... }`
-(companion_object
-  (identifier)? @symbol.name
-) @symbol.def
-
-; ---------------------------------------------------------------------------
 ; Type references — drive file-level ``type_use`` edges
 ; ---------------------------------------------------------------------------
 ; Kotlin types appear in primary-ctor positions (``class Foo(val x: Bar)``),
