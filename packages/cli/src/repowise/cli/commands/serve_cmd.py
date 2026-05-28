@@ -234,9 +234,37 @@ _WEB_CACHE_DIR = Path.home() / ".repowise" / "web"
 _MARKER_FILE = _WEB_CACHE_DIR / ".version"
 
 
+_NODE_MIN_MAJOR = 20  # Next.js 15 (see packages/web/package.json engines.node)
+
+
 def _node_available() -> str | None:
     """Return the path to node binary, or None."""
     return shutil.which("node")
+
+
+def _node_major_version(node: str) -> int | None:
+    """Return the major version of the *node* binary, or None if it can't be read.
+
+    A failure to invoke or parse is treated as "unknown" rather than fatal — the
+    caller decides whether to proceed or fall back.
+    """
+    try:
+        result = subprocess.run(
+            [node, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    raw = result.stdout.strip().lstrip("v")
+    head = raw.split(".", 1)[0]
+    try:
+        return int(head)
+    except ValueError:
+        return None
 
 
 def _npm_available() -> str | None:
@@ -504,11 +532,25 @@ def serve_command(
         node = _node_available()
         npm = _npm_available()
 
+        # Reject Node versions older than what the bundled Next.js needs.
+        # Without this check, an old node silently produces cryptic syntax
+        # errors from inside the Next.js runtime (e.g. `Unexpected token '?'`
+        # on `??`) once the frontend tries to start — see issue #276.
+        node_major = _node_major_version(node) if node else None
+        node_too_old = node is not None and node_major is not None and node_major < _NODE_MIN_MAJOR
+
         if not node:
             console.print(
-                "[yellow]Node.js not found — starting API server only.[/yellow]\n"
-                "[dim]To get the web UI, install Node.js 20+ or use Docker:\n"
-                "  docker run -p 7337:7337 -p 3000:3000 -v .repowise:/data repowise[/dim]"
+                f"[yellow]Node.js not found — starting API server only.[/yellow]\n"
+                f"[dim]To get the web UI, install Node.js {_NODE_MIN_MAJOR}+ or use Docker:\n"
+                f"  docker run -p 7337:7337 -p 3000:3000 -v .repowise:/data repowise[/dim]"
+            )
+        elif node_too_old:
+            console.print(
+                f"[yellow]Node.js {node_major} is too old for the bundled web UI "
+                f"(requires {_NODE_MIN_MAJOR}+) — starting API server only.[/yellow]\n"
+                f"[dim]Upgrade Node.js to {_NODE_MIN_MAJOR}+ or use Docker:\n"
+                f"  docker run -p 7337:7337 -p 3000:3000 -v .repowise:/data repowise[/dim]"
             )
         else:
             # Try to get the frontend running
