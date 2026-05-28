@@ -46,6 +46,14 @@ def _extract_cpp_heritage(
             text = node_text(base, src).strip()
             for prefix in ("public", "protected", "private", "virtual"):
                 text = text.removeprefix(prefix).strip()
+            # ``class Combined : public Bases...`` — variadic pack
+            # expansion. Strip the trailing ``...`` so the bare base
+            # name still emits a (one-to-many, low-confidence)
+            # heritage edge instead of being dropped.
+            text = text.removesuffix("...").strip()
+            # ``: boost::noncopyable`` and similar mixins — keep the
+            # bare name; downstream callers don't currently distinguish
+            # mixin bases from real ones.
             bare = text.split("::")[-1].strip()
             if not bare:
                 continue
