@@ -1,5 +1,6 @@
 import json
 import re
+import sys
 from pathlib import Path
 
 import click
@@ -183,17 +184,13 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
                     "PreToolUse": [
                         {
                             "matcher": "Grep|Glob",
-                            "hooks": [
-                                {"type": "command", "command": "repowise augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise augment"}],
                         }
                     ],
                     "PostToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [
-                                {"type": "command", "command": "repowise augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise augment"}],
                         }
                     ],
                 }
@@ -225,17 +222,13 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
                     "PreToolUse": [
                         {
                             "matcher": "Grep|Glob",
-                            "hooks": [
-                                {"type": "command", "command": "repowise-augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise-augment"}],
                         }
                     ],
                     "PostToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [
-                                {"type": "command", "command": "repowise-augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise-augment"}],
                         }
                     ],
                 }
@@ -283,17 +276,13 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
                     "PreToolUse": [
                         {
                             "matcher": "Grep|Glob",
-                            "hooks": [
-                                {"type": "command", "command": "repowise augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise augment"}],
                         }
                     ],
                     "PostToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [
-                                {"type": "command", "command": "repowise augment"}
-                            ],
+                            "hooks": [{"type": "command", "command": "repowise augment"}],
                         }
                     ],
                 }
@@ -403,3 +392,145 @@ def test_install_claude_code_hooks_rejects_invalid_existing_file(
         claude_config.install_claude_code_hooks()
 
     assert settings_path.read_text(encoding="utf-8") == original
+
+
+# ---------------------------------------------------------------------------
+# Workspace-aware MCP target resolution
+#
+# Regression coverage for the case where ``repowise init`` is run inside a
+# multi-repo workspace. Without workspace-aware resolution, each init
+# overwrites ``~/.claude/settings.json`` with the per-repo path, so the
+# global MCP server can only see whichever repo was indexed most recently.
+# These tests pin the "register the workspace root" behavior in place.
+# ---------------------------------------------------------------------------
+
+
+def _write_workspace_yaml(workspace_root: Path) -> None:
+    """Create a minimal valid ``.repowise-workspace.yaml`` at *workspace_root*."""
+    (workspace_root / ".repowise-workspace.yaml").write_text(
+        "version: 1\nrepos: []\n", encoding="utf-8"
+    )
+
+
+def _registered_repowise_args(settings_path: Path) -> list[str]:
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    return saved["mcpServers"]["repowise"]["args"]
+
+
+def test_resolve_mcp_target_returns_repo_path_without_workspace(tmp_path: Path) -> None:
+    """Single-repo usage is unchanged: target is the repo path itself."""
+    repo = tmp_path / "solo-repo"
+    repo.mkdir()
+    assert claude_config._resolve_mcp_target(repo) == repo
+
+
+def test_resolve_mcp_target_returns_workspace_root_when_present(tmp_path: Path) -> None:
+    """Inside a workspace, target collapses to the workspace root."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _write_workspace_yaml(workspace)
+    repo = workspace / "child-repo"
+    repo.mkdir()
+
+    assert claude_config._resolve_mcp_target(repo) == workspace
+
+
+def test_resolve_mcp_target_finds_workspace_through_multiple_ancestors(
+    tmp_path: Path,
+) -> None:
+    """``find_workspace_root`` walks up arbitrarily deep, not just one level."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _write_workspace_yaml(workspace)
+    deep = workspace / "a" / "b" / "c" / "repo"
+    deep.mkdir(parents=True)
+
+    assert claude_config._resolve_mcp_target(deep) == workspace
+
+
+def test_register_with_claude_code_uses_workspace_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``register_with_claude_code`` against a workspace member targets the root."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _write_workspace_yaml(workspace)
+    repo = workspace / "engine"
+    repo.mkdir()
+
+    settings_path = claude_config.register_with_claude_code(repo)
+    assert settings_path is not None
+
+    args = _registered_repowise_args(settings_path)
+    # ``mcp <path> --transport stdio`` — second element is the target path
+    registered_path = Path(args[1])
+    assert registered_path == workspace.resolve()
+
+
+def test_register_with_claude_code_sibling_inits_dont_clobber(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bug this fix targets: indexing two sibling repos in a workspace
+    must converge on a single registration pointing at the workspace root,
+    not flip-flop between per-repo paths."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _write_workspace_yaml(workspace)
+    engine = workspace / "engine"
+    engine.mkdir()
+    ops = workspace / "ops"
+    ops.mkdir()
+
+    claude_config.register_with_claude_code(engine)
+    first_args = _registered_repowise_args(tmp_path / "home" / ".claude" / "settings.json")
+
+    claude_config.register_with_claude_code(ops)
+    second_args = _registered_repowise_args(tmp_path / "home" / ".claude" / "settings.json")
+
+    assert first_args == second_args
+    assert Path(first_args[1]) == workspace.resolve()
+
+
+def test_register_with_claude_code_no_workspace_uses_repo_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a workspace yaml in any ancestor, behavior is unchanged."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    solo = tmp_path / "solo"
+    solo.mkdir()
+
+    settings_path = claude_config.register_with_claude_code(solo)
+    assert settings_path is not None
+
+    args = _registered_repowise_args(settings_path)
+    assert Path(args[1]) == solo.resolve()
+
+
+def test_register_with_claude_desktop_uses_workspace_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``register_with_claude_desktop`` mirrors the workspace-aware behavior."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    # Pre-create the Claude Desktop parent dir so the registration proceeds
+    desktop_parent = tmp_path / "home" / "Library" / "Application Support" / "Claude"
+    desktop_parent.mkdir(parents=True)
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    _write_workspace_yaml(workspace)
+    repo = workspace / "engine"
+    repo.mkdir()
+
+    config_path = claude_config.register_with_claude_desktop(repo)
+    assert config_path is not None
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    args = saved["mcpServers"]["repowise"]["args"]
+    assert Path(args[1]) == workspace.resolve()

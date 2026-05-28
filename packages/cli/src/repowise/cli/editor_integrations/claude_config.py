@@ -11,6 +11,7 @@ from repowise.cli.mcp_config import (
     load_existing_config,
     merge_mcp_entry,
 )
+from repowise.core.workspace.config import find_workspace_root
 
 
 def _claude_desktop_config_path() -> Path | None:
@@ -35,8 +36,30 @@ def _claude_code_settings_path() -> Path:
     return Path.home() / ".claude" / "settings.json"
 
 
+def _resolve_mcp_target(repo_path: Path) -> Path:
+    """Pick the right path to register as the MCP server target.
+
+    The Claude Desktop / Claude Code MCP config is global — there is only one
+    ``"repowise"`` server key. When the user is operating inside a workspace,
+    registering the per-repo path means every ``repowise init`` against a
+    sibling repo silently overwrites the entry to point at whichever repo was
+    indexed last, breaking workspace mode.
+
+    If ``repo_path`` lives inside a workspace (``.repowise-workspace.yaml`` in
+    any ancestor), return the workspace root instead so the MCP server is
+    invoked in workspace mode and ``repo="<alias>"`` queries work across all
+    repos. Otherwise fall back to the per-repo path, preserving single-repo
+    behavior.
+    """
+    workspace_root = find_workspace_root(repo_path)
+    return workspace_root if workspace_root is not None else repo_path
+
+
 def register_with_claude_desktop(repo_path: Path) -> Path | None:
     """Add repowise MCP server to Claude Desktop's config.
+
+    When ``repo_path`` is inside a workspace, the registration targets the
+    workspace root so the MCP server starts in workspace mode.
 
     Returns the config path if successful, None if Claude Desktop is not
     present or the platform is unsupported.
@@ -47,17 +70,23 @@ def register_with_claude_desktop(repo_path: Path) -> Path | None:
     if not config_path.parent.exists():
         # Claude Desktop not installed
         return None
-    entry = generate_mcp_config(repo_path)["mcpServers"]
+    target = _resolve_mcp_target(repo_path)
+    entry = generate_mcp_config(target)["mcpServers"]
     return config_path if merge_mcp_entry(config_path, entry) else None
 
 
 def register_with_claude_code(repo_path: Path) -> Path | None:
     """Add repowise MCP server to global Claude Code settings (~/.claude/settings.json).
 
+    When ``repo_path`` is inside a workspace, the registration targets the
+    workspace root so the MCP server starts in workspace mode and subsequent
+    inits against sibling repos do not overwrite the entry.
+
     Returns the settings path if successful, None on failure.
     """
     settings_path = _claude_code_settings_path()
-    entry = generate_mcp_config(repo_path)["mcpServers"]
+    target = _resolve_mcp_target(repo_path)
+    entry = generate_mcp_config(target)["mcpServers"]
     return settings_path if merge_mcp_entry(settings_path, entry) else None
 
 
@@ -148,9 +177,7 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
                 hook["command"] = "repowise-augment"
                 changed = True
         matcher = entry.get("matcher", "")
-        only_repowise = entry.get("hooks") and all(
-            _is_repowise_hook(h) for h in entry["hooks"]
-        )
+        only_repowise = entry.get("hooks") and all(_is_repowise_hook(h) for h in entry["hooks"])
         if only_repowise and matcher == "Bash":
             entry["matcher"] = "Bash|Grep|Glob"
             changed = True
@@ -188,9 +215,7 @@ def migrate_claude_code_hooks() -> bool:
         return False
 
     try:
-        settings_path.write_text(
-            json.dumps(existing, indent=2) + "\n", encoding="utf-8"
-        )
+        settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     except OSError:
         return False
     return True
