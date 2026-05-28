@@ -282,6 +282,101 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/third_party/**/*.h",
     "third_party/**/*.c",
     "third_party/**/*.h",
+    # ---- JavaScript / TypeScript conventions -----------------------------
+    # ``fnmatch`` treats ``*`` as "match anything including ``/``", so a
+    # leading ``*`` is enough to span both repo-root and nested paths.
+    # Test files — discovered by the runner via filename glob (vitest,
+    # jest, mocha, playwright, cypress), never imported by sibling source.
+    "*.test.ts",
+    "*.test.tsx",
+    "*.test.js",
+    "*.test.jsx",
+    "*.test.mjs",
+    "*.test.cjs",
+    "*.spec.ts",
+    "*.spec.tsx",
+    "*.spec.js",
+    "*.spec.jsx",
+    "*.spec.mjs",
+    "*/__tests__/*",
+    "*/__mocks__/*",
+    # Storybook stories — loaded by Storybook indexer via glob.
+    "*.stories.ts",
+    "*.stories.tsx",
+    "*.stories.js",
+    "*.stories.jsx",
+    "*.stories.mdx",
+    # Benchmarks — invoked by vitest/tinybench/bench scripts, not imported.
+    "*.bench.ts",
+    "*.bench.tsx",
+    "*.bench.js",
+    "*.bench.mjs",
+    # Vitest / Playwright / Cypress config and workspace files.
+    "*vitest.workspace.*",
+    "*vitest.shims.*",
+    "*playwright.config.*",
+    "*cypress.config.*",
+    "*.config.mts",
+    "*.config.cts",
+    # Codegen / generated artifacts.
+    "*.gen.ts",
+    "*.gen.tsx",
+    "*_generated.ts",
+    "*_generated.tsx",
+    "*.codegen.ts",
+    "*/generated/*.ts",
+    "*/generated/*.tsx",
+    "*/generated/*.js",
+    "*/__generated__/*",
+    # Next.js app router convention files beyond page/layout/route already
+    # covered above — loaded by the framework, no static importer. The
+    # ``*/foo.ts`` form ensures the literal basename is required (so
+    # ``mymiddleware.ts`` isn't accidentally exempt).
+    "*/instrumentation.ts",
+    "*/instrumentation-client.ts",
+    "*/middleware.ts",
+    "*/middleware.js",
+    "*/global-error.tsx",
+    "*/global-error.ts",
+    "*/forbidden.tsx",
+    "*/unauthorized.tsx",
+    "*/sitemap.ts",
+    "*/sitemap.tsx",
+    "*/robots.ts",
+    "*/robots.tsx",
+    "*/manifest.ts",
+    "*/manifest.tsx",
+    "*/icon.tsx",
+    "*/icon.ts",
+    "*/apple-icon.tsx",
+    "*/opengraph-image.tsx",
+    "*/opengraph-image.ts",
+    "*/twitter-image.tsx",
+    "*/twitter-image.ts",
+    # Repo-root variants (no leading directory) for monorepos where the
+    # app lives at root.
+    "instrumentation.ts",
+    "middleware.ts",
+    "sitemap.ts",
+    "robots.ts",
+    # Remix root/entry files — invoked by the framework runtime.
+    "*/entry.client.ts",
+    "*/entry.client.tsx",
+    "*/entry.server.ts",
+    "*/entry.server.tsx",
+    "*/next-env.d.ts",
+    "next-env.d.ts",
+    # SvelteKit + Nuxt convention files.
+    "*/+page.svelte",
+    "*/+page.ts",
+    "*/+page.server.ts",
+    "*/+layout.svelte",
+    "*/+layout.ts",
+    "*/+layout.server.ts",
+    "*/+server.ts",
+    "*/+error.svelte",
+    # ESM declaration outputs in dist trees.
+    "*/dist/*.d.ts",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
@@ -421,6 +516,26 @@ _FIXTURE_PATH_SEGMENTS: tuple[str, ...] = (
     "mock_data",
     "test_assets",
 )
+
+
+# JSX namespace types discovered by the TypeScript compiler via tsconfig
+# ``jsxImportSource`` / the global ``namespace JSX`` declaration — never
+# imported by name from user code, but referenced implicitly by every
+# JSX expression. A symbol with one of these names declared inside a
+# ``namespace JSX`` block is an integration point with the JSX
+# transformer, not dead code. The set is intentionally small and
+# targeted; anything broader risks masking genuinely-unused exports.
+_TS_JSX_NAMESPACE_TYPES: frozenset[str] = frozenset({
+    "IntrinsicElements",
+    "IntrinsicAttributes",
+    "IntrinsicClassAttributes",
+    "Element",
+    "ElementType",
+    "ElementClass",
+    "ElementAttributesProperty",
+    "ElementChildrenAttribute",
+    "LibraryManagedAttributes",
+})
 
 
 def _is_fixture_path(path: str) -> bool:
