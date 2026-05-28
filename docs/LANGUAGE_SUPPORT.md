@@ -325,6 +325,22 @@ without touching the shared pipeline files:
   visibility refinement for languages where access is dictated by AST
   context (C/C++ access specifiers, storage class, export attributes)
   rather than modifier text alone.
+- `graph_warmups.py` `is_never_flag` stamping --- read the language's
+  build manifest during warmup and set `is_never_flag=True` on file
+  nodes the manifest declares as a non-primary / secondary target.
+  The dead-code analyzer consults this attribute in `_should_never_flag`,
+  so each repo's own build files teach the analyzer what to ignore
+  without extending the hardcoded glob list. Used today by `_warmup_jvm`
+  to exempt every file under a Gradle non-`main` source set
+  (`testFixtures`, `integrationTest`, `javaPoet`, `jcstress`, `jmh`,
+  custom names) — Caffeine's `javaPoet/` and `jcstress/` are picked up
+  automatically without us knowing the names exist. The same shape fits
+  Rust (`[[example]]` / `[[bench]]` / `[[bin]]` targets in `Cargo.toml`),
+  C# (projects with `<Sdk>Microsoft.NET.Sdk.Test</Sdk>` or
+  `Microsoft.NET.Test.Sdk` references), TS/JS (workspace `packages/*`
+  declared `"private": true`), and Go (`//go:build integration`-gated
+  files) — any language that already builds a workspace index can opt
+  in by stamping the attribute during its warmup.
 
 ---
 

@@ -381,3 +381,131 @@ class TestJvmEndToEnd:
         # The init method should not surface as unused_internal.
         kinds = [(f.kind, f.symbol_name) for f in report.findings]
         assert (DeadCodeKind.UNUSED_INTERNAL, "init") not in kinds
+
+
+# ---------------------------------------------------------------------------
+# Workspace-driven never-flag (Phase 5 follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceNeverFlag:
+    def test_is_never_flag_node_attr_short_circuits_findings(self) -> None:
+        graph = _build_graph(
+            {
+                "lib/src/testFixtures/java/com/x/Fix.java": _java_file(
+                    is_never_flag=True,
+                    symbols=[{
+                        "name": "Fix",
+                        "kind": "class",
+                        "visibility": "public",
+                        "language": "java",
+                    }],
+                ),
+            },
+        )
+        analyzer = DeadCodeAnalyzer(graph)
+        report = analyzer.analyze({"min_confidence": 0.0})
+        paths = {f.file_path for f in report.findings}
+        names = {f.symbol_name for f in report.findings}
+        assert "lib/src/testFixtures/java/com/x/Fix.java" not in paths
+        assert "Fix" not in names
+
+
+# ---------------------------------------------------------------------------
+# Heritage-edge rescue: extends/implements/type_use count as symbol use
+# ---------------------------------------------------------------------------
+
+
+class TestHeritageEdgeRescue:
+    def test_extended_only_class_is_not_unused_export(self) -> None:
+        graph = _build_graph(
+            {
+                "p/Base.java": _java_file(
+                    symbols=[{
+                        "name": "Base",
+                        "kind": "class",
+                        "visibility": "public",
+                        "language": "java",
+                    }],
+                ),
+                "p/Child.java": _java_file(
+                    symbols=[{
+                        "name": "Child",
+                        "kind": "class",
+                        "visibility": "public",
+                        "language": "java",
+                    }],
+                ),
+            },
+            edges=[
+                ("p/Child.java", "p/Base.java", {"edge_type": "imports"}),
+                ("p/Child.java::Child", "p/Base.java::Base",
+                 {"edge_type": "extends"}),
+            ],
+        )
+        analyzer = DeadCodeAnalyzer(graph)
+        report = analyzer.analyze({"min_confidence": 0.0})
+        names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+        assert "Base" not in names
+
+    def test_implemented_only_interface_is_not_unused_export(self) -> None:
+        graph = _build_graph(
+            {
+                "p/Plugin.java": _java_file(
+                    symbols=[{
+                        "name": "Plugin",
+                        "kind": "interface",
+                        "visibility": "public",
+                        "language": "java",
+                    }],
+                ),
+                "p/Impl.java": _java_file(
+                    symbols=[{
+                        "name": "Impl",
+                        "kind": "class",
+                        "visibility": "public",
+                        "language": "java",
+                    }],
+                ),
+            },
+            edges=[
+                ("p/Impl.java", "p/Plugin.java", {"edge_type": "imports"}),
+                ("p/Impl.java::Impl", "p/Plugin.java::Plugin",
+                 {"edge_type": "implements"}),
+            ],
+        )
+        analyzer = DeadCodeAnalyzer(graph)
+        report = analyzer.analyze({"min_confidence": 0.0})
+        names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+        assert "Plugin" not in names
+
+    def test_type_use_only_class_is_not_unused_export(self) -> None:
+        graph = _build_graph(
+            {
+                "p/Config.java": _java_file(
+                    symbols=[{
+                        "name": "Config",
+                        "kind": "class",
+                        "visibility": "public",
+                        "language": "java",
+                    }],
+                ),
+                "p/User.java": _java_file(
+                    symbols=[{
+                        "name": "User",
+                        "kind": "class",
+                        "visibility": "public",
+                        "language": "java",
+                    }],
+                ),
+            },
+            edges=[
+                ("p/User.java", "p/Config.java", {"edge_type": "imports"}),
+                ("p/User.java::User", "p/Config.java::Config",
+                 {"edge_type": "type_use"}),
+            ],
+        )
+        analyzer = DeadCodeAnalyzer(graph)
+        report = analyzer.analyze({"min_confidence": 0.0})
+        names = {f.symbol_name for f in report.findings if f.kind == DeadCodeKind.UNUSED_EXPORT}
+        assert "Config" not in names

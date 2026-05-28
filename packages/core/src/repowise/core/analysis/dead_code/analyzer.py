@@ -775,15 +775,21 @@ class DeadCodeAnalyzer:
                     continue
 
                 # Symbol-level usage signal: any incoming ``calls`` /
-                # ``method_implements`` / ``reads`` edge means somewhere
-                # in the codebase actually uses this symbol — even if
-                # the file-level ``imported_names`` machinery missed it
+                # ``method_implements`` / ``reads`` / ``extends`` /
+                # ``implements`` / ``type_use`` edge means somewhere in
+                # the codebase actually uses this symbol — even if the
+                # file-level ``imported_names`` machinery missed it
                 # (intra-file C++ helpers, ``Foo::method`` qualified
                 # definitions linked by call resolution but never named
-                # in a header, Razor/XAML code-behind dispatches).
+                # in a header, Razor/XAML code-behind dispatches, and
+                # abstract base classes / interfaces that are only ever
+                # extended or implemented, never called directly — Java
+                # padding bases like ``BoundedLocalCache.BLCHeader``,
+                # Kotlin sealed parents, Scala typeclass traits).
                 if self.graph.has_node(sym_id) and any(
                     self.graph[pred][sym_id].get("edge_type")
-                    in ("calls", "method_implements", "reads")
+                    in ("calls", "method_implements", "reads",
+                        "extends", "implements", "type_use")
                     for pred in self.graph.predecessors(sym_id)
                 ):
                     continue
@@ -1094,6 +1100,16 @@ class DeadCodeAnalyzer:
         for pattern in _NEVER_FLAG_PATTERNS:
             if fnmatch.fnmatch(path, pattern):
                 return True
+        # Workspace-driven never-flag — set by language warmups that read
+        # the build manifest (Gradle non-``main`` source sets, Cargo
+        # ``[[example]]`` / ``[[bench]]`` targets, …). Lets each language
+        # learn conventions from its own build files instead of us
+        # extending the hardcoded glob list every time a repo defines a
+        # custom source set like ``testFixtures`` / ``javaPoet`` /
+        # ``jcstress``.
+        node = self.graph.nodes.get(path)
+        if node is not None and node.get("is_never_flag", False):
+            return True
         # __init__.py is a re-export barrel
         return Path(path).name == "__init__.py"
 
