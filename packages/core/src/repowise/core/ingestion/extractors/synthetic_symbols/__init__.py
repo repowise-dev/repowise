@@ -25,6 +25,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ...models import FileInfo, Symbol
+from .cpp_macros import cpp_macro_synthetic_symbols
 from .csharp_mvvm import csharp_synthetic_symbols
 from .java_records import java_record_synthetic_symbols
 from .jvm_codegen import jvm_codegen_synthetic_symbols
@@ -48,6 +49,8 @@ _SYNTHETIC_PROVIDERS: dict[str, list[_Provider]] = {
         jvm_codegen_synthetic_symbols,
     ],
     "kotlin": [kotlin_synthetic_symbols],
+    "cpp": [cpp_macro_synthetic_symbols],
+    "c": [cpp_macro_synthetic_symbols],
 }
 
 
