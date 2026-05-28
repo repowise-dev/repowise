@@ -1,0 +1,15 @@
+[versions]
+spring-boot = "3.2.0"
+lombok = "1.18.30"
+mapstruct = "1.5.5.Final"
+junit = "5.10.0"
+
+[libraries]
+spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-starter-web", version.ref = "spring-boot" }
+spring-boot-starter-data-jpa = { module = "org.springframework.boot:spring-boot-starter-data-jpa", version.ref = "spring-boot" }
+lombok = { module = "org.projectlombok:lombok", version.ref = "lombok" }
+mapstruct = { module = "org.mapstruct:mapstruct", version.ref = "mapstruct" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+
+[bundles]
+spring-web = ["spring-boot-starter-web", "spring-boot-starter-data-jpa"]
