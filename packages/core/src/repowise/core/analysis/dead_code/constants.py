@@ -381,6 +381,77 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/+error.svelte",
     # ESM declaration outputs in dist trees.
     "*/dist/*.d.ts",
+    # ---- JVM (Java + Kotlin) conventions ---------------------------------
+    # JPMS module descriptors and package-info files declare no importable
+    # symbols by design — they exist to carry module/package metadata that
+    # the JVM consumes via reflection at link/load time.
+    "*/module-info.java",
+    "module-info.java",
+    "*/package-info.java",
+    "package-info.java",
+    # Gradle / Maven test source sets. ``fnmatch`` ``*`` spans ``/`` so a
+    # leading ``*`` matches both nested module trees and repo-root layouts.
+    # The ``*Test`` and ``*Tests`` globs catch project-specific source-set
+    # names (``apacheTest``, ``eclipseTest``, ``frayTest``, ``intTest``,
+    # ``functionalTest``, ``smokeTest`` …) without an explicit allowlist.
+    "*/src/test/java/*",
+    "*/src/test/kotlin/*",
+    "*/src/integrationTest/*",
+    "*/src/it/*",
+    "*/src/intTest/*",
+    "*/src/e2eTest/*",
+    "*/src/functionalTest/*",
+    "*/src/smokeTest/*",
+    "*/src/acceptanceTest/*",
+    "*/src/jmh/*",
+    "*/src/perfTest/*",
+    "*/src/*Test/java/*",
+    "*/src/*Tests/java/*",
+    "*/src/*Test/kotlin/*",
+    "*/src/*Tests/kotlin/*",
+    # Repo-root variants (single-module project).
+    "src/test/java/*",
+    "src/test/kotlin/*",
+    "src/integrationTest/*",
+    "src/intTest/*",
+    "src/*Test/java/*",
+    "src/*Tests/java/*",
+    # File-suffix conventions for tests dropped outside a standard source
+    # set (TestNG, JUnit, Spock, ArchUnit, pact-jvm, jqwik).
+    "*Test.java",
+    "*Tests.java",
+    "*IT.java",
+    "*ITCase.java",
+    "*TestCase.java",
+    "*FrayTest.java",
+    "*Benchmark.java",
+    "*Spec.java",
+    "*Specification.java",
+    "*Test.kt",
+    "*Tests.kt",
+    "*IT.kt",
+    "*Spec.kt",
+    "*Specification.kt",
+    # Generated source roots emitted by Gradle / Maven / KAPT / KSP /
+    # annotation-processors / GraalVM AOT. Wired in at build time by the
+    # JVM toolchain, never imported by static source.
+    "*/build/generated/*",
+    "*/build/generated-src/*",
+    "*/target/generated-sources/*",
+    "*/target/generated-test-sources/*",
+    "*/build/generated/source/kapt/*",
+    "*/build/generated/source/kaptKotlin/*",
+    "*/build/generated/source/ksp/*",
+    "*/build/generated/aotSources/*",
+    # Generated-name suffixes that have unambiguous tool ownership.
+    "*_Generated.java",
+    "*$Generated.java",
+    "*MapperImpl.java",            # MapStruct compile-time impl
+    "*Dagger*.java",
+    "*AutoValue_*.java",
+    "*ServiceGrpc.java",
+    "*OuterClass.java",            # protoc generated outer class
+    "*$WrapperImpl.java",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
@@ -429,6 +500,116 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     # Typer — same shape.
     "typer.command",
     "typer.callback",
+    # ---- JVM: Spring / Jakarta / Quarkus / Micronaut stereotypes ----
+    # Bare-name match against the stripped ``@Foo`` form. A class or
+    # method bearing one of these is wired into the container / route
+    # table / event bus by reflection — never imported by source name.
+    "Component",
+    "Service",
+    "Repository",
+    "Controller",
+    "RestController",
+    "Configuration",
+    "ControllerAdvice",
+    "RestControllerAdvice",
+    "Mapper",                      # MapStruct + MyBatis
+    "SpringBootApplication",
+    "SpringBootConfiguration",
+    "EnableAutoConfiguration",
+    "Configurable",
+    "Endpoint",
+    "RestControllerEndpoint",
+    "WebMvcTest",
+    "DataJpaTest",
+    "Entity",
+    "MappedSuperclass",
+    "Embeddable",
+    "Converter",                   # JPA AttributeConverter
+    "QuarkusMain",
+    "QuarkusTest",
+    "QuarkusIntegrationTest",
+    "NativeImageTest",
+    "MicronautApplication",
+    "MicronautTest",
+    "Path",                        # JAX-RS
+    "Provider",
+    "WebServlet",
+    "WebFilter",
+    "WebListener",
+    "ApplicationScoped",
+    "RequestScoped",
+    "SessionScoped",
+    "Singleton",
+    "Stateless",
+    "Stateful",
+    "Dependent",
+    "Factory",
+    "Bean",
+    # ---- JVM: lifecycle / event / scheduling / messaging callbacks --
+    "PostConstruct",
+    "PreDestroy",
+    "EventListener",
+    "TransactionalEventListener",
+    "Scheduled",
+    "Schedule",                    # Quarkus
+    "JmsListener",
+    "KafkaListener",
+    "RabbitListener",
+    "SqsListener",
+    "StreamListener",
+    "Incoming",
+    "Outgoing",
+    "OnOpen",
+    "OnClose",
+    "OnMessage",
+    "OnError",
+    "PactTestFor",
+    "Pact",
+    # ---- JVM: test method markers -----------------------------------
+    "Test",
+    "ParameterizedTest",
+    "RepeatedTest",
+    "TestFactory",
+    "TestTemplate",
+    "BeforeAll",
+    "AfterAll",
+    "BeforeEach",
+    "AfterEach",
+    "Before",
+    "After",
+    "BeforeClass",
+    "AfterClass",
+    "DataProvider",
+    "ArchTest",
+    "Container",                   # Testcontainers
+    "DynamicTest",
+    "JsonCreator",                 # Jackson factory method — reflectively invoked
+    "JsonProperty",
+    "Mojo",                        # Maven plugin entry
+    "Goal",
+    "RegisterForReflection",
+    # ---- JVM: routing / HTTP-verb annotations -----------------------
+    # A method bearing one of these is a route handler — invoked by the
+    # framework dispatcher, not by source. Treated as an entry point.
+    "RequestMapping",
+    "GetMapping",
+    "PostMapping",
+    "PutMapping",
+    "DeleteMapping",
+    "PatchMapping",
+    "MessageMapping",
+    "SubscribeMapping",
+    "ExceptionHandler",
+    "InitBinder",
+    "ModelAttribute",
+    "GET",                         # JAX-RS / Quarkus / Micronaut
+    "POST",
+    "PUT",
+    "DELETE",
+    "PATCH",
+    "HEAD",
+    "OPTIONS",
+    "Route",
 )
 
 # Decorator *suffixes* that indicate framework registration regardless of
@@ -451,6 +632,8 @@ _FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
     ".group",
     ".callback",
 )
+
+
 
 # Default dynamic patterns (plugins, handlers, etc.)
 _DEFAULT_DYNAMIC_PATTERNS: tuple[str, ...] = (

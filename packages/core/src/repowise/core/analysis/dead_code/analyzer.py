@@ -199,6 +199,20 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
     "clientAction",
     # ---- SvelteKit page/layout module exports (distinctive names) ----
     "trailingSlash",
+    # ---- JVM (Java + Kotlin) runtime / serialization / contract anchors ----
+    # ``main`` is already covered above; these are the rest of the names
+    # the JVM resolves through reflection / serialization / Lombok-equivalent
+    # generation, never through static call edges. ``INSTANCE`` is the
+    # Kotlin ``object Foo`` singleton field; the JVM accesses it directly.
+    "serialVersionUID",
+    "readObject",
+    "writeObject",
+    "readObjectNoData",
+    "readResolve",
+    "writeReplace",
+    "canEqual",                    # Lombok-equivalent generated method
+    "INSTANCE",                    # Kotlin object singleton field
+    "Companion",                   # Kotlin companion-object accessor
 })
 from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
@@ -866,6 +880,29 @@ class DeadCodeAnalyzer:
                 continue
             if self._name_matches_dynamic(sym_name, dynamic_patterns):
                 continue
+
+            # Framework-decorator skip — same shape as unused-export. A
+            # private ``@PostConstruct``/``@EventListener``/``@Scheduled``
+            # method is invoked by the container, not by a source call.
+            decorators = node_data.get("decorators") or []
+            if decorators:
+                def _dec_base(d: str) -> str:
+                    stripped = d.lstrip("@")
+                    paren = stripped.find("(")
+                    return stripped[:paren] if paren >= 0 else stripped
+
+                if any(
+                    _dec_base(d).startswith(prefix)
+                    for d in decorators
+                    for prefix in _FRAMEWORK_DECORATORS
+                ):
+                    continue
+                if any(
+                    _dec_base(d).endswith(suffix)
+                    for d in decorators
+                    for suffix in _FRAMEWORK_DECORATOR_SUFFIXES
+                ):
+                    continue
 
             has_callers = any(
                 self.graph.get_edge_data(pred, node, {}).get("edge_type") == "calls"
