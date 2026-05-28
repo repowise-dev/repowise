@@ -25,6 +25,7 @@ from . import (
     fastapi,
     flask,
     go,
+    gtest,
     hono,
     jakarta,
     laravel,
@@ -68,6 +69,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *remix.HANDLERS,
     *trpc.HANDLERS,
     *go.HANDLERS,
+    *gtest.HANDLERS,
     *rust.HANDLERS,
     *typo3.HANDLERS,
 ]
