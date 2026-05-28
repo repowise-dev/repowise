@@ -475,6 +475,94 @@ def _find_ts_type_in_stem_map(
 
 
 # ---------------------------------------------------------------------------
+# Strategy: Java / Kotlin (shared JVM workspace)
+# ---------------------------------------------------------------------------
+
+def _resolve_jvm_type_refs(
+    parsed: ParsedFile,
+    ctx: "ResolverContext",
+    graph: "nx.DiGraph",
+) -> int:
+    """Resolve Java / Kotlin ``@param.type`` captures via ``JvmWorkspaceIndex``.
+
+    JVM resolution order — mirrors how ``javac`` / ``kotlinc`` resolve a
+    bare type name in a source file:
+
+      1. Same-package siblings — both ``.java`` and ``.kt`` files in
+         the package directory (Java + Kotlin co-located).
+      2. Explicit imports (``import com.foo.Bar`` resolves to that file
+         via the workspace's FQN map; wildcard ``import com.foo.*`` /
+         ``import static com.foo.Bar.*`` fan out to every file in the
+         package; both are already attached to the file's ``Import``
+         records by the per-language resolver).
+      3. ``java.lang`` builtins are filtered at extraction time by the
+         per-language head extractor — they never reach this code.
+
+    The candidate file set is collected once and then scanned for each
+    type reference, mirroring the Go strategy. Edges are emitted at
+    file granularity with the standard ``type_use`` confidence so the
+    unused-export pass sees field/param/return-only types as live.
+    """
+    if not parsed.type_refs:
+        return 0
+
+    from .resolvers.jvm_workspace import get_or_build_jvm_index
+
+    index = get_or_build_jvm_index(ctx)
+    from_path = parsed.file_info.path
+
+    candidates: set[str] = set()
+    own_pkg = index.package_for_file(from_path)
+    if own_pkg:
+        pkg = index.packages.get(own_pkg)
+        if pkg is not None:
+            candidates.update(pkg.files)
+    for imp in parsed.imports:
+        resolved = imp.resolved_file
+        if resolved and not resolved.startswith("external:"):
+            candidates.add(resolved)
+    candidates.discard(from_path)
+    if not candidates:
+        return 0
+
+    emitted = 0
+    seen_targets: set[tuple[str, str]] = set()
+    for ref in parsed.type_refs:
+        name = ref.type_name
+        if not name:
+            continue
+        target = _find_jvm_type_file(name, candidates, graph)
+        if target is None or target == from_path:
+            continue
+        if (name, target) in seen_targets:
+            continue
+        seen_targets.add((name, target))
+        if not graph.has_node(target):
+            continue
+        _add_or_merge_type_use_edge(
+            graph, src=from_path, dst=target, type_name=name, origin=ref.origin
+        )
+        emitted += 1
+    return emitted
+
+
+def _find_jvm_type_file(
+    type_name: str,
+    candidate_files: set[str],
+    graph: "nx.DiGraph",
+) -> str | None:
+    """Return a candidate file that defines a top-level type named *type_name*."""
+    for cand in candidate_files:
+        if not graph.has_node(cand):
+            continue
+        for succ in graph.successors(cand):
+            nd = graph.nodes.get(succ, {})
+            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
+                return cand
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------------------
 
@@ -491,6 +579,8 @@ _STRATEGIES: dict[str, Strategy] = {
     "cpp": _resolve_c_type_refs,
     "typescript": _resolve_ts_type_refs,
     "javascript": _resolve_ts_type_refs,
+    "java": _resolve_jvm_type_refs,
+    "kotlin": _resolve_jvm_type_refs,
 }
 
 
