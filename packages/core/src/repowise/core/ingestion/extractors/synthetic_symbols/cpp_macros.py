@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 # over a precompiled regex on the source text.
 
 _PYBIND11_MODULE_RE = re.compile(
-    r"\bPYBIND11_MODULE\s*\(\s*([A-Za-z_]\w*)\s*,",
+    r"\bPYBIND11(?:_EMBEDDED)?_MODULE\s*\(\s*([A-Za-z_]\w*)\s*,",
 )
 _BOOST_PY_MODULE_RE = re.compile(
     r"\bBOOST_PYTHON_MODULE(?:_INIT)?\s*\(\s*([A-Za-z_]\w*)\s*\)",

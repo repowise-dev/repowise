@@ -166,6 +166,7 @@ def _warmup_cpp(ctx: "ResolverContext") -> None:
 # as an entry point so the dead-code analyzer treats it as live.
 _CPP_ENTRY_MARKERS = (
     "PYBIND11_MODULE",
+    "PYBIND11_EMBEDDED_MODULE",
     "BOOST_PYTHON_MODULE",
     "NAPI_MODULE",
     "REGISTER_OP",

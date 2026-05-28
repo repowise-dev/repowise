@@ -225,6 +225,34 @@ _ENTRY_POINT_SYMBOL_NAMES: frozenset[str] = frozenset({
     "INSTANCE",                    # Kotlin object singleton field
     "Companion",                   # Kotlin companion-object accessor
 })
+
+
+# Compiler-intrinsic preprocessor macros C/C++ libraries redefine as a
+# fallback for compilers that don't ship them (``#if !defined(__has_include)
+# \n#define __has_include(h) 0``). The tree-sitter cpp grammar extracts the
+# ``#define`` as a ``preproc_function_def`` symbol, but the call sites are
+# preprocessor ``#if __has_include(...)`` directives, which the static
+# graph cannot observe — so without this skip every such fallback flags
+# as an unused export.
+_CPP_BUILTIN_MACROS: frozenset[str] = frozenset({
+    "__has_include",
+    "__has_include_next",
+    "__has_feature",
+    "__has_extension",
+    "__has_attribute",
+    "__has_cpp_attribute",
+    "__has_c_attribute",
+    "__has_declspec_attribute",
+    "__has_builtin",
+    "__has_warning",
+    "__builtin_expect",
+    "__builtin_unreachable",
+    "__builtin_assume",
+    "__builtin_constant_p",
+    "__is_identifier",
+    "__FILE__", "__LINE__", "__DATE__", "__TIME__",
+    "__func__", "__FUNCTION__", "__PRETTY_FUNCTION__",
+})
 from .dynamic_markers import find_dynamic_edge_files, find_dynamic_import_files
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 
@@ -704,6 +732,15 @@ class DeadCodeAnalyzer:
                 if sym_name.startswith("__") and sym_name.endswith("__"):
                     continue
                 if sym_name in _ENTRY_POINT_SYMBOL_NAMES:
+                    continue
+                # Compiler-builtin macros defined as a fallback
+                # (``#if !defined(__has_include)\n#define __has_include(h) 0``).
+                # The tree-sitter cpp grammar emits the ``#define`` as a
+                # ``preproc_function_def`` symbol, but the name is a
+                # compiler intrinsic — there will never be a static caller
+                # because the real call sites are preprocessor
+                # ``#if __has_include(...)`` directives, not C/C++ calls.
+                if sym.get("language") in ("cpp", "c") and sym_name in _CPP_BUILTIN_MACROS:
                     continue
                 # Rust proc-macro entry points — invoked by the compiler,
                 # not by call edges in the dependency graph.

@@ -285,6 +285,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/tests/**/*_perf.cpp",
     "*/tests/**/*_benchmark.cc",
     "*/tests/**/*_benchmark.cpp",
+    "*/tests/**/*_benchmarks.cc",
+    "*/tests/**/*_benchmarks.cpp",
     "*/tests/**/*_fuzz.cc",
     "*/tests/**/*_fuzz.cpp",
     "*/tests/perf/*.cc",
@@ -298,6 +300,17 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/tests/integration/*.cc",
     "*/tests/integration/*.cpp",
     "*/tests/manual/*",
+    # Broad test-tree coverage for project layouts that don't follow the
+    # ``*_test.{cc,cpp}`` suffix convention. nlohmann/json uses ``tests/src/
+    # unit-*.cpp``, ``tests/abi/diag/diag_off.cpp``, and ``tests/cmake_*/
+    # project/*.cpp`` — none match the suffix globs above. Anything inside a
+    # repo-rooted ``tests/`` tree is framework-discovered by the build
+    # system, not statically imported.
+    "*/tests/**/*.cc",
+    "*/tests/**/*.cpp",
+    "*/tests/**/*.cxx",
+    "*/tests/**/*.h",
+    "*/tests/**/*.hpp",
     "tests/**/*_test.cc",
     "tests/**/*_test.cpp",
     "tests/**/*_unittest.cc",
@@ -314,6 +327,14 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "tests/fuzz/*.cc",
     "tests/fuzz/*.cpp",
     "tests/manual/*",
+    # Repo-rooted broad coverage matching the ``*/tests/**`` block above —
+    # nlohmann/json's tree (``tests/src/unit-*.cpp``, ``tests/abi/...``)
+    # lives under the repo root with no leading prefix.
+    "tests/**/*.cc",
+    "tests/**/*.cpp",
+    "tests/**/*.cxx",
+    "tests/**/*.h",
+    "tests/**/*.hpp",
     # File-suffix conventions for tests dropped outside a standard test
     # directory (GoogleTest / Google Benchmark / libFuzzer / Catch2).
     "*_test.cc",
@@ -328,6 +349,8 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_perf.cpp",
     "*_benchmark.cc",
     "*_benchmark.cpp",
+    "*_benchmarks.cc",
+    "*_benchmarks.cpp",
     "*_fuzz.cc",
     "*_fuzz.cpp",
     # Conventional port / example skeleton headers — projects ship them
