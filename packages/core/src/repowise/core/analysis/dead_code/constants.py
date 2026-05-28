@@ -314,8 +314,12 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # Vitest / Playwright / Cypress config and workspace files.
     "*vitest.workspace.*",
     "*vitest.shims.*",
+    "*vitest.root.*",
     "*playwright.config.*",
     "*cypress.config.*",
+    "*rollup.config.*",
+    "*esbuild.config.*",
+    "*tsup.config.*",
     "*.config.mts",
     "*.config.cts",
     # Codegen / generated artifacts.
