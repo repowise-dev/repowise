@@ -105,6 +105,10 @@ class CallResolver:
         self._go_index: Any = None
         self._go_index_built = False
 
+        # JVM same-package resolution (lazy JvmWorkspaceIndex)
+        self._jvm_index: Any = None
+        self._jvm_index_built = False
+
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
 
@@ -204,6 +208,53 @@ class CallResolver:
     def _is_go(self, file_path: str) -> bool:
         parsed = self._parsed_files.get(file_path)
         return bool(parsed and parsed.file_info.language == "go")
+
+    def _is_jvm(self, file_path: str) -> bool:
+        parsed = self._parsed_files.get(file_path)
+        return bool(parsed and parsed.file_info.language in ("java", "kotlin"))
+
+    def _get_jvm_index(self) -> Any:
+        """Lazily build the JvmWorkspaceIndex (or None if unavailable)."""
+        if self._jvm_index_built:
+            return self._jvm_index
+        self._jvm_index_built = True
+        if not self._repo_path:
+            return None
+        from pathlib import Path
+
+        from .resolvers.jvm_workspace import build_jvm_workspace_index
+
+        class _Ctx:
+            def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
+                self.repo_path = Path(rp)
+                self.path_set = set(pf.keys())
+                self.parsed_files = pf
+
+        self._jvm_index = build_jvm_workspace_index(_Ctx(self._repo_path, self._parsed_files))
+        return self._jvm_index
+
+    def _resolve_jvm_same_package(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve a bare call to a symbol defined in a same-package sibling.
+
+        JVM files in the same package share a namespace — an unqualified
+        identifier ``Helper`` may be a class or method defined in any sibling
+        file of the same package, with no import statement.
+        """
+        index = self._get_jvm_index()
+        if index is None:
+            return None
+        siblings = index.same_package_files(file_path)
+        for sibling in siblings:
+            syms = self._file_symbols.get(sibling, {})
+            sym_id = syms.get(call.target_name)
+            if sym_id is not None and sym_id != caller_id:
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line)
+        return None
 
     def _resolve_go_package_call(
         self,
@@ -361,6 +412,13 @@ class CallResolver:
             if go_same_pkg is not None:
                 return go_same_pkg
 
+        # JVM: same-package implicit access — classes in the same package
+        # reference each other with no import statement.
+        if self._is_jvm(file_path):
+            jvm_same_pkg = self._resolve_jvm_same_package(file_path, call, caller_id)
+            if jvm_same_pkg is not None:
+                return jvm_same_pkg
+
         # Tier 2: import-scoped
         # 2a: Check specific imported name → source file (binding-aware)
         binding = self._import_bindings.get(file_path, {}).get(target_name)
@@ -424,6 +482,22 @@ class CallResolver:
             go_pkg_call = self._resolve_go_package_call(file_path, call, caller_id)
             if go_pkg_call is not None:
                 return go_pkg_call
+
+        # JVM: receiver may be a class in the same package (no import needed)
+        if self._is_jvm(file_path):
+            index = self._get_jvm_index()
+            if index is not None:
+                siblings = index.same_package_files(file_path)
+                for sibling in siblings:
+                    methods = self._file_methods.get(sibling, {})
+                    key = (receiver_name, method_name)
+                    if key in methods:
+                        return ResolvedCall(caller_id, methods[key], 0.90, call.line)
+                    syms = self._file_symbols.get(sibling, {})
+                    if receiver_name in syms:
+                        # Found the class; look for the method on it
+                        if key in methods:
+                            return ResolvedCall(caller_id, methods[key], 0.88, call.line)
 
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
         module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
