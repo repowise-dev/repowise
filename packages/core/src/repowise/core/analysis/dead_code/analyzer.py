@@ -29,6 +29,7 @@ from .constants import (
 )
 from .contract_methods import is_contract_method
 from .go_reachability import build_go_package_files, is_go_file_reachable
+from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
 
 # Symbol kinds that cannot be independently imported by name in any
 # supported language. Flagging them as "unused exports" is a guaranteed
@@ -304,12 +305,21 @@ class DeadCodeAnalyzer:
         # Lazily-built ``.go`` package-directory → file-node map, used by the
         # Go package-granular reachability hook (see ``go_reachability``).
         self._go_package_files: dict[str, list[str]] | None = None
+        # Lazily-built JVM (``.java`` + ``.kt``) package-directory map; see
+        # :mod:`jvm_reachability`.
+        self._jvm_package_files: dict[str, list[str]] | None = None
 
     def _go_packages(self) -> dict[str, list[str]]:
         """Return the cached Go package map, building it on first use."""
         if self._go_package_files is None:
             self._go_package_files = build_go_package_files(self.graph)
         return self._go_package_files
+
+    def _jvm_packages(self) -> dict[str, list[str]]:
+        """Return the cached JVM package map, building it on first use."""
+        if self._jvm_package_files is None:
+            self._jvm_package_files = build_jvm_package_files(self.graph)
+        return self._jvm_package_files
 
     def analyze(
         self,
@@ -456,8 +466,15 @@ class DeadCodeAnalyzer:
             # importer can still be live (entry-package sibling next to
             # main.go, or a package whose siblings carry the import). Delegate
             # to the Go helper instead of the raw file-level in_degree check.
-            if str(node).endswith(".go"):
-                if is_go_file_reachable(str(node), self.graph, self._go_packages()):
+            node_str = str(node)
+            if node_str.endswith(".go"):
+                if is_go_file_reachable(node_str, self.graph, self._go_packages()):
+                    continue
+            elif node_str.endswith(".java") or node_str.endswith(".kt"):
+                # JVM reachability is package-aware too: sibling-rescued
+                # packages plus stereotype-annotated / ``main``-carrying
+                # files surface as live even with no direct importer.
+                if is_jvm_file_reachable(node_str, self.graph, self._jvm_packages()):
                     continue
             elif self.graph.in_degree(node) > 0:
                 continue
