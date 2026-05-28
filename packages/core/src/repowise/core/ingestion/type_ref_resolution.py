@@ -280,6 +280,33 @@ def _find_go_type_file(
 # Strategy: C / C++
 # ---------------------------------------------------------------------------
 
+# ``std::vector`` / ``std::optional`` / ``std::shared_ptr`` — when the
+# parser captures these as type-ref heads (no unwrap path through the
+# grammar caught the inner T), the lookup is guaranteed to find nothing
+# useful. Filter them so we don't waste a per-ref graph walk. Same idea
+# as the TS/Rust builtin filters above.
+_CPP_STL_HEAD_NAMES: frozenset[str] = frozenset({
+    "vector", "array", "deque", "list", "forward_list",
+    "set", "multiset", "map", "multimap",
+    "unordered_set", "unordered_multiset",
+    "unordered_map", "unordered_multimap",
+    "stack", "queue", "priority_queue", "span",
+    "string", "string_view", "wstring", "u16string", "u32string",
+    "pair", "tuple",
+    "optional", "variant", "any", "bitset",
+    "shared_ptr", "unique_ptr", "weak_ptr",
+    "function", "reference_wrapper", "atomic", "atomic_ref",
+    "future", "promise", "shared_future",
+    "thread", "mutex", "lock_guard", "unique_lock", "shared_lock",
+    "condition_variable", "condition_variable_any",
+    "chrono", "duration", "time_point",
+    "initializer_list", "common_type", "decay", "remove_reference",
+    "enable_if", "is_same", "conditional",
+    # Smart casts / trait helpers
+    "make_shared", "make_unique", "make_pair", "make_tuple",
+})
+
+
 def _resolve_c_type_refs(
     parsed: ParsedFile,
     ctx: "ResolverContext",
@@ -295,6 +322,18 @@ def _resolve_c_type_refs(
     bare type name against the files this translation unit includes, falling
     back to a unique global stem match, and emit a ``type_use`` edge so the
     unused-export pass sees the header type as used.
+
+    C++ extensions over the bare C strategy:
+      * ``std::*`` container heads (``vector``, ``optional``, ``map`` …)
+        are filtered up-front — the inner ``T`` template argument is
+        captured separately by the template_argument_list query and
+        resolves on its own. The container head will never name a user
+        type.
+      * The same-target sibling file set from
+        :class:`CppWorkspaceIndex` is considered alongside ``#include``d
+        files, so a type declared in one TU and used in a sibling TU
+        of the same CMake / Bazel target resolves even when no header
+        wires them together.
     """
     if not parsed.type_refs:
         return 0
@@ -302,11 +341,22 @@ def _resolve_c_type_refs(
     from .parser_helpers import _C_BUILTIN_TYPES
 
     from_path = parsed.file_info.path
+    is_cpp = parsed.file_info.language == "cpp"
 
     import_targets: set[str] = set()
     for imp in parsed.imports:
         if imp.resolved_file and not imp.resolved_file.startswith("external:"):
             import_targets.add(imp.resolved_file)
+
+    sibling_files: set[str] = set()
+    if is_cpp:
+        try:
+            from .resolvers.cpp_workspace import get_or_build_cpp_index
+
+            cpp_index = get_or_build_cpp_index(ctx)
+            sibling_files = set(cpp_index.siblings_in_targets(from_path))
+        except Exception:
+            sibling_files = set()
 
     emitted = 0
     seen_targets: set[tuple[str, str]] = set()
@@ -314,7 +364,11 @@ def _resolve_c_type_refs(
         name = ref.type_name
         if not name or name in _C_BUILTIN_TYPES:
             continue
-        target = _find_c_type_file(name, from_path, import_targets, ctx, graph)
+        if is_cpp and name in _CPP_STL_HEAD_NAMES:
+            continue
+        target = _find_c_type_file(
+            name, from_path, import_targets, sibling_files, ctx, graph
+        )
         if target is None or target == from_path:
             continue
         if (name, target) in seen_targets:
@@ -330,10 +384,16 @@ def _find_c_type_file(
     type_name: str,
     from_path: str,
     import_targets: set[str],
+    sibling_files: set[str],
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
 ) -> str | None:
-    """Find the file defining *type_name*, preferring ``#include``d headers."""
+    """Find the file defining *type_name*, preferring ``#include``d headers.
+
+    Falls back to *sibling_files* (same workspace target — usually a
+    sibling ``.cc`` declaring an internal class that another ``.cc`` in
+    the same target uses by value), then the global stem map.
+    """
     for imp_file in import_targets:
         if not graph.has_node(imp_file):
             continue
@@ -341,6 +401,14 @@ def _find_c_type_file(
             nd = graph.nodes.get(succ, {})
             if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
                 return imp_file
+
+    for sib in sibling_files:
+        if sib == from_path or not graph.has_node(sib):
+            continue
+        for succ in graph.successors(sib):
+            nd = graph.nodes.get(succ, {})
+            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
+                return sib
 
     candidates = ctx.stem_map.get(type_name.lower(), [])
     if len(candidates) == 1 and candidates[0] != from_path:
