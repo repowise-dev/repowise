@@ -1,15 +1,17 @@
-"""JSX namespace types are not flagged as unused exports.
+"""Types declared inside a ``namespace JSX`` block are not flagged.
 
-Hono's ``src/jsx/base.ts`` declares ``namespace JSX`` and exports
-``IntrinsicElements``, ``ElementChildrenAttribute`` etc. These names
-are referenced implicitly by every JSX expression via the TypeScript
-compiler — never via an ``import`` statement. Without an exemption,
-they show up as ``unused_export`` interfaces with high confidence.
+Hono's ``src/jsx/intrinsic-elements.ts`` declares ``namespace JSX``
+and exports ~100 interfaces / type aliases (HTMLAttributes,
+ButtonHTMLAttributes, CSSProperties, …). They're all referenced
+implicitly by every JSX expression via the TypeScript compiler — never
+via an ``import`` statement. The exemption is the file-level
+``namespace JSX`` source check: any interface / type-alias defined in
+a file with that declaration is treated as a JSX transformer
+integration point.
 
-The exemption is narrow: it requires both (a) the symbol name in the
-JSX whitelist AND (b) the defining file containing ``namespace JSX``.
-A user-named ``IntrinsicElements`` outside such a file is still
-flaggable; a user-named ``UnrelatedType`` inside such a file is too.
+Tree-sitter doesn't currently propagate namespace parentage to a
+symbol's ``parent_name``, so the source-scan is the working signal.
+Symbols outside a ``namespace JSX`` file are still flaggable.
 """
 
 from __future__ import annotations
@@ -76,8 +78,13 @@ class TestJsxNamespaceExemption:
         g.add_edge("src/importer.ts", "src/jsx/base.ts", edge_type="imports", imported_names=[])
         _sym_node(g, "src/jsx/base.ts", "IntrinsicElements", kind="interface")
         _sym_node(g, "src/jsx/base.ts", "ElementChildrenAttribute", kind="interface")
-        # A control symbol — same file, name NOT in the whitelist.
-        _sym_node(g, "src/jsx/base.ts", "MyUnrelatedType", kind="interface")
+        # Other types declared in the same namespace JSX file — HTML
+        # attribute shapes — also implicitly consumed by the transformer.
+        _sym_node(g, "src/jsx/base.ts", "HTMLAttributes", kind="interface")
+        _sym_node(g, "src/jsx/base.ts", "CSSProperties", kind="type_alias")
+        # A function in the same file IS still flaggable (only types
+        # get the JSX-namespace exemption).
+        _sym_node(g, "src/jsx/base.ts", "someHelper", kind="function")
         parsed = _fake_parsed(
             "src/jsx/base.ts",
             "export namespace JSX { export interface IntrinsicElements {} }\n",
@@ -89,8 +96,10 @@ class TestJsxNamespaceExemption:
         flagged = {f.symbol_name for f in report.findings if f.kind.value == "unused_export"}
         assert "IntrinsicElements" not in flagged
         assert "ElementChildrenAttribute" not in flagged
-        # Control: name not in the whitelist is still flaggable.
-        assert "MyUnrelatedType" in flagged
+        assert "HTMLAttributes" not in flagged
+        assert "CSSProperties" not in flagged
+        # Control: non-type symbols are still flaggable.
+        assert "someHelper" in flagged
 
     def test_whitelist_name_outside_jsx_namespace_still_flagged(self, tmp_path: Path) -> None:
         g = nx.DiGraph()

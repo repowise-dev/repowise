@@ -25,7 +25,6 @@ from .constants import (
     _NEVER_FLAG_PATTERNS,
     _NEVER_PACKAGE_DIRS,
     _NON_CODE_LANGUAGES,
-    _TS_JSX_NAMESPACE_TYPES,
     _is_fixture_path,
 )
 from .contract_methods import is_contract_method
@@ -622,15 +621,19 @@ class DeadCodeAnalyzer:
                 # positives. C# auto-properties surface here as ``variable``.
                 if sym.get("kind") in _non_importable_kinds(sym.get("language", "unknown")):
                     continue
-                # JSX namespace types (``IntrinsicElements``,
-                # ``ElementChildrenAttribute``, …) declared inside a
-                # ``namespace JSX`` block are integration points with the
-                # JSX transformer — referenced implicitly by every JSX
-                # expression and never imported by name. Skip when both
-                # the name and the file match.
+                # Types declared inside a ``namespace JSX`` block are
+                # integration points with the JSX transformer — referenced
+                # implicitly by every JSX expression, never imported by
+                # name. The tree-sitter extractor doesn't carry namespace
+                # parentage through to ``parent_name``, so the file-level
+                # ``namespace JSX`` source-scan is the working signal we
+                # have. Names like ``IntrinsicElements`` /
+                # ``ElementChildrenAttribute`` carry the canonical TS
+                # JSX-protocol meaning; anything else inside such a file
+                # is an HTML-attribute / CSS-property shape consumed by
+                # the same machinery.
                 if (
                     sym.get("kind") in ("interface", "type_alias")
-                    and sym_name in _TS_JSX_NAMESPACE_TYPES
                     and str(node) in self._jsx_namespace_files
                 ):
                     continue
