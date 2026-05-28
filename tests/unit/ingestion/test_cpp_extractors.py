@@ -140,3 +140,62 @@ class StreamWrapper : public IO {
         rels = {(r.parent_name, r.kind) for r in result.heritage}
         assert ("IO", "extends") in rels
         assert ("IO", "implements") not in rels
+
+    def test_variadic_base_pack_emits_edge(self, parser: ASTParser) -> None:
+        """``class C : public Bases...`` — trailing ``...`` stripped, edge emitted."""
+        src = b"""\
+template<typename... Bases>
+class Combined : public Bases... {};
+"""
+        result = parser.parse_file(_file(), src)
+        rels = {(r.child_name, r.parent_name) for r in result.heritage}
+        assert ("Combined", "Bases") in rels
+
+
+class TestCppPhase2Captures:
+    """Symbol-graph hardening (Phase 2): new tree-sitter captures."""
+
+    def test_destructor_declaration_extracted(self, parser: ASTParser) -> None:
+        """``~Foo();`` in a class body lands as a symbol named ``~Foo``."""
+        src = b"""\
+class Foo {
+public:
+  ~Foo();
+};
+"""
+        result = parser.parse_file(_file(), src)
+        names = {s.name for s in result.symbols}
+        assert "~Foo" in names
+
+    def test_destructor_definition_qualified(self, parser: ASTParser) -> None:
+        """``Foo::~Foo() {}`` out-of-class definition lands too."""
+        src = b"""\
+class Foo {};
+Foo::~Foo() {}
+"""
+        result = parser.parse_file(_file(), src)
+        dtors = [s for s in result.symbols if s.name == "~Foo"]
+        assert dtors, "expected at least one ~Foo definition symbol"
+
+    def test_alias_declaration_extracted(self, parser: ASTParser) -> None:
+        """``using StringMap = std::map<std::string, int>;`` → type_alias."""
+        src = b"""\
+#include <map>
+#include <string>
+using StringMap = std::map<std::string, int>;
+"""
+        result = parser.parse_file(_file(), src)
+        by_name = {s.name: s for s in result.symbols}
+        assert "StringMap" in by_name
+        assert by_name["StringMap"].kind == "type_alias"
+
+    def test_template_argument_type_captured_as_ref(self, parser: ASTParser) -> None:
+        """``std::vector<Widget>`` in a param type captures ``Widget``."""
+        src = b"""\
+#include <vector>
+class Widget;
+void Consume(const std::vector<Widget>& xs);
+"""
+        result = parser.parse_file(_file(), src)
+        ref_names = {r.type_name for r in result.type_refs}
+        assert "Widget" in ref_names

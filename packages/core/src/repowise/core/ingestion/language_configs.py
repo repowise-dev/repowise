@@ -177,7 +177,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "type_definition": "struct",  # typedef struct { ... } Name;
             "preproc_def": "variable",  # #define MACRO value
             "preproc_function_def": "function",  # #define MACRO(x) ...
-            "declaration": "function",  # forward declarations
+            "declaration": "function",  # forward declarations + dtor decls
+            "alias_declaration": "type_alias",  # using X = Y;
         },
         import_node_types=["preproc_include"],
         export_node_types=[],

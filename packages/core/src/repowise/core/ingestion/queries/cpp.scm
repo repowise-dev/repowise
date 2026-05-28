@@ -127,6 +127,39 @@
   )
 ) @symbol.def
 
+; Destructor declaration inside a class body: ~Foo();
+(declaration
+  declarator: (function_declarator
+    declarator: (destructor_name) @symbol.name
+    parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
+; Destructor definition out-of-class: Foo::~Foo() { ... }
+(function_definition
+  declarator: (function_declarator
+    declarator: (qualified_identifier
+      name: (destructor_name) @symbol.name
+    )
+    parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
+; Operator-overload definition outside class: bool Foo::operator==(const Foo&) { }
+(function_definition
+  declarator: (function_declarator
+    declarator: (qualified_identifier
+      name: (operator_name) @symbol.name
+    )
+    parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
+; using StringMap = std::map<std::string, int>;
+(alias_declaration
+  name: (type_identifier) @symbol.name
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
 ; Imports (#include directives)
 ; ---------------------------------------------------------------------------
@@ -199,3 +232,11 @@
 ; Function return type: Widget * make(...)
 (function_definition
   type: (_) @param.type)
+
+; Template type argument: std::vector<Widget> — captures ``Widget``
+; (the head extractor strips ``std::*`` container wrappers before
+; resolving). Without this, every header type used only as a template
+; parameter reads as an unused export.
+(template_argument_list
+  (type_descriptor
+    type: (_) @param.type))
