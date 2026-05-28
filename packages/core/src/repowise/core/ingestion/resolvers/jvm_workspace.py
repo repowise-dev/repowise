@@ -169,6 +169,37 @@ def _scan_jvm_file(abs_path: str) -> tuple[str, tuple[str, ...]]:
     return package, tuple(types)
 
 
+_JPMS_PROVIDES_RE = re.compile(
+    r"provides\s+([\w.]+)\s+with\s+([\w.,\s]+);",
+    re.MULTILINE,
+)
+
+
+def _scan_jpms_provides(repo_path: Path) -> dict[str, tuple[str, ...]]:
+    """Scan ``module-info.java`` files for ``provides X with Y, Z`` directives.
+
+    Returns a mapping iface_fqn → impl_fqns identical in shape to
+    ``_scan_meta_inf_services``, so the two sources merge cleanly. Cheap
+    regex scan — the module-info syntax is restrictive enough that a
+    real parser is unnecessary, and avoiding the AST round-trip keeps
+    the warmup fast.
+    """
+    out: dict[str, list[str]] = {}
+    for mi in repo_path.rglob("module-info.java"):
+        if not mi.is_file():
+            continue
+        try:
+            text = mi.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for m in _JPMS_PROVIDES_RE.finditer(text):
+            iface = m.group(1).strip()
+            impls = [s.strip() for s in m.group(2).split(",") if s.strip()]
+            if iface and impls:
+                out.setdefault(iface, []).extend(impls)
+    return {k: tuple(v) for k, v in out.items()}
+
+
 def _scan_meta_inf_services(repo_path: Path) -> dict[str, tuple[str, ...]]:
     """Scan META-INF/services/ directories for SPI declarations."""
     services: dict[str, list[str]] = {}
@@ -301,9 +332,16 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
             exported_top_level=exported,
         )
 
-    # Scan META-INF resources (cheap glob, O(matching files))
+    # Scan META-INF resources + JPMS module-info.java provides directives
+    # (cheap glob, O(matching files)). Both populate ``services``; later
+    # phases treat any FQN listed there as reachable.
     try:
-        index.services = _scan_meta_inf_services(repo_path)
+        services = _scan_meta_inf_services(repo_path)
+        jpms = _scan_jpms_provides(repo_path)
+        merged: dict[str, list[str]] = {k: list(v) for k, v in services.items()}
+        for iface, impls in jpms.items():
+            merged.setdefault(iface, []).extend(impls)
+        index.services = {k: tuple(v) for k, v in merged.items()}
     except Exception:
         pass
     try:

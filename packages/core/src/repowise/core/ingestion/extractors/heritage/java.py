@@ -26,6 +26,33 @@ def _extract_java_heritage(
                 )
             )
 
+    # `sealed class Foo permits A, B {}` — emit a permits edge in BOTH
+    # directions so the analyzer treats the sealed hierarchy as a closed
+    # set. Parent → child = "extends" (the permits clause is the
+    # inverse of the children's own ``extends Foo``), letting the parent
+    # file reach every permitted subclass even when no other code references
+    # those subclasses directly.
+    for child in def_node.children:
+        if child.type != "permits":
+            continue
+        for sub in child.children:
+            if sub.type != "type_list":
+                continue
+            for type_node in sub.children:
+                if type_node.type in (",", "permits"):
+                    continue
+                permit_name = node_text(type_node, src).strip().split(".")[-1]
+                if not permit_name:
+                    continue
+                out.append(
+                    HeritageRelation(
+                        child_name=permit_name,
+                        parent_name=name,
+                        kind="extends",
+                        line=line,
+                    )
+                )
+
     interfaces = def_node.child_by_field_name("interfaces")
     # Java interface declarations use `extends_interfaces` for the parent list.
     if interfaces is None:

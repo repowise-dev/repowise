@@ -196,6 +196,21 @@ _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
     "extends_clause": "extends",
     "extends_type_clause": "extends",
     "implements_clause": "implements",
+    # JVM (Java + Kotlin) type positions. Note: ``parameter`` is NOT
+    # mapped here because tree-sitter-c-sharp also uses ``parameter``
+    # for ctor params and adding it would override C#'s walk to the
+    # enclosing ``constructor_declaration``. Kotlin function-parameter
+    # origin therefore falls through to ``function_declaration`` →
+    # "return_type" (imprecise but harmless — origin is provenance only).
+    "formal_parameter": "param_type",
+    "object_creation_expression": "composite_literal",
+    "local_variable_declaration": "field_type",
+    "superclass": "extends",
+    "super_interfaces": "implements",
+    "type_list": "implements",
+    "class_parameter": "ctor_param",  # Kotlin primary-ctor parameter
+    "variable_declaration": "field_type",  # Kotlin property declaration
+    "delegation_specifier": "extends",  # Kotlin class : Bar()
 }
 
 
@@ -626,6 +641,225 @@ def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
     return text
 
 
+# ---------------------------------------------------------------------------
+# Java type-reference head extraction
+# ---------------------------------------------------------------------------
+
+# Primitives + ubiquitous JDK types that never resolve to a user-defined
+# Java/Kotlin class in the workspace. Stripping them at extraction time
+# avoids polluting the resolver with hopeless lookups. The list errs on
+# the side of inclusion: a user class colliding with one of these names
+# still surfaces through the value-import path, just not through the
+# type-ref path.
+_JAVA_BUILTIN_TYPES: frozenset[str] = frozenset(
+    {
+        # Java primitives + builtin type nodes
+        "boolean", "byte", "short", "int", "long", "float", "double",
+        "char", "void", "var",
+        # java.lang (auto-imported)
+        "Object", "String", "Class", "Enum", "Record",
+        "Integer", "Long", "Double", "Float", "Boolean", "Character",
+        "Byte", "Short", "Number", "Void",
+        "Thread", "Runnable", "Runtime", "Process", "ProcessBuilder",
+        "Throwable", "Exception", "RuntimeException", "Error",
+        "IllegalArgumentException", "IllegalStateException",
+        "NullPointerException", "UnsupportedOperationException",
+        "IndexOutOfBoundsException", "ClassCastException",
+        "ArithmeticException", "SecurityException", "ClassNotFoundException",
+        "InterruptedException", "CloneNotSupportedException",
+        "StringBuilder", "StringBuffer",
+        "Comparable", "Iterable", "AutoCloseable", "Cloneable",
+        "Override", "Deprecated", "SuppressWarnings",
+        "FunctionalInterface", "SafeVarargs",
+        "Math", "System",
+        # java.util ubiquitous containers (almost always external when used
+        # as a type position; the actual element type is captured separately
+        # by the same query via the type_arguments inner capture).
+        "List", "ArrayList", "LinkedList",
+        "Map", "HashMap", "LinkedHashMap", "TreeMap", "ConcurrentHashMap",
+        "Set", "HashSet", "LinkedHashSet", "TreeSet",
+        "Collection", "Collections", "Iterator", "Optional",
+        "Queue", "Deque", "ArrayDeque", "Stack",
+        # java.util.function
+        "Function", "BiFunction", "Consumer", "BiConsumer", "Supplier",
+        "Predicate", "BiPredicate", "UnaryOperator", "BinaryOperator",
+        # java.util.concurrent ubiquitous
+        "Future", "CompletableFuture", "Executor", "ExecutorService",
+        "CountDownLatch", "Semaphore", "AtomicBoolean", "AtomicInteger",
+        "AtomicLong", "AtomicReference",
+        # java.time
+        "Instant", "Duration", "LocalDate", "LocalTime", "LocalDateTime",
+        "ZonedDateTime", "OffsetDateTime", "Period", "ZoneId",
+        # java.io
+        "File", "InputStream", "OutputStream", "Reader", "Writer",
+        "IOException", "Serializable",
+    }
+)
+
+
+def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head type identifier of a Java type expression, or None.
+
+    Examples:
+        ``Bar``                         → "Bar"
+        ``java.util.List<Foo>``         → "List"   → filtered (builtin)
+        ``com.x.y.Z``                   → "Z"
+        ``Foo.Bar``                     → "Bar"   (inner type)
+        ``Foo[]``                       → "Foo"
+        ``int`` / ``void`` / ``long``   → None
+        ``T``                           → None    (generic parameter)
+    """
+    node: Node | None = type_node
+    text = ""
+    for _ in range(8):
+        if node is None:
+            return None
+        kind = node.type
+        if kind == "type_identifier":
+            text = _node_text(node, src)
+            break
+        if kind in (
+            "void_type", "integral_type", "floating_point_type",
+            "boolean_type",
+        ):
+            return None
+        if kind == "scoped_type_identifier":
+            # ``com.x.y.Z`` / ``Foo.Bar`` — take the rightmost type_identifier
+            inner_ids = [c for c in node.children if c.type == "type_identifier"]
+            if not inner_ids:
+                return None
+            text = _node_text(inner_ids[-1], src)
+            break
+        if kind == "generic_type":
+            # ``Foo<T>`` — descend to the bare name; generic args are
+            # captured separately by their own type_arguments inner captures.
+            inner = next(
+                (c for c in node.named_children
+                 if c.type in ("type_identifier", "scoped_type_identifier")),
+                None,
+            )
+            node = inner
+            continue
+        if kind == "array_type":
+            # ``Foo[]`` — element child has no field name; take first named.
+            inner = next(iter(node.named_children), None)
+            node = inner
+            continue
+        if kind == "annotated_type":
+            # ``@NonNull Foo`` — last named child is the type.
+            node = next(
+                (c for c in reversed(node.named_children)
+                 if c.type not in ("annotation", "marker_annotation")),
+                None,
+            )
+            continue
+        # Anything else (wildcard, type_parameter, ...) — descend.
+        node = next(iter(node.named_children), None)
+    else:
+        return None
+
+    if not text or (not text[0].isalpha() and text[0] != "_"):
+        return None
+    if text in _JAVA_BUILTIN_TYPES:
+        return None
+    # Single-uppercase-letter heads are overwhelmingly generic type params.
+    if len(text) == 1 and text.isupper():
+        return None
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Kotlin type-reference head extraction
+# ---------------------------------------------------------------------------
+
+_KOTLIN_BUILTIN_TYPES: frozenset[str] = frozenset(
+    {
+        # Kotlin primitives (kotlin package, auto-imported)
+        "Boolean", "Byte", "Short", "Int", "Long", "Float", "Double", "Char",
+        "String", "Unit", "Nothing", "Any", "Number",
+        "Array", "IntArray", "LongArray", "ByteArray", "ShortArray",
+        "FloatArray", "DoubleArray", "CharArray", "BooleanArray",
+        "List", "MutableList", "ArrayList",
+        "Map", "MutableMap", "HashMap", "LinkedHashMap",
+        "Set", "MutableSet", "HashSet", "LinkedHashSet",
+        "Collection", "MutableCollection",
+        "Iterable", "MutableIterable", "Iterator", "MutableIterator",
+        "Sequence", "Pair", "Triple", "Result",
+        "Comparable", "Comparator",
+        "Throwable", "Exception", "RuntimeException", "Error",
+        "IllegalArgumentException", "IllegalStateException",
+        "NullPointerException", "UnsupportedOperationException",
+        "IndexOutOfBoundsException", "ClassCastException",
+        "Lazy", "Regex", "Range", "IntRange", "LongRange", "CharRange",
+        "Enum", "Annotation",
+        # kotlin.io / kotlin.text / kotlin.collections ubiquitous
+        "Reader", "Writer", "BufferedReader", "BufferedWriter",
+        # Coroutines + JVM common
+        "Object", "Function", "Runnable", "Class", "Void",
+    }
+)
+
+
+def _kotlin_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head identifier of a Kotlin type expression, or None.
+
+    Examples:
+        ``Bar``                         → "Bar"
+        ``Foo?``                        → "Foo"   (nullable_type unwrapped)
+        ``List<Foo>``                   → "List"  → filtered (builtin)
+        ``com.x.Foo``                   → "Foo"   (dotted user_type)
+        ``Foo.Bar``                     → "Bar"
+        ``() -> Foo``                   → None    (function_type — skipped)
+        ``Unit`` / ``Any`` / ``String`` → None    (builtin)
+    """
+    node: Node | None = type_node
+    text = ""
+    for _ in range(8):
+        if node is None:
+            return None
+        kind = node.type
+        if kind == "user_type":
+            # ``Foo`` / ``Foo<...>`` / ``ns.Foo``.
+            # Children: identifier, type_arguments, possibly more dotted parts.
+            # Rightmost identifier is the head; type_arguments contains the
+            # generic args (captured separately by their own type-ref).
+            inner_ids = [c for c in node.children if c.type == "identifier"]
+            if not inner_ids:
+                return None
+            text = _node_text(inner_ids[-1], src)
+            break
+        if kind == "identifier":
+            text = _node_text(node, src)
+            break
+        if kind == "nullable_type":
+            # Unwrap ``Foo?`` to the underlying user_type.
+            inner = next(iter(node.named_children), None)
+            node = inner
+            continue
+        if kind in ("function_type", "parenthesized_type"):
+            # () -> Foo, (() -> Foo) — leaf type names are not captured.
+            return None
+        if kind == "type_reference":
+            node = next(iter(node.named_children), None)
+            continue
+        if kind == "type_projection":
+            # `<out Foo>` / `<in Foo>` / `<Foo>` — last named child is the type.
+            node = next(iter(node.named_children), None)
+            continue
+        # Anything else — descend.
+        node = next(iter(node.named_children), None)
+    else:
+        return None
+
+    if not text or (not text[0].isalpha() and text[0] != "_"):
+        return None
+    if text in _KOTLIN_BUILTIN_TYPES:
+        return None
+    if len(text) == 1 and text.isupper():
+        return None
+    return text
+
+
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
@@ -635,6 +869,8 @@ TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
     "cpp": _c_head_type_identifier,
     "typescript": _ts_head_type_identifier,
     "javascript": _ts_head_type_identifier,
+    "java": _java_head_type_identifier,
+    "kotlin": _kotlin_head_type_identifier,
 }
 
 
