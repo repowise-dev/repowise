@@ -62,6 +62,17 @@ def build_analysis_summary_panel(
     )
 
 
+def _render_what_next_lines(next_steps: list[tuple[str, str]]) -> list[str]:
+    """Format the ``What's next:`` rows for the completion panel.
+
+    Pads short commands to a 28-column gutter for alignment, but always
+    inserts at least one space between command and description so a long
+    command like ``repowise init --provider gemini`` (>28 chars) doesn't
+    run straight into its description text.
+    """
+    return [f"  {cmd:<28} {desc}" for cmd, desc in next_steps]
+
+
 def build_completion_panel(
     title: str,
     metrics: list[tuple[str, str]],
@@ -85,8 +96,8 @@ def build_completion_panel(
     if next_steps:
         parts.append(Text(""))
         parts.append(Text("  What's next:", style="bold"))
-        for cmd, desc in next_steps:
-            parts.append(Text(f"  {cmd:<28}{desc}", style="dim"))
+        for line in _render_what_next_lines(next_steps):
+            parts.append(Text(line, style="dim"))
 
     return Panel(
         Group(*parts),
@@ -119,7 +130,11 @@ def build_contextual_next_steps(
         steps.append(("repowise init", "run full mode: complete git history + generate docs"))
         steps.append(("repowise mcp .", "start MCP server for AI assistants now"))
     elif index_only:
-        steps.append(("repowise mcp .", "start MCP server for AI assistants"))
+        # MCP is already auto-registered by `init`, so `repowise serve` is a
+        # more useful headline next step — it launches the dashboard where the
+        # graph, hotspots, dead code, and decisions are easier to browse than
+        # via the CLI.
+        steps.append(("repowise serve", "launch the dashboard at http://localhost:3000"))
         steps.append(("repowise init --provider gemini", "generate full documentation"))
     else:
         steps.append(("repowise mcp .", "start MCP server for AI assistants"))
