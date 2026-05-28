@@ -12,6 +12,7 @@ from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.ts_workspace import (
     build_ts_workspace_index,
     find_mdx_import_targets,
+    find_npm_script_entry_targets,
     find_vitest_include_targets,
     get_or_build_ts_index,
 )
@@ -119,3 +120,118 @@ class TestMdxImportScan:
         # ``react`` resolves to an ``external:`` node and must not enter
         # the entry-point set.
         assert not any(t.startswith("external:") for t in targets)
+
+
+class TestNpmScriptEntryScanner:
+    def test_tsx_runner_path_resolves(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "packages/bench/package.json",
+            '{"name":"@org/bench","scripts":{"bench":"tsx --conditions src index.ts"}}',
+        )
+        _write(tmp_path, "packages/bench/index.ts", "")
+        ctx = _ctx(tmp_path, ["packages/bench/index.ts"])
+        assert "packages/bench/index.ts" in find_npm_script_entry_targets(ctx)
+
+    def test_relative_path_in_root_package(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "package.json",
+            '{"scripts":{"build":"bun ./build/build.ts"}}',
+        )
+        _write(tmp_path, "build/build.ts", "")
+        ctx = _ctx(tmp_path, ["build/build.ts"])
+        assert "build/build.ts" in find_npm_script_entry_targets(ctx)
+
+    def test_mts_extension_picked_up(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "benchmarks/routers/package.json",
+            '{"scripts":{"bench:node":"tsx ./src/bench.mts"}}',
+        )
+        _write(tmp_path, "benchmarks/routers/src/bench.mts", "")
+        ctx = _ctx(tmp_path, ["benchmarks/routers/src/bench.mts"])
+        assert "benchmarks/routers/src/bench.mts" in find_npm_script_entry_targets(ctx)
+
+    def test_quoted_glob_expands(self, tmp_path: Path) -> None:
+        # Prettier-style glob argument in a root script — the files
+        # matched are maintained code even if no static import reaches
+        # them.
+        _write(
+            tmp_path,
+            "package.json",
+            '{"scripts":{"format":"prettier --check \\"perf-measures/**/*.ts\\""}}',
+        )
+        _write(tmp_path, "perf-measures/foo.ts", "")
+        _write(tmp_path, "perf-measures/nested/bar.ts", "")
+        _write(tmp_path, "src/app.ts", "")
+        ctx = _ctx(
+            tmp_path,
+            ["perf-measures/foo.ts", "perf-measures/nested/bar.ts", "src/app.ts"],
+        )
+        targets = find_npm_script_entry_targets(ctx)
+        assert "perf-measures/foo.ts" in targets
+        assert "perf-measures/nested/bar.ts" in targets
+        assert "src/app.ts" not in targets
+
+    def test_bare_directory_token_expands(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "package.json",
+            '{"scripts":{"lint":"eslint src benchmarks"}}',
+        )
+        _write(tmp_path, "benchmarks/deno/hono.ts", "")
+        _write(tmp_path, "src/index.ts", "")
+        ctx = _ctx(tmp_path, ["benchmarks/deno/hono.ts", "src/index.ts"])
+        targets = find_npm_script_entry_targets(ctx)
+        assert "benchmarks/deno/hono.ts" in targets
+        assert "src/index.ts" in targets
+
+    def test_experimental_subpackage_marks_all_sources(self, tmp_path: Path) -> None:
+        # zod-style ``packages/bench/*`` — runtime-resolved via
+        # ``import.meta.resolve`` so no static path appears. The
+        # convention-name match rescues the whole sub-package.
+        _write(
+            tmp_path,
+            "packages/bench/package.json",
+            '{"name":"@org/benchmarks","private":true,"scripts":{"bench":"tsx index.ts"}}',
+        )
+        for name in ("index.ts", "array.ts", "boolean.ts"):
+            _write(tmp_path, f"packages/bench/{name}", "")
+        ctx = _ctx(
+            tmp_path,
+            ["packages/bench/index.ts", "packages/bench/array.ts", "packages/bench/boolean.ts"],
+        )
+        targets = find_npm_script_entry_targets(ctx)
+        assert "packages/bench/array.ts" in targets
+        assert "packages/bench/boolean.ts" in targets
+
+    def test_nested_experimental_dir_inside_package(self, tmp_path: Path) -> None:
+        # ``packages/tsc/bench/*.ts`` — package.json at packages/tsc,
+        # but ``bench/`` is the experimental segment one level deeper.
+        _write(
+            tmp_path,
+            "packages/tsc/package.json",
+            '{"name":"@org/tsc-perf","scripts":{"build":"tsc"}}',
+        )
+        _write(tmp_path, "packages/tsc/bench/lots-of-objects.ts", "")
+        _write(tmp_path, "packages/tsc/src/index.ts", "")
+        ctx = _ctx(
+            tmp_path,
+            ["packages/tsc/bench/lots-of-objects.ts", "packages/tsc/src/index.ts"],
+        )
+        targets = find_npm_script_entry_targets(ctx)
+        assert "packages/tsc/bench/lots-of-objects.ts" in targets
+        # The ordinary ``src/index.ts`` is NOT auto-marked — that's
+        # handled by the regular exports/main path.
+        assert "packages/tsc/src/index.ts" not in targets
+
+    def test_flags_do_not_resolve(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path,
+            "package.json",
+            '{"scripts":{"x":"tsc --noEmit"}}',
+        )
+        ctx = _ctx(tmp_path, [])
+        # No source files referenced — empty set, no crashes from ``-`` tokens.
+        assert find_npm_script_entry_targets(ctx) == set()

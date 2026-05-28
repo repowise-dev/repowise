@@ -557,3 +557,207 @@ def find_vitest_include_targets(ctx: "ResolverContext") -> set[str]:
                         if regex.match(candidate):
                             targets.add(candidate)
     return targets
+
+
+# ---------------------------------------------------------------------------
+# npm-script entry detection
+# ---------------------------------------------------------------------------
+
+# Source-file extensions a script might point at directly. Includes the
+# ``.mts``/``.cts`` family because hono/zod benchmarks favour them.
+_NPM_SCRIPT_SOURCE_EXTS: tuple[str, ...] = (
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts",
+)
+
+# Runner tokens that take a single source path as their first non-flag
+# positional. Detection is positional rather than name-based so we don't
+# have to track shell-syntax quirks (``--`` separators, env-var prefixes,
+# multi-command ``&&`` chains).
+_NPM_SCRIPT_RUNNERS: frozenset[str] = frozenset({
+    "tsx", "ts-node", "ts-node-esm", "vite-node", "swc-node",
+    "node", "deno", "bun",
+    "esbuild", "rollup", "vite", "webpack",
+})
+
+# Sub-package names that conventionally hold ad-hoc / experimental
+# scripts — bench harnesses, tree-shaking experiments, examples, demos.
+# Their source files are typically passed as CLI arguments at runtime
+# (``rollup -c --input X.ts``, ``tsx index.ts <file>``) rather than
+# imported by anything in the static graph. Treating them as entry
+# points matches how a human reads the repo: maintained code, not dead.
+_EXPERIMENT_DIR_NAMES: frozenset[str] = frozenset({
+    "bench", "benches", "benchmark", "benchmarks",
+    "treeshake", "treeshaking",
+    "example", "examples",
+    "demo", "demos",
+    "sample", "samples",
+    "playground", "playgrounds",
+    "scratch",
+    # ``scripts/`` is conventionally ad-hoc tooling invoked via npm
+    # commands or pre/post-commit hooks — never imported by application
+    # code, but always maintained. Treat the whole dir as live.
+    "scripts",
+})
+
+
+def _iter_script_tokens(script: str) -> list[str]:
+    """Split a script command on whitespace and shell separators.
+
+    Strips quotes off individual tokens but does NOT honour shell quoting
+    (``"a b"`` becomes two tokens) — matches Node's npm script semantics
+    where commands are passed to ``sh -c`` and we only care about token
+    *shape*, not faithful argv reconstruction.
+    """
+    # Replace shell chain operators with spaces so each chunk parses.
+    cleaned = _re.sub(r"&&|\|\||;|\|", " ", script)
+    return [tok.strip("'\"") for tok in cleaned.split() if tok.strip("'\"")]
+
+
+def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
+    """Return repo-relative source files referenced by ``package.json`` scripts.
+
+    Hono's ``benchmarks/{jsx,routers,query-param}/**`` and zod's
+    ``packages/{bench,treeshake,tsc}/**`` are invoked as ``tsx <path>`` /
+    ``bun run <path>`` / ``rollup -c <path>`` from their package's
+    ``scripts.*`` — never imported by the main entry graph, so they read
+    as ``in_degree==0`` despite being live, maintained code. This scan
+    surfaces those paths as entry points.
+
+    Also picks up quoted glob arguments (prettier / eslint / format-check
+    style ``"src/**/*.ts"``) so files only ever consumed by build tooling
+    aren't flagged dead — they're maintained code, just not application
+    code.
+    """
+    if ctx.repo_path is None:
+        return set()
+
+    repo_root = ctx.repo_path.resolve()
+    path_set = ctx.path_set
+    targets: set[str] = set()
+
+    # Build a quick "directory → files under it" index lazily by scanning
+    # ``path_set`` once. Cheap: a few thousand strings at most.
+    dirs_in_repo: dict[str, list[str]] = {}
+    for p in path_set:
+        idx = 0
+        while True:
+            slash = p.find("/", idx)
+            if slash == -1:
+                break
+            dirs_in_repo.setdefault(p[:slash], []).append(p)
+            idx = slash + 1
+
+    for pkg_file in repo_root.rglob("package.json"):
+        # Skip node_modules — those are dependency manifests, not ours.
+        if "node_modules" in pkg_file.parts:
+            continue
+        try:
+            data = json.loads(pkg_file.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        scripts = data.get("scripts") or {}
+        if not isinstance(scripts, dict):
+            continue
+        pkg_dir = pkg_file.parent
+        try:
+            pkg_rel = pkg_dir.relative_to(repo_root).as_posix()
+        except ValueError:
+            continue
+        pkg_prefix = "" if pkg_rel in ("", ".") else f"{pkg_rel}/"
+
+        # Experimental sub-package convention: ``packages/bench``,
+        # ``packages/treeshake``, ``examples/`` style directories invoke
+        # their source files via runtime-supplied CLI arguments
+        # (``rollup --input``, ``import.meta.resolve``) that no static
+        # scan can resolve. The presence of an ``experimental`` directory
+        # name + a ``package.json`` is the human-meaningful "this is a
+        # maintained script bag" signal — mark every source file under
+        # it as an entry. Honour ``"private": true`` *or* the directory
+        # name match; the conventional names are the load-bearing signal.
+        pkg_dir_name = pkg_dir.name.lower()
+        if pkg_dir_name in _EXPERIMENT_DIR_NAMES:
+            dir_files = dirs_in_repo.get(pkg_rel) if pkg_rel else None
+            if dir_files:
+                for f in dir_files:
+                    if any(f.lower().endswith(ext) for ext in _NPM_SCRIPT_SOURCE_EXTS):
+                        targets.add(f)
+
+        for command in scripts.values():
+            if not isinstance(command, str):
+                continue
+            tokens = _iter_script_tokens(command)
+            for token in tokens:
+                if not token or token.startswith("-"):
+                    continue
+                # Source file with a known extension — try resolving as a
+                # path relative to the package directory. Glob meta-chars
+                # are handled by the next branch.
+                lower = token.lower()
+                if (
+                    any(lower.endswith(ext) for ext in _NPM_SCRIPT_SOURCE_EXTS)
+                    and "*" not in token
+                    and "?" not in token
+                ):
+                    candidate = (pkg_prefix + token).lstrip("./")
+                    candidate = _re.sub(r"\\", "/", candidate)
+                    # Normalise ``a/./b`` and ``a/../b`` segments.
+                    parts: list[str] = []
+                    for seg in candidate.split("/"):
+                        if seg in ("", "."):
+                            continue
+                        if seg == "..":
+                            if parts:
+                                parts.pop()
+                            continue
+                        parts.append(seg)
+                    norm = "/".join(parts)
+                    if norm in path_set:
+                        targets.add(norm)
+                    continue
+                # Glob argument (prettier / eslint / format scope) — only
+                # expand when the token has a glob meta-character and
+                # contains a slash, so plain runner names like ``tsc`` and
+                # plain flags don't get misinterpreted.
+                if ("*" in token or "?" in token) and "/" in token:
+                    rel_glob = (pkg_prefix + token).lstrip("./")
+                    # Strip stray leading ``./`` left over from npm conv.
+                    if rel_glob.startswith("./"):
+                        rel_glob = rel_glob[2:]
+                    try:
+                        regex = _vitest_glob_to_regex(rel_glob)
+                    except _re.error:
+                        continue
+                    for candidate in path_set:
+                        if regex.match(candidate):
+                            targets.add(candidate)
+                    continue
+                # Bare directory token (``eslint src runtime-tests build``)
+                # — mark every source file inside as live. Constrained to
+                # directories that actually exist in ``path_set`` to avoid
+                # treating arbitrary identifiers (``run``, ``--``) as dirs.
+                if "/" not in token and token in (
+                    "src", "lib", "app", "test", "tests", "scripts",
+                    "benchmarks", "perf-measures", "runtime-tests", "build",
+                    "examples",
+                ):
+                    dir_rel = pkg_prefix + token
+                    files = dirs_in_repo.get(dir_rel.rstrip("/"))
+                    if files:
+                        for f in files:
+                            if any(f.lower().endswith(ext) for ext in _NPM_SCRIPT_SOURCE_EXTS):
+                                targets.add(f)
+
+    # Catch experimental sub-directories nested inside a package — e.g.
+    # ``packages/tsc/bench/*.ts``, ``examples/*/index.ts`` — where the
+    # parent ``package.json`` doesn't itself match the experimental
+    # convention but a descendant directory does. We only scan dirs that
+    # already appear in ``dirs_in_repo`` (i.e., that hold source files),
+    # so the pass is bounded by what's in ``path_set``.
+    for dir_rel, files in dirs_in_repo.items():
+        last_seg = dir_rel.rsplit("/", 1)[-1].lower()
+        if last_seg not in _EXPERIMENT_DIR_NAMES:
+            continue
+        for f in files:
+            if any(f.lower().endswith(ext) for ext in _NPM_SCRIPT_SOURCE_EXTS):
+                targets.add(f)
+    return targets

@@ -55,6 +55,7 @@ def _warmup_typescript(ctx: "ResolverContext") -> None:
     """
     from .resolvers.ts_workspace import (
         find_mdx_import_targets,
+        find_npm_script_entry_targets,
         find_vitest_include_targets,
         get_or_build_ts_index,
     )
@@ -73,6 +74,13 @@ def _warmup_typescript(ctx: "ResolverContext") -> None:
         pass
     try:
         entry_paths |= find_vitest_include_targets(ctx)
+    except Exception:
+        pass
+    # ``package.json`` ``scripts.*`` references: benchmark / bench-runner /
+    # rollup-input paths that ship as live code but are never imported
+    # by the main entry graph.
+    try:
+        entry_paths |= find_npm_script_entry_targets(ctx)
     except Exception:
         pass
     for path in entry_paths:
