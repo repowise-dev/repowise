@@ -25,6 +25,7 @@ flattened to the first plausible source target. Packages without an
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -305,3 +306,254 @@ def resolve_via_workspaces(module_path: str, ctx: "ResolverContext") -> str | No
         if cand is not None:
             return cand
     return None
+
+
+# ---------------------------------------------------------------------------
+# TsWorkspaceIndex — aggregated workspace view consumed by the dead-code
+# analyzer (exports-wildcard entry points), the resolver, and any future
+# pass that needs to know "what does the workspace publish?".
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TsWorkspaceIndex:
+    """Aggregated TypeScript/JavaScript workspace metadata.
+
+    ``packages`` mirrors :func:`build_workspace_info` — kept here so a
+    single object carries every workspace fact the rest of the pipeline
+    needs. ``exports_entry_paths`` is the set of repo-relative source
+    files that any workspace package's ``package.json`` ``exports`` map
+    resolves to (including wildcards expanded against ``ctx.path_set``).
+    These files are *the* public surface of the monorepo — flagging them
+    as unreachable just because nothing inside the repo imports them is
+    a false positive, since downstream consumers reach them via the
+    package boundary the analyzer can't observe.
+    """
+
+    packages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    exports_entry_paths: set[str] = field(default_factory=set)
+
+
+def _expand_exports_wildcard(
+    target: str, exports_pattern: str, pkg_dir: str, path_set: set[str]
+) -> set[str]:
+    """Return every concrete source file matching a wildcard exports target.
+
+    ``exports_pattern`` is the key like ``"./locales/*"``; ``target`` is
+    the right-hand side like ``"./src/locales/*.ts"``. The function
+    interprets ``*`` as ``[^/]*`` (single path segment, Node spec) and
+    enumerates ``path_set`` entries under ``pkg_dir`` that match the
+    expanded prefix/suffix.
+    """
+    if "*" not in target:
+        # Non-wildcard target — just probe the concrete path.
+        stripped = target.lstrip("./")
+        resolved = _probe_path(f"{pkg_dir}/{stripped}", path_set)
+        return {resolved} if resolved is not None else set()
+    # Decompose ``./src/locales/*.ts`` into prefix=``src/locales/`` and
+    # suffix=``.ts``. The Node spec only allows one ``*`` per pattern.
+    stripped = target.lstrip("./")
+    prefix, _, suffix = stripped.partition("*")
+    base_prefix = f"{pkg_dir}/{prefix}"
+    matches: set[str] = set()
+    for candidate in path_set:
+        if not candidate.startswith(base_prefix):
+            continue
+        if suffix and not candidate.endswith(suffix):
+            continue
+        # Reject paths whose captured segment crosses a directory boundary
+        # unless the pattern itself spans dirs (``**`` is not part of the
+        # spec; ``*`` matches a single segment).
+        captured = candidate[len(base_prefix) : len(candidate) - len(suffix) if suffix else len(candidate)]
+        if "/" in captured and exports_pattern.endswith("/*"):
+            continue
+        matches.add(candidate)
+    return matches
+
+
+def build_ts_workspace_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
+    """Build the workspace index for *ctx*.
+
+    Idempotent — safe to call multiple times. Reads the workspace
+    metadata via :func:`build_workspace_info` and resolves every
+    ``exports`` target (concrete and wildcard) against ``ctx.path_set``
+    so a file's reachability through the package boundary is observable
+    to downstream passes.
+    """
+    packages = get_or_build_workspace_info(ctx)
+    entries: set[str] = set()
+    path_set = ctx.path_set
+    for _name, pkg in packages.items():
+        dir_posix: str = pkg["dir"]
+        exports_map: dict[str, str] = pkg.get("exports") or {}
+        for pattern, target in exports_map.items():
+            entries.update(_expand_exports_wildcard(target, pattern, dir_posix, path_set))
+        # ``main``/``module`` shorthand — package's primary entry.
+        main = pkg.get("main")
+        if isinstance(main, str):
+            resolved = _probe_path(f"{dir_posix}/{main.lstrip('./')}", path_set)
+            if resolved is not None:
+                entries.add(resolved)
+    return TsWorkspaceIndex(packages=packages, exports_entry_paths=entries)
+
+
+def get_or_build_ts_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
+    """Memoized accessor — builds the index once per resolver context."""
+    cached = getattr(ctx, "_ts_workspace_index", None)
+    if cached is not None:
+        return cached
+    index = build_ts_workspace_index(ctx)
+    ctx._ts_workspace_index = index  # type: ignore[attr-defined]
+    return index
+
+
+# ---------------------------------------------------------------------------
+# MDX import scan + vitest config scan — entry-point sources the static
+# graph never observes through the TS/JS parser path.
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_MDX_IMPORT_RE = _re.compile(
+    r"""import\s+
+        (?:type\s+)?
+        (?:\{[^}]*\}|\*\s+as\s+\w+|\w+(?:\s*,\s*\{[^}]*\})?)
+        \s+from\s+['"]([^'"]+)['"]""",
+    _re.VERBOSE,
+)
+
+_VITEST_INCLUDE_RE = _re.compile(
+    r"""include\s*:\s*\[\s*((?:['"][^'"]+['"]\s*,?\s*)+)\]""",
+    _re.MULTILINE,
+)
+_VITEST_STRING_RE = _re.compile(r"""['"]([^'"]+)['"]""")
+
+
+def find_mdx_import_targets(ctx: "ResolverContext") -> set[str]:
+    """Return repo-relative paths reached only via ``import`` in MDX/MD files.
+
+    React-component libraries published as documentation (``.mdx`` files
+    that embed live TSX components) hide their consumers from the static
+    TS parser because nothing in this repo parses MDX. The regex below
+    is intentionally narrow: ``import … from '...'``. Anything fancier
+    (JSX-in-MDX components, MDX-specific shorthand) falls out and gets
+    treated as no-edge — better than a parser dependency.
+    """
+    if ctx.repo_path is None:
+        return set()
+    from .typescript import resolve_ts_js_import
+
+    targets: set[str] = set()
+    for mdx in ctx.repo_path.rglob("*.mdx"):
+        try:
+            text = mdx.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        try:
+            rel = mdx.relative_to(ctx.repo_path).as_posix()
+        except ValueError:
+            continue
+        for match in _MDX_IMPORT_RE.finditer(text):
+            spec = match.group(1)
+            # Pre-normalise relative specifiers so ``../foo`` resolves
+            # against ``ctx.path_set`` — the underlying TS resolver
+            # leaves ``..`` segments unflattened and relies on the
+            # parser layer to do this, which doesn't run for MDX.
+            if spec.startswith("."):
+                import os as _os
+                joined = _os.path.normpath(_os.path.join(_os.path.dirname(rel), spec))
+                joined = joined.replace("\\", "/")
+                # Re-express as a relative spec rooted at the repo so
+                # ``resolve_ts_js_import`` treats it as relative.
+                spec_for_resolve = "./" + joined
+                resolved = resolve_ts_js_import(spec_for_resolve, "_root_.mdx", ctx)
+            else:
+                resolved = resolve_ts_js_import(spec, rel, ctx)
+            if resolved is None:
+                continue
+            if resolved.startswith("external:"):
+                continue
+            targets.add(resolved)
+    return targets
+
+
+def _vitest_glob_to_regex(glob: str) -> _re.Pattern[str]:
+    """Translate a vitest/minimatch glob into a regex matching repo paths.
+
+    ``**`` matches zero-or-more path segments (including empty); a single
+    ``*`` matches one path segment (no ``/``); ``?`` matches a single
+    non-``/`` char. Anything else is escaped. Python's ``fnmatch`` treats
+    ``*`` as "any chars including ``/``", which collapses ``foo/**/x``
+    into a too-strict regex that misses ``foo/x`` — hence this
+    bespoke translator.
+    """
+    out: list[str] = ["^"]
+    i = 0
+    while i < len(glob):
+        c = glob[i]
+        if c == "*":
+            if i + 1 < len(glob) and glob[i + 1] == "*":
+                # ``**`` — zero or more path segments. Consume optional
+                # trailing ``/`` so ``foo/**/bar`` matches ``foo/bar``.
+                i += 2
+                if i < len(glob) and glob[i] == "/":
+                    out.append("(?:.*/)?")
+                    i += 1
+                else:
+                    out.append(".*")
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        elif c in ".+()|^$[]{}\\":
+            out.append("\\" + c)
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    out.append("$")
+    return _re.compile("".join(out))
+
+
+def find_vitest_include_targets(ctx: "ResolverContext") -> set[str]:
+    """Return repo-relative source files matching vitest ``include`` globs.
+
+    Belt-and-suspenders alongside the ``*.test.*`` never-flag pattern —
+    catches custom test layouts like ``runtime-tests/**`` that escape
+    the filename convention.
+    """
+    if ctx.repo_path is None:
+        return set()
+
+    targets: set[str] = set()
+    config_globs = ("vitest.config.ts", "vitest.config.js", "vitest.config.mts",
+                    "vitest.config.mjs", "vitest.config.cjs", "vitest.config.cts",
+                    "vite.config.ts", "vite.config.js", "vite.config.mts",
+                    "vite.config.mjs")
+    seen: set[Path] = set()
+    for pattern in config_globs:
+        for cfg in ctx.repo_path.rglob(pattern):
+            if cfg in seen:
+                continue
+            seen.add(cfg)
+            try:
+                text = cfg.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            cfg_dir = cfg.parent
+            for inc_match in _VITEST_INCLUDE_RE.finditer(text):
+                for str_match in _VITEST_STRING_RE.finditer(inc_match.group(1)):
+                    glob_pat = str_match.group(1)
+                    # Resolve glob relative to the config file's directory.
+                    base = (cfg_dir / glob_pat).as_posix()
+                    try:
+                        rel_glob = Path(base).relative_to(ctx.repo_path).as_posix()
+                    except ValueError:
+                        continue
+                    regex = _vitest_glob_to_regex(rel_glob)
+                    for candidate in ctx.path_set:
+                        if regex.match(candidate):
+                            targets.add(candidate)
+    return targets

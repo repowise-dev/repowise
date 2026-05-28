@@ -46,11 +46,54 @@ def _warmup_go(ctx: "ResolverContext") -> None:
     get_or_build_go_index(ctx)
 
 
+def _warmup_typescript(ctx: "ResolverContext") -> None:
+    """Build the TS workspace index and stamp ``is_entry_point`` on every
+    source file the workspace's ``package.json`` ``exports`` map resolves
+    to. Without this, files reachable only through the package boundary
+    (downstream npm consumers) read as ``in_degree==0`` and ship as
+    unreachable findings.
+    """
+    from .resolvers.ts_workspace import (
+        find_mdx_import_targets,
+        find_vitest_include_targets,
+        get_or_build_ts_index,
+    )
+
+    index = get_or_build_ts_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    entry_paths: set[str] = set(index.exports_entry_paths)
+    # MDX-only consumers (docs sites that import TSX components into
+    # ``.mdx``) and custom vitest layouts (``runtime-tests/**``) — both
+    # invisible to the TS parser, both real entry points.
+    try:
+        entry_paths |= find_mdx_import_targets(ctx)
+    except Exception:
+        pass
+    try:
+        entry_paths |= find_vitest_include_targets(ctx)
+    except Exception:
+        pass
+    for path in entry_paths:
+        node = graph.nodes.get(path)
+        if node is None:
+            continue
+        node["is_entry_point"] = True
+
+
 # Map language tag → (phase-event name, warmup function). The phase
 # name shows up in the CLI progress bar and in ``state.json`` timings.
+#
+# Note: ``typescript`` and ``javascript`` share a single warmup — the
+# workspace index is derived from ``package.json`` files and is the
+# same for both languages. The dispatcher registers under each tag so
+# a JS-only repo still triggers the index build.
 _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "csharp": ("graph.dotnet_index", _warmup_dotnet),
     "go": ("graph.go_index", _warmup_go),
+    "typescript": ("graph.ts_index", _warmup_typescript),
+    "javascript": ("graph.ts_index", _warmup_typescript),
 }
 
 
@@ -66,9 +109,20 @@ def run_warmups(
     than dropping it into ``graph.imports``.
     """
     present_langs: set[str] = {pf.file_info.language for pf in parsed_files.values()}
+    fired_phases: set[str] = set()
     for lang, (phase_name, warmup) in _WARMUPS.items():
         if lang not in present_langs:
             continue
+        # Some warmups (TS + JS) share a phase event because they share the
+        # underlying index — only fire start/done once per phase name and
+        # rely on the warmup's own idempotency for the second invocation.
+        if phase_name in fired_phases:
+            try:
+                warmup(ctx)
+            except Exception:
+                pass
+            continue
+        fired_phases.add(phase_name)
         if progress is not None:
             progress.on_phase_start(phase_name, None)
         try:
