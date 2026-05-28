@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -187,6 +188,45 @@ def _load_local_provider_config() -> None:
     embedder = cfg.get("embedder")
     if embedder and embedder != "mock" and not os.environ.get("REPOWISE_EMBEDDER"):
         os.environ["REPOWISE_EMBEDDER"] = str(embedder)
+
+
+def _is_port_free(host: str, port: int) -> bool:
+    """Return True if *port* can be bound on *host* right now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _find_free_port(host: str, preferred: int, label: str, max_attempts: int = 20) -> int:
+    """Return *preferred* if free, otherwise the next free port within range.
+
+    Falls back to an OS-assigned port if a contiguous slot can't be found.
+    Prints a notice when the preferred port is unavailable so the user knows
+    the bind moved.
+    """
+    if _is_port_free(host, preferred):
+        return preferred
+
+    for offset in range(1, max_attempts + 1):
+        candidate = preferred + offset
+        if candidate > 65535:
+            break
+        if _is_port_free(host, candidate):
+            console.print(
+                f"[yellow]Port {preferred} for {label} is in use — using {candidate} instead.[/yellow]"
+            )
+            return candidate
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        candidate = sock.getsockname()[1]
+    console.print(
+        f"[yellow]Port {preferred} for {label} and nearby ports busy — using {candidate}.[/yellow]"
+    )
+    return candidate
 
 
 _GITHUB_REPO = "repowise-dev/repowise"
@@ -449,9 +489,18 @@ def serve_command(
             os.environ["REPOWISE_DB_URL"] = f"sqlite+aiosqlite:///{local_db.as_posix()}"
             console.print(f"[dim]Using local database: {local_db}[/dim]")
 
+    # Resolve a usable API port up front — uvicorn would otherwise crash later
+    # with a bare OSError, and the chosen port needs to flow into the frontend
+    # via REPOWISE_API_URL.
+    port = _find_free_port(host, port, "API server")
+
     frontend_proc: subprocess.Popen | None = None
 
     if not no_ui:
+        # The Next.js server binds to 0.0.0.0 (see HOSTNAME below), so probe
+        # there — a port can be free on 127.0.0.1 but taken on the wildcard.
+        ui_port = _find_free_port("0.0.0.0", ui_port, "web UI")
+
         node = _node_available()
         npm = _npm_available()
 
