@@ -89,6 +89,15 @@
   source: (string) @import.module
 ) @import.statement
 
+; CommonJS: const svc = require('./svc')  /  const { a, b } = require('./svc')
+; Tag the individual declarator so multi-declarator statements aren't deduped.
+(variable_declarator
+  value: (call_expression
+    function: (identifier) @_require
+    arguments: (arguments (string) @import.module))
+  (#eq? @_require "require")
+) @import.statement
+
 ; ---------------------------------------------------------------------------
 ; Calls
 ; ---------------------------------------------------------------------------
