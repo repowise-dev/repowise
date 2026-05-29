@@ -144,6 +144,35 @@ class TestInitIndexOnly:
         # No pages generated in index-only mode.
         assert state.get("total_pages", 0) == 0
 
+    def test_index_only_persists_clamped_commit_limit_and_excludes(self, runner, work_repo):
+        from repowise.cli.helpers import load_config
+
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--index-only", "-x", "vendor/", "--commit-limit", "99999"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        cfg = load_config(work_repo)
+        assert cfg["exclude_patterns"] == ["vendor/"]
+        assert cfg["commit_limit"] == 5000  # 99999 clamped to the 5000 max
+
+    def test_index_only_omits_excludes_when_none_given(self, runner, work_repo):
+        from repowise.cli.helpers import load_config
+
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--index-only"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        cfg = load_config(work_repo)
+        # Empty excludes and unset commit-limit must not be written as [] / default.
+        assert "exclude_patterns" not in cfg
+        assert "commit_limit" not in cfg
+
 
 class TestInitDefaultDbLocation:
     def test_creates_repo_local_db_without_env_override(

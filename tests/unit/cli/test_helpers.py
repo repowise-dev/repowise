@@ -138,6 +138,67 @@ class TestStateFile:
 
 
 # ---------------------------------------------------------------------------
+# save_config_partial
+# ---------------------------------------------------------------------------
+
+
+class TestSaveConfigPartial:
+    def test_save_config_partial_persists_exclude_patterns(self, tmp_path):
+        """save_config_partial should merge keys into existing config.yaml."""
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text("embedder: minilm\n", encoding="utf-8")
+
+        save_config_partial(tmp_path, exclude_patterns=[".claude/", "tools/"])
+
+        cfg = load_config(tmp_path)
+        assert cfg["exclude_patterns"] == [".claude/", "tools/"]
+        assert cfg["embedder"] == "minilm"  # existing keys preserved
+
+    def test_save_config_partial_noop_when_no_values(self, tmp_path):
+        """save_config_partial with no values should not modify config."""
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text("embedder: minilm\n", encoding="utf-8")
+
+        save_config_partial(tmp_path)  # no kwargs
+
+        cfg = load_config(tmp_path)
+        assert "exclude_patterns" not in cfg
+        assert cfg["embedder"] == "minilm"
+
+    def test_save_config_partial_creates_config_if_missing(self, tmp_path):
+        """save_config_partial should create config.yaml if it doesn't exist."""
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+
+        save_config_partial(tmp_path, exclude_patterns=[".claude/"])
+
+        cfg = load_config(tmp_path)
+        assert cfg["exclude_patterns"] == [".claude/"]
+
+    def test_save_config_partial_persists_commit_limit(self, tmp_path):
+        """save_config_partial should persist commit_limit alongside other keys."""
+        from repowise.cli.helpers import load_config, save_config_partial
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text("embedder: minilm\n", encoding="utf-8")
+
+        save_config_partial(tmp_path, commit_limit=500)
+
+        cfg = load_config(tmp_path)
+        assert cfg["commit_limit"] == 500
+        assert cfg["embedder"] == "minilm"
+
+
+# ---------------------------------------------------------------------------
 # Update lock
 # ---------------------------------------------------------------------------
 

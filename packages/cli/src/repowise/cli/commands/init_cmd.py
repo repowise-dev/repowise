@@ -33,6 +33,7 @@ from repowise.cli.helpers import (
     resolve_repo_path,
     run_async,
     save_config,
+    save_config_partial,
     save_state,
 )
 from repowise.cli.providers import (
@@ -2000,6 +2001,12 @@ def init_command(
         base_state["knowledge_graph"] = build_kg_state(kg)
         save_knowledge_graph_json(repo_path, kg)
     if effective_index_only or provider is None:
+        # Index-only mode skips save_config(); persist exclude_patterns/commit_limit here.
+        save_config_partial(
+            repo_path,
+            exclude_patterns=exclude_patterns if exclude_patterns else None,
+            commit_limit=resolved_commit_limit if commit_limit is not None else None,
+        )
         save_state(repo_path, base_state)
 
     # ---- State + config (full mode only) ----

@@ -491,6 +491,38 @@ def save_config(
         config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def save_config_partial(
+    repo_path: Path,
+    *,
+    exclude_patterns: list[str] | None = None,
+    commit_limit: int | None = None,
+) -> None:
+    """Merge optional keys into ``.repowise/config.yaml``, preserving existing keys.
+
+    No scalar-only fallback like :func:`save_config`: it would silently drop
+    ``exclude_patterns``, and PyYAML is a hard dependency anyway.
+    """
+    import yaml  # type: ignore[import-untyped]
+
+    updates: dict[str, Any] = {}
+    if exclude_patterns is not None:
+        updates["exclude_patterns"] = exclude_patterns
+    if commit_limit is not None:
+        updates["commit_limit"] = commit_limit
+    if not updates:
+        return
+
+    ensure_repowise_dir(repo_path)
+    config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
+    existing = load_config(repo_path)
+    existing.update(updates)
+
+    config_path.write_text(
+        yaml.dump(existing, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Provider resolution
 # ---------------------------------------------------------------------------
