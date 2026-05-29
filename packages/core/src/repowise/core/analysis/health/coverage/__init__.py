@@ -7,6 +7,7 @@ from .cobertura import parse_cobertura
 from .detector import detect_format, is_test_file, paired_test_file, parse
 from .lcov import parse_lcov
 from .model import CoverageReport, FileCoverage
+from .repowise_json import parse_repowise_json
 
 __all__ = [
     "CoverageReport",
@@ -18,4 +19,5 @@ __all__ = [
     "parse_clover",
     "parse_cobertura",
     "parse_lcov",
+    "parse_repowise_json",
 ]

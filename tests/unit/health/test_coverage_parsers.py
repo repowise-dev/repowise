@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from repowise.core.analysis.health.coverage import (
     parse_clover,
     parse_cobertura,
     parse_lcov,
+    parse_repowise_json,
 )
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "coverage"
@@ -80,6 +82,70 @@ def test_clover_parses_cond_lines() -> None:
     assert z.branch_coverage_pct is None
 
 
+def test_repowise_json_dict_form() -> None:
+    text = json.dumps(
+        {
+            "format": "repowise-coverage-v1",
+            "commit_sha": "deadbeef",
+            "files": {
+                "src/foo.py": {
+                    "line_coverage_pct": 75.0,
+                    "branch_coverage_pct": 50.0,
+                    "covered_lines": [1, 3, 4],
+                    "total_coverable_lines": 4,
+                },
+                "src/bar.py": {"line_coverage_pct": 100.0},
+            },
+        }
+    )
+    report = parse_repowise_json(text)
+    assert report.source_format == "repowise-json"
+    assert report.commit_sha == "deadbeef"
+    paths = {f.file_path: f for f in report.files}
+    assert set(paths) == {"src/foo.py", "src/bar.py"}
+    foo = paths["src/foo.py"]
+    assert foo.line_coverage_pct == 75.0
+    assert foo.branch_coverage_pct == 50.0
+    assert foo.covered_lines == [1, 3, 4]
+    assert foo.total_coverable_lines == 4
+    assert paths["src/bar.py"].branch_coverage_pct is None
+
+
+def test_repowise_json_list_form_and_path_normalization() -> None:
+    text = json.dumps(
+        {
+            "files": [
+                {"file_path": "src\\win\\a.py", "line_coverage_pct": 40.0},
+                {"path": "src/b.py", "covered_lines": [1, 2], "total_coverable_lines": 8},
+            ]
+        }
+    )
+    report = parse_repowise_json(text)
+    paths = {f.file_path: f for f in report.files}
+    assert "src/win/a.py" in paths  # backslashes normalized to POSIX
+    b = paths["src/b.py"]
+    assert b.line_coverage_pct == 25.0  # derived from 2/8
+    assert b.total_coverable_lines == 8
+
+
+def test_repowise_json_derives_total_from_pct_and_covered() -> None:
+    text = json.dumps({"files": {"x.py": {"line_coverage_pct": 50.0, "covered_lines": [1, 2, 3]}}})
+    fc = parse_repowise_json(text).files[0]
+    assert fc.total_coverable_lines == 6  # 3 covered at 50% => 6 coverable
+
+
+def test_repowise_json_skips_unanchored_entries() -> None:
+    # An entry with no pct, no covered lines, no total cannot anchor coverage —
+    # it is absent, not zero, so it must be dropped.
+    text = json.dumps({"files": {"x.py": {"branch_coverage_pct": 10.0}, "y.py": {}}})
+    assert parse_repowise_json(text).files == []
+
+
+def test_repowise_json_bad_input_is_empty() -> None:
+    assert parse_repowise_json("not json").files == []
+    assert parse_repowise_json("[1,2,3]").files == []
+
+
 @pytest.mark.parametrize(
     "name, expected",
     [
@@ -90,6 +156,19 @@ def test_clover_parses_cond_lines() -> None:
 )
 def test_detect_format(name: str, expected: str) -> None:
     assert detect_format(_read(name)) == expected
+
+
+def test_detect_and_dispatch_repowise_json() -> None:
+    text = json.dumps(
+        {"format": "repowise-coverage-v1", "files": {"a.py": {"line_coverage_pct": 1.0}}}
+    )
+    assert detect_format(text) == "repowise-json"
+    # recognizable by key even without the format tag
+    text2 = json.dumps({"files": {"a.py": {"line_coverage_pct": 1.0}}})
+    assert detect_format(text2) == "repowise-json"
+    assert parse(text).source_format == "repowise-json"
+    # JSON that isn't a coverage report sniffs to None
+    assert detect_format(json.dumps({"hello": "world"})) is None
 
 
 def test_detect_format_unknown() -> None:

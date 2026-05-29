@@ -275,6 +275,9 @@ def health_command(
                             "max_nesting": m.max_nesting,
                             "nloc": m.nloc,
                             "has_test_file": m.has_test_file,
+                            "line_coverage_pct": m.line_coverage_pct,
+                            "branch_coverage_pct": m.branch_coverage_pct,
+                            "duplication_pct": m.duplication_pct,
                         }
                         for m in metrics_sorted
                     ],

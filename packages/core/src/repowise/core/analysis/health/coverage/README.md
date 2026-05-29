@@ -14,9 +14,36 @@ from repowise.core.analysis.health.coverage import (
 
 - `parse(text, format=None)` → `CoverageReport`. Auto-detects format
   when `format` is ``None``; pass an explicit ``"lcov" | "cobertura" |
-  "clover"`` to override.
-- `parse_lcov(text)`, `parse_cobertura(text)`, `parse_clover(text)` —
-  format-specific entry points (used by tests / programmatic callers).
+  "clover" | "repowise-json"`` to override.
+- `parse_lcov(text)`, `parse_cobertura(text)`, `parse_clover(text)`,
+  `parse_repowise_json(text)` — format-specific entry points (used by
+  tests / programmatic callers).
+
+### Repowise normalized JSON (`repowise-coverage-v1`)
+
+A small, explicit JSON shape so coverage from *any* runner can be
+normalized once (keyed by repo-relative POSIX path) and fed to
+`repowise health --coverage`:
+
+```json
+{
+  "format": "repowise-coverage-v1",
+  "commit_sha": "abc123",
+  "files": {
+    "src/foo.py": {
+      "line_coverage_pct": 87.5,
+      "branch_coverage_pct": 70.0,
+      "covered_lines": [1, 2, 5],
+      "total_coverable_lines": 40
+    }
+  }
+}
+```
+
+`files` may also be a list of the same objects, each with its own
+`file_path`. Tolerant: any two of `(line_coverage_pct, covered_lines,
+total_coverable_lines)` pin a file down; an entry that anchors none is
+skipped (absent ≠ zero).
 - `detect_format(text)` — returns the sniffed format or ``None``.
 - `is_test_file(path, source=None)` — path + optional content heuristic.
 - `paired_test_file(path, all_paths)` — find the conventional test

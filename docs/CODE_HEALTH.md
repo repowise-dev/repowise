@@ -207,6 +207,16 @@ repowise health \
   --coverage frontend/lcov.info
 ```
 
+Formats are auto-detected: **LCOV**, **Cobertura** XML, **Clover** XML, and a
+**normalized JSON** (`repowise-coverage-v1`) keyed by repo-relative path — the
+last lets you feed coverage from any runner once it's mapped to one shape:
+
+```json
+{ "format": "repowise-coverage-v1",
+  "files": { "src/foo.py": { "line_coverage_pct": 87.5,
+                             "total_coverable_lines": 40 } } }
+```
+
 Coverage data feeds into `untested_hotspot` and `coverage_gap`, and shows up
 on the `/repos/<id>/health/coverage` dashboard.
 
@@ -290,7 +300,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 | Code health score (1–10)         | ✅ 23 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Low cohesion (LCOM4) / god class  | ✅ | ✅ | ❌ | ❌ |
-| Test coverage intelligence       | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ |
+| Test coverage intelligence       | ✅ LCOV/Cobertura/Clover/JSON | ❌ | ❌ | ❌ |
 | Untested hotspot detection       | ✅ coverage × hotspot | ❌ | ❌ | ❌ |
 | DRY violation detection          | ✅ native (no npm) | ✅ | ❌ | ❌ |
 | Health trend tracking            | ✅ | ✅ | ❌ | ❌ |

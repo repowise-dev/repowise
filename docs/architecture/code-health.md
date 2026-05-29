@@ -79,7 +79,8 @@ analysis/health/
 │   ├── detector.py                 # format auto-detect + test-file heuristic
 │   ├── lcov.py                     # LCOV parser (stdlib only)
 │   ├── cobertura.py                # Cobertura XML parser
-│   └── clover.py                   # Clover XML parser
+│   ├── clover.py                   # Clover XML parser
+│   └── repowise_json.py            # normalized repowise-coverage-v1 JSON parser
 │
 ├── duplication/                    # native Rabin-Karp clone detection
 │   ├── README.md
@@ -188,7 +189,7 @@ tests/unit/health/                  # 99+ tests
 ├── test_organizational_biomarkers.py
 ├── test_dry_violation.py
 ├── test_duplication.py             # tokenizer, hash, detector
-├── test_coverage_parsers.py        # LCOV/Cobertura/Clover
+├── test_coverage_parsers.py        # LCOV/Cobertura/Clover/JSON
 ├── test_scoring.py                 # category caps, clamping
 ├── test_scoring_snapshot.py        # stability snapshot — locks caps + deductions
 ├── test_health_config.py           # .repowise/health-rules.json
@@ -738,7 +739,7 @@ Other perf notes:
 | `tests/unit/health/test_complexity_walker.py` | Per-language CCN, nesting, cognitive assertions on handcrafted fixtures |
 | `tests/unit/health/test_<biomarker>.py` | Each biomarker — positive in two languages + one negative |
 | `tests/unit/health/test_duplication.py` | Tokenizer normalization, rolling-hash determinism, co-change weighting |
-| `tests/unit/health/test_coverage_parsers.py` | LCOV / Cobertura / Clover happy paths + edge cases |
+| `tests/unit/health/test_coverage_parsers.py` | LCOV / Cobertura / Clover / repowise-JSON happy paths + edge cases |
 | `tests/unit/health/test_scoring.py` | Deduction caps, clamping, KPI math |
 | `tests/unit/health/test_scoring_snapshot.py` | **Stability guard** — caps, severity table, biomarker→category mapping, two known fixture scores |
 | `tests/unit/health/test_trends.py` | Declining + predicted alerts, ordering |

@@ -25,6 +25,7 @@ from .clover import parse_clover
 from .cobertura import parse_cobertura
 from .lcov import parse_lcov
 from .model import CoverageReport
+from .repowise_json import parse_repowise_json
 
 # Test-file globs / suffixes — checked against POSIX-normalized paths.
 _TEST_PATH_FRAGMENTS = (
@@ -74,6 +75,12 @@ def detect_format(text: str) -> str | None:
     sample = text.lstrip()[:2048]
     if not sample:
         return None
+    if sample.startswith("{"):
+        # Repowise normalized JSON — tagged by ``format`` or recognizable by its
+        # per-file coverage keys. Checked before LCOV/XML since none start with ``{``.
+        if "repowise-coverage" in sample or "line_coverage_pct" in sample:
+            return "repowise-json"
+        return None
     if sample.startswith(("TN:", "SF:")) or _LCOV_LINE_RE.match(sample):
         return "lcov"
     if sample.startswith("<?xml") or sample.startswith("<"):
@@ -96,6 +103,8 @@ def parse(text: str, *, format: str | None = None) -> CoverageReport:
         return parse_cobertura(text)
     if fmt == "clover":
         return parse_clover(text)
+    if fmt in ("repowise-json", "json"):
+        return parse_repowise_json(text)
     return CoverageReport(source_format="unknown")
 
 
