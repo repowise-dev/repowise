@@ -26,7 +26,8 @@ Structural complexity (cap −2.5):
 Size & complexity (cap −1.5):
 - `complex_method` — functions with CCN ≥ 9.
 - `large_method` — functions exceeding the NLOC threshold.
-- `primitive_obsession` — many primitive parameters in a single signature.
+- `primitive_obsession` — many primitive parameters in a single signature
+  (suppressed in very small modules, where a wide signature is idiomatic).
 
 Duplication (cap −1.0):
 - `dry_violation` — Rabin–Karp clone pairs, weighted by co-change.

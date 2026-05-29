@@ -65,11 +65,19 @@ def test_large_method_severity_grades():
 # ---- primitive_obsession -------------------------------------------------
 
 
+# A filler function that lifts the enclosing file above the _MIN_FILE_NLOC floor
+# so primitive_obsession is evaluated (a wide signature in a tiny module is
+# idiomatic and suppressed — see test_primitive_obsession_skips_tiny_files).
+_FILLER = FunctionComplexity(
+    "filler", 1, 70, ccn=1, max_nesting=0, cognitive=0, nloc=70, param_count=0
+)
+
+
 def test_primitive_obsession_flags_wide_signature():
     fn = FunctionComplexity(
-        "do_things", 1, 5, ccn=1, max_nesting=0, cognitive=0, nloc=3, param_count=7
+        "do_things", 1, 30, ccn=1, max_nesting=0, cognitive=0, nloc=24, param_count=7
     )
-    out = PrimitiveObsessionDetector().detect(_ctx([fn]))
+    out = PrimitiveObsessionDetector().detect(_ctx([fn, _FILLER]))
     assert len(out) == 1
     assert out[0].details["param_count"] == 7
 
@@ -77,18 +85,30 @@ def test_primitive_obsession_flags_wide_signature():
 def test_primitive_obsession_grace_for_constructors():
     # 6 params on a regular fn fires; on __init__ it doesn't (grace = 2).
     regular = FunctionComplexity(
-        "build", 1, 5, ccn=1, max_nesting=0, cognitive=0, nloc=3, param_count=6
+        "build", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=6
     )
     ctor = FunctionComplexity(
-        "__init__", 1, 5, ccn=1, max_nesting=0, cognitive=0, nloc=3, param_count=6
+        "__init__", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=6
     )
     d = PrimitiveObsessionDetector()
-    assert d.detect(_ctx([regular]))
-    assert d.detect(_ctx([ctor])) == []
+    assert d.detect(_ctx([regular, _FILLER]))
+    assert d.detect(_ctx([ctor, _FILLER])) == []
 
 
 def test_primitive_obsession_ignores_small_signatures():
     fn = FunctionComplexity(
-        "narrow", 1, 5, ccn=1, max_nesting=0, cognitive=0, nloc=3, param_count=3
+        "narrow", 1, 20, ccn=1, max_nesting=0, cognitive=0, nloc=14, param_count=3
+    )
+    assert PrimitiveObsessionDetector().detect(_ctx([fn, _FILLER])) == []
+
+
+def test_primitive_obsession_skips_tiny_files():
+    # A wide signature in a module below the file-NLOC floor is idiomatic
+    # (config/builder/forwarder), not a design smell — suppressed. (Phase-9
+    # failure-forensics: anti-predictive on the small-file size band.)
+    fn = FunctionComplexity(
+        "configure", 1, 12, ccn=1, max_nesting=0, cognitive=0, nloc=10, param_count=8
     )
     assert PrimitiveObsessionDetector().detect(_ctx([fn])) == []
+    # The same wide signature in a substantial module still fires.
+    assert PrimitiveObsessionDetector().detect(_ctx([fn, _FILLER]))

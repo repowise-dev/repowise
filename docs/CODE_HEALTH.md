@@ -98,7 +98,9 @@ so it is excluded — the trigger is about length-with-substance, not raw line
 count.
 
 **primitive_obsession** — Many primitive parameters in one signature. A
-dataclass or parameter object would name the inputs.
+dataclass or parameter object would name the inputs. Suppressed in very small
+modules (under ~60 non-blank lines), where a wide signature is an idiomatic
+config/builder/forwarder rather than a design smell.
 
 **dry_violation** — Cross-file code clones, detected by a native Rabin–Karp
 rolling hash over tree-sitter tokens (variable renames don't hide a clone).
