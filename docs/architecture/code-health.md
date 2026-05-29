@@ -316,7 +316,7 @@ higher than dormant ones.
 
 ---
 
-## 5. The 23 biomarkers and their categories
+## 5. The 24 biomarkers and their categories
 
 Each biomarker is a stateless class implementing the `Biomarker` Protocol
 from `biomarkers/base.py`:
@@ -330,7 +330,7 @@ class Biomarker(Protocol):
 
 | Category               | Cap  | Biomarkers |
 |------------------------|------|------------|
-| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter |
+| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect |
 | Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
@@ -353,6 +353,23 @@ co-change coupling, D'Ambros) are likewise git-only and read the
 `change_entropy` / `change_entropy_pct` fields (see §5.1) and
 `co_change_partners_json`. `knowledge_loss` is activity-gated so
 abandoned-but-stable files (the survivor effect) no longer fire.
+
+`prior_defect` (recent bug-fix history, Ostrand-Weyuker / Kim's "bug cache")
+is the other git-only process signal: the count of bug-fix commits touching a
+file in the trailing ~6-month window, read from `prior_defect_count`. The
+git indexer classifies a commit as a fix with the **same keyword rule the
+defect benchmark labels fixes with** (`_constants.is_fix_commit`), counts only
+non-merge commits inside the window, and anchors the window to the index's
+`as_of` reference (`REPOWISE_GIT_WINDOW_ANCHOR`) — so scoring a historical T0
+checkout measures the fixes *before* T0, never leaking the post-T0 fixes that
+form the benchmark's labels. It carries a **neutral (1.0) weight by design**:
+on the calibration corpus prior-defect history is largely redundant with the
+existing process signals (correlation ≈ +0.59 with `change_entropy`, +0.38 with
+churn; calibrated coefficient ≈ +0.02, effort-aware Popt gain within bootstrap
+noise), so it is not boosted as a predictor. It ships for its **explanatory**
+value — "this file was bug-fixed N times recently" is immediately actionable,
+and it uniquely flags a few files the other signals miss — not for a measured
+accuracy lift.
 
 `low_cohesion` (LCOM4) and `god_class` are the two **class-level**
 structural smells. They read `ctx.class_metrics`, the per-class aggregates

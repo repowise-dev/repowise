@@ -34,6 +34,7 @@ from .low_cohesion import LowCohesionDetector
 from .nested_complexity import NestedComplexityDetector
 from .ownership_risk import OwnershipRiskDetector
 from .primitive_obsession import PrimitiveObsessionDetector
+from .prior_defect import PriorDefectDetector
 from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
@@ -58,6 +59,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     ChurnRiskDetector,  # type: ignore[list-item]
     ChangeEntropyDetector,  # type: ignore[list-item]
     CoChangeScatterDetector,  # type: ignore[list-item]
+    PriorDefectDetector,  # type: ignore[list-item]
     LargeAssertionBlockDetector,  # type: ignore[list-item]
     DuplicatedAssertionBlockDetector,  # type: ignore[list-item]
 ]

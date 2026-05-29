@@ -22,6 +22,9 @@ from repowise.core.analysis.health.biomarkers.knowledge_loss import (
 from repowise.core.analysis.health.biomarkers.ownership_risk import (
     OwnershipRiskDetector,
 )
+from repowise.core.analysis.health.biomarkers.prior_defect import (
+    PriorDefectDetector,
+)
 
 
 def _authors(*pairs: tuple[str, int]) -> str:
@@ -357,3 +360,33 @@ def test_co_change_scatter_skips_low_activity():
 def test_co_change_scatter_silent_on_essential_tier():
     # Empty partner list (ESSENTIAL git tier) → no signal.
     assert CoChangeScatterDetector().detect(_ctx({"commit_count_90d": 8})) == []
+
+
+# ---- prior_defect --------------------------------------------------------
+
+
+def test_prior_defect_fires_low_on_single_fix():
+    out = PriorDefectDetector().detect(_ctx({"prior_defect_count": 1}))
+    assert len(out) == 1
+    assert out[0].severity == "low"
+    assert out[0].details["prior_defect_count"] == 1
+    assert out[0].details["window_days"] == 180
+
+
+def test_prior_defect_scales_severity_with_count():
+    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 2}))[0].severity == "medium"
+    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 3}))[0].severity == "high"
+    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 6}))[0].severity == "critical"
+
+
+def test_prior_defect_escalates_to_critical_on_hotspot():
+    # A mid-band count (3) on a churn hotspot compounds to CRITICAL.
+    meta = {"prior_defect_count": 3, "is_hotspot": True}
+    out = PriorDefectDetector().detect(_ctx(meta))
+    assert out[0].severity == "critical"
+
+
+def test_prior_defect_silent_without_prior_fixes():
+    # No defect history (or ESSENTIAL tier where the field is absent) → silent.
+    assert PriorDefectDetector().detect(_ctx({"prior_defect_count": 0})) == []
+    assert PriorDefectDetector().detect(_ctx({"commit_count_90d": 9})) == []

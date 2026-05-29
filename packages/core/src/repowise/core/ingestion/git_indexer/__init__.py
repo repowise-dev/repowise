@@ -19,9 +19,9 @@ This package was split out of a single 1k-line module; the public import path
 
 from __future__ import annotations
 
-from ._constants import HOTSPOT_HALFLIFE_DAYS
+from ._constants import HOTSPOT_HALFLIFE_DAYS, is_fix_commit
 from .backfill import BACKFILL_PHASE, backfill_full_tier
-from .co_change import compute_co_changes
+from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import (
     compute_percentiles,
     detect_original_path,
@@ -30,6 +30,7 @@ from .enrich import (
 )
 from .file_history import index_file
 from .indexer import GitIndexer
+from .prior_defects import compute_prior_defects
 from .records import (
     _FIELD_SEP,
     _LOG_FORMAT,
@@ -58,9 +59,12 @@ __all__ = [
     "_should_skip_index",
     "backfill_full_tier",
     "compute_co_changes",
+    "compute_co_changes_and_entropy",
     "compute_percentiles",
+    "compute_prior_defects",
     "detect_original_path",
     "get_blame_ownership",
     "index_file",
+    "is_fix_commit",
     "is_significant_commit",
 ]
