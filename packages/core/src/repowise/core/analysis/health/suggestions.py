@@ -111,6 +111,18 @@ _TEMPLATES: dict[str, str] = {
         "so lock in current behavior and slow the rate of structural "
         "edits."
     ),
+    "change_entropy": (
+        "Calm this file's change history. Its modifications arrive in wide, "
+        "scattered commits — a strong history-based fault predictor. Land "
+        "future edits in focused, single-purpose commits, and consider "
+        "splitting the file so unrelated changes stop landing together."
+    ),
+    "co_change_scatter": (
+        "Reduce the blast radius. This file co-changes with many others, so "
+        "every edit ripples across the codebase. Tighten its interface, move "
+        "shared concerns behind a stable boundary, or split it so callers "
+        "depend on smaller, more cohesive units."
+    ),
     "knowledge_loss": (
         "Document the surviving knowledge. The primary author(s) of "
         "this file are no longer active — pair-program with someone "

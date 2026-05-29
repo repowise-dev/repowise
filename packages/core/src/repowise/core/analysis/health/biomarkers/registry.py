@@ -14,7 +14,9 @@ from collections.abc import Sequence
 from .base import Biomarker, BiomarkerResult, FileContext
 from .brain_method import BrainMethodDetector
 from .bumpy_road import BumpyRoadDetector
+from .change_entropy import ChangeEntropyDetector
 from .churn_risk import ChurnRiskDetector
+from .co_change_scatter import CoChangeScatterDetector
 from .code_age_volatility import CodeAgeVolatilityDetector
 from .complex_conditional import ComplexConditionalDetector
 from .complex_method import ComplexMethodDetector
@@ -48,6 +50,8 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     CodeAgeVolatilityDetector,  # type: ignore[list-item]
     OwnershipRiskDetector,  # type: ignore[list-item]
     ChurnRiskDetector,  # type: ignore[list-item]
+    ChangeEntropyDetector,  # type: ignore[list-item]
+    CoChangeScatterDetector,  # type: ignore[list-item]
 ]
 
 

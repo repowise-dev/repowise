@@ -1,12 +1,18 @@
 """Organizational biomarker tests: Developer Congestion, Knowledge Loss,
-Ownership Risk, Churn Risk."""
+Ownership Risk, Churn Risk, Change Entropy, Co-change Scatter."""
 
 from __future__ import annotations
 
 import json
 
 from repowise.core.analysis.health.biomarkers import FileContext
+from repowise.core.analysis.health.biomarkers.change_entropy import (
+    ChangeEntropyDetector,
+)
 from repowise.core.analysis.health.biomarkers.churn_risk import ChurnRiskDetector
+from repowise.core.analysis.health.biomarkers.co_change_scatter import (
+    CoChangeScatterDetector,
+)
 from repowise.core.analysis.health.biomarkers.developer_congestion import (
     DeveloperCongestionDetector,
 )
@@ -248,3 +254,106 @@ def test_churn_risk_skips_size_proportionate_churn():
         "lines_deleted_90d": 10,  # 30/120 = 0.25 < 1.0
     }
     assert ChurnRiskDetector().detect(_ctx(meta)) == []
+
+
+# ---- change_entropy ------------------------------------------------------
+
+
+def test_change_entropy_fires_on_high_percentile():
+    meta = {
+        "change_entropy": 1.4,
+        "change_entropy_pct": 0.88,
+        "commit_count_90d": 6,
+        "is_hotspot": False,
+    }
+    out = ChangeEntropyDetector().detect(_ctx(meta))
+    assert len(out) == 1
+    assert out[0].severity == "medium"  # 0.80 <= pct < 0.90
+    assert out[0].details["change_entropy_pct"] == 0.88
+
+
+def test_change_entropy_escalates_to_critical_on_hotspot():
+    meta = {
+        "change_entropy": 3.2,
+        "change_entropy_pct": 0.97,
+        "commit_count_90d": 9,
+        "is_hotspot": True,
+    }
+    out = ChangeEntropyDetector().detect(_ctx(meta))
+    assert out
+    assert out[0].severity == "critical"  # pct >= 0.95 and hotspot
+
+
+def test_change_entropy_skips_when_below_percentile():
+    meta = {
+        "change_entropy": 0.6,
+        "change_entropy_pct": 0.5,  # below the 0.80 floor
+        "commit_count_90d": 6,
+    }
+    assert ChangeEntropyDetector().detect(_ctx(meta)) == []
+
+
+def test_change_entropy_skips_low_activity():
+    meta = {
+        "change_entropy": 2.0,
+        "change_entropy_pct": 0.95,
+        "commit_count_90d": 2,  # below the 3-commit activity gate
+    }
+    assert ChangeEntropyDetector().detect(_ctx(meta)) == []
+
+
+def test_change_entropy_silent_without_signal():
+    # ESSENTIAL tier / file that never co-changed → no entropy, no firing
+    # even though the (defaulted) percentile field is present.
+    meta = {"change_entropy": 0.0, "change_entropy_pct": 0.0, "commit_count_90d": 8}
+    assert ChangeEntropyDetector().detect(_ctx(meta)) == []
+
+
+# ---- co_change_scatter ---------------------------------------------------
+
+
+def _partners(*pairs: tuple[str, float]) -> str:
+    return json.dumps([{"file_path": p, "co_change_count": c} for p, c in pairs])
+
+
+def test_co_change_scatter_fires_on_broad_coupling():
+    meta = {
+        "co_change_partners_json": _partners(*[(f"m{i}.py", 3.0) for i in range(9)]),
+        "commit_count_90d": 5,
+    }
+    out = CoChangeScatterDetector().detect(_ctx(meta))
+    assert len(out) == 1
+    assert out[0].severity == "medium"  # 8 <= scatter < 15
+    assert out[0].details["scatter"] == 9
+
+
+def test_co_change_scatter_high_severity_on_heavy_coupling():
+    meta = {
+        "co_change_partners_json": _partners(*[(f"m{i}.py", 2.5) for i in range(16)]),
+        "commit_count_90d": 7,
+    }
+    out = CoChangeScatterDetector().detect(_ctx(meta))
+    assert out
+    assert out[0].severity == "high"  # scatter >= 15
+
+
+def test_co_change_scatter_ignores_weak_partners():
+    # Many partners, but all below the 2.0 weight floor → scatter == 0.
+    meta = {
+        "co_change_partners_json": _partners(*[(f"m{i}.py", 1.0) for i in range(12)]),
+        "commit_count_90d": 5,
+    }
+    assert CoChangeScatterDetector().detect(_ctx(meta)) == []
+
+
+def test_co_change_scatter_skips_low_activity():
+    meta = {
+        "co_change_partners_json": _partners(*[(f"m{i}.py", 3.0) for i in range(10)]),
+        "commit_count_90d": 1,
+    }
+    assert CoChangeScatterDetector().detect(_ctx(meta)) == []
+
+
+def test_co_change_scatter_silent_on_essential_tier():
+    # Empty partner list (ESSENTIAL git tier) → no signal.
+    assert CoChangeScatterDetector().detect(_ctx({"commit_count_90d": 8})) == []

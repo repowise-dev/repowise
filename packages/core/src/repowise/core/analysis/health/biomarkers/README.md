@@ -9,7 +9,7 @@ class Biomarker(Protocol):
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]: ...
 ```
 
-## Registered detectors (17)
+## Registered detectors (19)
 
 Structural complexity (cap −2.5):
 - `brain_method` — symbols simultaneously long, complex, and central.
@@ -44,6 +44,12 @@ Organizational (cap −3.5):
 - `churn_risk` — relative churn: a file whose 90-day window rewrote a
   large fraction of its own lines (size-normalized, so it doesn't simply
   re-flag big files).
+- `change_entropy` — Hassan's History Complexity Metric: how scattered a
+  file's changes are across noisy commits (not a churn proxy). Reads the
+  FULL-tier `change_entropy` / `change_entropy_pct` git fields.
+- `co_change_scatter` — breadth of co-change coupling: a file coupled to
+  many others (shotgun surgery). Complements `hidden_coupling`, which
+  flags specific undeclared pairs.
 
 Caps were recalibrated to lift `organizational` (was −1.0) and de-rate
 `size_and_complexity` / `duplication` per plan §3.1. A per-biomarker

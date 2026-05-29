@@ -107,7 +107,9 @@ analysis/health/
     ├── function_hotspot.py
     ├── code_age_volatility.py
     ├── ownership_risk.py
-    └── churn_risk.py
+    ├── churn_risk.py
+    ├── change_entropy.py
+    └── co_change_scatter.py
 ```
 
 ### Persistence
@@ -310,7 +312,7 @@ higher than dormant ones.
 
 ---
 
-## 5. The 17 biomarkers and their categories
+## 5. The 19 biomarkers and their categories
 
 Each biomarker is a stateless class implementing the `Biomarker` Protocol
 from `biomarkers/base.py`:
@@ -324,7 +326,7 @@ class Biomarker(Protocol):
 
 | Category               | Cap  | Biomarkers |
 |------------------------|------|------------|
-| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk |
+| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter |
 | Structural complexity  | −2.5 | brain_method, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
@@ -333,9 +335,27 @@ class Biomarker(Protocol):
 `ownership_risk` (long-run minor-contributor dispersion, Bird et al.) and
 `churn_risk` (size-normalized relative churn, Nagappan-Ball) are git-only
 process signals computed from `top_authors_json` / `lines_added_90d` /
-`churn_percentile` — fields the git indexer already produces. `knowledge_loss`
-is activity-gated so abandoned-but-stable files (the survivor effect) no longer
-fire.
+`churn_percentile` — fields the git indexer already produces. `change_entropy`
+(Hassan's History Complexity Metric) and `co_change_scatter` (breadth of
+co-change coupling, D'Ambros) are likewise git-only and read the
+`change_entropy` / `change_entropy_pct` fields (see §5.1) and
+`co_change_partners_json`. `knowledge_loss` is activity-gated so
+abandoned-but-stable files (the survivor effect) no longer fire.
+
+### 5.1 Change-entropy git-layer fields
+
+`change_entropy` is computed during the **single** FULL-tier co-change walk
+(`ingestion/git_indexer/co_change.py::compute_co_changes_and_entropy`) — no
+extra `git log` subprocess. For each commit touching a set of tracked files
+`F` (with `2 ≤ |F| ≤ 30`; wider commits are dropped as noise, Hassan's filter),
+the commit's entropy is `log2(|F|)`, distributed uniformly (`1/|F|` per file)
+and decayed with the same τ=180d half-life as co-change. The decay-weighted sum
+per file is `git_meta["change_entropy"]`. `enrich.compute_percentiles` then
+derives `change_entropy_pct` by ranking **only files with positive entropy**
+(zero-entropy files — the ESSENTIAL tier, or files only ever changed alone —
+keep pct 0.0 so the biomarker stays silent). Both fields are persisted on
+`git_metadata` (migration `0025`) and the additive-reconcile path back-fills
+them on legacy DBs.
 
 `biomarkers/registry.py` is an **explicit list**, not auto-discovery —
 keeps the registration order deterministic and lets tests inject extras

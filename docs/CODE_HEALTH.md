@@ -1,9 +1,9 @@
 # Code Health
 
-Repowise computes a 1–10 health score for every file in your repo from seventeen
+Repowise computes a 1–10 health score for every file in your repo from nineteen
 deterministic biomarkers — McCabe complexity, deep nesting, brain methods,
 clone detection, untested hotspots, function-level churn, code-age volatility,
-ownership dispersion, relative churn, organizational risk, and more. **No LLM calls, no cloud requirement.** Pure
+ownership dispersion, relative churn, change entropy, co-change scatter, and more. **No LLM calls, no cloud requirement.** Pure
 Python over tree-sitter + git data, designed to finish in under 30 seconds on a
 3 000-file repo.
 
@@ -26,13 +26,13 @@ most:
 
 | Category               | Cap   | Biomarkers |
 |------------------------|-------|------------|
-| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk |
+| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter |
 | Structural complexity  | −2.5  | brain_method, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0  | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5  | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0  | dry_violation |
 
-Seventeen biomarkers across five categories. `function_hotspot` and
+Nineteen biomarkers across five categories. `function_hotspot` and
 `code_age_volatility` are blame-based and sit in the organizational bucket —
 both are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line
 blame index is built.
@@ -42,7 +42,7 @@ let the strongest empirical predictors deduct more than the uniform severity
 table alone allows. `developer_congestion` is multiplied by 1.5,
 `untested_hotspot` by 1.3, `ownership_risk` by 1.3 (the strongest defect
 correlate in the literature), `function_hotspot` (a follow-up biomarker) and
-`churn_risk` by 1.2, and `knowledge_loss` is de-rated to 0.4. The de-rating is OSS-calibrated
+`churn_risk` and `change_entropy` by 1.2 and 1.1, and `knowledge_loss` is de-rated to 0.4. The de-rating is OSS-calibrated
 (legacy code gets handed off because it works); enterprise users where
 attrition is a real risk should raise it back via per-repo overrides — see
 plan §3.5.
@@ -134,6 +134,22 @@ more lines than it contains is structurally unstable regardless of how big it
 is. Because the trigger is a ratio to NLOC, it does not simply re-flag large
 files. Fires when the file is actively churning (≥ 5 recent commits, top
 quartile of repo churn) and relative churn ≥ 1.0.
+
+**change_entropy** — How scattered a file's change history is, adapted from
+Hassan's History Complexity Metric. Each commit is treated as a one-period
+window whose entropy is `log2(files-touched)`, distributed across its files and
+decayed over time. A file repeatedly caught up in wide, scattered commits
+scores high; one changed in focused, single-purpose commits stays low even if
+it changes often — so this is *not* a churn proxy. Fires when the file is
+actively changing (≥ 3 recent commits) and sits in the top 20% of repo change
+entropy. Tier-aware: silent on ESSENTIAL-tier repos (no co-change walk).
+
+**co_change_scatter** — Breadth of coupling. Counts the distinct files a file
+co-changes with above the indexer's recording threshold; a high count means
+editing it tends to ripple across the codebase (shotgun surgery). This is the
+breadth complement to `hidden_coupling`, which flags *specific* undeclared
+coupled pairs. Fires on actively-changing files (≥ 3 recent commits) coupled to
+≥ 8 distinct partners. Tier-aware: silent on ESSENTIAL-tier repos.
 
 ## Test coverage
 
@@ -229,7 +245,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 17 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 19 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ |
 | Untested hotspot detection       | ✅ coverage × hotspot | ❌ | ❌ | ❌ |
