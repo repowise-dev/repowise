@@ -45,26 +45,57 @@ _SEVERITY_DEDUCTION: dict[Severity, float] = {
     Severity.CRITICAL: 2.0,
 }
 
-# Per-biomarker weight multiplier (plan §3.2 Option A). Applied to the
-# severity deduction BEFORE category capping. Lets stronger empirical
-# predictors deduct more without re-tuning the severity table itself.
-# Unknown biomarkers fall back to 1.0.
+# Per-biomarker weight multiplier. Applied to the severity deduction BEFORE
+# category capping, so stronger empirical predictors deduct more without
+# re-tuning the severity table. Unknown biomarkers fall back to 1.0.
+#
+# CALIBRATED OFFLINE (2026-05-29) against a 13-repo, 5-language defect corpus
+# (Python/TS/JS/Rust/Go; 830 files, 216 bug-fix-bearing). Methodology: each
+# file scored at the pre-window commit T0 (no HEAD→window leakage), then an
+# L2-regularized logistic regression of "received a bug-fix in (T0,T1]" on the
+# per-biomarker hits PLUS an explicit NLOC control column — so each weight
+# reflects the biomarker's defect lift *beyond file size*. Cross-project
+# (leave-one-repo-out) pooled OOF AUC ≈ 0.70. The fit is reproduced by
+# `local-stash/calibrate_health_weights.py`; the runtime stays pure-
+# deterministic / zero-LLM — only these learned constants ship.
+#
+# Mapping policy ("balanced"): positive, well-measured predictors are scaled
+# into [1.0, 1.8] ∝ coefficient; biomarkers that fired widely but were weak/
+# non-predictive at T0 are floored to 0.5 (kept as mild maintainability/parity
+# signals, not disabled); biomarkers the benchmark could NOT measure (no
+# coverage ingested → untested_hotspot/coverage_gap; test-only assertion smells;
+# too-rare churn_risk/hidden_coupling; the gate-bound code_age_volatility) keep
+# their prior weight. Top calibrated predictors: co_change_scatter (1.8),
+# change_entropy (1.51), ownership_risk (1.38), nested_complexity (1.34).
+#
 # Governance biomarkers (contradictory_decision, stale_governance,
-# ungoverned_hotspot) are listed here for documentation intent — their
-# findings are written by the additive governance pass (governance.py)
-# after the per-file score pass has already completed, so these weights
-# do not affect HealthFileMetric.score in the current pipeline.
+# ungoverned_hotspot) are written by the additive governance pass after the
+# per-file score pass, so their weights are documentation-only.
 _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
-    "developer_congestion": 1.5,
-    "untested_hotspot": 1.3,
-    "function_hotspot": 1.2,
-    "code_age_volatility": 1.1,
-    "hidden_coupling": 1.0,
-    "ownership_risk": 1.3,
-    "churn_risk": 1.2,
-    "change_entropy": 1.1,
-    "co_change_scatter": 1.0,
-    "knowledge_loss": 0.4,
+    # --- calibrated predictors (positive lift beyond size) ---
+    "co_change_scatter": 1.8,
+    "change_entropy": 1.51,
+    "ownership_risk": 1.38,
+    "nested_complexity": 1.34,
+    "complex_conditional": 1.33,
+    "large_method": 1.25,
+    "complex_method": 1.21,
+    "function_hotspot": 1.16,
+    "god_class": 1.13,
+    # --- kept at prior: benchmark could not fairly measure these ---
+    "untested_hotspot": 1.3,  # benchmark ingests no coverage (has_test_file fallback only)
+    "churn_risk": 1.2,  # fired in too few repos to calibrate
+    "code_age_volatility": 1.1,  # gate unmet at T0 across the corpus
+    # --- floored: fired widely but weak / non-predictive at T0 ---
+    "developer_congestion": 0.5,  # was 1.5 — the HEAD-leakage hero; weak under T0
+    "low_cohesion": 0.5,
+    "brain_method": 0.5,
+    "bumpy_road": 0.5,
+    "primitive_obsession": 0.5,
+    "dry_violation": 0.5,
+    "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
+    # (coverage_gap, hidden_coupling, large_assertion_block,
+    #  duplicated_assertion_block default to 1.0 — kept at prior)
     # Governance — additive pass, weights are informational
     "contradictory_decision": 1.0,
     "stale_governance": 0.9,

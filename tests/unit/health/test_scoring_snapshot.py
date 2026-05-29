@@ -38,19 +38,36 @@ _EXPECTED_SEVERITY_DEDUCTION = {
     Severity.CRITICAL: 2.0,
 }
 
+# Defect-calibrated offline (2026-05-29) against a 15-repo / 5-language corpus,
+# scoring each file at T0 with an L2-logistic + explicit NLOC control. These are
+# learned constants, not hand priors — regenerate via
+# local-stash/calibrate_health_weights.py if the corpus changes. See the comment
+# block on scoring._BIOMARKER_WEIGHT_MULTIPLIER for the "balanced" mapping policy.
 _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
-    "developer_congestion": 1.5,
+    # calibrated predictors
+    "co_change_scatter": 1.8,
+    "change_entropy": 1.51,
+    "ownership_risk": 1.38,
+    "nested_complexity": 1.34,
+    "complex_conditional": 1.33,
+    "large_method": 1.25,
+    "complex_method": 1.21,
+    "function_hotspot": 1.16,
+    "god_class": 1.13,
+    # kept at prior (benchmark could not fairly measure)
     "untested_hotspot": 1.3,
-    "function_hotspot": 1.2,
-    "code_age_volatility": 1.1,
-    "hidden_coupling": 1.0,
-    "ownership_risk": 1.3,
     "churn_risk": 1.2,
-    "change_entropy": 1.1,
-    "co_change_scatter": 1.0,
+    "code_age_volatility": 1.1,
+    # floored — fired widely but weak/non-predictive at T0
+    "developer_congestion": 0.5,
+    "low_cohesion": 0.5,
+    "brain_method": 0.5,
+    "bumpy_road": 0.5,
+    "primitive_obsession": 0.5,
+    "dry_violation": 0.5,
     "knowledge_loss": 0.4,
-    # Phase 4B governance biomarkers (informational — surfaced as findings,
-    # not fed back into the score pass, which has already run upstream).
+    # Governance biomarkers (informational — surfaced as findings, not fed back
+    # into the score pass, which has already run upstream).
     "contradictory_decision": 1.0,
     "stale_governance": 0.9,
     "ungoverned_hotspot": 0.7,
@@ -125,13 +142,13 @@ def test_known_fixture_score_is_stable():
         _result("knowledge_loss", Severity.LOW),
     ]
     score, _ = score_file(findings)
-    # Math (post-recalibration):
-    #   structural   = 2.0 + 1.2 = 3.2 → capped at 2.5
-    #   size_and_cx  = 0.7        (under 1.5 cap)
-    #   coverage     = 1.2 * 1.3 = 1.56 (under 2.0 cap)
-    #   organizational = 0.3 * 0.4 = 0.12 (under 3.5 cap)
-    #   total deduction = 2.5 + 0.7 + 1.56 + 0.12 = 4.88 → 10 - 4.88 = 5.12
-    assert score == 5.12
+    # Math (defect-calibrated weights):
+    #   structural   = brain(2.0*0.5) + nested(1.2*1.34) = 1.0 + 1.608 = 2.608 → capped at 2.5
+    #   size_and_cx  = complex_method 0.7 * 1.21 = 0.847   (under 1.5 cap)
+    #   coverage     = untested_hotspot 1.2 * 1.3 = 1.56   (under 2.0 cap)
+    #   organizational = knowledge_loss 0.3 * 0.4 = 0.12   (under 3.5 cap)
+    #   total deduction = 2.5 + 0.847 + 1.56 + 0.12 = 5.027 → 10 - 5.027 = 4.973
+    assert score == 4.973
 
 
 def test_category_cap_clamps_score():
@@ -142,10 +159,11 @@ def test_category_cap_clamps_score():
     assert score == 7.5
 
 
-def test_organizational_cap_now_dominant():
-    """Recalibration lifts organizational from -1.0 to -3.5 — verify a high-volume
-    developer_congestion stream now lands a real dent instead of being suppressed."""
+def test_organizational_cap_bounds_stream():
+    """The organizational cap (-3.5) bounds a high-volume finding stream. With
+    developer_congestion defect-calibrated down to 0.5 (it was a HEAD-leakage
+    artifact), three CRITICALs deduct under the cap rather than saturating it."""
     findings = [_result("developer_congestion", Severity.CRITICAL) for _ in range(3)]
     score, _ = score_file(findings)
-    # 3 * 2.0 * 1.5 = 9.0 weighted, capped at 3.5 → score = 6.5
-    assert score == 6.5
+    # 3 * 2.0 * 0.5 = 3.0 weighted (< 3.5 cap) → score = 7.0
+    assert score == 7.0

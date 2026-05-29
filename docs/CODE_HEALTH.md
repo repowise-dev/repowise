@@ -42,13 +42,22 @@ blame index is built.
 
 Per-biomarker weight multipliers (see `scoring._BIOMARKER_WEIGHT_MULTIPLIER`)
 let the strongest empirical predictors deduct more than the uniform severity
-table alone allows. `developer_congestion` is multiplied by 1.5,
-`untested_hotspot` by 1.3, `ownership_risk` by 1.3 (the strongest defect
-correlate in the literature), `function_hotspot` (a follow-up biomarker) and
-`churn_risk` and `change_entropy` by 1.2 and 1.1, and `knowledge_loss` is de-rated to 0.4. The de-rating is OSS-calibrated
-(legacy code gets handed off because it works); enterprise users where
-attrition is a real risk should raise it back via per-repo overrides — see
-plan §3.5.
+table alone allows. **These weights are calibrated offline against a defect
+corpus, not hand-tuned**: each file is scored at the pre-window commit (T0, no
+leakage) and an L2-logistic regression — with NLOC as an explicit control — fits
+each biomarker's defect lift *beyond file size*. The runtime stays
+deterministic; only the learned constants ship. The strongest calibrated
+predictors are `co_change_scatter` (1.8), `change_entropy` (1.51),
+`ownership_risk` (1.38), and `nested_complexity` (1.34); the remaining
+structural complexity/size biomarkers land around 1.1–1.33. Biomarkers that fire widely but
+proved weak under leakage-free scoring (`developer_congestion`, `dry_violation`,
+`low_cohesion`, `brain_method`, `primitive_obsession`, `bumpy_road`) are floored
+to 0.5 — kept as maintainability/parity signals, not disabled — and
+`knowledge_loss` stays de-rated at 0.4. Coverage-dependent and rarely-firing
+biomarkers (`untested_hotspot` 1.3, `code_age_volatility` 1.1, `churn_risk` 1.2)
+keep prior weights the corpus could not fairly measure. The calibration is
+reproduced by `local-stash/calibrate_health_weights.py` and documented in
+`repowise-bench/health-defect/BENCHMARK_REPORT.md`.
 
 The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 

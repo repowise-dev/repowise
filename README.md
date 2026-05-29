@@ -31,7 +31,9 @@ The result: your agent answers *"why does auth work this way?"* instead of *"her
 
 ## Benchmarks
 
-Most of a coding agent's spend goes to *exploration* — greping for symbols, reading candidate files, re-reading them as context grows. repowise does that work once, offline, so the agent skips it on every query. In early paired SWE-QA runs on real repositories (same model, same harness, with and without repowise's MCP tools), that translated into up to **−70% tool calls, −89% file reads, and −36% cost per query at comparable answer quality**. We're putting together a more rigorous, up-to-date benchmark suite and will publish the full numbers here soon — early methodology and results live at **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)**.
+Most of a coding agent's spend goes to *exploration* — greping for symbols, reading candidate files, re-reading them as context grows. repowise does that work once, offline, so the agent skips it on every query. In early paired SWE-QA runs on real repositories (same model, same harness, with and without repowise's MCP tools), that translated into up to **−70% tool calls, −89% file reads, and −36% cost per query at comparable answer quality**.
+
+And the intelligence isn't only for agents — repowise's **code-health score predicts where bugs will land**. Validated across **13 repositories in 5 languages** (Python, TypeScript, JavaScript, Rust, Go), the score reaches **ROC AUC up to 0.90** at identifying the files that go on to receive bug-fixes over the next six months — and the handful it flags unhealthiest concentrate **up to 80% of those future fixes**. The biomarker weights are **learned from real defect history, not hand-tuned**, while the runtime stays fully deterministic and LLM-free. Full methodology and results live at **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)**.
 
 ---
 
