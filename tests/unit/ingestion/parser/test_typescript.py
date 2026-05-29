@@ -207,3 +207,15 @@ export class Service {
         result = parser.parse_file(fi, src)
         method_names = {s.name for s in result.symbols if s.kind == "method"}
         assert {"run", "helper"} <= method_names
+
+
+def test_mts_file_uses_typescript_parser(parser: ASTParser) -> None:
+    fi = _make_file_info("src/module.mts", "typescript")
+    parsed = parser.parse_file(fi, b"export function load(): number { return 1; }\n")
+    assert any(s.name == "load" for s in parsed.symbols)
+
+
+def test_cts_file_uses_typescript_parser(parser: ASTParser) -> None:
+    fi = _make_file_info("src/module.cts", "typescript")
+    parsed = parser.parse_file(fi, b"export function load(): number { return 1; }\n")
+    assert any(s.name == "load" for s in parsed.symbols)

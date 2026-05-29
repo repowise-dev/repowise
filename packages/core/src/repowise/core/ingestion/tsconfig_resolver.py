@@ -31,8 +31,15 @@ import structlog
 log = structlog.get_logger(__name__)
 
 # Extensions probed in TypeScript module resolution order.
-_TS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx")
-_INDEX_FILES = ("index.ts", "index.tsx", "index.js", "index.jsx")
+_TS_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx")
+_INDEX_FILES = (
+    "index.ts",
+    "index.tsx",
+    "index.mts",
+    "index.cts",
+    "index.js",
+    "index.jsx",
+)
 
 
 # ---------------------------------------------------------------------------

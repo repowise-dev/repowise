@@ -530,3 +530,31 @@ class TestMatchAlias:
 
     def test_wildcard_empty_capture(self) -> None:
         assert TsconfigResolver._match_alias("@/*", "@/") == ""
+
+
+class TestMtsCtsAliasResolution:
+    def _resolver(self, tmp_path: Path, path_set: set[str]) -> TsconfigResolver:
+        return _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {
+                    "compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["./src/*"]}}
+                }
+            },
+            path_set=path_set,
+        )
+
+    def test_alias_resolves_to_mts(self, tmp_path: Path) -> None:
+        resolver = self._resolver(tmp_path, {"src/module.mts"})
+        result = resolver.resolve("@/module", _importer(tmp_path, "src/app.ts"))
+        assert result == "src/module.mts"
+
+    def test_alias_resolves_to_cts(self, tmp_path: Path) -> None:
+        resolver = self._resolver(tmp_path, {"src/module.cts"})
+        result = resolver.resolve("@/module", _importer(tmp_path, "src/app.ts"))
+        assert result == "src/module.cts"
+
+    def test_alias_directory_resolves_to_index_mts(self, tmp_path: Path) -> None:
+        resolver = self._resolver(tmp_path, {"src/pkg/index.mts"})
+        result = resolver.resolve("@/pkg", _importer(tmp_path, "src/app.ts"))
+        assert result == "src/pkg/index.mts"

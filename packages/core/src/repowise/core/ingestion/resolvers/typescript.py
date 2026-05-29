@@ -22,7 +22,18 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
         base_posix = posixpath.normpath(
             posixpath.join(importer_dir.as_posix(), module_path)
         )
-        exts: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js")
+        exts: tuple[str, ...] = (
+            ".ts",
+            ".tsx",
+            ".mts",
+            ".cts",
+            ".js",
+            ".jsx",
+            "/index.ts",
+            "/index.mts",
+            "/index.cts",
+            "/index.js",
+        )
         if ctx.has_sfc_files:
             exts = exts + (".vue", ".svelte", ".astro")
         for ext in exts:
@@ -37,7 +48,7 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
         stem_dot = base_posix.rfind(".")
         if stem_dot > base_posix.rfind("/"):
             real_stem = base_posix[:stem_dot]
-            for ext in (".ts", ".tsx"):
+            for ext in (".ts", ".tsx", ".mts", ".cts"):
                 candidate = real_stem + ext
                 if candidate in ctx.path_set:
                     return candidate

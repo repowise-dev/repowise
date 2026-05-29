@@ -51,8 +51,12 @@ def _is_test_file(rel_path: str) -> bool:
         or p.endswith(".test.ts")
         or p.endswith(".test.tsx")
         or p.endswith(".test.js")
+        or p.endswith(".test.mts")
+        or p.endswith(".test.cts")
         or p.endswith(".spec.ts")
         or p.endswith(".spec.js")
+        or p.endswith(".spec.mts")
+        or p.endswith(".spec.cts")
         or p.endswith("_test.go")
     )
 
@@ -186,8 +190,12 @@ def _has_paired_test_file(rel_path: str, all_paths: set[str]) -> bool:
         f"{stem}.test.ts",
         f"{stem}.test.tsx",
         f"{stem}.test.js",
+        f"{stem}.test.mts",
+        f"{stem}.test.cts",
         f"{stem}.spec.ts",
         f"{stem}.spec.js",
+        f"{stem}.spec.mts",
+        f"{stem}.spec.cts",
         f"{stem}_test.go",
     }
     return any(

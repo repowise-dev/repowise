@@ -29,6 +29,16 @@ class TestLanguageDetection:
         f.write_text("<div />")
         assert _detect_language(f) == "typescript"
 
+    def test_mts_extension(self, tmp_path: Path) -> None:
+        f = tmp_path / "module.mts"
+        f.write_text("export const x = 1;")
+        assert _detect_language(f) == "typescript"
+
+    def test_cts_extension(self, tmp_path: Path) -> None:
+        f = tmp_path / "module.cts"
+        f.write_text("export const x = 1;")
+        assert _detect_language(f) == "typescript"
+
     def test_go_extension(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "main.go") == "go"
 

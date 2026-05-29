@@ -46,8 +46,12 @@ _TEST_SUFFIXES: tuple[str, ...] = (
     ".test.ts",
     ".test.tsx",
     ".test.js",
+    ".test.mts",
+    ".test.cts",
     ".spec.ts",
     ".spec.js",
+    ".spec.mts",
+    ".spec.cts",
     "_test.go",
 )
 _TEST_DIR_FRAGMENTS: tuple[str, ...] = (

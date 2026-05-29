@@ -79,7 +79,19 @@ def _looks_like_test_path(path: str) -> bool:
         or "/__tests__/" in p
         or p.startswith(("test/", "tests/", "__tests__/"))
         or p.endswith(
-            ("_test.py", "_test.go", ".test.ts", ".test.tsx", ".test.js", ".spec.ts", ".spec.js")
+            (
+                "_test.py",
+                "_test.go",
+                ".test.ts",
+                ".test.tsx",
+                ".test.js",
+                ".test.mts",
+                ".test.cts",
+                ".spec.ts",
+                ".spec.js",
+                ".spec.mts",
+                ".spec.cts",
+            )
         )
         or p.rsplit("/", 1)[-1].startswith("test_")
     )

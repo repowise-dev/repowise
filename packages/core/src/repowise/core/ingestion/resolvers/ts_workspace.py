@@ -220,7 +220,16 @@ def get_or_build_workspace_map(ctx: "ResolverContext") -> dict[str, str]:
     return {name: info["dir"] for name, info in get_or_build_workspace_info(ctx).items()}
 
 
-_PROBE_EXTENSIONS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_PROBE_EXTENSIONS: tuple[str, ...] = (
+    ".ts",
+    ".tsx",
+    ".mts",
+    ".cts",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+)
 
 
 def _probe_path(base: str, path_set: set[str]) -> str | None:
