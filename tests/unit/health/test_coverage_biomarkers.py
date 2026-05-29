@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from repowise.core.analysis.health.biomarkers import FileContext
 from repowise.core.analysis.health.biomarkers.coverage_gap import CoverageGapDetector
+from repowise.core.analysis.health.biomarkers.coverage_gradient import (
+    CoverageGradientDetector,
+)
 from repowise.core.analysis.health.biomarkers.untested_hotspot import (
     UntestedHotspotDetector,
 )
@@ -124,3 +127,49 @@ def test_coverage_gap_skips_when_no_coverage_data() -> None:
 def test_coverage_gap_skips_well_covered() -> None:
     ctx = _ctx(line_cov=85.0, total_lines=200, covered_lines=set(range(1, 171)))
     assert CoverageGapDetector().detect(ctx) == []
+
+
+# ---------------------------------------------------------------------------
+# coverage_gradient
+# ---------------------------------------------------------------------------
+
+
+def test_coverage_gradient_fires_proportionally_to_uncovered() -> None:
+    # 75% covered → 25% uncovered → deduction 4.0 * 0.25 = 1.0.
+    ctx = _ctx(line_cov=75.0, total_lines=100)
+    results = CoverageGradientDetector().detect(ctx)
+    assert len(results) == 1
+    r = results[0]
+    assert r.deduction == 1.0
+    assert r.details["uncovered_fraction"] == 0.25
+    assert r.severity == "low"
+
+
+def test_coverage_gradient_fires_on_well_covered_file() -> None:
+    # The binary gates stay silent at 92% — the gradient still fires (the point
+    # of this biomarker): 8% uncovered → deduction 0.32.
+    ctx = _ctx(line_cov=92.0, total_lines=300)
+    results = CoverageGradientDetector().detect(ctx)
+    assert len(results) == 1
+    assert round(results[0].deduction, 4) == 0.32
+    assert CoverageGapDetector().detect(ctx) == []
+
+
+def test_coverage_gradient_severity_bands() -> None:
+    assert CoverageGradientDetector().detect(_ctx(line_cov=30.0))[0].severity == "high"
+    assert CoverageGradientDetector().detect(_ctx(line_cov=55.0))[0].severity == "medium"
+    assert CoverageGradientDetector().detect(_ctx(line_cov=90.0))[0].severity == "low"
+
+
+def test_coverage_gradient_silent_when_no_coverage_data() -> None:
+    # Absent coverage is never imputed as uncovered.
+    assert CoverageGradientDetector().detect(_ctx(line_cov=None)) == []
+
+
+def test_coverage_gradient_silent_at_full_coverage() -> None:
+    assert CoverageGradientDetector().detect(_ctx(line_cov=100.0)) == []
+
+
+def test_coverage_gradient_skips_test_files() -> None:
+    ctx = _ctx(path="tests/test_thing.py", line_cov=10.0)
+    assert CoverageGradientDetector().detect(ctx) == []

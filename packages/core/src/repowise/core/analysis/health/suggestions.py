@@ -80,6 +80,12 @@ _TEMPLATES: dict[str, str] = {
         "uncovered code paths (errors, edge cases, security-sensitive "
         "branches) rather than just chasing the percentage."
     ),
+    "coverage_gradient": (
+        "Raise this file's line coverage. The uncovered fraction tracks "
+        "defect risk directly — add tests for the untested paths, prioritising "
+        "error handling and edge cases, and the deduction shrinks in step with "
+        "the coverage you recover."
+    ),
     "developer_congestion": (
         "Cool the contention. Too many authors are touching this file "
         "at once — clarify ownership, or split the file along its "

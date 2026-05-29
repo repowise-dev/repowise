@@ -21,6 +21,7 @@ from .code_age_volatility import CodeAgeVolatilityDetector
 from .complex_conditional import ComplexConditionalDetector
 from .complex_method import ComplexMethodDetector
 from .coverage_gap import CoverageGapDetector
+from .coverage_gradient import CoverageGradientDetector
 from .developer_congestion import DeveloperCongestionDetector
 from .dry_violation import DryViolationDetector
 from .duplicated_assertion_block import DuplicatedAssertionBlockDetector
@@ -49,6 +50,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     DryViolationDetector,  # type: ignore[list-item]
     UntestedHotspotDetector,  # type: ignore[list-item]
     CoverageGapDetector,  # type: ignore[list-item]
+    CoverageGradientDetector,  # type: ignore[list-item]
     DeveloperCongestionDetector,  # type: ignore[list-item]
     KnowledgeLossDetector,  # type: ignore[list-item]
     HiddenCouplingDetector,  # type: ignore[list-item]

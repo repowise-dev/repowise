@@ -317,7 +317,7 @@ higher than dormant ones.
 
 ---
 
-## 5. The 24 biomarkers and their categories
+## 5. The 25 biomarkers and their categories
 
 Each biomarker is a stateless class implementing the `Biomarker` Protocol
 from `biomarkers/base.py`:
@@ -334,6 +334,7 @@ class Biomarker(Protocol):
 | Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect |
 | Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
+| Test coverage (cont.)  | −2.0 | coverage_gradient |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0 | dry_violation |
 | Test quality           | −0.5 | large_assertion_block, duplicated_assertion_block |
@@ -371,6 +372,25 @@ noise), so it is not boosted as a predictor. It ships for its **explanatory**
 value — "this file was bug-fixed N times recently" is immediately actionable,
 and it uniquely flags a few files the other signals miss — not for a measured
 accuracy lift.
+
+`coverage_gradient` makes the test-coverage signal **continuous**. The two
+binary coverage gates (`untested_hotspot`, `coverage_gap`) only fire below hard
+thresholds (≈40–60% line coverage), so on a well-tested codebase — where most
+files sit at 85–99% — the score is effectively blind to coverage even though the
+uncovered fraction still carries defect signal. `coverage_gradient` deducts
+health in direct proportion to that fraction: `4.0 × (1 − line_coverage_pct/100)`
+health points, clamped by its category cap (binding at ≥50% uncovered). It uses
+the `deduction` override on `BiomarkerResult` — a continuous magnitude that
+replaces the discrete severity → deduction table for that finding — so it stays
+**linear and per-finding attributable** (the `health_impact` contract holds). It
+is **silent when no coverage report was ingested** (`line_coverage_pct is None`):
+absent coverage is never imputed as uncovered. It lives in its own capped
+category (`test_coverage_gradient`, −2.0) so the additive continuous signal
+neither squeezes nor is squeezed by the binary gates, and it skips test files.
+Calibrated offline against the defect corpus, it recovers **+0.043 corpus AUC
+[95% CI +0.023, +0.061]** on the covered subset (≈65% of the continuous-feature
+ceiling), Popt-neutral, and is exactly zero on repos without ingested coverage —
+a purely additive improvement.
 
 `low_cohesion` (LCOM4) and `god_class` are the two **class-level**
 structural smells. They read `ctx.class_metrics`, the per-class aggregates

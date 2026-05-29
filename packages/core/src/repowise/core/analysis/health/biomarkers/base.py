@@ -99,6 +99,14 @@ class BiomarkerResult:
     line_end: int | None
     details: dict[str, Any]
     reason: str = ""
+    # Optional continuous deduction override (health points, pre-weight,
+    # pre-category-cap). When set, the scorer uses this magnitude instead of
+    # the discrete ``severity`` → deduction table — letting a biomarker carry a
+    # signal whose strength varies continuously per finding (e.g. a coverage
+    # deduction that scales with the uncovered fraction). ``severity`` is still
+    # carried for display/filtering. Stays fully per-finding attributable, so
+    # the linear ``health_impact`` contract holds.
+    deduction: float | None = None
 
 
 class Biomarker(Protocol):

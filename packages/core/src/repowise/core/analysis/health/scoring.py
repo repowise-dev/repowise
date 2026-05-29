@@ -29,9 +29,18 @@ CATEGORY_CAPS: dict[str, float] = {
     "organizational": 3.5,
     "structural_complexity": 2.5,
     "test_coverage": 2.0,
+    # Continuous coverage-gradient deduction (scales with the uncovered
+    # fraction). Kept in its OWN capped category, separate from the binary
+    # ``test_coverage`` gates, so the additive, monotonic coverage signal is
+    # bounded on its own terms and never squeezed by - or squeezes - the
+    # has-tests / hotspot gates. Calibrated offline: a per-file deduction of
+    # 4.0 x uncovered_fraction (this cap binding at ≥50% uncovered) recovers
+    # +0.043 corpus AUC [95% CI +0.023, +0.061] on the covered subset,
+    # Popt-neutral, and is exactly zero where coverage was never ingested.
+    "test_coverage_gradient": 2.0,
     "size_and_complexity": 1.5,
     "duplication": 1.0,
-    # Test-quality smells are mild, advisory signals — a small cap keeps a
+    # Test-quality smells are mild, advisory signals - a small cap keeps a
     # noisy test file from dominating its own health score.
     "test_quality": 0.5,
 }
@@ -51,19 +60,19 @@ _SEVERITY_DEDUCTION: dict[Severity, float] = {
 #
 # CALIBRATED OFFLINE (2026-05-29) against a 13-repo, 5-language defect corpus
 # (Python/TS/JS/Rust/Go; 830 files, 216 bug-fix-bearing). Methodology: each
-# file scored at the pre-window commit T0 (no HEAD→window leakage), then an
+# file scored at the pre-window commit T0 (no HEAD->window leakage), then an
 # L2-regularized logistic regression of "received a bug-fix in (T0,T1]" on the
-# per-biomarker hits PLUS an explicit NLOC control column — so each weight
+# per-biomarker hits PLUS an explicit NLOC control column - so each weight
 # reflects the biomarker's defect lift *beyond file size*. Cross-project
-# (leave-one-repo-out) pooled OOF AUC ≈ 0.70. The fit is reproduced by
+# (leave-one-repo-out) pooled OOF AUC ~ 0.70. The fit is reproduced by
 # `local-stash/calibrate_health_weights.py`; the runtime stays pure-
-# deterministic / zero-LLM — only these learned constants ship.
+# deterministic / zero-LLM - only these learned constants ship.
 #
 # Mapping policy ("balanced"): positive, well-measured predictors are scaled
 # into [1.0, 1.8] ∝ coefficient; biomarkers that fired widely but were weak/
 # non-predictive at T0 are floored to 0.5 (kept as mild maintainability/parity
 # signals, not disabled); biomarkers the benchmark could NOT measure (no
-# coverage ingested → untested_hotspot/coverage_gap; test-only assertion smells;
+# coverage ingested -> untested_hotspot/coverage_gap; test-only assertion smells;
 # too-rare churn_risk/hidden_coupling; the gate-bound code_age_volatility) keep
 # their prior weight. Top calibrated predictors: co_change_scatter (1.8),
 # change_entropy (1.51), ownership_risk (1.38), nested_complexity (1.34).
@@ -84,10 +93,10 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "god_class": 1.13,
     # Prior-defect history (recent bug-fix count). NEUTRAL weight by design, not
     # a boost: on the 13-repo corpus its calibrated coefficient is ~+0.02 (no lift
-    # beyond size + the existing process signals — it correlates +0.59 with
+    # beyond size + the existing process signals - it correlates +0.59 with
     # change_entropy, +0.38 with churn) and the effort-aware Popt gain is +0.01
     # with bootstrap CIs straddling zero. So it ships as an interpretable,
-    # leakage-free finding ("bug-fixed N times recently" — directly actionable,
+    # leakage-free finding ("bug-fixed N times recently" - directly actionable,
     # and it uniquely flags a handful of files the other signals miss), NOT as a
     # calibrated predictor. See local-stash/{calibrate_health_weights,
     # measure_prior_defect,diagnose_prior_defect}.py + the progress doc Phase 8.5.
@@ -97,7 +106,7 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "churn_risk": 1.2,  # fired in too few repos to calibrate
     "code_age_volatility": 1.1,  # gate unmet at T0 across the corpus
     # --- floored: fired widely but weak / non-predictive at T0 ---
-    "developer_congestion": 0.5,  # was 1.5 — the HEAD-leakage hero; weak under T0
+    "developer_congestion": 0.5,  # was 1.5 - the HEAD-leakage hero; weak under T0
     "low_cohesion": 0.5,
     "brain_method": 0.5,
     "bumpy_road": 0.5,
@@ -105,14 +114,14 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
     # (coverage_gap, hidden_coupling, large_assertion_block,
-    #  duplicated_assertion_block default to 1.0 — kept at prior)
-    # Governance — additive pass, weights are informational
+    #  duplicated_assertion_block default to 1.0 - kept at prior)
+    # Governance - additive pass, weights are informational
     "contradictory_decision": 1.0,
     "stale_governance": 0.9,
     "ungoverned_hotspot": 0.7,
 }
 
-# Map biomarker name → category. Kept here (single source of truth)
+# Map biomarker name -> category. Kept here (single source of truth)
 # rather than on each biomarker class because some biomarkers naturally
 # span categories and we may want to retune without re-deploying.
 _BIOMARKER_CATEGORY: dict[str, str] = {
@@ -128,6 +137,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "dry_violation": "duplication",
     "untested_hotspot": "test_coverage",
     "coverage_gap": "test_coverage",
+    "coverage_gradient": "test_coverage_gradient",
     "developer_congestion": "organizational",
     "knowledge_loss": "organizational",
     "hidden_coupling": "organizational",
@@ -140,7 +150,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "prior_defect": "organizational",
     "large_assertion_block": "test_quality",
     "duplicated_assertion_block": "test_quality",
-    # Governance biomarkers — written by the additive governance pass
+    # Governance biomarkers - written by the additive governance pass
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",
     "contradictory_decision": "organizational",
@@ -162,7 +172,7 @@ def biomarker_category(name: str) -> str:
 
 
 def score_file(results: Iterable[BiomarkerResult]) -> tuple[float, list[float]]:
-    """Aggregate biomarker hits → final score in [1.0, 10.0].
+    """Aggregate biomarker hits -> final score in [1.0, 10.0].
 
     Returns ``(score, per_result_deductions)`` where the deductions list
     is parallel to *results* and represents each finding's contribution
@@ -174,7 +184,12 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[float, list[float]]:
     raw: dict[str, list[tuple[int, float]]] = {}
     for idx, r in enumerate(results_list):
         cat = biomarker_category(r.biomarker_type)
-        weighted = severity_deduction(r.severity) * biomarker_weight(r.biomarker_type)
+        # A continuous ``deduction`` override (e.g. coverage scaled by the
+        # uncovered fraction) takes the place of the discrete severity table;
+        # both paths are then weighted and category-capped identically, so the
+        # per-finding ``health_impact`` stays linear and attributable.
+        base = r.deduction if r.deduction is not None else severity_deduction(r.severity)
+        weighted = base * biomarker_weight(r.biomarker_type)
         raw.setdefault(cat, []).append((idx, weighted))
 
     per_result = [0.0] * len(results_list)
@@ -200,7 +215,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[float, list[float]]:
 def attach_impacts(
     results: list[BiomarkerResult], deductions: list[float]
 ) -> list[HealthFindingData]:
-    """Lift ``BiomarkerResult`` → ``HealthFindingData`` with impact attached."""
+    """Lift ``BiomarkerResult`` -> ``HealthFindingData`` with impact attached."""
     out: list[HealthFindingData] = []
     for r, d in zip(results, deductions, strict=True):
         out.append(

@@ -28,14 +28,15 @@ most:
 
 | Category               | Cap   | Biomarkers |
 |------------------------|-------|------------|
-| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter |
+| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter, prior_defect |
 | Structural complexity  | −2.5  | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0  | untested_hotspot, coverage_gap |
+| Test coverage (cont.)  | −2.0  | coverage_gradient |
 | Size & complexity      | −1.5  | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0  | dry_violation |
 | Test quality           | −0.5  | large_assertion_block, duplicated_assertion_block |
 
-Twenty-three biomarkers across six categories. `function_hotspot` and
+Twenty-five biomarkers across the categories above. `function_hotspot` and
 `code_age_volatility` are blame-based and sit in the organizational bucket —
 both are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line
 blame index is built.
@@ -112,6 +113,12 @@ dependents. The textbook "write tests before refactoring" case.
 
 **coverage_gap** — Non-test files with meaningful uncovered surface.
 Severity grades along coverage depth.
+
+**coverage_gradient** — A continuous coverage deduction that scales with the
+uncovered fraction (`4.0 × (1 − line_coverage_pct/100)`, capped), so files stay
+penalised in proportion to how much code is untested rather than only when they
+fall below a hard threshold. Fires across the whole 0–100% range for files with
+known coverage; silent (no imputation) where coverage was never ingested.
 
 **developer_congestion** — Too many active authors touching the same file.
 Usually an ownership problem dressed up as a code problem.
@@ -219,8 +226,9 @@ last lets you feed coverage from any runner once it's mapped to one shape:
                              "total_coverable_lines": 40 } } }
 ```
 
-Coverage data feeds into `untested_hotspot` and `coverage_gap`, and shows up
-on the `/repos/<id>/health/coverage` dashboard.
+Coverage data feeds into `untested_hotspot`, `coverage_gap`, and
+`coverage_gradient` (a continuous deduction proportional to the uncovered
+fraction), and shows up on the `/repos/<id>/health/coverage` dashboard.
 
 ## Refactoring targets
 
@@ -299,7 +307,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 24 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 25 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Low cohesion (LCOM4) / god class  | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover/JSON | ❌ | ❌ | ❌ |

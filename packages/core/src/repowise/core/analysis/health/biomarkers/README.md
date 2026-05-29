@@ -36,6 +36,17 @@ Test coverage (cap −2.0):
 - `untested_hotspot` — hotspot × low coverage × many dependents.
 - `coverage_gap` — non-test files with meaningful uncovered surface.
 
+Test coverage — continuous (cap −2.0, own category `test_coverage_gradient`):
+- `coverage_gradient` — a per-file deduction that scales **continuously** with
+  the uncovered fraction (`4.0 × (1 − line_coverage_pct/100)`, capped) for files
+  with KNOWN coverage; silent when coverage was never ingested (absent ≠
+  uncovered). Unlike the binary gates above it fires across the whole 0–100%
+  range, so well-tested files at 85–99% still carry proportional signal. Uses
+  the `deduction` override on `BiomarkerResult` (continuous magnitude in place of
+  the discrete severity table), kept in its own capped category so it neither
+  squeezes nor is squeezed by the binary gates. Calibrated offline: +0.043 corpus
+  AUC [95% CI +0.023, +0.061] on the covered subset, Popt-neutral.
+
 Organizational (cap −3.5):
 - `developer_congestion` — too many active authors competing on a file.
 - `knowledge_loss` — primary authors no longer active (de-rated to 0.4).
@@ -104,7 +115,12 @@ table alone would allow.
 
 `BiomarkerResult` carries severity, function name, line span, a `details`
 dict (JSON-serialised into `HealthFinding.details_json` for the UI), and a
-`reason` string. `health_impact` is filled in by the scorer.
+`reason` string. `health_impact` is filled in by the scorer. An optional
+`deduction` field carries a continuous deduction magnitude (health points,
+pre-weight/pre-cap); when set the scorer uses it instead of the discrete
+severity → deduction table, letting a biomarker (e.g. `coverage_gradient`)
+express a per-finding signal that varies continuously while staying linear and
+attributable.
 
 ## Performance characteristics
 
