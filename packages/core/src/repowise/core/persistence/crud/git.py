@@ -130,13 +130,17 @@ async def recompute_git_percentiles(
     session: AsyncSession,
     repository_id: str,
 ) -> int:
-    """Recompute churn_percentile + is_hotspot using a SQL PERCENT_RANK window function.
+    """Recompute churn_percentile, is_hotspot, and change_entropy_pct using SQL
+    PERCENT_RANK window functions.
 
     Called after incremental updates so that percentile rankings stay fresh
     without a full ``repowise init``.  Returns the number of rows updated.
 
-    Primary ranking signal is temporal_hotspot_score (exponentially decayed churn);
-    commit_count_90d is the tiebreak.  Works on both SQLite (3.25+) and PostgreSQL.
+    Primary churn ranking signal is temporal_hotspot_score (exponentially decayed
+    churn); commit_count_90d is the tiebreak. change_entropy_pct ranks files by
+    change_entropy ascending — zero-entropy files tie at the minimum (0.0), so
+    they stay below the biomarker's ≥0.80 gate. Works on both SQLite (3.25+) and
+    PostgreSQL.
     """
     # First check how many rows exist so we can return the count without an
     # extra query after the UPDATE.
@@ -149,17 +153,23 @@ async def recompute_git_percentiles(
 
     sql = """
 WITH ranked AS (
-  SELECT id, PERCENT_RANK() OVER (
-    PARTITION BY repository_id
-    ORDER BY COALESCE(temporal_hotspot_score, 0.0), commit_count_90d
-  ) AS prank
+  SELECT id,
+    PERCENT_RANK() OVER (
+      PARTITION BY repository_id
+      ORDER BY COALESCE(temporal_hotspot_score, 0.0), commit_count_90d
+    ) AS prank,
+    PERCENT_RANK() OVER (
+      PARTITION BY repository_id
+      ORDER BY COALESCE(change_entropy, 0.0)
+    ) AS erank
   FROM git_metadata
   WHERE repository_id = :repo_id
 )
 UPDATE git_metadata
 SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
     is_hotspot = ((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id) >= 0.75
-                  AND git_metadata.commit_count_90d > 0)
+                  AND git_metadata.commit_count_90d > 0),
+    change_entropy_pct = (SELECT erank FROM ranked WHERE ranked.id = git_metadata.id)
 WHERE repository_id = :repo_id;
 """
     await session.execute(text(sql), {"repo_id": repository_id})

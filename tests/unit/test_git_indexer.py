@@ -321,18 +321,21 @@ class TestNumstatParsing:
         now = datetime.now(UTC)
         recent_ts = int((now - timedelta(days=5)).timestamp())
 
-        raw = self._build_log_output("src/app.py", [
-            {
-                "sha": "aaa11111",
-                "ts": recent_ts,
-                "subject": "feat: big change",
-                "numstat_lines": [
-                    ("100", "50", "src/app.py"),       # target: should count
-                    ("500", "300", "src/other.py"),     # not target: must NOT count
-                    ("200", "100", "src/utils.py"),     # not target: must NOT count
-                ],
-            },
-        ])
+        raw = self._build_log_output(
+            "src/app.py",
+            [
+                {
+                    "sha": "aaa11111",
+                    "ts": recent_ts,
+                    "subject": "feat: big change",
+                    "numstat_lines": [
+                        ("100", "50", "src/app.py"),  # target: should count
+                        ("500", "300", "src/other.py"),  # not target: must NOT count
+                        ("200", "100", "src/utils.py"),  # not target: must NOT count
+                    ],
+                },
+            ],
+        )
         mock_repo.git.log.return_value = raw
 
         meta = indexer._index_file("src/app.py", mock_repo)
@@ -348,16 +351,19 @@ class TestNumstatParsing:
 
         recent_ts = int((datetime.now(UTC) - timedelta(days=5)).timestamp())
 
-        raw = self._build_log_output("icon.png", [
-            {
-                "sha": "bbb22222",
-                "ts": recent_ts,
-                "subject": "feat: add icon",
-                "numstat_lines": [
-                    ("-", "-", "icon.png"),
-                ],
-            },
-        ])
+        raw = self._build_log_output(
+            "icon.png",
+            [
+                {
+                    "sha": "bbb22222",
+                    "ts": recent_ts,
+                    "subject": "feat: add icon",
+                    "numstat_lines": [
+                        ("-", "-", "icon.png"),
+                    ],
+                },
+            ],
+        )
         mock_repo.git.log.return_value = raw
 
         meta = indexer._index_file("icon.png", mock_repo)
@@ -494,6 +500,87 @@ class TestCoChangeBelowThresholdSkipped:
 
         # No pairs should appear since none reach min_count=3
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# 6b. test_change_entropy
+# ---------------------------------------------------------------------------
+
+
+class TestChangeEntropy:
+    """Hassan HCM: focused single-file commits → ~0 entropy; wide scattered
+    commits → high entropy; commits above the file-set cap are excluded."""
+
+    def test_change_entropy_focused_vs_scattered(self) -> None:
+        import time
+
+        from repowise.core.ingestion.git_indexer.co_change import (
+            compute_co_changes_and_entropy,
+        )
+
+        scattered_peers = [f"peer_{i}.py" for i in range(9)]
+        huge_peers = [f"huge_{i}.py" for i in range(34)]
+        all_files = {"focused.py", "scattered.py", "bigcommit.py"}
+        all_files.update(scattered_peers)
+        all_files.update(huge_peers)
+
+        now = int(time.time())
+        blocks: list[str] = []
+        # 3 focused commits: focused.py changes ALONE (|F| == 1 → log2(1) == 0).
+        for i in range(3):
+            blocks.append(f"\x00{now - i * 86400}\nfocused.py\n")
+        # 3 scattered commits: scattered.py amid 9 peers (|F| == 10).
+        for i in range(3):
+            files = "\n".join(["scattered.py", *scattered_peers])
+            blocks.append(f"\x00{now - i * 86400}\n{files}\n")
+        # 1 mass-edit commit (|F| == 35 > 30): bigcommit.py must get NO entropy.
+        big_files = "\n".join(["bigcommit.py", *huge_peers])
+        blocks.append(f"\x00{now}\n{big_files}\n")
+
+        mock_repo = MagicMock()
+        mock_repo.git.log.return_value = "".join(blocks)
+
+        _co, entropy = compute_co_changes_and_entropy(
+            mock_repo, all_files, commit_limit=2000, min_count=2
+        )
+
+        # Focused file changed alone → no entropy entry.
+        assert entropy.get("focused.py", 0.0) == 0.0
+        # Scattered file accrued positive entropy.
+        assert entropy.get("scattered.py", 0.0) > 0.0
+        # Mass-edit commit excluded → bigcommit.py gets nothing from it.
+        assert entropy.get("bigcommit.py", 0.0) == 0.0
+        # Scattered clearly dominates focused.
+        assert entropy["scattered.py"] > entropy.get("focused.py", 0.0)
+
+    def test_change_entropy_percentile_silent_when_all_zero(self) -> None:
+        """ESSENTIAL-tier shape (no entropy on any file) → all pct stay 0.0."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metadata_list = [
+            {"file_path": f"f{i}.py", "commit_count_90d": 5, "change_entropy": 0.0}
+            for i in range(5)
+        ]
+        compute_percentiles(metadata_list)
+        for m in metadata_list:
+            assert m["change_entropy_pct"] == 0.0
+
+    def test_change_entropy_percentile_ranks_nonzero(self) -> None:
+        """Only files with positive entropy are ranked; zero-entropy files stay 0.0."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metadata_list = [
+            {"file_path": "zero.py", "change_entropy": 0.0},
+            {"file_path": "low.py", "change_entropy": 0.5},
+            {"file_path": "mid.py", "change_entropy": 1.0},
+            {"file_path": "high.py", "change_entropy": 2.0},
+        ]
+        compute_percentiles(metadata_list)
+        pct = {m["file_path"]: m["change_entropy_pct"] for m in metadata_list}
+        assert pct["zero.py"] == 0.0
+        # Three nonzero files ranked 0, 1, 2 over n=3 → 0.0, 0.333, 0.667.
+        assert pct["high.py"] > pct["mid.py"] > pct["low.py"]
+        assert pct["high.py"] == pytest.approx(2 / 3)
 
 
 # ---------------------------------------------------------------------------

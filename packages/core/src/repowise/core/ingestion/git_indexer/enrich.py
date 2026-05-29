@@ -51,9 +51,7 @@ def detect_original_path(repo: Any, file_path: str, commit_limit: int) -> str | 
     return prev_path
 
 
-def get_blame_ownership(
-    repo: Any, file_path: str
-) -> tuple[str | None, str | None, float | None]:
+def get_blame_ownership(repo: Any, file_path: str) -> tuple[str | None, str | None, float | None]:
     """Compute primary owner from git blame (who wrote the most lines)."""
     try:
         blame = repo.blame("HEAD", file_path)
@@ -140,3 +138,20 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
         churn_pct = meta.get("churn_percentile", 0.0)
         if churn_pct >= 0.75 and commit_90d > 0:
             meta["is_hotspot"] = True
+
+    # change_entropy percentile (mirrors churn_percentile). Rank ONLY files
+    # that carry a positive entropy signal; files with zero entropy — every
+    # file on the ESSENTIAL tier, plus FULL-tier files that only ever changed
+    # alone — keep pct 0.0 so the change_entropy biomarker stays silent. (A
+    # naive rank-everything would hand the topmost zero-entropy file a high
+    # percentile when most files are zero.)
+    for meta in metadata_list:
+        meta.setdefault("change_entropy_pct", 0.0)
+    entropy_idxs = [
+        i for i in range(total) if (metadata_list[i].get("change_entropy") or 0.0) > 0.0
+    ]
+    n_ent = len(entropy_idxs)
+    if n_ent > 0:
+        entropy_idxs.sort(key=lambda i: metadata_list[i].get("change_entropy") or 0.0)
+        for rank, idx in enumerate(entropy_idxs):
+            metadata_list[idx]["change_entropy_pct"] = rank / n_ent

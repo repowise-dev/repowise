@@ -1,9 +1,14 @@
-"""Repo-wide co-change accumulation (FULL-tier signal).
+"""Repo-wide co-change accumulation + change entropy (FULL-tier signals).
 
-A single ``git log --name-only`` walk records decay-weighted co-occurrence
-pairs across all tracked files. This is the second of the two expensive
-signals the ESSENTIAL tier defers; the FULL tier (and the backfill worker)
-run it.
+A single ``git log --name-only`` walk feeds two history signals at once:
+
+* **Co-change** — decay-weighted co-occurrence pairs across tracked files.
+* **Change entropy** — Hassan's History Complexity Metric (2009), capturing
+  how scattered each file's changes are over time.
+
+Both are derived from the same commit iteration so the FULL tier (and the
+backfill worker) pay for only one ``git log`` subprocess. The ESSENTIAL tier
+defers the whole walk; absent fields are treated as "no signal" downstream.
 """
 
 from __future__ import annotations
@@ -22,33 +27,44 @@ from ._constants import (
     _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
     _DEFAULT_CO_CHANGE_MIN_COUNT,
     _MAX_FILES_PER_COMMIT_FOR_COCHANGE,
+    _MAX_FILES_PER_COMMIT_FOR_ENTROPY,
 )
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["compute_co_changes"]
+__all__ = ["compute_co_changes", "compute_co_changes_and_entropy"]
 
 
-def compute_co_changes(
+def compute_co_changes_and_entropy(
     repo: Any,
     all_files: set[str],
     commit_limit: int = _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
     min_count: int = _DEFAULT_CO_CHANGE_MIN_COUNT,
     on_commit_done: Callable[[], None] | None = None,
     on_co_change_start: Callable[[int], None] | None = None,
-) -> dict[str, list[dict]]:
-    """Walk recent commits and record co-occurrence pairs for tracked files.
+) -> tuple[dict[str, list[dict]], dict[str, float]]:
+    """Walk recent commits once, returning ``(co_changes, change_entropy)``.
 
     Uses a single ``git log --name-only`` call instead of spawning one
     ``git diff`` subprocess per commit — O(1) processes vs O(commit_limit).
 
-    Applies exponential temporal decay so recent co-changes weigh more than
-    ancient ones. ``on_co_change_start(total)`` is called once with the actual
-    number of commits found; ``on_commit_done()`` after each commit block.
+    **Co-change** applies exponential temporal decay so recent co-changes weigh
+    more than ancient ones. ``on_co_change_start(total)`` is called once with the
+    actual number of commits found; ``on_commit_done()`` after each commit block.
     Both run from a thread-pool thread; callers must ensure thread safety.
+
+    **Change entropy** adapts Hassan's History Complexity Metric: each commit is
+    a one-period window whose entropy is ``log2(|F|)`` (``|F|`` = tracked files
+    it touched), distributed uniformly (``1/|F|`` each) across those files with
+    the same temporal decay. A file only ever changed alone (``|F| == 1``, so
+    ``log2(1) == 0``) accrues no entropy; a file repeatedly caught in wide,
+    scattered commits accrues a lot. Commits touching more than
+    ``_MAX_FILES_PER_COMMIT_FOR_ENTROPY`` files are dropped as noise. The return
+    value maps ``file_path → decayed HCM sum`` (only files with a positive sum).
     """
     pair_scores: defaultdict[tuple[str, str], float] = defaultdict(float)
     pair_last_date: dict[tuple[str, str], int] = {}  # pair → latest Unix ts
+    entropy_scores: defaultdict[str, float] = defaultdict(float)
     now_ts = time.time()
 
     try:
@@ -60,7 +76,7 @@ def compute_co_changes(
             "--format=%x00%ct",
         )
     except Exception:
-        return {}
+        return {}, {}
 
     actual_commits = raw.count("\x00")
     if on_co_change_start is not None:
@@ -71,19 +87,30 @@ def compute_co_changes(
 
     def _flush_commit() -> None:
         nonlocal current_ts
-        if len(current) < 2:
+        n = len(current)
+        if n < 2:
             return
-        if len(current) > _MAX_FILES_PER_COMMIT_FOR_COCHANGE:
+        age_days = max((now_ts - current_ts) / 86400.0, 0.0)
+        weight = math.exp(-age_days / _CO_CHANGE_DECAY_TAU)
+
+        # Change entropy (Hassan HCM). The commit-as-period entropy is
+        # ``log2(n)``; each of its files gets the uniform ``1/n`` share, so the
+        # per-file contribution is ``weight * log2(n) / n``. Wide mass-edit
+        # commits are excluded with a tighter cap than co-change.
+        if n <= _MAX_FILES_PER_COMMIT_FOR_ENTROPY:
+            contribution = weight * math.log2(n) / n
+            for path in current:
+                entropy_scores[path] += contribution
+
+        if n > _MAX_FILES_PER_COMMIT_FOR_COCHANGE:
             # Mass-edit commit — skip pair generation entirely (see constant
             # docstring). Logged at debug for traceability.
             logger.debug(
                 "co_change_skip_oversized_commit",
-                files_in_commit=len(current),
+                files_in_commit=n,
                 threshold=_MAX_FILES_PER_COMMIT_FOR_COCHANGE,
             )
             return
-        age_days = max((now_ts - current_ts) / 86400.0, 0.0)
-        weight = math.exp(-age_days / _CO_CHANGE_DECAY_TAU)
         sorted_files = sorted(current)
         for i in range(len(sorted_files)):
             for j in range(i + 1, len(sorted_files)):
@@ -140,6 +167,8 @@ def compute_co_changes(
     for fp in result:
         result[fp].sort(key=lambda x: x["co_change_count"], reverse=True)
 
+    entropy = {fp: round(score, 6) for fp, score in entropy_scores.items() if score > 0.0}
+
     logger.debug(
         "co_change_computed",
         commits=actual_commits,
@@ -147,8 +176,29 @@ def compute_co_changes(
         pairs_considered=len(pair_scores),
         pairs_above_threshold=sum(1 for s in pair_scores.values() if s >= min_count),
         files_with_partners=len(result),
+        files_with_entropy=len(entropy),
         min_count=min_count,
         commit_limit=commit_limit,
     )
 
-    return dict(result)
+    return dict(result), entropy
+
+
+def compute_co_changes(
+    repo: Any,
+    all_files: set[str],
+    commit_limit: int = _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
+    min_count: int = _DEFAULT_CO_CHANGE_MIN_COUNT,
+    on_commit_done: Callable[[], None] | None = None,
+    on_co_change_start: Callable[[int], None] | None = None,
+) -> dict[str, list[dict]]:
+    """Co-change-only wrapper over :func:`compute_co_changes_and_entropy`.
+
+    Preserves the historical signature for the instance shim and existing
+    tests. Production indexing calls the combined function directly so the
+    single ``git log`` walk feeds both signals.
+    """
+    co_changes, _entropy = compute_co_changes_and_entropy(
+        repo, all_files, commit_limit, min_count, on_commit_done, on_co_change_start
+    )
+    return co_changes

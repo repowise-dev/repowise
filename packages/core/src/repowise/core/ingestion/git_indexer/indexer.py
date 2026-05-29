@@ -24,7 +24,7 @@ from ._constants import (
     _DEFAULT_COMMIT_LIMIT,
     _FILE_INDEX_TIMEOUT_SECS,
 )
-from .co_change import compute_co_changes
+from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import index_file
 from .records import GitIndexSummary, _CommitRec, _should_skip_index
@@ -115,9 +115,7 @@ class GitIndexer:
         if not self.follow_renames:
             from ..git_commit_index import load_commit_index
 
-            commit_index = load_commit_index(
-                repo, self.commit_limit, set(indexable_files)
-            )
+            commit_index = load_commit_index(repo, self.commit_limit, set(indexable_files))
 
         include_blame = self.tier.includes_blame
 
@@ -126,9 +124,7 @@ class GitIndexer:
             try:
                 import git as gitpython
 
-                thread_repo = gitpython.Repo(
-                    self.repo_path, search_parent_directories=True
-                )
+                thread_repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
                 try:
                     precomputed = commit_index.get(file_path) if commit_index else None
                     return index_file(
@@ -160,9 +156,7 @@ class GitIndexer:
                     )
                     result = {"file_path": file_path}
                 except Exception as exc:
-                    logger.debug(
-                        "Git indexing failed for file", path=file_path, error=str(exc)
-                    )
+                    logger.debug("Git indexing failed for file", path=file_path, error=str(exc))
                     result = {"file_path": file_path}
                 if on_file_done is not None:
                     on_file_done()
@@ -170,17 +164,18 @@ class GitIndexer:
 
         file_tasks = [index_one(fp) for fp in indexable_files]
 
-        async def _co_change_task() -> dict[str, list[dict]]:
+        async def _co_change_task() -> tuple[dict[str, list[dict]], dict[str, float]]:
             # ESSENTIAL tier defers co-change entirely (the expensive repo-wide
-            # walk) — return empty and let a FULL backfill fill it in.
+            # walk) — return empty and let a FULL backfill fill it in. Change
+            # entropy rides the same walk, so it's deferred together.
             if not self.tier.includes_co_change:
                 if on_co_change_done is not None:
                     with contextlib.suppress(Exception):
                         on_co_change_done()
-                return {}
+                return {}, {}
             result = await loop.run_in_executor(
                 executor,
-                compute_co_changes,
+                compute_co_changes_and_entropy,
                 repo,
                 set(tracked_files),
                 max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
@@ -193,7 +188,7 @@ class GitIndexer:
                     on_co_change_done()
             return result
 
-        metadata_list, co_changes = await asyncio.gather(
+        metadata_list, (co_changes, change_entropy) = await asyncio.gather(
             asyncio.gather(*file_tasks, return_exceptions=True),
             _co_change_task(),
         )
@@ -209,11 +204,13 @@ class GitIndexer:
             else:
                 results.append(r)
 
-        # Merge co-change partners into per-file metadata
+        # Merge co-change partners + change entropy into per-file metadata.
         for meta in results:
             fp = meta["file_path"]
             if fp in co_changes:
                 meta["co_change_partners_json"] = json.dumps(co_changes[fp])
+            if fp in change_entropy:
+                meta["change_entropy"] = change_entropy[fp]
 
         compute_percentiles(results)
 
@@ -253,9 +250,7 @@ class GitIndexer:
             try:
                 import git as gitpython
 
-                thread_repo = gitpython.Repo(
-                    self.repo_path, search_parent_directories=True
-                )
+                thread_repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
                 try:
                     return index_file(
                         thread_repo,

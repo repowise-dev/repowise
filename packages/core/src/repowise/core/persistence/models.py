@@ -391,6 +391,12 @@ class GitMetadata(Base):
     # Temporal hotspot score: exponentially time-decayed churn signal
     temporal_hotspot_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
 
+    # Change entropy (Hassan History Complexity Metric): decay-weighted sum of
+    # per-commit scatter (log2(files-touched)/files-touched) and its repo-wide
+    # percentile. Populated by the FULL-tier co-change walk.
+    change_entropy: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    change_entropy_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

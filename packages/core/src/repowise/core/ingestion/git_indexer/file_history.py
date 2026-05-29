@@ -106,6 +106,11 @@ def new_meta(file_path: str) -> dict[str, Any]:
         "merge_commit_count_90d": 0,
         # Temporal hotspot score (exponentially decayed churn)
         "temporal_hotspot_score": 0.0,
+        # Change entropy (Hassan HCM) — populated repo-wide by the co-change
+        # walk, percentile by enrich.compute_percentiles. Default 0.0 leaves
+        # the signal silent on the ESSENTIAL tier / files that never co-changed.
+        "change_entropy": 0.0,
+        "change_entropy_pct": 0.0,
     }
 
 

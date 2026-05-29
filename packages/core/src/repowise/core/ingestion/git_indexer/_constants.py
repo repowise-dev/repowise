@@ -123,6 +123,13 @@ _DEFAULT_CO_CHANGE_MIN_COUNT: int = 2
 # correctness change: typical commits sit well under 20 files.
 _MAX_FILES_PER_COMMIT_FOR_COCHANGE: int = 200
 
+# Change-entropy uses a tighter file-set cap than co-change. Hassan (2009)
+# excludes very wide commits from the History Complexity Metric because a
+# sweeping edit spreads its "change probability" so thinly that it adds noise
+# rather than signal. 30 follows the commonly cited Hassan filter; commits
+# above it are dropped from the entropy accumulation entirely.
+_MAX_FILES_PER_COMMIT_FOR_ENTROPY: int = 30
+
 # Commit message classification regexes (Phase 2.2).
 _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     "feature": re.compile(
