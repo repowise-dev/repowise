@@ -25,6 +25,7 @@ async def _run_git_indexing(
     commit_depth: int,
     follow_renames: bool,
     tier: GitIndexTier = GitIndexTier.FULL,
+    exclude_patterns: list[str] | None = None,
     progress: ProgressCallback | None,
 ) -> tuple[Any | None, list[dict], dict[str, dict]]:
     """Run git history indexing.
@@ -39,6 +40,7 @@ async def _run_git_indexing(
             commit_limit=commit_depth,
             follow_renames=follow_renames,
             tier=tier,
+            exclude_patterns=exclude_patterns,
         )
 
         def _on_start(total: int) -> None:

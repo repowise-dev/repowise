@@ -79,6 +79,8 @@ class EdgesMixin:
             if e.source not in self._graph:
                 continue
             if e.target not in self._graph:
+                if self._exclude.patterns and self._exclude.match_file(e.target):
+                    continue
                 self._graph.add_node(e.target)
             sub_type = e.edge_type or "dynamic"
             graph_edge_type = (

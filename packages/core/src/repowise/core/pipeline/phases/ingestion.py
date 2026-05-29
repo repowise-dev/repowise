@@ -169,7 +169,7 @@ async def _run_ingestion(
 
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(repo_path=repo_path)
+    graph_builder = GraphBuilder(repo_path=repo_path, exclude_patterns=exclude_patterns)
 
     loop = asyncio.get_running_loop()
     workers = max(1, os.cpu_count() or 4)

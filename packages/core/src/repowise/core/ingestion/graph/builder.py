@@ -40,12 +40,21 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         pr = builder.pagerank()
     """
 
-    def __init__(self, repo_path: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        repo_path: Path | str | None = None,
+        *,
+        exclude_patterns: list[str] | None = None,
+    ) -> None:
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
         self._built = False
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
         self._tsconfig_resolver: Any | None = None  # TsconfigResolver (lazy import)
+
+        import pathspec
+
+        self._exclude = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns or [])
 
         # Community / flow / metric caches (invalidated on build)
         self._community_cache: dict[str, int] | None = None

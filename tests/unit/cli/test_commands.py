@@ -122,3 +122,27 @@ class TestErrorCases:
         (tmp_path / ".repowise").mkdir()
         result = runner.invoke(cli, ["update", str(tmp_path)])
         assert result.exit_code != 0
+
+
+class TestBuildFilteredChangedPaths:
+    def test_excludes_matching_patterns(self):
+        from unittest.mock import MagicMock
+
+        from repowise.cli.commands.update_cmd import _build_filtered_changed_paths
+
+        fds = [
+            MagicMock(path="src/main.py"),
+            MagicMock(path=".claude/config.yml"),
+            MagicMock(path="tools/build.sh"),
+        ]
+        result = _build_filtered_changed_paths(fds, [".claude/", "tools/"])
+        assert result == ["src/main.py"]
+
+    def test_no_patterns_returns_all(self):
+        from unittest.mock import MagicMock
+
+        from repowise.cli.commands.update_cmd import _build_filtered_changed_paths
+
+        fds = [MagicMock(path="src/main.py"), MagicMock(path=".claude/config.yml")]
+        result = _build_filtered_changed_paths(fds, [])
+        assert result == ["src/main.py", ".claude/config.yml"]
