@@ -70,10 +70,13 @@ Consumed by `low_cohesion` and `god_class`.
 
 - **Member detection is best-effort and per-language.** A method's field
   reads and intra-class calls are found by scanning for `self.x` /
-  `this.x` / `$this->x` member-access nodes whose receiver token is in the
-  language's `self_identifiers`. Members accessed without an explicit
-  receiver (Python has none; Ruby's `@ivar`, implicit-`this` in some
-  languages) are not counted.
+  `this.x` / `this->x` / `$this->x` member-access nodes whose receiver
+  token is in the language's `self_identifiers`. Members accessed without
+  an explicit receiver are not counted — and this is the common idiom in
+  **Kotlin, C++, C#, and Java** (bare `field`, not `this.field`), so on
+  receiver-less code those languages fall through to the "no signal" valve
+  below rather than over-reporting cohesion. (Ruby's `@ivar` is the same
+  shape.)
 - **Safety valve.** If a class yields *zero* detected member references
   (a pure-static utility class, or a language whose member-access node
   type isn't mapped yet), `lcom4` falls back to `1` ("no signal") rather
@@ -119,9 +122,10 @@ fields on its `LanguageNodeMap` (all default to empty = opt-out):
 
 The receiver and member-name children are extracted by a generic
 field-name probe (`walker._self_member_name`), which tries the
-`object`/`value` and `property`/`attribute`/`field`/`name` fields and then
-falls back to positional children — so most tree-sitter grammars need only
-the node-type names above. Get one wrong and the safety valve degrades the
+`object`/`value`/`argument`/`expression` (receiver) and
+`property`/`attribute`/`field`/`name` (member) fields and then falls back
+to positional children — so most tree-sitter grammars need only the
+node-type names above. Get one wrong and the safety valve degrades the
 class to "no signal" rather than emitting a false positive, so it's cheap
 to add a language speculatively and refine later.
 
@@ -136,10 +140,13 @@ opt-in fields:
   `assertEqual` / `assert_eq!` / `expect(...).toBe(...)`).
 
 A language that maps neither produces no assertion blocks — never a false
-positive.
+positive. (Languages without an `expression_statement` wrapper — e.g.
+Kotlin, where the call node sits directly in the statement list — are
+handled too: the call node is matched as the statement itself.)
 
-Ships control-flow mappings for Python, TypeScript, JavaScript, Go, Java,
-Rust; class-level mappings for Python, TypeScript, JavaScript, Java, Rust
-(Go has no class-grouping node); assertion mappings for Python, TypeScript,
-JavaScript, Java, Rust, Go. Adding more languages — any tier — is purely
-additive in `languages.py`.
+Ships control-flow + assertion mappings for **all nine full-tier
+languages** — Python, TypeScript, JavaScript, Go, Java, Kotlin, Rust, C++,
+C# — plus the `tsx`/`jsx` aliases; class-level (LCOM4 / god-class)
+mappings for all of those except **Go** (methods attach to a type via an
+external receiver, so there is no single grouping node). Adding more
+languages — any tier — is purely additive in `languages.py`.

@@ -200,3 +200,103 @@ def test_typescript_expect_blocks():
     few = _find(results, "testFewExpects")
     assert few is not None
     assert few.assertion_blocks == []
+
+
+# ---- full-tier language coverage: Kotlin / C++ / C# ----------------------
+#
+# Each new full-tier language is validated end-to-end against the walker:
+# control-flow (nesting + CCN), class-level cohesion (LCOM4), and
+# assertion-block detection — mirroring the Python/TypeScript fixtures.
+
+
+def test_kotlin_nesting_and_ccn():
+    results = _walk("kotlin/nested.kt", "kotlin")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    # 6 ifs + 2 boolean operators over the base path.
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+    shallow = _find(results, "shallow")
+    assert shallow is not None and shallow.max_nesting == 0
+
+
+def test_kotlin_class_cohesion():
+    classes = _walk_classes("kotlin/classes.kt", "kotlin")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert cohesive.lcom4 == 1
+    assert splintered.lcom4 == 3
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+
+
+def test_kotlin_assertion_blocks():
+    results = _walk("kotlin/assertions.kt", "kotlin")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks[0][2] == 16
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_cpp_nesting_and_ccn():
+    results = _walk("cpp/nested.cpp", "cpp")
+    deep = _find(results, "deeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "manyBranches")
+    assert many is not None
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+
+
+def test_cpp_class_cohesion():
+    classes = _walk_classes("cpp/classes.cpp", "cpp")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert cohesive.lcom4 == 1
+    assert splintered.lcom4 == 3
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+
+
+def test_cpp_assertion_blocks():
+    results = _walk("cpp/assertions.cpp", "cpp")
+    many = _find(results, "testManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks[0][2] == 16
+    few = _find(results, "testFewAsserts")
+    assert few is not None and few.assertion_blocks == []
+
+
+def test_csharp_nesting_and_ccn():
+    results = _walk("csharp/nested.cs", "csharp")
+    deep = _find(results, "DeeplyNested")
+    assert deep is not None
+    assert deep.max_nesting >= 4, f"expected ≥4 nesting, got {deep.max_nesting}"
+    many = _find(results, "ManyBranches")
+    assert many is not None
+    assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
+
+
+def test_csharp_class_cohesion():
+    classes = _walk_classes("csharp/classes.cs", "csharp")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    assert cohesive.lcom4 == 1
+    assert splintered.lcom4 == 3
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+
+
+def test_csharp_assertion_blocks():
+    results = _walk("csharp/assertions.cs", "csharp")
+    many = _find(results, "TestManyAsserts")
+    assert many is not None
+    assert many.assertion_blocks[0][2] == 16
+    few = _find(results, "TestFewAsserts")
+    assert few is not None and few.assertion_blocks == []

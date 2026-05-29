@@ -25,9 +25,17 @@ names to the walker's abstract categories:
                   test-assertion runs (test-quality smells). Opt-in per
                   language via ``assert_kinds`` / ``assert_call_kinds``.
 
-Control-flow maps cover Python, TypeScript, JavaScript, Go, Java, Rust;
-class-level maps cover all of those except Go (no class-grouping node).
-Adding a language — either tier — is purely additive here.
+Control-flow maps cover all nine full-tier languages — Python, TypeScript,
+JavaScript, Go, Java, Kotlin, Rust, C++, C# — plus their aliases; class-level
+maps cover all of those except Go (no class-grouping node). Adding a language —
+either tier — is purely additive here.
+
+Two cross-language heuristic limits worth noting (both degrade to "no signal",
+never a false positive): (1) instance members accessed without an explicit
+receiver (idiomatic Kotlin/C++/C#/Java bare ``field`` rather than
+``this.field``) are not counted toward LCOM4 cohesion, so ``low_cohesion``
+stays silent on receiver-less code; (2) flat ``switch``/``when``/``match``
+arms count once for the dispatch, not per arm.
 """
 
 from __future__ import annotations
@@ -235,6 +243,83 @@ _RUST = LanguageNodeMap(
 )
 
 
+_KOTLIN = LanguageNodeMap(
+    function_kinds=frozenset({"function_declaration"}),
+    lambda_kinds=frozenset({"lambda_literal", "anonymous_function"}),
+    branch_kinds=frozenset({"if_expression"}),
+    loop_kinds=frozenset({"for_statement", "while_statement", "do_while_statement"}),
+    try_kinds=frozenset({"try_expression"}),
+    catch_kinds=frozenset({"catch_block"}),
+    switch_kinds=frozenset({"when_expression"}),
+    case_kinds=frozenset({"when_entry"}),
+    boolean_operator_kinds=frozenset(),
+    boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    # Methods group under a ``class_body``; ``object_declaration`` (singletons
+    # / companion objects) groups them the same way. Member access is
+    # ``receiver.member`` via ``navigation_expression``; the instance receiver
+    # is a ``this_expression`` whose text is ``this``. NOTE: idiomatic Kotlin
+    # accesses members WITHOUT an explicit ``this.`` receiver — those bare
+    # references are not counted (the documented implicit-receiver limit), so
+    # ``low_cohesion`` stays at the "no signal" value rather than mis-firing.
+    class_kinds=frozenset({"class_declaration", "object_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    member_access_kinds=frozenset({"navigation_expression"}),
+    # Kotlin has no bare ``assert`` keyword; ``assertEquals(...)`` /
+    # ``assertTrue(...)`` are plain calls placed directly in the statement
+    # list (no ``expression_statement`` wrapper).
+    assert_call_kinds=frozenset({"call_expression"}),
+)
+
+_CPP = LanguageNodeMap(
+    function_kinds=frozenset({"function_definition"}),
+    lambda_kinds=frozenset({"lambda_expression"}),
+    branch_kinds=frozenset({"if_statement", "conditional_expression"}),
+    loop_kinds=frozenset({"for_statement", "while_statement", "do_statement", "for_range_loop"}),
+    try_kinds=frozenset({"try_statement"}),
+    catch_kinds=frozenset({"catch_clause"}),
+    switch_kinds=frozenset({"switch_statement"}),
+    case_kinds=frozenset({"case_statement"}),
+    boolean_operator_kinds=frozenset(),
+    boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    # ``class_specifier`` / ``struct_specifier`` group methods in a
+    # ``field_declaration_list``. ``field_expression`` covers both
+    # ``this->member`` and ``obj.member``; the instance receiver is the
+    # ``this`` node. Same implicit-receiver limit as Kotlin — bare member
+    # access (no ``this->``) is not counted.
+    class_kinds=frozenset({"class_specifier", "struct_specifier"}),
+    self_identifiers=frozenset({"this"}),
+    member_access_kinds=frozenset({"field_expression"}),
+    # GoogleTest / Catch2 / Boost.Test macros: ``EXPECT_EQ`` / ``ASSERT_EQ`` /
+    # ``ASSERT_TRUE`` are ordinary calls (``expect``/``assert`` prefix matched
+    # case-insensitively).
+    assert_call_kinds=frozenset({"call_expression"}),
+)
+
+_CSHARP = LanguageNodeMap(
+    function_kinds=frozenset(
+        {"method_declaration", "constructor_declaration", "local_function_statement"}
+    ),
+    lambda_kinds=frozenset({"lambda_expression"}),
+    branch_kinds=frozenset({"if_statement", "conditional_expression"}),
+    loop_kinds=frozenset({"for_statement", "while_statement", "foreach_statement", "do_statement"}),
+    try_kinds=frozenset({"try_statement"}),
+    catch_kinds=frozenset({"catch_clause"}),
+    switch_kinds=frozenset({"switch_statement", "switch_expression"}),
+    case_kinds=frozenset({"switch_section", "switch_expression_arm"}),
+    boolean_operator_kinds=frozenset(),
+    boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    # ``class``/``struct``/``record`` declarations group methods in a
+    # ``declaration_list``. ``member_access_expression`` covers
+    # ``this.member`` (and ``obj.member``); ``this`` is the receiver token.
+    class_kinds=frozenset({"class_declaration", "struct_declaration", "record_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    member_access_kinds=frozenset({"member_access_expression"}),
+    # xUnit / NUnit / MSTest: ``Assert.Equal(...)`` / ``Assert.True(...)`` are
+    # invocations whose callee chain begins with ``Assert``.
+    assert_call_kinds=frozenset({"invocation_expression"}),
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
@@ -244,6 +329,9 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "go": _GO,
     "java": _JAVA,
     "rust": _RUST,
+    "kotlin": _KOTLIN,
+    "cpp": _CPP,
+    "csharp": _CSHARP,
 }
 
 

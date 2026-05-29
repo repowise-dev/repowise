@@ -421,7 +421,7 @@ them on legacy DBs.
 
 The complexity walker emits a `ClassComplexity` per class-like node for
 languages that opt in (`LanguageNodeMap.class_kinds` non-empty: Python,
-TS/JS, Java, Rust `impl`; Go has no grouping node). LCOM4 is the number of
+TS/JS, Java, Kotlin, Rust `impl`, C++, C#; Go has no grouping node). LCOM4 is the number of
 connected components in the graph whose nodes are the class's methods and
 whose edges link methods that share an instance field or call one another.
 Member references are detected per-language via `self`/`this`/`$this`
@@ -439,8 +439,9 @@ The same single walker pass records `assertion_blocks` on each
 is a bare `assert` (`LanguageNodeMap.assert_kinds`) or its expression is a
 call (`assert_call_kinds`) whose callee name starts with `assert` or
 `expect` — covering `assertEqual` / `assert_eq!` / `expect(...).toBe(...)`
-across xUnit and BDD styles. Opt-in per language (Python, TS/JS, Java, Rust,
-Go are mapped); a language that maps neither field simply emits no blocks.
+across xUnit and BDD styles. Opt-in per language (all nine full-tier
+languages — Python, TS/JS, Java, Kotlin, Go, Rust, C++, C# — are mapped);
+a language that maps neither field simply emits no blocks.
 `large_assertion_block` flags a single run ≥ 15; `duplicated_assertion_block`
 intersects the clone report with assertion spans. Both gate on
 `coverage.is_test_file(path)` so production code is never touched.

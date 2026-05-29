@@ -120,6 +120,13 @@ class FileComplexity:
     classes: list[ClassComplexity]
 
 
+# Leaf node types that carry a declared name at the bottom of a C/C++
+# ``declarator`` chain.
+_DECLARATOR_NAME_KINDS = frozenset(
+    {"identifier", "field_identifier", "type_identifier", "qualified_identifier"}
+)
+
+
 def _find_name(node: Node) -> str:
     """Best-effort: return the text of the first identifier child."""
     # Search a couple of common field names first.
@@ -127,6 +134,16 @@ def _find_name(node: Node) -> str:
         child = node.child_by_field_name(field_name)
         if child is not None and child.text is not None:
             return child.text.decode("utf-8", errors="replace")
+    # C / C++: the function name is not a direct child but nested inside a
+    # ``declarator`` chain (``function_definition → function_declarator →
+    # field_identifier``). Languages with a ``name`` field never reach here.
+    decl = node.child_by_field_name("declarator")
+    hops = 0
+    while decl is not None and hops < 6:
+        if decl.type in _DECLARATOR_NAME_KINDS and decl.text is not None:
+            return decl.text.decode("utf-8", errors="replace")
+        decl = decl.child_by_field_name("declarator") or decl.child_by_field_name("name")
+        hops += 1
     for child in node.children:
         if (
             child.type in ("identifier", "property_identifier", "field_identifier")
@@ -486,7 +503,16 @@ def _is_assertion_statement(stmt: Node, lmap: LanguageNodeMap) -> bool:
     """True if *stmt* is a test assertion (bare ``assert`` or assert call)."""
     if stmt.type in lmap.assert_kinds:
         return True
-    if not lmap.assert_call_kinds or stmt.type != _EXPRESSION_STATEMENT:
+    if not lmap.assert_call_kinds:
+        return False
+    # Some grammars (Kotlin) have no ``expression_statement`` wrapper — the
+    # call node sits directly in the statement list. Match it as the
+    # statement itself. (Wrapper languages never hit this: their call nodes
+    # only ever appear as the single child of an ``expression_statement``,
+    # so they can't form a run of ≥2 at this level.)
+    if stmt.type in lmap.assert_call_kinds:
+        return _callee_matches_assert(stmt)
+    if stmt.type != _EXPRESSION_STATEMENT:
         return False
     call = _find_assert_call(stmt, lmap.assert_call_kinds)
     return call is not None and _callee_matches_assert(call)
@@ -562,7 +588,9 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
 # ----------------------------------------------------------------------
 
 _PROP_FIELD_NAMES = ("property", "attribute", "field", "name")
-_OBJECT_FIELD_NAMES = ("object", "value", "argument", "operand")
+# ``expression`` is C#'s receiver field on ``member_access_expression`` (its
+# ``this`` token is unnamed, so the positional fallback would pick the member).
+_OBJECT_FIELD_NAMES = ("object", "value", "argument", "operand", "expression")
 _IDENTIFIER_SUFFIX = "identifier"
 
 

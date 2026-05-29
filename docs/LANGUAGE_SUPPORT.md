@@ -21,8 +21,18 @@ pipeline stages produce meaningful output.
 | Call graph edges | Y | partial | -- | -- | -- |
 | Heritage (extends/implements) | Y | partial | -- | -- | -- |
 | Named bindings | Y | -- | -- | -- | -- |
+| Code-health biomarkers | Y¹ | -- | -- | -- | -- |
 | Dead code detection | Y | Y | Y | Y | -- |
 | Semantic search & wiki pages | Y | Y | Y | Y | Y |
+
+¹ **Code-health biomarkers** require a per-language complexity-walker map
+(`analysis/health/complexity/languages.py`), independent of `.scm` parsing.
+A language is only listed **Full** once it clears the
+[code-health checklist](#code-health-biomarker-coverage) below — except
+**Go**, whose class-level metrics (LCOM4 / god-class) are not computable
+because Go methods attach to a type via an external receiver rather than
+nesting in a class body; Go gets the function- and assertion-level
+biomarkers but is footnoted on the class-level ones.
 
 ---
 
@@ -60,6 +70,43 @@ All nine languages support:
 - For TypeScript / JavaScript only: a workspace-granular index (`TsWorkspaceIndex`) built as a warmup phase that surfaces every file reachable through a `package.json` `exports` map (including `"./locales/*"`-style wildcards) as an entry point so downstream npm consumers don't read as unreachable; type-reference resolution emits `type_use` edges for parameter / field / return / generic-constraint / type-alias-RHS / heritage clauses (unwrapping `Promise<T>`, `T[]`, `Pick<T,K>`, union/intersection, conditional/mapped types) so interfaces consumed only as types are not flagged dead; same-file rescue exempts symbols whose only consumer is another declaration in the same module; convention never-flag globs for `*.test.*` / `*.spec.*` / `*.stories.*` / `*.bench.*` / `__tests__/**` / `__mocks__/**` / Next.js app-router files (`page.tsx`, `layout.tsx`, `route.ts`, `middleware.ts`, `instrumentation.ts`, route segment configs) / SvelteKit `+page` / `+layout` / `+server` / Remix `entry.client` / `entry.server` / `next-env.d.ts` / `*.gen.ts` / `generated/**`; experimental sub-package rescue marks every source file in directories named `bench` / `benchmarks` / `treeshake` / `examples` / `demos` / `samples` / `playground` / `scratch` / `scripts` as a live entry (these dirs invoke their files via runtime CLI arguments no static scan can follow); npm-script entry detection — parses every `package.json` `scripts.*` command for paths (`tsx X.ts` / `bun run X.mts` / `rollup -c X.js`), quoted glob arguments (prettier / eslint scopes), and bare directory tokens; MDX `import` scan + `vitest.config` `include` glob scan as belt-and-suspenders for entry surfaces the static parser can't see; framework edges for Next.js App Router (`app/**/{page,layout,route,middleware,…}`), Hono / Fastify / Koa / Elysia router DSLs (`.get('/x', handler)`), Remix / SvelteKit / Astro filesystem-convention routes, and tRPC procedure registries (`.query(handler)` / `.mutation(handler)`); JSX-namespace types declared inside a `namespace JSX` file are exempt from `unused_export` (consumed by tsc via `jsxImportSource`, never imported as values)
 - For XAML only: `<ResourceDictionary Source="..."/>` and `MergedDictionaries` entries resolve across `pack://application:,,,/`, `ms-appx:///`, repo-rooted and relative URIs, emitting xaml→xaml `dynamic_uses` edges
 - For JVM (Java + Kotlin together) only: a unified `JvmWorkspaceIndex` warmup parsing Maven `pom.xml` reactors and Gradle `settings.gradle(.kts)` + source-sets + `gradle/libs.versions.toml` version catalogs; one walk groups every `.java` and `.kt` file by package directory so `import com.foo.Bar` fans out to every defining file in the package (siblings share importers), `import com.foo.*` / `import static com.foo.Bar.*` expand to all matching files, same-package implicit identifier access is honoured, and Kotlin↔Java cross-language resolution links callers across both source-roots (including `.kt` files hosted under `src/main/java`); type-reference resolution emits `type_use` edges for parameter / field / return / generic / `new T()` types (unwrapping arrays, generics, nullables), plus Kotlin `companion object` / `object` singleton / method-reference (`Foo::bar`) / `sealed … permits` resolution; source-generator-equivalent synthesis emits the symbols Lombok (`@Data` / `@Value` / `@Builder` / `@RequiredArgsConstructor` / `@Slf4j` / `@UtilityClass` / friends), Java `record`, Kotlin `data class` / `enum class` / `object`, and MapStruct / AutoValue / Immutables would produce at compile time — so a Lombok-only Spring service no longer reads its injected fields as unused; framework edges cover Spring (stereotypes with meta-annotation resolution; `@RequestMapping` family routing; Spring Data `JpaRepository` / `Crud` / `Mongo` / `R2dbc` / `Elasticsearch` / `Neo4j` / `Couchbase` / `Cassandra` interfaces and their derived-query methods as entry points; `@Bean` factories; single-constructor + `@Autowired` / `@Inject` / `@Resource` DI; Lombok-RAC/AAC constructor inference), Jakarta (JAX-RS `@Path`, CDI scopes, Servlet 3+ `@WebServlet`/`@WebFilter`/`@WebListener`, JPA `@Entity` + `@OneToMany`/`@ManyToOne`/`@ManyToMany`/`@OneToOne` association edges; both `javax.*` and `jakarta.*`), Quarkus (entry stereotypes + SmallRye `@Incoming("topic")` ↔ `@Outgoing("topic")` cross-linking), Micronaut (DI / routing, gated on Micronaut imports to disambiguate Spring's collisions), and Android (`AndroidManifest.xml` `android:name` references emit edges to the named class); JVM dynamic hints capture `Class.forName`, Mockito / mockk, MapStruct `Mappers.getMapper`, `SpringApplication.run` and Kotlin `runApplication<>`, Jackson / Gson `readValue` / `fromJson` / `treeToValue`; package-aware dead-code reachability rescues sibling-rescued packages, stereotype-annotated classes, `main(String[])` carriers, and FQNs listed in `META-INF/services/*` / `META-INF/spring.factories` (Boot 2) / `META-INF/spring/...AutoConfiguration.imports` (Boot 3) / JPMS `provides … with …` — all resolved during the workspace warmup; JVM never-flag patterns cover `module-info.java`, `package-info.java`, every conventional test source-set (`src/test/**`, `src/integrationTest/**`, `src/intTest/**`, `src/it/**`, `src/jmh/**`, generic `src/*Test/**`), generated source roots (`build/generated/**`, KAPT/KSP, `target/generated-sources/**`, GraalVM `aotSources`), generated suffix conventions (`Dagger*`, `AutoValue_*`, JPA `*_.java` metamodel, `*Grpc.java`, protoc `*OuterClass.java`), JUnit / TestNG / Spock / ArchUnit test-naming + annotation-marked entry points (`@Test` / `@PostConstruct` / `@EventListener` / `@Scheduled` / `@JmsListener` / `@KafkaListener` / `@RabbitListener` / `@SqsListener` / `@Incoming` / `@Outgoing` / `@Mojo` / `@Bean` / …), and JVM contract methods (`equals` / `hashCode` / `toString` / `compareTo` / `clone` / serialization `readObject` / `writeObject` / `serialVersionUID` / Lombok `canEqual` / Kotlin `componentN` / `copy` / enum `values` / `valueOf`)
+
+#### Code-health biomarker coverage
+
+The code-health layer scores every source file from deterministic
+biomarkers (complexity, cohesion, test-quality, …). These run off a
+per-language complexity-walker map
+(`analysis/health/complexity/languages.py`) that is **independent** of the
+`.scm` ingestion queries — a language can parse perfectly for the graph yet
+still need this map before health biomarkers fire. To keep "Full" meaning
+"health works", a language must clear this checklist (each item has a green
+fixture under `tests/fixtures/lang_samples/<lang>/` + a walker test):
+
+1. **Control flow** — `if` / loop / `switch`/`match`/`when` / `try`-`catch`
+   nodes mapped → McCabe CCN, nesting depth, cognitive complexity.
+2. **Boolean operators** — `&&` / `||` (or their text form) counted toward
+   CCN and `complex_conditional`.
+3. **Class metrics** — `class_kinds` set so `method_count` / `total_nloc` /
+   `max_method_ccn` aggregate (feeds `god_class`). *(N/A for Go — no
+   class-grouping node.)*
+4. **LCOM4 cohesion** — `self_identifiers` + `member_access_kinds` set so
+   explicit-receiver member access is detected (feeds `low_cohesion`).
+   Receiver-less idioms degrade to "no signal", never a false positive.
+   *(N/A for Go.)*
+5. **Assertion blocks** — `assert_kinds` / `assert_call_kinds` set so runs
+   of consecutive assertions are detected on test files (feeds
+   `large_assertion_block` / `duplicated_assertion_block`).
+
+| Language | Control flow | Class metrics | LCOM4 | Assertions |
+|----------|:---:|:---:|:---:|:---:|
+| Python | Y | Y | Y | Y |
+| TypeScript / JavaScript | Y | Y | Y | Y |
+| Java | Y | Y | Y | Y |
+| Kotlin | Y | Y | Y | Y |
+| Go | Y | — | — | Y |
+| Rust | Y | Y | Y | Y |
+| C++ | Y | Y | Y | Y |
+| C# | Y | Y | Y | Y |
 
 ### Good
 
@@ -351,9 +398,10 @@ without touching the shared pipeline files:
   `assert_kinds` / `assert_call_kinds` to get test-quality assertion-block
   smells. All tiers are purely additive and degrade safely — an unmapped
   language simply produces no health findings rather than wrong ones.
-  Control-flow maps ship for Python, TypeScript, JavaScript, Go, Java,
-  Rust; class-level maps for all of those except Go; assertion maps for all
-  six. See `complexity/README.md` for the extension recipe and the LCOM4
+  Control-flow and assertion maps ship for all nine full-tier languages
+  (Python, TypeScript, JavaScript, Go, Java, Kotlin, Rust, C++, C#);
+  class-level maps for all of those except Go (no class-grouping node).
+  See `complexity/README.md` for the extension recipe and the LCOM4
   heuristic's limits.
 
 ---
