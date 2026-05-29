@@ -29,6 +29,53 @@ from ._shared import _BATCH_SIZE
 # ---------------------------------------------------------------------------
 
 
+def _finding_file_path(finding: Any) -> str | None:
+    """Read ``file_path`` from a dataclass-like finding or a plain dict."""
+    if isinstance(finding, dict):
+        return finding.get("file_path")
+    return getattr(finding, "file_path", None)
+
+
+def _dead_code_row_kwargs(finding: Any, repository_id: str) -> dict:
+    """Normalize a DeadCodeFindingData-like object or plain dict into kwargs
+    for the ``DeadCodeFinding`` ORM row."""
+    if hasattr(finding, "kind"):
+        data = {
+            "kind": str(finding.kind.value)
+            if hasattr(finding.kind, "value")
+            else str(finding.kind),
+            "file_path": finding.file_path,
+            "symbol_name": finding.symbol_name,
+            "symbol_kind": finding.symbol_kind,
+            "confidence": finding.confidence,
+            "reason": finding.reason,
+            "last_commit_at": finding.last_commit_at,
+            "commit_count_90d": finding.commit_count_90d,
+            "lines": finding.lines,
+            "package": finding.package,
+            "evidence_json": json.dumps(
+                finding.evidence if hasattr(finding, "evidence") else []
+            ),
+            "safe_to_delete": finding.safe_to_delete,
+            "primary_owner": finding.primary_owner,
+            "age_days": finding.age_days,
+        }
+    else:
+        data = dict(finding)
+        if "evidence" in data:
+            data["evidence_json"] = json.dumps(data.pop("evidence"))
+
+    return {
+        "id": _new_uuid(),
+        "repository_id": repository_id,
+        **{
+            k: v
+            for k, v in data.items()
+            if k not in ("id", "repository_id") and hasattr(DeadCodeFinding, k)
+        },
+    }
+
+
 async def save_dead_code_findings(
     session: AsyncSession,
     repository_id: str,
@@ -48,44 +95,45 @@ async def save_dead_code_findings(
     for i in range(0, len(findings), _BATCH_SIZE):
         batch = findings[i : i + _BATCH_SIZE]
         for finding in batch:
-            # Accept both DeadCodeFindingData-like objects and plain dicts
-            if hasattr(finding, "kind"):
-                data = {
-                    "kind": str(finding.kind.value)
-                    if hasattr(finding.kind, "value")
-                    else str(finding.kind),
-                    "file_path": finding.file_path,
-                    "symbol_name": finding.symbol_name,
-                    "symbol_kind": finding.symbol_kind,
-                    "confidence": finding.confidence,
-                    "reason": finding.reason,
-                    "last_commit_at": finding.last_commit_at,
-                    "commit_count_90d": finding.commit_count_90d,
-                    "lines": finding.lines,
-                    "package": finding.package,
-                    "evidence_json": json.dumps(
-                        finding.evidence if hasattr(finding, "evidence") else []
-                    ),
-                    "safe_to_delete": finding.safe_to_delete,
-                    "primary_owner": finding.primary_owner,
-                    "age_days": finding.age_days,
-                }
-            else:
-                data = dict(finding)
-                if "evidence" in data:
-                    data["evidence_json"] = json.dumps(data.pop("evidence"))
+            session.add(DeadCodeFinding(**_dead_code_row_kwargs(finding, repository_id)))
+        await session.flush()
 
-            session.add(
-                DeadCodeFinding(
-                    id=_new_uuid(),
-                    repository_id=repository_id,
-                    **{
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("id", "repository_id") and hasattr(DeadCodeFinding, k)
-                    },
-                )
-            )
+
+async def upsert_dead_code_findings(
+    session: AsyncSession,
+    repository_id: str,
+    findings: list[Any],
+    *,
+    file_paths: list[str],
+) -> None:
+    """Replace open dead-code findings **only for the given file paths**.
+
+    Used by the incremental ``repowise update`` path so unchanged files keep
+    their findings instead of being wiped on every partial re-index. Callers
+    must pass the full set of *changed* file paths (not just paths that
+    produced findings) so a changed-but-now-clean file has its stale findings
+    removed.
+    """
+    if not file_paths:
+        return
+    allowed = set(file_paths)
+    existing = await session.execute(
+        select(DeadCodeFinding).where(
+            DeadCodeFinding.repository_id == repository_id,
+            DeadCodeFinding.status == "open",
+            DeadCodeFinding.file_path.in_(file_paths),
+        )
+    )
+    for row in existing.scalars().all():
+        await session.delete(row)
+    await session.flush()
+
+    # Insert only within the replaced scope (delete is scoped to file_paths).
+    scoped = [f for f in findings if _finding_file_path(f) in allowed]
+    for i in range(0, len(scoped), _BATCH_SIZE):
+        batch = scoped[i : i + _BATCH_SIZE]
+        for finding in batch:
+            session.add(DeadCodeFinding(**_dead_code_row_kwargs(finding, repository_id)))
         await session.flush()
 
 

@@ -368,6 +368,7 @@ def _persist_index_only_update(
     state: dict,
     head: str | None,
     start: float,
+    changed_paths: list[str],
 ) -> None:
     """Persist the index-only update (graph + git + dead-code + health), save
     state, and print the completion line. No LLM regeneration."""
@@ -406,10 +407,12 @@ def _persist_index_only_update(
             if dead_code_report is not None:
                 try:
                     from repowise.core.persistence.crud import (
-                        save_dead_code_findings,
+                        upsert_dead_code_findings,
                     )
 
-                    await save_dead_code_findings(session, repo_id, dead_code_report.findings)
+                    await upsert_dead_code_findings(
+                        session, repo_id, dead_code_report.findings, file_paths=changed_paths
+                    )
                 except Exception as exc:
                     console.print(f"[yellow]Dead-code persist skipped: {exc}[/yellow]")
 
@@ -776,6 +779,7 @@ def update_command(
             state,
             head,
             start,
+            [fd.path for fd in file_diffs],
         )
         return
 
@@ -1068,18 +1072,19 @@ def update_command(
             except Exception:
                 pass  # health persistence is best-effort
 
-        # Persist dead code findings (partial)
-        if dead_code_report and dead_code_report.findings:
+        # Scoped to changed files so unchanged files keep their findings (#295).
+        if dead_code_report is not None:
             try:
                 import dataclasses as _dc_dead
 
-                from repowise.core.persistence.crud import save_dead_code_findings
+                from repowise.core.persistence.crud import upsert_dead_code_findings
 
                 async with get_session(sf) as session:
-                    await save_dead_code_findings(
+                    await upsert_dead_code_findings(
                         session,
                         repo_id,
                         [_dc_dead.asdict(f) for f in dead_code_report.findings],
+                        file_paths=[fd.path for fd in file_diffs],
                     )
             except Exception:
                 pass  # dead code persistence is best-effort

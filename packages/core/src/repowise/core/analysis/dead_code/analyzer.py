@@ -428,37 +428,16 @@ class DeadCodeAnalyzer:
     def analyze_partial(
         self, affected_files: list[str], config: dict | None = None
     ) -> DeadCodeReport:
-        """Partial analysis for incremental updates."""
-        cfg = config or {}
-        findings: list[DeadCodeFindingData] = []
-        dynamic_patterns = cfg.get("dynamic_patterns", _DEFAULT_DYNAMIC_PATTERNS)
-        whitelist = set(cfg.get("whitelist", []))
+        """Run the full detector suite, then narrow findings to ``affected_files``.
 
+        Persisted via the file-scoped ``upsert_dead_code_findings`` so unchanged
+        files keep their findings. Cross-file effects on unchanged files are not
+        recomputed here; the full ``analyze()`` remains authoritative.
+        """
         affected_set = set(affected_files)
-        for node in affected_set:
-            if node not in self.graph:
-                continue
-            node_data = self.graph.nodes.get(node, {})
-            if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
-                continue
-            if self._should_never_flag(node, whitelist):
-                continue
+        full = self.analyze(config)
+        findings = [f for f in full.findings if f.file_path in affected_set]
 
-            in_deg = self.graph.in_degree(node)
-            node_data = self.graph.nodes.get(node, {})
-            if (
-                in_deg == 0
-                and not node_data.get("is_entry_point", False)
-                and not node_data.get("is_test", False)
-            ):
-                finding = self._make_unreachable_finding(node, node_data, dynamic_patterns)
-                if finding:
-                    findings.append(finding)
-
-        min_conf = cfg.get("min_confidence", 0.4)
-        findings = [f for f in findings if f.confidence >= min_conf]
-
-        now = datetime.now(UTC)
         deletable = sum(f.lines for f in findings if f.safe_to_delete)
         high = sum(1 for f in findings if f.confidence >= 0.7)
         medium = sum(1 for f in findings if 0.4 <= f.confidence < 0.7)
@@ -466,7 +445,7 @@ class DeadCodeAnalyzer:
 
         return DeadCodeReport(
             repo_id="",
-            analyzed_at=now,
+            analyzed_at=full.analyzed_at,
             total_findings=len(findings),
             findings=findings,
             deletable_lines=deletable,

@@ -275,6 +275,55 @@ class TestUpdateIndexOnly:
         assert state1["last_sync_commit"] != base_commit
 
 
+class TestUpdatePreservesDeadCode:
+    def test_single_file_update_preserves_unchanged_files(self, runner, git_work_repo):
+        """A single-file re-index must not wipe the whole dead-code index;
+        unchanged files keep their findings (regression guard for #295)."""
+        import sqlite3
+
+        runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+
+        db = git_work_repo / ".repowise" / "wiki.db"
+
+        def _counts_by_file() -> dict[str, int]:
+            con = sqlite3.connect(db)
+            try:
+                rows = con.execute(
+                    "SELECT file_path, COUNT(*) FROM dead_code_findings "
+                    "WHERE status='open' GROUP BY file_path"
+                ).fetchall()
+            finally:
+                con.close()
+            return {fp: n for fp, n in rows}
+
+        before = _counts_by_file()
+        if sum(before.values()) == 0:
+            pytest.skip("sample repo produced no dead-code findings to preserve")
+
+        # Pick a real file (skip package-level findings whose path is a directory).
+        changed = next((fp for fp in before if (git_work_repo / fp).is_file()), None)
+        if changed is None:
+            pytest.skip("no file-level dead-code findings to exercise scoping")
+        # Append a blank line: a real content change valid in any language.
+        target = git_work_repo / changed
+        target.write_text(target.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        _git(["add", "-A"], git_work_repo)
+        _git(["commit", "-m", "touch one file"], git_work_repo)
+
+        result = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert result.exit_code == 0, result.output
+
+        after = _counts_by_file()
+        assert sum(after.values()) > 0, "dead-code index was wiped to zero"
+        for fp, n in before.items():
+            if fp != changed:
+                assert after.get(fp, 0) == n, f"unchanged file {fp} lost findings"
+
+
 class TestUpdateFullMock:
     def test_regenerates_pages(self, runner, git_work_repo):
         import json
