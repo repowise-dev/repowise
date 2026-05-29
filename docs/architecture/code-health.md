@@ -101,7 +101,13 @@ analysis/health/
     ├── untested_hotspot.py
     ├── coverage_gap.py
     ├── developer_congestion.py
-    └── knowledge_loss.py
+    ├── knowledge_loss.py
+    ├── hidden_coupling.py
+    ├── complex_conditional.py
+    ├── function_hotspot.py
+    ├── code_age_volatility.py
+    ├── ownership_risk.py
+    └── churn_risk.py
 ```
 
 ### Persistence
@@ -304,7 +310,7 @@ higher than dormant ones.
 
 ---
 
-## 5. The 12 biomarkers and their categories
+## 5. The 17 biomarkers and their categories
 
 Each biomarker is a stateless class implementing the `Biomarker` Protocol
 from `biomarkers/base.py`:
@@ -318,11 +324,18 @@ class Biomarker(Protocol):
 
 | Category               | Cap  | Biomarkers |
 |------------------------|------|------------|
-| Structural complexity  | −3.5 | brain_method, nested_complexity, bumpy_road |
-| Size & complexity      | −2.0 | complex_method, large_method, primitive_obsession |
-| Duplication            | −1.5 | dry_violation |
+| Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk |
+| Structural complexity  | −2.5 | brain_method, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
-| Organizational         | −1.0 | developer_congestion, knowledge_loss |
+| Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
+| Duplication            | −1.0 | dry_violation |
+
+`ownership_risk` (long-run minor-contributor dispersion, Bird et al.) and
+`churn_risk` (size-normalized relative churn, Nagappan-Ball) are git-only
+process signals computed from `top_authors_json` / `lines_added_90d` /
+`churn_percentile` — fields the git indexer already produces. `knowledge_loss`
+is activity-gated so abandoned-but-stable files (the survivor effect) no longer
+fire.
 
 `biomarkers/registry.py` is an **explicit list**, not auto-discovery —
 keeps the registration order deterministic and lets tests inject extras

@@ -1,9 +1,9 @@
 # Code Health
 
-Repowise computes a 1–10 health score for every file in your repo from fifteen
+Repowise computes a 1–10 health score for every file in your repo from seventeen
 deterministic biomarkers — McCabe complexity, deep nesting, brain methods,
 clone detection, untested hotspots, function-level churn, code-age volatility,
-organizational risk, and more. **No LLM calls, no cloud requirement.** Pure
+ownership dispersion, relative churn, organizational risk, and more. **No LLM calls, no cloud requirement.** Pure
 Python over tree-sitter + git data, designed to finish in under 30 seconds on a
 3 000-file repo.
 
@@ -26,13 +26,13 @@ most:
 
 | Category               | Cap   | Biomarkers |
 |------------------------|-------|------------|
-| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility |
+| Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk |
 | Structural complexity  | −2.5  | brain_method, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0  | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5  | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0  | dry_violation |
 
-Fifteen biomarkers across five categories. `function_hotspot` and
+Seventeen biomarkers across five categories. `function_hotspot` and
 `code_age_volatility` are blame-based and sit in the organizational bucket —
 both are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line
 blame index is built.
@@ -40,8 +40,9 @@ blame index is built.
 Per-biomarker weight multipliers (see `scoring._BIOMARKER_WEIGHT_MULTIPLIER`)
 let the strongest empirical predictors deduct more than the uniform severity
 table alone allows. `developer_congestion` is multiplied by 1.5,
-`untested_hotspot` by 1.3, `function_hotspot` (a follow-up biomarker) by 1.2,
-and `knowledge_loss` is de-rated to 0.4. The de-rating is OSS-calibrated
+`untested_hotspot` by 1.3, `ownership_risk` by 1.3 (the strongest defect
+correlate in the literature), `function_hotspot` (a follow-up biomarker) and
+`churn_risk` by 1.2, and `knowledge_loss` is de-rated to 0.4. The de-rating is OSS-calibrated
 (legacy code gets handed off because it works); enterprise users where
 attrition is a real risk should raise it back via per-repo overrides — see
 plan §3.5.
@@ -88,7 +89,9 @@ Severity grades along coverage depth.
 Usually an ownership problem dressed up as a code problem.
 
 **knowledge_loss** — The primary authors of the file are no longer active
-on the project. Refactor while someone still remembers why.
+on the project. Refactor while someone still remembers why. Gated on recent
+activity — an abandoned-but-stable file is low risk (the survivor effect),
+so this only fires while the code is still being changed.
 
 **hidden_coupling** — Files that consistently change in the same commits
 without an explicit import or dependency edge between them. Captures
@@ -116,6 +119,21 @@ timestamps, `recent_mod_count` from distinct shas inside the last 30
 days. Severity escalates with both axes (CRIT when median age ≥ 2y AND
 ≥ 5 recent commits). Tier-aware: same ESSENTIAL no-op as
 `function_hotspot`.
+
+**ownership_risk** — Long-run ownership dispersion. Counts *minor
+contributors* — authors who each own less than 5% of the file's commits —
+and the dominant owner's share. Many drive-by authors with no clear owner is
+the single strongest defect correlate in the literature (Bird et al.). Fires
+on files with ≥ 5 commits where ≥ 3 contributors are minor or no owner holds
+40%. Complements `developer_congestion`, which measures *active* (90-day)
+contention rather than lifetime dispersion.
+
+**churn_risk** — Relative churn: the fraction of a file's lines rewritten in
+the last 90 days, normalized by file size. A file whose recent window rewrote
+more lines than it contains is structurally unstable regardless of how big it
+is. Because the trigger is a ratio to NLOC, it does not simply re-flag large
+files. Fires when the file is actively churning (≥ 5 recent commits, top
+quartile of repo churn) and relative churn ≥ 1.0.
 
 ## Test coverage
 
@@ -211,7 +229,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 15 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 17 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ |
 | Untested hotspot detection       | ✅ coverage × hotspot | ❌ | ❌ | ❌ |

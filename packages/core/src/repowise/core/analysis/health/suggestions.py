@@ -97,6 +97,20 @@ _TEMPLATES: dict[str, str] = {
         "the original author or write down the design intent before "
         "shipping the next change."
     ),
+    "ownership_risk": (
+        "Assign a clear owner and reduce drive-by contributors on this "
+        "file. Fragmented ownership — many authors each touching a small "
+        "slice — is one of the strongest defect predictors; nominate a "
+        "DRI for reviews, or split the file along its natural seams so "
+        "each part has a coherent owner."
+    ),
+    "churn_risk": (
+        "This file is being rewritten faster than its size. Stabilize "
+        "the interface and add characterization tests before the next "
+        "change — high relative churn means the design hasn't settled, "
+        "so lock in current behavior and slow the rate of structural "
+        "edits."
+    ),
     "knowledge_loss": (
         "Document the surviving knowledge. The primary author(s) of "
         "this file are no longer active — pair-program with someone "

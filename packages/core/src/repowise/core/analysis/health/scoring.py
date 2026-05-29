@@ -57,6 +57,8 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "function_hotspot": 1.2,
     "code_age_volatility": 1.1,
     "hidden_coupling": 1.0,
+    "ownership_risk": 1.3,
+    "churn_risk": 1.2,
     "knowledge_loss": 0.4,
     # Governance — additive pass, weights are informational
     "contradictory_decision": 1.0,
@@ -83,6 +85,8 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "hidden_coupling": "organizational",
     "function_hotspot": "organizational",
     "code_age_volatility": "organizational",
+    "ownership_risk": "organizational",
+    "churn_risk": "organizational",
     # Governance biomarkers — written by the additive governance pass
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",

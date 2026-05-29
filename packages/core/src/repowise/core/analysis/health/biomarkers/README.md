@@ -9,7 +9,7 @@ class Biomarker(Protocol):
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]: ...
 ```
 
-## Registered detectors (14)
+## Registered detectors (17)
 
 Structural complexity (cap −2.5):
 - `brain_method` — symbols simultaneously long, complex, and central.
@@ -38,6 +38,12 @@ Organizational (cap −3.5):
   frequently modified (per-function churn from the FULL-tier blame index).
 - `code_age_volatility` — dormant functions (median line age ≥ 1y) that
   are suddenly being modified again. Uses the same blame index.
+- `ownership_risk` — long-run ownership dispersion: many minor
+  contributors (each < 5% of commits) or no dominant owner. Bird's
+  strongest literature defect correlate.
+- `churn_risk` — relative churn: a file whose 90-day window rewrote a
+  large fraction of its own lines (size-normalized, so it doesn't simply
+  re-flag big files).
 
 Caps were recalibrated to lift `organizational` (was −1.0) and de-rate
 `size_and_complexity` / `duplication` per plan §3.1. A per-biomarker

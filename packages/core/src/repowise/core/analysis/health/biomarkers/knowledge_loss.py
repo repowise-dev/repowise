@@ -8,9 +8,16 @@ this code.
 
 Fires when:
 
-- ``bus_factor`` ≤ 1 (the file has one true author)
-- AND ``primary_owner_name`` differs from ``recent_owner_name`` OR the
+- the file is still changing (``commit_count_90d`` ≥ 1 or it is a
+  hotspot; an ``is_stable`` file never fires), AND
+- ``bus_factor`` ≤ 1 (the file has one true author), AND
+- ``primary_owner_name`` differs from ``recent_owner_name`` OR the
   recent owner contributes < 20% of recent commits
+
+The activity gate is what makes this signal point the right way: an
+abandoned-but-stable file is *low* risk (the survivor effect — code
+nobody touches doesn't break), so knowledge loss only matters while the
+code is live and the lost author's intent is still being edited around.
 
 Severity grades on whether the file is also a hotspot.
 """
@@ -50,6 +57,14 @@ class KnowledgeLossDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         meta = ctx.git_meta or {}
+
+        # Activity gate: an abandoned-but-stable file is low risk
+        # (survivor effect). Only fire while the code is still live.
+        if meta.get("is_stable"):
+            return []
+        if _as_int(meta.get("commit_count_90d")) < 1 and not _is_hotspot(meta):
+            return []
+
         bus = _as_int(meta.get("bus_factor"))
         if bus > _BUS_FACTOR_THRESHOLD or bus == 0:
             # bus_factor 0 means git indexing was skipped or the file

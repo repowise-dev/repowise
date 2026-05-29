@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from .base import Biomarker, BiomarkerResult, FileContext
 from .brain_method import BrainMethodDetector
 from .bumpy_road import BumpyRoadDetector
+from .churn_risk import ChurnRiskDetector
 from .code_age_volatility import CodeAgeVolatilityDetector
 from .complex_conditional import ComplexConditionalDetector
 from .complex_method import ComplexMethodDetector
@@ -25,6 +26,7 @@ from .hidden_coupling import HiddenCouplingDetector
 from .knowledge_loss import KnowledgeLossDetector
 from .large_method import LargeMethodDetector
 from .nested_complexity import NestedComplexityDetector
+from .ownership_risk import OwnershipRiskDetector
 from .primitive_obsession import PrimitiveObsessionDetector
 from .untested_hotspot import UntestedHotspotDetector
 
@@ -44,6 +46,8 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     ComplexConditionalDetector,  # type: ignore[list-item]
     FunctionHotspotDetector,  # type: ignore[list-item]
     CodeAgeVolatilityDetector,  # type: ignore[list-item]
+    OwnershipRiskDetector,  # type: ignore[list-item]
+    ChurnRiskDetector,  # type: ignore[list-item]
 ]
 
 
