@@ -1,17 +1,40 @@
 <div align="center">
 
-<img src=".github/assets/logo.png" width="280" alt="repowise" /><br />
-**The codebase intelligence layer for your AI coding agent.**
+<a href="https://www.repowise.dev"><img src=".github/assets/banner.png" alt="repowise — the codebase intelligence layer for your AI coding agent" width="100%" /></a>
 
-Five intelligence layers. Nine MCP tools. Multi-repo workspaces. Auto-sync hooks. One `pip install`.
+<p align="center"><em>The codebase intelligence layer for your AI coding agent.</em></p>
 
-[![PyPI version](https://img.shields.io/pypi/v/repowise?color=F59520&labelColor=0A0A0A)](https://pypi.org/project/repowise/)
-[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--v3-F59520?labelColor=0A0A0A)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python](https://img.shields.io/badge/python-3.11%2B-F59520?labelColor=0A0A0A)](https://pypi.org/project/repowise/)
-[![MCP](https://img.shields.io/badge/MCP-compatible-F59520?labelColor=0A0A0A)](https://modelcontextprotocol.io)
-[![Stars](https://img.shields.io/github/stars/repowise-dev/repowise?color=F59520&labelColor=0A0A0A)](https://github.com/repowise-dev/repowise)
+<p align="center"><strong>Five intelligence layers · Nine MCP tools · Multi-repo workspaces · Auto-sync hooks · One <code>pip install</code></strong></p>
 
-[**Explore real codebases →**](https://www.repowise.dev/explore) · [**Hosted for teams →**](https://www.repowise.dev/#contact) · [**Docs**](https://docs.repowise.dev) · [**Discord**](https://discord.gg/cQVpuDB6rh) · [**Contact**](mailto:hello@repowise.dev)
+<p align="center">
+  <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Live demo — repowise.dev" /></a>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/pypi/v/repowise?style=for-the-badge&color=1E293B&labelColor=0A0A0A&logo=pypi&logoColor=white" alt="PyPI version" /></a>
+  <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--v3-059669?style=for-the-badge&labelColor=0A0A0A" alt="License: AGPL v3" /></a>
+  <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/badge/Python-3.11%2B-1E293B?style=for-the-badge&labelColor=0A0A0A&logo=python&logoColor=white" alt="Python 3.11+" /></a>
+  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-1E293B?style=for-the-badge&labelColor=0A0A0A" alt="MCP compatible" /></a>
+  <a href="https://github.com/repowise-dev/repowise/stargazers"><img src="https://img.shields.io/github/stars/repowise-dev/repowise?style=for-the-badge&logo=github&color=1E293B&labelColor=0A0A0A&logoColor=white" alt="GitHub stars" /></a>
+</p>
+
+<p align="center">
+  <a href="https://www.repowise.dev/#contact"><strong>Hosted for teams →</strong></a> ·
+  <a href="https://docs.repowise.dev"><strong>Docs</strong></a> ·
+  <a href="https://discord.gg/cQVpuDB6rh"><strong>Discord</strong></a> ·
+  <a href="mailto:hello@repowise.dev"><strong>Contact</strong></a>
+</p>
+
+<p align="center"><sub>
+  <a href="#benchmarks">Benchmarks</a> ·
+  <a href="#what-repowise-builds">Intelligence layers</a> ·
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#nine-mcp-tools">MCP tools</a> ·
+  <a href="#local-dashboard">Dashboard</a> ·
+  <a href="#how-it-compares">Comparison</a> ·
+  <a href="#hosted-version--for-teams">Hosted</a> ·
+  <a href="#license">License</a>
+</sub></p>
 
 ---
 
@@ -652,8 +675,14 @@ For commercial licensing — the enterprise security & compliance layer, SSO/SCI
 
 <div align="center">
 
-Built for engineers who got tired of watching their AI agent `cat` the same file for the fourth time.
+<em>Built for engineers who got tired of watching their AI agent <code>cat</code> the same file for the fourth time.</em>
 
-[repowise.dev](https://repowise.dev) · [Explore →](https://www.repowise.dev/explore) · [Discord](https://discord.gg/cQVpuDB6rh) · [X](https://x.com/repowisedev) · [hello@repowise.dev](mailto:hello@repowise.dev)
+<p align="center">
+  <a href="https://repowise.dev"><strong>repowise.dev</strong></a> ·
+  <a href="https://www.repowise.dev/explore"><strong>Explore →</strong></a> ·
+  <a href="https://discord.gg/cQVpuDB6rh"><strong>Discord</strong></a> ·
+  <a href="https://x.com/repowisedev"><strong>X</strong></a> ·
+  <a href="mailto:hello@repowise.dev"><strong>hello@repowise.dev</strong></a>
+</p>
 
 </div>
