@@ -8,10 +8,27 @@ live in ``repowise.cli.editor_integrations``.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+# When set (truthy), `repowise init` skips registering MCP servers / hooks in
+# the user's *global* editor config (~/.claude/settings.json, Claude Desktop).
+# Intended for headless / CI / benchmark indexing, where indexing many repos —
+# or transient git worktrees — must not mutate the developer's global config or
+# repoint the single global "repowise" MCP entry at a path that will be deleted.
+_SKIP_EDITOR_SETUP_ENV = "REPOWISE_SKIP_EDITOR_SETUP"
+
+
+def _editor_setup_disabled() -> bool:
+    return os.environ.get(_SKIP_EDITOR_SETUP_ENV, "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+    )
 
 
 @dataclass(frozen=True)
@@ -120,6 +137,8 @@ def register_editor_clients(
 ) -> None:
     """Register editor clients with repowise MCP and hooks where supported."""
 
+    if _editor_setup_disabled():
+        return
     for integration in _resolve_integrations(integrations):
         integration.register_client(console_obj, repo_path)
 

@@ -25,6 +25,41 @@ def _silent_console() -> Console:
     return Console(file=StringIO(), force_terminal=False)
 
 
+def test_register_editor_clients_skipped_when_env_set(monkeypatch) -> None:
+    """REPOWISE_SKIP_EDITOR_SETUP makes global client registration a no-op.
+
+    Headless / CI / benchmark indexing (incl. transient git worktrees) must not
+    mutate the developer's global editor config or repoint the single global
+    'repowise' MCP entry at a path that will be deleted.
+    """
+    from repowise.cli.editor_setup import register_editor_clients
+
+    registered: list[Path] = []
+
+    class FakeIntegration:
+        def configure_options(self, c: Any, o: Any) -> Any:
+            return o
+
+        def write_project_files(self, c: Any, p: Path, o: Any) -> None:
+            pass
+
+        def register_client(self, c: Any, p: Path) -> None:
+            registered.append(p)
+
+        def refresh_project_files(self, c: Any, p: Path, o: Any) -> None:
+            pass
+
+    integrations = (FakeIntegration(),)
+
+    monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")
+    register_editor_clients(_silent_console(), Path("repo"), integrations=integrations)
+    assert registered == []  # skipped
+
+    monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
+    register_editor_clients(_silent_console(), Path("repo"), integrations=integrations)
+    assert registered == [Path("repo")]  # runs when unset
+
+
 def test_resolve_editor_setup_options_delegates_to_integrations() -> None:
     calls: list[tuple[str, frozenset[str], bool]] = []
 
