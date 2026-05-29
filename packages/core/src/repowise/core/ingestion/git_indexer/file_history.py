@@ -198,6 +198,7 @@ def index_file(
     follow_renames: bool,
     include_blame: bool = True,
     precomputed_commits: list[_CommitRec] | None = None,
+    as_of_ts: float | None = None,
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -207,8 +208,17 @@ def index_file(
 
     *include_blame* gates the FULL-tier ``git blame`` ownership pass; the
     ESSENTIAL tier sets it False and falls back to commit-author ownership.
+
+    *as_of_ts* anchors the recency windows (90d/30d, age, temporal decay) to a
+    fixed reference time — the timestamp of the repo's most recent commit,
+    supplied by the orchestrator. Anchoring to the repo's own HEAD rather than
+    wall-clock ``now()`` makes indexing **deterministic** (re-indexing the same
+    commit later yields identical windows) and **correct for historical
+    checkouts** (scoring a worktree at an old commit measures the 90 days before
+    *that* commit, not an empty window 6 months in its future). Falls back to
+    ``now()`` when not supplied.
     """
-    now = datetime.now(UTC)
+    now = datetime.fromtimestamp(as_of_ts, tz=UTC) if as_of_ts is not None else datetime.now(UTC)
     ninety_days_ago_ts = (now - timedelta(days=90)).timestamp()
     thirty_days_ago_ts = (now - timedelta(days=30)).timestamp()
 

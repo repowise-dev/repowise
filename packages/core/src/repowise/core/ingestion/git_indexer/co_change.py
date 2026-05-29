@@ -42,6 +42,7 @@ def compute_co_changes_and_entropy(
     min_count: int = _DEFAULT_CO_CHANGE_MIN_COUNT,
     on_commit_done: Callable[[], None] | None = None,
     on_co_change_start: Callable[[int], None] | None = None,
+    as_of_ts: float | None = None,
 ) -> tuple[dict[str, list[dict]], dict[str, float]]:
     """Walk recent commits once, returning ``(co_changes, change_entropy)``.
 
@@ -65,7 +66,11 @@ def compute_co_changes_and_entropy(
     pair_scores: defaultdict[tuple[str, str], float] = defaultdict(float)
     pair_last_date: dict[tuple[str, str], int] = {}  # pair → latest Unix ts
     entropy_scores: defaultdict[str, float] = defaultdict(float)
-    now_ts = time.time()
+    # Anchor the decay reference to the repo's most recent commit (passed by the
+    # orchestrator) rather than wall-clock time, so the decay is deterministic
+    # and historical-checkout-correct (mirrors file_history's as_of_ts). Falls
+    # back to wall clock when not supplied.
+    now_ts = as_of_ts if as_of_ts is not None else time.time()
 
     try:
         # %x00 = commit separator, %ct = committer timestamp (Unix epoch).

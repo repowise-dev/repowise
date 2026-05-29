@@ -280,6 +280,42 @@ class TestStableClassification:
         assert meta["is_stable"] is True
 
 
+class TestGitWindowAnchor:
+    """REPOWISE_GIT_WINDOW_ANCHOR anchors recency windows to the repo's most
+    recent commit instead of wall-clock now() — default off (product unchanged),
+    on for historical T0 scoring so windowed signals aren't silently empty."""
+
+    def _mock_repo_with_old_commits(self) -> tuple[MagicMock, datetime]:
+        mock_repo = MagicMock()
+        old_date = datetime.now(UTC) - timedelta(days=180)
+        log_lines = []
+        for i in range(15):
+            ts = int((old_date - timedelta(days=i)).timestamp())
+            log_lines.append(
+                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1f{ts}\x1f\x1ffeat: old {i}\x1f"
+            )
+        mock_repo.git.log.return_value = "\n".join(log_lines)
+        # HEAD tip = the newest of the (old) batch.
+        mock_repo.head.commit.committed_date = int(old_date.timestamp())
+        return mock_repo, old_date
+
+    def test_default_uses_wall_clock(self, monkeypatch) -> None:
+        monkeypatch.delenv("REPOWISE_GIT_WINDOW_ANCHOR", raising=False)
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo, _ = self._mock_repo_with_old_commits()
+        meta = indexer._index_file("f.py", mock_repo)
+        # 180-day-old commits are outside a now()-anchored 90d window.
+        assert meta["commit_count_90d"] == 0
+
+    def test_anchor_to_head_commit(self, monkeypatch) -> None:
+        monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo, _ = self._mock_repo_with_old_commits()
+        meta = indexer._index_file("f.py", mock_repo)
+        # Anchored to the latest commit, all 15 fall within its preceding 90d.
+        assert meta["commit_count_90d"] == 15
+
+
 # ---------------------------------------------------------------------------
 # 4b. test_numstat_parsing
 # ---------------------------------------------------------------------------

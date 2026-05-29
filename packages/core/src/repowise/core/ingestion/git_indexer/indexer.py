@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -118,6 +119,7 @@ class GitIndexer:
             commit_index = load_commit_index(repo, self.commit_limit, set(indexable_files))
 
         include_blame = self.tier.includes_blame
+        as_of_ts = self._resolve_as_of_ts(repo, commit_index)
 
         def _index_one_sync(file_path: str) -> dict:
             """Use a per-thread Repo to avoid shared-handle issues on Windows."""
@@ -135,6 +137,7 @@ class GitIndexer:
                         follow_renames=self.follow_renames,
                         include_blame=include_blame,
                         precomputed_commits=precomputed,
+                        as_of_ts=as_of_ts,
                     )
                 finally:
                     thread_repo.close()
@@ -182,6 +185,7 @@ class GitIndexer:
                 _DEFAULT_CO_CHANGE_MIN_COUNT,
                 on_commit_done,
                 on_co_change_start,
+                as_of_ts,
             )
             if on_co_change_done is not None:
                 with contextlib.suppress(Exception):
@@ -245,6 +249,7 @@ class GitIndexer:
         loop = asyncio.get_event_loop()
         semaphore = asyncio.Semaphore(20)
         include_blame = self.tier.includes_blame
+        as_of_ts = self._resolve_as_of_ts(repo)
 
         def _index_one_sync(file_path: str) -> dict:
             try:
@@ -259,6 +264,7 @@ class GitIndexer:
                         commit_limit=self.commit_limit,
                         follow_renames=self.follow_renames,
                         include_blame=include_blame,
+                        as_of_ts=as_of_ts,
                     )
                 finally:
                     thread_repo.close()
@@ -296,6 +302,37 @@ class GitIndexer:
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------
+
+    def _resolve_as_of_ts(
+        self, repo: Any, commit_index: dict[str, list[_CommitRec]] | None = None
+    ) -> float | None:
+        """Optional reference 'now' for recency windows (90d/30d, age, decay).
+
+        Default (env unset) returns ``None`` → callers anchor to wall-clock
+        ``now()``, preserving the live-product meaning of "churned lately /
+        is_stable" as *relative to today*.
+
+        When ``REPOWISE_GIT_WINDOW_ANCHOR`` is truthy (e.g. ``head``), anchor
+        instead to the repo's most recent commit timestamp. This makes indexing
+        deterministic and correct for **historical checkouts**: scoring a
+        worktree at an old commit then measures the 90 days before *that* commit
+        rather than an empty window in its future. Used by the defect benchmark,
+        which scores repos at a past T0 — without it every windowed process
+        signal (churn, entropy, co-change, congestion) is silently zero."""
+        anchor = os.environ.get("REPOWISE_GIT_WINDOW_ANCHOR", "").strip().lower()
+        if anchor in ("", "0", "false", "no", "now"):
+            return None
+        try:
+            if commit_index:
+                ts = max(
+                    (c.ts for recs in commit_index.values() for c in recs if c.ts > 0),
+                    default=0.0,
+                )
+                if ts > 0:
+                    return float(ts)
+            return float(repo.head.commit.committed_date)
+        except Exception:
+            return None
 
     def _get_repo(self) -> Any | None:
         try:
@@ -340,6 +377,7 @@ class GitIndexer:
             follow_renames=self.follow_renames,
             include_blame=self.tier.includes_blame,
             precomputed_commits=precomputed_commits,
+            as_of_ts=self._resolve_as_of_ts(repo),
         )
 
     def _get_blame_ownership(
