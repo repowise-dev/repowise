@@ -28,6 +28,7 @@ from ._constants import (
 from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import index_file
+from .prior_defects import compute_prior_defects
 from .records import GitIndexSummary, _CommitRec, _should_skip_index
 from .tiers import GitIndexTier
 
@@ -208,13 +209,25 @@ class GitIndexer:
             else:
                 results.append(r)
 
-        # Merge co-change partners + change entropy into per-file metadata.
+        # Prior-defect counts: one dedicated windowed git-log pass (NOT the
+        # depth-capped commit index, which under-counts the busiest files —
+        # exactly the ones this signal flags). Bounded to the trailing window,
+        # so it's cheap regardless of total repo age and leakage-free at T0.
+        prior_defects: dict[str, int] = {}
+        try:
+            prior_defects = compute_prior_defects(repo, set(indexable_files), as_of_ts=as_of_ts)
+        except Exception as exc:
+            logger.debug("prior_defect_pass_failed", error=str(exc))
+
+        # Merge co-change partners + change entropy + prior defects into metadata.
         for meta in results:
             fp = meta["file_path"]
             if fp in co_changes:
                 meta["co_change_partners_json"] = json.dumps(co_changes[fp])
             if fp in change_entropy:
                 meta["change_entropy"] = change_entropy[fp]
+            if fp in prior_defects:
+                meta["prior_defect_count"] = prior_defects[fp]
 
         compute_percentiles(results)
 
@@ -295,6 +308,19 @@ class GitIndexer:
                 logger.warning("Failed to index changed file", error=str(r))
             else:
                 results.append(r)
+
+        # Recompute prior-defect counts for the changed files (same dedicated
+        # windowed pass as the full index — the per-file commit list can't carry
+        # this signal accurately on busy repos).
+        try:
+            prior_defects = compute_prior_defects(
+                repo, {m["file_path"] for m in results}, as_of_ts=as_of_ts
+            )
+            for meta in results:
+                if meta["file_path"] in prior_defects:
+                    meta["prior_defect_count"] = prior_defects[meta["file_path"]]
+        except Exception as exc:
+            logger.debug("prior_defect_pass_failed", error=str(exc))
 
         repo.close()
         return results

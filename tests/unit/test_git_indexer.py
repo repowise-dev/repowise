@@ -316,6 +316,111 @@ class TestGitWindowAnchor:
         assert meta["commit_count_90d"] == 15
 
 
+class TestFixCommitClassifier:
+    """``is_fix_commit`` must agree byte-for-byte with the benchmark's
+    ``lib/defect_counter.find_fix_commits`` keyword rule (product == benchmark)."""
+
+    def test_include_patterns_match(self) -> None:
+        from repowise.core.ingestion.git_indexer._constants import is_fix_commit
+
+        assert is_fix_commit("fix: null deref in parser")
+        assert is_fix_commit("Resolve crash on empty input")
+        assert is_fix_commit("patch the off-by-one")
+        assert is_fix_commit("closes #123")
+        assert is_fix_commit("fixes #99 regression")
+        assert is_fix_commit("squash a nasty bug")
+
+    def test_exclude_overrides_include(self) -> None:
+        from repowise.core.ingestion.git_indexer._constants import is_fix_commit
+
+        # "fix" present, but excluded keyword wins (matches the bench's order).
+        assert not is_fix_commit("fix lint")
+        assert not is_fix_commit("fix formatting in docs")
+        assert not is_fix_commit("Merge fix branch")
+        assert not is_fix_commit("bump deps to fix CVE")
+        assert not is_fix_commit("fix a typo")
+
+    def test_non_fixes_silent(self) -> None:
+        from repowise.core.ingestion.git_indexer._constants import is_fix_commit
+
+        assert not is_fix_commit("feat: add new endpoint")
+        assert not is_fix_commit("refactor the walker")
+        assert not is_fix_commit("")
+
+
+class TestPriorDefectCount:
+    """``compute_prior_defects`` walks a dedicated windowed ``prior_sha..HEAD``
+    git-log pass (NOT the depth-capped commit index), classifies fixes with the
+    shared keyword rule, and attributes each fix to every indexable file it
+    touched — mirroring the defect benchmark's prior-defects baseline."""
+
+    def _mock_repo(self, records: list[tuple[str, list[str]]]) -> MagicMock:
+        """records: list of (subject, [touched paths]). Builds the --name-only
+        log output and routes prior_sha resolution vs the windowed walk."""
+        mock_repo = MagicMock()
+        mock_repo.head.commit.hexsha = "HEADSHA"
+        chunks = []
+        for i, (subject, paths) in enumerate(records):
+            body = "\n".join(paths)
+            chunks.append(f"\x00sha{i:04d}\x1f{subject}\n{body}")
+        log_out = "\n".join(chunks)
+
+        def _log(*args, **kwargs):
+            # prior_sha resolution carries --before / -1; the walk carries
+            # --name-only. Route on that.
+            if any(str(a).startswith("--before") for a in args):
+                return "PRIORSHA"
+            return log_out
+
+        mock_repo.git.log.side_effect = _log
+        return mock_repo
+
+    def test_counts_and_attributes_fixes(self) -> None:
+        from repowise.core.ingestion.git_indexer.prior_defects import (
+            compute_prior_defects,
+        )
+
+        repo = self._mock_repo(
+            [
+                ("fix: crash on empty config", ["src/app.py", "src/util.py"]),
+                ("resolve race in scheduler", ["src/app.py"]),
+                ("feat: add flag", ["src/app.py"]),  # not a fix
+                ("fix lint", ["src/app.py"]),  # excluded keyword
+            ]
+        )
+        counts = compute_prior_defects(
+            repo, {"src/app.py", "src/util.py"}, as_of_ts=1_700_000_000.0
+        )
+        assert counts == {"src/app.py": 2, "src/util.py": 1}
+
+    def test_ignores_non_indexable_paths(self) -> None:
+        from repowise.core.ingestion.git_indexer.prior_defects import (
+            compute_prior_defects,
+        )
+
+        repo = self._mock_repo(
+            [
+                ("fix: bug", ["src/app.py", "docs/readme.md"]),
+            ]
+        )
+        counts = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert counts == {"src/app.py": 1}
+
+    def test_zero_when_no_fixes(self) -> None:
+        from repowise.core.ingestion.git_indexer.prior_defects import (
+            compute_prior_defects,
+        )
+
+        repo = self._mock_repo(
+            [
+                ("feat: add thing", ["src/app.py"]),
+                ("docs: update readme", ["src/app.py"]),
+            ]
+        )
+        counts = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert counts == {}
+
+
 # ---------------------------------------------------------------------------
 # 4b. test_numstat_parsing
 # ---------------------------------------------------------------------------

@@ -54,6 +54,9 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     "complex_method": 1.21,
     "function_hotspot": 1.16,
     "god_class": 1.13,
+    # prior-defect history — neutral weight: interpretable finding, calibrated
+    # coef ~0 (redundant with change_entropy/churn), Popt gain within noise.
+    "prior_defect": 1.0,
     # kept at prior (benchmark could not fairly measure)
     "untested_hotspot": 1.3,
     "churn_risk": 1.2,
@@ -95,6 +98,7 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "churn_risk": "organizational",
     "change_entropy": "organizational",
     "co_change_scatter": "organizational",
+    "prior_defect": "organizational",
     "large_assertion_block": "test_quality",
     "duplicated_assertion_block": "test_quality",
     # Phase 4B governance biomarkers.

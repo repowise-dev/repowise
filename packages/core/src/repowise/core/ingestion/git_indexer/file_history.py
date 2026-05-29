@@ -104,6 +104,12 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # Phase 3 fields
         "original_path": None,
         "merge_commit_count_90d": 0,
+        # Prior-defect history: count of bug-fix commits touching this file in
+        # the trailing PRIOR_DEFECT_WINDOW_DAYS window (anchored to as_of_ts when
+        # set, so T0 benchmark scoring stays leakage-free). Consumed by the
+        # ``prior_defect`` health biomarker; mirrors the benchmark's
+        # prior-defects baseline definition (product == benchmark).
+        "prior_defect_count": 0,
         # Temporal hotspot score (exponentially decayed churn)
         "temporal_hotspot_score": 0.0,
         # Change entropy (Hassan HCM) — populated repo-wide by the co-change

@@ -150,6 +150,53 @@ _COMMIT_CATEGORIES: dict[str, re.Pattern[str]] = {
     ),
 }
 
+# Bug-fix commit classifier — mirrors the defect benchmark's
+# ``lib/defect_counter.find_fix_commits`` (keyword strategy) so the product's
+# ``prior_defect`` signal counts exactly the commits the benchmark labels as
+# fixes (product == benchmark). A commit subject is a fix iff it matches an
+# INCLUDE pattern and NO EXCLUDE pattern; merge commits are excluded upstream
+# (the per-file walk skips ``is_merge``), mirroring the bench's ``--no-merges``.
+#
+# Deliberately NOT reusing ``_COMMIT_CATEGORIES["fix"]`` — that is a broader
+# classifier tuned for commit-category *ratios* (it catches "refactor to fix
+# crash", "error handling"), whereas the defect label wants high-precision
+# fix-only matches and must stay byte-identical to the benchmark's regex set.
+_FIX_COMMIT_INCLUDE: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bfix\b", re.IGNORECASE),
+    re.compile(r"\bbug\b", re.IGNORECASE),
+    re.compile(r"\bpatch\b", re.IGNORECASE),
+    re.compile(r"\bresolves?\b", re.IGNORECASE),
+    re.compile(r"closes?\s+#\d+", re.IGNORECASE),
+    re.compile(r"fixes?\s+#\d+", re.IGNORECASE),
+)
+_FIX_COMMIT_EXCLUDE: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^Merge ", re.IGNORECASE),
+    re.compile(r"\btypo\b", re.IGNORECASE),
+    re.compile(r"\bbump\b", re.IGNORECASE),
+    re.compile(r"\bdeps?\b", re.IGNORECASE),
+    re.compile(r"\bchore\b", re.IGNORECASE),
+    re.compile(r"\blint\b", re.IGNORECASE),
+    re.compile(r"\bformat\b", re.IGNORECASE),
+    re.compile(r"\bstyle\b", re.IGNORECASE),
+    re.compile(r"\bdocs?\b", re.IGNORECASE),
+)
+
+# Trailing window over which ``prior_defect`` counts bug-fix commits. 180 days
+# (≈6 months) intentionally matches the benchmark's ``defect_window_months: 6``
+# prior-defects baseline — a wider window than the 90d activity signals because
+# defect history is a slower-moving cluster than recent churn.
+PRIOR_DEFECT_WINDOW_DAYS: int = 180
+
+
+def is_fix_commit(subject: str) -> bool:
+    """Whether a commit *subject* is a bug-fix, per the benchmark's keyword rule."""
+    if not subject:
+        return False
+    if any(p.search(subject) for p in _FIX_COMMIT_EXCLUDE):
+        return False
+    return any(p.search(subject) for p in _FIX_COMMIT_INCLUDE)
+
+
 # Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
 _CO_CHANGE_DECAY_TAU: float = 180.0
 

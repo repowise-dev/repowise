@@ -82,6 +82,16 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "complex_method": 1.21,
     "function_hotspot": 1.16,
     "god_class": 1.13,
+    # Prior-defect history (recent bug-fix count). NEUTRAL weight by design, not
+    # a boost: on the 13-repo corpus its calibrated coefficient is ~+0.02 (no lift
+    # beyond size + the existing process signals — it correlates +0.59 with
+    # change_entropy, +0.38 with churn) and the effort-aware Popt gain is +0.01
+    # with bootstrap CIs straddling zero. So it ships as an interpretable,
+    # leakage-free finding ("bug-fixed N times recently" — directly actionable,
+    # and it uniquely flags a handful of files the other signals miss), NOT as a
+    # calibrated predictor. See local-stash/{calibrate_health_weights,
+    # measure_prior_defect,diagnose_prior_defect}.py + the progress doc Phase 8.5.
+    "prior_defect": 1.0,
     # --- kept at prior: benchmark could not fairly measure these ---
     "untested_hotspot": 1.3,  # benchmark ingests no coverage (has_test_file fallback only)
     "churn_risk": 1.2,  # fired in too few repos to calibrate
@@ -127,6 +137,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "churn_risk": "organizational",
     "change_entropy": "organizational",
     "co_change_scatter": "organizational",
+    "prior_defect": "organizational",
     "large_assertion_block": "test_quality",
     "duplicated_assertion_block": "test_quality",
     # Governance biomarkers — written by the additive governance pass

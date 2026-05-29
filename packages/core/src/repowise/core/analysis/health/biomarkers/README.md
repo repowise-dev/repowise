@@ -9,7 +9,7 @@ class Biomarker(Protocol):
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]: ...
 ```
 
-## Registered detectors (23)
+## Registered detectors (24)
 
 Structural complexity (cap −2.5):
 - `brain_method` — symbols simultaneously long, complex, and central. The
@@ -56,6 +56,14 @@ Organizational (cap −3.5):
 - `co_change_scatter` — breadth of co-change coupling: a file coupled to
   many others (shotgun surgery). Complements `hidden_coupling`, which
   flags specific undeclared pairs.
+- `prior_defect` — recent bug-fix history: the count of bug-fix commits
+  touching the file in the trailing ~6-month window (same keyword rule the
+  defect benchmark labels fixes with, anchored to the index's `as_of`
+  reference so historical/T0 scoring stays leakage-free). Reads the
+  `prior_defect_count` git field. **Neutral weight (1.0) by design** — on the
+  calibration corpus it is largely redundant with `change_entropy`/`churn_risk`
+  (no measured lift), so it ships as an interpretable, actionable finding
+  ("bug-fixed N times recently") rather than a boosted predictor.
 
 Test quality (cap −0.5, test files only):
 - `large_assertion_block` — a test function with a run of ≥ 15 consecutive

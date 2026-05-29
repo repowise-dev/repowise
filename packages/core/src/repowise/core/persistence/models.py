@@ -388,6 +388,11 @@ class GitMetadata(Base):
     original_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     merge_commit_count_90d: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Prior-defect history: bug-fix commits touching this file in the trailing
+    # ~6-month defect window (anchored to the index's as_of reference). Consumed
+    # by the ``prior_defect`` health biomarker — a leakage-aware process signal.
+    prior_defect_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Temporal hotspot score: exponentially time-decayed churn signal
     temporal_hotspot_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
 

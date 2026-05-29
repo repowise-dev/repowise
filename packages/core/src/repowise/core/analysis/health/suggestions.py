@@ -136,6 +136,13 @@ _TEMPLATES: dict[str, str] = {
         "shared concerns behind a stable boundary, or split it so callers "
         "depend on smaller, more cohesive units."
     ),
+    "prior_defect": (
+        "This file has been bug-fixed repeatedly in recent months — defects "
+        "cluster, so it is among the likeliest places the next bug will land. "
+        "Treat it as fragile: add regression tests around the areas that keep "
+        "breaking, harden input handling, and review changes here with extra "
+        "care before they ship."
+    ),
     "large_assertion_block": (
         "Split this test. A long run of assertions in one case tests "
         "several behaviours at once — when it fails it names a line, not a "

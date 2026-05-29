@@ -1,11 +1,11 @@
 # Code Health
 
-Repowise computes a 1–10 health score for every file in your repo from twenty-three
+Repowise computes a 1–10 health score for every file in your repo from twenty-four
 deterministic biomarkers — McCabe complexity, deep nesting, brain methods,
 class cohesion (LCOM4), god classes, clone detection, untested hotspots,
 function-level churn, code-age volatility,
 ownership dispersion, relative churn, change entropy, co-change scatter,
-test-quality smells, and more. **No LLM calls, no cloud requirement.** Pure
+recent defect history, test-quality smells, and more. **No LLM calls, no cloud requirement.** Pure
 Python over tree-sitter + git data, designed to finish in under 30 seconds on a
 3 000-file repo.
 
@@ -297,7 +297,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 23 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 24 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Low cohesion (LCOM4) / god class  | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover/JSON | ❌ | ❌ | ❌ |
