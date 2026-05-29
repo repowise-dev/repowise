@@ -23,10 +23,12 @@ from .complex_method import ComplexMethodDetector
 from .coverage_gap import CoverageGapDetector
 from .developer_congestion import DeveloperCongestionDetector
 from .dry_violation import DryViolationDetector
+from .duplicated_assertion_block import DuplicatedAssertionBlockDetector
 from .function_hotspot import FunctionHotspotDetector
 from .god_class import GodClassDetector
 from .hidden_coupling import HiddenCouplingDetector
 from .knowledge_loss import KnowledgeLossDetector
+from .large_assertion_block import LargeAssertionBlockDetector
 from .large_method import LargeMethodDetector
 from .low_cohesion import LowCohesionDetector
 from .nested_complexity import NestedComplexityDetector
@@ -56,6 +58,8 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     ChurnRiskDetector,  # type: ignore[list-item]
     ChangeEntropyDetector,  # type: ignore[list-item]
     CoChangeScatterDetector,  # type: ignore[list-item]
+    LargeAssertionBlockDetector,  # type: ignore[list-item]
+    DuplicatedAssertionBlockDetector,  # type: ignore[list-item]
 ]
 
 

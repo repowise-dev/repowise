@@ -13,6 +13,10 @@ Tree-sitter AST walker. Single AST pass per file computes:
   sibling branches. Feeds `bumpy_road`.
 - **param_count** — formal parameter count. Feeds `primitive_obsession`.
 - **nloc** — non-comment lines of code per function.
+- **assertion_blocks** — runs of ≥ 2 consecutive assertion statements,
+  each `(start_line, end_line, count)`. Opt-in per language via
+  `assert_kinds` / `assert_call_kinds`. Feeds the test-quality biomarkers
+  (`large_assertion_block`, `duplicated_assertion_block`).
 
 It also emits **class-level** aggregates (`ClassComplexity`) for languages
 that opt in — see "Class-level metrics" below.
@@ -121,7 +125,21 @@ the node-type names above. Get one wrong and the safety valve degrades the
 class to "no signal" rather than emitting a false positive, so it's cheap
 to add a language speculatively and refine later.
 
+For **assertion-block** detection (test-quality smells), set two more
+opt-in fields:
+
+- `assert_kinds` — statement node type(s) that are assertions on their own
+  (Python/Java `assert_statement`).
+- `assert_call_kinds` — call node type(s) to inspect for an assertion
+  *call*. A statement counts when its expression is a call of one of these
+  kinds whose callee name starts with `assert` or `expect` (covers
+  `assertEqual` / `assert_eq!` / `expect(...).toBe(...)`).
+
+A language that maps neither produces no assertion blocks — never a false
+positive.
+
 Ships control-flow mappings for Python, TypeScript, JavaScript, Go, Java,
 Rust; class-level mappings for Python, TypeScript, JavaScript, Java, Rust
-(Go has no class-grouping node). Adding more languages — either tier — is
-purely additive in `languages.py`.
+(Go has no class-grouping node); assertion mappings for Python, TypeScript,
+JavaScript, Java, Rust, Go. Adding more languages — any tier — is purely
+additive in `languages.py`.

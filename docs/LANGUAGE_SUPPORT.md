@@ -346,13 +346,15 @@ without touching the shared pipeline files:
   (`LanguageNodeMap`), independent of the ingestion `.scm` queries. Add a
   map for a language to get McCabe complexity, nesting, cognitive
   complexity, and the per-function biomarkers; optionally set
-  `class_kinds` / `self_identifiers` / `member_access_kinds` on that map
-  to also get class-level metrics (LCOM4 cohesion, god-class). Both tiers
-  are purely additive and degrade safely — an unmapped language simply
-  produces no health findings rather than wrong ones. Control-flow maps
-  ship for Python, TypeScript, JavaScript, Go, Java, Rust; class-level
-  maps for all of those except Go. See `complexity/README.md` for the
-  extension recipe and the LCOM4 heuristic's limits.
+  `class_kinds` / `self_identifiers` / `member_access_kinds` to also get
+  class-level metrics (LCOM4 cohesion, god-class), and
+  `assert_kinds` / `assert_call_kinds` to get test-quality assertion-block
+  smells. All tiers are purely additive and degrade safely — an unmapped
+  language simply produces no health findings rather than wrong ones.
+  Control-flow maps ship for Python, TypeScript, JavaScript, Go, Java,
+  Rust; class-level maps for all of those except Go; assertion maps for all
+  six. See `complexity/README.md` for the extension recipe and the LCOM4
+  heuristic's limits.
 
 ---
 

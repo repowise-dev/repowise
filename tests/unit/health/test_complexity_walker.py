@@ -156,3 +156,47 @@ def test_unsupported_language_has_no_classes():
     fcx = walk_file("/tmp/x.unknown", "klingon", b"")
     assert fcx.classes == []
     assert fcx.functions == []
+
+
+# ---- assertion-block detection (test-quality) ----------------------------
+
+
+def test_python_assertion_blocks():
+    results = _walk("python/assertions.py", "python")
+    many = _find(results, "test_many_bare_asserts")
+    assert many is not None
+    # One uninterrupted run of 16 bare asserts.
+    assert len(many.assertion_blocks) == 1
+    assert many.assertion_blocks[0][2] == 16
+
+    calls = _find(results, "test_unittest_calls")
+    assert calls is not None
+    # self.assertEqual / assertTrue calls counted as assertions.
+    assert calls.assertion_blocks[0][2] == 3
+
+
+def test_python_assertion_runs_split_on_non_assert():
+    results = _walk("python/assertions.py", "python")
+    split = _find(results, "test_split_runs")
+    assert split is not None
+    # A non-assert statement between the asserts breaks the run into two.
+    assert [b[2] for b in split.assertion_blocks] == [2, 2]
+
+
+def test_python_single_assert_is_not_a_block():
+    results = _walk("python/assertions.py", "python")
+    few = _find(results, "test_few_asserts")
+    assert few is not None
+    # Two asserts separated by an assignment → no run of ≥2.
+    assert few.assertion_blocks == []
+
+
+def test_typescript_expect_blocks():
+    results = _walk("typescript/assertions.ts", "typescript")
+    many = _find(results, "testManyExpects")
+    if many is None:
+        pytest.skip("typescript function not detected")
+    assert many.assertion_blocks[0][2] == 16
+    few = _find(results, "testFewExpects")
+    assert few is not None
+    assert few.assertion_blocks == []

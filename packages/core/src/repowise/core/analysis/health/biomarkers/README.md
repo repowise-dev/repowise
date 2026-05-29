@@ -9,7 +9,7 @@ class Biomarker(Protocol):
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]: ...
 ```
 
-## Registered detectors (21)
+## Registered detectors (23)
 
 Structural complexity (cap −2.5):
 - `brain_method` — symbols simultaneously long, complex, and central. The
@@ -56,6 +56,12 @@ Organizational (cap −3.5):
 - `co_change_scatter` — breadth of co-change coupling: a file coupled to
   many others (shotgun surgery). Complements `hidden_coupling`, which
   flags specific undeclared pairs.
+
+Test quality (cap −0.5, test files only):
+- `large_assertion_block` — a test function with a run of ≥ 15 consecutive
+  assertions (one case testing many behaviours at once).
+- `duplicated_assertion_block` — copy-pasted assertion runs across tests,
+  found by intersecting the clone detector with assertion spans.
 
 Caps were recalibrated to lift `organizational` (was −1.0) and de-rate
 `size_and_complexity` / `duplication` per plan §3.1. A per-biomarker

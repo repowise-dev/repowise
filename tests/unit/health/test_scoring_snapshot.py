@@ -28,6 +28,7 @@ _EXPECTED_CATEGORY_CAPS = {
     "test_coverage": 2.0,
     "size_and_complexity": 1.5,
     "duplication": 1.0,
+    "test_quality": 0.5,
 }
 
 _EXPECTED_SEVERITY_DEDUCTION = {
@@ -77,6 +78,8 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "churn_risk": "organizational",
     "change_entropy": "organizational",
     "co_change_scatter": "organizational",
+    "large_assertion_block": "test_quality",
+    "duplicated_assertion_block": "test_quality",
     # Phase 4B governance biomarkers.
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",

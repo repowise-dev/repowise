@@ -21,6 +21,9 @@ names to the walker's abstract categories:
                   class-level metrics (LCOM4 / god-class). Opt-in per
                   language via ``class_kinds`` / ``self_identifiers`` /
                   ``member_access_kinds`` — see the dataclass below.
+- ``ASSERT``    — (optional) statement / call node type(s) used to detect
+                  test-assertion runs (test-quality smells). Opt-in per
+                  language via ``assert_kinds`` / ``assert_call_kinds``.
 
 Control-flow maps cover Python, TypeScript, JavaScript, Go, Java, Rust;
 class-level maps cover all of those except Go (no class-grouping node).
@@ -84,6 +87,24 @@ class LanguageNodeMap:
     # reference for cohesion).
     member_access_kinds: frozenset[str] = frozenset()
 
+    # ------------------------------------------------------------------
+    # Assertion detection (test-quality smells). Both fields default to
+    # empty, making assertion-block detection OPT-IN per language:
+    #
+    #   * ``assert_kinds`` — statement node types that ARE assertions on
+    #     their own (Python/Java ``assert_statement``).
+    #   * ``assert_call_kinds`` — call node types to inspect for an
+    #     assertion *call* (``assertEqual`` / ``expect`` / ``assert_eq!``).
+    #     A statement counts as an assertion when its expression is a call
+    #     of one of these kinds whose callee name starts with ``assert`` or
+    #     ``expect`` (see ``walker._ASSERT_CALL_PREFIXES``).
+    #
+    # Consumed by ``large_assertion_block`` / ``duplicated_assertion_block``
+    # (both fire only on test files). A language that maps neither field
+    # simply produces no assertion blocks — never a false positive.
+    assert_kinds: frozenset[str] = frozenset()
+    assert_call_kinds: frozenset[str] = frozenset()
+
 
 _PY = LanguageNodeMap(
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
@@ -98,6 +119,10 @@ _PY = LanguageNodeMap(
     class_kinds=frozenset({"class_definition"}),
     self_identifiers=frozenset({"self", "cls"}),
     member_access_kinds=frozenset({"attribute"}),
+    # ``assert x == y`` is a bare statement; ``self.assertEqual(...)`` is a
+    # call.
+    assert_kinds=frozenset({"assert_statement"}),
+    assert_call_kinds=frozenset({"call"}),
 )
 
 _TS = LanguageNodeMap(
@@ -130,6 +155,9 @@ _TS = LanguageNodeMap(
     class_kinds=frozenset({"class_declaration", "class", "abstract_class_declaration"}),
     self_identifiers=frozenset({"this"}),
     member_access_kinds=frozenset({"member_expression"}),
+    # ``expect(x).toBe(y)`` / ``assert.equal(...)`` — best-effort: any call
+    # whose callee chain mentions ``expect`` / ``assert*``.
+    assert_call_kinds=frozenset({"call_expression"}),
 )
 
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
@@ -149,6 +177,8 @@ _GO = LanguageNodeMap(
     # receiver (``func (r T) m()``) rather than nesting in a class body,
     # so there is no single node that groups a type's methods. Left for a
     # future receiver-aware grouping pass; until then Go emits no classes.
+    # ``assert.Equal(t, ...)`` (testify) — best-effort call detection.
+    assert_call_kinds=frozenset({"call_expression"}),
 )
 
 _JAVA = LanguageNodeMap(
@@ -174,6 +204,9 @@ _JAVA = LanguageNodeMap(
     # ``field_access`` covers ``this.field``; ``method_invocation`` covers
     # ``this.foo()`` (its ``name`` field is the called method).
     member_access_kinds=frozenset({"field_access", "method_invocation"}),
+    # ``assert x`` (JUnit ``assert`` keyword) + ``assertEquals(...)`` calls.
+    assert_kinds=frozenset({"assert_statement"}),
+    assert_call_kinds=frozenset({"method_invocation"}),
 )
 
 _RUST = LanguageNodeMap(
@@ -197,6 +230,8 @@ _RUST = LanguageNodeMap(
     class_kinds=frozenset({"impl_item"}),
     self_identifiers=frozenset({"self"}),
     member_access_kinds=frozenset({"field_expression"}),
+    # ``assert!`` / ``assert_eq!`` / ``assert_ne!`` are macro invocations.
+    assert_call_kinds=frozenset({"macro_invocation"}),
 )
 
 

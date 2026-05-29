@@ -316,7 +316,7 @@ higher than dormant ones.
 
 ---
 
-## 5. The 21 biomarkers and their categories
+## 5. The 23 biomarkers and their categories
 
 Each biomarker is a stateless class implementing the `Biomarker` Protocol
 from `biomarkers/base.py`:
@@ -335,6 +335,14 @@ class Biomarker(Protocol):
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0 | dry_violation |
+| Test quality           | −0.5 | large_assertion_block, duplicated_assertion_block |
+
+`large_assertion_block` and `duplicated_assertion_block` are the two
+**test-quality** smells (see §5.3). They fire only on test files and sit in
+a deliberately small category so a noisy test can't dominate its own score.
+`large_method` is now gated on a minimal CCN floor (≥ 2) so a long-but-flat
+body (a big data literal) reads as layout, not a complexity smell — a small
+step toward decoupling the score from raw file size.
 
 `ownership_risk` (long-run minor-contributor dispersion, Bird et al.) and
 `churn_risk` (size-normalized relative churn, Nagappan-Ball) are git-only
@@ -384,6 +392,20 @@ references (a static utility, or an unmapped language) reports `lcom4 = 1`
 ("no signal") rather than `len(methods)`, so adding a language can only
 turn signal on — never produce a false-positive flood. See
 `complexity/README.md` for the full heuristic and its limits.
+
+### 5.3 Assertion-block walker metrics (test-quality)
+
+The same single walker pass records `assertion_blocks` on each
+`FunctionComplexity`: runs of ≥ 2 consecutive assertion statements, each
+`(start_line, end_line, count)`. A statement counts as an assertion when it
+is a bare `assert` (`LanguageNodeMap.assert_kinds`) or its expression is a
+call (`assert_call_kinds`) whose callee name starts with `assert` or
+`expect` — covering `assertEqual` / `assert_eq!` / `expect(...).toBe(...)`
+across xUnit and BDD styles. Opt-in per language (Python, TS/JS, Java, Rust,
+Go are mapped); a language that maps neither field simply emits no blocks.
+`large_assertion_block` flags a single run ≥ 15; `duplicated_assertion_block`
+intersects the clone report with assertion spans. Both gate on
+`coverage.is_test_file(path)` so production code is never touched.
 
 `biomarkers/registry.py` is an **explicit list**, not auto-discovery —
 keeps the registration order deterministic and lets tests inject extras

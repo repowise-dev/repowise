@@ -136,6 +136,18 @@ _TEMPLATES: dict[str, str] = {
         "shared concerns behind a stable boundary, or split it so callers "
         "depend on smaller, more cohesive units."
     ),
+    "large_assertion_block": (
+        "Split this test. A long run of assertions in one case tests "
+        "several behaviours at once — when it fails it names a line, not a "
+        "cause. Break it into focused cases (one behaviour each), or factor "
+        "shared setup into a fixture so each assertion's intent is clear."
+    ),
+    "duplicated_assertion_block": (
+        "De-duplicate this assertion block. The same checks are copy-pasted "
+        "across tests, so a behaviour change must be edited in several "
+        "places and usually isn't. Extract the shared assertions into a "
+        "helper or parametrize the cases over the varying inputs."
+    ),
     "knowledge_loss": (
         "Document the surviving knowledge. The primary author(s) of "
         "this file are no longer active — pair-program with someone "

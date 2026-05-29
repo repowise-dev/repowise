@@ -1,10 +1,11 @@
 # Code Health
 
-Repowise computes a 1–10 health score for every file in your repo from twenty-one
+Repowise computes a 1–10 health score for every file in your repo from twenty-three
 deterministic biomarkers — McCabe complexity, deep nesting, brain methods,
 class cohesion (LCOM4), god classes, clone detection, untested hotspots,
 function-level churn, code-age volatility,
-ownership dispersion, relative churn, change entropy, co-change scatter, and more. **No LLM calls, no cloud requirement.** Pure
+ownership dispersion, relative churn, change entropy, co-change scatter,
+test-quality smells, and more. **No LLM calls, no cloud requirement.** Pure
 Python over tree-sitter + git data, designed to finish in under 30 seconds on a
 3 000-file repo.
 
@@ -32,8 +33,9 @@ most:
 | Test coverage          | −2.0  | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5  | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0  | dry_violation |
+| Test quality           | −0.5  | large_assertion_block, duplicated_assertion_block |
 
-Twenty-one biomarkers across five categories. `function_hotspot` and
+Twenty-three biomarkers across six categories. `function_hotspot` and
 `code_age_volatility` are blame-based and sit in the organizational bucket —
 both are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line
 blame index is built.
@@ -80,8 +82,11 @@ sign the function is doing several jobs that should be split.
 **complex_method** — Cyclomatic complexity ≥ 9. Each branch is a path the
 test suite has to cover.
 
-**large_method** — Functions that exceed the NLOC threshold. Length on its
-own is not always a bug, so this is a milder signal.
+**large_method** — Long functions that also carry at least some branching.
+A long-but-perfectly-flat body (a big config/data literal, a wall of
+sequential assignments) is a layout artefact rather than a complexity smell,
+so it is excluded — the trigger is about length-with-substance, not raw line
+count.
 
 **primitive_obsession** — Many primitive parameters in one signature. A
 dataclass or parameter object would name the inputs.
@@ -162,6 +167,22 @@ editing it tends to ripple across the codebase (shotgun surgery). This is the
 breadth complement to `hidden_coupling`, which flags *specific* undeclared
 coupled pairs. Fires on actively-changing files (≥ 3 recent commits) coupled to
 ≥ 8 distinct partners. Tier-aware: silent on ESSENTIAL-tier repos.
+
+## Test quality
+
+These two fire **only on test files** and live in a deliberately small
+category (cap −0.5), so a noisy test never dominates its own health score.
+
+**large_assertion_block** — A test that fires 15 or more assertions in one
+uninterrupted run. Such a test usually checks several behaviours at once: when
+it fails it points at a line, not a cause, and it's brittle to unrelated
+changes. Splitting it into focused cases makes failures legible.
+
+**duplicated_assertion_block** — The same run of assertions copy-pasted across
+tests. Reuses the Rabin–Karp clone detector and keeps only the clone regions
+that overlap an assertion block on a test file. A change to the asserted
+behaviour then has to be edited in several places — and usually isn't, so the
+copies drift.
 
 ## Test coverage
 
@@ -257,7 +278,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 21 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 23 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Low cohesion (LCOM4) / god class  | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ |

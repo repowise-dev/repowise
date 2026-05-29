@@ -31,6 +31,9 @@ CATEGORY_CAPS: dict[str, float] = {
     "test_coverage": 2.0,
     "size_and_complexity": 1.5,
     "duplication": 1.0,
+    # Test-quality smells are mild, advisory signals — a small cap keeps a
+    # noisy test file from dominating its own health score.
+    "test_quality": 0.5,
 }
 
 # Per-biomarker deduction by severity. The scorer caps the per-category
@@ -93,6 +96,8 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "churn_risk": "organizational",
     "change_entropy": "organizational",
     "co_change_scatter": "organizational",
+    "large_assertion_block": "test_quality",
+    "duplicated_assertion_block": "test_quality",
     # Governance biomarkers — written by the additive governance pass
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",
