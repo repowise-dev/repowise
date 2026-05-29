@@ -9,10 +9,16 @@ class Biomarker(Protocol):
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]: ...
 ```
 
-## Registered detectors (19)
+## Registered detectors (21)
 
 Structural complexity (cap −2.5):
-- `brain_method` — symbols simultaneously long, complex, and central.
+- `brain_method` — symbols simultaneously long, complex, and central. The
+  centrality gate is language-agnostic: `dependents ≥ min(8, max(repo p80, 3))`,
+  so it fires on sparse-graph languages (TS/Rust) instead of assuming
+  Python's import density.
+- `low_cohesion` — a class whose methods form unrelated clusters (LCOM4 ≥ 2).
+- `god_class` — a large class (≥ 200 NLOC, ≥ 15 methods) that also hides a
+  brain method.
 - `nested_complexity` — functions with deep nesting (≥ 4 levels).
 - `bumpy_road` — multiple branches at the same nesting depth.
 - `complex_conditional` — compound boolean expressions with ≥ 3 ops.
@@ -63,9 +69,13 @@ table alone would allow.
 
 - `file_path`, `language`, `nloc`, `module`, `has_test_file`.
 - `function_metrics` — `dict[symbol_name → FunctionComplexity]`.
+- `class_metrics` — `list[ClassComplexity]` (LCOM4, method count, size).
+  Empty for languages whose walker map doesn't opt into class analysis.
 - `git_meta` — per-file git metadata (commits, owners, bus factor,
   co-change partners).
 - `dependents_count` — file-level in-edge count from the graph.
+- `repo_dependents_p80` — repo-wide p80 of file in-degree; `None` with no
+  graph. The language-agnostic centrality floor for `brain_method`.
 - `pagerank_score` — graph centrality (0.0 when symbol-only).
 - `line_coverage_pct`, `branch_coverage_pct`, `covered_lines` — coverage
   signals; `None` when no coverage was ingested.

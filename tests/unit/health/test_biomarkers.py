@@ -11,7 +11,9 @@ from repowise.core.analysis.health.biomarkers.nested_complexity import (
 from repowise.core.analysis.health.complexity import FunctionComplexity
 
 
-def _ctx(fns: list[FunctionComplexity], *, dependents: int = 0) -> FileContext:
+def _ctx(
+    fns: list[FunctionComplexity], *, dependents: int = 0, repo_dependents_p80: int | None = None
+) -> FileContext:
     return FileContext(
         file_path="src/example.py",
         language="python",
@@ -21,6 +23,7 @@ def _ctx(fns: list[FunctionComplexity], *, dependents: int = 0) -> FileContext:
         function_metrics={f.name: f for f in fns},
         git_meta={},
         dependents_count=dependents,
+        repo_dependents_p80=repo_dependents_p80,
         pagerank_score=0.0,
     )
 
@@ -58,6 +61,32 @@ def test_brain_method_requires_centrality():
     results = BrainMethodDetector().detect(_ctx([fn], dependents=12))
     assert len(results) == 1
     assert results[0].details["dependents_count"] == 12
+
+
+def test_brain_method_percentile_floor_fires_on_sparse_graph():
+    """A complex+central function in a sparse-graph repo (low p80) should
+    fire even below the fixed dependents>=8 bar."""
+    fn = FunctionComplexity("central_brain", 1, 200, ccn=20, max_nesting=4, cognitive=40, nloc=150)
+    # Repo top-quintile is 3 dependents; this file has 4 → top quintile.
+    results = BrainMethodDetector().detect(_ctx([fn], dependents=4, repo_dependents_p80=3))
+    assert len(results) == 1
+    assert results[0].details["centrality_floor"] == 3
+
+
+def test_brain_method_percentile_floor_respects_min_floor():
+    """Even with a tiny p80, the floor never drops below 3, so a file with
+    a single importer is not flagged."""
+    fn = FunctionComplexity("brain", 1, 200, ccn=20, max_nesting=4, cognitive=40, nloc=150)
+    assert BrainMethodDetector().detect(_ctx([fn], dependents=1, repo_dependents_p80=1)) == []
+
+
+def test_brain_method_dense_graph_keeps_fixed_bar():
+    """When p80 is high (dense graph), the floor caps at 8 — a file with 5
+    dependents still doesn't qualify."""
+    fn = FunctionComplexity("brain", 1, 200, ccn=20, max_nesting=4, cognitive=40, nloc=150)
+    assert BrainMethodDetector().detect(_ctx([fn], dependents=5, repo_dependents_p80=40)) == []
+    # 8+ always qualifies regardless of percentile.
+    assert BrainMethodDetector().detect(_ctx([fn], dependents=8, repo_dependents_p80=40))
 
 
 def test_detect_all_runs_every_biomarker():

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.analysis.health.complexity import walk_file_complexity
+from repowise.core.analysis.health.complexity import walk_file, walk_file_complexity
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "lang_samples"
 
@@ -24,6 +24,16 @@ def _walk(rel_path: str, language: str):
     if not results:
         pytest.skip(f"tree-sitter language pack missing for {language}")
     return results
+
+
+def _walk_classes(rel_path: str, language: str):
+    p = FIXTURES / rel_path
+    if not p.exists():
+        pytest.skip(f"fixture missing: {p}")
+    fcx = walk_file(str(p), language, p.read_bytes())
+    if not fcx.classes:
+        pytest.skip(f"tree-sitter language pack missing / no classes for {language}")
+    return {c.name: c for c in fcx.classes}
 
 
 def _find(results, name):
@@ -105,3 +115,44 @@ def test_rust_flat_match_complexity():
 def test_unsupported_language_returns_empty():
     results = walk_file_complexity("/tmp/x.unknown", "klingon", b"")
     assert results == []
+
+
+# ---- class-level metrics (LCOM4) -----------------------------------------
+
+
+def test_python_class_cohesion():
+    classes = _walk_classes("python/classes.py", "python")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    assert cohesive is not None and splintered is not None
+    # All methods collaborate around shared state → single component.
+    assert cohesive.lcom4 == 1
+    # Two disjoint field clusters + a loner → three components.
+    assert splintered.lcom4 == 3
+    assert splintered.method_count == 5
+    assert splintered.field_count == 2
+
+
+def test_typescript_class_cohesion():
+    classes = _walk_classes("typescript/classes.ts", "typescript")
+    cohesive = classes.get("Cohesive")
+    splintered = classes.get("Splintered")
+    if cohesive is None or splintered is None:
+        pytest.skip("typescript classes not detected")
+    assert cohesive.lcom4 == 1
+    assert splintered.lcom4 == 3
+
+
+def test_class_metrics_carry_methods_and_size():
+    classes = _walk_classes("python/classes.py", "python")
+    cohesive = classes["Cohesive"]
+    # methods are the same FunctionComplexity objects the function pass found
+    assert len(cohesive.methods) == cohesive.method_count
+    assert cohesive.total_nloc > 0
+    assert cohesive.max_method_ccn >= 1
+
+
+def test_unsupported_language_has_no_classes():
+    fcx = walk_file("/tmp/x.unknown", "klingon", b"")
+    assert fcx.classes == []
+    assert fcx.functions == []

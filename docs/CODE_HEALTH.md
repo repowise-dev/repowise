@@ -1,8 +1,9 @@
 # Code Health
 
-Repowise computes a 1–10 health score for every file in your repo from nineteen
+Repowise computes a 1–10 health score for every file in your repo from twenty-one
 deterministic biomarkers — McCabe complexity, deep nesting, brain methods,
-clone detection, untested hotspots, function-level churn, code-age volatility,
+class cohesion (LCOM4), god classes, clone detection, untested hotspots,
+function-level churn, code-age volatility,
 ownership dispersion, relative churn, change entropy, co-change scatter, and more. **No LLM calls, no cloud requirement.** Pure
 Python over tree-sitter + git data, designed to finish in under 30 seconds on a
 3 000-file repo.
@@ -27,12 +28,12 @@ most:
 | Category               | Cap   | Biomarkers |
 |------------------------|-------|------------|
 | Organizational         | −3.5  | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter |
-| Structural complexity  | −2.5  | brain_method, nested_complexity, bumpy_road, complex_conditional |
+| Structural complexity  | −2.5  | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0  | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5  | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0  | dry_violation |
 
-Nineteen biomarkers across five categories. `function_hotspot` and
+Twenty-one biomarkers across five categories. `function_hotspot` and
 `code_age_volatility` are blame-based and sit in the organizational bucket —
 both are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line
 blame index is built.
@@ -57,7 +58,18 @@ The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 
 **brain_method** — A single function that is simultaneously long, deeply
 nested, highly complex, and central to the dependency graph. The strongest
-single signal of fragile code.
+single signal of fragile code. Centrality is judged against the repo's own
+dependency density (top-quintile of connected files, with an absolute
+hub bar), so it fires on sparse-graph languages too — not just Python.
+
+**low_cohesion** — A class whose methods split into groups that share no
+fields and don't call each other (LCOM4 ≥ 2). Measured by the walker's
+class-level model; a high value usually means several smaller,
+single-responsibility classes are hiding inside one.
+
+**god_class** — A large class (≥ 200 lines, ≥ 15 methods) that also
+contains a brain method. Size alone isn't flagged — the brain-method
+requirement keeps flat data holders and config tables from firing.
 
 **nested_complexity** — Functions with control-flow nesting ≥ 4 levels.
 Hard to read, hard to test, hard to refactor.
@@ -245,8 +257,9 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 19 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 21 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
+| Low cohesion (LCOM4) / god class  | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ |
 | Untested hotspot detection       | ✅ coverage × hotspot | ❌ | ❌ | ❌ |
 | DRY violation detection          | ✅ native (no npm) | ✅ | ❌ | ❌ |

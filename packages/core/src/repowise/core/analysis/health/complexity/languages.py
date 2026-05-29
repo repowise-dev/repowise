@@ -17,9 +17,14 @@ names to the walker's abstract categories:
 - ``LAMBDA``    — anonymous function. Treated as ``FUNCTION`` for
                   nested-walker recursion but does not emit its own
                   ``FunctionComplexity``.
+- ``CLASS``     — (optional) node type(s) that group methods for
+                  class-level metrics (LCOM4 / god-class). Opt-in per
+                  language via ``class_kinds`` / ``self_identifiers`` /
+                  ``member_access_kinds`` — see the dataclass below.
 
-Phase 1 covers Python, TypeScript, JavaScript, Go, Java, Rust.
-Phase 5 will add C, C++, C#, Kotlin, Ruby, PHP, Swift, Scala.
+Control-flow maps cover Python, TypeScript, JavaScript, Go, Java, Rust;
+class-level maps cover all of those except Go (no class-grouping node).
+Adding a language — either tier — is purely additive here.
 """
 
 from __future__ import annotations
@@ -45,6 +50,40 @@ class LanguageNodeMap:
     # text content equals ``&&`` or ``||``.
     boolean_operator_text_kinds: frozenset[str] = frozenset()
 
+    # ------------------------------------------------------------------
+    # Class-level analysis (LCOM4 / god-class). All three fields default
+    # to empty, which makes class-level metrics OPT-IN per language:
+    #
+    #   * ``class_kinds`` empty  → no classes are emitted for this
+    #     language at all (e.g. Go, where methods attach to types via an
+    #     external receiver rather than nesting in a class body).
+    #   * ``self_identifiers`` / ``member_access_kinds`` empty or wrong →
+    #     no self/this member references are detected, so the LCOM4
+    #     computation falls back to the "no signal" value (``lcom4 = 1``)
+    #     rather than guessing. This is the safety valve that keeps the
+    #     ``low_cohesion`` biomarker from false-firing on a language whose
+    #     member-access node type we have not yet mapped.
+    #
+    # To add class-level support for a new language: set ``class_kinds``
+    # to the node type(s) that group methods (a class body, or Rust's
+    # ``impl`` block), ``self_identifiers`` to the receiver token(s) that
+    # denote the instance (``self`` / ``this`` / ``$this`` / ``cls``), and
+    # ``member_access_kinds`` to the node type(s) for ``receiver.member``
+    # access. The receiver and member-name children are pulled out by the
+    # generic field-name probe in ``walker._self_member_name`` (it tries
+    # the ``object``/``value`` and ``property``/``attribute``/``field``/
+    # ``name`` fields, then falls back to positional children), so most
+    # tree-sitter grammars need only the node-type names below.
+
+    # Node types that group methods into a cohesive unit for LCOM4.
+    class_kinds: frozenset[str] = frozenset()
+    # Receiver tokens denoting "this instance" (text-matched).
+    self_identifiers: frozenset[str] = frozenset()
+    # Node types representing ``receiver.member`` / ``receiver->member``
+    # access (both field reads and method calls — both count as a member
+    # reference for cohesion).
+    member_access_kinds: frozenset[str] = frozenset()
+
 
 _PY = LanguageNodeMap(
     function_kinds=frozenset({"function_definition", "async_function_definition"}),
@@ -56,6 +95,9 @@ _PY = LanguageNodeMap(
     switch_kinds=frozenset({"match_statement"}),
     case_kinds=frozenset({"case_clause"}),
     boolean_operator_kinds=frozenset({"boolean_operator"}),
+    class_kinds=frozenset({"class_definition"}),
+    self_identifiers=frozenset({"self", "cls"}),
+    member_access_kinds=frozenset({"attribute"}),
 )
 
 _TS = LanguageNodeMap(
@@ -85,6 +127,9 @@ _TS = LanguageNodeMap(
     case_kinds=frozenset({"switch_case"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    class_kinds=frozenset({"class_declaration", "class", "abstract_class_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    member_access_kinds=frozenset({"member_expression"}),
 )
 
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
@@ -100,6 +145,10 @@ _GO = LanguageNodeMap(
     case_kinds=frozenset({"expression_case", "type_case", "default_case"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    # No class-level fields: Go methods attach to a type via an external
+    # receiver (``func (r T) m()``) rather than nesting in a class body,
+    # so there is no single node that groups a type's methods. Left for a
+    # future receiver-aware grouping pass; until then Go emits no classes.
 )
 
 _JAVA = LanguageNodeMap(
@@ -120,19 +169,34 @@ _JAVA = LanguageNodeMap(
     case_kinds=frozenset({"switch_block_statement_group", "switch_rule"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    class_kinds=frozenset({"class_declaration"}),
+    self_identifiers=frozenset({"this"}),
+    # ``field_access`` covers ``this.field``; ``method_invocation`` covers
+    # ``this.foo()`` (its ``name`` field is the called method).
+    member_access_kinds=frozenset({"field_access", "method_invocation"}),
 )
 
 _RUST = LanguageNodeMap(
     function_kinds=frozenset({"function_item"}),
     lambda_kinds=frozenset({"closure_expression"}),
     branch_kinds=frozenset({"if_expression", "if_let_expression"}),
-    loop_kinds=frozenset({"for_expression", "while_expression", "while_let_expression", "loop_expression"}),
+    loop_kinds=frozenset(
+        {"for_expression", "while_expression", "while_let_expression", "loop_expression"}
+    ),
     try_kinds=frozenset(),
     catch_kinds=frozenset(),
     switch_kinds=frozenset({"match_expression"}),
     case_kinds=frozenset({"match_arm"}),
     boolean_operator_kinds=frozenset(),
     boolean_operator_text_kinds=frozenset({"binary_expression"}),
+    # Methods live in an ``impl`` block, not the ``struct`` itself; each
+    # impl block is its own cohesion unit (a type with several impl blocks
+    # yields several ``ClassComplexity`` rows). ``field_expression`` covers
+    # both ``self.field`` and ``self.method()`` (the latter nests a
+    # field_expression inside a call_expression).
+    class_kinds=frozenset({"impl_item"}),
+    self_identifiers=frozenset({"self"}),
+    member_access_kinds=frozenset({"field_expression"}),
 )
 
 
