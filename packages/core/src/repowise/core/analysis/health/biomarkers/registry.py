@@ -24,9 +24,11 @@ from .coverage_gap import CoverageGapDetector
 from .developer_congestion import DeveloperCongestionDetector
 from .dry_violation import DryViolationDetector
 from .function_hotspot import FunctionHotspotDetector
+from .god_class import GodClassDetector
 from .hidden_coupling import HiddenCouplingDetector
 from .knowledge_loss import KnowledgeLossDetector
 from .large_method import LargeMethodDetector
+from .low_cohesion import LowCohesionDetector
 from .nested_complexity import NestedComplexityDetector
 from .ownership_risk import OwnershipRiskDetector
 from .primitive_obsession import PrimitiveObsessionDetector
@@ -34,6 +36,8 @@ from .untested_hotspot import UntestedHotspotDetector
 
 _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     BrainMethodDetector,  # type: ignore[list-item]
+    LowCohesionDetector,  # type: ignore[list-item]
+    GodClassDetector,  # type: ignore[list-item]
     NestedComplexityDetector,  # type: ignore[list-item]
     ComplexMethodDetector,  # type: ignore[list-item]
     BumpyRoadDetector,  # type: ignore[list-item]

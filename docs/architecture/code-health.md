@@ -273,21 +273,25 @@ Single pass over the parsed file list. For each file:
 # engine.py — pseudocode
 1. _walk(pf):
    source = read_bytes(pf.file_info.abs_path)
-   walk_file_complexity(language, source) → list[FunctionComplexity]
+   walk_file(language, source) → FileComplexity(functions, classes)
    # Each FunctionComplexity carries: name, line range, nloc, ccn,
    # max_nesting, cognitive, bumps, param_count.
+   # Each ClassComplexity carries: name, line range, method_count,
+   # total_nloc, methods, lcom4, max_method_ccn, field_count.
 
-2. _populate_symbol_complexity(pf, fc_list):
+2. _populate_symbol_complexity(pf, fcx.functions):
    # Side effect: write max(ccn) into Symbol.complexity_estimate so
    # the ContextAssembler symbol ranker benefits even when callers
    # don't query the health tables directly.
 
-3. _evaluate_file(pf, fc_list, ...):
+3. _evaluate_file(pf, fcx, ...):
    # Build a FileContext with:
    #   - nloc, has_test_file, module
    #   - function_metrics: dict[symbol_name → FunctionComplexity]
+   #   - class_metrics: list[ClassComplexity]  (LCOM4 / god-class)
    #   - git_meta: per-file dict (hotspot, owners, bus factor, ...)
    #   - dependents_count: in_degree on the graph
+   #   - repo_dependents_p80: repo-wide p80 of in-degree (brain_method floor)
    #   - line_coverage_pct, branch_coverage_pct, covered_lines (when ingested)
    #   - clones, duplication_pct (from cross-file detect_clones())
    results = detect_all(ctx, disabled=file_disabled)
@@ -312,7 +316,7 @@ higher than dormant ones.
 
 ---
 
-## 5. The 19 biomarkers and their categories
+## 5. The 21 biomarkers and their categories
 
 Each biomarker is a stateless class implementing the `Biomarker` Protocol
 from `biomarkers/base.py`:
@@ -327,7 +331,7 @@ class Biomarker(Protocol):
 | Category               | Cap  | Biomarkers |
 |------------------------|------|------------|
 | Organizational         | −3.5 | developer_congestion, knowledge_loss, hidden_coupling, function_hotspot, code_age_volatility, ownership_risk, churn_risk, change_entropy, co_change_scatter |
-| Structural complexity  | −2.5 | brain_method, nested_complexity, bumpy_road, complex_conditional |
+| Structural complexity  | −2.5 | brain_method, low_cohesion, god_class, nested_complexity, bumpy_road, complex_conditional |
 | Test coverage          | −2.0 | untested_hotspot, coverage_gap |
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0 | dry_violation |
@@ -341,6 +345,16 @@ co-change coupling, D'Ambros) are likewise git-only and read the
 `change_entropy` / `change_entropy_pct` fields (see §5.1) and
 `co_change_partners_json`. `knowledge_loss` is activity-gated so
 abandoned-but-stable files (the survivor effect) no longer fire.
+
+`low_cohesion` (LCOM4) and `god_class` are the two **class-level**
+structural smells. They read `ctx.class_metrics`, the per-class aggregates
+the walker now emits alongside per-function metrics (see §5.2).
+`brain_method`'s centrality gate is **language-agnostic**: instead of a
+fixed `dependents ≥ 8`, it fires when a file is in the repo's top quintile
+of connected files (`repo_dependents_p80`, computed once per analyze) or
+clears the absolute hub bar of 8 — so it no longer goes silent on
+sparse-graph languages (TS barrels, Rust) whose in-degrees are lower than
+Python's.
 
 ### 5.1 Change-entropy git-layer fields
 
@@ -356,6 +370,20 @@ derives `change_entropy_pct` by ranking **only files with positive entropy**
 keep pct 0.0 so the biomarker stays silent). Both fields are persisted on
 `git_metadata` (migration `0025`) and the additive-reconcile path back-fills
 them on legacy DBs.
+
+### 5.2 Class-level walker metrics (LCOM4)
+
+The complexity walker emits a `ClassComplexity` per class-like node for
+languages that opt in (`LanguageNodeMap.class_kinds` non-empty: Python,
+TS/JS, Java, Rust `impl`; Go has no grouping node). LCOM4 is the number of
+connected components in the graph whose nodes are the class's methods and
+whose edges link methods that share an instance field or call one another.
+Member references are detected per-language via `self`/`this`/`$this`
+member-access nodes. **Safety valve:** a class with no detected member
+references (a static utility, or an unmapped language) reports `lcom4 = 1`
+("no signal") rather than `len(methods)`, so adding a language can only
+turn signal on — never produce a false-positive flood. See
+`complexity/README.md` for the full heuristic and its limits.
 
 `biomarkers/registry.py` is an **explicit list**, not auto-discovery —
 keeps the registration order deterministic and lets tests inject extras

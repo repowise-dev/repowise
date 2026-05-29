@@ -73,6 +73,8 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
 # span categories and we may want to retune without re-deploying.
 _BIOMARKER_CATEGORY: dict[str, str] = {
     "brain_method": "structural_complexity",
+    "low_cohesion": "structural_complexity",
+    "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
     "bumpy_road": "structural_complexity",
     "complex_conditional": "structural_complexity",

@@ -24,6 +24,19 @@ _TEMPLATES: dict[str, str] = {
         "many dependents — extract cohesive responsibilities into helpers "
         "so each call site sees a smaller surface area."
     ),
+    "low_cohesion": (
+        "Split this class along its cohesion seams. Its methods form "
+        "groups that share no fields or calls — each group is a smaller, "
+        "single-responsibility class waiting to be extracted. Start by "
+        "moving one disconnected method cluster (and the fields only it "
+        "touches) into its own type."
+    ),
+    "god_class": (
+        "Break up this god class. It is large, has many methods, and "
+        "concentrates real logic in a brain method — extract cohesive "
+        "responsibilities into collaborators so no single class owns the "
+        "whole subsystem. Pair the split with characterization tests."
+    ),
     "nested_complexity": (
         "Flatten the control flow. Pull early-return guards to the top, "
         "extract the deepest branch into a helper, and consider "

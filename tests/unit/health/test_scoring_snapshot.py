@@ -57,6 +57,8 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
 
 _EXPECTED_BIOMARKER_CATEGORY = {
     "brain_method": "structural_complexity",
+    "low_cohesion": "structural_complexity",
+    "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
     "bumpy_road": "structural_complexity",
     "complex_conditional": "structural_complexity",

@@ -304,7 +304,7 @@ they all derive their language sets from the registry automatically.
 
 ### Optional language-specific passes
 
-Three pluggable hooks let a language opt into deeper resolution
+Several pluggable hooks let a language opt into deeper resolution
 without touching the shared pipeline files:
 
 - `graph_warmups.py` --- register a one-time pre-import warmup (e.g.
@@ -341,6 +341,18 @@ without touching the shared pipeline files:
   declared `"private": true`), and Go (`//go:build integration`-gated
   files) — any language that already builds a workspace index can opt
   in by stamping the attribute during its warmup.
+- `analysis/health/complexity/languages.py` --- the code-health
+  complexity walker keeps its own per-language node-type map
+  (`LanguageNodeMap`), independent of the ingestion `.scm` queries. Add a
+  map for a language to get McCabe complexity, nesting, cognitive
+  complexity, and the per-function biomarkers; optionally set
+  `class_kinds` / `self_identifiers` / `member_access_kinds` on that map
+  to also get class-level metrics (LCOM4 cohesion, god-class). Both tiers
+  are purely additive and degrade safely — an unmapped language simply
+  produces no health findings rather than wrong ones. Control-flow maps
+  ship for Python, TypeScript, JavaScript, Go, Java, Rust; class-level
+  maps for all of those except Go. See `complexity/README.md` for the
+  extension recipe and the LCOM4 heuristic's limits.
 
 ---
 

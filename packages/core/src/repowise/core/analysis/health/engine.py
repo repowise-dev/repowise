@@ -31,7 +31,7 @@ from ...ingestion.git_indexer.function_blame import (
 )
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
-from .complexity import FunctionComplexity, walk_file_complexity
+from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .duplication import DuplicationReport, detect_clones
 from .models import HealthFileMetricData, HealthFindingData, HealthReport
@@ -96,8 +96,20 @@ class _ImportEdgeView:
         return data.get("edge_type") == key
 
 
+def _percentile_p80(counts: list[int]) -> int | None:
+    """80th percentile of *counts* using the inclusive-lower convention
+    already used by ``churn_percentile`` in ``enrich.compute_percentiles``.
+    Returns ``None`` for an empty list.
+    """
+    if not counts:
+        return None
+    counts = sorted(counts)
+    idx_p80 = min(len(counts) - 1, max(0, int(0.8 * len(counts))))
+    return counts[idx_p80]
+
+
 def _compute_repo_function_mod_p80(
-    walked: list[tuple[Any, list[FunctionComplexity]]],
+    walked: list[tuple[Any, FileComplexity]],
     git_meta_map: dict[str, dict],
 ) -> int | None:
     """Compute the repo-wide 80th percentile of per-function modification counts.
@@ -108,22 +120,44 @@ def _compute_repo_function_mod_p80(
     "no signal" outcome.
     """
     counts: list[int] = []
-    for pf, fc_list in walked:
+    for pf, fcx in walked:
         meta = git_meta_map.get(pf.file_info.path) or {}
         idx = meta.get("blame_index")
         if not isinstance(idx, BlameIndex) or not idx.lines:
             continue
-        for fc in fc_list:
+        for fc in fcx.functions:
             mod_count = len(distinct_commits_in_range(idx, fc.start_line, fc.end_line))
             if mod_count > 0:
                 counts.append(mod_count)
-    if not counts:
+    return _percentile_p80(counts)
+
+
+def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | None:
+    """Repo-wide 80th percentile of file-level in-degree (dependents).
+
+    Restricted to files that actually have ≥1 dependent — this is the
+    "top quintile of *connected* files", mirroring the mod-count p80
+    convention (which only counts functions that were actually modified).
+    Returns ``None`` when no graph is available or no file has dependents,
+    in which case centrality-percentile gates fall back to their fixed
+    floor. Used by ``brain_method`` so its centrality gate adapts to
+    sparse-graph languages (TS/Rust) instead of assuming Python's denser
+    import graph.
+    """
+    if graph is None:
         return None
-    counts.sort()
-    # ``int(0.8 * n)`` matches the (inclusive-lower) percentile convention
-    # already used by churn_percentile in enrich.compute_percentiles.
-    idx_p80 = min(len(counts) - 1, max(0, int(0.8 * len(counts))))
-    return counts[idx_p80]
+    counts: list[int] = []
+    for pf in parsed_files:
+        path = pf.file_info.path
+        if path not in graph:
+            continue
+        try:
+            deg = int(graph.in_degree(path))
+        except Exception:
+            continue
+        if deg > 0:
+            counts.append(deg)
+    return _percentile_p80(counts)
 
 
 def _build_repo_commit_counts(git_meta_map: dict[str, dict]) -> dict[str, int]:
@@ -235,24 +269,25 @@ class HealthAnalyzer:
         # Pre-walk every target so we can compute the repo-wide p80 of
         # per-function modification counts ONCE before any biomarker runs.
         # The walked list is reused by the per-file biomarker stage below.
-        walked: list[tuple[Any, list[FunctionComplexity]]] = []
+        walked: list[tuple[Any, FileComplexity]] = []
         for pf in self.parsed_files:
             if changed_set is not None and pf.file_info.path not in changed_set:
                 continue
             try:
-                fc_list = self._walk(pf)
+                fcx = self._walk(pf)
             except Exception as exc:
                 log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
-                fc_list = []
-            walked.append((pf, fc_list))
+                fcx = FileComplexity(functions=[], classes=[])
+            walked.append((pf, fcx))
 
         repo_fn_mod_p80 = _compute_repo_function_mod_p80(walked, self.git_meta_map)
+        repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
 
-        for pf, fc_list in walked:
+        for pf, fcx in walked:
             # Side-effect: bump Symbol.complexity_estimate when we can
             # match by enclosing line range. Symbols not matched keep
             # their default (1).
-            self._populate_symbol_complexity(pf, fc_list)
+            self._populate_symbol_complexity(pf, fcx.functions)
 
             file_disabled = list(disabled)
             extra = per_file_disabled.get(pf.file_info.path)
@@ -262,13 +297,14 @@ class HealthAnalyzer:
                         file_disabled.append(name)
             file_metric, file_findings = self._evaluate_file(
                 pf,
-                fc_list,
+                fcx,
                 all_paths,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
                 repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
+                repo_dependents_p80=repo_dependents_p80,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -353,22 +389,23 @@ class HealthAnalyzer:
         workers = max(1, int(max_workers or os.cpu_count() or 4))
         semaphore = asyncio.Semaphore(workers)
 
-        async def _one(pf: Any) -> tuple[Any, list[FunctionComplexity]]:
+        async def _one(pf: Any) -> tuple[Any, FileComplexity]:
             async with semaphore:
                 try:
-                    fc = await asyncio.to_thread(self._walk, pf)
+                    fcx = await asyncio.to_thread(self._walk, pf)
                 except Exception as exc:
                     log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
-                    fc = []
-            return pf, fc
+                    fcx = FileComplexity(functions=[], classes=[])
+            return pf, fcx
 
         walked = await asyncio.gather(*[_one(pf) for pf in target_files])
         repo_fn_mod_p80 = _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
+        repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
 
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
-        for pf, fc_list in walked:
-            self._populate_symbol_complexity(pf, fc_list)
+        for pf, fcx in walked:
+            self._populate_symbol_complexity(pf, fcx.functions)
             file_disabled = list(disabled)
             extra = per_file_disabled.get(pf.file_info.path)
             if extra:
@@ -377,13 +414,14 @@ class HealthAnalyzer:
                         file_disabled.append(name)
             file_metric, file_findings = self._evaluate_file(
                 pf,
-                fc_list,
+                fcx,
                 all_paths,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
                 repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
+                repo_dependents_p80=repo_dependents_p80,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -408,14 +446,14 @@ class HealthAnalyzer:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _walk(self, pf: Any) -> list[FunctionComplexity]:
+    def _walk(self, pf: Any) -> FileComplexity:
         path = pf.file_info.abs_path
         language = pf.file_info.language
         try:
             source = Path(path).read_bytes()
         except OSError:
-            return []
-        return walk_file_complexity(path, language, source)
+            return FileComplexity(functions=[], classes=[])
+        return walk_file(path, language, source)
 
     def _populate_symbol_complexity(self, pf: Any, fc_list: list[FunctionComplexity]) -> None:
         if not fc_list:
@@ -433,7 +471,7 @@ class HealthAnalyzer:
     def _evaluate_file(
         self,
         pf: Any,
-        fc_list: list[FunctionComplexity],
+        fcx: FileComplexity,
         all_paths: set[str],
         *,
         disabled: list[str],
@@ -441,9 +479,11 @@ class HealthAnalyzer:
         graph_view: HasEdge | None = None,
         repo_commit_counts: dict[str, int] | None = None,
         repo_function_mod_p80: int | None = None,
+        repo_dependents_p80: int | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData]]:
         file_path = pf.file_info.path
 
+        fc_list = fcx.functions
         fn_metrics: dict[str, FunctionComplexity] = {fc.name: fc for fc in fc_list}
         max_ccn = max((fc.ccn for fc in fc_list), default=1)
         max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
@@ -482,8 +522,10 @@ class HealthAnalyzer:
             or _coverage_is_test_file(file_path),
             module=module,
             function_metrics=fn_metrics,
+            class_metrics=fcx.classes,
             git_meta=file_git_meta,
             dependents_count=dependents_count,
+            repo_dependents_p80=repo_dependents_p80,
             pagerank_score=0.0,
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ....ingestion.git_indexer.function_blame import BlameIndex
-from ..complexity import FunctionComplexity
+from ..complexity import ClassComplexity, FunctionComplexity
 from ..duplication import ClonePair
 from ..models import Severity
 
@@ -38,10 +38,21 @@ class FileContext:
     # Map symbol-name → complexity metrics for functions/methods in this
     # file. Symbols without a complexity row default to CCN=1, nesting=0.
     function_metrics: dict[str, FunctionComplexity] = field(default_factory=dict)
+    # Per-class aggregate metrics (LCOM4, method count, size). Empty for
+    # languages whose walker map doesn't opt into class-level analysis
+    # (see ``complexity.languages``). Consumed by ``low_cohesion`` /
+    # ``god_class``.
+    class_metrics: list[ClassComplexity] = field(default_factory=list)
     # Per-file git metadata (may be empty when git indexing skipped).
     git_meta: dict[str, Any] = field(default_factory=dict)
     # Graph-derived signals.
     dependents_count: int = 0
+    # Repo-wide 80th percentile of file-level in-degree (dependents),
+    # computed by the engine across files that have ≥1 dependent. ``None``
+    # when no graph is available. ``brain_method`` uses it as a
+    # language-agnostic centrality floor so its gate adapts to
+    # sparse-graph languages instead of assuming Python's import density.
+    repo_dependents_p80: int | None = None
     pagerank_score: float = 0.0
     # Coverage signals (populated when --coverage was ingested). When no
     # coverage is available these stay ``None`` and coverage-aware
