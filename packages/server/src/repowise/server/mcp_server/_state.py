@@ -20,3 +20,12 @@ _vector_store_ready: asyncio.Event | None = None
 _registry: Any = None          # RepoRegistry | None
 _workspace_root: str | None = None
 _cross_repo_enricher: Any = None  # CrossRepoEnricher | None
+
+# Embedder health — set by _resolve_embedder() in _server.py. ``None`` until an
+# embedder is resolved. When an explicitly-configured embedder fails to
+# initialise we still fall back to MockEmbedder (so non-RAG tools stay up) but
+# record the degradation here so build_meta() can surface it in every tool's
+# `_meta` envelope — otherwise broken semantic search looks perfectly healthy
+# (issue #306). Shape: {"active": str, "requested": str | None,
+# "degraded": bool, "reason": str (only when degraded)}.
+_embedder_status: dict[str, Any] | None = None

@@ -70,6 +70,7 @@ _STATE_NAMES = frozenset(
         "_registry",
         "_workspace_root",
         "_cross_repo_enricher",
+        "_embedder_status",
     }
 )
 

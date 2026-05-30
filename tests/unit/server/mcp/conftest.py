@@ -562,6 +562,7 @@ async def setup_mcp(factory, fts, vector_store, populated_db):
     mcp_mod._repo_path = None
     mcp_mod._registry = None
     mcp_mod._workspace_root = None
+    mcp_mod._embedder_status = None
 
 
 @pytest.fixture

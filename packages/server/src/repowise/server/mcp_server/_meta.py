@@ -204,8 +204,36 @@ def build_meta(
         out["cached"] = True
     if repository is not None:
         out.update(freshness_from_repo(repository))
+    out.update(_embedder_meta())
     if extra:
         out.update(extra)
+    return out
+
+
+def _embedder_meta() -> dict[str, Any]:
+    """Surface embedder degradation (issue #306) in the `_meta` envelope.
+
+    When the configured embedder failed to initialise and the server silently
+    fell back to mock vectors, every tool response carries ``embedder: "mock"``,
+    ``embedder_degraded: True``, and a human-readable ``embedder_warning`` so an
+    agent can detect — programmatically — that semantic search is broken instead
+    of trusting empty/garbage retrieval. Emits nothing when the embedder is
+    healthy or unresolved, so healthy responses stay clean.
+    """
+    # Lazy import: `_state` is a sibling module; importing it at call-time keeps
+    # `_meta` free of any package import-ordering coupling.
+    from repowise.server.mcp_server import _state
+
+    status = getattr(_state, "_embedder_status", None)
+    if not status or not status.get("degraded"):
+        return {}
+    out: dict[str, Any] = {
+        "embedder": status.get("active", "mock"),
+        "embedder_degraded": True,
+    }
+    reason = status.get("reason")
+    if reason:
+        out["embedder_warning"] = reason
     return out
 
 

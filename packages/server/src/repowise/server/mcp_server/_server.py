@@ -25,10 +25,30 @@ from repowise.server.mcp_server import _state
 _log = __import__("logging").getLogger("repowise.mcp")
 
 
-def _resolve_embedder():
-    """Resolve embedder from REPOWISE_EMBEDDER env var or .repowise/config.yaml."""
-    name = os.environ.get("REPOWISE_EMBEDDER", "").lower()
-    if not name and _state._repo_path:
+# Per-embedder remediation hints, appended to the ERROR log and the `_meta`
+# warning so a misconfiguration is actionable without grepping SDK tracebacks.
+# Keyed by built-in embedder name; unknown/custom embedders fall back to the
+# generic exception message alone.
+_EMBEDDER_REMEDIATION: dict[str, str] = {
+    "openai": "set OPENAI_API_KEY in the MCP server's environment (and `pip install openai`)",
+    "gemini": (
+        "set GEMINI_API_KEY (or GOOGLE_API_KEY) in the MCP server's environment "
+        "(and `pip install google-genai`)"
+    ),
+    "openrouter": "set OPENROUTER_API_KEY in the MCP server's environment (and `pip install openai`)",
+}
+
+
+def _configured_embedder_name() -> str:
+    """Read the configured embedder name from env or ``.repowise/config.yaml``.
+
+    Returns a lowercased name, or ``""`` when nothing is explicitly configured
+    (in which case MockEmbedder is the intended default, not a degradation).
+    """
+    name = os.environ.get("REPOWISE_EMBEDDER", "").strip().lower()
+    if name:
+        return name
+    if _state._repo_path:
         try:
             from pathlib import Path
 
@@ -37,30 +57,84 @@ def _resolve_embedder():
                 import yaml  # type: ignore[import-untyped]
 
                 cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                name = (cfg.get("embedder") or "").lower()
+                return (cfg.get("embedder") or "").strip().lower()
         except Exception:
             _log.debug("Failed to read embedder from config.yaml", exc_info=True)
+    return ""
+
+
+def _embedder_kwargs(name: str) -> dict[str, Any]:
+    """Map repowise embedding env vars onto an embedder's constructor kwargs.
+
+    Kept backend-agnostic: ``REPOWISE_EMBEDDING_MODEL`` applies to any embedder
+    that accepts a ``model`` arg; ``REPOWISE_EMBEDDING_DIMS`` is gemini-specific
+    (its constructor exposes ``output_dimensionality``). Anything not set here
+    falls through to the embedder's own defaults.
+    """
+    kwargs: dict[str, Any] = {}
+    model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
+    if model:
+        kwargs["model"] = model
     if name == "gemini":
-        try:
-            from repowise.core.providers.embedding.gemini import GeminiEmbedder
+        dims = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+        kwargs["output_dimensionality"] = int(dims) if dims else 768
+    return kwargs
 
-            dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
-            return GeminiEmbedder(output_dimensionality=dims)
-        except Exception:
-            _log.warning(
-                "Failed to initialise Gemini embedder — falling back to mock", exc_info=True
-            )
-    if name == "openai":
-        try:
-            from repowise.core.providers.embedding.openai import OpenAIEmbedder
 
-            model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "text-embedding-3-small")
-            return OpenAIEmbedder(model=model)
-        except Exception:
-            _log.warning(
-                "Failed to initialise OpenAI embedder — falling back to mock", exc_info=True
-            )
-    return MockEmbedder()
+def _resolve_embedder():
+    """Resolve the embedder from ``REPOWISE_EMBEDDER`` / ``.repowise/config.yaml``.
+
+    Goes through the shared embedder registry (``get_embedder``) so *every*
+    backend is honoured — openai, gemini, openrouter, and any custom embedder
+    registered via ``register_embedder`` — not just a hardcoded subset.
+
+    When an embedder is **explicitly configured** but fails to initialise (most
+    often a missing API key, but also a missing SDK or an unknown name), we
+    still fall back to ``MockEmbedder`` so the server keeps serving non-RAG
+    tools — but we record the degradation in ``_state._embedder_status`` and log
+    at ``ERROR`` with the missing key and remediation. ``build_meta`` then
+    surfaces ``embedder_degraded`` in every tool's ``_meta`` envelope so callers
+    can detect that semantic search is running on mock vectors instead of the
+    real index, rather than the broken server masquerading as healthy (#306).
+
+    When nothing is configured (or ``mock`` is requested explicitly),
+    MockEmbedder is the intended default and is **not** flagged as degraded.
+    """
+    from repowise.core.providers.embedding import get_embedder
+
+    name = _configured_embedder_name()
+
+    if not name or name == "mock":
+        _state._embedder_status = {
+            "active": "mock",
+            "requested": name or None,
+            "degraded": False,
+        }
+        return MockEmbedder()
+
+    try:
+        embedder = get_embedder(name, **_embedder_kwargs(name))
+        _state._embedder_status = {"active": name, "requested": name, "degraded": False}
+        return embedder
+    except Exception as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        reason = (
+            f"Configured embedder '{name}' failed to initialise ({detail}). "
+            "Semantic search (search_codebase, get_answer) is running on mock "
+            "vectors and CANNOT match the real index — results will be empty or "
+            "irrelevant."
+        )
+        remediation = _EMBEDDER_REMEDIATION.get(name)
+        if remediation:
+            reason += f" To fix: {remediation}, then restart the MCP server."
+        _log.error(reason, exc_info=True)
+        _state._embedder_status = {
+            "active": "mock",
+            "requested": name,
+            "degraded": True,
+            "reason": reason,
+        }
+        return MockEmbedder()
 
 
 async def _load_vector_stores(repo_path: str | None) -> None:
