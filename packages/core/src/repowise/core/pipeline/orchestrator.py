@@ -247,6 +247,7 @@ async def run_pipeline(
             commit_depth=commit_depth,
             follow_renames=follow_renames,
             tier=git_tier,
+            exclude_patterns=exclude_patterns,
             progress=progress,
         )
 

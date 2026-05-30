@@ -58,11 +58,16 @@ class GitIndexer:
         commit_limit: int | None = None,
         follow_renames: bool = False,
         tier: GitIndexTier = GitIndexTier.FULL,
+        exclude_patterns: list[str] | None = None,
     ) -> None:
         self.repo_path = Path(repo_path)
         self.commit_limit = commit_limit or _DEFAULT_COMMIT_LIMIT
         self.follow_renames = follow_renames
         self.tier = tier
+
+        import pathspec
+
+        self._exclude = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns or [])
 
     async def index_repo(
         self,
@@ -428,7 +433,10 @@ class GitIndexer:
     def _get_tracked_files(self, repo: Any) -> list[str]:
         try:
             output = repo.git.ls_files()
-            return [f for f in output.splitlines() if f.strip()]
+            paths = [f for f in output.splitlines() if f.strip()]
+            if self._exclude.patterns:
+                paths = [p for p in paths if not self._exclude.match_file(p)]
+            return paths
         except Exception as exc:
             logger.warning("Failed to list tracked files", error=str(exc))
             return []

@@ -756,3 +756,25 @@ class TestBlameOwnershipComputed:
         assert name == "Alice"
         assert email == "alice@example.com"
         assert pct == pytest.approx(0.8)
+
+
+class TestExcludePatterns:
+    def test_get_tracked_files_respects_exclude_patterns(self) -> None:
+        indexer = GitIndexer("/tmp/fake", exclude_patterns=[".claude/", "tools/"])
+
+        fake_repo = MagicMock()
+        fake_repo.git.ls_files.return_value = (
+            "src/main.py\n.claude/config.yml\ntools/build.sh\nsrc/utils.py"
+        )
+
+        result = indexer._get_tracked_files(fake_repo)
+        assert result == ["src/main.py", "src/utils.py"]
+
+    def test_get_tracked_files_no_exclude_patterns(self) -> None:
+        indexer = GitIndexer("/tmp/fake")
+
+        fake_repo = MagicMock()
+        fake_repo.git.ls_files.return_value = "src/main.py\n.claude/config.yml"
+
+        result = indexer._get_tracked_files(fake_repo)
+        assert result == ["src/main.py", ".claude/config.yml"]

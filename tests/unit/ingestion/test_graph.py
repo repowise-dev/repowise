@@ -954,3 +954,28 @@ class TestGoImports:
         b.build()
         g = b.graph()
         assert g.has_edge("main.go", "calculator/calculator.go")
+
+
+class TestDynamicEdgeExcludeFilter:
+    def _edge(self, target: str):
+        from repowise.core.ingestion.dynamic_hints import DynamicEdge
+
+        return DynamicEdge(
+            source="src/main.py",
+            target=target,
+            edge_type="co_change",
+            hint_source="git",
+            weight=1.0,
+        )
+
+    def test_skips_excluded_targets(self):
+        gb = GraphBuilder("/tmp/fake", exclude_patterns=[".claude/"])
+        gb._graph.add_node("src/main.py")
+        gb.add_dynamic_edges([self._edge(".claude/config.yml")])
+        assert ".claude/config.yml" not in gb._graph
+
+    def test_allows_non_excluded_targets(self):
+        gb = GraphBuilder("/tmp/fake", exclude_patterns=[".claude/"])
+        gb._graph.add_node("src/main.py")
+        gb.add_dynamic_edges([self._edge("src/utils.py")])
+        assert "src/utils.py" in gb._graph

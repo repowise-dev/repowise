@@ -266,6 +266,17 @@ def _workspace_update(
 # ---------------------------------------------------------------------------
 
 
+def _build_filtered_changed_paths(file_diffs: list, exclude_patterns: list[str]) -> list[str]:
+    """Extract paths from file_diffs, filtering out excluded patterns."""
+    paths = [fd.path for fd in file_diffs]
+    if not exclude_patterns:
+        return paths
+    import pathspec
+
+    spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
+    return [p for p in paths if not spec.match_file(p)]
+
+
 def _rebuild_graph_and_git(
     repo_path: Any,
     file_diffs: list,
@@ -290,7 +301,7 @@ def _rebuild_graph_and_git(
     parser = ASTParser()
     parsed_files: list = []
     source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(repo_path)
+    graph_builder = GraphBuilder(repo_path, exclude_patterns=exclude_patterns)
 
     for fi in file_infos:
         try:
@@ -325,8 +336,9 @@ def _rebuild_graph_and_git(
             repo_path,
             commit_limit=_commit_limit,
             follow_renames=_follow_renames,
+            exclude_patterns=exclude_patterns or None,
         )
-        changed_paths = [fd.path for fd in file_diffs]
+        changed_paths = _build_filtered_changed_paths(file_diffs, exclude_patterns)
         updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
         git_meta_map = {m["file_path"]: m for m in updated_meta}
         graph_builder.update_co_change_edges(git_meta_map)
