@@ -284,7 +284,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           </ScrollArea>
 
           <div className="border-t border-[var(--color-border-default)] px-4 py-3">
-            <p className="text-xs text-[var(--color-text-tertiary)]">repowise v0.14.0</p>
+            <p className="text-xs text-[var(--color-text-tertiary)]">repowise v0.15.0</p>
           </div>
         </SheetContent>
       </Sheet>

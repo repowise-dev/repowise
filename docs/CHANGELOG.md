@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.0] — 2026-05-30
+
+### Added
+- **Code-health biomarkers overhaul — calibrated, multi-language, process-aware.** The health model is reworked into a broad biomarker suite whose weights are calibrated against real defect data (#305): class-level cohesion and god-class detection (#302), test-quality smells with hardened size sensitivity (#303), change-entropy and co-change scatter signals (#301), ownership and relative-churn process signals (#300), and a prior-defect process signal (#312). Coverage deductions now scale by the uncovered fraction rather than a flat penalty (#314), primitive-obsession is suppressed in tiny modules to cut false positives (#313), and the biomarkers extend to Kotlin, C++, and C# (#316).
+- **`repowise risk` — just-in-time change-risk scoring.** A new command and scoring pass estimate the risk of changing a file from churn, complexity, ownership, and defect history, surfaced both in the CLI and the dashboard (#315).
+- **Commits change-risk page with per-function blame.** A new commits explorer surfaces per-commit change-risk history (#317), change-complexity and defect-history signals (#318), and a per-function blame view with a coverage-gradient breakdown (#319).
+- **Coverage ingestion.** `repowise` ingests normalized-JSON coverage reports and surfaces coverage metrics across the health surfaces (#309).
+- **`.mts` / `.cts` are treated as TypeScript** for indexing and language detection (#310).
+
+### Fixed
+- **`exclude_patterns` are enforced in the git indexer and dynamic-edge passes** — excluded paths no longer leak back in through commit history or dynamic edges (#308). Index-only runs now persist `exclude_patterns` via `save_config_partial` so subsequent updates honour them (#297).
+- **Single-file re-index no longer wipes all dead-code findings** — an incremental re-index of one file previously cleared the whole findings set (#298).
+- **CommonJS `require()` is resolved** so property-access calls on a required module are no longer mis-flagged as dead (#299).
+- **`@repowise-dev/ui` uses extensionless relative imports** package-wide, fixing a web build failure where `.js`-suffixed relative specifiers failed to resolve (#320).
+
+### Documentation
+- **README header refreshed** with a banner and badges (#311).
+
+---
+
 ## [0.14.0] — 2026-05-28
 
 ### Added

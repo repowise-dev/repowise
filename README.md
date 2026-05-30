@@ -547,6 +547,10 @@ repowise health --coverage cov.lcov         # ingest coverage, light up untested
 repowise health --refactoring-targets       # ranked by impact / effort
 repowise health --trend                     # last 10 snapshots + declining/predicted-decline alerts
 
+# Change risk
+repowise risk                               # score HEAD's defect risk (0-10)
+repowise risk main..HEAD                    # score a branch / PR range as one change
+
 # Dead code
 repowise dead-code                          # full report
 repowise dead-code --safe-only              # only safe-to-delete findings
