@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.1] — 2026-05-30
+
+### Fixed
+- **Misconfigured embedders no longer fail silently.** When an embedder is explicitly configured (`REPOWISE_EMBEDDER` or `.repowise/config.yaml`) but can't initialise — most often a missing API key — the MCP server used to fall back to the mock embedder with only a `WARNING`, then report healthy while semantic search (`search_codebase`, `get_answer`) ran on vectors that can't match the real index. The failure is now logged at `ERROR` with the missing key and remediation, and surfaced in every tool's `_meta` envelope (`embedder_degraded: true`) so it's detectable instead of masquerading as a healthy server. Embedder resolution also goes through the shared registry, so `openrouter` and custom-registered embedders are honoured — not just `openai`/`gemini` (#324).
+- **Indexing artifacts serialize reliably.** A transient blame index is dropped before artifact serialization, fixing a failure that could corrupt published index artifacts (#323).
+
+---
+
 ## [0.15.0] — 2026-05-30
 
 ### Added
