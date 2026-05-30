@@ -828,6 +828,13 @@ def update_command(
         repo_path, graph_builder, git_meta_map, parsed_files, file_diffs
     )
 
+    # Partial health has consumed the per-file ``BlameIndex``; drop it before
+    # the metadata reaches persistence / regeneration so the transient,
+    # non-serializable object can never leak downstream (mirrors run_pipeline).
+    from repowise.core.pipeline.phases.git import drop_transient_git_signals
+
+    drop_transient_git_signals(list(git_meta_map.values()))
+
     if index_only:
         _persist_index_only_update(
             repo_path,

@@ -19,6 +19,23 @@ from ._common import _phase_done
 logger = structlog.get_logger(__name__)
 
 
+def drop_transient_git_signals(git_metadata_list: list[dict]) -> None:
+    """Strip in-memory-only signals from git metadata dicts.
+
+    The per-file ``BlameIndex`` (attached under ``"blame_index"``) is consumed
+    by the health biomarkers (``function_hotspot`` / ``code_age_volatility``)
+    and is never meant to round-trip through the DB or JSON artifacts —
+    serializing it raises "Object of type BlameIndex is not JSON serializable".
+    Call this once the health phase has run, before the metadata reaches
+    ``PipelineResult`` / persistence / artifact writers.
+
+    Mutates the dicts in place; callers that also hold a ``git_meta_map`` built
+    from the same dict objects see them cleaned too.
+    """
+    for meta in git_metadata_list:
+        meta.pop("blame_index", None)
+
+
 async def _run_git_indexing(
     repo_path: Path,
     *,

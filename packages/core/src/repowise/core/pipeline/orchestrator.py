@@ -33,7 +33,7 @@ from .phases.analysis import (
     _run_health_analysis,
 )
 from .phases.generation import run_generation
-from .phases.git import _run_git_indexing
+from .phases.git import _run_git_indexing, drop_transient_git_signals
 from .phases.ingestion import _run_ingestion
 
 logger = structlog.get_logger(__name__)
@@ -362,6 +362,12 @@ async def run_pipeline(
     health_report = await _run_health_analysis(
         graph_builder, git_meta_map, parsed_files, repo_path=repo_path, progress=progress
     )
+
+    # Drop the in-memory-only ``BlameIndex`` now that the health biomarkers
+    # have consumed it — before it can leak into ``PipelineResult`` and the
+    # downstream JSON artifact writers / DB persistence. ``git_meta_map`` shares
+    # these dict objects, so this cleans both views.
+    drop_transient_git_signals(git_metadata_list)
 
     decision_report = await _run_decision_extraction(
         repo_path,
