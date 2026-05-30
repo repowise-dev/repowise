@@ -73,3 +73,53 @@ register_command(workspace_group)
 
 cli_registry.apply(cli)
 
+
+
+# TEMP — bot smoke test, DO NOT MERGE. A deliberately gnarly, uncalled function
+# to exercise the PR bot's complexity biomarkers + diff-attributable health
+# delta. Safe to delete; not wired into the CLI.
+def _bot_smoke_test_classify(value, mode, flags):  # noqa
+    result = []
+    for i in range(len(value)):
+        if mode == "a":
+            if flags.get("x"):
+                if value[i] > 0:
+                    if value[i] % 2 == 0:
+                        if value[i] > 100:
+                            result.append("big-even")
+                        else:
+                            result.append("small-even")
+                    elif value[i] % 3 == 0:
+                        result.append("odd-three")
+                    else:
+                        result.append("odd")
+                elif value[i] < 0:
+                    if value[i] < -100:
+                        result.append("very-negative")
+                    else:
+                        result.append("negative")
+                else:
+                    result.append("zero")
+            else:
+                result.append("no-x")
+        elif mode == "b":
+            for j in range(i):
+                if value[j] == value[i]:
+                    if j % 2 == 0:
+                        result.append("dup-even")
+                    else:
+                        result.append("dup-odd")
+                else:
+                    result.append("uniq")
+        elif mode == "c":
+            while value[i] > 0:
+                value[i] -= 1
+                if value[i] == 5:
+                    break
+                elif value[i] == 3:
+                    continue
+                else:
+                    result.append("dec")
+        else:
+            result.append("default")
+    return result
