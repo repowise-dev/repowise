@@ -34,6 +34,12 @@ async def _insert_git_metadata(session_factory, repo_id: str) -> None:
             is_stable=False,
             churn_percentile=0.85,
             age_days=365,
+            change_entropy=1.5,
+            change_entropy_pct=0.9,
+            prior_defect_count=4,
+            temporal_hotspot_score=12.3,
+            commit_count_capped=True,
+            original_path="src/old_main.py",
         )
         await crud.upsert_git_metadata(
             session,
@@ -67,6 +73,13 @@ async def test_get_git_metadata(client: AsyncClient, app) -> None:
     assert data["commit_count_total"] == 50
     assert data["is_hotspot"] is True
     assert data["primary_owner_name"] == "Alice"
+    # Newly surfaced change-complexity + defect-history signals.
+    assert data["change_entropy"] == 1.5
+    assert data["change_entropy_pct"] == 90.0  # normalized 0-1 -> 0-100
+    assert data["prior_defect_count"] == 4
+    assert data["temporal_hotspot_score"] == 12.3
+    assert data["commit_count_capped"] is True
+    assert data["original_path"] == "src/old_main.py"
 
 
 @pytest.mark.asyncio
@@ -93,6 +106,9 @@ async def test_get_hotspots(client: AsyncClient, app) -> None:
     assert len(data) == 1
     assert data[0]["file_path"] == "src/main.py"
     assert data[0]["is_hotspot"] is True
+    assert data[0]["change_entropy_pct"] == 90.0
+    assert data[0]["prior_defect_count"] == 4
+    assert data[0]["original_path"] == "src/old_main.py"
 
 
 @pytest.mark.asyncio

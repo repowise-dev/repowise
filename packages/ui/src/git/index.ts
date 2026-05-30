@@ -1,4 +1,5 @@
 export * from "./bus-factor-panel.js";
+export * from "./change-history-card.js";
 export * from "./churn-bar.js";
 export * from "./churn-histogram.js";
 export * from "./co-change-list.js";

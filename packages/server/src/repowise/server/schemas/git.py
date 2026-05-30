@@ -34,6 +34,15 @@ class GitMetadataResponse(BaseModel):
     avg_commit_size: float
     commit_categories: dict
     merge_commit_count_90d: int
+    # Change-complexity + defect-history signals (computed every index, newly
+    # surfaced). change_entropy_pct is normalized 0-100 like churn_percentile.
+    change_entropy: float = 0.0
+    change_entropy_pct: float = 0.0
+    prior_defect_count: int = 0
+    temporal_hotspot_score: float | None = None
+    commit_count_capped: bool = False
+    # Rename lineage: the file's path before its most recent move, if any.
+    original_path: str | None = None
     test_gap: bool | None = None
 
     @classmethod
@@ -67,6 +76,13 @@ class GitMetadataResponse(BaseModel):
             if obj.commit_categories_json
             else {},  # type: ignore[attr-defined]
             merge_commit_count_90d=obj.merge_commit_count_90d or 0,  # type: ignore[attr-defined]
+            change_entropy=obj.change_entropy or 0.0,  # type: ignore[attr-defined]
+            # Normalize 0-1 -> 0-100 to match churn_percentile's contract.
+            change_entropy_pct=(obj.change_entropy_pct or 0.0) * 100.0,  # type: ignore[attr-defined]
+            prior_defect_count=obj.prior_defect_count or 0,  # type: ignore[attr-defined]
+            temporal_hotspot_score=obj.temporal_hotspot_score,  # type: ignore[attr-defined]
+            commit_count_capped=bool(obj.commit_count_capped),  # type: ignore[attr-defined]
+            original_path=obj.original_path,  # type: ignore[attr-defined]
         )
 
 
@@ -93,6 +109,11 @@ class HotspotResponse(BaseModel):
     commit_count_capped: bool = False
     age_days: int = 0
     last_commit_at: datetime | None = None
+    # Change-complexity + defect-history signals.
+    change_entropy: float = 0.0
+    change_entropy_pct: float = 0.0
+    prior_defect_count: int = 0
+    original_path: str | None = None
 
 
 class OwnershipEntry(BaseModel):

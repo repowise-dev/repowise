@@ -55,6 +55,16 @@ export interface GitMetadata {
   test_gap?: boolean | null;
   /** v0.2.0+ — combined recency × churn × ownership score. Order hotspots by this when present. */
   temporal_hotspot_score?: number | null;
+  /** Hassan change entropy (History Complexity Metric) — decay-weighted commit scatter. */
+  change_entropy?: number;
+  /** Repo-wide percentile rank of change_entropy, 0–100. */
+  change_entropy_pct?: number;
+  /** Bug-fix commits touching this file in the trailing defect window. */
+  prior_defect_count?: number;
+  /** The file's path before its most recent rename, if any. */
+  original_path?: string | null;
+  /** True when the per-file commit-history cap was hit during indexing. */
+  commit_count_capped?: boolean;
 }
 
 export interface Hotspot {
@@ -83,6 +93,14 @@ export interface Hotspot {
   commit_count_capped?: boolean;
   age_days?: number;
   last_commit_at?: string | null;
+  /** Hassan change entropy (History Complexity Metric) — decay-weighted commit scatter. */
+  change_entropy?: number;
+  /** Repo-wide percentile rank of change_entropy, 0–100. */
+  change_entropy_pct?: number;
+  /** Bug-fix commits touching this file in the trailing defect window. */
+  prior_defect_count?: number;
+  /** The file's path before its most recent rename, if any. */
+  original_path?: string | null;
 }
 
 export interface OwnershipEntry {

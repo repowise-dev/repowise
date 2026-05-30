@@ -64,6 +64,11 @@ def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
         commit_count_capped=bool(r.commit_count_capped),
         age_days=r.age_days or 0,
         last_commit_at=r.last_commit_at,
+        change_entropy=r.change_entropy or 0.0,
+        # Normalize 0-1 -> 0-100 to match churn_percentile.
+        change_entropy_pct=(r.change_entropy_pct or 0.0) * 100.0,
+        prior_defect_count=r.prior_defect_count or 0,
+        original_path=r.original_path,
     )
 
 

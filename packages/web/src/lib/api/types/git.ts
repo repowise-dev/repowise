@@ -28,6 +28,12 @@ export interface GitMetadataResponse {
   avg_commit_size: number;
   commit_categories: Record<string, number>;
   merge_commit_count_90d: number;
+  change_entropy?: number;
+  change_entropy_pct?: number;
+  prior_defect_count?: number;
+  temporal_hotspot_score?: number | null;
+  commit_count_capped?: boolean;
+  original_path?: string | null;
   test_gap?: boolean | null;
 }
 
@@ -54,6 +60,10 @@ export interface HotspotResponse {
   commit_count_capped?: boolean;
   age_days?: number;
   last_commit_at?: string | null;
+  change_entropy?: number;
+  change_entropy_pct?: number;
+  prior_defect_count?: number;
+  original_path?: string | null;
 }
 
 export interface OwnershipEntry {
