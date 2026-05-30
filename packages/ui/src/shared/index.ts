@@ -1,7 +1,7 @@
-export * from "./api-error.js";
-export * from "./breadcrumb.js";
-export * from "./empty-state.js";
-export * from "./stat-card.js";
-export * from "./results-footer.js";
+export * from "./api-error";
+export * from "./breadcrumb";
+export * from "./empty-state";
+export * from "./stat-card";
+export * from "./results-footer";
 export { RowActions, type RowAction } from "./row-actions";
 export * from "./entity";

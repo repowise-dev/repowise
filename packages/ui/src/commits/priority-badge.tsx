@@ -1,4 +1,4 @@
-import { cn } from "../lib/cn.js";
+import { cn } from "../lib/cn";
 import type { ReviewPriority } from "@repowise-dev/types/git";
 
 const STYLES: Record<ReviewPriority, string> = {

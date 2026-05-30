@@ -1,1 +1,1 @@
-export * from "./general-form.js";
+export * from "./general-form";

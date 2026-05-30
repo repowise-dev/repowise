@@ -1,1 +1,1 @@
-export * from "./first-five-files.js";
+export * from "./first-five-files";

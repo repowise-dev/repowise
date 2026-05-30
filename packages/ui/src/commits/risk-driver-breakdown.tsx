@@ -1,4 +1,4 @@
-import { cn } from "../lib/cn.js";
+import { cn } from "../lib/cn";
 import type { RiskDriver } from "@repowise-dev/types/git";
 
 export interface RiskDriverBreakdownProps {

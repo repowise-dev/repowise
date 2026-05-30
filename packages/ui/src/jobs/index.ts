@@ -1,2 +1,2 @@
-export * from "./job-log.js";
-export * from "./generation-progress.js";
+export * from "./job-log";
+export * from "./generation-progress";

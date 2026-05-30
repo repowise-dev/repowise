@@ -1,5 +1,5 @@
 import { Activity, Bug, FileSymlink, History } from "lucide-react";
-import { ChurnBar } from "./churn-bar.js";
+import { ChurnBar } from "./churn-bar";
 
 export interface ChangeHistoryCardProps {
   /** Repo-wide percentile rank of change entropy, 0–100. */

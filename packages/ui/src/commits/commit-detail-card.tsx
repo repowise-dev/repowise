@@ -1,7 +1,7 @@
 import { Bug, GitCommitHorizontal, User } from "lucide-react";
-import { PriorityBadge } from "./priority-badge.js";
-import { RiskDriverBreakdown } from "./risk-driver-breakdown.js";
-import { formatDateTime, formatLOC } from "../lib/format.js";
+import { PriorityBadge } from "./priority-badge";
+import { RiskDriverBreakdown } from "./risk-driver-breakdown";
+import { formatDateTime, formatLOC } from "../lib/format";
 import type { CommitDetail } from "@repowise-dev/types/git";
 
 export interface CommitDetailCardProps {

@@ -1,5 +1,5 @@
 import { ShieldCheck } from "lucide-react";
-import { cn } from "../lib/cn.js";
+import { cn } from "../lib/cn";
 
 /**
  * Honest credibility note for the change-risk model. The numbers are the

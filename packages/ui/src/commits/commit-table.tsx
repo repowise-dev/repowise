@@ -2,13 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { Bug, Search } from "lucide-react";
-import { PriorityBadge } from "./priority-badge.js";
-import { ChurnBar } from "../git/churn-bar.js";
-import { Input } from "../ui/input.js";
-import { EmptyState } from "../shared/empty-state.js";
-import { ResultsFooter } from "../shared/results-footer.js";
-import { formatLOC, formatRelativeTime } from "../lib/format.js";
-import { cn } from "../lib/cn.js";
+import { PriorityBadge } from "./priority-badge";
+import { ChurnBar } from "../git/churn-bar";
+import { Input } from "../ui/input";
+import { EmptyState } from "../shared/empty-state";
+import { ResultsFooter } from "../shared/results-footer";
+import { formatLOC, formatRelativeTime } from "../lib/format";
+import { cn } from "../lib/cn";
 import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
 
 export type CommitSort = "risk" | "date";
