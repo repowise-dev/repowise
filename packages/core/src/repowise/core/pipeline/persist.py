@@ -147,6 +147,7 @@ async def persist_pipeline_result(
         save_health_metrics,
         save_health_snapshot,
         upsert_git_commits_bulk,
+        upsert_git_function_blame_bulk,
         upsert_git_metadata_bulk,
     )
 
@@ -242,6 +243,10 @@ async def persist_pipeline_result(
         await save_health_metrics(session, repo_id, hr.metrics or [])
         if hr.findings:
             await save_health_findings(session, repo_id, hr.findings)
+        # Per-function blame rollup (FULL tier only; empty otherwise).
+        fn_blame_rows = getattr(hr, "function_blame_rows", None)
+        if fn_blame_rows:
+            await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
         # Snapshot the run for trend tracking (rolling delete inside).
         kpis = hr.kpis or {}
         try:

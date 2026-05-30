@@ -19,6 +19,7 @@ from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.scoring import (
     CATEGORY_CAPS,
     biomarker_category,
+    biomarker_weight,
     severity_deduction,
 )
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
@@ -275,50 +276,92 @@ async def list_health_files(
     }
 
 
-def _score_breakdown_from_findings(findings: list[Any]) -> dict:
-    """Recompute per-category deductions from open findings of one file.
+def _finding_details(f: Any) -> dict:
+    """Return a finding's details as a dict, from either a live ``details``
+    attr (tests) or the stored ``details_json`` column (the ORM row)."""
+    d = getattr(f, "details", None)
+    if isinstance(d, dict):
+        return d
+    raw = getattr(f, "details_json", None)
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
-    Mirrors ``scoring.score_file`` so the dashboard can show how a file's
-    score was built up — even though the scoring math runs at index time,
-    not at request time.
+
+def _finding_base_deduction(f: Any) -> float:
+    """The pre-cap, pre-weight base deduction for one stored finding.
+
+    Mirrors ``scoring.score_file``: a continuous ``deduction`` override (e.g.
+    coverage scaled by the uncovered fraction, recorded in the finding's
+    ``details``) takes the place of the discrete severity table. Reading the
+    override here — instead of always recomputing from the severity band — is
+    what lets the breakdown show the continuous coverage gradient rather than a
+    band proxy.
     """
-    raw_per_cat: dict[str, list[tuple[Any, float]]] = {}
+    override = _finding_details(f).get("deduction")
+    if isinstance(override, (int, float)):
+        return float(override)
+    sev = Severity(f.severity) if not isinstance(f.severity, Severity) else f.severity
+    return severity_deduction(sev)
+
+
+def _score_breakdown_from_findings(findings: list[Any]) -> dict:
+    """Reconstruct per-category deductions from open findings of one file.
+
+    The applied per-finding impact is read from the **stored**
+    ``health_impact`` (the exact, already-weighted-and-capped value computed by
+    ``scoring.score_file`` at index time), so the breakdown reproduces the
+    file's score and surfaces continuous signals (the coverage gradient) instead
+    of a severity-band proxy. The raw (pre-cap) figure is reconstructed with the
+    same ``base x weight`` formula scoring uses, so a capped category is honest
+    about how much it shed.
+    """
+    per_cat: dict[str, list[Any]] = {}
     for f in findings:
-        sev = Severity(f.severity) if not isinstance(f.severity, Severity) else f.severity
-        d = severity_deduction(sev)
-        cat = biomarker_category(f.biomarker_type)
-        raw_per_cat.setdefault(cat, []).append((f, d))
+        per_cat.setdefault(biomarker_category(f.biomarker_type), []).append(f)
 
     categories: list[dict] = []
     total_deduction = 0.0
     for cat, cap in CATEGORY_CAPS.items():
-        entries = raw_per_cat.get(cat, [])
-        raw_sum = sum(d for _, d in entries)
-        capped = min(raw_sum, cap)
-        scale = (cap / raw_sum) if raw_sum > cap and raw_sum > 0 else 1.0
+        entries = per_cat.get(cat, [])
+        if not entries:
+            continue
+        raw_per_finding = [
+            _finding_base_deduction(f) * biomarker_weight(f.biomarker_type) for f in entries
+        ]
+        applied_per_finding = [float(f.health_impact or 0.0) for f in entries]
+        raw_sum = sum(raw_per_finding)
+        applied_sum = sum(applied_per_finding)
         categories.append(
             {
                 "category": cat,
                 "cap": round(cap, 2),
                 "raw_deduction": round(raw_sum, 3),
-                "applied_deduction": round(capped, 3),
-                "capped": raw_sum > cap,
+                "applied_deduction": round(applied_sum, 3),
+                # Category shed weight iff its applied total is held at the cap.
+                "capped": applied_sum < raw_sum - 1e-6,
                 "finding_count": len(entries),
                 "findings": [
                     {
                         "id": f.id,
                         "biomarker_type": f.biomarker_type,
                         "severity": f.severity,
-                        "raw_impact": round(d, 3),
-                        "applied_impact": round(d * scale, 3),
+                        "raw_impact": round(raw, 3),
+                        "applied_impact": round(applied, 3),
                         "function_name": f.function_name,
                         "reason": f.reason,
                     }
-                    for f, d in entries
+                    for f, raw, applied in zip(
+                        entries, raw_per_finding, applied_per_finding, strict=True
+                    )
                 ],
             }
         )
-        total_deduction += capped
+        total_deduction += applied_sum
     score = max(1.0, min(10.0, 10.0 - total_deduction))
     return {
         "score": round(score, 2),
@@ -345,9 +388,7 @@ async def file_score_breakdown(
         "metric": _metric_to_dict(metric) if metric else None,
         "breakdown": breakdown,
         "findings": [_finding_to_dict(f) for f in findings],
-        "suggestions": {
-            b: _suggestion_for(b) for b in {f.biomarker_type for f in findings}
-        },
+        "suggestions": {b: _suggestion_for(b) for b in {f.biomarker_type for f in findings}},
     }
 
 
@@ -380,9 +421,7 @@ async def health_trend(
             d = round(float(after) - float(before), 2)
             if d == 0:
                 continue
-            file_deltas.append(
-                {"file_path": p, "before": before, "after": after, "delta": d}
-            )
+            file_deltas.append({"file_path": p, "before": before, "after": after, "delta": d})
         file_deltas.sort(key=lambda r: r["delta"])
 
     return {
@@ -426,7 +465,9 @@ async def update_finding_status(
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     if payload.status not in _ALLOWED_STATUSES:
-        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(_ALLOWED_STATUSES)}")
+        raise HTTPException(
+            status_code=400, detail=f"status must be one of {sorted(_ALLOWED_STATUSES)}"
+        )
     f = await crud.update_health_finding_status(session, finding_id, payload.status)
     if f is None:
         raise HTTPException(status_code=404, detail="Finding not found")
@@ -542,7 +583,9 @@ async def refactoring_targets(
     biomarker: str | None = Query(None, description="Filter to one biomarker type"),
     min_severity: str | None = Query(None),
     max_effort: str | None = Query(None, description="S | M | L | XL"),
-    sort: str = Query("impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"),
+    sort: str = Query(
+        "impact_per_effort", pattern="^(impact_per_effort|total_impact|score|finding_count)$"
+    ),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> dict:
     """Refactoring candidates ranked by impact / effort."""

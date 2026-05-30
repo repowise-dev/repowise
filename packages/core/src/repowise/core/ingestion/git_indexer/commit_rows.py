@@ -71,9 +71,10 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
         sha = c["sha"]
         subject = (c.get("subject") or "")[:_MAX_SUBJECT_LEN]
         changes = c.get("changes") or []
+        exp = exp_by_sha.get(sha, 0)
         feats = features_from_file_changes(
             changes,
-            exp=exp_by_sha.get(sha, 0),
+            exp=exp,
             is_fix=is_fix_commit(subject),
             author=c.get("author_name", ""),
             subject=subject,
@@ -94,6 +95,7 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
                 "subsystems_changed": feats.ns,
                 "entropy": feats.entropy,
                 "is_fix": feats.is_fix,
+                "author_experience": exp,
                 "change_risk_score": risk.score,
                 "change_risk_level": risk.level,
             }

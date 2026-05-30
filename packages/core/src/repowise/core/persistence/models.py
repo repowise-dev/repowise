@@ -450,12 +450,75 @@ class GitCommit(Base):
     entropy: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     is_fix: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Author experience at the time of the commit: the author's cumulative prior
+    # commit count, reconstructed in-memory over the walk (no extra git pass).
+    # The one change-risk feature not derivable from the diff alone — persisted
+    # so the per-commit risk breakdown reproduces the stored score exactly.
+    author_experience: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Just-in-time change-risk: 0-10 score + level ("low"/"moderate"/"high")
     # from the calibrated linear ``change_risk`` model. Author experience is
     # computed in-memory across the walk (cumulative prior-commit count); the
     # score is pure arithmetic on already-parsed diff data (zero LLM, no blame).
     change_risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class GitFunctionBlame(Base):
+    """Per-function blame rollup: function-granular git signals derived from the
+    per-line ``BlameIndex`` during FULL-tier health analysis.
+
+    The blame index is built once per file (one ``git blame`` call) and was
+    previously consumed in-memory by the ``function_hotspot`` /
+    ``code_age_volatility`` biomarkers and then discarded. This table persists
+    the cheap per-function rollup (bounded by the number of *modified*
+    functions) so a function-level health surface can read it without
+    re-blaming: modification count, median line age, recent-modification count,
+    and the blame owner over the function's line range. Raw per-line blame is
+    NOT persisted (size ~ LOC x history; recomputable).
+
+    Keyed ``(repository_id, symbol_id)`` where ``symbol_id = "{path}::{name}"``
+    mirrors :class:`WikiSymbol.symbol_id`, so callers can join straight to the
+    symbol graph.
+    """
+
+    __tablename__ = "git_function_blame"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "symbol_id", name="uq_git_function_blame"),
+        Index("ix_git_function_blame_repo_mods", "repository_id", "mod_count"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    # "{path}::{name}" — mirrors WikiSymbol.symbol_id.
+    symbol_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    function_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    line_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Distinct commits touching the function's line range (its churn).
+    mod_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Distinct commits touching the range within the recent window.
+    recent_mod_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Median author time (unix seconds) over the range — a line-age proxy that
+    # ages naturally; the UI derives "median age" relative to display time.
+    median_author_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Blame owner over the function's lines.
+    owner_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner_line_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

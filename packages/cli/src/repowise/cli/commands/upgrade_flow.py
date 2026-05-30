@@ -91,6 +91,7 @@ async def _backfill_git(
     from repowise.core.persistence import get_session
     from repowise.core.persistence.crud import (
         recompute_git_percentiles,
+        upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
     from repowise.core.persistence.stores.sql_job_store import SqlJobStore
@@ -115,6 +116,11 @@ async def _backfill_git(
         if git_results:
             await upsert_git_metadata_bulk(session, repo_id, git_results)
             await recompute_git_percentiles(session, repo_id)
+        # Persist the per-commit rows captured during the FULL-tier walk so the
+        # commits/change-risk surface lands on an ESSENTIAL→FULL promotion too
+        # (Foundation 1 only wrote them on the full orchestrator index).
+        if summary.commit_rows:
+            await upsert_git_commits_bulk(session, repo_id, summary.commit_rows)
 
     console.print(
         f"Git tier upgraded to FULL: [cyan]{summary.files_indexed}[/cyan] files "

@@ -301,6 +301,7 @@ def test_base_includes_all_models():
         "wiki_symbols",
         "git_metadata",
         "git_commits",
+        "git_function_blame",
         "dead_code_findings",
         "decision_records",
         "decision_evidence",

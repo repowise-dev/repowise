@@ -35,6 +35,7 @@ def load_commit_index(
     indexable_files: set[str],
     *,
     commit_sink: list[dict] | None = None,
+    since_ts: int | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -58,6 +59,12 @@ def load_commit_index(
     no extra git pass — and lets the caller build per-commit rows downstream
     (see :mod:`git_indexer.commit_rows`). The default (``None``) leaves the
     return value and behaviour unchanged.
+
+    When *since_ts* is supplied (unix seconds), commits at or before it are
+    skipped — used by the incremental path to capture only commits newer than
+    the newest already-persisted one, so the commits surface stays current
+    without re-walking the full window. Default (``None``) processes the whole
+    depth.
 
     Failures (git unavailable, corrupt log output, etc.) return an
     empty dict so the caller can fall back to per-file indexing.
@@ -99,6 +106,12 @@ def load_commit_index(
         if parsed is None:
             continue
         header, numstat_lines = parsed
+
+        # Incremental bound: drop commits at/older than the newest already
+        # persisted (newest-first walk, but author/commit-time can be slightly
+        # out of order, so skip rather than break to stay correct).
+        if since_ts is not None and header["ts"] <= since_ts:
+            continue
         commits_parsed += 1
 
         # Full change footprint of this commit (every file, not just the

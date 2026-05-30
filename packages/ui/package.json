@@ -22,6 +22,8 @@
     "./graph/*": "./src/graph/*.tsx",
     "./git": "./src/git/index.ts",
     "./git/*": "./src/git/*.tsx",
+    "./commits": "./src/commits/index.ts",
+    "./commits/*": "./src/commits/*.tsx",
     "./dead-code": "./src/dead-code/index.ts",
     "./dead-code/*": "./src/dead-code/*.tsx",
     "./health": "./src/health/index.ts",

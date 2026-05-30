@@ -144,6 +144,99 @@ async def test_get_co_changes(client: AsyncClient, app) -> None:
     assert data["co_change_partners"][0]["file_path"] == "src/utils.py"
 
 
+async def _insert_git_commits(session_factory, repo_id: str) -> None:
+    """Insert a small spread of commits with distinct risk scores."""
+    from datetime import UTC, datetime
+
+    def _row(sha: str, risk: float, ts: int, **over) -> dict:
+        base = {
+            "sha": sha,
+            "author_name": "Ann",
+            "author_email": "ann@example.com",
+            "committed_at": datetime.fromtimestamp(ts, tz=UTC),
+            "subject": f"commit {sha}",
+            "lines_added": 40,
+            "lines_deleted": 5,
+            "files_changed": 4,
+            "dirs_changed": 2,
+            "subsystems_changed": 1,
+            "entropy": 1.2,
+            "is_fix": False,
+            "author_experience": 3,
+            "change_risk_score": risk,
+            "change_risk_level": "high" if risk >= 7 else "moderate" if risk >= 4 else "low",
+        }
+        base.update(over)
+        return base
+
+    async with get_session(session_factory) as session:
+        await crud.upsert_git_commits_bulk(
+            session,
+            repo_id,
+            [
+                _row("aaaaaaaa11", 2.0, 3000),
+                _row("bbbbbbbb22", 8.5, 1000),
+                _row("cccccccc33", 5.0, 2000),
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_commits_sorted_by_risk(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"sort": "risk"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 3
+    items = payload["items"]
+    # Risk-descending review-priority order.
+    assert [c["short_sha"] for c in items] == ["bbbbbbbb", "cccccccc", "aaaaaaaa"]
+    top = items[0]
+    assert top["change_risk_score"] == 8.5
+    # Repo-relative normalization: the top commit is the highest percentile and
+    # falls in the top tercile (portable, not the absolute calibration band).
+    assert top["risk_percentile"] > items[-1]["risk_percentile"]
+    assert top["review_priority"] == "high"
+    assert items[-1]["review_priority"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_get_commits_sorted_by_date(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"sort": "date"})
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert [c["short_sha"] for c in items] == ["aaaaaaaa", "cccccccc", "bbbbbbbb"]
+
+
+@pytest.mark.asyncio
+async def test_get_commit_detail_has_drivers(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/bbbbbbbb")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sha"] == "bbbbbbbb22"
+    assert data["author_experience"] == 3
+    # Re-scoring the stored features reproduces the persisted score exactly.
+    assert data["change_risk_score"] == 8.5
+    assert len(data["drivers"]) == 7  # la, ld, nf, nd, ns, entropy, exp
+    feats = {d["feature"] for d in data["drivers"]}
+    assert {"la", "exp", "entropy"} <= feats
+
+
+@pytest.mark.asyncio
+async def test_get_commit_not_found(client: AsyncClient) -> None:
+    repo = await create_test_repo(client)
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/deadbeef")
+    assert resp.status_code == 404
+
+
 @pytest.mark.asyncio
 async def test_get_git_summary(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)

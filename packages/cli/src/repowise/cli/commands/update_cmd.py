@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -117,6 +118,47 @@ async def _persist_partial_health(session: Any, repo_id: str, report: Any) -> No
     await upsert_health_findings(
         session, repo_id, list(report.findings or []), file_paths=changed_paths
     )
+    # Per-function blame rollup for the changed files (keeps git_function_blame
+    # current between full indexes; FULL git tier only — empty otherwise).
+    fn_blame_rows = getattr(report, "function_blame_rows", None)
+    if fn_blame_rows:
+        from repowise.core.persistence.crud import upsert_git_function_blame_bulk
+
+        await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+
+
+async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
+    """Capture + upsert ``git_commits`` rows for commits new since the last index.
+
+    Foundation 1 only populated the per-commit table on the full orchestrator
+    index; without this, the commits/change-risk surface goes stale between full
+    re-indexes. Bounds the walk to commits newer than the newest persisted
+    ``committed_at`` (one ``git log`` pass) and upserts (idempotent on sha).
+    """
+    from repowise.core.ingestion.git_indexer import GitIndexer
+    from repowise.core.persistence.crud import (
+        get_latest_commit_committed_at,
+        upsert_git_commits_bulk,
+    )
+
+    cfg = load_config(repo_path)
+    indexer = GitIndexer(
+        repo_path,
+        commit_limit=cfg.get("commit_limit"),
+        follow_renames=cfg.get("follow_renames", False),
+    )
+    newest = await get_latest_commit_committed_at(session, repo_id)
+    since_ts: int | None = None
+    if newest is not None:
+        # SQLite drops tzinfo, so a naive read must be interpreted as UTC (the
+        # column is stored tz-aware) rather than local time.
+        from datetime import UTC
+
+        dt = newest if newest.tzinfo is not None else newest.replace(tzinfo=UTC)
+        since_ts = int(dt.timestamp())
+    rows = await asyncio.to_thread(indexer.capture_new_commit_rows, since_ts=since_ts)
+    if rows:
+        await upsert_git_commits_bulk(session, repo_id, rows)
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +445,11 @@ def _persist_index_only_update(
                     await recompute_git_percentiles(session, repo_id)
                 except Exception as exc:
                     console.print(f"[yellow]Git persist skipped: {exc}[/yellow]")
+
+                try:
+                    await _persist_incremental_commits(session, repo_id, repo_path)
+                except Exception as exc:
+                    console.print(f"[yellow]Commit capture skipped: {exc}[/yellow]")
 
             if dead_code_report is not None:
                 try:
@@ -987,6 +1034,7 @@ def update_command(
                         list(git_meta_map.values()),
                     )
                     await recompute_git_percentiles(session, repo_id)
+                    await _persist_incremental_commits(session, repo_id, repo_path)
             except Exception:
                 pass  # git persistence is best-effort
 

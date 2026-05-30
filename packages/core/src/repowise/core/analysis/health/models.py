@@ -59,3 +59,6 @@ class HealthReport:
     metrics: list[HealthFileMetricData] = field(default_factory=list)
     # Repo-level KPIs computed by ``scoring.compute_kpis``.
     kpis: dict[str, Any] = field(default_factory=dict)
+    # Per-function blame rollup rows (``git_function_blame``), derived from the
+    # FULL-tier blame index. Empty on ESSENTIAL tier / when blame is absent.
+    function_blame_rows: list[dict] = field(default_factory=list)

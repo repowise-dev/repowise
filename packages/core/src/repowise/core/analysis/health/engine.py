@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -327,6 +328,7 @@ class HealthAnalyzer:
             findings=findings,
             metrics=metrics,
             kpis=kpis,
+            function_blame_rows=self._function_blame_rows(walked),
         )
 
     async def analyze_async(
@@ -440,11 +442,30 @@ class HealthAnalyzer:
             findings=findings,
             metrics=metrics,
             kpis=kpis,
+            function_blame_rows=self._function_blame_rows(walked),
         )
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
+        """Build the per-function blame rollup from the walked files + the
+        FULL-tier blame indexes attached to ``git_meta_map``.
+
+        Cheap (reads the already-materialised blame index; no extra git) and
+        failure-isolated so a rollup hiccup never breaks the health report.
+        Returns an empty list on the ESSENTIAL tier (no blame indexes).
+        """
+        try:
+            from .function_blame_rollup import build_function_blame_rows
+
+            return build_function_blame_rows(
+                list(walked), self.git_meta_map, now_ts=int(time.time())
+            )
+        except Exception as exc:
+            log.debug("function_blame_rollup_failed", error=str(exc))
+            return []
 
     def _walk(self, pf: Any) -> FileComplexity:
         path = pf.file_info.abs_path

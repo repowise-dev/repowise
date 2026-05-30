@@ -16,11 +16,13 @@ from .features import (
     features_from_file_changes,
 )
 from .model import ChangeRisk, RiskDriver, score_change
+from .normalize import RiskNormalizer
 
 __all__ = [
     "ChangeFeatures",
     "ChangeRisk",
     "RiskDriver",
+    "RiskNormalizer",
     "extract_commit_features",
     "extract_range_features",
     "features_from_file_changes",

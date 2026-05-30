@@ -35,6 +35,7 @@ __all__ = [
     "build_blame_index",
     "distinct_commits_in_range",
     "median_author_time_in_range",
+    "owner_in_range",
     "recent_commits_in_range",
 ]
 
@@ -85,6 +86,39 @@ def ownership_from_blame(idx: BlameIndex) -> tuple[str | None, str | None, float
             top_email = email
             break
     return top_name, top_email, top_count / total if total else None
+
+
+def owner_in_range(
+    idx: BlameIndex, start_line: int, end_line: int
+) -> tuple[str | None, str | None, float | None]:
+    """Top blame author over ``[start_line, end_line]`` (inclusive).
+
+    Returns ``(name, email, share)`` where ``share`` is the fraction of blamed
+    lines in the range authored by the top author. ``None``s when the range has
+    no blame coverage. Scoped variant of :func:`ownership_from_blame`, reused by
+    the per-function blame rollup.
+    """
+    if not idx.lines or start_line > end_line:
+        return None, None, None
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for ln in range(start_line, end_line + 1):
+        entry = idx.lines.get(ln)
+        if entry is None:
+            continue
+        name = idx.authors.get(entry[0], ("unknown", ""))[0]
+        counts[name] += 1
+    if not counts:
+        return None, None, None
+    total = sum(counts.values())
+    top_name, top_count = counts.most_common(1)[0]
+    top_email = ""
+    for _sha, (name, email) in idx.authors.items():
+        if name == top_name and email:
+            top_email = email
+            break
+    return top_name, top_email or None, (top_count / total if total else None)
 
 
 def _parse_porcelain(

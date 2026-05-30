@@ -12,6 +12,7 @@ export type BiomarkerCategory =
   | "size_and_complexity"
   | "duplication"
   | "test_coverage"
+  | "test_coverage_gradient"
   | "organizational";
 
 export interface BiomarkerInfo {
@@ -25,6 +26,7 @@ export const CATEGORY_LABEL: Record<BiomarkerCategory, string> = {
   size_and_complexity: "Size & complexity",
   duplication: "Duplication",
   test_coverage: "Test coverage",
+  test_coverage_gradient: "Coverage gradient",
   organizational: "Organizational",
 };
 
@@ -32,6 +34,7 @@ export const CATEGORY_CAP: Record<BiomarkerCategory, number> = {
   organizational: 3.5,
   structural_complexity: 2.5,
   test_coverage: 2.0,
+  test_coverage_gradient: 2.0,
   size_and_complexity: 1.5,
   duplication: 1.0,
 };
@@ -90,6 +93,12 @@ export const BIOMARKER_GLOSSARY: Record<string, BiomarkerInfo> = {
     category: "test_coverage",
     description:
       "Specific uncovered lines in a file. Surfaced when a coverage report has been ingested.",
+  },
+  coverage_gradient: {
+    label: "Coverage gradient",
+    category: "test_coverage_gradient",
+    description:
+      "A continuous coverage penalty proportional to the uncovered fraction — keeps the score sensitive to coverage even on well-tested files where the binary gates never fire.",
   },
   developer_congestion: {
     label: "Developer congestion",

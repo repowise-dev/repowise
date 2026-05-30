@@ -78,6 +78,32 @@ def test_commit_sink_collects_full_footprint_including_non_indexable() -> None:
     ]
 
 
+def test_commit_sink_since_ts_drops_old_commits() -> None:
+    """``since_ts`` filters the sink to commits strictly newer than the bound —
+    the incremental capture path's freshness guarantee."""
+    raw = _build_log(
+        [
+            {"sha": "new", "an": "A", "ae": "a@x", "ct": 3000, "subj": "new",
+             "files": [(1, 0, "src/a.py")]},
+            {"sha": "mid", "an": "A", "ae": "a@x", "ct": 2000, "subj": "mid",
+             "files": [(1, 0, "src/a.py")]},
+            {"sha": "old", "an": "A", "ae": "a@x", "ct": 1000, "subj": "old",
+             "files": [(1, 0, "src/a.py")]},
+        ]
+    )
+    repo = MagicMock()
+    repo.git.log.return_value = raw
+
+    sink: list[dict] = []
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink, since_ts=1500)
+    # Only commits with ts > 1500 survive (3000, 2000).
+    assert sorted(c["sha"] for c in sink) == ["mid", "new"]
+
+    sink2: list[dict] = []
+    load_commit_index(repo, 100, {"src/a.py"}, commit_sink=sink2, since_ts=3000)
+    assert sink2 == []
+
+
 def test_commit_sink_default_none_is_noop() -> None:
     """Without a sink the return value and behaviour are unchanged."""
     raw = _build_log(
@@ -179,14 +205,14 @@ def test_build_commit_rows_author_experience_is_cumulative() -> None:
         },
     ]
     rows = build_commit_rows(parsed)
-    # Re-derive exp via the change features by re-scoring would be indirect;
-    # instead assert the monotonic relationship through risk's exp driver is
-    # consistent — simplest: rebuild and check the experience tally by proxy.
-    # Ann's three commits have exp 0,1,2 in time order; Bob's single commit 0.
-    # We can't read exp off the row directly, so assert via a fresh computation
-    # mirroring the implementation contract: the earliest Ann commit must score
-    # at least as risky (lower exp ⇒ higher risk, exp coef is protective).
     by_sha = {r["sha"]: r for r in rows}
+    # Ann's three commits have exp 0,1,2 in time order; Bob's single commit 0.
+    # The persisted author_experience is the in-memory cumulative prior count.
+    assert by_sha["c1"]["author_experience"] == 0
+    assert by_sha["c2"]["author_experience"] == 1
+    assert by_sha["c3"]["author_experience"] == 2
+    assert by_sha["b1"]["author_experience"] == 0
+    # Lower experience ⇒ higher risk (exp coefficient is protective).
     assert by_sha["c1"]["change_risk_score"] >= by_sha["c3"]["change_risk_score"]
 
 

@@ -93,6 +93,10 @@ class CoverageGradientDetector:
                     "line_coverage_pct": cov,
                     "branch_coverage_pct": ctx.branch_coverage_pct,
                     "uncovered_fraction": round(uncovered_fraction, 4),
+                    # The continuous base deduction (pre-weight, pre-cap). Stored
+                    # so the score-breakdown API can show the gradient instead of
+                    # recomputing a severity-band proxy.
+                    "deduction": round(deduction, 4),
                 },
                 reason=(
                     f"{uncovered_pct}% of lines uncovered ({cov:.0f}% line coverage) - "

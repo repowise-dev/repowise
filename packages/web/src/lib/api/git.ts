@@ -1,5 +1,7 @@
 import { apiGet } from "./client";
 import type {
+  CommitDetailResponse,
+  CommitResponse,
   GitMetadataResponse,
   GitSummaryResponse,
   HotspotResponse,
@@ -104,4 +106,28 @@ export async function getGitSummary(
 ): Promise<GitSummaryResponse> {
   const params = topOwnersLimit ? { top_owners_limit: topOwnersLimit } : undefined;
   return apiGet<GitSummaryResponse>(`/api/repos/${repoId}/git-summary`, params);
+}
+
+/**
+ * Paginated per-commit change-risk feed — the review-priority queue. `sort`
+ * defaults to `risk` (review-priority order); `date` orders by recency. Each
+ * commit carries a repo-relative `risk_percentile` + `review_priority`.
+ */
+export async function getCommitsPage(
+  repoId: string,
+  options: { sort?: "risk" | "date"; limit?: number; offset?: number } = {},
+): Promise<Paginated<CommitResponse>> {
+  const { sort = "risk", limit = 50, offset = 0 } = options;
+  return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {
+    sort,
+    limit,
+    offset,
+  });
+}
+
+export async function getCommit(
+  repoId: string,
+  sha: string,
+): Promise<CommitDetailResponse> {
+  return apiGet<CommitDetailResponse>(`/api/repos/${repoId}/commits/${sha}`);
 }

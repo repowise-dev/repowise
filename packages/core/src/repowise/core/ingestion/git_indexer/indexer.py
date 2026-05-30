@@ -345,6 +345,38 @@ class GitIndexer:
         repo.close()
         return results
 
+    def capture_new_commit_rows(self, *, since_ts: int | None = None) -> list[dict]:
+        """Build ``git_commits`` rows for commits newer than *since_ts*.
+
+        The incremental counterpart to the ``commit_sink`` capture on
+        ``index_repo``: walks the repo-wide commit index (one ``git log`` pass,
+        bounded to commits newer than the newest already-persisted one) and
+        turns the sunk commits into rows via :func:`build_commit_rows`. Empty in
+        rename-tracking mode (no batched commit index — same limitation as the
+        full index). Failure-isolated: returns ``[]`` on any error.
+        """
+        if self.follow_renames:
+            return []
+        repo = self._get_repo()
+        if repo is None:
+            return []
+        try:
+            from ..git_commit_index import load_commit_index
+            from .commit_rows import build_commit_rows
+
+            sink: list[dict] = []
+            # Empty indexable set: we only want the full-footprint sink, not the
+            # per-file bucket (which the incremental file pass already rebuilt).
+            load_commit_index(
+                repo, self.commit_limit, set(), commit_sink=sink, since_ts=since_ts
+            )
+            return build_commit_rows(sink)
+        except Exception as exc:
+            logger.debug("incremental_commit_rows_failed", error=str(exc))
+            return []
+        finally:
+            repo.close()
+
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------

@@ -81,3 +81,37 @@ export interface GitSummaryResponse {
   average_churn_percentile: number;
   top_owners: Array<{ name: string; email?: string; file_count: number; pct: number }>;
 }
+
+export type ReviewPriority = "low" | "moderate" | "high";
+
+export interface CommitResponse {
+  sha: string;
+  short_sha: string;
+  author_name: string;
+  author_email: string;
+  committed_at: string | null;
+  subject: string;
+  lines_added: number;
+  lines_deleted: number;
+  files_changed: number;
+  dirs_changed: number;
+  subsystems_changed: number;
+  entropy: number;
+  is_fix: boolean;
+  change_risk_score: number | null;
+  change_risk_level: ReviewPriority | null;
+  risk_percentile: number;
+  review_priority: ReviewPriority;
+}
+
+export interface RiskDriverResponse {
+  feature: string;
+  value: number | null;
+  contribution: number;
+  label: string;
+}
+
+export interface CommitDetailResponse extends CommitResponse {
+  author_experience?: number | null;
+  drivers: RiskDriverResponse[];
+}

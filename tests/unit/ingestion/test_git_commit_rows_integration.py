@@ -64,6 +64,40 @@ async def test_index_repo_collects_commit_rows(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_new_commit_rows_bounds_by_since_ts(tmp_path) -> None:
+    """The incremental capture walks the same commit index but drops commits at
+    or older than *since_ts* — only genuinely new commits are returned."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _commit(repo, tmp_path / "a.py", "x = 1\n", "feat: add a")
+    _commit(repo, tmp_path / "b.py", "y = 2\n", "feat: add b")
+    _commit(repo, tmp_path / "c.py", "w = 4\n", "feat: add c")
+
+    idx = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+
+    # No bound → all three commits captured.
+    all_rows = idx.capture_new_commit_rows()
+    assert len(all_rows) == 3
+
+    # Bound at/after the newest → nothing new. (Commits made in the same second
+    # share a timestamp at 1s git resolution, so a far-future bound is the
+    # robust assertion; the precise boundary is covered by the unit test.)
+    newest_ts = max(r["committed_at"].timestamp() for r in all_rows)
+    assert idx.capture_new_commit_rows(since_ts=int(newest_ts)) == []
+
+
+@pytest.mark.asyncio
+async def test_capture_new_commit_rows_empty_in_rename_mode(tmp_path) -> None:
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _commit(repo, tmp_path / "a.py", "x = 1\n", "feat: add a")
+    idx = GitIndexer(tmp_path, tier=GitIndexTier.FULL, follow_renames=True)
+    assert idx.capture_new_commit_rows() == []
+
+
+@pytest.mark.asyncio
 async def test_index_repo_commit_rows_empty_in_rename_mode(tmp_path) -> None:
     """Rename-tracking mode uses the per-file walk (no batched commit index),
     so commit rows are not collected — documented fallback, not an error."""

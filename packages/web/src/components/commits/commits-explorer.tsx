@@ -1,0 +1,131 @@
+"use client";
+
+import { useState } from "react";
+import useSWR from "swr";
+import { AlertTriangle, Bug, GitCommitHorizontal } from "lucide-react";
+import { StatCard } from "@repowise-dev/ui/shared/stat-card";
+import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@repowise-dev/ui/ui/sheet";
+import { CommitTable, type CommitSort } from "@repowise-dev/ui/commits/commit-table";
+import { CommitDetailCard } from "@repowise-dev/ui/commits/commit-detail-card";
+import { CredibilityStrip } from "@repowise-dev/ui/commits/credibility-strip";
+import { getCommit, getCommitsPage } from "@/lib/api/git";
+import type { CommitResponse, Paginated } from "@/lib/api/types";
+
+const PAGE_SIZE = 50;
+
+export function CommitsExplorer({ repoId }: { repoId: string }) {
+  const [sort, setSort] = useState<CommitSort>("risk");
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const [selectedSha, setSelectedSha] = useState<string | null>(null);
+
+  const { data, isLoading, isValidating, error } = useSWR<Paginated<CommitResponse>>(
+    `commits:${repoId}:${sort}:${limit}`,
+    () => getCommitsPage(repoId, { sort, limit }),
+    { revalidateOnFocus: false, keepPreviousData: true },
+  );
+
+  const { data: detail, isLoading: detailLoading } = useSWR(
+    selectedSha ? `commit:${repoId}:${selectedSha}` : null,
+    () => getCommit(repoId, selectedSha as string),
+    { revalidateOnFocus: false },
+  );
+
+  const list = data?.items ?? [];
+  const total = data?.total ?? list.length;
+  const hasMore = data?.has_more ?? false;
+
+  const highCount = list.filter((c) => c.review_priority === "high").length;
+  const fixCount = list.filter((c) => c.is_fix).length;
+  const avgEntropy =
+    list.length > 0
+      ? list.reduce((s, c) => s + (c.entropy || 0), 0) / list.length
+      : 0;
+
+  if (isLoading && list.length === 0) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-96 w-full" />
+      </div>
+    );
+  }
+
+  if (error && list.length === 0) {
+    return (
+      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)]">
+        Couldn&apos;t load commits. Per-commit change-risk is captured on the next full index —
+        try running a sync first.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <CredibilityStrip />
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard
+          label="Commits"
+          value={total}
+          description="with change-risk"
+          icon={<GitCommitHorizontal className="h-4 w-4 text-[var(--color-text-tertiary)]" />}
+        />
+        <StatCard
+          label="High priority"
+          value={highCount}
+          description="top tercile (loaded)"
+          icon={<AlertTriangle className="h-4 w-4 text-red-400" />}
+        />
+        <StatCard
+          label="Fix commits"
+          value={fixCount}
+          description="bug-fix subjects"
+          icon={<Bug className="h-4 w-4 text-orange-400" />}
+        />
+        <StatCard
+          label="Avg entropy"
+          value={avgEntropy.toFixed(2)}
+          description="change diffusion"
+        />
+      </div>
+
+      <CommitTable
+        commits={list}
+        sort={sort}
+        onSortChange={(s) => {
+          setSort(s);
+          setLimit(PAGE_SIZE);
+        }}
+        onSelect={(c) => setSelectedSha(c.sha)}
+        total={total}
+        hasMore={hasMore}
+        loadingMore={isValidating && !isLoading}
+        onLoadMore={() => setLimit((n) => Math.min(n + PAGE_SIZE, 200))}
+      />
+
+      <Sheet open={selectedSha !== null} onOpenChange={(open) => !open && setSelectedSha(null)}>
+        <SheetContent side="right" className="w-[440px] max-w-[92vw] sm:w-[560px]">
+          <SheetHeader>
+            <SheetTitle>Commit change-risk</SheetTitle>
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-4 pb-6">
+            {detailLoading || !detail ? (
+              <div className="space-y-3 pt-2">
+                <Skeleton className="h-24 w-full" />
+                <Skeleton className="h-40 w-full" />
+              </div>
+            ) : (
+              <CommitDetailCard commit={detail} />
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </div>
+  );
+}

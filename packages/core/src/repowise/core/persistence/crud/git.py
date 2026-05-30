@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     GitCommit,
+    GitFunctionBlame,
     GitMetadata,
     _new_uuid,
     _now_utc,
@@ -233,6 +234,20 @@ async def count_git_commits(session: AsyncSession, repository_id: str) -> int:
     return int(result.scalar_one() or 0)
 
 
+async def get_latest_commit_committed_at(session: AsyncSession, repository_id: str):
+    """Return the newest persisted ``committed_at`` for a repo, or None.
+
+    Bounds the incremental commit-row walk: only commits newer than this need
+    capturing on a ``repowise update``.
+    """
+    result = await session.execute(
+        select(func.max(GitCommit.committed_at)).where(
+            GitCommit.repository_id == repository_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_git_commit(session: AsyncSession, repository_id: str, sha: str) -> GitCommit | None:
     """Return one commit by sha (or a unique prefix), or None."""
     result = await session.execute(
@@ -242,6 +257,23 @@ async def get_git_commit(session: AsyncSession, repository_id: str, sha: str) ->
         )
     )
     return result.scalars().first()
+
+
+async def get_commit_risk_scores(session: AsyncSession, repository_id: str) -> list[float]:
+    """Return every persisted ``change_risk_score`` for a repository (unsorted).
+
+    Used to build a repo-relative :class:`~repowise.core.analysis.change_risk.
+    RiskNormalizer` so the commits surface can rank a commit against its own
+    repo's distribution rather than the absolute calibration band. Bounded by
+    the indexer's ``commit_limit``, so the full pull is cheap.
+    """
+    result = await session.execute(
+        select(GitCommit.change_risk_score).where(
+            GitCommit.repository_id == repository_id,
+            GitCommit.change_risk_score.is_not(None),
+        )
+    )
+    return [float(s) for s in result.scalars().all() if s is not None]
 
 
 async def get_git_commits(
@@ -265,4 +297,96 @@ async def get_git_commits(
         .limit(limit)
         .offset(offset)
     )
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# GitFunctionBlame CRUD (per-function blame rollup)
+# ---------------------------------------------------------------------------
+
+
+def _update_git_function_blame(existing: GitFunctionBlame, row: dict) -> None:
+    for key, val in row.items():
+        # ``symbol_id`` is the natural key — never reassign it on update.
+        if key not in ("id", "repository_id", "symbol_id") and hasattr(existing, key):
+            setattr(existing, key, val)
+    existing.updated_at = _now_utc()
+
+
+async def upsert_git_function_blame_bulk(
+    session: AsyncSession,
+    repository_id: str,
+    rows: list[dict],
+) -> None:
+    """Bulk upsert per-function blame rows (keyed ``repository_id`` + ``symbol_id``)."""
+    await _batch_upsert(
+        session,
+        GitFunctionBlame,
+        rows,
+        key_fn=lambda row: (
+            GitFunctionBlame.repository_id == repository_id,
+            GitFunctionBlame.symbol_id == row.get("symbol_id", ""),
+        ),
+        update_fn=_update_git_function_blame,
+        insert_fn=lambda row: GitFunctionBlame(
+            id=_new_uuid(),
+            repository_id=repository_id,
+            **{
+                k: v
+                for k, v in row.items()
+                if k not in ("id", "repository_id") and hasattr(GitFunctionBlame, k)
+            },
+        ),
+        batch_size=_BATCH_SIZE,
+    )
+
+
+async def delete_git_function_blame(session: AsyncSession, repository_id: str) -> None:
+    """Remove all per-function blame rows for a repository (clean reindex)."""
+    await session.execute(
+        delete(GitFunctionBlame).where(GitFunctionBlame.repository_id == repository_id)
+    )
+    await session.flush()
+
+
+async def count_git_function_blame(session: AsyncSession, repository_id: str) -> int:
+    """Count persisted per-function blame rows for a repository."""
+    result = await session.execute(
+        select(func.count())
+        .select_from(GitFunctionBlame)
+        .where(GitFunctionBlame.repository_id == repository_id)
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def get_git_function_blame(
+    session: AsyncSession, repository_id: str, symbol_id: str
+) -> GitFunctionBlame | None:
+    """Return one per-function blame row by exact ``symbol_id``, or None."""
+    result = await session.execute(
+        select(GitFunctionBlame).where(
+            GitFunctionBlame.repository_id == repository_id,
+            GitFunctionBlame.symbol_id == symbol_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_git_function_blames(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_path: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[GitFunctionBlame]:
+    """Return a page of per-function blame rows, hottest (most-modified) first.
+
+    Optionally scoped to a single ``file_path`` (the per-file drill-down).
+    """
+    q = select(GitFunctionBlame).where(GitFunctionBlame.repository_id == repository_id)
+    if file_path is not None:
+        q = q.where(GitFunctionBlame.file_path == file_path)
+    q = q.order_by(GitFunctionBlame.mod_count.desc()).limit(limit).offset(offset)
+    result = await session.execute(q)
     return list(result.scalars().all())

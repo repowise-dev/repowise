@@ -57,10 +57,13 @@ from .decisions import (
     DecisionStatusUpdate,
 )
 from .git import (
+    CommitDetailResponse,
+    CommitResponse,
     GitMetadataResponse,
     GitSummaryResponse,
     HotspotResponse,
     OwnershipEntry,
+    RiskDriverResponse,
 )
 from .graph import (
     ArchitectureEdgeResponse,
@@ -179,6 +182,8 @@ __all__ = [
     "ChatMessageResponse",
     "ChatRequest",
     "CochangeWarning",
+    "CommitDetailResponse",
+    "CommitResponse",
     "CommunityDetailResponse",
     "CommunityMember",
     "CommunitySummaryItem",
@@ -243,6 +248,7 @@ __all__ = [
     "ReviewerEntry",
     "ReviewerSuggestion",
     "ReviewerSuggestionsResponse",
+    "RiskDriverResponse",
     "SearchRequest",
     "SearchResultResponse",
     "SecurityFindingResponse",

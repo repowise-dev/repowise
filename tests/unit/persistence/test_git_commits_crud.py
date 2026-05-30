@@ -9,8 +9,10 @@ import pytest
 from repowise.core.persistence.crud import (
     count_git_commits,
     delete_git_commits,
+    get_commit_risk_scores,
     get_git_commit,
     get_git_commits,
+    get_latest_commit_committed_at,
     upsert_git_commits_bulk,
 )
 from tests.unit.persistence.helpers import insert_repo
@@ -98,6 +100,56 @@ async def test_upsert_is_idempotent_on_sha(async_session) -> None:
     got = await get_git_commit(async_session, repo.id, "dup")
     assert got.change_risk_score == 9.0
     assert got.change_risk_level == "high"
+
+
+@pytest.mark.asyncio
+async def test_get_commit_risk_scores(async_session) -> None:
+    repo = await insert_repo(async_session)
+    rows = [
+        _row("aaa", risk=2.0, ts=3000),
+        _row("bbb", risk=8.5, ts=1000),
+        _row("ccc", risk=5.0, ts=2000, change_risk_score=None, change_risk_level=None),
+    ]
+    await upsert_git_commits_bulk(async_session, repo.id, rows)
+    await async_session.commit()
+
+    scores = await get_commit_risk_scores(async_session, repo.id)
+    # Null-scored commits are excluded; order is unspecified, so compare as a set.
+    assert sorted(scores) == [2.0, 8.5]
+
+
+@pytest.mark.asyncio
+async def test_get_latest_commit_committed_at(async_session) -> None:
+    repo = await insert_repo(async_session)
+    assert await get_latest_commit_committed_at(async_session, repo.id) is None
+    base = 1_700_000_000
+    await upsert_git_commits_bulk(
+        async_session,
+        repo.id,
+        [
+            _row("aaa", risk=2.0, ts=base + 300),
+            _row("bbb", risk=8.5, ts=base + 100),
+            _row("ccc", risk=5.0, ts=base + 200),
+        ],
+    )
+    await async_session.commit()
+    latest = await get_latest_commit_committed_at(async_session, repo.id)
+    assert latest is not None
+    # SQLite may return naive; interpret as UTC for the comparison.
+    dt = latest if latest.tzinfo is not None else latest.replace(tzinfo=UTC)
+    assert int(dt.timestamp()) == base + 300
+
+
+@pytest.mark.asyncio
+async def test_author_experience_round_trips(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_commits_bulk(
+        async_session, repo.id, [_row("exp1", risk=3.0, ts=1000, author_experience=42)]
+    )
+    await async_session.commit()
+    got = await get_git_commit(async_session, repo.id, "exp1")
+    assert got is not None
+    assert got.author_experience == 42
 
 
 @pytest.mark.asyncio

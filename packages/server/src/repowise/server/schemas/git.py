@@ -130,3 +130,49 @@ class GitSummaryResponse(BaseModel):
     stable_count: int
     average_churn_percentile: float
     top_owners: list[dict]
+
+
+class CommitResponse(BaseModel):
+    """One per-commit row from the ``git_commits`` table.
+
+    Carries the stored raw change-risk plus a **repo-relative** normalization
+    (``risk_percentile`` + ``review_priority``). The raw ``change_risk_level``
+    is the absolute calibration band — kept for transparency but de-emphasized
+    in the UI, because it skews high on repos with large typical commits. The
+    review-priority queue ranks on ``risk_percentile`` instead.
+    """
+
+    sha: str
+    short_sha: str
+    author_name: str
+    author_email: str
+    committed_at: datetime | None
+    subject: str
+    lines_added: int
+    lines_deleted: int
+    files_changed: int
+    dirs_changed: int
+    subsystems_changed: int
+    entropy: float
+    is_fix: bool
+    change_risk_score: float | None
+    change_risk_level: str | None
+    # Repo-relative normalization (the portable signal).
+    risk_percentile: float
+    review_priority: str
+
+
+class RiskDriverResponse(BaseModel):
+    """One feature's signed contribution to a commit's change-risk logit."""
+
+    feature: str
+    value: float | None
+    contribution: float
+    label: str
+
+
+class CommitDetailResponse(CommitResponse):
+    """A single commit with its full, attributable risk-driver breakdown."""
+
+    author_experience: int | None = None
+    drivers: list[RiskDriverResponse] = []

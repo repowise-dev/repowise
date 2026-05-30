@@ -103,6 +103,51 @@ export interface Hotspot {
   original_path?: string | null;
 }
 
+/** Repo-relative review priority derived from the score's percentile within
+ * its own repo (terciles) — portable, unlike the absolute calibration band. */
+export type ReviewPriority = "low" | "moderate" | "high";
+
+export interface Commit {
+  sha: string;
+  short_sha: string;
+  author_name: string;
+  author_email: string;
+  committed_at: string | null;
+  subject: string;
+  lines_added: number;
+  lines_deleted: number;
+  files_changed: number;
+  dirs_changed: number;
+  subsystems_changed: number;
+  entropy: number;
+  is_fix: boolean;
+  /** Raw 0–10 change-risk score from the calibrated model (stored). */
+  change_risk_score: number | null;
+  /** Absolute calibration band — kept for transparency, but skews high on
+   * repos with large typical commits; prefer {@link review_priority}. */
+  change_risk_level: ReviewPriority | null;
+  /** Where this commit's score sits within its repo's distribution, 0–100. */
+  risk_percentile: number;
+  /** Repo-relative review priority (the portable ranking signal). */
+  review_priority: ReviewPriority;
+}
+
+/** One feature's signed contribution to a commit's change-risk logit. */
+export interface RiskDriver {
+  feature: string;
+  value: number | null;
+  /** Signed push on the logit; positive raises risk, negative lowers it. */
+  contribution: number;
+  label: string;
+}
+
+export interface CommitDetail extends Commit {
+  /** Author's cumulative prior-commit count at the time of the commit. */
+  author_experience?: number | null;
+  /** Per-feature breakdown, strongest contribution first. */
+  drivers: RiskDriver[];
+}
+
 export interface OwnershipEntry {
   module_path: string;
   primary_owner: string | null;
