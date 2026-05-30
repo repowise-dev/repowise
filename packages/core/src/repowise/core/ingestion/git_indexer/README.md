@@ -79,13 +79,29 @@ the full window at a fraction of the cost of lifting the global cap (it scales
 with window activity, not total repo age). Windowed-but-decayed signals
 (90d counts, entropy) tolerate the cap because old commits contribute ~nothing.
 
+## Per-commit rows + just-in-time change-risk
+
+The same repo-wide walk also yields **per-commit** rows (the `git_commits`
+table), not just per-file aggregates. `load_commit_index` accepts an optional
+`commit_sink`: when supplied it appends each commit (sha, author, ts, subject,
+and its full `(path, added, deleted)` footprint across *all* files) during the
+existing walk — no extra `git` pass. `commit_rows.build_commit_rows` then turns
+those into rows carrying Kamei change features (lines/files/dirs/subsystems
+touched, churn entropy) and a calibrated **change-risk** score/level from
+`analysis.change_risk` — runtime-safe (pure arithmetic, no LLM, no blame).
+Author *experience* (the one change-risk feature that costs a subprocess in the
+live `repowise risk` path) is reconstructed **in memory** here: walking commits
+oldest→newest, each author's prior-commit count is the running tally. Empty in
+rename-tracking mode (which uses the per-file walk, not the batched index).
+
 ## Internal layout
 
 | Module | Contents |
 |--------|----------|
 | `tiers.py` | `GitIndexTier` enum + `includes_blame` / `includes_co_change` |
 | `_constants.py` | commit-depth defaults, decay half-lives, the bug-fix keyword classifier (`is_fix_commit`, mirrors the benchmark) + `PRIOR_DEFECT_WINDOW_DAYS`, skip heuristics, GitPython noise patch |
-| `records.py` | `_CommitRec`, `GitIndexSummary`, the `git log` record format + rename/skip path helpers |
+| `records.py` | `_CommitRec`, `GitIndexSummary` (carries `commit_rows`), the `git log` record format + rename/skip path helpers |
+| `commit_rows.py` | `build_commit_rows` — per-commit Kamei features + change-risk from the walk's sunk commits (pure, in-memory author experience) |
 | `file_history.py` | `index_file` — per-file parse + base metrics (blame gated by tier) |
 | `enrich.py` | blame ownership, commit significance, rename detection, percentiles |
 | `function_blame.py` | per-line blame index → per-function modification counts + line age (FULL tier; feeds `function_hotspot` / `code_age_volatility`) |

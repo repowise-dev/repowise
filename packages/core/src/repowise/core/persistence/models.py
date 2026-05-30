@@ -19,6 +19,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -401,6 +402,60 @@ class GitMetadata(Base):
     # percentile. Populated by the FULL-tier co-change walk.
     change_entropy: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     change_entropy_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class GitCommit(Base):
+    """Per-commit git history: one row per commit in the indexed window.
+
+    Captures the change-level signals the per-file ``GitMetadata`` aggregates
+    away — diff size/diffusion (Kamei change metrics) and a calibrated
+    just-in-time ``change_risk`` score — written during the same single
+    repo-wide ``git log`` walk that builds the commit index (no extra git
+    pass). The walk excludes merges, so every row is a real content change.
+    Bounded by the indexer's ``commit_limit`` (newest-first), like the rest of
+    the git data.
+    """
+
+    __tablename__ = "git_commits"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "sha", name="uq_git_commit"),
+        Index("ix_git_commits_repo_risk", "repository_id", "change_risk_score"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    # Authorship + timeline
+    author_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    author_email: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    subject: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    # Kamei change features (diff size + diffusion of THIS change)
+    lines_added: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lines_deleted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    files_changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dirs_changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    subsystems_changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entropy: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    is_fix: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Just-in-time change-risk: 0-10 score + level ("low"/"moderate"/"high")
+    # from the calibrated linear ``change_risk`` model. Author experience is
+    # computed in-memory across the walk (cumulative prior-commit count); the
+    # score is pure arithmetic on already-parsed diff data (zero LLM, no blame).
+    change_risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

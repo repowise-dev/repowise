@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ._constants import _CODE_EXTENSIONS
@@ -112,6 +112,10 @@ class GitIndexSummary:
     hotspots: int
     stable_files: int
     duration_seconds: float = 0.0
+    # Per-commit rows collected during the repo-wide commit-index walk, ready
+    # for ``upsert_git_commits_bulk``. Empty in rename-tracking mode (which uses
+    # the per-file walk instead of the batched commit index).
+    commit_rows: list[dict] = field(default_factory=list)
 
 
 _RENAME_RE = re.compile(r"\{(.+?) => (.+?)\}")

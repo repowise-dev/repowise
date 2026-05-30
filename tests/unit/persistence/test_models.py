@@ -300,6 +300,7 @@ def test_base_includes_all_models():
         "webhook_events",
         "wiki_symbols",
         "git_metadata",
+        "git_commits",
         "dead_code_findings",
         "decision_records",
         "decision_evidence",

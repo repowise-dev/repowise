@@ -2,7 +2,7 @@
 
 The original per-file path in ``git_indexer._index_file`` spawned one
 ``git log --numstat`` subprocess per tracked file. On a 5,000-file repo
-that meant 5,000 process spawns — ~50–100 ms each on Windows — which
+that meant 5,000 process spawns — ~50-100 ms each on Windows — which
 made the git phase dominate the total ``repowise init`` wall-clock.
 
 This module replaces the fan-out with one repo-wide ``git log`` pass
@@ -33,6 +33,8 @@ def load_commit_index(
     repo: object,
     commit_limit: int,
     indexable_files: set[str],
+    *,
+    commit_sink: list[dict] | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -47,6 +49,15 @@ def load_commit_index(
     Files with no commits in the window simply aren't present in the
     dict; callers should treat ``KeyError`` / ``get(file, [])`` as
     "no recorded history" rather than an error.
+
+    When *commit_sink* is supplied, each parsed commit is appended to it as a
+    raw dict (``sha``, ``author_name``, ``author_email``, ``ts``, ``subject``,
+    and ``changes`` — the full ``(path, added, deleted)`` list across *all*
+    files in the commit, not just the indexable subset, so change diffusion is
+    measured against the real footprint). This rides the same single walk —
+    no extra git pass — and lets the caller build per-commit rows downstream
+    (see :mod:`git_indexer.commit_rows`). The default (``None``) leaves the
+    return value and behaviour unchanged.
 
     Failures (git unavailable, corrupt log output, etc.) return an
     empty dict so the caller can fall back to per-file indexing.
@@ -90,6 +101,11 @@ def load_commit_index(
         header, numstat_lines = parsed
         commits_parsed += 1
 
+        # Full change footprint of this commit (every file, not just the
+        # indexable subset) — only accumulated when a sink is requested so the
+        # default path pays nothing.
+        commit_changes: list[tuple[str, int, int]] = [] if commit_sink is not None else None  # type: ignore[assignment]
+
         for line in numstat_lines:
             cols = line.split("\t")
             if len(cols) < 3:
@@ -107,15 +123,18 @@ def load_commit_index(
             else:
                 target = stat_path
 
-            if target not in indexable_files:
-                continue
-
             try:
                 added = int(cols[0]) if cols[0] != "-" else 0
                 deleted = int(cols[1]) if cols[1] != "-" else 0
             except ValueError:
                 added = 0
                 deleted = 0
+
+            if commit_changes is not None:
+                commit_changes.append((target, added, deleted))
+
+            if target not in indexable_files:
+                continue
 
             # Each commit becomes one record per file it touched — the
             # per-file analyzer treats this list as the file's own history.
@@ -131,6 +150,18 @@ def load_commit_index(
                     added=added,
                     deleted=deleted,
                 )
+            )
+
+        if commit_sink is not None:
+            commit_sink.append(
+                {
+                    "sha": header["sha"],
+                    "author_name": header["author_name"],
+                    "author_email": header["author_email"],
+                    "ts": header["ts"],
+                    "subject": header["subject"],
+                    "changes": commit_changes,
+                }
             )
 
     logger.debug(

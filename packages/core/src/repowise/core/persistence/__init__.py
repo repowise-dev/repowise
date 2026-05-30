@@ -118,6 +118,7 @@ from .models import (
     DecisionRecord,
     ExternalSystem,
     GenerationJob,
+    GitCommit,
     GitMetadata,
     GraphEdge,
     GraphMetric,
@@ -157,6 +158,7 @@ __all__ = [
     # search
     "FullTextSearch",
     "GenerationJob",
+    "GitCommit",
     "GitMetadata",
     "GraphEdge",
     "GraphMetric",

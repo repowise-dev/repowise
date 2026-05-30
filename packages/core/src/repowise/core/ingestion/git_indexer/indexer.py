@@ -114,10 +114,16 @@ class GitIndexer:
         # its commits from this shared dict instead of spawning its own
         # ``git log -- <file>`` — turning O(files) process spawns into O(1).
         commit_index: dict[str, list[_CommitRec]] = {}
+        commit_sink: list[dict] = []
         if not self.follow_renames:
             from ..git_commit_index import load_commit_index
 
-            commit_index = load_commit_index(repo, self.commit_limit, set(indexable_files))
+            commit_index = load_commit_index(
+                repo,
+                self.commit_limit,
+                set(indexable_files),
+                commit_sink=commit_sink,
+            )
 
         include_blame = self.tier.includes_blame
         as_of_ts = self._resolve_as_of_ts(repo, commit_index)
@@ -231,6 +237,19 @@ class GitIndexer:
 
         compute_percentiles(results)
 
+        # Per-commit rows + just-in-time change-risk, built in-memory from the
+        # commit-index walk's already-parsed diffs (no extra git pass). Empty
+        # in rename-tracking mode (no batched commit index) and failure-isolated
+        # so a change_risk hiccup never breaks file-level git metadata.
+        commit_rows: list[dict] = []
+        if commit_sink:
+            try:
+                from .commit_rows import build_commit_rows
+
+                commit_rows = build_commit_rows(commit_sink)
+            except Exception as exc:
+                logger.debug("commit_rows_build_failed", error=str(exc))
+
         duration = time.monotonic() - start
         hotspots = sum(1 for m in results if m.get("is_hotspot", False))
         stable = sum(1 for m in results if m.get("is_stable", False))
@@ -240,6 +259,7 @@ class GitIndexer:
             hotspots=hotspots,
             stable_files=stable,
             duration_seconds=duration,
+            commit_rows=commit_rows,
         )
         repo.close()
 

@@ -146,6 +146,7 @@ async def persist_pipeline_result(
         save_health_findings,
         save_health_metrics,
         save_health_snapshot,
+        upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
 
@@ -225,6 +226,11 @@ async def persist_pipeline_result(
     # ---- Git metadata --------------------------------------------------------
     if result.git_metadata_list:
         await upsert_git_metadata_bulk(session, repo_id, result.git_metadata_list)
+
+    # ---- Per-commit rows + change-risk (ride on the git summary) -------------
+    commit_rows = getattr(getattr(result, "git_summary", None), "commit_rows", None)
+    if commit_rows:
+        await upsert_git_commits_bulk(session, repo_id, commit_rows)
 
     # ---- Dead code findings --------------------------------------------------
     if result.dead_code_report and result.dead_code_report.findings:

@@ -6,10 +6,11 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
+    GitCommit,
     GitMetadata,
     _new_uuid,
     _now_utc,
@@ -175,3 +176,93 @@ WHERE repository_id = :repo_id;
     await session.execute(text(sql), {"repo_id": repository_id})
     await session.flush()
     return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# GitCommit CRUD (per-commit rows + just-in-time change-risk)
+# ---------------------------------------------------------------------------
+
+
+def _update_git_commit(existing: GitCommit, row: dict) -> None:
+    for key, val in row.items():
+        # ``sha`` is the natural key — never reassign it on update.
+        if key not in ("id", "repository_id", "sha") and hasattr(existing, key):
+            setattr(existing, key, val)
+    existing.updated_at = _now_utc()
+
+
+async def upsert_git_commits_bulk(
+    session: AsyncSession,
+    repository_id: str,
+    commit_rows: list[dict],
+) -> None:
+    """Bulk upsert per-commit rows (keyed on ``repository_id`` + ``sha``)."""
+    await _batch_upsert(
+        session,
+        GitCommit,
+        commit_rows,
+        key_fn=lambda row: (
+            GitCommit.repository_id == repository_id,
+            GitCommit.sha == row.get("sha", ""),
+        ),
+        update_fn=_update_git_commit,
+        insert_fn=lambda row: GitCommit(
+            id=_new_uuid(),
+            repository_id=repository_id,
+            **{
+                k: v
+                for k, v in row.items()
+                if k not in ("id", "repository_id") and hasattr(GitCommit, k)
+            },
+        ),
+        batch_size=_BATCH_SIZE,
+    )
+
+
+async def delete_git_commits(session: AsyncSession, repository_id: str) -> None:
+    """Remove all per-commit rows for a repository (used before a clean reindex)."""
+    await session.execute(delete(GitCommit).where(GitCommit.repository_id == repository_id))
+    await session.flush()
+
+
+async def count_git_commits(session: AsyncSession, repository_id: str) -> int:
+    """Count persisted commits for a repository."""
+    result = await session.execute(
+        select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repository_id)
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def get_git_commit(session: AsyncSession, repository_id: str, sha: str) -> GitCommit | None:
+    """Return one commit by sha (or a unique prefix), or None."""
+    result = await session.execute(
+        select(GitCommit).where(
+            GitCommit.repository_id == repository_id,
+            GitCommit.sha.like(f"{sha}%"),
+        )
+    )
+    return result.scalars().first()
+
+
+async def get_git_commits(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    sort: str = "risk",
+) -> list[GitCommit]:
+    """Return a page of commits, sorted by change-risk (default) or recency.
+
+    ``sort="risk"`` ranks by ``change_risk_score`` descending (the review-
+    priority order); ``sort="date"`` ranks by ``committed_at`` descending.
+    """
+    order = GitCommit.committed_at.desc() if sort == "date" else GitCommit.change_risk_score.desc()
+    result = await session.execute(
+        select(GitCommit)
+        .where(GitCommit.repository_id == repository_id)
+        .order_by(order)
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(result.scalars().all())
