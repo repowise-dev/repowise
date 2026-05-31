@@ -40,6 +40,7 @@ from repowise.cli.providers import (
     build_cost_tracker,
     build_embedder,
     build_vector_store,
+    flush_cost_tracker,
     resolve_embedder,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
@@ -447,6 +448,11 @@ def _run_workspace_generation(
             )
         except Exception:
             pass
+
+    # Persist the buffered LLM cost rows in one transaction now that all LLM
+    # work (generation + KG enrichment) is done — keeps cost writes out of the
+    # contended generation window (issue #326).
+    flush_cost_tracker(cost_tracker)
 
     return generated_pages
 
@@ -1260,6 +1266,11 @@ def _run_generation_phase(
                     )
                 except Exception as _kg_enrich_err:
                     console.print(f"  [yellow]KG enrichment skipped: {_kg_enrich_err}[/yellow]")
+
+        # Persist the buffered LLM cost rows in one transaction now that all LLM
+        # work (generation + KG enrichment) is done — keeps cost writes out of
+        # the contended generation window (issue #326).
+        flush_cost_tracker(cost_tracker)
 
     return False, cost_declined
 

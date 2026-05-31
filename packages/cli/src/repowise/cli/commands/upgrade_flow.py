@@ -193,7 +193,9 @@ async def _run_upgrade(
     if cost_tracking_disabled():
         cost_tracker = CostTracker()
     else:
-        cost_tracker = CostTracker(session_factory=sf, repo_id=repo_id)
+        # buffered=True defers cost INSERTs to a single post-generation flush so
+        # they never contend with the generation writer (issue #326).
+        cost_tracker = CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
     provider._cost_tracker = cost_tracker
     generated_pages = await run_generation(
         repo_path=repo_path,
@@ -210,6 +212,9 @@ async def _run_upgrade(
         cost_tracker=cost_tracker,
         generation_config=config,
     )
+
+    # Flush buffered cost rows now generation is done (best-effort).
+    await cost_tracker.flush()
 
     # 6. Persist pages + a GenerationJob marker, then build the FTS index.
     async with get_session(sf) as session:

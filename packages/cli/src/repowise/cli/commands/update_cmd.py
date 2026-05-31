@@ -1029,6 +1029,12 @@ def update_command(
         )
     )
 
+    # Flush the buffered LLM cost rows now that generation is done — a single
+    # transaction outside the contended generation window (issue #326).
+    from repowise.cli.providers import flush_cost_tracker
+
+    flush_cost_tracker(cost_tracker)
+
     # Persist
     async def _persist() -> None:
         from repowise.cli.helpers import get_db_url_for_repo

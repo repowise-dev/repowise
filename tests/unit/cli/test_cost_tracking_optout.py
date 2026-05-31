@@ -8,8 +8,10 @@ the two guards that fix that:
 
   1. ``--no-cost-tracking`` / ``REPOWISE_NO_COST_TRACKING`` skip the second
      engine entirely, returning an in-memory tracker.
-  2. When tracking *is* enabled, the cost engine uses a short ``busy_timeout`` so
-     a contended insert fails fast and is dropped instead of stalling.
+  2. When tracking *is* enabled, the CLI tracker is *buffered*: per-call rows are
+     held in memory and flushed in one transaction after generation, so cost
+     writes never land inside the contended generation window. A short
+     ``busy_timeout`` bounds the one flush as a last-resort defense.
 """
 
 from __future__ import annotations
@@ -203,3 +205,126 @@ class TestContendedPersistIsBestEffort:
         assert count == 1
 
         await engine.dispose()
+
+
+async def _open_repo_engine(tmp_path: Path):
+    """Open an initialised repo DB and return (engine, session_factory, repo_id, db_path)."""
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+
+    db_path = tmp_path / ".repowise" / "wiki.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
+    engine = create_engine(db_url, busy_timeout_ms=_COST_TRACKER_BUSY_TIMEOUT_MS)
+    await init_db(engine)
+    sf = create_session_factory(engine)
+    async with get_session(sf) as session:
+        repo = await upsert_repository(session, name="repo", local_path=str(tmp_path))
+        repo_id = repo.id
+    return engine, sf, repo_id, db_path
+
+
+async def _count_cost_rows(sf) -> int:
+    import sqlalchemy as sa
+
+    from repowise.core.persistence import get_session
+
+    async with get_session(sf) as session:
+        return (await session.execute(sa.text("SELECT COUNT(*) FROM llm_costs"))).scalar()
+
+
+class TestBufferedTrackerDefersWrites:
+    @pytest.mark.asyncio
+    async def test_record_writes_nothing_until_flush(self, tmp_path: Path) -> None:
+        """The whole point of the fix: a buffered ``record()`` performs NO DB
+        write, so nothing can contend with the generation writer. Rows only
+        land on ``flush()`` — in a single transaction."""
+        engine, sf, repo_id, _ = await _open_repo_engine(tmp_path)
+        tracker = CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
+
+        for _ in range(5):
+            await tracker.record(
+                model="deepseek-v4-flash",
+                input_tokens=100,
+                output_tokens=50,
+                operation="doc_generation",
+            )
+
+        # Nothing written yet — all five rows are buffered in memory.
+        assert await _count_cost_rows(sf) == 0
+        assert tracker.session_tokens == 5 * 150  # live accounting still works
+
+        written = await tracker.flush()
+        assert written == 5
+        assert await _count_cost_rows(sf) == 5
+
+        # Flush is idempotent — buffer is drained.
+        assert await tracker.flush() == 0
+        assert await _count_cost_rows(sf) == 5
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_buffered_flush_succeeds_after_writer_releases(self, tmp_path: Path) -> None:
+        """Even if a writer is held for the *entire* generation window, buffered
+        records accumulate with zero contention and the post-generation flush
+        (run after the writer releases) persists every row."""
+        engine, sf, repo_id, db_path = await _open_repo_engine(tmp_path)
+        tracker = CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
+
+        blocker = sqlite3.connect(db_path)
+        blocker.execute("BEGIN IMMEDIATE")  # hold the write lock during "generation"
+        try:
+            for _ in range(3):
+                # Must not block or raise — buffered records never touch the DB.
+                await tracker.record(
+                    model="deepseek-v4-flash",
+                    input_tokens=10,
+                    output_tokens=10,
+                    operation="doc_generation",
+                )
+            assert await _count_cost_rows(sf) == 0
+        finally:
+            blocker.rollback()  # generation done → writer released
+            blocker.close()
+
+        assert await tracker.flush() == 3
+        assert await _count_cost_rows(sf) == 3
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_flush_is_noop_for_in_memory_tracker(self) -> None:
+        tracker = CostTracker()  # no session_factory
+        await tracker.record(
+            model="deepseek-v4-flash",
+            input_tokens=10,
+            output_tokens=10,
+            operation="doc_generation",
+        )
+        assert await tracker.flush() == 0
+
+    def test_flush_cost_tracker_helper_drives_flush(self, tmp_path: Path) -> None:
+        """The sync ``flush_cost_tracker`` helper persists buffered rows from
+        Click's synchronous context and never raises."""
+        import asyncio
+
+        from repowise.cli.providers import flush_cost_tracker
+
+        engine, sf, repo_id, _ = asyncio.run(_open_repo_engine(tmp_path))
+        tracker = CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
+        asyncio.run(
+            tracker.record(
+                model="deepseek-v4-flash",
+                input_tokens=10,
+                output_tokens=10,
+                operation="doc_generation",
+            )
+        )
+        assert flush_cost_tracker(tracker) == 1
+        assert asyncio.run(_count_cost_rows(sf)) == 1
+        asyncio.run(engine.dispose())

@@ -55,7 +55,10 @@ async def make_cost_tracker(repo_path: Path, repo_name: str) -> CostTracker:
         repo_name=repo_name,
         busy_timeout_ms=_COST_TRACKER_BUSY_TIMEOUT_MS,
     )
-    return CostTracker(session_factory=sf, repo_id=repo_id)
+    # buffered=True defers every per-call INSERT to a single ``flush()`` after
+    # generation, so cost writes never contend with the generation writer
+    # (issue #326). Call ``flush_cost_tracker`` once heavy DB work is done.
+    return CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
 
 
 def build_cost_tracker(
@@ -80,3 +83,18 @@ def build_cost_tracker(
         return run_async(make_cost_tracker(repo_path, repo_name))
     except Exception:
         return CostTracker()
+
+
+def flush_cost_tracker(cost_tracker: CostTracker) -> int:
+    """Persist any buffered cost rows from a synchronous CLI context.
+
+    Call once generation (and any other LLM work) is done. Best-effort — never
+    raises into the caller; a contended or failed flush drops the rows. Returns
+    the number of rows persisted (0 for in-memory / disabled trackers).
+    """
+    from repowise.cli.helpers import run_async
+
+    try:
+        return run_async(cost_tracker.flush())
+    except Exception:
+        return 0
