@@ -157,6 +157,7 @@ async def run_pipeline(
     cost_tracker: Any | None = None,
     generation_config: Any | None = None,
     existing_kg_fingerprint: str | None = None,
+    on_page_ready: Any | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -483,6 +484,7 @@ async def run_pipeline(
             dead_code_report=dead_code_report,
             decision_report=decision_report,
             external_systems=external_systems,
+            on_page_ready=on_page_ready,
         )
 
     # ---- Knowledge Graph LLM enrichment (layer naming + tour) -----------------

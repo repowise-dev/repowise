@@ -38,6 +38,7 @@ async def run_generation(
     dead_code_report: Any | None = None,
     decision_report: Any | None = None,
     external_systems: list[dict] | None = None,
+    on_page_ready: Any | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -128,6 +129,7 @@ async def run_generation(
         dead_code_report=dead_code_report,
         decision_report=decision_report,
         external_systems=external_systems,
+        on_page_ready=on_page_ready,
     )
 
     # Onboarding summary — count generated slots and surface which ones

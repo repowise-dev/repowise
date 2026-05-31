@@ -59,6 +59,7 @@ class _GenerationRun:
         dead_code_report: Any | None,
         decision_report: Any | None,
         external_systems: list[dict] | None,
+        on_page_ready: Callable[[GeneratedPage], None] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -70,6 +71,12 @@ class _GenerationRun:
         self.repo_name = repo_name
         self.job_system = job_system
         self.on_page_done = on_page_done
+        # Fired with the full GeneratedPage the instant it completes (in
+        # addition to on_page_done, which only gets the page_type). Lets a
+        # caller persist/stream pages incrementally — e.g. the hosted indexer
+        # flushing pages.json per page so a budget cutoff yields partial docs
+        # instead of nothing. Optional + best-effort; never blocks generation.
+        self.on_page_ready = on_page_ready
         self.on_total_known = on_total_known
         self.on_subphase = on_subphase
         self.git_meta_map = git_meta_map
@@ -337,6 +344,14 @@ class _GenerationRun:
                     # Progress tick fires the moment the page is ready.
                     if self.on_page_done is not None:
                         self.on_page_done(result.page_type)
+                    # Hand the full page to a streaming sink (incremental
+                    # persistence). Best-effort: a sink error must not drop the
+                    # page or abort the level.
+                    if self.on_page_ready is not None:
+                        try:
+                            self.on_page_ready(result)
+                        except Exception as exc:  # noqa: BLE001
+                            log.debug("on_page_ready.failed", error=str(exc))
                     if self.vector_store is not None:
                         embed_items.append(_embed_item(result))
                 return result
