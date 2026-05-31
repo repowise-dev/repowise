@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.15.2] — 2026-05-31
+
+### Added
+- **`on_page_ready` streaming callback.** `run_pipeline` / `run_generation` / `PageGenerator.generate_all` now accept an optional `on_page_ready` callback, invoked with each page the moment it is generated (alongside the existing `on_page_done`, which only receives the page type). Lets callers persist or stream pages incrementally — e.g. flush pages to storage per page so a generation cut-off yields a partial-but-usable set rather than nothing. Additive and backward-compatible; best-effort (a sink error is logged and never aborts a run) (#328).
+
+---
+
 ## [0.15.1] — 2026-05-30
 
 ### Fixed
