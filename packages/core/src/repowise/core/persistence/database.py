@@ -40,32 +40,48 @@ from .models import Base
 # for large repos. SQLite blocks (doesn't busy-loop) so this is cheap.
 _SQLITE_BUSY_TIMEOUT_MS = 30000
 
-_SQLITE_PRAGMAS: tuple[tuple[str, str], ...] = (
-    ("journal_mode", "WAL"),
-    ("synchronous", "NORMAL"),
-    ("busy_timeout", str(_SQLITE_BUSY_TIMEOUT_MS)),
-    ("foreign_keys", "ON"),
-)
+
+def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
+    """Return the pragma list to apply to a SQLite connection."""
+    return (
+        ("journal_mode", "WAL"),
+        ("synchronous", "NORMAL"),
+        ("busy_timeout", str(busy_timeout_ms)),
+        ("foreign_keys", "ON"),
+    )
 
 
-def _apply_sqlite_pragmas(dbapi_connection: object, _connection_record: object) -> None:
-    """Apply WAL, busy_timeout, and FK pragmas on every new SQLite connection.
+def _make_pragma_listener(busy_timeout_ms: int):
+    """Build a ``connect`` event listener that applies our SQLite pragmas.
 
-    Registered as a ``connect`` event listener so it runs once per physical
-    connection, including the first one opened after the engine is created and
-    every reconnect afterward. WAL is a database-level setting that persists in
-    the file, but we re-issue it defensively in case the file was created by an
-    older repowise version, by ``alembic``, or by a third-party tool that left
-    journal_mode at the default ``delete``.
+    The listener is a closure so the ``busy_timeout`` can be tuned per engine.
+    Most engines use the default 30s headroom (needed for bulk graph-edge
+    writes), but short-lived best-effort writers — e.g. the cost tracker's
+    secondary engine — pass a small timeout so a contended write fails fast and
+    is dropped instead of stalling the primary writer for the full window
+    (issue #326).
     """
-    cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
-    try:
-        for name, value in _SQLITE_PRAGMAS:
-            # journal_mode returns the new mode and must be queried, not assigned,
-            # because in :memory: databases it silently downgrades to MEMORY.
-            cursor.execute(f"PRAGMA {name}={value}")
-    finally:
-        cursor.close()
+
+    def _apply_sqlite_pragmas(dbapi_connection: object, _connection_record: object) -> None:
+        """Apply WAL, busy_timeout, and FK pragmas on every new SQLite connection.
+
+        Registered as a ``connect`` event listener so it runs once per physical
+        connection, including the first one opened after the engine is created and
+        every reconnect afterward. WAL is a database-level setting that persists in
+        the file, but we re-issue it defensively in case the file was created by an
+        older repowise version, by ``alembic``, or by a third-party tool that left
+        journal_mode at the default ``delete``.
+        """
+        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        try:
+            for name, value in _sqlite_pragmas(busy_timeout_ms):
+                # journal_mode returns the new mode and must be queried, not assigned,
+                # because in :memory: databases it silently downgrades to MEMORY.
+                cursor.execute(f"PRAGMA {name}={value}")
+        finally:
+            cursor.close()
+
+    return _apply_sqlite_pragmas
 
 
 __all__ = [
@@ -159,6 +175,7 @@ def create_engine(
     # StaticPool is required for :memory: SQLite so all connections share the same DB.
     # Pass use_static_pool=True explicitly when creating in-memory test engines.
     use_static_pool: bool = False,
+    busy_timeout_ms: int | None = None,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
 
@@ -166,6 +183,11 @@ def create_engine(
         url:             Raw or async-prefixed database URL.  Defaults to SQLite.
         echo:            Log all SQL statements (useful for debugging).
         use_static_pool: Force StaticPool (required for in-memory SQLite tests).
+        busy_timeout_ms: Override the SQLite ``busy_timeout`` (milliseconds) for
+                         connections from this engine. Defaults to 30s. Pass a
+                         small value for best-effort secondary writers that must
+                         never stall the primary writer (issue #326). Ignored
+                         for non-SQLite backends.
     """
     db_url = get_db_url(url)
     is_sqlite = db_url.startswith("sqlite")
@@ -189,7 +211,8 @@ def create_engine(
     if is_sqlite:
         # The ``connect`` event fires for the underlying DBAPI connection, so we
         # listen on the sync engine that backs the AsyncEngine.
-        event.listen(engine.sync_engine, "connect", _apply_sqlite_pragmas)
+        timeout = busy_timeout_ms if busy_timeout_ms is not None else _SQLITE_BUSY_TIMEOUT_MS
+        event.listen(engine.sync_engine, "connect", _make_pragma_listener(timeout))
     return engine
 
 

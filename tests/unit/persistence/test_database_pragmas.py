@@ -47,6 +47,35 @@ async def test_file_sqlite_engine_sets_busy_timeout(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_busy_timeout_override_is_applied(tmp_path: Path) -> None:
+    """A custom ``busy_timeout_ms`` must reach the connection pragma so the
+    cost tracker's best-effort engine fails fast under contention instead of
+    blocking the full 30s default window (issue #326)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}"
+    engine = create_engine(db_url, busy_timeout_ms=2000)
+    try:
+        await init_db(engine)
+        timeout = await _read_pragma(engine, "busy_timeout")
+        assert int(timeout) == 2000
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_default_busy_timeout_unchanged(tmp_path: Path) -> None:
+    """Without an override the engine keeps the 30s default — the headroom that
+    legitimate bulk graph-edge writes rely on."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}"
+    engine = create_engine(db_url)
+    try:
+        await init_db(engine)
+        timeout = await _read_pragma(engine, "busy_timeout")
+        assert int(timeout) == 30000
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_file_sqlite_engine_enforces_foreign_keys(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'wiki.db'}"
     engine = create_engine(db_url)
@@ -71,7 +100,9 @@ async def test_concurrent_writers_do_not_lock(tmp_path: Path) -> None:
         await init_db(engine)
         # Seed one row so the second writer has something to update.
         async with engine.begin() as conn:
-            await conn.execute(text("CREATE TABLE IF NOT EXISTS t (k INTEGER PRIMARY KEY, v INTEGER)"))
+            await conn.execute(
+                text("CREATE TABLE IF NOT EXISTS t (k INTEGER PRIMARY KEY, v INTEGER)")
+            )
             await conn.execute(text("INSERT INTO t (k, v) VALUES (1, 0)"))
     finally:
         await engine.dispose()
