@@ -63,13 +63,13 @@ answer quality** ([benchmarks ↓](#benchmarks)).
 repowise runs once, builds everything, then keeps it in sync on every commit.
 Each layer is queryable from the CLI, the MCP tools, and the local dashboard.
 
-| Layer | What it gives you | Unique? |
+| Layer | What it gives you | Edge |
 |---|---|---|
-| **◈ Graph** | tree-sitter dependency graph across 15 languages · two-tier file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank / centrality / execution flows · framework-aware route→handler edges | Table stakes |
-| **◈ Git** | hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · contributor profiles · module health · reviewer suggestions | Rare |
-| **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) | Table stakes |
-| **◈ Decisions** | architectural decisions mined from **8 sources**, evidence-backed (verified / fuzzy / unverified), linked to graph nodes, connected by `supersedes`/`refines`/`conflicts_with` edges, tracked for staleness | **Nobody else** |
-| **★ Code Health** | **25 deterministic biomarkers**, 1–10 score per file · defect-calibrated weights · coverage ingestion · trend alerts · refactoring targets · **zero LLM, <30s** | **Our moat ↓** |
+| **◈ Graph** | tree-sitter dependency graph across 15 languages · two-tier file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank / centrality / execution flows · framework-aware route→handler edges | A real graph most tools never build |
+| **◈ Git** | hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · contributor profiles · module health · reviewer suggestions | Behavioral signals static analysis can't see |
+| **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) | Stays current — rebuilt every commit |
+| **◈ Decisions** | architectural decisions mined from **8 sources**, evidence-backed (verified / fuzzy / unverified), linked to graph nodes, connected by `supersedes`/`refines`/`conflicts_with` edges, tracked for staleness | **★ Captured nowhere else** |
+| **★ Code Health** | **25 deterministic biomarkers**, 1–10 score per file · defect-calibrated weights · coverage ingestion · trend alerts · refactoring targets · **zero LLM, <30s** | **★ Defect-validated — our edge ↓** |
 
 Full deep-dive on every layer (graph, git, docs, decisions, hooks, auto-sync,
 dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTELLIGENCE_LAYERS.md)**
@@ -78,8 +78,8 @@ dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTEL
 
 ## ★ Code Health — the layer nobody else nails
 
-Graph and wiki layers now have competition. **Code health is where repowise is
-unique** — and we can prove it predicts real bugs.
+Code health is repowise's deepest differentiator — the one layer with no real
+equivalent, and **the only one we can prove predicts real bugs**.
 
 repowise scores **every file 1–10** from **25 deterministic biomarkers** —
 McCabe complexity, deep nesting, brain methods, class cohesion (LCOM4), god
