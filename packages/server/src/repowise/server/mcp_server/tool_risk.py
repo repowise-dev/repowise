@@ -21,10 +21,15 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_dicts_by_key,
+    filter_path_list,
+    filter_rows_by_attr,
+    is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -102,6 +107,7 @@ def _compute_impact_surface(
     target: str,
     reverse_deps: dict[str, set[str]],
     node_meta: dict[str, Any],
+    exclude_spec: Any = None,
 ) -> list[dict]:
     """Find the top 3 most critical modules that depend on this file."""
     # BFS up to 2 hops through reverse dependencies
@@ -131,6 +137,7 @@ def _compute_impact_surface(
             }
         )
     ranked.sort(key=lambda x: -x["pagerank"])
+    ranked = filter_dicts_by_key(ranked, "file_path", exclude_spec)
     return ranked[:3]
 
 
@@ -197,6 +204,7 @@ async def _assess_one_target(
     import_links: dict[str, set[str]],
     reverse_deps: dict[str, set[str]],
     node_meta: dict[str, Any],
+    exclude_spec: Any = None,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -230,6 +238,7 @@ async def _assess_one_target(
             target,
             reverse_deps,
             node_meta,
+            exclude_spec,
         )
         result_data["test_gap"] = await _check_test_gap(session, repo_id, target)
         result_data["security_signals"] = await _get_security_signals(session, repo_id, target)
@@ -248,15 +257,19 @@ async def _assess_one_target(
         reverse=True,
     )[:5]
     import_related = import_links.get(target, set())
-    co_changes = [
-        {
-            "file_path": p.get("file_path", p.get("path", "")),
-            "count": p.get("co_change_count", p.get("count", 0)),
-            "last_co_change": p.get("last_co_change"),
-            "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
-        }
-        for p in partners_sorted
-    ]
+    co_changes = filter_dicts_by_key(
+        [
+            {
+                "file_path": p.get("file_path", p.get("path", "")),
+                "count": p.get("co_change_count", p.get("count", 0)),
+                "last_co_change": p.get("last_co_change"),
+                "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
+            }
+            for p in partners_sorted
+        ],
+        "file_path",
+        exclude_spec,
+    )
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
@@ -268,7 +281,7 @@ async def _assess_one_target(
     risk_type = _classify_risk_type(meta, dep_count)
 
     # --- Impact surface ---
-    impact_surface = _compute_impact_surface(target, reverse_deps, node_meta)
+    impact_surface = _compute_impact_surface(target, reverse_deps, node_meta, exclude_spec)
 
     # Phase 2: diff size & change magnitude
     lines_added = getattr(meta, "lines_added_90d", 0) or 0
@@ -380,6 +393,10 @@ async def get_risk(
     if repo == "all":
         return _unsupported_repo_all("get_risk")
     ctx = await _resolve_repo_context(repo)
+    exclude_spec = _get_exclude_spec(ctx.path)
+    targets = filter_path_list(targets, exclude_spec)
+    if changed_files:
+        changed_files = filter_path_list(changed_files, exclude_spec)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         repo_id = repository.id
@@ -417,6 +434,7 @@ async def get_risk(
                     import_links,
                     reverse_deps,
                     node_meta,
+                    exclude_spec,
                 )
                 for t in targets
             ]
@@ -433,7 +451,9 @@ async def get_risk(
             .order_by(GitMetadata.churn_percentile.desc())
             .limit(len(targets) + 5)
         )
-        all_hotspots = res.scalars().all()
+        all_hotspots = filter_rows_by_attr(
+            list(res.scalars().all()), "file_path", exclude_spec
+        )
         global_hotspots = [
             {
                 "file_path": h.file_path,
@@ -580,10 +600,23 @@ async def get_risk(
             if len(partners) > 3:
                 r["co_change_partners"] = partners[:3]
 
+        def _as_path(entry: Any) -> str | None:
+            if isinstance(entry, str):
+                return entry
+            if isinstance(entry, dict):
+                return (
+                    entry.get("file_path")
+                    or entry.get("path")
+                    or entry.get("file")
+                    or entry.get("missing_partner")
+                    or entry.get("partner")
+                )
+            return None
+
         # ``pr_blast_radius`` is the analyzer's own payload — preserve it for
-        # callers that want the full picture, but truncate the noisy lists so
-        # we stay well under the 25k-token transport ceiling on PRs that touch
-        # many files. The directive below is what the agent should read first.
+        # callers that want the full picture, but drop excluded paths and
+        # truncate the noisy lists so we stay well under the 25k-token transport
+        # ceiling on PRs that touch many files.
         trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
         for key, cap in (
             ("transitive_affected", 15),
@@ -592,7 +625,12 @@ async def get_risk(
             ("recommended_reviewers", 5),
         ):
             value = trimmed_blast.get(key)
-            if isinstance(value, list) and len(value) > cap:
+            if not isinstance(value, list):
+                continue
+            if exclude_spec:
+                value = [e for e in value if not is_excluded(_as_path(e), exclude_spec)]
+                trimmed_blast[key] = value
+            if len(value) > cap:
                 trimmed_blast[key] = value[:cap]
                 trimmed_blast[f"{key}_truncated_total"] = len(value)
         response["pr_blast_radius"] = trimmed_blast
@@ -600,22 +638,19 @@ async def get_risk(
         # Directive: 3 short lists the agent can read in one glance. Each
         # entry is a file path (string), never a dossier. Designed to answer
         # "what should I do about this PR" in three lines.
-        def _as_path(entry: Any) -> str | None:
-            if isinstance(entry, str):
-                return entry
-            if isinstance(entry, dict):
-                return entry.get("file_path") or entry.get("path") or entry.get("file")
-            return None
 
-        will_break = [
-            p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p
-        ][:5]
-        missing_cochanges = [
-            p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p
-        ][:3]
-        missing_tests = [p for p in (_as_path(e) for e in trimmed_blast.get("test_gaps", [])) if p][
-            :3
-        ]
+        will_break = filter_path_list(
+            [p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p],
+            exclude_spec,
+        )[:5]
+        missing_cochanges = filter_path_list(
+            [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
+            exclude_spec,
+        )[:3]
+        missing_tests = filter_path_list(
+            [p for p in (_as_path(e) for e in trimmed_blast.get("test_gaps", [])) if p],
+            exclude_spec,
+        )[:3]
 
         # Governance risk — bounded query over changed_files (small set).
         governance_risk: list[dict[str, Any]] = []

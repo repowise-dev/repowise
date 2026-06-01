@@ -14,10 +14,12 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _is_workspace_mode,
     _resolve_all_contexts,
     _resolve_repo_context,
+    filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -113,7 +115,9 @@ async def get_dead_code(
                     DeadCodeFinding.status == "open",
                 )
                 all_result = await session.execute(all_query)
-                repo_findings = list(all_result.scalars().all())
+                repo_findings = filter_rows_by_attr(
+                    list(all_result.scalars().all()), "file_path", _get_exclude_spec(ctx.path)
+                )
 
                 finding_paths = list({f.file_path for f in repo_findings})
                 git_meta_map: dict[str, Any] = {}

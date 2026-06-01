@@ -15,9 +15,11 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_all_contexts,
     _resolve_repo_context,
+    filter_dicts_by_key,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -256,6 +258,8 @@ async def search_codebase(
                     select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
                 )
                 git_map = {g.file_path: g for g in git_res.scalars().all()}
+
+        output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
         for item in output:
             # Freshness boost: recently-active files rank higher

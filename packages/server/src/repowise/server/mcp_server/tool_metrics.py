@@ -19,9 +19,11 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -67,7 +69,8 @@ async def get_graph_metrics(
 
         # Try exact lookup first
         node = await get_graph_node(session, repo_id, target)
-        if node is None:
+        node_path = node.node_id if node and node.node_type == "file" else getattr(node, "file_path", None)
+        if node is None or is_excluded(node_path, _get_exclude_spec(ctx.path)):
             return {
                 "target": target,
                 "error": (

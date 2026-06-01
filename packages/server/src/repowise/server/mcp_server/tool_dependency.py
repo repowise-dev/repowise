@@ -14,9 +14,12 @@ from repowise.core.persistence.models import (
     GraphNode,
 )
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_graph_nodes,
+    is_excluded,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 
@@ -37,6 +40,10 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
     if repo == "all":
         return _unsupported_repo_all("get_dependency_path")
     ctx = await _resolve_repo_context(repo)
+    exclude_spec = _get_exclude_spec(ctx.path)
+    for _p in (source, target):
+        if is_excluded(_p, exclude_spec):
+            return {"error": f"'{_p}' is excluded by exclude_patterns."}
 
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
@@ -53,7 +60,7 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
                 GraphNode.repository_id == repository.id,
             )
         )
-        nodes = node_result.scalars().all()
+        nodes = filter_graph_nodes(list(node_result.scalars().all()), exclude_spec)
 
     try:
         import networkx as nx
@@ -64,8 +71,15 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
             "explanation": "networkx not available for path queries",
         }
 
+    # Build the graph only from surviving nodes/edges so shortest paths, common
+    # ancestors, shared neighbors, and bridges never route through excluded files.
+    allowed = {n.node_id for n in nodes} if exclude_spec else None
     graph = nx.DiGraph()
     for e in edges:
+        if allowed is not None and (
+            e.source_node_id not in allowed or e.target_node_id not in allowed
+        ):
+            continue
         graph.add_edge(
             e.source_node_id,
             e.target_node_id,

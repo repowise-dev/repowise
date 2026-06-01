@@ -28,10 +28,13 @@ from repowise.core.persistence.models import (
 )
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _is_workspace_mode,
     _resolve_all_contexts,
     _resolve_repo_context,
+    filter_graph_nodes,
+    filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -197,6 +200,7 @@ async def get_overview(repo: str | None = None) -> dict:
         return await _workspace_overview()
 
     ctx = await _resolve_repo_context(repo)
+    exclude_spec = _get_exclude_spec(ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
@@ -238,14 +242,17 @@ async def get_overview(repo: str | None = None) -> dict:
                 GraphNode.is_test == False,  # noqa: E712
             )
         )
-        entry_nodes = [
-            n
-            for n in result.scalars().all()
-            if not any(
-                seg in n.node_id.lower()
-                for seg in ("fixture", "test_data", "testdata", "sample_repo")
-            )
-        ]
+        entry_nodes = filter_graph_nodes(
+            [
+                n
+                for n in result.scalars().all()
+                if not any(
+                    seg in n.node_id.lower()
+                    for seg in ("fixture", "test_data", "testdata", "sample_repo")
+                )
+            ],
+            exclude_spec,
+        )
 
         # Phase 4: repo-wide git health summary
         git_res = await session.execute(
@@ -253,7 +260,9 @@ async def get_overview(repo: str | None = None) -> dict:
                 GitMetadata.repository_id == repository.id,
             )
         )
-        all_git = git_res.scalars().all()
+        all_git = filter_rows_by_attr(
+            list(git_res.scalars().all()), "file_path", exclude_spec
+        )
 
         git_health: dict[str, Any] = {}
         if all_git:
@@ -345,7 +354,7 @@ async def get_overview(repo: str | None = None) -> dict:
                     GraphNode.node_type == "file",
                 )
             )
-            all_nodes = node_result.scalars().all()
+            all_nodes = filter_graph_nodes(list(node_result.scalars().all()), exclude_spec)
         else:
             node_result = await session.execute(
                 select(GraphNode).where(
@@ -353,7 +362,7 @@ async def get_overview(repo: str | None = None) -> dict:
                     GraphNode.is_test == False,  # noqa: E712
                 )
             )
-            all_nodes = node_result.scalars().all()
+            all_nodes = filter_graph_nodes(list(node_result.scalars().all()), exclude_spec)
 
         # Group file nodes by community_id
         community_groups: dict[int, list[GraphNode]] = defaultdict(list)

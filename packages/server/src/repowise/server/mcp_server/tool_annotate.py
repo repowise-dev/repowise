@@ -11,9 +11,11 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    is_excluded,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 
@@ -38,6 +40,8 @@ async def annotate_file(
     if repo == "all":
         return _unsupported_repo_all("annotate_file")
     ctx = await _resolve_repo_context(repo)
+    if is_excluded(target, _get_exclude_spec(ctx.path)):
+        return {"target": target, "error": f"'{target}' is excluded by exclude_patterns."}
 
     from repowise.core.persistence.models import Page
 

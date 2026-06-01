@@ -26,9 +26,12 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_dicts_by_key,
+    is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -132,8 +135,10 @@ async def get_callers_callees(
         repo_id = repository.id
 
         # Resolve symbol
+        exclude_spec = _get_exclude_spec(ctx.path)
         node = await _resolve_symbol_node(session, repo_id, symbol_id)
-        if node is None:
+        node_path = node.node_id if node and node.node_type == "file" else getattr(node, "file_path", None)
+        if node is None or is_excluded(node_path, exclude_spec):
             return {
                 "symbol_id": symbol_id,
                 "error": (
@@ -192,6 +197,10 @@ async def get_callers_callees(
             callers.append(entry)
         else:
             callees.append(entry)
+
+    # Drop callers/callees that live in excluded files.
+    callers = filter_dicts_by_key(callers, "file", exclude_spec)
+    callees = filter_dicts_by_key(callees, "file", exclude_spec)
 
     # Sort by confidence DESC, then by name
     callers.sort(key=lambda x: (-x.get("confidence", 0), x.get("name", "")))

@@ -38,9 +38,11 @@ from sqlalchemy import select
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import symbol_hint as _symbol_hint
@@ -319,7 +321,7 @@ async def get_symbol(
         repository = await _get_repo(session)
         row = await _resolve_symbol(session, repository.id, symbol_id)
 
-    if row is None:
+    if row is None or is_excluded(getattr(row, "file_path", None), _get_exclude_spec(ctx.path)):
         return {
             "symbol_id": symbol_id,
             "error": (

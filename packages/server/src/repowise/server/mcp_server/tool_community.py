@@ -19,9 +19,11 @@ from repowise.core.persistence.crud import (
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_graph_nodes,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -102,8 +104,13 @@ async def get_community(
         members_list: list[dict[str, Any]] = []
         member_count = 0
         if include_members:
-            members = await get_community_members(
-                session, repo_id, community_id, limit=member_limit
+            members = filter_graph_nodes(
+                list(
+                    await get_community_members(
+                        session, repo_id, community_id, limit=member_limit
+                    )
+                ),
+                _get_exclude_spec(ctx.path),
             )
             member_count = len(members)
             for m in members:

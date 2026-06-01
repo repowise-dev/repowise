@@ -420,3 +420,71 @@ def _compute_alignment(
         "stale_count": len(stale),
         "sibling_coverage": round(sibling_coverage, 2) if sibling_coverage is not None else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-repo exclude_patterns filtering (issue 5 of #296)
+#
+# Excluded files are skipped at ingest time, but rows may predate an
+# exclude_patterns change, so MCP tools filter their results at query time too.
+# ---------------------------------------------------------------------------
+
+
+def _get_exclude_spec(repo_path: "Path | str") -> "Any":
+    """Compile the repo's ``exclude_patterns`` into a PathSpec, or None."""
+    import pathspec
+
+    from repowise.core.repo_config import load_repo_config
+
+    patterns = load_repo_config(repo_path).get("exclude_patterns") or []
+    if not patterns:
+        return None
+    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+
+
+def is_excluded(path: "str | None", spec: "Any") -> bool:
+    """True if *path* matches *spec* (None spec or path -> not excluded)."""
+    return bool(spec is not None and path and spec.match_file(path))
+
+
+def filter_rows_by_attr(rows: list, attr: str, spec: "Any") -> list:
+    """Shape A: drop ORM rows whose ``attr`` path is excluded."""
+    if not spec:
+        return rows
+    return [r for r in rows if not is_excluded(getattr(r, attr, None), spec)]
+
+
+def filter_graph_nodes(nodes: list, spec: "Any") -> list:
+    """Shape B: file nodes match on ``node_id``, symbol nodes on ``file_path``."""
+    if not spec:
+        return nodes
+    out = []
+    for n in nodes:
+        path = n.node_id if getattr(n, "node_type", None) == "file" else n.file_path
+        if is_excluded(path, spec):
+            continue
+        out.append(n)
+    return out
+
+
+def filter_dicts_by_key(items: list, key: str, spec: "Any") -> list:
+    """Shape C: drop result dicts whose ``key`` path is excluded."""
+    if not spec:
+        return items
+    return [d for d in items if not is_excluded(d.get(key), spec)]
+
+
+def filter_path_list(paths: "list | None", spec: "Any") -> list:
+    """Shape D: filter a list of path strings (None -> [])."""
+    if not paths:
+        return []
+    if not spec:
+        return list(paths)
+    return [p for p in paths if not is_excluded(p, spec)]
+
+
+def filter_embedded_path_ids(ids: list, spec: "Any") -> list:
+    """Shape E: ids look like ``"path::Name"``; match on the file portion."""
+    if not spec:
+        return ids
+    return [i for i in ids if not is_excluded(i.split("::", 1)[0], spec)]

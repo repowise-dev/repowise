@@ -24,9 +24,12 @@ from repowise.server.mcp_server._graph_utils import (
     resolve_trace_communities,
 )
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_embedded_path_ids,
+    is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -86,6 +89,14 @@ async def get_execution_flows(
             for n in top_nodes:
                 entry_nodes.append((n, _ep_score(n)))
 
+        exclude_spec = _get_exclude_spec(ctx.path)
+        if exclude_spec:
+            entry_nodes = [
+                (n, s)
+                for (n, s) in entry_nodes
+                if not is_excluded(n.file_path or n.node_id, exclude_spec)
+            ]
+
         if not entry_nodes:
             return {
                 "total_entry_points": 0,
@@ -101,6 +112,10 @@ async def get_execution_flows(
             trace = await bfs_trace(
                 session, repo_id, ep_node.node_id, max_depth, node_cache
             )
+            # Drop excluded files reached downstream so they don't leak via the
+            # trace (entry-point filtering above doesn't cover BFS descendants).
+            if exclude_spec:
+                trace = filter_embedded_path_ids(trace, exclude_spec)
 
             communities_visited, crosses = await resolve_trace_communities(
                 session, repo_id, trace, node_cache

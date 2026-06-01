@@ -20,11 +20,14 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _build_origin_story,
     _compute_alignment,
+    _get_exclude_spec,
     _get_repo,
     _is_path,
     _resolve_all_contexts,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_path_list,
+    is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
@@ -124,7 +127,9 @@ async def get_why(
                         "id": d.id,
                         "title": d.title,
                         "staleness_score": d.staleness_score,
-                        "affected_files": json.loads(d.affected_files_json)[:5],
+                        "affected_files": filter_path_list(
+                            json.loads(d.affected_files_json), _get_exclude_spec(ctx.path)
+                        )[:5],
                     }
                     for d in stale[:10]
                 ],
@@ -145,6 +150,8 @@ async def get_why(
     # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
         ctx = await _resolve_repo_context(repo)
+        if is_excluded(query, _get_exclude_spec(ctx.path)):
+            return {"query": query, "error": f"'{query}' is excluded by exclude_patterns."}
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
             res = await session.execute(

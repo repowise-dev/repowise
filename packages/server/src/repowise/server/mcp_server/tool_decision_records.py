@@ -9,17 +9,25 @@ from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import DecisionRecord
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_path_list,
+    is_excluded,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 
 _VALID_ACTIONS = frozenset({"create", "update", "update_status", "delete", "list", "get"})
 
 
-def _serialize_decision(rec: DecisionRecord) -> dict[str, Any]:
-    """Convert a DecisionRecord ORM object to a plain dict."""
+def _serialize_decision(rec: DecisionRecord, spec: Any = None) -> dict[str, Any]:
+    """Convert a DecisionRecord ORM object to a plain dict.
+
+    When *spec* is given, affected_files / evidence_file pointing at excluded
+    files are dropped so excluded paths never surface in query results.
+    """
+    evidence_file = None if is_excluded(rec.evidence_file, spec) else rec.evidence_file
     return {
         "id": rec.id,
         "repository_id": rec.repository_id,
@@ -30,11 +38,11 @@ def _serialize_decision(rec: DecisionRecord) -> dict[str, Any]:
         "rationale": rec.rationale,
         "alternatives": json.loads(rec.alternatives_json),
         "consequences": json.loads(rec.consequences_json),
-        "affected_files": json.loads(rec.affected_files_json),
+        "affected_files": filter_path_list(json.loads(rec.affected_files_json), spec),
         "affected_modules": json.loads(rec.affected_modules_json),
         "tags": json.loads(rec.tags_json),
         "source": rec.source,
-        "evidence_file": rec.evidence_file,
+        "evidence_file": evidence_file,
         "confidence": rec.confidence,
         "staleness_score": rec.staleness_score,
         "superseded_by": rec.superseded_by,
@@ -117,6 +125,7 @@ async def update_decision_records(
     if repo == "all":
         return _unsupported_repo_all("update_decision_records")
     ctx = await _resolve_repo_context(repo)
+    exclude_spec = _get_exclude_spec(ctx.path)
 
     if action not in _VALID_ACTIONS:
         return {
@@ -155,7 +164,7 @@ async def update_decision_records(
             rec = await crud.get_decision(session, decision_id)
             if rec is None:
                 return {"error": f"Decision {decision_id} not found"}
-            return {"action": "get", "decision": _serialize_decision(rec)}
+            return {"action": "get", "decision": _serialize_decision(rec, exclude_spec)}
 
     # --- list ---
     if action == "list":
@@ -175,7 +184,7 @@ async def update_decision_records(
             return {
                 "action": "list",
                 "count": len(decisions),
-                "decisions": [_serialize_decision(d) for d in decisions],
+                "decisions": [_serialize_decision(d, exclude_spec) for d in decisions],
             }
 
     # --- update ---

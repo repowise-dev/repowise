@@ -16,7 +16,12 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import HealthFileMetric, HealthFinding
-from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
+from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
+    _get_repo,
+    _resolve_repo_context,
+    filter_rows_by_attr,
+)
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.core.registry import mcp_tool_registry as mcp
 
@@ -165,7 +170,12 @@ async def get_health(
         all_metrics_q = select(HealthFileMetric).where(
             HealthFileMetric.repository_id == repository.id
         )
-        all_metrics = list((await session.execute(all_metrics_q)).scalars().all())
+        exclude_spec = _get_exclude_spec(ctx.path)
+        all_metrics = filter_rows_by_attr(
+            list((await session.execute(all_metrics_q)).scalars().all()),
+            "file_path",
+            exclude_spec,
+        )
 
         if module_targets:
             module_set = set(module_targets)
@@ -192,14 +202,24 @@ async def get_health(
         if effective_targets:
             finding_q = finding_q.where(HealthFinding.file_path.in_(effective_targets))
         finding_q = finding_q.order_by(HealthFinding.health_impact.desc())
-        finding_rows = list((await session.execute(finding_q)).scalars().all())
+        finding_rows = filter_rows_by_attr(
+            list((await session.execute(finding_q)).scalars().all()),
+            "file_path",
+            exclude_spec,
+        )
 
         coverage_rows: list[Any] = []
         coverage_summary: dict[str, Any] = {}
         if "coverage" in include_set:
-            coverage_rows = await load_coverage_for_repo(
-                session, repository.id, file_paths=list(targets) if targets else None
+            coverage_rows = filter_rows_by_attr(
+                await load_coverage_for_repo(
+                    session, repository.id, file_paths=list(targets) if targets else None
+                ),
+                "file_path",
+                exclude_spec,
             )
+            # coverage_summary is a repo-wide stored aggregate, not recomputed
+            # here; the per-file rows above are exclude-filtered.
             coverage_summary = await get_coverage_summary(session, repository.id)
 
         snapshots: list[Any] = []

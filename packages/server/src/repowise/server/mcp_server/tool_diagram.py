@@ -14,9 +14,11 @@ from repowise.core.persistence.models import (
     Page,
 )
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_graph_nodes,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 
@@ -89,7 +91,7 @@ async def get_architecture_diagram(
                 else GraphNode.repository_id == repository.id,
             )
         )
-        nodes = result.scalars().all()
+        nodes = filter_graph_nodes(list(result.scalars().all()), _get_exclude_spec(ctx.path))
 
         result = await session.execute(
             select(GraphEdge).where(
@@ -100,8 +102,10 @@ async def get_architecture_diagram(
 
         node_ids = {n.node_id for n in nodes}
         pr_map = {n.node_id: n.pagerank for n in nodes}
+        # Keep only edges whose BOTH endpoints survived exclude filtering — an
+        # edge with one surviving endpoint would still render the excluded one.
         relevant_edges = sorted(
-            [e for e in edges if e.source_node_id in node_ids or e.target_node_id in node_ids],
+            [e for e in edges if e.source_node_id in node_ids and e.target_node_id in node_ids],
             key=lambda e: pr_map.get(e.source_node_id, 0.0),
             reverse=True,
         )
