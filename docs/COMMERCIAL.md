@@ -41,13 +41,13 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **Five intelligence layers** — Graph (tree-sitter AST across 14 languages, two-tier
+- **Five intelligence layers** — Graph (tree-sitter AST across 15 languages, two-tier
   dependency graph, call resolution, heritage extraction, Leiden communities,
   PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
   factor, significant commits, contributor profiles, module health), Documentation
   (LLM-generated wiki, freshness scoring, RAG search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
-  (fifteen deterministic biomarkers, 1–10 score per file, coverage ingestion, trend
+  (25 deterministic biomarkers, 1–10 score per file, coverage ingestion, trend
   alerts).
 - **Nine task-shaped MCP tools** — `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_why`, `get_dead_code`,
@@ -77,11 +77,11 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise treats **8 languages at Full tier** — Python, TypeScript, JavaScript, Java,
-Go, Rust, C++, and **C#** — with AST parsing, import resolution, named bindings, call
-resolution, heritage extraction, multi-project workspace resolvers, framework-aware
-edges, and per-language dynamic-hint extractors. A further 6 languages (C, Kotlin,
-Ruby, Swift, Scala, PHP) sit at Good tier.
+Repowise treats **9 languages at Full tier** — Python, TypeScript, JavaScript, Java,
+Kotlin, Go, Rust, C++, and **C#** — with AST parsing, import resolution, named
+bindings, call resolution, heritage extraction, multi-project workspace resolvers,
+framework-aware edges, and per-language dynamic-hint extractors. A further 5 languages
+(C, Ruby, Swift, Scala, PHP) sit at Good tier.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are
 worth calling out. For **.NET**, as one example:

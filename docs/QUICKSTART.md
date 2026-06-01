@@ -185,7 +185,7 @@ REPOWISE_API_URL=http://localhost:7337 npm run dev --workspace packages/web
 
 - **[User Guide](USER_GUIDE.md)** — full CLI reference, web UI features, MCP setup, common workflows, and troubleshooting
 - **[CLI Reference](CLI_REFERENCE.md)** — every command with every flag
-- **[MCP Tools](MCP_TOOLS.md)** — all 7 MCP tools with parameters and examples
+- **[MCP Tools](MCP_TOOLS.md)** — all 9 MCP tools with parameters and examples
 - **[Workspaces](WORKSPACES.md)** — multi-repo workspace setup and cross-repo intelligence
 - **[Auto-Sync](AUTO_SYNC.md)** — hooks, file watcher, webhooks, polling
 - **[Architecture](architecture/ARCHITECTURE.md)** — how repowise is built internally

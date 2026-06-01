@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-repowise exposes 7 tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Cursor, Cline, Windsurf) structured access to your codebase intelligence — dependency graph, git history, documentation, and architectural decisions.
+repowise exposes 9 tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Cursor, Cline, Windsurf) structured access to your codebase intelligence — dependency graph, git history, documentation, and architectural decisions.
 
 **Start the MCP server:**
 
@@ -20,10 +20,12 @@ repowise mcp --transport sse --port 7338 # for web clients
 | `get_overview` | Architecture summary | First call on any unfamiliar codebase |
 | `get_answer` | One-call RAG Q&A | First call on any code question |
 | `get_context` | Rich context for targets | Before reading or modifying code |
+| `get_symbol` | Raw source bytes for one symbol | When you need one function/class body |
 | `search_codebase` | Semantic search | Discovering code by topic |
 | `get_risk` | Modification risk | Before changing hotspot files |
 | `get_why` | Architectural decisions | Before structural changes |
 | `get_dead_code` | Unreachable code | Cleanup tasks |
+| `get_health` | Code-health biomarker scores | Before refactoring — find the worst files |
 
 ---
 
@@ -81,7 +83,7 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. |
-| `include` | list[string] | No | Additional data to include: `"source"` (symbol body), `"callers"` (who calls this), `"callees"` (what this calls), `"metrics"` (PageRank, centrality), `"community"` (cluster membership) |
+| `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this — symbol targets), `"callees"` (what this calls — symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only) |
 | `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
 
@@ -95,6 +97,36 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 get_context(targets=["src/auth/middleware.ts"])
 get_context(targets=["middleware", "api/routes", "payments"], include=["callers", "metrics"])
 get_context(targets=["src/auth"], compact=false, include=["community"])
+```
+
+---
+
+## `get_symbol`
+
+Raw source bytes for one indexed symbol with exact line bounds — cheaper and
+safer than `Read` + offset math. The only tool that returns actual source code.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `symbol_id` | string | Yes | Canonical `"path/to/file.py::SymbolName"` from `get_context`'s symbol list. Normalises `::` / `.` / `/` separators across languages. |
+| `context_lines` | int | No | Extra source lines before/after the symbol (0–50, default 0) |
+| `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
+
+**Returns:** The symbol's source bytes (bounded at ~400 lines), its exact start/end
+line numbers, kind, and a `truncated` flag. On a miss, returns an `error` with
+the closest matches.
+
+**When to use:** When you need the body of one function or class. Pipe the
+`symbol_id` straight from `get_context`'s symbol list. Deterministic resolution
+on overloads.
+
+**Example call:**
+
+```
+get_symbol(symbol_id="src/auth/service.py::AuthService")
+get_symbol(symbol_id="src/auth/service.py::login", context_lines=10)
 ```
 
 ---
@@ -205,13 +237,46 @@ get_dead_code(min_confidence=0.8, include_internals=true)
 
 ---
 
+## `get_health`
+
+Code-health biomarker scores — the same 25 deterministic biomarkers the
+`repowise health` CLI computes, exposed for agentic workflows. Zero LLM calls.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty → dashboard mode. |
+| `include` | list[string] | No | `"refactoring"` (rule-based suggestions), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"` |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+| `limit` | int | No | Max rows in the lowest-scoring file list (default 20, capped at 50) |
+
+**Returns:** Dashboard mode (no `targets`) returns repo-level KPIs (hotspot
+health, average health, worst performer), the lowest-scoring files, and a
+per-module NLOC-weighted rollup. Targeted mode returns per-file biomarker
+findings with severity and the score breakdown.
+
+**When to use:** Before refactoring — find the worst-scoring files and what to
+fix first. Pair with `get_risk` on hotspots.
+
+**Example calls:**
+
+```
+get_health()
+get_health(include=["refactoring"])
+get_health(targets=["src/api/server.py"])
+get_health(targets=["module:src.api"], include=["trend"])
+```
+
+---
+
 ## Workspace Mode
 
 In workspace mode (initialized with `repowise init .`), all tools accept an optional `repo` parameter:
 
 - **Omit `repo`** — queries the default (primary) repo
 - **`repo="backend"`** — targets a specific repo by alias
-- **`repo="all"`** — queries across all workspace repos (supported by `search_codebase`, `get_context`, `get_overview`)
+- **`repo="all"`** — queries across all workspace repos (supported by `search_codebase`, `get_context`, `get_overview`; not supported by `get_symbol`)
 
 The MCP server automatically enriches responses with cross-repo intelligence:
 - **Co-change partners** from other repos surfaced in `get_context` and `get_risk`
@@ -222,7 +287,7 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 
 ## Proactive Hooks (Complementary)
 
-In addition to the 7 MCP tools, `repowise init` installs Claude Code hooks that provide **passive, automatic** context enrichment:
+In addition to the 9 MCP tools, `repowise init` installs Claude Code hooks that provide **passive, automatic** context enrichment:
 
 - **PreToolUse** — every `Grep`/`Glob` call is enriched with graph context (symbols, importers, dependencies, git signals) at ~24ms latency
 - **PostToolUse** — after git commits, the agent is notified when the wiki is stale

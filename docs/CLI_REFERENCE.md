@@ -54,6 +54,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock` |
 | `--index-only` | Skip LLM generation. Only parse, build graph, and index git. Free. |
+| `--mode` | Pipeline depth: `standard` (default) or `fast` (graph + essential-git only — no per-file blame/co-change, no LLM — for very large repos; upgrade later with `update --full`). |
 | `--dry-run` | Show generation plan and cost estimate without running. |
 | `--test-run` | Generate docs for only the top 10 files (by PageRank). |
 | `--skip-tests` | Exclude test files from doc generation. |
@@ -261,9 +262,34 @@ repowise dead-code resolve <id>          # mark resolved / false positive
 
 ---
 
+### `repowise risk [REVSPEC]`
+
+Just-in-time change-risk scoring for a commit or diff range. Scores the defect
+risk of a change (0–10) from the same calibrated signals the code-health layer
+uses — no LLM calls. `REVSPEC` defaults to `HEAD`; pass a `base..head` range to
+score a whole branch / PR as one change.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--path` | Path to the git repository (default: current directory) |
+| `--ext` | Comma-separated file suffixes to count (e.g. `.py` or `.ts,.tsx`) |
+| `--format` | Output format: `table` (default) or `json` |
+
+```bash
+repowise risk                 # score HEAD
+repowise risk main..HEAD      # score a branch / PR range as one change
+repowise risk --ext .ts,.tsx  # restrict to specific suffixes
+```
+
+See [`docs/CHANGE_RISK.md`](./CHANGE_RISK.md) for the scoring model.
+
+---
+
 ### `repowise health [PATH]`
 
-Compute per-file code-health scores from twelve deterministic biomarkers (CCN, nesting, brain methods, duplication, untested hotspots, organizational risk). Zero LLM calls — pure Python over tree-sitter + git data. See [`docs/CODE_HEALTH.md`](./CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](./architecture/code-health.md) for the internals.
+Compute per-file code-health scores from 25 deterministic biomarkers (McCabe complexity, nesting, brain methods, LCOM4 cohesion, god classes, native clone detection, untested hotspots, coverage gradient, function/ownership/churn/change-entropy organizational risk, test-quality smells, and more). Zero LLM calls — pure Python over tree-sitter + git data. See [`docs/CODE_HEALTH.md`](./CODE_HEALTH.md) for the user guide and [`docs/architecture/code-health.md`](./architecture/code-health.md) for the internals.
 
 **Options:**
 
@@ -438,7 +464,7 @@ repowise mcp --transport stdio           # for Claude Code, Cursor, etc.
 repowise mcp --transport sse --port 7338 # for web clients
 ```
 
-See [MCP Tools](MCP_TOOLS.md) for all 7 exposed tools.
+See [MCP Tools](MCP_TOOLS.md) for all 9 exposed tools.
 
 ---
 
@@ -499,6 +525,24 @@ repowise doctor                          # auto-detects
 repowise doctor --repair                 # fix detected store mismatches
 repowise doctor --workspace              # every workspace repo
 repowise doctor --workspace --repair     # also drop dead entries / sync drift
+```
+
+---
+
+### `repowise delete [REPO_ID]`
+
+Delete a repository's index and all stored intelligence (wiki, graph, embeddings,
+git metadata). Does **not** touch your source files. Prompts for confirmation
+unless `--force` is passed.
+
+| Flag | Description |
+|------|-------------|
+| `--force` / `-f` | Skip the confirmation prompt |
+| `--path` / `-p` | Path to the repository directory |
+
+```bash
+repowise delete                          # delete the current repo's index (prompts)
+repowise delete <repo-id> --force        # delete a specific repo's index, no prompt
 ```
 
 ---

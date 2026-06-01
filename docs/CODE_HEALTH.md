@@ -1,6 +1,6 @@
 # Code Health
 
-Repowise computes a 1–10 health score for every file in your repo from twenty-four
+Repowise computes a 1–10 health score for every file in your repo from twenty-five
 deterministic biomarkers — McCabe complexity, deep nesting, brain methods,
 class cohesion (LCOM4), god classes, clone detection, untested hotspots,
 function-level churn, code-age volatility,

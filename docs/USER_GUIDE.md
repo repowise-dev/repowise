@@ -352,17 +352,19 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 | `--transport` | Protocol: `stdio` (default, for editors) or `sse` (for web clients) |
 | `--port` | Port for SSE transport (default: 7338) |
 
-**MCP tools exposed (7 tools):**
+**MCP tools exposed (9 tools):**
 
 | Tool | What it does |
 |------|-------------|
 | `get_overview` | Repository architecture summary, key modules, entry points, git health, community summary |
 | `get_answer` | One-call RAG: confidence-gated synthesis over the wiki, with cited 2–5 sentence answers and a per-repository question cache |
 | `get_context` | Complete context for files/modules/symbols — docs, ownership, decisions, freshness, community membership. Defaults to `compact=True`; pass `compact=False` for the full structure block and importer list. In workspace mode, accepts `repo` parameter. |
+| `get_symbol` | Raw source bytes for one indexed symbol with exact line bounds (cheaper/safer than `Read` + offset math) |
 | `search_codebase` | Semantic search over wiki with git freshness boosting. In workspace mode, searches across all repos. |
 | `get_risk` | Modification risk assessment — hotspot score, dependents, co-change partners, bus factor, blast radius, test gaps, 0–10 risk score |
 | `get_why` | Why code is structured the way it is — architectural decisions, git archaeology. Three modes: NL search, path-based, health dashboard. |
 | `get_dead_code` | Tiered dead code report grouped by confidence with cleanup impact estimates |
+| `get_health` | 25-biomarker code-health scores — dashboard KPIs + lowest-scoring files, or per-file findings; `include` for refactoring suggestions and trend alerts |
 
 In workspace mode, tools are workspace-aware — pass `repo="backend"` to target a specific repo or `repo="all"` to query across the entire workspace. The default repo is used when `repo` is omitted.
 
