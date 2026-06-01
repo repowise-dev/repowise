@@ -523,6 +523,25 @@ def save_config_partial(
     )
 
 
+def config_fingerprint(repo_path: Path) -> str:
+    """SHA-256 hex of ``.repowise/config.yaml`` + ``health-rules.json`` content.
+
+    Used by ``repowise update`` and ``repowise init`` to detect config changes
+    across runs without relying on filesystem timestamps. Missing files are
+    skipped, so an absent config still yields a stable hash.
+    """
+    import hashlib
+
+    rw_dir = get_repowise_dir(repo_path)
+    h = hashlib.sha256()
+    for name in ("config.yaml", "health-rules.json"):
+        p = rw_dir / name
+        if p.exists():
+            h.update(name.encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Provider resolution
 # ---------------------------------------------------------------------------

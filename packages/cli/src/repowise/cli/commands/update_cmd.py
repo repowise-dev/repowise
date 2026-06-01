@@ -495,7 +495,12 @@ def _persist_index_only_update(
                 console.print(f"[yellow]Graph nodes persist skipped: {exc}[/yellow]")
 
     run_async(_persist_index_only())
-    save_state(repo_path, {**state, "last_sync_commit": head})
+    from repowise.cli.helpers import config_fingerprint
+
+    save_state(
+        repo_path,
+        {**state, "last_sync_commit": head, "config_fingerprint": config_fingerprint(repo_path)},
+    )
     elapsed = time.monotonic() - start
     console.print(
         f"[green]Index-only update complete[/green] in {elapsed:.1f}s — "
@@ -525,6 +530,180 @@ def _render_update_report(
         console.print(
             f"[bold green]Updated {len(generated_pages)} pages in {elapsed:.1f}s[/bold green]"
         )
+
+
+def _git_metadata_to_dict(gm: Any) -> dict[str, Any]:
+    """Convert a GitMetadata ORM row to the dict format HealthAnalyzer expects."""
+    return {
+        "file_path": gm.file_path,
+        "commit_count_total": gm.commit_count_total,
+        "commit_count_90d": gm.commit_count_90d,
+        "commit_count_30d": gm.commit_count_30d,
+        "first_commit_at": gm.first_commit_at,
+        "last_commit_at": gm.last_commit_at,
+        "primary_owner_name": gm.primary_owner_name,
+        "primary_owner_email": gm.primary_owner_email,
+        "primary_owner_commit_pct": gm.primary_owner_commit_pct,
+        "top_authors_json": gm.top_authors_json,
+        "significant_commits_json": gm.significant_commits_json,
+        "co_change_partners_json": gm.co_change_partners_json,
+        "commit_categories_json": gm.commit_categories_json,
+        "is_hotspot": gm.is_hotspot,
+        "is_stable": gm.is_stable,
+        "churn_percentile": gm.churn_percentile,
+        "age_days": gm.age_days,
+        "commit_count_capped": gm.commit_count_capped,
+        "lines_added_90d": gm.lines_added_90d,
+        "lines_deleted_90d": gm.lines_deleted_90d,
+        "avg_commit_size": gm.avg_commit_size,
+        "recent_owner_name": gm.recent_owner_name,
+        "recent_owner_commit_pct": gm.recent_owner_commit_pct,
+        "bus_factor": gm.bus_factor,
+        "contributor_count": gm.contributor_count,
+        "original_path": gm.original_path,
+        "merge_commit_count_90d": gm.merge_commit_count_90d,
+        "temporal_hotspot_score": gm.temporal_hotspot_score,
+        "prior_defect_count": gm.prior_defect_count,
+        "change_entropy": gm.change_entropy,
+        "change_entropy_pct": gm.change_entropy_pct,
+    }
+
+
+def _run_full_health_rescore(
+    repo_path: Any,
+    cfg: dict,
+    exclude_patterns: list[str],
+    state: dict,
+    head: str | None,
+    curr_fingerprint: str,
+) -> None:
+    """Rebuild graph and re-run full health analysis when config changed.
+
+    Uses save_health_metrics / save_health_findings (full replace, not upsert)
+    so rows for newly-excluded files are removed. Loads GitMetadata from the DB
+    (so biomarkers keep accurate churn/ownership/co-change data) and removes
+    excluded rows both from the DB and the analyzer input.
+    """
+    import time
+
+    start = time.monotonic()
+    from pathlib import Path as PathlibPath
+
+    import pathspec
+
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
+    file_infos = list(traverser.traverse())
+
+    parser = ASTParser()
+    parsed_files: list = []
+    graph_builder = GraphBuilder(repo_path, exclude_patterns=exclude_patterns)
+    for fi in file_infos:
+        try:
+            source = PathlibPath(fi.abs_path).read_bytes()
+            parsed = parser.parse_file(fi, source)
+            parsed_files.append(parsed)
+            graph_builder.add_file(parsed)
+        except Exception:
+            pass
+    graph_builder.build()
+
+    exclude_spec = (
+        pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
+        if exclude_patterns
+        else None
+    )
+
+    async def _rescore() -> None:
+        from sqlalchemy import delete, select
+
+        from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.analysis.health import HealthAnalyzer
+        from repowise.core.analysis.health.config import HealthConfig
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+            init_db,
+            upsert_repository,
+        )
+        from repowise.core.persistence.crud import save_health_findings, save_health_metrics
+        from repowise.core.persistence.models import GitMetadata
+        from repowise.core.pipeline.persist import persist_graph_nodes
+
+        url = get_db_url_for_repo(repo_path)
+        engine = create_engine(url)
+        await init_db(engine)
+        sf = create_session_factory(engine)
+
+        async with get_session(sf) as session:
+            repo = await upsert_repository(
+                session, name=repo_path.name, local_path=str(repo_path)
+            )
+            repo_id = repo.id
+
+            gm_result = await session.execute(
+                select(GitMetadata).where(GitMetadata.repository_id == repo_id)
+            )
+            git_rows = list(gm_result.scalars().all())
+            excluded_git_paths = [
+                gm.file_path
+                for gm in git_rows
+                if exclude_spec is not None and exclude_spec.match_file(gm.file_path)
+            ]
+            if excluded_git_paths:
+                await session.execute(
+                    delete(GitMetadata).where(
+                        GitMetadata.repository_id == repo_id,
+                        GitMetadata.file_path.in_(excluded_git_paths),
+                    )
+                )
+                await session.flush()
+
+            git_meta_map = {
+                gm.file_path: _git_metadata_to_dict(gm)
+                for gm in git_rows
+                if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
+            }
+
+            analyzer = HealthAnalyzer(
+                graph_builder.graph(),
+                git_meta_map=git_meta_map,
+                parsed_files=parsed_files,
+            )
+            hcfg = HealthConfig.load(repo_path)
+            analyzer_config = (
+                hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
+                if (hcfg.disabled_biomarkers or hcfg.rules)
+                else None
+            )
+            report = analyzer.analyze(analyzer_config)
+
+            console.print(
+                f"Health re-score: [cyan]{len(parsed_files)} files[/cyan], "
+                f"[yellow]{len(report.findings)} findings[/yellow]"
+            )
+
+            await save_health_metrics(session, repo_id, report.metrics or [])
+            await save_health_findings(session, repo_id, list(report.findings or []))
+            await persist_graph_nodes(session, repo_id, graph_builder)
+
+    try:
+        run_async(_rescore())
+    except Exception as exc:
+        # Return without advancing the fingerprint so the next update retries.
+        console.print(f"[yellow]Health re-score failed: {exc}[/yellow]")
+        return
+
+    save_state(
+        repo_path,
+        {**state, "last_sync_commit": head, "config_fingerprint": curr_fingerprint},
+    )
+    elapsed = time.monotonic() - start
+    console.print(
+        f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -713,8 +892,19 @@ def update_command(
             "Run 'repowise init' there first, or pass --since <ref>." + hint
         )
 
-    if head and head == base_ref:
+    # A config.yaml / health-rules.json change warrants a full health re-score
+    # even when git is unchanged. A missing prior fingerprint is backfilled, not
+    # treated as a change. ``config_changed`` gates every "nothing to do" path.
+    from repowise.cli.helpers import config_fingerprint
+
+    prev_config_fp = state.get("config_fingerprint")
+    curr_config_fp = config_fingerprint(repo_path)
+    config_changed = prev_config_fp is not None and prev_config_fp != curr_config_fp
+
+    if head and head == base_ref and not config_changed:
         console.print("[green]Already up to date.[/green]")
+        if prev_config_fp is None and not dry_run:
+            save_state(repo_path, {**state, "config_fingerprint": curr_config_fp})
         return
 
     # --- Single-flight check ------------------------------------------------
@@ -785,9 +975,26 @@ def update_command(
     detector = ChangeDetector(repo_path)
     file_diffs = detector.get_changed_files(base_ref, head or "HEAD")
 
-    if not file_diffs:
+    if not file_diffs and not config_changed:
         console.print("[green]No changed files detected.[/green]")
-        save_state(repo_path, {**state, "last_sync_commit": head})
+        save_state(
+            repo_path,
+            {**state, "last_sync_commit": head, "config_fingerprint": curr_config_fp},
+        )
+        return
+
+    if config_changed:
+        # Full re-score (not the partial update) so unchanged files pick up the
+        # new rules/excludes instead of being left stale.
+        console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
+        if dry_run:
+            console.print(
+                "[yellow]Dry run — health would be re-scored. No changes made.[/yellow]"
+            )
+            return
+        cfg = load_config(repo_path)
+        exclude_patterns = list(cfg.get("exclude_patterns") or [])
+        _run_full_health_rescore(repo_path, cfg, exclude_patterns, state, head, curr_config_fp)
         return
 
     console.print(f"Changed files: [yellow]{len(file_diffs)}[/yellow]")
@@ -1230,8 +1437,11 @@ def update_command(
         pass  # Editor project-file refresh must never fail the update command
 
     # Update state
+    from repowise.cli.helpers import config_fingerprint
+
     state["last_sync_commit"] = head
     state["total_pages"] = state.get("total_pages", 0) + len(generated_pages)
+    state["config_fingerprint"] = config_fingerprint(repo_path)
     save_state(repo_path, state)
 
     # --- Roll forward to any commit that landed during this run ------------

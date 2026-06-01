@@ -198,6 +198,39 @@ class TestSaveConfigPartial:
         assert cfg["embedder"] == "minilm"
 
 
+class TestConfigFingerprint:
+    def test_config_fingerprint_detects_change(self, tmp_path):
+        """config_fingerprint returns a stable hash that changes with config."""
+        from repowise.cli.helpers import config_fingerprint
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        (rw_dir / "config.yaml").write_text("exclude_patterns: [.claude/]", encoding="utf-8")
+        (rw_dir / "health-rules.json").write_text(
+            '{"disabled_biomarkers": []}', encoding="utf-8"
+        )
+
+        fp1 = config_fingerprint(tmp_path)
+        assert isinstance(fp1, str)
+        assert len(fp1) == 64  # sha256 hex
+        assert config_fingerprint(tmp_path) == fp1
+
+        (rw_dir / "health-rules.json").write_text(
+            '{"disabled_biomarkers": ["ungoverned_hotspot"]}', encoding="utf-8"
+        )
+        assert config_fingerprint(tmp_path) != fp1
+
+    def test_config_fingerprint_missing_files(self, tmp_path):
+        """config_fingerprint handles missing config files gracefully."""
+        from repowise.cli.helpers import config_fingerprint
+
+        rw_dir = tmp_path / ".repowise"
+        rw_dir.mkdir()
+        fp = config_fingerprint(tmp_path)
+        assert isinstance(fp, str)
+        assert len(fp) == 64
+
+
 # ---------------------------------------------------------------------------
 # Update lock
 # ---------------------------------------------------------------------------

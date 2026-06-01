@@ -23,6 +23,7 @@ from repowise.cli.editor_setup import (
     write_editor_project_files,
 )
 from repowise.cli.helpers import (
+    config_fingerprint,
     console,
     ensure_repowise_dir,
     get_head_commit,
@@ -1344,6 +1345,10 @@ def _save_full_state_and_config(
         reasoning=resolved_reasoning,
     )
 
+    # Re-save state with the fingerprint now that config.yaml is written.
+    state["config_fingerprint"] = config_fingerprint(repo_path)
+    save_state(repo_path, state)
+
 
 def _show_completion(
     *,
@@ -2018,6 +2023,8 @@ def init_command(
             exclude_patterns=exclude_patterns if exclude_patterns else None,
             commit_limit=resolved_commit_limit if commit_limit is not None else None,
         )
+        # Fingerprint after config writes so the first update doesn't false-positive.
+        base_state["config_fingerprint"] = config_fingerprint(repo_path)
         save_state(repo_path, base_state)
 
     # ---- State + config (full mode only) ----

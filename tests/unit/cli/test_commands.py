@@ -152,3 +152,78 @@ class TestBuildFilteredChangedPaths:
         fds = [MagicMock(path="src/main.py"), MagicMock(path=".claude/config.yml")]
         result = _build_filtered_changed_paths(fds, [])
         assert result == ["src/main.py", ".claude/config.yml"]
+
+
+class TestGitMetadataToDict:
+    def test_converts_orm_row_to_dict(self):
+        from types import SimpleNamespace
+
+        from repowise.cli.commands.update_cmd import _git_metadata_to_dict
+
+        gm = SimpleNamespace(
+            file_path="src/main.py",
+            commit_count_total=42,
+            commit_count_90d=10,
+            commit_count_30d=3,
+            first_commit_at=None,
+            last_commit_at=None,
+            primary_owner_name="alice",
+            primary_owner_email="alice@example.com",
+            primary_owner_commit_pct=0.7,
+            top_authors_json="[]",
+            significant_commits_json="[]",
+            co_change_partners_json="[]",
+            commit_categories_json="{}",
+            is_hotspot=True,
+            is_stable=False,
+            churn_percentile=0.9,
+            age_days=100,
+            commit_count_capped=False,
+            lines_added_90d=120,
+            lines_deleted_90d=30,
+            avg_commit_size=15.0,
+            recent_owner_name="alice",
+            recent_owner_commit_pct=0.8,
+            bus_factor=2,
+            contributor_count=4,
+            original_path=None,
+            merge_commit_count_90d=1,
+            temporal_hotspot_score=0.8,
+            prior_defect_count=5,
+            change_entropy=0.42,
+            change_entropy_pct=0.6,
+        )
+
+        d = _git_metadata_to_dict(gm)
+        assert d["file_path"] == "src/main.py"
+        assert d["commit_count_total"] == 42
+        assert d["is_hotspot"] is True
+        assert d["bus_factor"] == 2
+        # Columns added by the newer health biomarkers must flow through too.
+        assert d["prior_defect_count"] == 5
+        assert d["change_entropy"] == 0.42
+        assert d["change_entropy_pct"] == 0.6
+
+
+class TestRescoreFailureFingerprint:
+    def test_failed_rescore_does_not_advance_fingerprint(self, tmp_path, monkeypatch):
+        """A failed re-score must not persist the new fingerprint, so the next
+        update retries instead of treating the config change as handled."""
+        import json
+
+        from repowise.cli.commands import update_cmd
+
+        def _boom(coro):
+            coro.close()  # avoid 'coroutine never awaited' warning
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(update_cmd, "run_async", _boom)
+        (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
+
+        update_cmd._run_full_health_rescore(
+            tmp_path, {}, [], {"last_sync_commit": "base"}, "head1", "NEWFP"
+        )
+
+        state_file = tmp_path / ".repowise" / "state.json"
+        if state_file.exists():
+            assert json.loads(state_file.read_text()).get("config_fingerprint") != "NEWFP"

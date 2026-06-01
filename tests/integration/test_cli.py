@@ -304,6 +304,88 @@ class TestUpdateIndexOnly:
         assert state1["last_sync_commit"] != base_commit
 
 
+class TestUpdateConfigChangeDetection:
+    def _state(self, repo):
+        import json
+
+        return json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+
+    def test_init_stores_fingerprint_and_update_detects_config_change(
+        self, runner, git_work_repo
+    ):
+        """init records a config_fingerprint; an update with no file changes
+        skips rescore when config is unchanged but triggers one when
+        health-rules.json changes (#296, issue 3)."""
+        r0 = runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+        assert self._state(git_work_repo).get("config_fingerprint")
+
+        # No new commits, unchanged config -> no rescore.
+        r1 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r1.exit_code == 0, r1.output
+        assert "Already up to date" in r1.output
+
+        # Change health-rules.json (not a git change) -> config-triggered rescore.
+        (git_work_repo / ".repowise" / "health-rules.json").write_text(
+            '{"disabled_biomarkers": ["ungoverned_hotspot"]}', encoding="utf-8"
+        )
+        r2 = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r2.exit_code == 0, r2.output
+        assert "Config files changed" in r2.output
+        assert "health re-score complete" in r2.output.lower()
+
+    def test_dry_run_does_not_rescore_or_advance_fingerprint(self, runner, git_work_repo):
+        """`update --dry-run` after a config change must not mutate state/DB."""
+        import json
+
+        runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        fp_before = self._state(git_work_repo)["config_fingerprint"]
+
+        (git_work_repo / ".repowise" / "health-rules.json").write_text(
+            '{"disabled_biomarkers": ["ungoverned_hotspot"]}', encoding="utf-8"
+        )
+        result = runner.invoke(
+            cli,
+            ["update", str(git_work_repo), "--index-only", "--dry-run"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert "complete" not in result.output.lower()
+        # Fingerprint must NOT advance, so a real update still re-scores later.
+        assert self._state(git_work_repo)["config_fingerprint"] == fp_before
+
+    def test_config_change_with_source_diffs_runs_full_rescore(self, runner, git_work_repo):
+        """A config change must take the full re-score path even when there are
+        also source-file commits (not the partial update)."""
+        runner.invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+
+        # New source commit AND a config change in the same update window.
+        (git_work_repo / "new_module.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        _git(["add", "-A"], git_work_repo)
+        _git(["commit", "-m", "add module"], git_work_repo)
+        (git_work_repo / ".repowise" / "health-rules.json").write_text(
+            '{"disabled_biomarkers": ["ungoverned_hotspot"]}', encoding="utf-8"
+        )
+
+        result = runner.invoke(
+            cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert result.exit_code == 0, result.output
+        assert "Config files changed" in result.output
+        assert "health re-score complete" in result.output.lower()
+
+
 class TestUpdatePreservesDeadCode:
     def test_single_file_update_preserves_unchanged_files(self, runner, git_work_repo):
         """A single-file re-index must not wipe the whole dead-code index;
