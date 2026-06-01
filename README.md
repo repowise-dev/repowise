@@ -2,7 +2,7 @@
 
 <a href="https://www.repowise.dev"><img src=".github/assets/banner.png" alt="repowise — the codebase intelligence layer for your AI coding agent" width="100%" /></a>
 
-<p align="center"><em>The codebase intelligence layer for your AI coding agent.</em></p>
+<p align="center"><em>The intelligence layer that gives your AI agent context, ownership, decisions — and a code-health score proven to predict real bugs.</em></p>
 
 <p align="center"><strong>Five intelligence layers · Nine MCP tools · 15 languages · Multi-repo workspaces · One <code>pip install</code></strong></p>
 
@@ -161,6 +161,25 @@ Full report: **[health-defect/BENCHMARK_REPORT.md →](https://github.com/repowi
 
 ---
 
+## Local dashboard
+
+`repowise serve` starts a full web UI alongside the MCP server — no separate
+setup.
+
+<img src=".github/assets/webui.gif" alt="repowise web UI" width="100%" />
+
+Highlights: **Chat** (natural-language Q&A) · **Docs** (wiki with Mermaid +
+graph sidebar) · **Graph** (interactive, 2,000+ nodes, community coloring, path
+finder) · **C4 Architecture** (Context → Containers → Components) · **Risk**
+(hotspots, ownership heatmap, module health, dead code, blast radius) ·
+**Contributors** (per-author profiles) · **Decisions** (evidence drawer,
+evolution timeline, decision-graph) · **Health** (biomarker scores, coverage,
+trends) · **Security** (local pattern scan) · **Costs** · **Workspace**
+(cross-repo contracts & co-changes). Full view-by-view list in
+[docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+
+---
+
 ## Supported languages
 
 **15 languages parsed to AST · 9 at the Full tier · framework-aware across all of them.**
@@ -281,25 +300,6 @@ diverges from live `.git/HEAD`.
 
 Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 ~30 greps+reads) and the full reference: **[docs/MCP_TOOLS.md →](docs/MCP_TOOLS.md)**
-
----
-
-## Local dashboard
-
-`repowise serve` starts a full web UI alongside the MCP server — no separate
-setup.
-
-<img src=".github/assets/webui.gif" alt="repowise web UI" width="100%" />
-
-Highlights: **Chat** (natural-language Q&A) · **Docs** (wiki with Mermaid +
-graph sidebar) · **Graph** (interactive, 2,000+ nodes, community coloring, path
-finder) · **C4 Architecture** (Context → Containers → Components) · **Risk**
-(hotspots, ownership heatmap, module health, dead code, blast radius) ·
-**Contributors** (per-author profiles) · **Decisions** (evidence drawer,
-evolution timeline, decision-graph) · **Health** (biomarker scores, coverage,
-trends) · **Security** (local pattern scan) · **Costs** · **Workspace**
-(cross-repo contracts & co-changes). Full view-by-view list in
-[docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 ---
 
