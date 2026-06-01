@@ -35,6 +35,27 @@ def save_mcp_config(repo_path: Path) -> Path:
     return config_path
 
 
+def _merge_server_entries(servers: dict, new_entry: dict) -> dict:
+    """Deep-merge *new_entry* server definitions into *servers* in place.
+
+    For each server key, the generated ``command``/``args``/``description``
+    overwrite the stored values (so path/command changes take effect), but any
+    other keys the user added to the entry — most importantly an ``env`` block
+    carrying BYOK provider keys — are preserved. A shallow ``servers.update()``
+    would replace the whole entry and silently wipe ``env`` on every
+    re-registration (``repowise init`` / ``update``). See issue #307.
+    """
+    for name, entry in new_entry.items():
+        current = servers.get(name)
+        if isinstance(current, dict) and isinstance(entry, dict):
+            merged_entry = dict(current)
+            merged_entry.update(entry)
+            servers[name] = merged_entry
+        else:
+            servers[name] = entry
+    return servers
+
+
 def save_root_mcp_config(repo_path: Path) -> Path:
     """Write .mcp.json at repo root for MCP clients that support discovery.
 
@@ -47,7 +68,7 @@ def save_root_mcp_config(repo_path: Path) -> Path:
     if config_path.exists():
         existing = load_existing_config(config_path)
         servers = dict(existing.get("mcpServers", {}))
-        servers.update(new_entry)
+        _merge_server_entries(servers, new_entry)
         existing["mcpServers"] = servers
         merged = existing
     else:
@@ -61,6 +82,10 @@ def merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
     """Merge *new_entry* into the mcpServers block of *config_path*.
 
     Creates the file if it doesn't exist. Returns True on success.
+
+    The per-server merge is deep: generated fields overwrite stored ones, but
+    user-added keys such as an ``env`` block are preserved across
+    re-registration (see :func:`_merge_server_entries`).
     """
     try:
         if config_path.exists():
@@ -70,7 +95,7 @@ def merge_mcp_entry(config_path: Path, new_entry: dict) -> bool:
             existing = {}
 
         servers = dict(existing.get("mcpServers", {}))
-        servers.update(new_entry)
+        _merge_server_entries(servers, new_entry)
         existing["mcpServers"] = servers
         config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return True

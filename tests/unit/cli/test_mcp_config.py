@@ -98,6 +98,64 @@ def test_merge_mcp_entry_rejects_invalid_existing_file(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Re-registration must not wipe user-added per-server keys (issue #307)
+# ---------------------------------------------------------------------------
+
+
+def test_merge_mcp_entry_preserves_user_env_block(tmp_path: Path) -> None:
+    """A user-added ``env`` block (BYOK keys) survives re-registration."""
+    config_path = tmp_path / "settings.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "repowise": {
+                        "command": "old-command",
+                        "args": ["stale"],
+                        "env": {"OPENAI_API_KEY": "sk-secret"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert mcp_config.merge_mcp_entry(config_path, _repowise_entry(tmp_path))
+
+    repowise = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]["repowise"]
+    # User env preserved...
+    assert repowise["env"] == {"OPENAI_API_KEY": "sk-secret"}
+    # ...while generated fields are refreshed to the current values.
+    assert repowise["command"] == "repowise"
+    assert repowise["args"][:2] == ["mcp", str(tmp_path.resolve()).replace("\\", "/")]
+
+
+def test_save_root_mcp_config_preserves_user_env_block(tmp_path: Path) -> None:
+    """``.mcp.json`` re-write keeps a user ``env`` block on the repowise entry."""
+    config_path = tmp_path / ".mcp.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "repowise": {
+                        "command": "old-command",
+                        "args": ["stale"],
+                        "env": {"DEEPSEEK_API_KEY": "dk-secret"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mcp_config.save_root_mcp_config(tmp_path)
+
+    repowise = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]["repowise"]
+    assert repowise["env"] == {"DEEPSEEK_API_KEY": "dk-secret"}
+    assert repowise["command"] == "repowise"
+
+
+# ---------------------------------------------------------------------------
 # install_claude_code_hooks — fresh installs
 # ---------------------------------------------------------------------------
 
