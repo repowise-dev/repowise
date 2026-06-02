@@ -314,6 +314,53 @@ class TestVersionHistory:
 
         assert isinstance(stored.created_at, datetime)
 
+    async def test_idempotent_reupsert_is_noop(self, persisted, sf):
+        """Re-upserting identical content/hash/model bumps nothing.
+
+        This is what makes incremental per-page flushing during generation safe
+        to combine with the end-of-run persist of the same pages: the second
+        write neither increments the version nor archives a PageVersion. A real
+        content change still snapshots + bumps as before.
+        """
+        from repowise.core.persistence.crud import upsert_page
+
+        repo_id = persisted["repo_id"]
+        pid = "idempotent-reupsert-probe"
+        fields = dict(
+            page_id=pid,
+            repository_id=repo_id,
+            page_type="file_page",
+            title="Probe",
+            content="stable content",
+            target_path="probe/a.py",
+            source_hash="hash-stable",
+            model_name="model-1",
+            provider_name="provider-1",
+        )
+
+        async with sf() as session:
+            await upsert_page(session, **fields)
+            await session.commit()
+        async with sf() as session:
+            await upsert_page(session, **fields)  # identical → no-op
+            await session.commit()
+
+        async with sf() as session:
+            stored = await get_page(session, pid)
+            versions = await get_page_versions(session, pid)
+        assert stored.version == 1
+        assert versions == []
+
+        # A genuine change still archives the prior state and bumps.
+        async with sf() as session:
+            await upsert_page(session, **{**fields, "content": "changed content"})
+            await session.commit()
+        async with sf() as session:
+            stored2 = await get_page(session, pid)
+            versions2 = await get_page_versions(session, pid)
+        assert stored2.version == 2
+        assert len(versions2) == 1
+
 
 # ---------------------------------------------------------------------------
 # Full-text search tests

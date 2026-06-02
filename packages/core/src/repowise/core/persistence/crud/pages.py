@@ -64,6 +64,23 @@ async def upsert_page(
     existing = existing_result.scalar_one_or_none()
 
     if existing is not None:
+        # Idempotent no-op: when the content, prompt hash and model are all
+        # unchanged, re-persisting must not bump the version or spawn a
+        # PageVersion snapshot. This makes the write safe to repeat — e.g. an
+        # incremental per-page flush during generation followed by the
+        # end-of-run persist of the same page — without inflating history.
+        if (
+            existing.content == content
+            and existing.source_hash == source_hash
+            and existing.model_name == model_name
+        ):
+            existing.summary = summary
+            existing.target_path = target_path
+            existing.freshness_status = freshness_status
+            existing.metadata_json = meta_json
+            await session.flush()
+            return existing
+
         # Archive the current state before overwriting
         snapshot = PageVersion(
             id=_new_uuid(),

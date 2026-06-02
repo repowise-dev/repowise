@@ -353,7 +353,8 @@ def _run_workspace_generation(
     from repowise.cli.cost_estimator import build_generation_plan, estimate_cost
     from repowise.cli.ui import RichProgressCallback
     from repowise.core.generation import GenerationConfig
-    from repowise.core.pipeline import run_generation
+
+    from ._generation_persist import run_generation_with_persistence
 
     # Build embedder + vector store
     embedder_impl: Any = build_embedder(embedder_name_resolved)
@@ -469,8 +470,9 @@ def _run_workspace_generation(
         gen_callback = RichProgressCallback(gen_progress, console)
 
         generated_pages = run_async(
-            run_generation(
+            run_generation_with_persistence(
                 repo_path=repo_path,
+                repo_name=result.repo_name,
                 parsed_files=result.parsed_files,
                 source_map=result.source_map,
                 graph_builder=result.graph_builder,
@@ -1257,8 +1259,9 @@ def _run_generation_phase(
         embedder_impl: Any = build_embedder(embedder_name_resolved)
         vector_store: Any = build_vector_store(repo_path, embedder_impl)
 
-        # Run generation via the pipeline's generation function
-        from repowise.core.pipeline import run_generation
+        # Run generation via the pipeline's generation function, wrapped so
+        # pages are reused + flushed incrementally (resume-friendly).
+        from ._generation_persist import run_generation_with_persistence
 
         with Progress(
             SpinnerColumn(),
@@ -1282,8 +1285,9 @@ def _run_generation_phase(
             provider._cost_tracker = cost_tracker
 
             generated_pages = run_async(
-                run_generation(
+                run_generation_with_persistence(
                     repo_path=repo_path,
+                    repo_name=result.repo_name,
                     parsed_files=result.parsed_files,
                     source_map=result.source_map,
                     graph_builder=result.graph_builder,
