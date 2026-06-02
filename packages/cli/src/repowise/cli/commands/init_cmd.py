@@ -487,6 +487,7 @@ class _WorkspaceCtx:
     resolved_reasoning: str
     embedder_name_resolved: str
     resolved_commit_limit: int
+    run_mode: str = "standard"
 
 
 @dataclass
@@ -510,6 +511,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
     from datetime import datetime
 
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
+    from repowise.core.pipeline.modes import OrchestratorMode
 
     console.print(
         f"  [{BRAND}][{idx}/{total}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name})..."
@@ -540,6 +542,11 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
                     exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
                     include_submodules=ctx.include_submodules,
                     generate_docs=False,
+                    mode=(
+                        OrchestratorMode.FAST
+                        if ctx.run_mode == "fast"
+                        else OrchestratorMode.STANDARD
+                    ),
                     progress=callback,
                     existing_kg_fingerprint=_prev_kg_fp,
                 )
@@ -775,6 +782,7 @@ def _workspace_init(
     onboarding: bool = True,
     coverage_pct: float | None = None,
     harvest_decisions: bool = True,
+    run_mode: str = "standard",
 ) -> None:
     """Multi-repo workspace initialization.
 
@@ -927,6 +935,7 @@ def _workspace_init(
         resolved_reasoning=resolved_reasoning,
         embedder_name_resolved=embedder_name_resolved,
         resolved_commit_limit=resolved_commit_limit,
+        run_mode=run_mode,
     )
 
     for i, repo in enumerate(selected, 1):
@@ -1275,6 +1284,31 @@ def _run_generation_phase(
     return False, cost_declined
 
 
+def _git_tier_for_run_mode(run_mode: str) -> str:
+    """Map a CLI run-mode to the git index tier it persisted.
+
+    Fast mode indexes the ESSENTIAL tier (no per-file blame / co-change);
+    standard mode indexes FULL. Recorded in state.json so ``--resume`` and
+    ``repowise update`` know which tier already exists on disk.
+    """
+    return "essential" if run_mode == "fast" else "full"
+
+
+def _effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) -> str:
+    """On ``--resume``, continue the git tier the prior run used.
+
+    A fast (ESSENTIAL-tier) run resumed *without* re-passing ``--mode fast``
+    would otherwise default to STANDARD and silently redo the expensive FULL
+    git indexing the first run deliberately skipped (issue #341). We restore
+    the persisted ``run_mode`` unless the user explicitly asked for fast on
+    the resume invocation (in which case fast already wins).
+    """
+    if not resume or run_mode == "fast":
+        return run_mode
+    prev = load_state(repo_path).get("run_mode")
+    return prev if prev in ("fast", "standard") else run_mode
+
+
 def _save_full_state_and_config(
     *,
     repo_path: Path,
@@ -1322,6 +1356,9 @@ def _save_full_state_and_config(
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name
     state["docs_enabled"] = True
+    # Full-mode docs runs always index the FULL git tier.
+    state["run_mode"] = "standard"
+    state["git_tier"] = "full"
     total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
     state["total_tokens"] = total_tokens
     if phase_timings:
@@ -1685,6 +1722,7 @@ def init_command(
             onboarding=onboarding,
             coverage_pct=coverage_pct,
             harvest_decisions=harvest_decisions,
+            run_mode=run_mode,
         )
         return
 
@@ -1698,6 +1736,13 @@ def init_command(
 
     # Suppress library/structlog output — progress bars are the only output needed.
     setup_logging_silence()
+
+    # On --resume, continue the prior run's git tier so a resumed fast index
+    # doesn't silently fall back to the expensive FULL tier (issue #341). Done
+    # before the interactive gate so a resume never re-prompts for the mode.
+    run_mode = _effective_run_mode_for_resume(repo_path, run_mode, resume)
+    if run_mode == "fast":
+        index_only = True
 
     # ---- Interactive mode (TTY, no explicit flags) ----
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only
@@ -2005,6 +2050,10 @@ def init_command(
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
     base_state["docs_enabled"] = not effective_index_only and provider is not None
+    # Record the git tier this run indexed so a later --resume continues the
+    # same tier instead of silently upgrading ESSENTIAL → FULL (issue #341).
+    base_state["run_mode"] = run_mode
+    base_state["git_tier"] = _git_tier_for_run_mode(run_mode)
     if phase_timings:
         base_state["phase_timings"] = phase_timings
     kg = getattr(result, "knowledge_graph_result", None)
