@@ -130,6 +130,12 @@ class PipelineResult:
     search_codebase). None when no store was configured (semantic dedup is
     then skipped; title dedup still runs)."""
 
+    index_persisted_incrementally: bool = False
+    """True when a ResumeController persisted (or rehydrated) the INDEX phase
+    during the run. The caller's final persist then skips the index portion —
+    it is already on disk — and writes only analysis + generation. False for
+    every non-resume caller, which persist the full result as before."""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -618,6 +624,9 @@ async def run_pipeline(
         ],
         external_systems=external_systems,
         vector_store=vector_store,
+        index_persisted_incrementally=(
+            resume_controller.index_persisted if resume_controller is not None else False
+        ),
     )
 
 

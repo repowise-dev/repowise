@@ -48,10 +48,20 @@ class ResumeController:
         self._resume = resume
         self._ledger = ResumeLedger(session_factory, repo_id)
         self._completed: set[ResumePhase] | None = None
+        # True once the INDEX phase is provably on disk — either freshly
+        # checkpointed this run or rehydrated from a prior run. The caller
+        # keys its "skip the index in the final persist" decision on this, so
+        # it must NEVER be True unless the index really was persisted (a
+        # best-effort checkpoint failure leaves it False → full persist).
+        self._index_persisted = False
 
     @property
     def repo_id(self) -> str:
         return self._repo_id
+
+    @property
+    def index_persisted(self) -> bool:
+        return self._index_persisted
 
     # -- skip decisions --------------------------------------------------------
 
@@ -88,6 +98,8 @@ class ResumeController:
         async with get_session(self._sf) as session:
             graph_builder = await rehydrate_graph_builder(session, self._repo_id, repo_path)
             git_meta_map = await rehydrate_git_meta_map(session, self._repo_id)
+        # The index is, by definition, already persisted (we just read it).
+        self._index_persisted = True
         return graph_builder, git_meta_map
 
     # -- checkpoints -----------------------------------------------------------
@@ -127,6 +139,7 @@ class ResumeController:
         except Exception as exc:
             logger.warning("resume_checkpoint_index_failed", error=str(exc))
             return
+        self._index_persisted = True
         await self._ledger.mark_completed(ResumePhase.INDEX)
         logger.info("resume_checkpoint_index", repo_id=self._repo_id)
 

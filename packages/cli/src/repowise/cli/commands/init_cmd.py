@@ -184,6 +184,35 @@ _build_embedder = build_embedder
 # ---------------------------------------------------------------------------
 
 
+async def _build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any, Any]:
+    """Create the repo row + a ResumeController bound to a fresh engine.
+
+    Returns ``(controller, engine)``. The caller runs the pipeline in the same
+    event loop and disposes the engine afterwards. The repository row is
+    created up front so the controller checkpoints against a real
+    ``Repository.id`` (not ``str(repo_path)``), and so an interrupted run
+    leaves a resumable, persisted index behind.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.pipeline.resume import ResumeController
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    await init_db(engine)
+    sf = create_session_factory(engine)
+    async with get_session(sf) as session:
+        repo_id = (
+            await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
+        ).id
+    return ResumeController(sf, repo_id, resume=resume), engine
+
+
 async def _persist_result(
     result: Any,
     repo_path: Path,
@@ -201,12 +230,22 @@ async def _persist_result(
         init_db,
         upsert_repository,
     )
-    from repowise.core.pipeline import persist_pipeline_result
+    from repowise.core.pipeline import (
+        persist_analysis,
+        persist_generation,
+        persist_pipeline_result,
+    )
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
     await init_db(engine)
     sf = create_session_factory(engine)
+
+    # When a ResumeController persisted the INDEX phase incrementally during
+    # the run, the graph + git + symbols are already on disk — write only the
+    # analysis + generation outputs here (avoids re-persisting a rehydrated
+    # graph and a redundant full index write).
+    index_done = bool(getattr(result, "index_persisted_incrementally", False))
 
     fts = None
     if result.generated_pages:
@@ -235,7 +274,11 @@ async def _persist_result(
                 existing = {}
             existing["tech_stack"] = result.tech_stack
             repo.settings_json = _json.dumps(existing)
-        await persist_pipeline_result(result, session, repo.id)
+        if index_done:
+            await persist_analysis(result, session, repo.id)
+            await persist_generation(result, session, repo.id)
+        else:
+            await persist_pipeline_result(result, session, repo.id)
 
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.
@@ -261,6 +304,20 @@ async def _persist_result(
     if fts is not None and result.generated_pages:
         for page in result.generated_pages:
             await fts.index(page.page_id, page.title, page.content)
+
+    # Stamp the analysis (+ generation) phases in the resume ledger now that
+    # they're persisted, so a future resume can skip them too.
+    if index_done:
+        from repowise.core.pipeline.resume import ResumeLedger, ResumePhase
+
+        async with get_session(sf) as _ls:
+            repo_id = (
+                await upsert_repository(_ls, name=result.repo_name, local_path=str(repo_path))
+            ).id
+        ledger = ResumeLedger(sf, repo_id)
+        await ledger.mark_completed(ResumePhase.ANALYSIS)
+        if result.generated_pages:
+            await ledger.mark_completed(ResumePhase.GENERATION)
 
     await engine.dispose()
 
@@ -1936,24 +1993,40 @@ def init_command(
             _prev_state.get("knowledge_graph", {}).get("fingerprint") if not force else None
         )
 
-        result = run_async(
-            run_pipeline(
-                repo_path,
-                commit_depth=resolved_commit_limit,
-                follow_renames=resolved_follow_renames,
-                skip_tests=skip_tests,
-                skip_infra=skip_infra,
-                exclude_patterns=exclude_patterns if exclude_patterns else None,
-                include_submodules=include_submodules,
-                generate_docs=False,
-                llm_client=llm_client,
-                concurrency=concurrency,
-                test_run=test_run,
-                mode=orchestrator_mode,
-                progress=callback,
-                existing_kg_fingerprint=_prev_kg_fp,
-            )
-        )
+        async def _index_with_resume() -> Any:
+            # Create the engine, session factory, and repository row *before*
+            # the pipeline (all in this one event loop) so the resume
+            # controller has a stable Repository.id to checkpoint against —
+            # fixing the old str(repo_path) FK wiring — and so an interrupt
+            # mid-run leaves a resumable, persisted index behind. Skipped on a
+            # dry run, which must not touch the database at all.
+            controller = None
+            engine = None
+            if not dry_run:
+                controller, engine = await _build_resume_controller(repo_path, resume=resume)
+            try:
+                return await run_pipeline(
+                    repo_path,
+                    commit_depth=resolved_commit_limit,
+                    follow_renames=resolved_follow_renames,
+                    skip_tests=skip_tests,
+                    skip_infra=skip_infra,
+                    exclude_patterns=exclude_patterns if exclude_patterns else None,
+                    include_submodules=include_submodules,
+                    generate_docs=False,
+                    llm_client=llm_client,
+                    concurrency=concurrency,
+                    test_run=test_run,
+                    mode=orchestrator_mode,
+                    progress=callback,
+                    existing_kg_fingerprint=_prev_kg_fp,
+                    resume_controller=controller,
+                )
+            finally:
+                if engine is not None:
+                    await engine.dispose()
+
+        result = run_async(_index_with_resume())
 
     # Surface per-phase timing data to the caller — both for the
     # state.json persistence below and for any future "profile" tooling
