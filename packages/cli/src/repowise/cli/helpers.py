@@ -496,8 +496,14 @@ def save_config_partial(
     *,
     exclude_patterns: list[str] | None = None,
     commit_limit: int | None = None,
+    **extra: Any,
 ) -> None:
     """Merge optional keys into ``.repowise/config.yaml``, preserving existing keys.
+
+    ``exclude_patterns`` / ``commit_limit`` are explicit for the common case;
+    any other config keys (e.g. ``enable_onboarding=False``) can be passed as
+    keyword arguments. ``None`` values are skipped so callers can forward
+    optional flags without clobbering existing keys.
 
     No scalar-only fallback like :func:`save_config`: it would silently drop
     ``exclude_patterns``, and PyYAML is a hard dependency anyway.
@@ -509,6 +515,7 @@ def save_config_partial(
         updates["exclude_patterns"] = exclude_patterns
     if commit_limit is not None:
         updates["commit_limit"] = commit_limit
+    updates.update({k: v for k, v in extra.items() if v is not None})
     if not updates:
         return
 
