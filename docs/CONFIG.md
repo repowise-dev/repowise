@@ -185,7 +185,14 @@ The `.repowise/.env` file is gitignored automatically.
 ## Exclude patterns
 
 repowise respects your `.gitignore` automatically (same `gitwildmatch` format git
-uses). On top of that, add extra patterns via `--exclude` / `-x`:
+uses). Like git, it reads **nested `.gitignore` files** too — a `.gitignore` in
+any subdirectory applies to that directory's contents. This matters for
+monorepos and yarn/npm workspaces, where a package keeps its own `.gitignore`
+excluding that package's build output (e.g. `dist/`, `coverage/`, generated
+bundles) — those exclusions are now honoured without duplicating them at the
+repo root.
+
+On top of that, add extra patterns via `--exclude` / `-x`:
 
 ```bash
 repowise init -x vendor/ -x "*.generated.ts" -x proto/ -x "**/*.pb.go"
@@ -193,7 +200,7 @@ repowise init -x vendor/ -x "*.generated.ts" -x proto/ -x "**/*.pb.go"
 
 Patterns are saved to `config.yaml` and applied on subsequent `update` runs. You
 can also create a `.repowiseIgnore` file (same gitignore syntax) at the repo root
-or in any subdirectory for more granular control.
+or in any subdirectory for more granular control without touching `.gitignore`.
 
 Built-in exclusions (always applied): `.git/`, `.repowise/`, `node_modules/`,
 `__pycache__/`, `*.pyc`, `.venv/`, binary files, lockfiles, and minified assets.

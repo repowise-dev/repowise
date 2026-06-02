@@ -2,8 +2,9 @@
 
 FileTraverser walks a repository tree and yields FileInfo objects for each
 source file that should be documented.  It respects:
-  1. .gitignore  (via pathspec)
-  2. .repowiseIgnore (same syntax, user overrides)
+  1. .gitignore  (via pathspec) — the repo-root file plus any nested
+     .gitignore in subdirectories (git reads one per directory, so does this)
+  2. .repowiseIgnore (same syntax, user overrides) — root and per-directory
   3. A hardcoded blocklist of dirs / file patterns
   4. Binary file detection
   5. File-size limit
@@ -218,8 +219,11 @@ class FileTraverser:
         )
         patterns = extra_exclude_patterns or []
         self._extra_exclude = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
-        # Per-directory .repowiseIgnore cache: absolute dir path -> PathSpec.
-        # Pre-seed root so it isn't read twice (we already have self._extra_ignore).
+        # Per-directory ignore cache: absolute dir path -> PathSpec built from
+        # that directory's nested .gitignore + .repowiseIgnore.
+        # Pre-seed root: its .gitignore is matched full-path via self._gitignore
+        # and its .repowiseIgnore via self._extra_ignore, so the root entry only
+        # needs the latter (avoids reading either file a second time).
         self._dir_ignore_cache: dict[str, pathspec.PathSpec] = {
             str(self.repo_root): self._extra_ignore,
         }
@@ -315,14 +319,26 @@ class FileTraverser:
                 yield dirpath_obj / filename
 
     def _get_dir_ignore(self, dirpath: Path) -> pathspec.PathSpec:
-        """Return the per-directory .repowiseIgnore spec, loading and caching on first access."""
+        """Return the per-directory ignore spec, loading and caching on first access.
+
+        Merges the directory's nested ``.gitignore`` and ``.repowiseIgnore``
+        (in that order) into one spec. Git applies a ``.gitignore`` to its own
+        directory's entries — not just the repo root — so a monorepo/workspace
+        package with its own ``.gitignore`` (e.g. ``frontend/.gitignore``
+        excluding ``storybook-static/``) is honoured. Patterns are matched
+        against the immediate child name (see ``_should_skip_dir`` /
+        ``_build_file_info``), consistent with the existing per-directory
+        ``.repowiseIgnore`` handling.
+        """
         key = str(dirpath)
         if key not in self._dir_ignore_cache:
-            ignore_file = dirpath / self._extra_ignore_filename
-            if ignore_file.exists():
-                lines = ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-            else:
-                lines = []
+            lines: list[str] = []
+            for name in (".gitignore", self._extra_ignore_filename):
+                ignore_file = dirpath / name
+                if ignore_file.exists():
+                    lines.extend(
+                        ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    )
             self._dir_ignore_cache[key] = pathspec.PathSpec.from_lines("gitwildmatch", lines)
         return self._dir_ignore_cache[key]
 

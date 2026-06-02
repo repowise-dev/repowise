@@ -267,6 +267,72 @@ class TestPerDirectoryrepowiseIgnore:
 
 
 # ---------------------------------------------------------------------------
+# Nested (per-directory) .gitignore
+# ---------------------------------------------------------------------------
+
+
+class TestNestedGitignore:
+    """Git reads a ``.gitignore`` in every directory, not just the repo root.
+    A workspace/monorepo package with its own ``.gitignore`` must be honoured.
+    """
+
+    def test_nested_gitignore_excludes_dir(self, tmp_path: Path) -> None:
+        # Mirrors the #341 case: a yarn-workspace `frontend/` with its own
+        # .gitignore excluding generated bundle output.
+        frontend = tmp_path / "frontend"
+        frontend.mkdir()
+        (frontend / ".gitignore").write_text("storybook-static/\n")
+        (frontend / "storybook-static").mkdir()
+        (frontend / "storybook-static" / "bundle.js").write_text("/* minified */")
+        (frontend / "app.ts").write_text("const x = 1;")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("app.ts" in p for p in paths)
+        assert not any("storybook-static" in p for p in paths)
+
+    def test_nested_gitignore_excludes_files(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / ".gitignore").write_text("*.generated.ts\n")
+        (pkg / "real.ts").write_text("const x = 1;")
+        (pkg / "types.generated.ts").write_text("export type T = string;")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("real.ts" in p for p in paths)
+        assert not any("types.generated.ts" in p for p in paths)
+
+    def test_nested_gitignore_does_not_affect_sibling_dirs(self, tmp_path: Path) -> None:
+        a = tmp_path / "a"
+        a.mkdir()
+        (a / ".gitignore").write_text("artifacts/\n")
+        (a / "artifacts").mkdir()
+        (a / "artifacts" / "out.py").write_text("pass")
+        b = tmp_path / "b"
+        (b / "artifacts").mkdir(parents=True)
+        (b / "artifacts" / "keep.py").write_text("pass")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("a/artifacts" in p for p in paths)
+        # b/artifacts is not excluded — different directory, no .gitignore there
+        assert any("keep.py" in p for p in paths)
+
+    def test_nested_gitignore_and_repowise_ignore_merge(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / ".gitignore").write_text("bundles/\n")
+        (pkg / ".repowiseIgnore").write_text("*.snap\n")
+        (pkg / "bundles").mkdir()
+        (pkg / "bundles" / "bundle.js").write_text("// built")
+        (pkg / "comp.tsx").write_text("<div />")
+        (pkg / "comp.snap").write_text("snapshot")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("comp.tsx" in p for p in paths)
+        assert not any("bundles" in p for p in paths)
+        assert not any("comp.snap" in p for p in paths)
+
+
+# ---------------------------------------------------------------------------
 # Monorepo detection
 # ---------------------------------------------------------------------------
 
