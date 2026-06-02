@@ -11,7 +11,9 @@ import pytest
 from repowise.core.analysis.health.duplication import (
     DEFAULT_MIN_LINES,
     DEFAULT_WINDOW_TOKENS,
+    DuplicationLimits,
     detect_clones,
+    looks_minified,
     tokenize_file,
 )
 from repowise.core.analysis.health.duplication.rabin_karp import (
@@ -151,3 +153,112 @@ def test_tokenize_file_returns_empty_for_unsupported_language(language: str):
     # An obviously invalid language code yields an empty stream rather
     # than raising.
     assert tokenize_file("not-a-language", b"x = 1\n") == []
+
+
+# ---------------------------------------------------------------------------
+# Resource guards (issue #341 — minified bundles wedged the health phase)
+# ---------------------------------------------------------------------------
+
+
+def test_looks_minified_flags_long_average_line():
+    limits = DuplicationLimits()
+    # 10 lines, each ~300 bytes → average well over the threshold.
+    minified = b"\n".join(b"a" * 300 for _ in range(10))
+    assert looks_minified(minified, limits) is True
+
+
+def test_looks_minified_flags_single_giant_line():
+    limits = DuplicationLimits()
+    # Many short lines but one monster line (a bundled IIFE) trips it.
+    src = b"const x = 1\n" * 50 + b"y" * 5000 + b"\n"
+    assert looks_minified(src, limits) is True
+
+
+def test_looks_minified_passes_normal_source():
+    limits = DuplicationLimits()
+    src = b"\n".join(b"    return a + b + c" for _ in range(40))
+    assert looks_minified(src, limits) is False
+
+
+def test_looks_minified_handles_empty_source():
+    assert looks_minified(b"", DuplicationLimits()) is False
+
+
+def test_detect_clones_skips_minified_file_but_keeps_real_clones(tmp_path: Path):
+    """A checked-in minified bundle must be skipped without preventing
+    genuine clone detection between the other files."""
+    body = "\n".join(
+        [
+            "def doit(x, y, z):",
+            "    if x:",
+            "        a = x + y",
+            "    else:",
+            "        a = x - y",
+            "    return a + x + y + z",
+            "",
+        ]
+    )
+    a = _write(tmp_path, "a.py", body)
+    b = _write(tmp_path, "b.py", body.replace("doit", "twin"))
+    # One giant single-line "bundle" that previously blew up the detector.
+    bundle = _write(tmp_path, "bundle.min.js", "var a=1;" * 50_000 + "\n")
+    parsed = [
+        _pf("a.py", str(a)),
+        _pf("b.py", str(b)),
+        _pf("bundle.min.js", str(bundle), language="javascript"),
+    ]
+    report = detect_clones(parsed, window_tokens=20, min_lines=4)
+    # Genuine clone between a.py and b.py still found.
+    assert report.pairs
+    assert {report.pairs[0].file_a, report.pairs[0].file_b} == {"a.py", "b.py"}
+    # The bundle was skipped, not tokenized.
+    assert report.diagnostics["skipped_minified"] >= 1
+    assert "bundle.min.js" not in report.duplication_pct
+
+
+def test_detect_clones_caps_degenerate_bucket(tmp_path: Path):
+    """Many identical files produce one oversized hash bucket; it must be
+    dropped instead of triggering the O(k^2) all-pairs explosion."""
+    snippet = "def f():\n    return 1 + 2 + 3 + 4 + 5\n"
+    parsed = []
+    for i in range(12):
+        p = _write(tmp_path, f"f{i}.py", snippet)
+        parsed.append(_pf(f"f{i}.py", str(p)))
+    limits = DuplicationLimits(max_bucket_windows=4, time_budget_secs=0)
+    report = detect_clones(parsed, window_tokens=4, min_lines=1, limits=limits)
+    assert report.diagnostics["degenerate_buckets"] >= 1
+    # Oversized buckets are skipped wholesale → no pairs emitted.
+    assert report.pairs == []
+
+
+def test_detect_clones_respects_per_file_token_cap(tmp_path: Path):
+    body = "def doit(x, y, z):\n    return x + y + z + x + y + z\n"
+    a = _write(tmp_path, "a.py", body)
+    b = _write(tmp_path, "b.py", body.replace("doit", "twin"))
+    parsed = [_pf("a.py", str(a)), _pf("b.py", str(b))]
+    # Cap below the token count of these small files → both skipped.
+    limits = DuplicationLimits(max_tokens_per_file=5)
+    report = detect_clones(parsed, window_tokens=4, min_lines=1, limits=limits)
+    assert report.diagnostics["skipped_token_cap"] == 2
+    assert report.pairs == []
+
+
+def test_detect_clones_window_budget_stops_collection(tmp_path: Path):
+    body = "def doit(x, y, z):\n    return x + y + z + x + y + z\n"
+    parsed = []
+    for i in range(5):
+        p = _write(tmp_path, f"f{i}.py", body)
+        parsed.append(_pf(f"f{i}.py", str(p)))
+    limits = DuplicationLimits(max_total_windows=3)
+    report = detect_clones(parsed, window_tokens=4, min_lines=1, limits=limits)
+    assert report.diagnostics["window_budget_hit"] is True
+
+
+def test_detect_clones_reports_diagnostics_on_normal_run(tmp_path: Path):
+    a = _write(tmp_path, "a.py", "def f():\n    return 1\n")
+    parsed = [_pf("a.py", str(a))]
+    report = detect_clones(parsed, window_tokens=DEFAULT_WINDOW_TOKENS, min_lines=DEFAULT_MIN_LINES)
+    # Diagnostics are always populated, even when nothing tripped.
+    assert report.diagnostics["files_considered"] == 1
+    assert report.diagnostics["degenerate_buckets"] == 0
+    assert report.diagnostics["timed_out"] is False
