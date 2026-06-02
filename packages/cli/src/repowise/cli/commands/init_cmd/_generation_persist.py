@@ -75,9 +75,7 @@ async def run_generation_with_persistence(
     sf = create_session_factory(engine)
 
     async with get_session(sf) as session:
-        repo_id = (
-            await upsert_repository(session, name=repo_name, local_path=str(repo_path))
-        ).id
+        repo_id = (await upsert_repository(session, name=repo_name, local_path=str(repo_path))).id
 
     prior_pages: dict[str, Any] = {}
     if reuse_prior_pages:

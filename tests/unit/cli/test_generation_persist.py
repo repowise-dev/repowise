@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from repowise.cli.commands._generation_persist import run_generation_with_persistence
+from repowise.cli.commands.init_cmd._generation_persist import run_generation_with_persistence
 from repowise.core.generation.models import GeneratedPage
 from repowise.core.persistence import (
     create_engine,
