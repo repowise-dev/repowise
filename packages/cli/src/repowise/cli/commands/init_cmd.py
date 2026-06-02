@@ -2030,7 +2030,20 @@ def init_command(
                 if engine is not None:
                     await engine.dispose()
 
-        result = run_async(_index_with_resume())
+        # Make the long synchronous index/analysis phases interruptible: the
+        # first Ctrl-C unwinds them cleanly (the INDEX checkpoint already on
+        # disk is reused on the next --resume), a second forces a hard quit.
+        from repowise.core.cancellation import PipelineCancelled, cancellation_scope
+
+        try:
+            with cancellation_scope():
+                result = run_async(_index_with_resume())
+        except (PipelineCancelled, KeyboardInterrupt):
+            console.print(
+                "\n[yellow]Interrupted.[/] Indexed work so far has been saved — "
+                "run [bold]repowise init --resume[/] to continue where it stopped."
+            )
+            return
 
     # Surface per-phase timing data to the caller — both for the
     # state.json persistence below and for any future "profile" tooling

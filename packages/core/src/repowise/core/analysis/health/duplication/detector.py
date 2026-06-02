@@ -30,6 +30,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.cancellation import check_cancelled
+
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
 from .rabin_karp import WindowHash, index_by_hash, rolling_hashes
 from .tokenizer import Token, tokenize_file
@@ -257,6 +259,7 @@ def _collect_windows(
     all_windows: list[WindowHash] = []
 
     for pf in parsed_files:
+        check_cancelled()
         diag.files_considered += 1
         path = pf.file_info.path
         language = pf.file_info.language
@@ -320,7 +323,9 @@ def _pairs_from_buckets(
         if len(windows) > limits.max_bucket_windows:
             diag.degenerate_buckets += 1
             continue
-        # Check the clock occasionally (cheap) rather than per-pair.
+        # Bail promptly on Ctrl-C, and check the clock occasionally (cheap)
+        # rather than per-pair.
+        check_cancelled()
         if deadline is not None and (i & 0x3FF) == 0 and time.monotonic() > deadline:
             diag.timed_out = True
             break
