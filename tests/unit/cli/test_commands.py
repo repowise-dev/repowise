@@ -221,9 +221,72 @@ class TestRescoreFailureFingerprint:
         (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
 
         update_cmd._run_full_health_rescore(
-            tmp_path, {}, [], {"last_sync_commit": "base"}, "head1", "NEWFP"
+            tmp_path, [], {"last_sync_commit": "base"}, "head1", "NEWFP"
         )
 
         state_file = tmp_path / ".repowise" / "state.json"
         if state_file.exists():
             assert json.loads(state_file.read_text()).get("config_fingerprint") != "NEWFP"
+
+
+class TestBuildRepoGraph:
+    """The shared traverse/parse/build helper used by both the incremental
+    rebuild and the config-triggered re-score paths."""
+
+    def test_reports_parse_skips_instead_of_swallowing(self, tmp_path, monkeypatch):
+        """Files that fail to parse are skipped and surfaced as a count."""
+        from repowise.cli.commands import update_cmd
+        from repowise.core.ingestion import ASTParser
+
+        (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "bad.py").write_text("y = 2\n", encoding="utf-8")
+
+        real_parse = ASTParser.parse_file
+
+        def _maybe_raise(self, fi, source):
+            if fi.path.endswith("bad.py"):
+                raise ValueError("boom")
+            return real_parse(self, fi, source)
+
+        monkeypatch.setattr(ASTParser, "parse_file", _maybe_raise)
+
+        printed: list[str] = []
+
+        class _FakeConsole:
+            def print(self, *args, **kwargs):
+                printed.append(" ".join(str(a) for a in args))
+
+        monkeypatch.setattr(update_cmd, "console", _FakeConsole())
+
+        parsed_files, _src, _gb, _struct, _count = update_cmd._build_repo_graph(tmp_path, [])
+
+        paths = [pf.file_info.path for pf in parsed_files]
+        assert any(p.endswith("good.py") for p in paths)
+        assert not any(p.endswith("bad.py") for p in paths)
+        assert any("Skipped" in line for line in printed)
+
+    def test_includes_framework_edge_step(self, tmp_path, monkeypatch):
+        """The shared path always runs the framework-aware synthetic edge step,
+        so the re-score graph matches the incremental rebuild graph."""
+        from repowise.cli.commands import update_cmd
+        from repowise.core.ingestion import GraphBuilder
+
+        (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "repowise.core.generation.editor_files.tech_stack.detect_tech_stack",
+            lambda _p: [],
+        )
+
+        calls: list = []
+        real_add = GraphBuilder.add_framework_edges
+
+        def _spy(self, names):
+            calls.append(list(names))
+            return real_add(self, names)
+
+        monkeypatch.setattr(GraphBuilder, "add_framework_edges", _spy)
+
+        update_cmd._build_repo_graph(tmp_path, [])
+
+        assert calls, "framework-edge step must run in the shared rebuild path"

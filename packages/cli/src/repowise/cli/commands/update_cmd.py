@@ -277,6 +277,69 @@ def _build_filtered_changed_paths(file_diffs: list, exclude_patterns: list[str])
     return [p for p in paths if not spec.match_file(p)]
 
 
+def _build_repo_graph(
+    repo_path: Any,
+    exclude_patterns: list[str],
+    *,
+    collect_sources: bool = False,
+) -> tuple[list, dict[str, bytes], Any, Any, int]:
+    """Traverse + parse the repo and build the graph (+ framework-aware edges).
+
+    Shared by the incremental rebuild path (:func:`_rebuild_graph_and_git`) and
+    the config-triggered re-score path (:func:`_run_full_health_rescore`) so both
+    build the same graph from the same parser and the same synthetic edge step.
+
+    Files that fail to read/parse are skipped and reported as a count rather than
+    swallowed silently. ``source_map`` is populated only when ``collect_sources``
+    is set (the re-score path doesn't need the raw bytes).
+
+    Returns ``(parsed_files, source_map, graph_builder, repo_structure,
+    file_count)``.
+    """
+    from pathlib import Path as PathlibPath
+
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
+    file_infos = list(traverser.traverse())
+    repo_structure = traverser.get_repo_structure()
+
+    parser = ASTParser()
+    parsed_files: list = []
+    source_map: dict[str, bytes] = {}
+    graph_builder = GraphBuilder(repo_path, exclude_patterns=exclude_patterns)
+
+    skipped = 0
+    for fi in file_infos:
+        try:
+            source = PathlibPath(fi.abs_path).read_bytes()
+            parsed = parser.parse_file(fi, source)
+        except Exception:
+            skipped += 1
+            continue
+        parsed_files.append(parsed)
+        if collect_sources:
+            source_map[fi.path] = source
+        graph_builder.add_file(parsed)
+    graph_builder.build()
+
+    if skipped:
+        console.print(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
+
+    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
+    try:
+        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+
+        tech_items = detect_tech_stack(repo_path)
+        fw_count = graph_builder.add_framework_edges([item.name for item in tech_items])
+        if fw_count:
+            console.print(f"Framework edges added: [cyan]{fw_count}[/cyan]")
+    except Exception:
+        pass  # framework edge detection is best-effort
+
+    return parsed_files, source_map, graph_builder, repo_structure, len(file_infos)
+
+
 def _rebuild_graph_and_git(
     repo_path: Any,
     file_diffs: list,
@@ -289,41 +352,10 @@ def _rebuild_graph_and_git(
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count, git_meta_map)``.
     """
-    from pathlib import Path as PathlibPath
-
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
-
     # Full re-ingest for graph (needed for cascade analysis)
-    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
-    file_infos = list(traverser.traverse())
-    repo_structure = traverser.get_repo_structure()
-
-    parser = ASTParser()
-    parsed_files: list = []
-    source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(repo_path, exclude_patterns=exclude_patterns)
-
-    for fi in file_infos:
-        try:
-            source = PathlibPath(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            parsed_files.append(parsed)
-            source_map[fi.path] = source
-            graph_builder.add_file(parsed)
-        except Exception:
-            pass
-    graph_builder.build()
-
-    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask)
-    try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
-
-        tech_items = detect_tech_stack(repo_path)
-        fw_count = graph_builder.add_framework_edges([item.name for item in tech_items])
-        if fw_count:
-            console.print(f"Framework edges added: [cyan]{fw_count}[/cyan]")
-    except Exception:
-        pass  # framework edge detection is best-effort
+    parsed_files, source_map, graph_builder, repo_structure, file_count = _build_repo_graph(
+        repo_path, exclude_patterns, collect_sources=True
+    )
 
     # Re-index git metadata for changed files
     git_meta_map: dict[str, dict] = {}
@@ -345,7 +377,7 @@ def _rebuild_graph_and_git(
     except Exception as exc:
         console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
 
-    return parsed_files, source_map, graph_builder, repo_structure, len(file_infos), git_meta_map
+    return parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map
 
 
 def _run_partial_analysis(
@@ -571,7 +603,6 @@ def _git_metadata_to_dict(gm: Any) -> dict[str, Any]:
 
 def _run_full_health_rescore(
     repo_path: Any,
-    cfg: dict,
     exclude_patterns: list[str],
     state: dict,
     head: str | None,
@@ -587,27 +618,14 @@ def _run_full_health_rescore(
     import time
 
     start = time.monotonic()
-    from pathlib import Path as PathlibPath
 
     import pathspec
 
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
-
-    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
-    file_infos = list(traverser.traverse())
-
-    parser = ASTParser()
-    parsed_files: list = []
-    graph_builder = GraphBuilder(repo_path, exclude_patterns=exclude_patterns)
-    for fi in file_infos:
-        try:
-            source = PathlibPath(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            parsed_files.append(parsed)
-            graph_builder.add_file(parsed)
-        except Exception:
-            pass
-    graph_builder.build()
+    # Share the rebuild path with the incremental update so both produce the
+    # same graph (same parser, same framework-aware synthetic edges).
+    parsed_files, _source_map, graph_builder, _repo_structure, _file_count = _build_repo_graph(
+        repo_path, exclude_patterns
+    )
 
     exclude_spec = (
         pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
@@ -994,7 +1012,7 @@ def update_command(
             return
         cfg = load_config(repo_path)
         exclude_patterns = list(cfg.get("exclude_patterns") or [])
-        _run_full_health_rescore(repo_path, cfg, exclude_patterns, state, head, curr_config_fp)
+        _run_full_health_rescore(repo_path, exclude_patterns, state, head, curr_config_fp)
         return
 
     console.print(f"Changed files: [yellow]{len(file_diffs)}[/yellow]")
