@@ -126,6 +126,7 @@ async def run_generation_with_persistence(
 
     try:
         pages = await run_generation(
+            repo_path=repo_path,
             **generation_kwargs,
             prior_pages=prior_pages,
             on_page_ready=_on_page_ready,

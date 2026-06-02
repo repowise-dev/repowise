@@ -72,7 +72,11 @@ async def test_pages_flushed_incrementally(repo_dir, monkeypatch):
     wrapper returns — even though the caller never persists explicitly."""
     emitted = [_page("alpha"), _page("beta")]
 
-    async def fake_run_generation(*, on_page_ready=None, prior_pages=None, **_kw):
+    async def fake_run_generation(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
+        # ``repo_path`` is required (no default) so a wrapper that stops
+        # forwarding it fails here instead of silently passing — the gap that
+        # let the real ``run_generation``'s required ``repo_path`` go unpassed.
+        assert repo_path == repo_dir
         # Mirror the generator: fire the sink the instant each page is ready.
         for p in emitted:
             on_page_ready(p)
@@ -96,11 +100,11 @@ async def test_prior_pages_loaded_on_second_run(repo_dir, monkeypatch):
     """A second run sees the first run's pages as prior_pages for reuse."""
     seen_prior: dict = {}
 
-    async def first_run(*, on_page_ready=None, prior_pages=None, **_kw):
+    async def first_run(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
         on_page_ready(_page("gamma"))
         return [_page("gamma")]
 
-    async def second_run(*, on_page_ready=None, prior_pages=None, **_kw):
+    async def second_run(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
         seen_prior.update(prior_pages or {})
         return []
 
@@ -116,7 +120,7 @@ async def test_prior_pages_loaded_on_second_run(repo_dir, monkeypatch):
 async def test_sink_failure_never_breaks_generation(repo_dir, monkeypatch):
     """A page the persister can't store must not abort the run."""
 
-    async def fake_run_generation(*, on_page_ready=None, prior_pages=None, **_kw):
+    async def fake_run_generation(*, repo_path, on_page_ready=None, prior_pages=None, **_kw):
         # A bare object lacks GeneratedPage attributes → upsert raises inside
         # the consumer, which must swallow it.
         on_page_ready(object())
