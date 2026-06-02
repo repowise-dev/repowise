@@ -113,7 +113,7 @@ scored at the same leakage-free commit against the same defect labels:
 
 Ranking by repowise health surfaces **2.3× the defects under a fixed review
 budget** (Popt Δ +0.144, recall Δ +0.098, density Δ p = 0.003 — all paired,
-significant). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/main/health-defect/COMPARISON_REPORT.md)
+significant). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
 
 User guide & per-biomarker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)**
 
@@ -139,7 +139,7 @@ repositories (same model, same harness, with vs without repowise's MCP tools):
 Best case shown; across the two benchmarks the range is −49% to −70% tool calls,
 −69% to −89% file reads, and −29% to −36% cost. Bonus: feeding an agent a commit
 via `get_context` costs **2,391 tokens vs 64,039** for the raw changed files —
-**~27× fewer**. Reports: [flask48](https://github.com/repowise-dev/repowise-bench/blob/main/BENCHMARK_REPORT_FLASK48.md) · [sklearn48](https://github.com/repowise-dev/repowise-bench/blob/main/BENCHMARK_REPORT_SKLEARN48.md)
+**~27× fewer**. Reports: [flask48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK48.md) · [sklearn48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_SKLEARN48.md)
 
 ### 2 · Code health predicts real defects
 
@@ -157,7 +157,7 @@ languages**:
 - Holds up on an **external published dataset it has never seen** (PROMISE/jEdit
   CK-metrics: AUC 0.76–0.78, within ~0.03 of the dataset's own tuned model).
 
-Full report: **[health-defect/BENCHMARK_REPORT.md →](https://github.com/repowise-dev/repowise-bench/blob/main/health-defect/BENCHMARK_REPORT.md)**
+Full report: **[health-defect/BENCHMARK_REPORT.md →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)**
 
 ---
 
@@ -393,7 +393,7 @@ uv run pytest tests/unit/
 ```
 
 Full guide, including how to add languages and LLM providers:
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
 ---
 
