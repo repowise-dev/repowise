@@ -527,6 +527,17 @@ repowise doctor --workspace              # every workspace repo
 repowise doctor --workspace --repair     # also drop dead entries / sync drift
 ```
 
+**CLI update check.** `doctor` also prints a best-effort `CLI version` row that
+compares your installed CLI against the latest release on PyPI and, when an
+update is available, shows the suggested upgrade command (e.g. `uv tool upgrade
+repowise`, `pipx upgrade repowise`, or `python -m pip install -U repowise`). It
+shows both the `repowise` resolved on your `PATH` and the command that launched
+the current process, since these can differ. This check is advisory: it never
+updates anything automatically and does not fail `doctor` when PyPI is
+unreachable. After upgrading, **restart Claude/Codex/Cursor or any MCP client**
+so it picks up the new executable. (A standalone `repowise version --check` may
+be added later.)
+
 ---
 
 ### `repowise delete [REPO_ID]`

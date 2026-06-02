@@ -23,6 +23,59 @@ def _check(name: str, ok: bool, detail: str = "") -> tuple[str, str, str]:
     return (name, status, detail)
 
 
+def _print_cli_version_status() -> None:
+    """Print a best-effort CLI update-check line.
+
+    Advisory only: an outdated CLI is informational, not a broken repo, so this
+    never affects doctor's pass/fail outcome and never fails on network errors.
+    Runs once per invocation (the CLI version is global, not per-repo).
+    """
+    try:
+        from repowise.cli.update_check import get_cli_update_check
+
+        check = get_cli_update_check()
+    except Exception:
+        return  # never let the update check break doctor
+
+    # Show the full running command and resolved path verbatim — they can
+    # differ (e.g. a stale shim on PATH vs the venv that launched this process),
+    # and surfacing that mismatch is the point of this row.
+    path_detail = check.resolved_executable or "not on PATH"
+    running = check.running_executable or "?"
+
+    if check.latest_version is None:
+        status = "[green]OK[/green]"
+        detail = (
+            f"current {check.current_version}, could not check latest version, "
+            f"path {path_detail}, running {running}"
+        )
+    elif check.update_available:
+        status = "[yellow]WARN[/yellow]"
+        detail = (
+            f"current {check.current_version}, latest {check.latest_version}, "
+            f"path {path_detail}, running {running}"
+        )
+    else:
+        status = "[green]OK[/green]"
+        detail = (
+            f"current {check.current_version} (latest), "
+            f"path {path_detail}, running {running}"
+        )
+
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="cyan")
+    table.add_column()
+    table.add_column()
+    table.add_row("CLI version", status, detail)
+    console.print(table)
+
+    if check.update_available:
+        console.print(f"  [yellow]Update available:[/yellow] {check.suggested_command}")
+        console.print(
+            "  [dim]Restart Claude/Codex/Cursor or any MCP client after updating.[/dim]"
+        )
+
+
 def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     """Run the standard health checks against one repo. Returns ``True`` if
     all checks passed.
@@ -442,6 +495,9 @@ def doctor_command(
         no_workspace_flag=no_workspace,
     )
     target.notice(console, command="doctor")
+
+    # Advisory CLI update check — printed once, above the repo check table(s).
+    _print_cli_version_status()
 
     if not target.is_workspace:
         assert target.repo_path is not None

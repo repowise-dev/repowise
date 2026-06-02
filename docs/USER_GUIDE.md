@@ -584,6 +584,14 @@ Checks:
 - `state.json` valid
 - Providers installed and importable
 - Stale page count
+- **CLI version** — best-effort check of your installed CLI against the latest
+  PyPI release
+
+The CLI version row is advisory: when a newer release exists it prints the
+right upgrade command for your install method (`uv tool upgrade repowise`,
+`pipx upgrade repowise`, or `python -m pip install -U repowise`) plus a reminder
+to **restart Claude/Codex/Cursor or any MCP client** afterwards. It never
+upgrades automatically and never fails `doctor` when PyPI is unavailable.
 
 ---
 
