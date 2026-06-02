@@ -416,26 +416,60 @@ async def run_pipeline(
     if progress:
         progress.on_message("info", "Phase 2: Analysis")
 
-    dead_code_report = await _run_dead_code_analysis(graph_builder, git_meta_map, progress=progress)
-
-    health_report = await _run_health_analysis(
-        graph_builder, git_meta_map, parsed_files, repo_path=repo_path, progress=progress
+    # Resume fast-path: when a prior run already completed (and persisted) the
+    # ANALYSIS phase, skip recomputing dead code / health / decisions — the
+    # last is the costly one (LLM-backed, minutes on large repos). We rehydrate
+    # only the thin views generation reads; the persisted rows stay
+    # authoritative and are never re-written from these. ``health_report`` is
+    # not a generation input, so it stays None on this path (its persisted rows
+    # are untouched). Falls back to a full recompute if rehydration errors.
+    skip_analysis = bool(
+        resume_controller and await resume_controller.can_skip(ResumePhase.ANALYSIS)
     )
+    dead_code_report = None
+    health_report = None
+    decision_report = None
+    # Reports actually fed to generation + KG — rehydrated on the skip path,
+    # the freshly computed ones otherwise.
+    gen_dead_code_report = None
+    gen_decision_report = None
+    if skip_analysis:
+        try:
+            (
+                gen_dead_code_report,
+                gen_decision_report,
+            ) = await resume_controller.rehydrate_analysis()
+            if progress:
+                progress.on_message("info", "  ↳ Resuming — reusing persisted analysis")
+        except Exception as exc:
+            logger.warning("resume_rehydrate_analysis_failed_recomputing", error=str(exc))
+            skip_analysis = False
 
-    # Drop the in-memory-only ``BlameIndex`` now that the health biomarkers
-    # have consumed it — before it can leak into ``PipelineResult`` and the
-    # downstream JSON artifact writers / DB persistence. ``git_meta_map`` shares
-    # these dict objects, so this cleans both views.
-    drop_transient_git_signals(git_metadata_list)
+    if not skip_analysis:
+        dead_code_report = await _run_dead_code_analysis(
+            graph_builder, git_meta_map, progress=progress
+        )
 
-    decision_report = await _run_decision_extraction(
-        repo_path,
-        llm_client=llm_client,
-        graph_builder=graph_builder,
-        git_meta_map=git_meta_map,
-        parsed_files=parsed_files,
-        progress=progress,
-    )
+        health_report = await _run_health_analysis(
+            graph_builder, git_meta_map, parsed_files, repo_path=repo_path, progress=progress
+        )
+
+        # Drop the in-memory-only ``BlameIndex`` now that the health biomarkers
+        # have consumed it — before it can leak into ``PipelineResult`` and the
+        # downstream JSON artifact writers / DB persistence. ``git_meta_map``
+        # shares these dict objects, so this cleans both views.
+        drop_transient_git_signals(git_metadata_list)
+
+        decision_report = await _run_decision_extraction(
+            repo_path,
+            llm_client=llm_client,
+            graph_builder=graph_builder,
+            git_meta_map=git_meta_map,
+            parsed_files=parsed_files,
+            progress=progress,
+        )
+        gen_dead_code_report = dead_code_report
+        gen_decision_report = decision_report
 
     # ---- Knowledge Graph skeleton (deterministic, no LLM) ----------------
     knowledge_graph_result = None
@@ -479,7 +513,7 @@ async def run_pipeline(
                 tech_stack=tech_stack_dicts,
                 external_systems=external_systems,
                 git_meta_map=git_meta_map,
-                dead_code_report=dead_code_report,
+                dead_code_report=gen_dead_code_report,
                 repo_path=repo_path,
             )
             knowledge_graph_result.fingerprint = new_fingerprint
@@ -493,6 +527,19 @@ async def run_pipeline(
         _phase_done(progress, "knowledge_graph.skeleton")
     except (ValueError, KeyError, OSError, RuntimeError) as kg_err:
         logger.error("kg_skeleton_building_failed", error=str(kg_err), exc_info=True)
+
+    # ---- Checkpoint: ANALYSIS ----------------------------------------------
+    # Persist dead code + health + decisions now that the analysis phase is
+    # complete, so an interrupt during the long generation phase below can
+    # resume past analysis instead of recomputing it. Skipped when we already
+    # rehydrated analysis (it's by definition persisted) — best-effort.
+    if resume_controller is not None and not skip_analysis:
+        await resume_controller.checkpoint_analysis(
+            dead_code_report=dead_code_report,
+            health_report=health_report,
+            decision_report=decision_report,
+            git_metadata_list=git_metadata_list,
+        )
 
     # ---- Phase 3: Generation (optional) ------------------------------------
     generated_pages: list[Any] | None = None
@@ -539,8 +586,8 @@ async def run_pipeline(
             progress=progress,
             resume=resume,
             generation_config=resolved_generation_config,
-            dead_code_report=dead_code_report,
-            decision_report=decision_report,
+            dead_code_report=gen_dead_code_report,
+            decision_report=gen_decision_report,
             external_systems=external_systems,
             on_page_ready=on_page_ready,
         )

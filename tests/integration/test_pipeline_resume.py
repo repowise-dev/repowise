@@ -91,3 +91,52 @@ async def test_resume_skips_index_compute(sf, sample_repo_path: Path, monkeypatc
     # DB and source re-parsed.
     assert result.parsed_files, "resume should re-parse source files"
     assert result.graph_builder.graph().number_of_nodes() > 0, "graph should be rehydrated"
+
+
+async def test_first_run_checkpoints_analysis(sf, sample_repo_path: Path) -> None:
+    repo_id = await _make_repo(sf, sample_repo_path)
+    await run_pipeline(
+        sample_repo_path,
+        mode=OrchestratorMode.FAST,
+        resume_controller=ResumeController(sf, repo_id, resume=False),
+    )
+
+    # ANALYSIS is checkpointed mid-run (before generation), so a later
+    # generation-interrupted resume can skip recomputing it.
+    completed = await ResumeLedger(sf, repo_id).completed_phases()
+    assert ResumePhase.ANALYSIS in completed
+
+
+async def test_resume_skips_analysis_recompute(sf, sample_repo_path: Path, monkeypatch) -> None:
+    repo_id = await _make_repo(sf, sample_repo_path)
+
+    # First run persists INDEX + ANALYSIS.
+    await run_pipeline(
+        sample_repo_path,
+        mode=OrchestratorMode.FAST,
+        resume_controller=ResumeController(sf, repo_id, resume=False),
+    )
+
+    # On resume, none of the analysis recompute paths may run — patch all three
+    # to fail loudly if the skip regresses.
+    import repowise.core.pipeline.orchestrator as orch
+
+    async def _boom_dead_code(*a, **k):  # pragma: no cover - must never be called
+        raise AssertionError("dead-code analysis ran on resume — analysis not skipped")
+
+    async def _boom_health(*a, **k):  # pragma: no cover - must never be called
+        raise AssertionError("health analysis ran on resume — analysis not skipped")
+
+    async def _boom_decisions(*a, **k):  # pragma: no cover - must never be called
+        raise AssertionError("decision extraction ran on resume — analysis not skipped")
+
+    monkeypatch.setattr(orch, "_run_dead_code_analysis", _boom_dead_code)
+    monkeypatch.setattr(orch, "_run_health_analysis", _boom_health)
+    monkeypatch.setattr(orch, "_run_decision_extraction", _boom_decisions)
+
+    result = await run_pipeline(
+        sample_repo_path,
+        mode=OrchestratorMode.FAST,
+        resume_controller=ResumeController(sf, repo_id, resume=True),
+    )
+    assert result.parsed_files, "resume should still produce a usable index"

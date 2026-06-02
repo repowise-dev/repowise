@@ -25,10 +25,15 @@ from typing import Any
 
 import structlog
 
-from ..persist import persist_git, persist_ingestion
+from ..persist import persist_analysis, persist_git, persist_ingestion
 from .ledger import ResumeLedger
 from .phases import RESUME_PHASE_ORDER, ResumePhase
-from .rehydrate import rehydrate_git_meta_map, rehydrate_graph_builder
+from .rehydrate import (
+    rehydrate_dead_code_report,
+    rehydrate_decision_report,
+    rehydrate_git_meta_map,
+    rehydrate_graph_builder,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -102,6 +107,23 @@ class ResumeController:
         self._index_persisted = True
         return graph_builder, git_meta_map
 
+    async def rehydrate_analysis(self) -> tuple[Any, Any]:
+        """Rebuild ``(dead_code_report, decision_report)`` from persisted rows.
+
+        Used **only** as generation input on a resumed run whose ANALYSIS phase
+        already completed — so the resume skips re-running dead-code detection,
+        health scoring and (the costly) decision extraction. The returned views
+        are deliberately thin (just what the page generator reads) and must
+        never be written back: the persisted analysis rows are authoritative.
+        Raises on a DB error so the caller can fall back to recomputing.
+        """
+        from repowise.core.persistence import get_session
+
+        async with get_session(self._sf) as session:
+            dead_code_report = await rehydrate_dead_code_report(session, self._repo_id)
+            decision_report = await rehydrate_decision_report(session, self._repo_id)
+        return dead_code_report, decision_report
+
     # -- checkpoints -----------------------------------------------------------
 
     async def checkpoint_index(
@@ -142,6 +164,46 @@ class ResumeController:
         self._index_persisted = True
         await self._ledger.mark_completed(ResumePhase.INDEX)
         logger.info("resume_checkpoint_index", repo_id=self._repo_id)
+
+    async def checkpoint_analysis(
+        self,
+        *,
+        dead_code_report: Any | None,
+        health_report: Any | None,
+        decision_report: Any | None,
+        git_metadata_list: list[dict],
+        vector_store: Any | None = None,
+    ) -> None:
+        """Persist the ANALYSIS phase (dead code + health + decisions) and record it.
+
+        Mirrors :meth:`checkpoint_index`: writing these rows the moment the
+        analysis phase finishes — *before* the long generation phase — is what
+        lets a generation interrupt resume past analysis instead of recomputing
+        it (decision extraction in particular can run for minutes). Best-effort:
+        a persistence hiccup is logged and swallowed, leaving ANALYSIS unmarked
+        so the resumed run simply recomputes it. ``generated_pages`` is empty at
+        this point, so harvested-decision folding still happens at the final
+        end-of-run persist.
+        """
+        from repowise.core.persistence import get_session
+
+        view = SimpleNamespace(
+            dead_code_report=dead_code_report,
+            health_report=health_report,
+            decision_report=decision_report,
+            git_metadata_list=git_metadata_list,
+            generated_pages=None,
+            vector_store=vector_store,
+        )
+        await self._ledger.mark_started(ResumePhase.ANALYSIS)
+        try:
+            async with get_session(self._sf) as session:
+                await persist_analysis(view, session, self._repo_id)
+        except Exception as exc:
+            logger.warning("resume_checkpoint_analysis_failed", error=str(exc))
+            return
+        await self._ledger.mark_completed(ResumePhase.ANALYSIS)
+        logger.info("resume_checkpoint_analysis", repo_id=self._repo_id)
 
     async def mark_phase_complete(self, phase: ResumePhase) -> None:
         """Record *phase* as completed (analysis / generation persisted by the
