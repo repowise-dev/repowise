@@ -108,53 +108,23 @@ async def persist_graph_nodes(
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
 
 
-async def persist_pipeline_result(
-    result: Any,
-    session: Any,
-    repo_id: str,
-) -> None:
-    """Persist all outputs from a :class:`PipelineResult` into the database.
+async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
+    """Persist ingestion-phase outputs: graph nodes/edges, external systems,
+    symbols, and the per-file security scan.
 
-    Parameters
-    ----------
-    result:
-        A ``PipelineResult`` from ``run_pipeline()``.
-    session:
-        An active SQLAlchemy ``AsyncSession`` (caller manages commit/rollback).
-    repo_id:
-        The repository ID to associate all records with.
+    Every write here is an idempotent UPSERT keyed by ``(repo_id, …)``, so
+    this is safe to call incrementally (per phase) and to re-run on resume.
 
-    Note
-    ----
-    FTS indexing is intentionally excluded here — callers must do it after
-    this session closes to avoid SQLite write-lock conflicts.
-
-    This function mutates ``sym.file_path`` on parsed-file symbols that
-    lack one.  Callers should treat *result* as consumed after this call.
+    Returns the number of symbols written (for the summary log). Mutates
+    ``sym.file_path`` on symbols that lack one — callers should treat the
+    parsed-file symbols as consumed after this call.
     """
     from repowise.core.persistence import (
         batch_upsert_graph_edges,
         batch_upsert_symbols,
         bulk_upsert_external_systems,
         link_graph_nodes_to_external_systems,
-        upsert_page_from_generated,
     )
-    from repowise.core.persistence.crud import (
-        bulk_upsert_decisions,
-        recompute_decision_staleness,
-        save_dead_code_findings,
-        save_health_findings,
-        save_health_metrics,
-        save_health_snapshot,
-        upsert_git_commits_bulk,
-        upsert_git_function_blame_bulk,
-        upsert_git_metadata_bulk,
-    )
-
-    # ---- Pages (if generated) -----------------------------------------------
-    if result.generated_pages:
-        for page in result.generated_pages:
-            await upsert_page_from_generated(session, page, repo_id)
 
     # ---- Graph nodes ---------------------------------------------------------
     ep_scores: dict[str, float] = {}
@@ -208,10 +178,9 @@ async def persist_pipeline_result(
         await batch_upsert_symbols(session, repo_id, all_symbols)
 
     # ---- Security scan -------------------------------------------------------
-    # Choice: persist.py (rather than orchestrator.py) because there is already
-    # a clear per-file loop over parsed_files here, and the instructions ask for
-    # a minimal, non-invasive addition.  The orchestrator parse stage is owned
-    # by another agent and must not be touched.
+    # There is already a clear per-file loop over parsed_files here, so the
+    # scan rides alongside symbol persistence. Best-effort — never breaks
+    # the rest of the phase.
     try:
         from repowise.core.analysis.security_scan import SecurityScanner
 
@@ -224,14 +193,46 @@ async def persist_pipeline_result(
     except Exception as _sec_err:
         logger.warning("security_scan_skipped", error=str(_sec_err))
 
-    # ---- Git metadata --------------------------------------------------------
+    return len(all_symbols)
+
+
+async def persist_git(result: Any, session: Any, repo_id: str) -> None:
+    """Persist git-phase outputs: per-file metadata and per-commit rows.
+
+    Both writes are idempotent UPSERTs keyed by ``(repo_id, file_path)`` /
+    ``(repo_id, sha)`` — safe to call incrementally and on resume.
+    """
+    from repowise.core.persistence.crud import (
+        upsert_git_commits_bulk,
+        upsert_git_metadata_bulk,
+    )
+
     if result.git_metadata_list:
         await upsert_git_metadata_bulk(session, repo_id, result.git_metadata_list)
 
-    # ---- Per-commit rows + change-risk (ride on the git summary) -------------
+    # Per-commit rows + change-risk ride on the git summary.
     commit_rows = getattr(getattr(result, "git_summary", None), "commit_rows", None)
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
+
+
+async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
+    """Persist analysis-phase outputs: dead code, health, decisions, governance.
+
+    Dead-code and health writes are repo-wide DELETE-THEN-INSERT (so they
+    converge on re-run but don't support partial-within-phase resume);
+    decisions/governance are idempotent. Intended to run once the analysis
+    phase has fully completed.
+    """
+    from repowise.core.persistence.crud import (
+        bulk_upsert_decisions,
+        recompute_decision_staleness,
+        save_dead_code_findings,
+        save_health_findings,
+        save_health_metrics,
+        save_health_snapshot,
+        upsert_git_function_blame_bulk,
+    )
 
     # ---- Dead code findings --------------------------------------------------
     if result.dead_code_report and result.dead_code_report.findings:
@@ -356,7 +357,21 @@ async def persist_pipeline_result(
     except Exception as _gov_err:
         logger.debug("governance_findings_skipped", error=str(_gov_err))
 
-    # ---- Knowledge graph layers & tour steps -----------------------------------
+
+async def persist_generation(result: Any, session: Any, repo_id: str) -> None:
+    """Persist generation-phase outputs: wiki pages and knowledge-graph layers.
+
+    Pages upsert per ``page_id`` (archiving prior versions); KG layers/tour
+    are full-replace. Both safe to call incrementally / on resume.
+    """
+    from repowise.core.persistence import upsert_page_from_generated
+
+    # ---- Pages (if generated) -----------------------------------------------
+    if result.generated_pages:
+        for page in result.generated_pages:
+            await upsert_page_from_generated(session, page, repo_id)
+
+    # ---- Knowledge graph layers & tour steps --------------------------------
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         from repowise.core.persistence.crud import upsert_kg_layers, upsert_kg_tour_steps
@@ -366,11 +381,47 @@ async def persist_pipeline_result(
         if hasattr(kg, "tour") and kg.tour:
             await upsert_kg_tour_steps(session, repo_id, kg.tour)
 
+
+async def persist_pipeline_result(
+    result: Any,
+    session: Any,
+    repo_id: str,
+) -> None:
+    """Persist all outputs from a :class:`PipelineResult` into the database.
+
+    Thin composition of the four phase-scoped persisters
+    (:func:`persist_ingestion`, :func:`persist_git`, :func:`persist_analysis`,
+    :func:`persist_generation`) in dependency order. The same functions are
+    reused by the incremental-persistence path so a resumed run can persist
+    one phase at a time.
+
+    Parameters
+    ----------
+    result:
+        A ``PipelineResult`` from ``run_pipeline()``.
+    session:
+        An active SQLAlchemy ``AsyncSession`` (caller manages commit/rollback).
+    repo_id:
+        The repository ID to associate all records with.
+
+    Note
+    ----
+    FTS indexing is intentionally excluded here — callers must do it after
+    this session closes to avoid SQLite write-lock conflicts.
+
+    This function mutates ``sym.file_path`` on parsed-file symbols that
+    lack one.  Callers should treat *result* as consumed after this call.
+    """
+    symbol_count = await persist_ingestion(result, session, repo_id)
+    await persist_git(result, session, repo_id)
+    await persist_analysis(result, session, repo_id)
+    await persist_generation(result, session, repo_id)
+
     logger.info(
         "pipeline_result_persisted",
         repo_id=repo_id,
         pages=len(result.generated_pages) if result.generated_pages else 0,
         graph_nodes=result.graph_builder.graph().number_of_nodes(),
-        symbols=len(all_symbols),
+        symbols=symbol_count,
         git_files=len(result.git_metadata_list),
     )
