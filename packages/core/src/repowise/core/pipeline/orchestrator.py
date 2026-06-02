@@ -34,7 +34,9 @@ from .phases.analysis import (
 )
 from .phases.generation import run_generation
 from .phases.git import _run_git_indexing, drop_transient_git_signals
-from .phases.ingestion import _run_ingestion
+from .phases.ingestion import _run_ingestion, reparse_for_resume
+from .resume import ResumePhase
+from .resume.controller import ResumeController
 
 logger = structlog.get_logger(__name__)
 
@@ -158,6 +160,7 @@ async def run_pipeline(
     generation_config: Any | None = None,
     existing_kg_fingerprint: str | None = None,
     on_page_ready: Any | None = None,
+    resume_controller: ResumeController | None = None,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -263,26 +266,62 @@ async def run_pipeline(
             progress=progress,
         )
 
-    (
-        (
-            parsed_files,
-            file_infos,
-            repo_structure,
-            source_map,
-            graph_builder,
-            traversal_stats,
-            tech_items,
-        ),
-        (
-            git_summary,
-            git_metadata_list,
-            git_meta_map,
-        ),
-    ) = await asyncio.gather(_ingestion_stage(), _git_stage())
+    # Resume fast-path: when a prior run already persisted the INDEX phase
+    # (graph + git), rehydrate it from the DB and only re-parse source files —
+    # skipping the git history walk and the graph centrality kernels, which
+    # are the minutes-long work that makes a first index slow. Falls back to a
+    # full compute if rehydration yields no graph (nothing was persisted).
+    skip_index = bool(resume_controller and await resume_controller.can_skip(ResumePhase.INDEX))
+    git_summary = None
+    if skip_index:
+        try:
+            graph_builder, git_meta_map = await resume_controller.rehydrate_index(repo_path)
+            if progress:
+                progress.on_message(
+                    "info", "  ↳ Resuming — reusing persisted graph + git index"
+                )
+            (
+                parsed_files,
+                file_infos,
+                repo_structure,
+                source_map,
+                tech_items,
+            ) = await reparse_for_resume(
+                repo_path,
+                exclude_patterns=exclude_patterns,
+                include_submodules=include_submodules,
+                include_nested_repos=include_nested_repos,
+                skip_tests=skip_tests,
+                skip_infra=skip_infra,
+                progress=progress,
+            )
+            traversal_stats = None
+            git_metadata_list = list(git_meta_map.values())
+        except Exception as exc:
+            logger.warning("resume_rehydrate_failed_recomputing", error=str(exc))
+            skip_index = False
 
-    # Add co-change edges to the graph
-    if git_meta_map:
-        graph_builder.add_co_change_edges(git_meta_map)
+    if not skip_index:
+        (
+            (
+                parsed_files,
+                file_infos,
+                repo_structure,
+                source_map,
+                graph_builder,
+                traversal_stats,
+                tech_items,
+            ),
+            (
+                git_summary,
+                git_metadata_list,
+                git_meta_map,
+            ),
+        ) = await asyncio.gather(_ingestion_stage(), _git_stage())
+
+        # Add co-change edges to the graph (rehydrated graphs already carry them)
+        if git_meta_map:
+            graph_builder.add_co_change_edges(git_meta_map)
 
     # ---- External systems (C4 L1) ------------------------------------------
     # Parse repo manifests for declared third-party dependencies. Failure here
@@ -314,6 +353,19 @@ async def run_pipeline(
     except Exception as _ext_err:
         logger.warning("external_systems_extraction_failed", error=str(_ext_err))
     _phase_done(progress, "external_systems")
+
+    # ---- Checkpoint: INDEX -------------------------------------------------
+    # Persist the freshly-computed graph + git + symbols now so an interrupt
+    # during the analysis phase below can resume without redoing the expensive
+    # index. Skipped when we rehydrated (already persisted) — best-effort.
+    if resume_controller is not None and not skip_index:
+        await resume_controller.checkpoint_index(
+            parsed_files=parsed_files,
+            graph_builder=graph_builder,
+            git_metadata_list=git_metadata_list,
+            git_summary=git_summary,
+            external_systems=external_systems,
+        )
 
     # Emit rich insight summary for the ingestion phase
     if progress:

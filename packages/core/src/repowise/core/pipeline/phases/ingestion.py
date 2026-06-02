@@ -362,3 +362,131 @@ async def _run_ingestion(
             progress.on_message("info", f"  Languages: {lang_str}")
 
     return parsed_files, file_infos, repo_structure, source_map, graph_builder, stats, tech_items
+
+
+async def reparse_for_resume(
+    repo_path: Path,
+    *,
+    exclude_patterns: list[str] | None,
+    include_submodules: bool = False,
+    include_nested_repos: bool = False,
+    skip_tests: bool,
+    skip_infra: bool,
+    progress: ProgressCallback | None,
+) -> tuple[list[Any], list[Any], Any, dict[str, bytes], list[Any]]:
+    """Parse-only ingestion for a resumed run: traverse + parse, **no graph
+    build or centrality**.
+
+    A resumed run rehydrates the graph (and its expensive centrality metrics)
+    and the git metadata from the database, so the only thing it must redo on
+    disk is parsing source into ``ParsedFile`` objects (those aren't persisted
+    in reconstructable form, and the analysis/generation phases need them).
+    Skipping the graph build + the four centrality kernels is exactly the
+    minutes-long work resume exists to avoid.
+
+    Returns ``(parsed_files, file_infos, repo_structure, source_map,
+    tech_items)`` — mirrors the prefix of :func:`_run_ingestion` minus the
+    graph builder and traversal stats.
+    """
+    from repowise.core.ingestion import ASTParser, FileTraverser
+
+    traverser = FileTraverser(
+        repo_path,
+        extra_exclude_patterns=exclude_patterns or None,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
+
+    all_paths = list(traverser._walk())
+    if progress:
+        progress.on_phase_start("traverse", None)
+
+    file_infos: list[Any] = []
+    io_pool = ThreadPoolExecutor(max_workers=8)
+    try:
+        aws = [
+            asyncio.wrap_future(io_pool.submit(traverser._build_file_info, p)) for p in all_paths
+        ]
+        for coro in asyncio.as_completed(aws):
+            try:
+                result = await coro
+            except Exception:
+                result = None
+            if result is not None:
+                file_infos.append(result)
+            if progress:
+                progress.on_item_done("traverse")
+    finally:
+        await asyncio.to_thread(io_pool.shutdown, wait=True)
+
+    repo_structure = traverser.get_repo_structure(file_infos)
+    _phase_done(progress, "traverse")
+
+    if skip_tests:
+        file_infos = [fi for fi in file_infos if not fi.is_test]
+    if skip_infra:
+        file_infos = [
+            fi
+            for fi in file_infos
+            if fi.language not in ("dockerfile", "makefile", "terraform", "shell")
+        ]
+
+    if progress:
+        progress.on_phase_start("parse", len(file_infos))
+
+    fi_and_bytes: list[tuple] = []
+    for fi in file_infos:
+        try:
+            source = Path(fi.abs_path).read_bytes()
+            fi_and_bytes.append((fi, source))
+        except Exception:
+            if progress:
+                progress.on_item_done("parse")
+
+    parsed_files: list[Any] = []
+    source_map: dict[str, bytes] = {}
+    loop = asyncio.get_running_loop()
+    workers = max(1, os.cpu_count() or 4)
+    parse_results: list[Any] = []
+
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            tasks = [loop.run_in_executor(pool, _parse_one, item) for item in fi_and_bytes]
+            if progress is not None:
+                _tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
+                for fut in tasks:
+                    fut.add_done_callback(_tick)
+            parse_results = await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as pool_exc:
+        logger.warning("resume_reparse_pool_failed_falling_back", error=str(pool_exc))
+        _fallback_parser = ASTParser()
+        for i, (fi, source) in enumerate(fi_and_bytes):
+            try:
+                parse_results.append(_fallback_parser.parse_file(fi, source))
+            except Exception as exc:
+                parse_results.append((fi.abs_path, str(exc)))
+            if progress:
+                progress.on_item_done("parse")
+            if i % 50 == 49:
+                await asyncio.sleep(0)
+
+    for idx, result in enumerate(parse_results):
+        fi, source = fi_and_bytes[idx]
+        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], str):
+            logger.debug("parse_error_in_worker", path=result[0], error=result[1])
+        elif isinstance(result, Exception):
+            logger.debug("parse_exception_in_worker", path=fi.abs_path, error=str(result))
+        else:
+            parsed_files.append(result)
+            source_map[fi.path] = source
+    _phase_done(progress, "parse")
+
+    tech_items: list = []
+    try:
+        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+
+        tech_items = detect_tech_stack(repo_path)
+    except Exception:
+        pass
+
+    return parsed_files, file_infos, repo_structure, source_map, tech_items
