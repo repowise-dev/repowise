@@ -56,9 +56,12 @@ from repowise.server.mcp_server._answer_pipeline import (
 )
 from repowise.server.mcp_server._answer_pipeline import hydrate_hits as _hydrate_hits
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    filter_dicts_by_key,
+    is_excluded,
 )
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -121,6 +124,7 @@ async def get_answer(
 
     t0 = time.perf_counter()
     ctx = await _resolve_repo_context(repo)
+    exclude_spec = _get_exclude_spec(ctx.path)
 
     if not question or not question.strip():
         return {
@@ -165,6 +169,16 @@ async def get_answer(
             # promotion, source-body excerpts). Give synthesis another shot
             # with the new context rather than pinning the bad answer.
             hedged_cache = _answer_is_hedged(payload.get("answer", ""))
+            # A row cached before exclude_patterns changed may reference a
+            # now-excluded file — in its fields or its prose. Re-synthesize
+            # rather than scrub the fields and leave the prose dangling.
+            cached_paths = [
+                *(payload.get("citations") or []),
+                *(payload.get("fallback_targets") or []),
+                *(h.get("target_path") for h in (payload.get("retrieval") or [])),
+                *(g.get("file") for g in (payload.get("best_guesses") or [])),
+            ]
+            excluded_cache = any(is_excluded(p, exclude_spec) for p in cached_paths)
             if schema_stale:
                 _log.info(
                     "Bypassing cache entry at schema v%s (current v%s)",
@@ -173,6 +187,8 @@ async def get_answer(
                 )
             elif hedged_cache:
                 _log.info("Bypassing hedged cache entry for re-synthesis")
+            elif excluded_cache:
+                _log.info("Bypassing cache entry referencing a now-excluded path")
             else:
                 payload["_meta"] = _build_meta(
                     timing_ms=(time.perf_counter() - t0) * 1000,
@@ -193,6 +209,10 @@ async def get_answer(
     # them and decides when to stop (cap at 5 for the response payload).
     hits = await _hybrid_retrieve(question, ctx)
     hits = await _hydrate_hits(hits, ctx, scope=scope)
+
+    # Drop excluded files right after hydration (which attaches target_path) so
+    # they never enter ranking, citations, or fallback_targets.
+    hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
 
     # Term-coverage re-rank before any graph-aware bias so conjunctive
     # matches survive the merge.
@@ -215,6 +235,9 @@ async def get_answer(
     # damped score, then re-sorts.
     with contextlib.suppress(Exception):
         hits = await _expand_via_graph(hits, ctx)
+    # Re-filter: graph expansion can pull excluded neighbors back in (before the
+    # cap, so an excluded neighbor can't occupy a top-5 slot).
+    hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
     # Always cap retrieval hits at 5 for the response payload.
     hits = hits[:5]
 

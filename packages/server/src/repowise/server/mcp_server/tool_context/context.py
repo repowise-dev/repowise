@@ -30,6 +30,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import (
+    _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
@@ -88,6 +89,8 @@ async def get_context(
     # must pass include explicitly.
     include_set = set(include) if include else {"docs", "freshness"}
 
+    exclude_spec = _get_exclude_spec(ctx.path)
+
     import time as _time
 
     _t0 = _time.perf_counter()
@@ -102,6 +105,7 @@ async def get_context(
                     t,
                     include_set,
                     compact,
+                    exclude_spec=exclude_spec,
                 )
                 for t in targets
             ]

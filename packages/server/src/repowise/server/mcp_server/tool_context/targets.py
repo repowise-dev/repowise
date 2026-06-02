@@ -25,6 +25,11 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
+from repowise.server.mcp_server._helpers import (
+    filter_dicts_by_key,
+    filter_path_list,
+    is_excluded,
+)
 from repowise.server.mcp_server.tool_context.enrichment import (
     _resolve_call_graph,
     _resolve_community,
@@ -66,10 +71,21 @@ async def _resolve_one_target(
     target: str,
     include: set[str] | None,
     compact: bool = False,
+    *,
+    exclude_spec: Any = None,
 ) -> dict:
     """Resolve a single target and return its full context."""
     repo_id = repository.id
     result_data: dict[str, Any] = {}
+
+    # Reject excluded file / ``path::Name`` targets outright (bare symbol names
+    # aren't path-matchable here and fall through to neighbor filtering).
+    gate_path = target.split("::", 1)[0] if "::" in target else target
+    if is_excluded(gate_path, exclude_spec):
+        return {
+            "target": target,
+            "error": f"'{target}' is excluded by exclude_patterns configuration",
+        }
 
     # --- Determine target type ---
     # 1. Try file page (most common)
@@ -215,6 +231,7 @@ async def _resolve_one_target(
                     .limit(5)
                 )
                 suggestions = [row[0] for row in res.all() if row[0] != target]
+            suggestions = filter_path_list(suggestions, exclude_spec)
             if suggestions:
                 return {
                     "target": target,
@@ -317,7 +334,9 @@ async def _resolve_one_target(
                     )
                 )
                 importers = res.scalars().all()
-                docs["imported_by"] = [e.source_node_id for e in importers]
+                docs["imported_by"] = filter_path_list(
+                    [e.source_node_id for e in importers], exclude_spec
+                )
 
                 # Community info (compact=False only, ~80 bytes)
                 res = await session.execute(
@@ -352,14 +371,18 @@ async def _resolve_one_target(
                 )
             )
             file_pages = res.scalars().all()
-            docs["files"] = [
-                {
-                    "path": f.target_path,
-                    "description": f.title,
-                    "confidence_score": f.confidence,
-                }
-                for f in file_pages
-            ]
+            docs["files"] = filter_dicts_by_key(
+                [
+                    {
+                        "path": f.target_path,
+                        "description": f.title,
+                        "confidence_score": f.confidence,
+                    }
+                    for f in file_pages
+                ],
+                "path",
+                exclude_spec,
+            )
 
         elif target_type == "symbol":
             sym = sym_matches[0]  # type: ignore[possibly-undefined]
@@ -384,13 +407,17 @@ async def _resolve_one_target(
                 )
             )
             edges = res.scalars().all()
-            docs["used_by"] = [e.source_node_id for e in edges][:20]
+            docs["used_by"] = filter_path_list([e.source_node_id for e in edges], exclude_spec)[:20]
             # Candidates
             if len(sym_matches) > 1:  # type: ignore[possibly-undefined]
-                docs["candidates"] = [
-                    {"name": m.name, "kind": m.kind, "file_path": m.file_path}
-                    for m in sym_matches[1:5]  # type: ignore[possibly-undefined]
-                ]
+                docs["candidates"] = filter_dicts_by_key(
+                    [
+                        {"name": m.name, "kind": m.kind, "file_path": m.file_path}
+                        for m in sym_matches[1:5]  # type: ignore[possibly-undefined]
+                    ],
+                    "file_path",
+                    exclude_spec,
+                )
 
         result_data["docs"] = docs
 
@@ -616,6 +643,7 @@ async def _resolve_one_target(
             result_data,
             want_callers=want_callers,
             want_callees=want_callees,
+            exclude_spec=exclude_spec,
         )
 
     # --- Metrics (replaces get_graph_metrics) ---
@@ -624,7 +652,9 @@ async def _resolve_one_target(
 
     # --- Community (replaces get_community) ---
     if include and "community" in include:
-        await _resolve_community(session, repository, target, result_data)
+        await _resolve_community(
+            session, repository, target, result_data, exclude_spec=exclude_spec
+        )
 
     # --- Code health (Phase 2) ---
     if include and "health" in include:

@@ -112,7 +112,22 @@ async def _search_single_repo(
             "relevance_score": r.score,
         })
 
-    return output[:limit], method
+    output = output[:limit]
+
+    # Attach target_path and drop excluded hits per repo (so federated search
+    # honours each repo's own exclude_patterns) before aggregation.
+    if output:
+        page_ids = [item["page_id"] for item in output]
+        async with get_session(ctx.session_factory) as session:
+            res = await session.execute(
+                select(Page.id, Page.target_path).where(Page.id.in_(page_ids))
+            )
+            page_info = {row[0]: row[1] for row in res.all()}
+        for item in output:
+            item["target_path"] = page_info.get(item["page_id"], "")
+        output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
+
+    return output, method
 
 
 async def _federated_search(query: str, limit: int, page_type: str | None) -> dict:

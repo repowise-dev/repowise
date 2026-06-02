@@ -30,6 +30,7 @@ from repowise.core.persistence.models import (
     HealthFinding,
     Repository,
 )
+from repowise.server.mcp_server._helpers import filter_dicts_by_key, filter_path_list
 
 # Minimum confidence for call edges to filter false positives
 _MIN_CALL_CONFIDENCE = 0.7
@@ -44,6 +45,7 @@ async def _resolve_call_graph(
     *,
     want_callers: bool = False,
     want_callees: bool = False,
+    exclude_spec: Any = None,
 ) -> None:
     """Resolve callers/callees for a symbol and attach to result_data."""
     repo_id = repository.id
@@ -129,6 +131,9 @@ async def _resolve_call_graph(
         else:
             callees.append(entry)
 
+    callers = filter_dicts_by_key(callers, "file", exclude_spec)
+    callees = filter_dicts_by_key(callees, "file", exclude_spec)
+
     # Sort by confidence DESC
     callers.sort(key=lambda x: -(x.get("confidence") or 0))
     callees.sort(key=lambda x: -(x.get("confidence") or 0))
@@ -187,6 +192,8 @@ async def _resolve_community(
     repository: Repository,
     target: str,
     result_data: dict[str, Any],
+    *,
+    exclude_spec: Any = None,
 ) -> None:
     """Resolve community membership and attach to result_data["community"]."""
     repo_id = repository.id
@@ -206,7 +213,7 @@ async def _resolve_community(
 
     # Get top members (cap at 10 for compact output)
     members = await get_community_members(session, repo_id, node.community_id, limit=10)
-    member_paths = [m.node_id for m in members]
+    member_paths = filter_path_list([m.node_id for m in members], exclude_spec)
 
     # Neighboring communities (cap at 5)
     cross_edges = await get_cross_community_edges(session, repo_id, node.community_id)
