@@ -41,6 +41,29 @@ from .scoring import attach_impacts, compute_kpis, score_file
 log = structlog.get_logger(__name__)
 
 
+def _log_duplication_diagnostics(report: DuplicationReport) -> None:
+    """Emit a debug line when a duplication guard fired.
+
+    Skipped bundles / capped buckets are otherwise invisible — surfacing
+    them explains why a repo produced fewer clone findings than expected
+    (and confirms the issue-#341 hang guards are doing their job).
+    """
+    diag = report.diagnostics
+    if not diag:
+        return
+    if any(
+        diag.get(k)
+        for k in (
+            "skipped_minified",
+            "skipped_token_cap",
+            "window_budget_hit",
+            "degenerate_buckets",
+            "timed_out",
+        )
+    ):
+        log.debug("health_duplication_limits", **diag)
+
+
 def _is_test_file(rel_path: str) -> bool:
     p = rel_path.lower()
     return (
@@ -268,6 +291,7 @@ class HealthAnalyzer:
         else:
             try:
                 dup_report = detect_clones(self.parsed_files, self.git_meta_map)
+                _log_duplication_diagnostics(dup_report)
             except Exception as exc:
                 log.debug("health_duplication_failed", error=str(exc))
                 dup_report = DuplicationReport()
@@ -375,6 +399,7 @@ class HealthAnalyzer:
                 dup_report = await asyncio.to_thread(
                     detect_clones, self.parsed_files, self.git_meta_map
                 )
+                _log_duplication_diagnostics(dup_report)
             except Exception as exc:
                 log.debug("health_duplication_failed", error=str(exc))
                 dup_report = DuplicationReport()

@@ -21,6 +21,7 @@ size.
 from __future__ import annotations
 
 import json
+import time
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ from typing import Any
 
 import structlog
 
+from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
 from .rabin_karp import WindowHash, index_by_hash, rolling_hashes
 from .tokenizer import Token, tokenize_file
 
@@ -76,6 +78,10 @@ class DuplicationReport:
     duplication_pct: dict[str, float] = field(default_factory=dict)
     # Per-file pair index for fast lookups by biomarker.
     pairs_by_file: dict[str, list[ClonePair]] = field(default_factory=dict)
+    # Flat counters describing how the resource guards behaved (files
+    # skipped as minified, degenerate buckets dropped, deadline hit, …).
+    # Empty on the no-op fallback path. See ``limits.DuplicationDiagnostics``.
+    diagnostics: dict[str, int | bool] = field(default_factory=dict)
 
 
 def _read_source(abs_path: str) -> bytes | None:
@@ -186,74 +192,197 @@ def detect_clones(
     *,
     window_tokens: int = DEFAULT_WINDOW_TOKENS,
     min_lines: int = DEFAULT_MIN_LINES,
+    limits: DuplicationLimits | None = None,
 ) -> DuplicationReport:
     """Run the duplication pipeline over the supplied parsed files.
 
-    The detector reads source bytes from ``ParsedFile.file_info.abs_path``
-    and tokenizes each file once. Skipping files where tokenization
-    returns an empty list (unsupported language, parse failure) keeps
-    the rest of the pipeline running.
+    Thin orchestrator over four bounded stages:
+
+    1. :func:`_collect_windows` — read + tokenize each file, skipping
+       minified/generated content and over-budget files.
+    2. ``index_by_hash`` — group candidate windows by rolling hash.
+    3. :func:`_pairs_from_buckets` — verify collisions into clone pairs,
+       capping degenerate buckets and honouring a wall-clock deadline.
+    4. :func:`_finalize_pairs` / :func:`_aggregate` — merge, filter by
+       size, weight by co-change, and roll up per-file metrics.
+
+    Every stage is bounded by :class:`~.limits.DuplicationLimits` so no
+    repo shape (minified bundles, generated tables) can wedge the run —
+    see issue #341.
     """
     meta_map = git_meta_map or {}
+    lim = limits or DuplicationLimits()
+    diag = DuplicationDiagnostics()
+
+    per_file_tokens, per_file_nloc, all_windows = _collect_windows(
+        parsed_files, window_tokens, lim, diag
+    )
+    if not all_windows:
+        return DuplicationReport(diagnostics=diag.as_log_fields())
+
+    bucket = index_by_hash(all_windows)
+    raw_pairs = _pairs_from_buckets(bucket, per_file_tokens, window_tokens, lim, diag)
+
+    final = _finalize_pairs(_merge_adjacent_pairs(raw_pairs), min_lines, meta_map)
+    pairs_by_file, duplication_pct = _aggregate(final, per_file_nloc)
+
+    return DuplicationReport(
+        pairs=final,
+        duplication_pct=duplication_pct,
+        pairs_by_file=pairs_by_file,
+        diagnostics=diag.as_log_fields(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 — windowing
+# ---------------------------------------------------------------------------
+
+
+def _collect_windows(
+    parsed_files: Iterable[Any],
+    window_tokens: int,
+    limits: DuplicationLimits,
+    diag: DuplicationDiagnostics,
+) -> tuple[dict[str, list[Token]], dict[str, int], list[WindowHash]]:
+    """Tokenize each file once and emit its rolling-hash windows.
+
+    Files are dropped (and counted in *diag*) when they are unreadable,
+    minified/generated, shorter than one window, or exceed the per-file
+    token cap. Collection stops cleanly once the repo-wide window budget
+    is reached so peak memory stays bounded.
+    """
     per_file_tokens: dict[str, list[Token]] = {}
     per_file_nloc: dict[str, int] = {}
     all_windows: list[WindowHash] = []
 
     for pf in parsed_files:
+        diag.files_considered += 1
         path = pf.file_info.path
         language = pf.file_info.language
+
         source = _read_source(pf.file_info.abs_path)
         if source is None:
+            diag.skipped_unreadable += 1
             continue
+        if looks_minified(source, limits):
+            diag.skipped_minified += 1
+            continue
+
         toks = tokenize_file(language, source)
         if len(toks) < window_tokens:
             continue
+        if len(toks) > limits.max_tokens_per_file:
+            diag.skipped_token_cap += 1
+            continue
+
+        windows = rolling_hashes(path, toks, window_tokens)
+        if len(all_windows) + len(windows) > limits.max_total_windows:
+            diag.window_budget_hit = True
+            break
+
         per_file_tokens[path] = toks
         per_file_nloc[path] = _nloc(source)
-        all_windows.extend(rolling_hashes(path, toks, window_tokens))
+        all_windows.extend(windows)
+        diag.files_tokenized += 1
 
-    if not all_windows:
-        return DuplicationReport()
+    diag.total_windows = len(all_windows)
+    return per_file_tokens, per_file_nloc, all_windows
 
-    bucket = index_by_hash(all_windows)
+
+# ---------------------------------------------------------------------------
+# Stage 2 — bucket verification
+# ---------------------------------------------------------------------------
+
+
+def _pairs_from_buckets(
+    bucket: dict[int, list[WindowHash]],
+    per_file_tokens: dict[str, list[Token]],
+    window_tokens: int,
+    limits: DuplicationLimits,
+    diag: DuplicationDiagnostics,
+) -> list[ClonePair]:
+    """Verify each hash bucket into clone pairs.
+
+    Buckets larger than ``limits.max_bucket_windows`` are degenerate
+    repetition (boilerplate, generated code) — emitting their O(k²) pairs
+    is pure noise, so they are skipped and counted. A soft wall-clock
+    deadline guards against any unanticipated pathology: on expiry we
+    return the pairs found so far rather than spinning indefinitely.
+    """
     raw_pairs: list[ClonePair] = []
     seen: set[tuple[str, int, str, int]] = set()
+    deadline = (time.monotonic() + limits.time_budget_secs) if limits.time_budget_secs else None
 
-    for windows in bucket.values():
+    for i, windows in enumerate(bucket.values()):
         if len(windows) < 2:
             continue
-        # All-pairs within a bucket — buckets are small in practice.
-        for i in range(len(windows)):
-            for j in range(i + 1, len(windows)):
-                a, b = windows[i], windows[j]
-                # Canonicalize so (file_a, file_b) is stable.
-                if (a.file_path, a.start_index) > (b.file_path, b.start_index):
-                    a, b = b, a
-                key = (a.file_path, a.start_index, b.file_path, b.start_index)
-                if key in seen:
-                    continue
-                seen.add(key)
-                if not _tokens_equal(
-                    per_file_tokens[a.file_path],
-                    per_file_tokens[b.file_path],
-                    a.start_index,
-                    b.start_index,
-                    window_tokens,
-                ):
-                    continue
-                raw_pairs.append(
-                    ClonePair(
-                        file_a=a.file_path,
-                        file_b=b.file_path,
-                        a_start_line=a.start_line,
-                        a_end_line=a.end_line,
-                        b_start_line=b.start_line,
-                        b_end_line=b.end_line,
-                        token_count=window_tokens,
-                    )
-                )
+        if len(windows) > limits.max_bucket_windows:
+            diag.degenerate_buckets += 1
+            continue
+        # Check the clock occasionally (cheap) rather than per-pair.
+        if deadline is not None and (i & 0x3FF) == 0 and time.monotonic() > deadline:
+            diag.timed_out = True
+            break
+        _verify_bucket(windows, per_file_tokens, window_tokens, seen, raw_pairs)
 
-    merged = _merge_adjacent_pairs(raw_pairs)
+    return raw_pairs
+
+
+def _verify_bucket(
+    windows: list[WindowHash],
+    per_file_tokens: dict[str, list[Token]],
+    window_tokens: int,
+    seen: set[tuple[str, int, str, int]],
+    out: list[ClonePair],
+) -> None:
+    """Confirm every unordered pair in one (bounded) hash bucket.
+
+    Hash equality is necessary but not sufficient — ``_tokens_equal``
+    rejects collisions by comparing the actual token sequences.
+    """
+    for i in range(len(windows)):
+        for j in range(i + 1, len(windows)):
+            a, b = windows[i], windows[j]
+            # Canonicalize so (file_a, file_b) ordering is stable.
+            if (a.file_path, a.start_index) > (b.file_path, b.start_index):
+                a, b = b, a
+            key = (a.file_path, a.start_index, b.file_path, b.start_index)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not _tokens_equal(
+                per_file_tokens[a.file_path],
+                per_file_tokens[b.file_path],
+                a.start_index,
+                b.start_index,
+                window_tokens,
+            ):
+                continue
+            out.append(
+                ClonePair(
+                    file_a=a.file_path,
+                    file_b=b.file_path,
+                    a_start_line=a.start_line,
+                    a_end_line=a.end_line,
+                    b_start_line=b.start_line,
+                    b_end_line=b.end_line,
+                    token_count=window_tokens,
+                )
+            )
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 — finalize + roll up
+# ---------------------------------------------------------------------------
+
+
+def _finalize_pairs(
+    merged: list[ClonePair],
+    min_lines: int,
+    meta_map: dict[str, dict[str, Any]],
+) -> list[ClonePair]:
+    """Drop sub-threshold pairs and attach co-change weight."""
     final: list[ClonePair] = []
     for p in merged:
         if min(p.a_line_count, p.b_line_count) < min_lines:
@@ -271,7 +400,14 @@ def detect_clones(
                 co_change_count=score,
             )
         final.append(p)
+    return final
 
+
+def _aggregate(
+    final: list[ClonePair],
+    per_file_nloc: dict[str, int],
+) -> tuple[dict[str, list[ClonePair]], dict[str, float]]:
+    """Build the per-file pair index and duplication percentages."""
     pairs_by_file: dict[str, list[ClonePair]] = defaultdict(list)
     dup_lines: dict[str, int] = defaultdict(int)
     for p in final:
@@ -290,11 +426,7 @@ def detect_clones(
         # the same physical lines.
         duplication_pct[path] = round(min(100.0, 100.0 * dup / nloc), 2)
 
-    return DuplicationReport(
-        pairs=final,
-        duplication_pct=duplication_pct,
-        pairs_by_file=dict(pairs_by_file),
-    )
+    return dict(pairs_by_file), duplication_pct
 
 
 def _nloc(source: bytes) -> int:
