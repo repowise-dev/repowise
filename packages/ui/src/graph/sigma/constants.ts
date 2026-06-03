@@ -121,13 +121,3 @@ export const LABEL_SIZE = 11;
 export const LABEL_DENSITY = 0.15;
 export const LABEL_GRID_CELL_SIZE = 80;
 export const LABEL_RENDERED_SIZE_THRESHOLD = 6;
-
-// ---- Surface depth system (for panels, tooltips, controls) ----
-
-export const SURFACE_COLORS = {
-  void: "#06060a",
-  deep: "#0a0a10",
-  surface: "#101018",
-  elevated: "#16161f",
-  hover: "#1c1c28",
-} as const;
