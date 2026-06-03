@@ -461,3 +461,109 @@ class TestCuratedTour:
     def test_flag_off_leaves_tour_empty(self, large_repo):
         kg = _curate(large_repo, enabled=False)
         assert kg.tour == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — node typing & never-empty summaries
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def typed_repo():
+    """A repo exercising infra/CI/data typing plus a barrel and a test."""
+    barrel = "packages/p/index.ts"
+    paths = [
+        ".github/workflows/ci.yml",
+        "Dockerfile",
+        "infra/main.tf",
+        "db/migrations/001_init.sql",
+        "config/app.yaml",
+        "README.md",
+        "src/api/route.py",
+        "tests/unit/test_route.py",
+        barrel,
+    ]
+    return build_repo(
+        paths,
+        tests={"tests/unit/test_route.py"},
+        entries={barrel},
+        barrels={barrel},
+    )
+
+
+def _node_by_path(kg, path):
+    return next(n for n in kg.nodes if n.get("filePath") == path)
+
+
+class TestNodeTyping:
+    def test_ci_workflow_is_pipeline(self, typed_repo):
+        kg = _curate(typed_repo, enabled=True)
+        n = _node_by_path(kg, ".github/workflows/ci.yml")
+        assert n["type"] == "pipeline"
+        assert "ci" in n["tags"]
+
+    def test_dockerfile_and_terraform_are_infra(self, typed_repo):
+        kg = _curate(typed_repo, enabled=True)
+        for p in ("Dockerfile", "infra/main.tf"):
+            n = _node_by_path(kg, p)
+            assert n["type"] == "service"
+            assert "infra" in n["tags"]
+
+    def test_migration_sql_is_schema(self, typed_repo):
+        kg = _curate(typed_repo, enabled=True)
+        n = _node_by_path(kg, "db/migrations/001_init.sql")
+        assert n["type"] == "schema"
+        assert "data" in n["tags"]
+
+
+class TestSummaryFloor:
+    def test_no_empty_file_summary(self, typed_repo, large_repo):
+        for repo in (typed_repo, large_repo):
+            kg = _curate(repo, enabled=True)
+            for n in kg.nodes:
+                if n["id"].startswith("file:"):
+                    assert n["summary"], f"empty summary for {n['filePath']}"
+
+    def test_barrel_summary_is_honest(self, typed_repo):
+        kg = _curate(typed_repo, enabled=True)
+        n = _node_by_path(kg, "packages/p/index.ts")
+        assert "barrel" in n["summary"].lower()
+
+    def test_test_summary_names_target(self, typed_repo):
+        kg = _curate(typed_repo, enabled=True)
+        n = _node_by_path(kg, "tests/unit/test_route.py")
+        assert n["summary"].lower().startswith("tests for")
+
+    def test_flag_off_leaves_summaries_empty(self, typed_repo):
+        kg = _curate(typed_repo, enabled=False)
+        assert all(n["summary"] == "" for n in kg.nodes if n["id"].startswith("file:"))
+
+    def test_deterministic(self, typed_repo):
+        a = _curate(typed_repo, enabled=True)
+        b = _curate(typed_repo, enabled=True)
+        assert [n.get("summary") for n in a.nodes] == [n.get("summary") for n in b.nodes]
+
+
+class TestSummaryFloorDeferral:
+    def test_defer_leaves_summaries_for_later(self, typed_repo):
+        # Generate mode defers the floor so page backfill can win first.
+        kg = curate_knowledge_graph(
+            _build_skeleton(typed_repo),
+            parsed_files=typed_repo.parsed,
+            graph_builder=typed_repo.builder,
+            repo_structure=typed_repo.repo_structure,
+            community_info=typed_repo.builder.community_info(),
+            enabled=True,
+            defer_summary_floor=True,
+        )
+        assert any(n["summary"] == "" for n in kg.nodes if n["id"].startswith("file:"))
+
+    def test_apply_floor_fills_only_empties(self, typed_repo):
+        from repowise.core.analysis.kg_curation import apply_summary_floor
+
+        kg = _build_skeleton(typed_repo)
+        # Simulate a rich page summary already backfilled onto one node.
+        _node_by_path(kg, "src/api/route.py")["summary"] = "Rich page summary."
+        apply_summary_floor(kg, typed_repo.parsed)
+        assert _node_by_path(kg, "src/api/route.py")["summary"] == "Rich page summary."
+        assert all(n["summary"] for n in kg.nodes if n["id"].startswith("file:"))
