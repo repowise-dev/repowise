@@ -40,17 +40,17 @@ const DECISION_NODE_SIZE = { width: 200, height: 72 };
 const CODE_NODE_SIZE = { width: 180, height: 44 };
 
 const STATUS_DOT: Record<string, string> = {
-  active: "#22c55e",
-  proposed: "#3b82f6",
-  deprecated: "#ef4444",
-  superseded: "#64748b",
+  active: "var(--color-success)",
+  proposed: "var(--color-info)",
+  deprecated: "var(--color-error)",
+  superseded: "var(--color-text-tertiary)",
 };
 
 const EDGE_STYLE: Record<DecisionEdgeKind, { stroke: string; label: string; dashed?: boolean }> = {
-  supersedes: { stroke: "#a78bfa", label: "supersedes" },
-  refines: { stroke: "#38bdf8", label: "refines" },
-  relates_to: { stroke: "#94a3b8", label: "relates to" },
-  conflicts_with: { stroke: "#ef4444", label: "conflicts" },
+  supersedes: { stroke: "var(--color-accent-secondary)", label: "supersedes" },
+  refines: { stroke: "var(--color-edge-co-change)", label: "refines" },
+  relates_to: { stroke: "var(--color-text-tertiary)", label: "relates to" },
+  conflicts_with: { stroke: "var(--color-error)", label: "conflicts" },
 };
 
 // ---------------------------------------------------------------------------
@@ -86,9 +86,9 @@ const DecisionNode = memo(function DecisionNode({ data }: NodeProps) {
         minHeight: DECISION_NODE_SIZE.height,
         padding: "8px 10px",
         borderRadius: 8,
-        border: `1px solid ${stale ? "#f59e0b" : "var(--color-border-default, #334155)"}`,
-        background: "var(--color-bg-surface, #0f172a)",
-        color: "var(--color-text-primary, #e2e8f0)",
+        border: `1px solid ${stale ? "var(--color-warning)" : "var(--color-border-default)"}`,
+        background: "var(--color-bg-surface)",
+        color: "var(--color-text-primary)",
         fontSize: 12,
         cursor: "pointer",
       }}
@@ -97,7 +97,7 @@ const DecisionNode = memo(function DecisionNode({ data }: NodeProps) {
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
         <span style={{ width: 9, height: 9, borderRadius: 999, background: dot, flexShrink: 0 }} />
-        <span style={{ fontSize: 10, textTransform: "capitalize", color: "var(--color-text-tertiary, #94a3b8)" }}>
+        <span style={{ fontSize: 10, textTransform: "capitalize", color: "var(--color-text-tertiary)" }}>
           {decision.status}
           {stale && " · stale"}
         </span>
@@ -128,9 +128,9 @@ const CodeNode = memo(function CodeNode({ data }: NodeProps) {
         minHeight: CODE_NODE_SIZE.height,
         padding: "6px 8px",
         borderRadius: 6,
-        border: "1px dashed var(--color-border-default, #334155)",
-        background: "var(--color-bg-elevated, rgba(148,163,184,0.08))",
-        color: "var(--color-text-secondary, #94a3b8)",
+        border: "1px dashed var(--color-border-default)",
+        background: "var(--color-bg-elevated)",
+        color: "var(--color-text-secondary)",
         fontSize: 10,
         fontFamily: "var(--font-mono, ui-monospace, monospace)",
       }}
@@ -168,7 +168,7 @@ const DecisionEdge = memo(function DecisionEdge(props: EdgeProps) {
       <BaseEdge
         id={id}
         path={path}
-        style={{ stroke: "#64748b", strokeWidth: 1, strokeDasharray: "4 3" }}
+        style={{ stroke: "var(--color-text-tertiary)", strokeWidth: 1, strokeDasharray: "4 3" }}
       />
     );
   }
@@ -193,14 +193,14 @@ const DecisionEdge = memo(function DecisionEdge(props: EdgeProps) {
           style={{
             position: "absolute",
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-            background: isConflict ? "rgba(239,68,68,0.95)" : "rgba(15, 23, 42, 0.92)",
-            color: isConflict ? "#fff" : "#e2e8f0",
+            background: isConflict ? "var(--color-error)" : "var(--color-bg-overlay)",
+            color: isConflict ? "white" : "var(--color-text-primary)",
             padding: "1px 6px",
             borderRadius: 4,
             fontSize: 9,
             fontWeight: 600,
             pointerEvents: "none",
-            border: `1px solid ${isConflict ? "rgba(239,68,68,0.6)" : "rgba(148, 163, 184, 0.25)"}`,
+            border: `1px solid ${isConflict ? "var(--color-error)" : "var(--color-border-default)"}`,
             whiteSpace: "nowrap",
           }}
           className="nodrag nopan"
@@ -364,8 +364,8 @@ function DecisionGraphViewInner({ graph, isLoading, onSelectDecision }: Decision
         minHeight: 420,
         display: "flex",
         flexDirection: "column",
-        background: "var(--color-bg-canvas, #0b1220)",
-        border: "1px solid var(--color-border-default, #334155)",
+        background: "var(--color-bg-canvas)",
+        border: "1px solid var(--color-border-default)",
         borderRadius: 8,
         overflow: "hidden",
       }}
@@ -376,15 +376,15 @@ function DecisionGraphViewInner({ graph, isLoading, onSelectDecision }: Decision
           alignItems: "center",
           gap: 12,
           padding: "6px 10px",
-          borderBottom: "1px solid var(--color-border-default, #334155)",
+          borderBottom: "1px solid var(--color-border-default)",
           fontSize: 11,
-          color: "var(--color-text-secondary, #94a3b8)",
+          color: "var(--color-text-secondary)",
         }}
       >
-        <Legend color="#a78bfa" label="supersedes" />
-        <Legend color="#38bdf8" label="refines" />
-        <Legend color="#94a3b8" label="relates to" />
-        <Legend color="#ef4444" label="conflicts" />
+        <Legend color={EDGE_STYLE.supersedes.stroke} label="supersedes" />
+        <Legend color={EDGE_STYLE.refines.stroke} label="refines" />
+        <Legend color={EDGE_STYLE.relates_to.stroke} label="relates to" />
+        <Legend color={EDGE_STYLE.conflicts_with.stroke} label="conflicts" />
         <label style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
           <input type="checkbox" checked={showCode} onChange={(e) => setShowCode(e.target.checked)} />
           Code links
@@ -408,7 +408,10 @@ function DecisionGraphViewInner({ graph, isLoading, onSelectDecision }: Decision
           nodesDraggable={false}
           nodesConnectable={false}
         >
-          <Background gap={28} size={1} color="rgba(148,163,184,0.18)" />
+          {/* Theme-neutral dot grid — React Flow renders this as an SVG fill
+              attribute, which can't resolve var(); a low-alpha gray reads on
+              both the warm-paper and charcoal canvases. */}
+          <Background gap={28} size={1} color="rgba(140,127,136,0.18)" />
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
@@ -435,7 +438,7 @@ function Centered({ text }: { text: string }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        color: "var(--color-text-tertiary, #64748b)",
+        color: "var(--color-text-tertiary)",
         fontSize: 13,
         pointerEvents: "none",
         zIndex: 3,

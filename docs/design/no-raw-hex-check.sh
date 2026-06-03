@@ -28,7 +28,6 @@ ALLOW+='|workspace/workspace-graph-node\.tsx'            # dynamic langColor hex
 ALLOW+='|/c4/'                                            # C4 architecture diagram subsystem
 ALLOW+='|/graph/sigma/'                                   # Sigma canvas renderer
 ALLOW+='|graph-primitives/tone-styles\.ts'               # BRAND: categorical node-tone palette (like lang colors)
-ALLOW+='|decisions/decision-graph-view\.tsx'             # decision graph viz
 ALLOW+='|wiki/git-history-panel\.tsx'                     # graph viz
 ALLOW+='|graph/(graph-flow|path-finder-panel|workspace-graph)\.tsx' # remaining graph canvas glue
 
