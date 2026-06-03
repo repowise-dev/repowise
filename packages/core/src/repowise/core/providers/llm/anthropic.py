@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from anthropic import APIStatusError as _AnthropicAPIStatusError
@@ -22,7 +23,6 @@ from anthropic import AsyncAnthropic
 from anthropic import RateLimitError as _AnthropicRateLimitError
 from tenacity import (
     RetryError,
-    before_sleep_log,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
@@ -36,8 +36,10 @@ from repowise.core.providers.llm.base import (
     ChatToolCall,
     GeneratedResponse,
     ProviderError,
+    ProviderModelOption,
     RateLimitError,
     ensure_reasoning_supported,
+    fallback_model_option,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
@@ -50,6 +52,57 @@ log = structlog.get_logger(__name__)
 _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
 _MAX_WAIT = 4.0
+_DEFAULT_BASE_URL = "https://api.anthropic.com"
+
+
+def _anthropic_model_options(
+    api_key: str,
+    base_url: str,
+    fallback_model: str,
+) -> tuple[ProviderModelOption, ...]:
+    fallback = fallback_model_option(fallback_model)
+    try:
+        import httpx
+
+        models_url = base_url.rstrip("/")
+        if not models_url.endswith("/v1"):
+            models_url = f"{models_url}/v1"
+        response = httpx.get(
+            f"{models_url}/models",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        data = response.json().get("data", [])
+    except Exception:
+        return (fallback,)
+
+    if not isinstance(data, list):
+        return (fallback,)
+
+    options: list[ProviderModelOption] = []
+    for raw in data:
+        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+            continue
+        model_id = raw["id"]
+        display_name = raw.get("display_name")
+        options.append(
+            ProviderModelOption(
+                model=model_id,
+                label=display_name if isinstance(display_name, str) else model_id,
+                reasoning_modes=("auto",),
+                recommended=model_id == fallback_model,
+                source="api",
+            )
+        )
+
+    if not options:
+        return (fallback,)
+
+    return tuple(options)
 
 
 class AnthropicProvider(BaseProvider):
@@ -78,6 +131,8 @@ class AnthropicProvider(BaseProvider):
                 "No API key provided. Pass api_key= or set ANTHROPIC_API_KEY.",
             )
         resolved_base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL")
+        self._api_key = resolved_key
+        self._base_url = resolved_base_url or _DEFAULT_BASE_URL
         self._client = AsyncAnthropic(api_key=resolved_key, base_url=resolved_base_url)
         self._model = model
         self._rate_limiter = rate_limiter
@@ -90,6 +145,9 @@ class AnthropicProvider(BaseProvider):
     @property
     def model_name(self) -> str:
         return self._model
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        return _anthropic_model_options(self._api_key, self._base_url, self._model)
 
     async def generate(
         self,
@@ -156,9 +214,7 @@ class AnthropicProvider(BaseProvider):
         except _AnthropicRateLimitError as exc:
             raise RateLimitError("anthropic", str(exc), status_code=429) from exc
         except _AnthropicAPIStatusError as exc:
-            raise ProviderError(
-                "anthropic", str(exc), status_code=exc.status_code
-            ) from exc
+            raise ProviderError("anthropic", str(exc), status_code=exc.status_code) from exc
 
         cached = getattr(response.usage, "cache_read_input_tokens", 0) or 0
         result = GeneratedResponse(
@@ -220,11 +276,13 @@ class AnthropicProvider(BaseProvider):
         anthropic_tools = []
         for t in tools:
             fn = t.get("function", t)
-            anthropic_tools.append({
-                "name": fn["name"],
-                "description": fn.get("description", ""),
-                "input_schema": fn.get("parameters", {}),
-            })
+            anthropic_tools.append(
+                {
+                    "name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters", {}),
+                }
+            )
 
         # Convert OpenAI-format messages to Anthropic format
         anthropic_messages = _to_anthropic_messages(messages)
@@ -262,7 +320,11 @@ class AnthropicProvider(BaseProvider):
                     elif event.type == "content_block_stop":
                         if current_tool_name:
                             try:
-                                args = _json.loads(current_tool_input_json) if current_tool_input_json else {}
+                                args = (
+                                    _json.loads(current_tool_input_json)
+                                    if current_tool_input_json
+                                    else {}
+                                )
                             except Exception:
                                 args = {}
                             yield ChatStreamEvent(
@@ -353,14 +415,18 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
 
         if role == "tool":
             # OpenAI tool result → Anthropic user message with tool_result block
-            result.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": msg.get("tool_call_id", ""),
-                    "content": msg.get("content", ""),
-                }],
-            })
+            result.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": msg.get("tool_call_id", ""),
+                            "content": msg.get("content", ""),
+                        }
+                    ],
+                }
+            )
         elif role == "assistant":
             content_blocks: list[dict[str, Any]] = []
             # Text content
@@ -371,18 +437,21 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
             for tc in msg.get("tool_calls", []):
                 fn = tc.get("function", {})
                 import json as _json
+
                 args = fn.get("arguments", "{}")
                 if isinstance(args, str):
                     try:
                         args = _json.loads(args)
                     except Exception:
                         args = {}
-                content_blocks.append({
-                    "type": "tool_use",
-                    "id": tc.get("id", ""),
-                    "name": fn.get("name", ""),
-                    "input": args,
-                })
+                content_blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "input": args,
+                    }
+                )
             if content_blocks:
                 result.append({"role": "assistant", "content": content_blocks})
         else:

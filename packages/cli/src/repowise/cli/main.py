@@ -36,8 +36,8 @@ def cli(ctx: click.Context) -> None:
     # Self-heal: migrate any legacy `repowise augment` Claude Code hooks
     # to the import-isolated `repowise-augment` console script. Cheap,
     # silent, idempotent — only writes when there is something to change.
-    # Skipped when invoked as the augment subcommand itself (hot path on
-    # every Grep/Glob/Bash) — `augment_hook.main` handles that case.
+    # Skipped when invoked as the augment subcommand itself (hook hot path) —
+    # `augment_hook.main` handles that case.
     if ctx.invoked_subcommand != "augment":
         try:
             from repowise.cli.editor_integrations.claude_config import migrate_claude_code_hooks
@@ -72,4 +72,3 @@ register_command(reindex_command)
 register_command(workspace_group)
 
 cli_registry.apply(cli)
-

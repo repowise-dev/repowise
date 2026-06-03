@@ -38,12 +38,16 @@ class TestCliBasics:
         assert "--dry-run" in result.output
         assert "--skip-tests" in result.output
         assert "--reasoning" in result.output
+        assert "xhigh" in result.output
+        assert "--codex" in result.output
+        assert "--agents" in result.output
 
     def test_update_help(self, runner):
         result = runner.invoke(cli, ["update", "--help"])
         assert result.exit_code == 0
         assert "--since" in result.output
         assert "--reasoning" in result.output
+        assert "xhigh" in result.output
 
     def test_search_help(self, runner):
         result = runner.invoke(cli, ["search", "--help"])

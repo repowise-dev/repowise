@@ -1,15 +1,15 @@
 # MCP Tools Reference
 
-repowise exposes 9 tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Cursor, Cline, Windsurf) structured access to your codebase intelligence — dependency graph, git history, documentation, and architectural decisions.
+repowise exposes 9 tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence — dependency graph, git history, documentation, and architectural decisions.
 
 **Start the MCP server:**
 
 ```bash
-repowise mcp --transport stdio           # for Claude Code, Cursor, etc.
+repowise mcp --transport stdio           # for Claude Code, Codex, Cursor, etc.
 repowise mcp --transport sse --port 7338 # for web clients
 ```
 
-**Auto-setup for Claude Code:** `repowise init` automatically registers the MCP server and installs proactive hooks. No manual configuration needed.
+**Auto-setup:** `repowise init` automatically registers the MCP server and installs proactive hooks for Claude Code. `repowise init --codex` writes project-local Codex MCP config and hooks.
 
 ---
 
@@ -287,9 +287,10 @@ The MCP server automatically enriches responses with cross-repo intelligence:
 
 ## Proactive Hooks (Complementary)
 
-In addition to the 9 MCP tools, `repowise init` installs Claude Code hooks that provide **passive, automatic** context enrichment:
+In addition to the 9 MCP tools, `repowise init` installs AI-agent hooks (Claude Code and Codex) that provide **passive, automatic** context enrichment:
 
-- **PreToolUse** — every `Grep`/`Glob` call is enriched with graph context (symbols, importers, dependencies, git signals) at ~24ms latency
-- **PostToolUse** — after git commits, the agent is notified when the wiki is stale
+- **Claude Code PostToolUse** — broad or zero-result `Grep`/`Glob` calls can be enriched with graph context, and git operations can trigger stale-wiki notices.
+- **Codex SessionStart/UserPromptSubmit** — Codex receives concise Repowise MCP workflow guidance when a session or prompt starts.
+- **Codex PostToolUse** — after edits or git operations, Codex receives a freshness reminder when indexed context may be stale.
 
-Hooks fire automatically on every search. MCP tools are for deeper, on-demand investigation. See [Auto-Sync](AUTO_SYNC.md) for details.
+Hooks are lightweight reminders. MCP tools are for deeper, on-demand investigation. See [Auto-Sync](AUTO_SYNC.md) and [Codex Integration](CODEX.md) for details.

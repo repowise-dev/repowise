@@ -50,7 +50,7 @@ source code and no memory of how the codebase got there.
 
 repowise fixes that. It indexes your codebase into **five intelligence layers** —
 dependency graph, git history, auto-generated docs, architectural decisions, and
-code health — and exposes them to Claude Code (and any MCP-compatible agent)
+code health — and exposes them to Claude Code, Codex, and any MCP-compatible agent
 through **nine task-shaped tools**. The result: your agent answers *"why does
 auth work this way?"* instead of *"here is what `auth.ts` contains"* — with
 **fewer tool calls, fewer file reads, and lower cost per query, at comparable
@@ -255,6 +255,10 @@ repowise serve       # workspace dashboard + per-repo pages
 `repowise init` automatically registers the MCP server, installs
 PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, generates `.mcp.json`
 at the project root, and offers a post-commit hook that keeps everything in sync.
+If the Codex CLI is installed and logged in, interactive runs also offer to write
+project-local `.codex/config.toml`, `.codex/hooks.json`, and a managed `AGENTS.md`;
+non-interactive runs require `--codex`. Skip Codex setup with `--no-codex`; force or
+skip `AGENTS.md` with `--agents` / `--no-agents`.
 
 To add the MCP server to another editor manually:
 
@@ -273,7 +277,7 @@ To add the MCP server to another editor manually:
 > commit-triggered update takes **under 30 seconds** and only regenerates the
 > pages your change touched.
 
-**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Config](docs/CONFIG.md)
+**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Config](docs/CONFIG.md)
 
 ---
 
@@ -311,8 +315,8 @@ Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
 | Private repo — no cloud | ✅ | ❌ in development | ❌ OSS forks only | ✅ Enterprise tier | ✅ |
 | Auto-generated documentation | ✅ | ✅ Gemini | ✅ | ✅ PR2Doc | ❌ |
 | MCP server for AI agents | ✅ 9 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
-| Proactive agent hooks | ✅ Pre + PostToolUse | ❌ | ❌ | ❌ | ❌ |
-| Auto-generated CLAUDE.md | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Proactive agent hooks | ✅ Claude + Codex hooks | ❌ | ❌ | ❌ | ❌ |
+| Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Code health score (1–10) | ✅ 25 biomarkers | ❌ | ❌ | ❌ | ✅ 25–30 |
 | Brain Method / LCOM4 / god class | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Test-coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ | ❌ |

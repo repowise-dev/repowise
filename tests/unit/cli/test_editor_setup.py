@@ -11,14 +11,21 @@ from repowise.cli import mcp_config
 from repowise.cli.commands import init_cmd, update_cmd
 from repowise.cli.editor_integrations import claude as claude_integration
 from repowise.cli.editor_integrations import claude_config
+from repowise.cli.editor_integrations import codex as codex_integration
 from repowise.cli.editor_integrations.claude import ClaudeCodeSetup
-from repowise.cli.editor_integrations.defaults import get_default_disabled_project_files
+from repowise.cli.editor_integrations.codex import CodexSetup
+from repowise.cli.editor_integrations.defaults import (
+    get_default_disabled_project_files,
+    get_default_integration_overrides,
+    get_default_project_file_overrides,
+)
 from repowise.cli.editor_setup import (
     EditorSetupOptions,
     refresh_editor_project_files,
     resolve_editor_setup_options,
     write_editor_project_files,
 )
+from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 
 
 def _silent_console() -> Console:
@@ -93,6 +100,13 @@ def test_resolve_editor_setup_options_delegates_to_integrations() -> None:
 def test_default_disabled_project_files_maps_legacy_no_claude_flag() -> None:
     assert get_default_disabled_project_files() == ()
     assert get_default_disabled_project_files(no_claude_md=True) == ("claude_md",)
+
+
+def test_default_overrides_map_codex_flags_to_integration_ids() -> None:
+    assert get_default_project_file_overrides() == {}
+    assert get_default_project_file_overrides(agents_md=False) == {"agents_md": False}
+    assert get_default_integration_overrides() == {}
+    assert get_default_integration_overrides(codex_setup=True) == {"codex": True}
 
 
 def test_write_editor_project_files_saves_common_mcp_before_integrations(
@@ -230,6 +244,195 @@ def test_refresh_editor_project_files_delegates_to_integrations(tmp_path: Path) 
     assert calls == [("refresh", tmp_path, frozenset({"skip"}))]
 
 
+def test_codex_project_setup_writes_project_config_hooks_and_agents(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, Path, bool | None]] = []
+
+    monkeypatch.setattr(mcp_config, "is_codex_cli_installed", lambda: True)
+    monkeypatch.setattr(mcp_config, "is_codex_logged_in", lambda: True)
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_mcp_config",
+        lambda repo_path: (
+            calls.append(("codex-mcp", repo_path, None)) or repo_path / ".codex" / "config.toml"
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_hooks_config",
+        lambda repo_path: (
+            calls.append(("codex-hooks", repo_path, None)) or repo_path / ".codex" / "hooks.json"
+        ),
+    )
+    monkeypatch.setattr(
+        codex_integration,
+        "maybe_generate_agents_md",
+        lambda _console, repo_path, *, agents_md=None: calls.append(
+            ("agents-md", repo_path, agents_md)
+        ),
+    )
+
+    CodexSetup().write_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(
+            integration_overrides={"codex": True},
+            project_file_overrides={"agents_md": False},
+        ),
+    )
+
+    assert calls == [
+        ("codex-mcp", tmp_path, None),
+        ("codex-hooks", tmp_path, None),
+        ("agents-md", tmp_path, False),
+    ]
+
+
+def test_codex_project_setup_enables_agents_by_default_with_codex(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, Path, bool | None]] = []
+
+    monkeypatch.setattr(mcp_config, "is_codex_cli_installed", lambda: True)
+    monkeypatch.setattr(mcp_config, "is_codex_logged_in", lambda: True)
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_mcp_config",
+        lambda repo_path: (
+            calls.append(("codex-mcp", repo_path, None)) or repo_path / ".codex" / "config.toml"
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_hooks_config",
+        lambda repo_path: (
+            calls.append(("codex-hooks", repo_path, None)) or repo_path / ".codex" / "hooks.json"
+        ),
+    )
+    monkeypatch.setattr(
+        codex_integration,
+        "maybe_generate_agents_md",
+        lambda _console, repo_path, *, agents_md=None, default=True: calls.append(
+            ("agents-md", repo_path, agents_md)
+        ),
+    )
+
+    CodexSetup().write_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(integration_overrides={"codex": True}),
+    )
+
+    assert calls == [
+        ("codex-mcp", tmp_path, None),
+        ("codex-hooks", tmp_path, None),
+        ("agents-md", tmp_path, True),
+    ]
+
+
+def test_codex_project_setup_skips_when_disabled(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_mcp_config",
+        lambda _repo_path: calls.append("codex-mcp"),
+    )
+
+    CodexSetup().write_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(integration_overrides={"codex": False}),
+    )
+
+    assert calls == []
+
+
+def test_codex_project_setup_skips_without_explicit_opt_in(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(mcp_config, "is_codex_cli_installed", lambda: True)
+    monkeypatch.setattr(mcp_config, "is_codex_logged_in", lambda: True)
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_mcp_config",
+        lambda _repo_path: calls.append("codex-mcp"),
+    )
+
+    CodexSetup().write_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(),
+    )
+
+    assert calls == []
+
+
+def test_codex_project_setup_writes_agents_without_codex_setup(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, Path, bool | None]] = []
+
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_mcp_config",
+        lambda _repo_path: calls.append(("unexpected-codex-mcp", tmp_path, None)),
+    )
+    monkeypatch.setattr(
+        mcp_config,
+        "save_codex_hooks_config",
+        lambda _repo_path: calls.append(("unexpected-codex-hooks", tmp_path, None)),
+    )
+    monkeypatch.setattr(
+        codex_integration,
+        "maybe_generate_agents_md",
+        lambda _console, repo_path, *, agents_md=None: calls.append(
+            ("agents-md", repo_path, agents_md)
+        ),
+    )
+
+    CodexSetup().write_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(project_file_overrides={"agents_md": True}),
+    )
+
+    assert calls == [("agents-md", tmp_path, True)]
+
+
+def test_codex_refresh_project_files_delegates_to_agents_generator(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls: list[tuple[Path, bool | None, bool]] = []
+
+    monkeypatch.setattr(
+        codex_integration,
+        "maybe_generate_agents_md",
+        lambda _console, repo_path, *, agents_md=None, default=True: calls.append(
+            (repo_path, agents_md, default)
+        ),
+    )
+
+    CodexSetup().refresh_project_files(
+        _silent_console(),
+        tmp_path,
+        EditorSetupOptions(project_file_overrides={"agents_md": True}),
+    )
+
+    assert calls == [(tmp_path, True, False)]
+
+
 def test_claude_refresh_project_files_writes_when_enabled(
     tmp_path: Path,
     monkeypatch: Any,
@@ -314,6 +517,66 @@ def test_update_command_uses_editor_refresh_abstraction() -> None:
     assert "ClaudeMdGenerator" not in source
     assert "EditorFileDataFetcher" not in source
     assert "claude_md" not in source
+
+
+def test_workspace_update_refreshes_agents_for_selected_repos(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    backend = tmp_path / "backend"
+    frontend = tmp_path / "frontend"
+    (backend / ".repowise").mkdir(parents=True)
+    (frontend / ".repowise").mkdir(parents=True)
+    ws_config = WorkspaceConfig(
+        repos=[
+            RepoEntry(path="backend", alias="backend"),
+            RepoEntry(path="frontend", alias="frontend"),
+        ],
+    )
+    calls: list[tuple[Path, dict[str, bool]]] = []
+
+    def fake_refresh(_console: object, repo_path: Path, *, options: EditorSetupOptions):
+        calls.append((repo_path, options.project_file_overrides))
+
+    monkeypatch.setattr(
+        "repowise.cli.editor_setup.refresh_editor_project_files",
+        fake_refresh,
+    )
+
+    update_cmd._refresh_workspace_editor_project_files(
+        ws_root=tmp_path,
+        ws_config=ws_config,
+        repo_filter=None,
+        agents_md=True,
+    )
+
+    assert calls == [
+        (backend.resolve(), {"agents_md": True}),
+        (frontend.resolve(), {"agents_md": True}),
+    ]
+
+
+def test_workspace_generation_rebinds_codex_provider_to_repo(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    class FakeProvider:
+        provider_name = "codex_cli"
+        model_name = "codex_cli/gpt-5.5"
+
+    rebound = object()
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_resolve_provider(provider_name: str, model: str, repo_path: Path) -> object:
+        calls.append((provider_name, model, repo_path))
+        return rebound
+
+    monkeypatch.setattr(init_cmd.workspace, "resolve_provider", fake_resolve_provider)
+
+    result = init_cmd.workspace._workspace_generation_provider_for_repo(FakeProvider(), tmp_path)
+
+    assert result is rebound
+    assert calls == [("codex_cli", "codex_cli/gpt-5.5", tmp_path)]
 
 
 def test_init_command_uses_editor_option_abstraction() -> None:

@@ -9,7 +9,7 @@ live in ``repowise.cli.editor_integrations``.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -37,6 +37,8 @@ class EditorSetupOptions:
 
     disabled_project_files: frozenset[str] = field(default_factory=frozenset)
     prompt_for_project_files: bool = False
+    project_file_overrides: dict[str, bool] = field(default_factory=dict)
+    integration_overrides: dict[str, bool] = field(default_factory=dict)
 
     def with_disabled_project_file(self, project_file_id: str) -> EditorSetupOptions:
         """Return options with one managed project file disabled."""
@@ -44,6 +46,36 @@ class EditorSetupOptions:
         return EditorSetupOptions(
             disabled_project_files=self.disabled_project_files | {project_file_id},
             prompt_for_project_files=self.prompt_for_project_files,
+            project_file_overrides=dict(self.project_file_overrides),
+            integration_overrides=dict(self.integration_overrides),
+        )
+
+    def with_project_file_override(
+        self,
+        project_file_id: str,
+        enabled: bool,
+    ) -> EditorSetupOptions:
+        """Return options with one managed project file explicitly enabled or disabled."""
+
+        return EditorSetupOptions(
+            disabled_project_files=self.disabled_project_files,
+            prompt_for_project_files=self.prompt_for_project_files,
+            project_file_overrides={**self.project_file_overrides, project_file_id: enabled},
+            integration_overrides=dict(self.integration_overrides),
+        )
+
+    def with_integration_override(
+        self,
+        integration_id: str,
+        enabled: bool,
+    ) -> EditorSetupOptions:
+        """Return options with one editor integration explicitly enabled or disabled."""
+
+        return EditorSetupOptions(
+            disabled_project_files=self.disabled_project_files,
+            prompt_for_project_files=self.prompt_for_project_files,
+            project_file_overrides=dict(self.project_file_overrides),
+            integration_overrides={**self.integration_overrides, integration_id: enabled},
         )
 
 
@@ -96,6 +128,8 @@ def resolve_editor_setup_options(
     *,
     disabled_project_files: Iterable[str] | None = None,
     prompt_for_project_files: bool = False,
+    project_file_overrides: Mapping[str, bool] | None = None,
+    integration_overrides: Mapping[str, bool] | None = None,
     integrations: tuple[EditorSetupIntegration, ...] | None = None,
 ) -> EditorSetupOptions:
     """Build setup options, allowing integrations to own their prompts."""
@@ -103,6 +137,8 @@ def resolve_editor_setup_options(
     options = EditorSetupOptions(
         disabled_project_files=frozenset(disabled_project_files or ()),
         prompt_for_project_files=prompt_for_project_files,
+        project_file_overrides=dict(project_file_overrides or {}),
+        integration_overrides=dict(integration_overrides or {}),
     )
     for integration in _resolve_integrations(integrations):
         options = integration.configure_options(console_obj, options)

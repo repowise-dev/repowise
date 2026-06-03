@@ -111,7 +111,7 @@ repowise scans your git history, README files, and inline comments for patterns 
 
 **What it captures:** Human-readable documentation at every level of the hierarchy.
 
-Generation is the only layer that requires an LLM API key. repowise sends structured prompts to your chosen provider (Anthropic, OpenAI, Gemini, Ollama, or LiteLLM) and generates wiki pages at three levels:
+Generation is the only layer that requires an LLM provider. repowise sends structured prompts to your chosen provider (Anthropic, OpenAI, Gemini, Ollama, LiteLLM, or the local Codex CLI provider) and generates wiki pages at three levels:
 
 | Level | What it contains |
 |-------|-----------------|
@@ -161,7 +161,7 @@ The dependency graph is loaded into memory at server startup for fast traversal.
 
 ## The MCP server
 
-The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants via 10 tools. It's the primary interface between repowise and Claude Code, Cursor, Cline, or any other MCP-compatible editor.
+The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants via 10 tools. It's the primary interface between repowise and Claude Code, Codex, Cursor, Cline, or any other MCP-compatible editor.
 
 When you run `repowise mcp`, the server starts in stdio mode and your editor can begin calling tools. The tools are designed to answer the questions an AI needs to make good decisions about your code — not just "what is this file" but "should I edit it", "why is it structured this way", and "what will break if I change it".
 

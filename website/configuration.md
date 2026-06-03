@@ -46,28 +46,33 @@ The main configuration file. Created after first `init`, updated when you pass `
 provider: anthropic                  # LLM provider
 model: claude-sonnet-4-6             # Model identifier
 embedder: gemini                     # Embedding provider
-reasoning: auto                      # auto | off | minimal
+reasoning: auto                      # auto | off/none | minimal | low | medium | high | xhigh | max
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
   - proto/
 commit_limit: 500                    # Max commits per file for git analysis
 follow_renames: false                # Track file renames in git history
+editor_files:
+  claude_md: true
+  agents_md: true
 ```
 
 You can edit this file directly. Changes take effect on the next `init`, `update`, or `serve` run.
 
 `reasoning` controls documentation-generation calls for reasoning-capable chat
-models. `auto` preserves provider defaults. `off` disables Qwen3-style thinking
+models. `auto` preserves provider defaults. `off`/`none` disables Qwen3-style thinking
 for OpenAI-compatible vLLM/SGLang endpoints by sending
 `extra_body.chat_template_kwargs.enable_thinking=false`, and maps to
 OpenRouter's `reasoning.effort=none` for effort-capable OpenRouter model
 families. `minimal` requests OpenAI's lowest supported reasoning effort for
 supported OpenAI reasoning models and maps to OpenRouter's
 `reasoning.effort=minimal` for effort-capable OpenRouter model families.
-Providers or models that cannot translate an explicit mode fail before making
-an API call. The interactive `serve` chat streaming path is separate and does
-not currently consume this setting.
+`low`, `medium`, `high`, `xhigh`, and `max` request native effort levels for
+providers and model families that expose them. Providers or models that cannot
+translate an explicit mode fail before making an API call. The interactive
+`serve` chat streaming path is separate and does not currently consume this
+setting.
 
 ---
 
@@ -171,6 +176,30 @@ repowise init --provider litellm --model azure/gpt-4
 
 ---
 
+### Codex CLI
+
+Use your authenticated local Codex CLI subscription instead of an API key:
+
+```bash
+npm install -g @openai/codex
+codex login
+codex login status
+repowise init --provider codex_cli --codex --yes
+```
+
+`codex_cli/default` uses the Codex CLI's configured model. `codex_cli/gpt-5.5` passes `--model gpt-5.5` to `codex exec`. Repowise records token usage from Codex JSONL output and treats `codex_cli/*` cost as `$0.00` because billing is handled by Codex CLI auth/subscription.
+
+Project-local Codex setup is controlled by:
+
+```yaml
+editor_files:
+  agents_md: true
+```
+
+Use `repowise init --codex` to write `.codex/config.toml` and `.codex/hooks.json`.
+
+---
+
 ### Provider auto-detection
 
 If you don't pass `--provider`, repowise detects your provider by checking:
@@ -178,6 +207,8 @@ If you don't pass `--provider`, repowise detects your provider by checking:
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
 3. API key environment variables, in order: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY`
+
+Codex CLI is intentionally explicit: pass `--provider codex_cli` or set `REPOWISE_PROVIDER=codex_cli`.
 
 ---
 

@@ -10,6 +10,7 @@ import pytest
 from repowise.cli.helpers import (
     CONFIG_FILENAME,
     ensure_repowise_dir,
+    find_repowise_repo_root,
     get_db_url_for_repo,
     get_head_commit,
     get_repowise_dir,
@@ -68,6 +69,28 @@ class TestResolveRepoPath:
         assert result == tmp_path.resolve()
 
 
+class TestFindRepowiseRepoRoot:
+    def test_finds_parent_repowise_dir(self, tmp_path):
+        root = tmp_path / "repo"
+        nested = root / "src" / "pkg"
+        nested.mkdir(parents=True)
+        (root / ".repowise").mkdir()
+
+        assert find_repowise_repo_root(nested) == root.resolve()
+
+    def test_returns_none_when_missing(self, tmp_path):
+        assert find_repowise_repo_root(tmp_path) is None
+
+    def test_ignores_nested_git_dirs(self, tmp_path):
+        root = tmp_path / "repo"
+        nested = root / "vendor" / "dep" / "src"
+        nested.mkdir(parents=True)
+        (root / ".repowise").mkdir()
+        (root / "vendor" / "dep" / ".git").mkdir()
+
+        assert find_repowise_repo_root(nested) == root.resolve()
+
+
 # ---------------------------------------------------------------------------
 # .repowise/ directory
 # ---------------------------------------------------------------------------
@@ -107,12 +130,12 @@ class TestResolveReasoning:
         assert resolve_reasoning("off", {"reasoning": "auto"}) == "off"
 
     def test_env_wins_over_config(self, monkeypatch):
-        monkeypatch.setenv("REPOWISE_REASONING", "minimal")
-        assert resolve_reasoning(config={"reasoning": "off"}) == "minimal"
+        monkeypatch.setenv("REPOWISE_REASONING", "high")
+        assert resolve_reasoning(config={"reasoning": "off"}) == "high"
 
     def test_config_wins_over_default(self, monkeypatch):
         monkeypatch.delenv("REPOWISE_REASONING", raising=False)
-        assert resolve_reasoning(config={"reasoning": "off"}) == "off"
+        assert resolve_reasoning(config={"reasoning": "xhigh"}) == "xhigh"
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +314,7 @@ class TestUpdateLock:
         )
 
         ensure_repowise_dir(tmp_path)
-        (tmp_path / ".repowise" / UPDATE_LOCK_FILENAME).write_text(
-            "not json", encoding="utf-8"
-        )
+        (tmp_path / ".repowise" / UPDATE_LOCK_FILENAME).write_text("not json", encoding="utf-8")
         assert read_update_lock(tmp_path) is None
 
 
@@ -427,7 +448,9 @@ class TestResolveProviderBaseUrl:
             return "provider"
 
         monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
-        monkeypatch.setattr("repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: [])
+        monkeypatch.setattr(
+            "repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: []
+        )
         monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("OPENAI_BASE_URL", "http://proxy.local")
@@ -448,7 +471,9 @@ class TestResolveProviderBaseUrl:
             return "provider"
 
         monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
-        monkeypatch.setattr("repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: [])
+        monkeypatch.setattr(
+            "repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: []
+        )
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         cfg = {
             "provider": "ollama",
@@ -464,7 +489,9 @@ class TestResolveProviderBaseUrl:
             yaml = None
 
         if "yaml" in locals() and yaml is not None:
-            config_path.write_text(yaml.dump(cfg, default_flow_style=False, sort_keys=False), encoding="utf-8")
+            config_path.write_text(
+                yaml.dump(cfg, default_flow_style=False, sort_keys=False), encoding="utf-8"
+            )
         else:
             config_path.write_text(
                 "provider: ollama\nmodel: llama3\nollama:\n  base_url: http://ollama.local:11434\n",

@@ -11,6 +11,7 @@ Built-in providers:
     - deepseek    → DeepSeekProvider
     - ollama      → OllamaProvider
     - litellm     → LiteLLMProvider
+    - codex_cli   → CodexCliProvider
     - mock        → MockProvider (testing only)
 
 Custom provider registration:
@@ -26,7 +27,8 @@ Custom provider registration:
 from __future__ import annotations
 
 import importlib
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from repowise.core.providers.llm.base import BaseProvider
 from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateLimiter
@@ -43,6 +45,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
     "deepseek": ("repowise.core.providers.llm.deepseek", "DeepSeekProvider"),
+    "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
 }
 
@@ -117,13 +120,10 @@ def get_provider(
 
     if name not in _BUILTIN_PROVIDERS:
         available = sorted(set(_BUILTIN_PROVIDERS) | set(_custom_providers))
-        raise ValueError(
-            f"Unknown provider: {name!r}. "
-            f"Available providers: {available}"
-        )
+        raise ValueError(f"Unknown provider: {name!r}. Available providers: {available}")
 
     # Attach rate limiter (skip for mock — tests should run without limits)
-    if with_rate_limiter and name != "mock":
+    if with_rate_limiter and name not in ("mock", "codex_cli"):
         config = rate_limit_config or PROVIDER_DEFAULTS.get(name)
         if config and "rate_limiter" not in kwargs:
             kwargs["rate_limiter"] = RateLimiter(config)
@@ -141,6 +141,7 @@ def get_provider(
             "openrouter": "openai",  # openrouter uses the openai package
             "deepseek": "openai",  # deepseek uses the openai package
             "litellm": "litellm",
+            "codex_cli": "@openai/codex",
         }
         package = _missing.get(name, name)
         raise ImportError(

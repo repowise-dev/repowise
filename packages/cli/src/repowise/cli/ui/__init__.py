@@ -28,7 +28,11 @@ from repowise.cli.ui.mode_selection import (
     should_offer_fast_mode,
 )
 from repowise.cli.ui.progress import MaybeCountColumn, RichProgressCallback
-from repowise.cli.ui.provider_selection import interactive_provider_select
+from repowise.cli.ui.provider_selection import (
+    ProviderSelection,
+    interactive_provider_config_select,
+    interactive_provider_select,
+)
 from repowise.cli.ui.repo_scanner import (
     RepoScanInfo,
     print_scan_summary,
@@ -53,6 +57,7 @@ __all__ = [
     "OK",
     "WARN",
     "MaybeCountColumn",
+    "ProviderSelection",
     "RepoScanInfo",
     "RichProgressCallback",
     "build_analysis_summary_panel",
@@ -63,6 +68,7 @@ __all__ = [
     "interactive_fast_mode_offer",
     "interactive_mode_select",
     "interactive_primary_select",
+    "interactive_provider_config_select",
     "interactive_provider_select",
     "interactive_repo_select",
     "load_dotenv",

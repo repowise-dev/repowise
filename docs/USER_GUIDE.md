@@ -52,6 +52,14 @@ pip install "repowise[litellm]"      # 100+ providers via LiteLLM (Together, Gro
 pip install "repowise[all]"          # All LLM providers + PostgreSQL support
 ```
 
+Codex CLI users can use the local subscription/auth flow without an API-key provider SDK:
+
+```bash
+pip install repowise
+npm install -g @openai/codex
+codex login
+```
+
 If you plan to use PostgreSQL instead of the default SQLite:
 
 ```bash
@@ -62,7 +70,7 @@ pip install "repowise[postgres]"
 
 - Python 3.11 or later
 - Git (repowise analyzes your repository's git history)
-- An LLM API key (for documentation generation — not needed for analysis-only mode)
+- An LLM API key or authenticated Codex CLI (for documentation generation — not needed for analysis-only mode)
 
 ### Verify Installation
 
@@ -95,6 +103,12 @@ export OPENAI_API_KEY="sk-..."
 export GEMINI_API_KEY="..."
 ```
 
+For Codex CLI auth:
+
+```bash
+codex login status
+```
+
 On Windows PowerShell:
 
 ```powershell
@@ -123,7 +137,7 @@ After init completes, you have several ways to access the generated documentatio
 ```bash
 repowise search "authentication"     # Search from the terminal
 repowise serve                       # Browse in a web UI at localhost:7337
-repowise mcp                         # Connect to Claude Code, Cursor, etc.
+repowise mcp                         # Connect to Claude Code, Codex, Cursor, etc.
 ```
 
 ### What gets created
@@ -136,7 +150,9 @@ your-repo/
 │   ├── config.yaml       # Saved configuration (provider, model, excludes)
 │   ├── .env              # Saved API keys (gitignored)
 │   └── lancedb/          # Vector store for semantic search
-└── CLAUDE.md             # Auto-generated codebase context for AI editors
+├── .claude/CLAUDE.md     # Auto-generated Claude Code context
+├── AGENTS.md             # Auto-generated Codex context when enabled
+└── .codex/               # Project-local Codex MCP/hooks config when --codex is used
 ```
 
 ---
@@ -156,13 +172,13 @@ repowise init [PATH]
 1. **Ingestion** — walks every file, parses AST with tree-sitter, builds a dependency graph, indexes git history (churn, hotspots, ownership, bus factor)
 2. **Analysis** — detects dead code, extracts architectural decisions from inline markers, READMEs, and git history
 3. **Generation** — sends structured prompts to the LLM, generates file-level, module-level, and repo-level wiki pages, plus architecture diagrams
-4. **Persistence** — stores everything in `.repowise/wiki.db`, builds search indexes, generates `CLAUDE.md`
+4. **Persistence** — stores everything in `.repowise/wiki.db`, builds search indexes, generates managed editor instruction files
 
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `mock`. Auto-detected from env vars if not set. |
+| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `mock`. Auto-detected from env vars if not set. |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`, `gpt-5.4-nano`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock`. Auto-detected from env vars. |
 | `--index-only` | Skip LLM generation entirely. Only parse, build graph, and index git. Free. |
@@ -172,12 +188,14 @@ repowise init [PATH]
 | `--skip-infra` | Exclude infrastructure files (Dockerfiles, Makefiles, Terraform, shell scripts). |
 | `--exclude / -x` | Gitignore-style exclusion patterns. Repeatable: `-x vendor/ -x "*.generated.*"` |
 | `--concurrency` | Max concurrent LLM calls (default: 5). Higher = faster but more API pressure. |
-| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal` (default: `auto`). |
+| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (default: `auto`). |
 | `--resume` | Resume from the last checkpoint if a previous run was interrupted. |
 | `--force` | Regenerate all pages even if they already exist. |
 | `--commit-limit` | Max commits to analyze per file (default: 500, max: 5000). Saved to config. |
 | `--follow-renames` | Track file renames in git history (slower but more accurate). |
 | `--no-claude-md` | Don't generate `CLAUDE.md` at the end. |
+| `--agents / --no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
+| `--codex / --no-codex` | Generate or skip project-local Codex MCP config and hooks. |
 | `--yes / -y` | Skip cost confirmation prompt (auto-confirms if cost > $2). |
 
 **Examples:**
@@ -188,6 +206,9 @@ repowise init
 
 # Fully automated
 repowise init --provider anthropic --model claude-sonnet-4-6 --yes
+
+# Use the authenticated local Codex CLI
+repowise init --provider codex_cli --codex --yes
 
 # Just index, no LLM cost
 repowise init --index-only
@@ -223,7 +244,7 @@ Much faster and cheaper than a full `init` — only regenerates pages for change
 2. Re-parses changed files and rebuilds the dependency graph
 3. Determines affected pages (direct changes + dependents via cascade analysis)
 4. Regenerates only those pages
-5. Updates `state.json` and `CLAUDE.md`
+5. Updates `state.json` and configured editor instruction files
 
 **Options:**
 
@@ -232,10 +253,11 @@ Much faster and cheaper than a full `init` — only regenerates pages for change
 | `--provider` | Override LLM provider for this run |
 | `--model` | Override model |
 | `--since` | Git ref to diff from (overrides `state.json`). Example: `--since v1.0.0` |
-| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`, or `minimal`. |
+| `--reasoning` | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `--cascade-budget` | Max pages to regenerate per run (default: 30). Prevents runaway regeneration. |
 | `--dry-run` | Show what would be updated without regenerating. |
 | `--full` | Upgrade a fast (`--mode fast`) index to a full one (single-repo). See below. |
+| `--agents / --no-agents` | Generate or skip managed `AGENTS.md` after update. Persists the preference. |
 
 **Upgrading a fast index to full (`--full`):**
 
@@ -802,6 +824,16 @@ repowise mcp /path/to/your-repo --transport stdio
 
 Claude Code auto-detects the `.repowise/.mcp.json` generated by `repowise init`.
 
+### Codex
+
+Run:
+
+```bash
+repowise init --codex
+```
+
+This writes project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. The Codex config uses `repowise mcp` from the repository root, so it does not require editing global `~/.codex/config.toml`. See [Codex Integration](CODEX.md).
+
 ### Cursor / Windsurf / Cline
 
 Add an MCP server entry pointing to:
@@ -837,15 +869,15 @@ Once connected, your AI editor can:
 
 ## Proactive Context Enrichment (Hooks)
 
-Repowise automatically enriches AI agent tool calls with codebase graph context via Claude Code hooks. This is installed automatically during `repowise init` — no manual configuration required.
+Repowise installs lightweight AI-agent hooks during editor setup. Claude Code hooks are installed during `repowise init`; Codex hooks are written by `repowise init --codex`.
 
-Unlike MCP tools (which agents must explicitly call), hooks fire on every search automatically. Every `Grep` or `Glob` an agent runs gets graph context injected alongside the results, without the agent having to think about it.
+Unlike MCP tools, hooks are passive reminders that fire from editor lifecycle events and tool-use events. They do not call an LLM or the network.
 
 ### How it works
 
-#### PreToolUse Hook — Grep/Glob enrichment
+#### Claude Code PostToolUse Hook — Grep/Glob enrichment
 
-Whenever an AI agent runs `Grep` or `Glob`, repowise intercepts the call and queries the local `wiki.db` for each matching file. The enrichment is appended to the tool result before the agent sees it:
+When Claude Code runs a broad or zero-result `Grep` or `Glob`, repowise can query the local `wiki.db` and append focused context:
 
 | Field | What it tells the agent |
 |-------|------------------------|
@@ -854,11 +886,11 @@ Whenever an AI agent runs `Grep` or `Glob`, repowise intercepts the call and que
 | **Depends on** | What this file imports (forward dependency) |
 | **Git signals** | Hotspot status, bus factor, and owner |
 
-Average latency is ~24ms — well under the 500ms target. No LLM calls, no network requests — pure local SQLite queries against `wiki.db`.
+No LLM calls, no network requests — pure local SQLite queries against `wiki.db`.
 
-#### PostToolUse Hook — Git commit detection
+#### PostToolUse Hook — Git/edit freshness detection
 
-After a successful `git commit`, `git merge`, `git rebase`, `git cherry-pick`, or `git pull`, repowise checks whether the wiki is stale by comparing `HEAD` against the last indexed commit in `.repowise/state.json`. If the wiki is out of date, the agent is notified:
+After a successful `git commit`, `git merge`, `git rebase`, `git cherry-pick`, or `git pull`, repowise checks whether the wiki is stale by comparing `HEAD` against the last indexed commit in `.repowise/state.json`. Codex edit hooks also remind the agent that indexed context may be stale after edits.
 
 ```
 Wiki is stale — run `repowise update` to refresh
@@ -868,19 +900,20 @@ This ensures agents are never silently working from outdated documentation.
 
 ### Configuration
 
-Hooks are written to `~/.claude/settings.json` automatically during `repowise init`. The installed configuration:
+Claude Code hooks are written to `~/.claude/settings.json` automatically during `repowise init`. Codex hooks are written to `.codex/hooks.json` by `repowise init --codex`.
 
 | Hook type | Matcher | Action |
 |-----------|---------|--------|
-| `PreToolUse` | `Grep\|Glob` | Query `wiki.db` and prepend graph context to the result |
-| `PostToolUse` | `Bash` | Check for git operations and notify if wiki is stale |
+| Claude `PostToolUse` | `Bash\|Grep\|Glob` | Check git freshness and add search rescue/triage context |
+| Codex `SessionStart` / `UserPromptSubmit` | lifecycle | Remind Codex to use Repowise MCP tools |
+| Codex `PostToolUse` | `Bash`, `apply_patch\|Edit\|Write` | Check git/edit freshness |
 
 Both hooks call the `repowise-augment` console script — a standalone, import-isolated entry point that does not load the full `repowise` CLI. This keeps cold start under the 500ms target and ensures a broken environment (missing optional dep, corrupt DB, etc.) never crashes the agent: any failure exits 0 silently. The equivalent `repowise augment` Click subcommand still exists for manual debugging.
 
 ### CLI command
 
 ```bash
-repowise-augment    # Not meant to be called manually — invoked by Claude Code hooks
+repowise-augment    # Not meant to be called manually — invoked by AI-agent hooks
 repowise augment    # Equivalent Click subcommand, useful for manual debugging
 ```
 

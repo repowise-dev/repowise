@@ -11,6 +11,7 @@ import pytest
 
 pytest.importorskip("openai", reason="openai SDK not installed")
 
+from repowise.core.providers.llm import openrouter as openrouter_module
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
 from repowise.core.providers.llm.openrouter import OpenRouterProvider
 
@@ -44,6 +45,17 @@ def test_missing_api_key_raises(monkeypatch):
 def test_custom_model():
     p = OpenRouterProvider(api_key="sk-or-test", model="google/gemini-3.1-flash-lite-preview")
     assert p.model_name == "google/gemini-3.1-flash-lite-preview"
+
+
+def test_supported_reasoning_modes_are_model_specific():
+    assert OpenRouterProvider(
+        api_key="sk-or-test",
+        model="x-ai/grok-4",
+    ).supported_reasoning_modes() == ("auto",)
+    assert OpenRouterProvider(
+        api_key="sk-or-test",
+        model="anthropic/claude-sonnet-4.6",
+    ).supported_reasoning_modes() == ("auto",)
 
 
 def test_default_headers_app_title():
@@ -82,6 +94,62 @@ def test_rejects_unknown_kwargs():
     registry changes (e.g. new tier=, budget= params passed through)."""
     with pytest.raises(TypeError):
         OpenRouterProvider(api_key="sk-or-test", future_param="oops")
+
+
+def test_available_model_options_uses_models_endpoint(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {
+                        "id": "vendor/reasoner",
+                        "name": "Vendor Reasoner",
+                        "supported_parameters": ["reasoning", "tools"],
+                    },
+                    {
+                        "id": "vendor/plain",
+                        "name": "Vendor Plain",
+                        "supported_parameters": ["tools"],
+                    },
+                ]
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_get(url, *, headers, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    provider = OpenRouterProvider(api_key="sk-or-test")
+    options = provider.available_model_options()
+
+    assert captured["url"] == "https://openrouter.ai/api/v1/models"
+    assert captured["headers"] == {"Authorization": "Bearer sk-or-test"}
+    reasoner = next(option for option in options if option.model == "vendor/reasoner")
+    assert reasoner.reasoning_modes == (
+        "auto",
+        "off",
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    )
+    assert (
+        OpenRouterProvider(
+            api_key="sk-or-test",
+            model="vendor/reasoner",
+        ).supported_reasoning_modes()
+        == reasoner.reasoning_modes
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +200,9 @@ async def test_generate_token_counts():
 
 
 async def test_generate_sends_correct_messages():
-    provider = OpenRouterProvider(api_key="sk-or-test", model="google/gemini-3.1-flash-lite-preview")
+    provider = OpenRouterProvider(
+        api_key="sk-or-test", model="google/gemini-3.1-flash-lite-preview"
+    )
     mock_response = _make_mock_chat_response()
     captured_kwargs: list[dict] = []
 
@@ -156,6 +226,9 @@ async def test_generate_sends_correct_messages():
 
 
 async def test_generate_forwards_minimal_reasoning_extra_body():
+    openrouter_module._OPENROUTER_REASONING_MODELS_BY_BASE["https://openrouter.ai/api/v1"] = {
+        "openai/gpt-5"
+    }
     provider = OpenRouterProvider(api_key="sk-or-test", model="openai/gpt-5")
     mock_response = _make_mock_chat_response()
     captured_kwargs: list[dict] = []
@@ -169,12 +242,33 @@ async def test_generate_forwards_minimal_reasoning_extra_body():
         provider._client = mock_client.return_value
         await provider.generate("system msg", "user msg", reasoning="minimal")
 
-    assert captured_kwargs[0]["extra_body"] == {
-        "reasoning": {"effort": "minimal"}
+    assert captured_kwargs[0]["extra_body"] == {"reasoning": {"effort": "minimal"}}
+
+
+async def test_generate_forwards_high_reasoning_extra_body():
+    openrouter_module._OPENROUTER_REASONING_MODELS_BY_BASE["https://openrouter.ai/api/v1"] = {
+        "x-ai/grok-4"
     }
+    provider = OpenRouterProvider(api_key="sk-or-test", model="x-ai/grok-4")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="high")
+
+    assert captured_kwargs[0]["extra_body"] == {"reasoning": {"effort": "high"}}
 
 
 async def test_generate_forwards_off_reasoning_extra_body():
+    openrouter_module._OPENROUTER_REASONING_MODELS_BY_BASE["https://openrouter.ai/api/v1"] = {
+        "x-ai/grok-4"
+    }
     provider = OpenRouterProvider(api_key="sk-or-test", model="x-ai/grok-4")
     mock_response = _make_mock_chat_response()
     captured_kwargs: list[dict] = []
@@ -191,10 +285,32 @@ async def test_generate_forwards_off_reasoning_extra_body():
     assert captured_kwargs[0]["extra_body"] == {"reasoning": {"effort": "none"}}
 
 
-async def test_generate_rejects_reasoning_for_unsupported_openrouter_model():
-    provider = OpenRouterProvider(
-        api_key="sk-or-test", model="google/gemini-3.1-flash-lite-preview"
-    )
+async def test_generate_forwards_none_reasoning_extra_body():
+    openrouter_module._OPENROUTER_REASONING_MODELS_BY_BASE["https://openrouter.ai/api/v1"] = {
+        "x-ai/grok-4"
+    }
+    provider = OpenRouterProvider(api_key="sk-or-test", model="x-ai/grok-4")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="none")
+
+    assert captured_kwargs[0]["extra_body"] == {"reasoning": {"effort": "none"}}
+
+
+async def test_generate_rejects_reasoning_for_unsupported_openrouter_model(monkeypatch):
+    def fake_get(*_args, **_kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    provider = OpenRouterProvider(api_key="sk-or-test", model="anthropic/claude-sonnet-4.6")
 
     with patch("openai.AsyncOpenAI") as mock_client:
         provider._client = mock_client.return_value
@@ -206,9 +322,13 @@ async def test_generate_rejects_reasoning_for_unsupported_openrouter_model():
 
 @pytest.mark.parametrize(
     "model",
-    ["openai/gpt-5.2", "openai/gpt-5-pro", "openai/gpt-5-codex", "openai/gpt-5.4-nano"],
+    ["openai/gpt-4.1", "anthropic/claude-sonnet-4.6"],
 )
-async def test_generate_rejects_reasoning_for_known_unsupported_openai_route(model):
+async def test_generate_rejects_reasoning_for_known_unsupported_openai_route(monkeypatch, model):
+    def fake_get(*_args, **_kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr("httpx.get", fake_get)
     provider = OpenRouterProvider(api_key="sk-or-test", model=model)
 
     with patch("openai.AsyncOpenAI") as mock_client:

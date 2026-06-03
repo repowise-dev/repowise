@@ -46,9 +46,76 @@ def test_custom_model():
     assert p.model_name == "gpt-5.4-mini"
 
 
+def test_supported_reasoning_modes_are_model_specific():
+    assert OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5-mini",
+    ).supported_reasoning_modes() == ("auto", "minimal", "low", "medium", "high")
+    assert OpenAIProvider(
+        api_key="sk-test",
+        model="qwen3",
+    ).supported_reasoning_modes() == ("auto", "off", "none")
+    assert OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-4o",
+    ).supported_reasoning_modes() == ("auto",)
+
+
 def test_gpt54_model():
     p = OpenAIProvider(api_key="sk-test", model="gpt-5.4")
     assert p.model_name == "gpt-5.4"
+
+
+def test_available_model_options_uses_models_endpoint(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"id": "gpt-5.4-nano"},
+                    {"id": "gpt-4.1"},
+                    {"id": "text-embedding-3-large"},
+                ]
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_get(url, *, headers, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    options = OpenAIProvider(api_key="sk-test").available_model_options()
+
+    assert captured["url"] == "https://api.openai.com/v1/models"
+    assert captured["headers"] == {"Authorization": "Bearer sk-test"}
+    assert "gpt-5.4-nano" in [option.model for option in options]
+    assert "text-embedding-3-large" not in [option.model for option in options]
+    assert next(option for option in options if option.model == "gpt-5.4-nano").reasoning_modes == (
+        "auto",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+    )
+
+
+def test_available_model_options_falls_back_to_configured_model(monkeypatch):
+    def fake_get(*_args, **_kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    options = OpenAIProvider(api_key="sk-test").available_model_options()
+
+    assert options[0].model == "gpt-5.4-nano"
+    assert options[0].recommended is True
+    assert options[0].source == "fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +208,23 @@ async def test_generate_forwards_minimal_reasoning_effort():
     assert captured_kwargs[0]["reasoning_effort"] == "minimal"
 
 
+async def test_generate_forwards_none_reasoning_effort_for_gpt51():
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5.1")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="none")
+
+    assert captured_kwargs[0]["reasoning_effort"] == "none"
+
+
 async def test_generate_forwards_off_reasoning_extra_body():
     provider = OpenAIProvider(api_key="sk-test", model="qwen3")
     mock_response = _make_mock_chat_response()
@@ -155,9 +239,24 @@ async def test_generate_forwards_off_reasoning_extra_body():
         provider._client = mock_client.return_value
         await provider.generate("system msg", "user msg", reasoning="off")
 
-    assert captured_kwargs[0]["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": False}
-    }
+    assert captured_kwargs[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+async def test_generate_forwards_none_reasoning_as_thinking_disabled():
+    provider = OpenAIProvider(api_key="sk-test", model="qwen3")
+    mock_response = _make_mock_chat_response()
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_response
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        await provider.generate("system msg", "user msg", reasoning="none")
+
+    assert captured_kwargs[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 async def test_generate_rejects_minimal_for_non_reasoning_model():
@@ -173,7 +272,7 @@ async def test_generate_rejects_minimal_for_non_reasoning_model():
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-5.1", "gpt-5.2", "gpt-5-pro", "gpt-5-codex", "gpt-5.4-nano"],
+    ["gpt-5.1", "gpt-5-pro"],
 )
 async def test_generate_rejects_minimal_for_known_unsupported_reasoning_models(model):
     provider = OpenAIProvider(api_key="sk-test", model=model)

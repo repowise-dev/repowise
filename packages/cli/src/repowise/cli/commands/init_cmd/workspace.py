@@ -19,7 +19,11 @@ from typing import Any
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from repowise.cli._setup import setup_logging_silence
-from repowise.cli.editor_integrations.defaults import get_default_disabled_project_files
+from repowise.cli.editor_integrations.defaults import (
+    get_default_disabled_project_files,
+    get_default_integration_overrides,
+    get_default_project_file_overrides,
+)
 from repowise.cli.editor_setup import (
     register_editor_clients,
     resolve_editor_setup_options,
@@ -46,7 +50,7 @@ from repowise.cli.ui import (
     interactive_advanced_config,
     interactive_mode_select,
     interactive_primary_select,
-    interactive_provider_select,
+    interactive_provider_config_select,
     interactive_repo_select,
     load_dotenv,
     print_banner,
@@ -136,6 +140,19 @@ def _run_workspace_generation(
         resume=resume,
         verbose=False,
     )
+
+
+def _workspace_generation_provider_for_repo(provider: Any, repo_path: Path) -> Any:
+    """Return a generation provider bound to the current workspace repo.
+
+    The Codex CLI provider shells out ``codex exec --cd <repo>``, so it must be
+    re-resolved against each repo's path; all other providers are path-agnostic
+    and returned unchanged.
+    """
+
+    if getattr(provider, "provider_name", None) != "codex_cli":
+        return provider
+    return resolve_provider("codex_cli", getattr(provider, "model_name", None), repo_path)
 
 
 @dataclass
@@ -253,10 +270,11 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
             repo_docs_enabled = False
         else:
             try:
+                repo_provider = _workspace_generation_provider_for_repo(provider, repo.path)
                 generated_pages = _run_workspace_generation(
                     repo_path=repo.path,
                     result=result,
-                    provider=provider,
+                    provider=repo_provider,
                     embedder_name_resolved=ctx.embedder_name_resolved,
                     concurrency=ctx.concurrency,
                     yes=ctx.yes,
@@ -369,6 +387,8 @@ def _workspace_init(
     commit_limit: int | None,
     follow_renames: bool,
     no_claude_md: bool,
+    agents_md: bool | None,
+    codex_setup: bool | None,
     include_submodules: bool,
     # Generation params (passed through from init_command)
     provider_name: str | None = None,
@@ -431,10 +451,13 @@ def _workspace_init(
         if mode == "index_only":
             index_only = True
         elif mode == "advanced":
-            provider_name, model = interactive_provider_select(
-                console, model, repo_path=primary_repo.path
+            selection = interactive_provider_config_select(
+                console, model, reasoning, repo_path=primary_repo.path
             )
-            adv = interactive_advanced_config(console)
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
+            adv = interactive_advanced_config(console, prompt_reasoning=False)
             commit_limit = adv.get("commit_limit") or commit_limit
             follow_renames = adv.get("follow_renames", follow_renames)
             skip_tests = adv.get("skip_tests", skip_tests)
@@ -447,9 +470,12 @@ def _workspace_init(
             embedder_name_resolved = resolve_embedder(adv.get("embedder") or embedder_name)
         elif not index_only:
             # "full" mode
-            provider_name, model = interactive_provider_select(
-                console, model, repo_path=primary_repo.path
+            selection = interactive_provider_config_select(
+                console, model, reasoning, repo_path=primary_repo.path
             )
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
 
     # Resolve provider once (shared across all repos for generation)
     primary_cfg = load_config(primary_repo.path)
@@ -458,7 +484,7 @@ def _workspace_init(
     if not index_only:
         try:
             provider = resolve_provider(provider_name, model, primary_repo.path)
-            # Re-resolve the embedder now that interactive_provider_select
+            # Re-resolve the embedder now that interactive provider selection
             # may have set the provider's API key in os.environ. Without
             # this, full-mode runs would display "mock" forever because
             # the initial resolution happened before the key was available.
@@ -509,6 +535,12 @@ def _workspace_init(
         console,
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
+        ),
+        project_file_overrides=get_default_project_file_overrides(
+            agents_md=agents_md,
+        ),
+        integration_overrides=get_default_integration_overrides(
+            codex_setup=codex_setup,
         ),
     )
 

@@ -62,9 +62,7 @@ class ClaudeCodeSetup:
 
         hooks = install_claude_code_hooks()
         if hooks:
-            console_obj.print(
-                "  [green]✓[/green] Claude Code hooks registered (PreToolUse + PostToolUse)"
-            )
+            console_obj.print("  [green]✓[/green] Claude Code hooks registered (PostToolUse)")
 
     def refresh_project_files(
         self,

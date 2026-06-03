@@ -15,6 +15,7 @@ from rich.text import Text
 
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, DIM
 from repowise.cli.ui.repo_scanner import RepoScanInfo
+from repowise.core.reasoning import REASONING_MODES
 
 # A repo at or above this many files is "large" — large enough that a quick
 # fast-mode first index (graph + essential git, no LLM docs) is worth offering.
@@ -231,6 +232,7 @@ def _prompt_generation(
     *,
     allow_fast: bool,
     is_large: bool,
+    prompt_reasoning: bool = True,
 ) -> None:
     """Generation section: concurrency, reasoning, embedder, test run, tiering."""
     console.print()
@@ -251,11 +253,14 @@ def _prompt_generation(
         type=int,
     )
 
-    result["reasoning"] = click.prompt(
-        "  Reasoning mode",
-        default="auto",
-        type=click.Choice(["auto", "off", "minimal"]),
-    )
+    if prompt_reasoning:
+        result["reasoning"] = click.prompt(
+            "  Reasoning mode",
+            default="auto",
+            type=click.Choice(REASONING_MODES),
+        )
+    else:
+        result["reasoning"] = None
 
     # Embedder selection
     detected_embedder = _resolve_embedder_from_env()
@@ -300,7 +305,8 @@ def _build_summary_table(result: dict[str, Any], patterns: list[str], *, allow_f
     summary.add_row("Commit limit", str(result["commit_limit"]))
     summary.add_row("Follow renames", "yes" if result["follow_renames"] else "no")
     summary.add_row("Concurrency", str(result["concurrency"]))
-    summary.add_row("Reasoning", result["reasoning"])
+    if result.get("reasoning"):
+        summary.add_row("Reasoning", result["reasoning"])
     summary.add_row("Embedder", result["embedder"])
     if allow_fast:
         summary.add_row("Run mode", result["run_mode"])
@@ -321,6 +327,7 @@ def interactive_advanced_config(
     scan: RepoScanInfo | None = None,
     *,
     allow_fast: bool = False,
+    prompt_reasoning: bool = True,
 ) -> dict[str, Any]:
     """Prompt for advanced init options, grouped into logical sections.
 
@@ -351,7 +358,14 @@ def interactive_advanced_config(
     _prompt_run_mode(console, result, allow_fast=allow_fast, is_large=is_large)
     patterns = _prompt_exclude(console, scan, result)
     _prompt_git(console, scan, result)
-    _prompt_generation(console, scan, result, allow_fast=allow_fast, is_large=is_large)
+    _prompt_generation(
+        console,
+        scan,
+        result,
+        allow_fast=allow_fast,
+        is_large=is_large,
+        prompt_reasoning=prompt_reasoning,
+    )
 
     # ── Summary ───────────────────────────────────────────────────────────
     console.print()

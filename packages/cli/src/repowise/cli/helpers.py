@@ -91,6 +91,26 @@ def resolve_repo_path(path: str | None) -> Path:
     return Path(path).resolve()
 
 
+def find_repowise_repo_root(start: Path | None = None) -> Path | None:
+    """Walk upward from *start* looking for a repo with ``.repowise``."""
+
+    current = (start or Path.cwd()).resolve()
+    home = Path.home().resolve()
+    for candidate in (current, *current.parents):
+        if _same_path(candidate, home):
+            return None
+        if (candidate / REPOWISE_DIR).is_dir():
+            return candidate
+    return None
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.samefile(right)
+    except OSError:
+        return left == right
+
+
 def find_workspace_root(start: Path | None = None) -> Path | None:
     """Walk up from *start* (default: cwd) looking for ``.repowise-workspace.yaml``.
 
@@ -554,6 +574,14 @@ def config_fingerprint(repo_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _is_codex_cli_available() -> bool:
+    """Check if the Codex CLI binary is available."""
+
+    import shutil
+
+    return shutil.which("codex") is not None
+
+
 def resolve_provider(
     provider_name: str | None,
     model: str | None,
@@ -617,6 +645,8 @@ def resolve_provider(
         base_url = _resolve_base_url(provider_name)
         if base_url:
             kwargs["base_url"] = base_url
+        if provider_name == "codex_cli" and repo_path is not None:
+            kwargs["repo_path"] = repo_path
 
         # Pass API key from environment if available
         if provider_name == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
@@ -695,7 +725,10 @@ def resolve_provider(
 
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
-        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / LITELLM_API_KEY."
+        "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
+        "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
+        "LITELLM_API_KEY. Use REPOWISE_PROVIDER=codex_cli to use an authenticated "
+        "Codex CLI subscription."
     )
 
 
@@ -737,6 +770,14 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
     }
 
     if provider_name:
+        if provider_name == "codex_cli":
+            if not _is_codex_cli_available():
+                warnings.append(
+                    "Provider 'codex_cli' requires the Codex CLI. "
+                    "Install it with: npm install -g @openai/codex"
+                )
+            return warnings
+
         # Validate specific provider
         if provider_name not in provider_env_vars:
             warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")

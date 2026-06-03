@@ -1,0 +1,9 @@
+{
+  "repowise": {
+    "command": "repowise",
+    "args": [
+      "mcp"
+    ],
+    "startup_timeout_sec": 20
+  }
+}

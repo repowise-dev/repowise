@@ -1,0 +1,45 @@
+{
+  "name": "codex",
+  "version": "0.1.0",
+  "description": "Repowise codebase intelligence for Codex.",
+  "author": {
+    "name": "Repowise",
+    "email": "hello@repowise.dev",
+    "url": "https://repowise.dev"
+  },
+  "homepage": "https://repowise.dev",
+  "repository": "https://github.com/repowise-dev/repowise",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "codebase",
+    "documentation",
+    "architecture",
+    "mcp",
+    "codex",
+    "graph",
+    "git"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Repowise",
+    "shortDescription": "Codebase wiki, graph, git signals, and decisions for Codex.",
+    "longDescription": "Adds Repowise MCP tools, lifecycle hooks, and focused skills so Codex can explore indexed repositories, assess edit risk, recover design rationale, and plan cleanup work.",
+    "developerName": "Repowise",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "MCP",
+      "Hooks",
+      "Skills"
+    ],
+    "websiteURL": "https://repowise.dev",
+    "defaultPrompt": [
+      "Explain this repository with Repowise.",
+      "Find risk before changing this module.",
+      "Identify safe dead-code cleanup candidates."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

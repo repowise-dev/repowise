@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from openai import APIStatusError as _OpenAIAPIStatusError
@@ -35,8 +36,10 @@ from repowise.core.providers.llm.base import (
     ChatToolCall,
     GeneratedResponse,
     ProviderError,
+    ProviderModelOption,
     RateLimitError,
     ensure_reasoning_supported,
+    fallback_model_option,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -50,8 +53,20 @@ _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
 _MAX_WAIT = 4.0
 _QWEN_THINKING_MODEL_MARKERS = ("qwen", "qwq")
-_OPENAI_MINIMAL_REASONING_EXACT_MODELS = ("gpt-5", "gpt-5-mini", "gpt-5-nano")
-_OPENAI_MINIMAL_REASONING_PREFIXES = ("gpt-5-mini-", "gpt-5-nano-")
+_OPENAI_TEXT_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
+_OPENAI_NON_TEXT_MARKERS = (
+    "audio",
+    "babbage",
+    "dall-e",
+    "davinci",
+    "embedding",
+    "image",
+    "moderation",
+    "sora",
+    "tts",
+    "transcribe",
+    "whisper",
+)
 
 
 def _model_leaf(model: str) -> str:
@@ -60,11 +75,7 @@ def _model_leaf(model: str) -> str:
 
 def _supports_openai_reasoning_effort(model: str) -> bool:
     leaf = _model_leaf(model)
-    # Keep this conservative: dotted, pro, codex, and future aliases do not all
-    # accept the same Chat Completions reasoning_effort values.
-    return leaf in _OPENAI_MINIMAL_REASONING_EXACT_MODELS or leaf.startswith(
-        _OPENAI_MINIMAL_REASONING_PREFIXES
-    )
+    return leaf.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
 def _supports_chat_template_thinking_toggle(model: str) -> bool:
@@ -73,17 +84,24 @@ def _supports_chat_template_thinking_toggle(model: str) -> bool:
 
 
 def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
-    modes: list[ReasoningMode] = []
-    if _supports_openai_reasoning_effort(model):
-        modes.append("minimal")
     if _supports_chat_template_thinking_toggle(model):
-        modes.append("off")
-    return tuple(modes)
+        return ("off", "none")
+    if not _supports_openai_reasoning_effort(model):
+        return ()
+
+    leaf = _model_leaf(model)
+    if "codex-max" in leaf:
+        return ("none", "medium", "high", "xhigh")
+    if leaf.startswith("gpt-5.1"):
+        return ("none", "low", "medium", "high")
+    if leaf.startswith("gpt-5-pro"):
+        return ("high",)
+    if leaf.startswith("gpt-5"):
+        return ("minimal", "low", "medium", "high")
+    return ("low", "medium", "high")
 
 
-def _resolve_openai_reasoning_mode(
-    reasoning: ReasoningMode, *, model: str
-) -> ReasoningMode:
+def _resolve_openai_reasoning_mode(reasoning: ReasoningMode, *, model: str) -> ReasoningMode:
     """Validate OpenAI-compatible reasoning support before retry handling."""
     return ensure_reasoning_supported(
         "openai",
@@ -91,28 +109,99 @@ def _resolve_openai_reasoning_mode(
         normalize_reasoning(reasoning),
         _openai_supported_reasoning_modes(model),
         detail=(
-            "OpenAIProvider maps minimal to OpenAI reasoning_effort only for "
-            "known compatible OpenAI model ids (gpt-5, gpt-5-mini, "
-            "gpt-5-nano, and mini/nano snapshot ids), and maps off to "
-            "Qwen/QwQ chat_template_kwargs for OpenAI-compatible endpoints."
+            "OpenAIProvider maps explicit efforts to OpenAI reasoning_effort "
+            "for known reasoning model ids, and maps off/none to Qwen/QwQ "
+            "chat_template_kwargs for OpenAI-compatible endpoints."
         ),
     )
 
 
-def _openai_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
+def _openai_reasoning_kwargs(reasoning: ReasoningMode, *, model: str) -> dict[str, Any]:
     """Translate a validated repowise reasoning intent to OpenAI kwargs."""
     mode = normalize_reasoning(reasoning)
     if mode == "auto":
         return {}
-    if mode == "minimal":
-        return {"reasoning_effort": "minimal"}
-    return {
-        "extra_body": {
-            "chat_template_kwargs": {
-                "enable_thinking": False,
+    if _supports_chat_template_thinking_toggle(model) and mode in ("off", "none"):
+        return {
+            "extra_body": {
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                },
             },
-        },
-    }
+        }
+    if mode == "off":
+        return {}
+    if mode in ("none", "minimal", "low", "medium", "high", "xhigh"):
+        return {"reasoning_effort": mode}
+    return {}
+
+
+def _is_openai_text_model(model_id: str) -> bool:
+    leaf = _model_leaf(model_id)
+    if any(marker in leaf for marker in _OPENAI_NON_TEXT_MARKERS):
+        return False
+    return leaf.startswith(_OPENAI_TEXT_MODEL_PREFIXES)
+
+
+def _openai_option(
+    model_id: str,
+    *,
+    fallback_model: str,
+) -> ProviderModelOption:
+    reasoning_modes = ("auto", *_openai_supported_reasoning_modes(model_id))
+    notes = (
+        "reasoning levels inferred; OpenAI /models does not advertise them"
+        if len(reasoning_modes) > 1
+        else ""
+    )
+    return ProviderModelOption(
+        model=model_id,
+        label=model_id,
+        reasoning_modes=reasoning_modes,
+        recommended=model_id == fallback_model,
+        source="api",
+        notes=notes,
+    )
+
+
+def _openai_model_options(
+    api_key: str,
+    base_url: str,
+    fallback_model: str,
+) -> tuple[ProviderModelOption, ...]:
+    fallback = fallback_model_option(
+        fallback_model,
+        reasoning_modes=("auto", *_openai_supported_reasoning_modes(fallback_model)),
+    )
+    try:
+        import httpx
+
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        data = response.json().get("data", [])
+    except Exception:
+        return (fallback,)
+
+    if not isinstance(data, list):
+        return (fallback,)
+
+    model_ids = sorted(
+        {
+            model["id"]
+            for model in data
+            if isinstance(model, dict)
+            and isinstance(model.get("id"), str)
+            and _is_openai_text_model(model["id"])
+        }
+    )
+    if not model_ids:
+        return (fallback,)
+
+    return tuple(_openai_option(model_id, fallback_model=fallback_model) for model_id in model_ids)
 
 
 class OpenAIProvider(BaseProvider):
@@ -131,7 +220,7 @@ class OpenAIProvider(BaseProvider):
         model: str = "gpt-5.4-nano",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
-        cost_tracker: "CostTracker | None" = None,
+        cost_tracker: CostTracker | None = None,
     ) -> None:
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not resolved_key:
@@ -140,6 +229,8 @@ class OpenAIProvider(BaseProvider):
                 "No API key provided. Pass api_key= or set OPENAI_API_KEY.",
             )
         resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
+        self._api_key = resolved_key
+        self._base_url = resolved_base_url or "https://api.openai.com/v1"
         self._client = AsyncOpenAI(api_key=resolved_key, base_url=resolved_base_url)
         self._model = model
         self._rate_limiter = rate_limiter
@@ -152,6 +243,12 @@ class OpenAIProvider(BaseProvider):
     @property
     def model_name(self) -> str:
         return self._model
+
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return ("auto", *_openai_supported_reasoning_modes(self._model))
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        return _openai_model_options(self._api_key, self._base_url, self._model)
 
     async def generate(
         self,
@@ -166,9 +263,7 @@ class OpenAIProvider(BaseProvider):
         # OpenAI auto-caches stable prompt prefixes >= 1024 tokens; hints are
         # informational only, so we accept and discard them.
         del cache_hints
-        reasoning_mode = _resolve_openai_reasoning_mode(
-            reasoning, model=self._model
-        )
+        reasoning_mode = _resolve_openai_reasoning_mode(reasoning, model=self._model)
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -219,16 +314,14 @@ class OpenAIProvider(BaseProvider):
                     {"role": "user", "content": user_prompt},
                 ],
             }
-            kwargs.update(_openai_reasoning_kwargs(reasoning))
+            kwargs.update(_openai_reasoning_kwargs(reasoning, model=self._model))
             response = await self._client.chat.completions.create(
                 **kwargs,
             )
         except _OpenAIRateLimitError as exc:
             raise RateLimitError("openai", str(exc), status_code=429) from exc
         except _OpenAIAPIStatusError as exc:
-            raise ProviderError(
-                "openai", str(exc), status_code=exc.status_code
-            ) from exc
+            raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc
 
         usage = response.usage
         cached = 0

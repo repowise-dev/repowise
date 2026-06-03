@@ -19,7 +19,11 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Table
 
 from repowise.cli._setup import setup_logging_silence
-from repowise.cli.editor_integrations.defaults import get_default_disabled_project_files
+from repowise.cli.editor_integrations.defaults import (
+    get_default_disabled_project_files,
+    get_default_integration_overrides,
+    get_default_project_file_overrides,
+)
 from repowise.cli.editor_setup import (
     register_editor_clients,
     resolve_editor_setup_options,
@@ -48,7 +52,7 @@ from repowise.cli.ui import (
     interactive_advanced_config,
     interactive_fast_mode_offer,
     interactive_mode_select,
-    interactive_provider_select,
+    interactive_provider_config_select,
     load_dotenv,
     print_banner,
     print_index_only_intro,
@@ -57,6 +61,7 @@ from repowise.cli.ui import (
     quick_repo_scan,
     should_offer_fast_mode,
 )
+from repowise.core.reasoning import REASONING_MODES
 
 from ._interactive import offer_hook_install
 from .generation import cost_gate_declined, format_cost, run_repo_generation, select_coverage
@@ -200,7 +205,7 @@ def _run_generation_phase(
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, ollama, litellm, mock)."
+        "deepseek, ollama, litellm, codex_cli, mock)."
     ),
 )
 @click.option("--model", default=None, help="Model identifier override.")
@@ -224,9 +229,12 @@ def _run_generation_phase(
 @click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
 @click.option(
     "--reasoning",
-    type=click.Choice(["auto", "off", "minimal"]),
+    type=click.Choice(REASONING_MODES),
     default=None,
-    help="Reasoning mode for supported providers: auto, off, or minimal. Default: auto.",
+    help=(
+        "Reasoning mode for supported providers: auto, off/none, minimal, "
+        "low, medium, high, xhigh, or max. Default: auto."
+    ),
 )
 @click.option(
     "--test-run",
@@ -276,6 +284,18 @@ def _run_generation_phase(
     is_flag=True,
     default=False,
     help="Skip generating CLAUDE.md. Saves 'editor_files.claude_md: false' to config.",
+)
+@click.option(
+    "--agents/--no-agents",
+    "agents_md",
+    default=None,
+    help="Generate managed AGENTS.md (default: config or enabled).",
+)
+@click.option(
+    "--codex/--no-codex",
+    "codex_setup",
+    default=None,
+    help="Generate or skip project-local Codex MCP config and hooks.",
 )
 @click.option(
     "--include-submodules",
@@ -344,6 +364,8 @@ def init_command(
     commit_limit: int | None,
     follow_renames: bool,
     no_claude_md: bool,
+    agents_md: bool | None,
+    codex_setup: bool | None,
     include_submodules: bool,
     init_all: bool,
     onboarding: bool,
@@ -381,6 +403,8 @@ def init_command(
             commit_limit=commit_limit,
             follow_renames=follow_renames,
             no_claude_md=no_claude_md,
+            agents_md=agents_md,
+            codex_setup=codex_setup,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -448,8 +472,21 @@ def init_command(
             ):
                 run_mode = "fast"
         elif mode == "advanced":
-            provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
-            adv = interactive_advanced_config(console, scan=scan_info, allow_fast=True)
+            selection = interactive_provider_config_select(
+                console,
+                model,
+                reasoning,
+                repo_path=repo_path,
+            )
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
+            adv = interactive_advanced_config(
+                console,
+                scan=scan_info,
+                allow_fast=True,
+                prompt_reasoning=False,
+            )
             commit_limit = adv["commit_limit"]
             follow_renames = adv["follow_renames"]
             skip_tests = adv["skip_tests"]
@@ -465,7 +502,15 @@ def init_command(
             if run_mode == "fast":
                 index_only = True
         else:
-            provider_name, model = interactive_provider_select(console, model, repo_path=repo_path)
+            selection = interactive_provider_config_select(
+                console,
+                model,
+                reasoning,
+                repo_path=repo_path,
+            )
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
             # Full mode picked, but on a large repo offer the quick path too.
             # Default no here — the user explicitly asked for docs.
             if (
@@ -480,6 +525,12 @@ def init_command(
         console,
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
+        ),
+        project_file_overrides=get_default_project_file_overrides(
+            agents_md=agents_md,
+        ),
+        integration_overrides=get_default_integration_overrides(
+            codex_setup=codex_setup,
         ),
         prompt_for_project_files=is_interactive and not index_only,
     )
@@ -538,12 +589,15 @@ def init_command(
                 )
     else:
         if not is_interactive and provider_name is None and sys.stdin.isatty():
-            from repowise.cli.ui import interactive_provider_select as _ips
+            from repowise.cli.ui import interactive_provider_config_select as _ipcs
 
-            provider_name, model = _ips(console, model)
+            selection = _ipcs(console, model, reasoning, repo_path=repo_path)
+            provider_name = selection.provider_name
+            model = selection.model
+            reasoning = selection.reasoning
 
         provider = resolve_provider(provider_name, model, repo_path)
-        # resolve_provider / interactive_provider_select may have just set
+        # resolve_provider / interactive provider selection may have just set
         # the API key in os.environ. Re-resolve the embedder so the
         # display (and the embed path below) honors the key the user just
         # pasted, rather than the pre-prompt "mock" fallback.

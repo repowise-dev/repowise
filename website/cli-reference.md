@@ -44,7 +44,7 @@ repowise init [PATH] [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `mock` |
+| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `mock` |
 | `--model` | string | — | Model override (e.g., `claude-sonnet-4-6`, `gpt-4.1`) |
 | `--embedder` | choice | auto | Embedding provider: `gemini`, `openai`, `mock` |
 | `--index-only` | flag | false | Skip LLM generation — parse, graph, git, dead code only |
@@ -55,12 +55,14 @@ repowise init [PATH] [OPTIONS]
 | `--exclude` / `-x` | string | — | Gitignore-style exclude pattern (repeatable: `-x vendor/ -x "*.gen.*"`) |
 | `--include-submodules` | flag | false | Include git submodule directories (excluded by default) |
 | `--concurrency` | int | 5 | Max concurrent LLM calls |
-| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`, or `minimal` |
+| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `--resume` | flag | false | Resume from last checkpoint after an interruption |
 | `--force` | flag | false | Regenerate all pages even if up to date |
 | `--commit-limit` | int | 500 | Max commits per file for git analysis (max 5000, saved to config) |
 | `--follow-renames` | flag | false | Track file renames in git history (saved to config) |
 | `--no-claude-md` | flag | false | Skip generating `.claude/CLAUDE.md` |
+| `--agents` / `--no-agents` | flag | config | Generate or skip managed `AGENTS.md` for Codex |
+| `--codex` / `--no-codex` | flag | prompt/skip | Generate or skip project-local Codex MCP config and hooks |
 | `--yes` / `-y` | flag | false | Skip the cost confirmation prompt |
 
 ### Examples
@@ -71,6 +73,9 @@ repowise init
 
 # Non-interactive, specific provider
 repowise init --provider anthropic --yes
+
+# Use the authenticated local Codex CLI
+repowise init --provider codex_cli --codex --yes
 
 # OpenAI-compatible Qwen3 endpoint with thinking disabled
 repowise init --provider openai --model qwen3 --reasoning off
@@ -102,7 +107,7 @@ repowise init --resume
 1. **Ingestion** — parses all files with tree-sitter, builds dependency graph
 2. **Analysis** — git churn/ownership, dead code detection, decision mining
 3. **Generation** — LLM writes wiki pages at repo/module/file level (skipped with `--index-only`)
-4. **Persistence** — writes to SQLite, builds vector index, generates `.claude/CLAUDE.md`
+4. **Persistence** — writes to SQLite, builds vector index, generates managed editor instruction files
 
 ### Provider auto-detection
 
@@ -128,9 +133,10 @@ repowise update [PATH] [OPTIONS]
 | `--provider` | string | — | Override LLM provider |
 | `--model` | string | — | Override model |
 | `--since` | string | — | Git ref to diff from (overrides saved `state.json`) |
-| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`, or `minimal` |
+| `--reasoning` | choice | auto | Reasoning mode for supported providers: `auto`, `off`/`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `--cascade-budget` | int | auto | Max pages to regenerate from cascading changes |
 | `--dry-run` | flag | false | Show affected pages without regenerating |
+| `--agents` / `--no-agents` | flag | config | Generate or skip managed `AGENTS.md` after update |
 
 ### Examples
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 import click
@@ -30,6 +31,7 @@ from repowise.cli.helpers import (
     save_state,
     write_update_pending,
 )
+from repowise.core.reasoning import REASONING_MODES
 
 # ---------------------------------------------------------------------------
 # Mode resolution
@@ -170,6 +172,7 @@ def _workspace_update(
     target: CommandTarget,
     *,
     dry_run: bool = False,
+    agents_md: bool | None = None,
 ) -> None:
     """Update stale repos in a workspace.
 
@@ -210,6 +213,13 @@ def _workspace_update(
 
     if stale_count == 0:
         console.print("[green]All repos are up to date.[/green]")
+        if not dry_run:
+            _refresh_workspace_editor_project_files(
+                ws_root=ws_root,
+                ws_config=ws_config,
+                repo_filter=repo_alias,
+                agents_md=agents_md,
+            )
         return
 
     if dry_run:
@@ -259,6 +269,44 @@ def _workspace_update(
         f"[bold]Done:[/bold] {updated} updated, {skipped} skipped"
         + (f", {errors} errors" if errors else "")
     )
+    _refresh_workspace_editor_project_files(
+        ws_root=ws_root,
+        ws_config=ws_config,
+        repo_filter=repo_alias,
+        agents_md=agents_md,
+    )
+
+
+def _refresh_workspace_editor_project_files(
+    *,
+    ws_root: Path,
+    ws_config: Any,
+    repo_filter: str | None,
+    agents_md: bool | None,
+) -> None:
+    """Refresh workspace repo editor files for explicit per-run overrides."""
+
+    if agents_md is None:
+        return
+
+    from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
+    from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
+
+    options = EditorSetupOptions(
+        project_file_overrides=get_default_project_file_overrides(agents_md=agents_md),
+    )
+    for entry in ws_config.repos:
+        if repo_filter and entry.alias != repo_filter:
+            continue
+        repo_path = (ws_root / entry.path).resolve()
+        if not (repo_path / ".repowise").is_dir():
+            continue
+        try:
+            refresh_editor_project_files(console, repo_path, options=options)
+        except Exception as exc:
+            console.print(
+                f"  [yellow]{entry.alias}: editor project-file refresh skipped: {exc}[/yellow]"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -737,9 +785,12 @@ def _run_full_health_rescore(
 @click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
 @click.option(
     "--reasoning",
-    type=click.Choice(["auto", "off", "minimal"]),
+    type=click.Choice(REASONING_MODES),
     default=None,
-    help="Reasoning mode for supported providers: auto, off, or minimal.",
+    help=(
+        "Reasoning mode for supported providers: auto, off/none, minimal, "
+        "low, medium, high, xhigh, or max."
+    ),
 )
 @click.option(
     "--cascade-budget",
@@ -815,6 +866,12 @@ def _run_full_health_rescore(
         "REPOWISE_NO_COST_TRACKING env var."
     ),
 )
+@click.option(
+    "--agents/--no-agents",
+    "agents_md",
+    default=None,
+    help="Generate managed AGENTS.md after update (default: config or enabled).",
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -829,6 +886,7 @@ def update_command(
     index_only: bool = False,
     docs_flag: bool | None = None,
     full: bool = False,
+    agents_md: bool | None = None,
     concurrency: int = 5,
     no_cost_tracking: bool = False,
 ) -> None:
@@ -855,7 +913,7 @@ def update_command(
                 "--full is single-repo only. Run it inside a specific repo "
                 "(or pass --no-workspace / --repo <alias>)."
             )
-        _workspace_update(target, dry_run=dry_run)
+        _workspace_update(target, dry_run=dry_run, agents_md=agents_md)
         return
 
     # --- Single-repo path from here on. ---
@@ -1448,9 +1506,21 @@ def update_command(
 
     # ---- Editor project files (best-effort) ----
     try:
-        from repowise.cli.editor_setup import refresh_editor_project_files
+        from repowise.cli.editor_integrations.defaults import get_default_project_file_overrides
+        from repowise.cli.editor_setup import EditorSetupOptions, refresh_editor_project_files
 
-        refresh_editor_project_files(console, repo_path)
+        editor_options = None
+        if agents_md is not None:
+            editor_options = EditorSetupOptions(
+                project_file_overrides=get_default_project_file_overrides(
+                    agents_md=agents_md,
+                ),
+            )
+        refresh_editor_project_files(
+            console,
+            repo_path,
+            options=editor_options,
+        )
     except Exception:
         pass  # Editor project-file refresh must never fail the update command
 

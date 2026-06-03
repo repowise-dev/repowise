@@ -24,7 +24,7 @@ repowise generates and maintains a structured wiki for any codebase. It tracks c
 | **Git intelligence** | Churn hotspots, ownership, bus factor, change patterns |
 | **Dead code detection** | Finds confirmed unused exports, functions, and types |
 | **Decision intelligence** | Captures *why* code is structured the way it is |
-| **MCP server** | 10 tools for AI assistants (Claude Code, Cursor, Windsurf, Cline) |
+| **MCP server** | 10 tools for AI assistants (Claude Code, Codex, Cursor, Windsurf, Cline) |
 | **Web dashboard** | Browse wiki, search, and explore architecture diagrams |
 | **Multi-language** | Python, TypeScript, JavaScript, Go, Rust, Java, C/C++, Kotlin, Ruby, C#, Swift, Scala, PHP |
 
@@ -45,3 +45,4 @@ pip install repowise
 | [**60-second quickstart →**](getting-started) | The fastest path to a working setup. |
 | [**Core concepts →**](concepts) | Understand the four layers before diving in. |
 | [**CLI reference →**](cli-reference) | Every command, flag, and option. |
+| [**Codex integration →**](codex) | Codex MCP, hooks, AGENTS.md, and local CLI provider setup. |

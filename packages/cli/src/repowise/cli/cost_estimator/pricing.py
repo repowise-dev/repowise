@@ -35,6 +35,7 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "gemini": (0.00025, 0.0015),
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
+    "codex_cli/": (0.0, 0.0),
 }
 
 

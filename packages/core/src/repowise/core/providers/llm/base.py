@@ -14,13 +14,45 @@ Adding a new provider:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
-
 CacheSegment = Literal["system", "user_prefix"]
+ModelOptionSource = Literal["api", "local", "fallback"]
+
+
+@dataclass(frozen=True)
+class ProviderModelOption:
+    """A model choice exposed by a provider for interactive configuration."""
+
+    model: str
+    label: str | None = None
+    reasoning_modes: tuple[ReasoningMode, ...] = ("auto",)
+    recommended: bool = False
+    source: ModelOptionSource = "fallback"
+    notes: str = ""
+
+
+def fallback_model_option(
+    model: str,
+    *,
+    label: str | None = None,
+    reasoning_modes: tuple[ReasoningMode, ...] = ("auto",),
+    notes: str = "model list unavailable; using configured model",
+) -> ProviderModelOption:
+    """Return the single fallback option used when live discovery fails."""
+
+    return ProviderModelOption(
+        model=model,
+        label=label or model,
+        reasoning_modes=reasoning_modes,
+        recommended=True,
+        source="fallback",
+        notes=notes,
+    )
 
 
 @dataclass(frozen=True)
@@ -120,8 +152,8 @@ class BaseProvider(ABC):
                            repowise uses 0.3 for consistent doc style.
             request_id:    Optional trace ID for logging and debugging.
             reasoning:     Provider-level reasoning intent. ``auto`` preserves
-                           provider defaults; ``off`` and ``minimal`` are
-                           translated by providers that support them.
+                           provider defaults; explicit modes are translated by
+                           providers that support them.
             cache_hints:   Optional hints that one or more prompt segments are
                            reusable across calls. Providers with an explicit
                            caching primitive (Anthropic) use them; others
@@ -155,6 +187,29 @@ class BaseProvider(ABC):
         Stored on every generated page for attribution and reproducibility.
         """
         ...
+
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        """Return reasoning modes supported by this provider/model.
+
+        ``auto`` is always present because it means "preserve provider defaults".
+        Providers with model-specific support should override this method and
+        return the exact explicit modes they can translate before an API call.
+        """
+
+        return ("auto",)
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        """Return model options available for interactive provider setup."""
+
+        return (
+            ProviderModelOption(
+                model=self.model_name,
+                label=self.model_name,
+                reasoning_modes=self.supported_reasoning_modes(),
+                recommended=True,
+                source="fallback",
+            ),
+        )
 
 
 class ProviderError(Exception):

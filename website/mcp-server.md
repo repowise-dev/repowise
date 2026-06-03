@@ -7,7 +7,7 @@ nav_order: 5
 # MCP Server
 {: .no_toc }
 
-Connect repowise to Claude Code, Cursor, Cline, or any MCP-compatible editor.
+Connect repowise to Claude Code, Codex, Cursor, Cline, or any MCP-compatible editor.
 {: .fs-6 .fw-300 }
 
 ---
@@ -65,6 +65,26 @@ If you're running repowise for the current directory, you can omit the path:
 }
 ```
 
+### Codex
+
+Run the Codex setup command from your repository:
+
+```bash
+repowise init --codex
+```
+
+This writes project-local `.codex/config.toml` with a Repowise MCP server entry:
+
+```toml
+[mcp_servers.repowise]
+command = "repowise"
+args = ["mcp"]
+cwd = "/path/to/your-repo"
+startup_timeout_sec = 20
+```
+
+It also writes `.codex/hooks.json` and managed `AGENTS.md`. See [Codex Integration](codex).
+
 ### Cursor
 
 Add to `.cursor/mcp.json` in your repo or `~/.cursor/mcp.json` globally:
@@ -118,7 +138,7 @@ Add to Windsurf's MCP configuration:
 
 ### stdio (default)
 
-The default transport. The MCP server runs as a subprocess of your editor, communicating over stdin/stdout. This is the correct option for Claude Code, Cursor, Cline, and Windsurf.
+The default transport. The MCP server runs as a subprocess of your editor, communicating over stdin/stdout. This is the correct option for Claude Code, Codex, Cursor, Cline, and Windsurf.
 
 ```bash
 repowise mcp                         # stdio, current directory
@@ -392,4 +412,4 @@ The tools are designed to form a decision workflow:
 5. **When locating code** → `search_codebase(query="...")` before grep
 6. **After making changes** → `update_decision_records(action="create", ...)` to record decisions
 
-The [CLAUDE.md generator](claude-md-generator) writes these instructions directly into your project's CLAUDE.md, so Claude Code follows this workflow automatically.
+The [CLAUDE.md generator](claude-md-generator) writes these instructions directly into your project's CLAUDE.md, so Claude Code follows this workflow automatically. Codex setup writes the same workflow into managed `AGENTS.md`.

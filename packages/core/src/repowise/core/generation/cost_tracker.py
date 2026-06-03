@@ -49,6 +49,8 @@ _warned_models: set[str] = set()
 
 def _get_pricing(model: str) -> dict[str, float]:
     """Return pricing for *model*, falling back and warning if unknown."""
+    if model.startswith("codex_cli/"):
+        return {"input": 0.0, "output": 0.0}
     if model in _PRICING:
         return _PRICING[model]
     if model not in _warned_models:

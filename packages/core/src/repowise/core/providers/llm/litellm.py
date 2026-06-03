@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from tenacity import (
@@ -38,11 +39,13 @@ from repowise.core.providers.llm.base import (
     ChatToolCall,
     GeneratedResponse,
     ProviderError,
+    ProviderModelOption,
     RateLimitError,
     ensure_reasoning_supported,
+    fallback_model_option,
 )
 from repowise.core.rate_limiter import RateLimiter
-from repowise.core.reasoning import ReasoningMode
+from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
 if TYPE_CHECKING:
     from repowise.core.generation.cost_tracker import CostTracker
@@ -52,6 +55,81 @@ log = structlog.get_logger(__name__)
 _MAX_RETRIES = 3
 _MIN_WAIT = 1.0
 _MAX_WAIT = 4.0
+_LITELLM_REASONING_MODES: tuple[ReasoningMode, ...] = ("low", "medium", "high")
+
+
+def _litellm_supports_reasoning(model: str) -> bool:
+    try:
+        import litellm  # type: ignore[import-untyped]
+
+        return bool(litellm.supports_reasoning(model=model))
+    except Exception:
+        return False
+
+
+def _litellm_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
+    if _litellm_supports_reasoning(model):
+        return _LITELLM_REASONING_MODES
+    return ()
+
+
+def _litellm_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, object]:
+    mode = normalize_reasoning(reasoning)
+    if mode == "auto":
+        return {}
+    return {"reasoning_effort": mode}
+
+
+def _litellm_model_options(fallback_model: str) -> tuple[ProviderModelOption, ...]:
+    fallback = fallback_model_option(
+        fallback_model,
+        reasoning_modes=("auto", *_litellm_supported_reasoning_modes(fallback_model)),
+    )
+    try:
+        import litellm  # type: ignore[import-untyped]
+
+        model_ids = sorted(
+            {
+                model
+                for model in getattr(litellm, "model_list", []) or []
+                if isinstance(model, str) and model
+            }
+        )
+    except Exception:
+        return (fallback,)
+
+    if not model_ids:
+        return (fallback,)
+
+    options: list[ProviderModelOption] = []
+    for model_id in model_ids:
+        try:
+            supports_reasoning = bool(litellm.supports_reasoning(model=model_id))
+        except Exception:
+            supports_reasoning = False
+        reasoning_modes = (
+            (
+                "auto",
+                *_LITELLM_REASONING_MODES,
+            )
+            if supports_reasoning
+            else ("auto",)
+        )
+        notes = ""
+        if supports_reasoning:
+            notes = "LiteLLM reports reasoning support"
+        options.append(
+            ProviderModelOption(
+                model=model_id,
+                label=model_id,
+                reasoning_modes=reasoning_modes,
+                recommended=model_id == fallback_model,
+                source="local",
+                notes=notes,
+            )
+        )
+
+    return tuple(options)
 
 
 class LiteLLMProvider(BaseProvider):
@@ -73,7 +151,7 @@ class LiteLLMProvider(BaseProvider):
         api_base: str | None = None,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
-        cost_tracker: "CostTracker | None" = None,
+        cost_tracker: CostTracker | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
@@ -94,6 +172,12 @@ class LiteLLMProvider(BaseProvider):
     def model_name(self) -> str:
         return self._model
 
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return ("auto", *_litellm_supported_reasoning_modes(self._model))
+
+    def available_model_options(self) -> tuple[ProviderModelOption, ...]:
+        return _litellm_model_options(self._model)
+
     async def generate(
         self,
         system_prompt: str,
@@ -104,7 +188,13 @@ class LiteLLMProvider(BaseProvider):
         reasoning: ReasoningMode = "auto",
         cache_hints: tuple = (),
     ) -> GeneratedResponse:
-        ensure_reasoning_supported("litellm", self._model, reasoning)
+        reasoning_mode = ensure_reasoning_supported(
+            "litellm",
+            self._model,
+            reasoning,
+            _litellm_supported_reasoning_modes(self._model),
+            detail="LiteLLM reasoning support comes from litellm.supports_reasoning().",
+        )
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -115,6 +205,7 @@ class LiteLLMProvider(BaseProvider):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 request_id=request_id,
+                reasoning=reasoning_mode,
             )
         except RetryError as exc:
             raise ProviderError(
@@ -135,6 +226,7 @@ class LiteLLMProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
         request_id: str | None,
+        reasoning: ReasoningMode,
     ) -> GeneratedResponse:
         # Import litellm lazily — it's a large package and only needed at call time
         import litellm  # type: ignore[import-untyped]
@@ -156,6 +248,7 @@ class LiteLLMProvider(BaseProvider):
             call_kwargs["api_key"] = self._api_key
         if self._api_base:
             call_kwargs["api_base"] = self._api_base
+        call_kwargs.update(_litellm_reasoning_kwargs(reasoning))
 
         try:
             response = await litellm.acompletion(**call_kwargs)
@@ -259,7 +352,11 @@ class LiteLLMProvider(BaseProvider):
                     for tc_delta in delta.tool_calls:
                         idx = tc_delta.index
                         if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {"id": getattr(tc_delta, "id", "") or "", "name": "", "arguments": ""}
+                            tool_calls_acc[idx] = {
+                                "id": getattr(tc_delta, "id", "") or "",
+                                "name": "",
+                                "arguments": "",
+                            }
                         acc = tool_calls_acc[idx]
                         if getattr(tc_delta, "id", None):
                             acc["id"] = tc_delta.id
