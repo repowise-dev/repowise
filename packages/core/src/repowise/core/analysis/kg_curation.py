@@ -30,6 +30,11 @@ from typing import Any
 
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult, _slugify
 from repowise.core.generation.layers import compute_layer_order, infer_layer
+from repowise.core.generation.tour import (
+    DEFAULT_MAX_STOPS,
+    build_tour,
+    score_entry_points,
+)
 
 __all__ = ["curate_knowledge_graph", "curation_enabled"]
 
@@ -110,6 +115,13 @@ def curate_knowledge_graph(
         _curate_entry_points(kg, parsed_files, graph_builder)
     except Exception:  # pragma: no cover - defensive; keep skeleton entry points
         logger.exception("kg_curation._curate_entry_points failed; keeping raw entry points")
+
+    try:
+        tour = _curate_tour(kg, parsed_files, graph_builder)
+        if tour is not None:
+            kg.tour = tour
+    except Exception:  # pragma: no cover - defensive; keep skeleton/LLM tour
+        logger.exception("kg_curation._curate_tour failed; keeping existing tour")
 
     return kg
 
@@ -266,12 +278,16 @@ def _is_barrel(parsed_file: Any) -> bool:
     if any(getattr(s, "kind", "") in _SUBSTANTIVE_KINDS for s in symbols):
         return False
 
-    has_reexports = any(getattr(imp, "is_reexport", False) for imp in getattr(parsed_file, "imports", []) or [])
+    has_reexports = any(
+        getattr(imp, "is_reexport", False) for imp in getattr(parsed_file, "imports", []) or []
+    )
     exports_only = bool(getattr(parsed_file, "exports", []))
     return has_reexports or exports_only or not symbols
 
 
-def _curate_entry_points(kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any) -> None:
+def _curate_entry_points(
+    kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any
+) -> None:
     """Demote re-export barrels and surface a capped, ranked entry-point set.
 
     Mutates only the presentation view: drops the ``entry_point`` *tag* from
@@ -311,3 +327,154 @@ def _curate_entry_points(kg: KnowledgeGraphResult, parsed_files: list[Any], grap
     ranked = [path for _, path in survivors]
     kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
     kg.project["entry_candidates"] = ranked
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — canonical, layer-aware tour
+# ---------------------------------------------------------------------------
+
+
+def _readme_overview_node(kg: KnowledgeGraphResult) -> dict | None:
+    """The best root-level README/overview file node, if one exists."""
+    best: dict | None = None
+    for n in _file_nodes(kg):
+        path = n["filePath"]
+        name = PurePosixPath(path).name.lower()
+        depth = len(PurePosixPath(path).parts) - 1
+        if not (name.startswith("readme") and depth <= 1):
+            continue
+        # Prefer the shallowest README (the repo-root one).
+        if best is None or depth < (len(PurePosixPath(best["filePath"]).parts) - 1):
+            best = n
+    return best
+
+
+def _best_in_layer(paths: list[str], rank: dict[str, float], pagerank: dict[str, float]) -> str:
+    """Highest-ranked path in a layer (entry score, then PageRank, then name)."""
+    return sorted(paths, key=lambda p: (-rank.get(p, 0.0), -pagerank.get(p, 0.0), p))[0]
+
+
+def _curate_tour(
+    kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any
+) -> list[dict] | None:
+    """Build one canonical, layer-aware tour over the curated layers.
+
+    Uses the deterministic :func:`build_tour` (BFS-from-entry + PageRank) as the
+    base ordering, opens with the repo README/overview, then diversifies so the
+    walk covers as many curated layers as the step budget allows (swapping
+    redundant same-layer stops for representatives of uncovered layers). Every
+    step carries a ``layer_id`` mapping it to a curated layer, so the tour reads
+    the architecture top→bottom. The LLM may later rewrite step *prose* only.
+    """
+    file_nodes = _file_nodes(kg)
+    if not file_nodes:
+        return None
+
+    paths = [n["filePath"] for n in file_nodes]
+    type_by_path = {n["filePath"]: n.get("type", "file") for n in file_nodes}
+    file_layers = {p: infer_layer(p) for p in paths}
+    order = compute_layer_order(file_layers, _file_import_edges(graph_builder))
+    layer_index = {name: i for i, name in enumerate(order)}
+
+    pagerank = graph_builder.pagerank() or {}
+    rank = {path: s for s, path in score_entry_points(parsed_files, pagerank)}
+
+    # Infra files (Docker/CI/etc.) close the tour; everything else is code.
+    infra_paths = [p for p in paths if type_by_path.get(p) in {"service", "pipeline"}]
+
+    project_name = kg.project.get("name") or "repository"
+    base = build_tour(
+        parsed_files,
+        pagerank,
+        _file_import_edges(graph_builder),
+        file_page_paths=paths,
+        infra_paths=infra_paths,
+        repo_name=project_name,
+        max_stops=DEFAULT_MAX_STOPS,
+    )
+
+    overview = [s for s in base if s.kind == "overview"]
+    code = [s for s in base if s.kind == "code"]
+    infra = [s for s in base if s.kind == "infra"]
+
+    # --- Diversify code stops for layer coverage -------------------------
+    by_layer: dict[str, list[str]] = defaultdict(list)
+    for p in paths:
+        by_layer[file_layers[p]].append(p)
+
+    code_paths = [s.target_path for s in code]
+    seen_layers: set[str] = set()
+    redundant_positions: list[int] = []
+    for i, p in enumerate(code_paths):
+        layer = file_layers.get(p)
+        if layer in seen_layers:
+            redundant_positions.append(i)
+        else:
+            seen_layers.add(layer)
+
+    uncovered = [name for name in order if name not in seen_layers]
+    for layer in uncovered:
+        if not redundant_positions:
+            break
+        candidates = [p for p in by_layer.get(layer, []) if p not in code_paths]
+        if not candidates:
+            continue
+        rep = _best_in_layer(candidates, rank, pagerank)
+        pos = redundant_positions.pop()
+        code_paths[pos] = rep
+        seen_layers.add(layer)
+
+    # Order the walk top→bottom: by layer dependency rank, then path.
+    code_paths = sorted(
+        dict.fromkeys(code_paths),
+        key=lambda p: (layer_index.get(file_layers.get(p, ""), len(order)), p),
+    )
+
+    # --- Assemble the exported tour --------------------------------------
+    tour: list[dict] = []
+    order_n = 0
+
+    readme = _readme_overview_node(kg)
+    if overview:
+        order_n += 1
+        ov = overview[0].as_dict()
+        ov["order"] = order_n
+        if readme is not None:
+            ov["target_path"] = readme["filePath"]
+            ov["title"] = PurePosixPath(readme["filePath"]).name
+            ov["layer_id"] = f"layer:{_slugify(file_layers[readme['filePath']])}"
+        else:
+            ov["layer_id"] = None
+        tour.append(ov)
+
+    for p in code_paths:
+        order_n += 1
+        layer = file_layers.get(p, "")
+        idx = layer_index.get(layer, len(order))
+        if idx == 0:
+            reason = f"Top of the stack ({layer}) — start of the request/control flow."
+        elif idx >= len(order) - 1:
+            reason = f"Foundational layer ({layer}) — the others build on this."
+        else:
+            reason = f"The {layer} layer — sits mid-stack between consumers and foundations."
+        tour.append(
+            {
+                "order": order_n,
+                "target_path": p,
+                "page_type": "file_page",
+                "title": PurePosixPath(p).name,
+                "depth": idx,
+                "kind": "code",
+                "reason": reason,
+                "layer_id": f"layer:{_slugify(layer)}",
+            }
+        )
+
+    for s in infra:
+        order_n += 1
+        step = s.as_dict()
+        step["order"] = order_n
+        step["layer_id"] = f"layer:{_slugify(file_layers.get(s.target_path, 'Config'))}"
+        tour.append(step)
+
+    return tour

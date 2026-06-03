@@ -58,10 +58,19 @@ async def enrich_knowledge_graph(
         reasoning=reasoning,
     )
 
-    tour = await _generate_tour(
-        enriched_layers, llm_client, graph_builder, repo_structure, kg_skeleton,
-        reasoning=reasoning,
-    )
+    # When curation is enabled it has already written the canonical,
+    # layer-aware tour (deterministic, one per layer top→bottom). The LLM must
+    # not reselect or reorder it — keep the curated tour as-is (prose narration
+    # can be layered on separately). Otherwise fall back to LLM tour generation.
+    from repowise.core.analysis.kg_curation import curation_enabled
+
+    if curation_enabled() and kg_skeleton.tour:
+        tour = kg_skeleton.tour
+    else:
+        tour = await _generate_tour(
+            enriched_layers, llm_client, graph_builder, repo_structure, kg_skeleton,
+            reasoning=reasoning,
+        )
 
     if generated_pages:
         _backfill_summaries(kg_skeleton, generated_pages)
