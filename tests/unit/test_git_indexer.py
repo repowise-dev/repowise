@@ -279,6 +279,40 @@ class TestStableClassification:
         assert meta["commit_count_90d"] == 0
         assert meta["is_stable"] is True
 
+    def test_top_authors_carry_per_author_timestamps(self) -> None:
+        """Each top-author entry records that author's own first/last commit ts
+        so the owner aggregator doesn't credit one author for another's commit."""
+        import json
+
+        indexer = GitIndexer("/tmp/repo")
+        mock_repo = MagicMock()
+
+        base = datetime.now(UTC) - timedelta(days=200)
+        # Alice: days 0 and 5 (older). Bob: day 40 (most recent on this file).
+        specs = [
+            ("Alice", "alice@example.com", base),
+            ("Alice", "alice@example.com", base + timedelta(days=5)),
+            ("Bob", "bob@example.com", base + timedelta(days=40)),
+        ]
+        log_lines = []
+        for i, (name, email, when) in enumerate(specs):
+            ts = int(when.timestamp())
+            log_lines.append(
+                f"\x00sha{i:04d}\x1f{name}\x1f{email}\x1f{ts}\x1f\x1ffeat: c{i}\x1f"
+            )
+        mock_repo.git.log.return_value = "\n".join(log_lines)
+
+        meta = indexer._index_file("shared.py", mock_repo)
+        authors = {a["name"]: a for a in json.loads(meta["top_authors_json"])}
+
+        alice_last = int((base + timedelta(days=5)).timestamp())
+        bob_last = int((base + timedelta(days=40)).timestamp())
+        assert authors["Alice"]["last_commit_ts"] == alice_last
+        assert authors["Alice"]["first_commit_ts"] == int(base.timestamp())
+        # Alice's last must NOT be bumped to Bob's later commit on the same file.
+        assert authors["Alice"]["last_commit_ts"] < authors["Bob"]["last_commit_ts"]
+        assert authors["Bob"]["last_commit_ts"] == bob_last
+
 
 class TestGitWindowAnchor:
     """REPOWISE_GIT_WINDOW_ANCHOR anchors recency windows to the repo's most

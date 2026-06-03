@@ -34,7 +34,12 @@ _FIELD_SEP = "\x1f"
 # output, which is what :func:`_parse_commit_record` then splits on. The body
 # (``%b``) is captured last because it is the only multi-line field; everything
 # after the 6th field separator is "body + numstat" and is disentangled there.
-_LOG_FORMAT = "%x00%H%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%s%x1f%b"
+# Author name/email use the mailmap-canonical ``%aN``/``%aE`` (not raw
+# ``%an``/``%ae``) so a repo's ``.mailmap`` folds a contributor's multiple
+# names/emails — personal vs. GitHub ``noreply``, a second machine's git config —
+# into one identity. Without this, ownership and "last touched" split one human
+# across several contributor buckets.
+_LOG_FORMAT = "%x00%H%x1f%aN%x1f%aE%x1f%ct%x1f%P%x1f%s%x1f%b"
 
 # A git ``--numstat`` line: ``<added>\t<deleted>\t<path>`` where added/deleted
 # are decimal counts or ``-`` for binary files. Used to split the trailing

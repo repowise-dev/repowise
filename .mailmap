@@ -1,0 +1,13 @@
+# Coalesce contributor identities that git records under more than one
+# name/email (personal vs. GitHub noreply, differing name spellings).
+# Format: Canonical Name <canonical-email> <other-email>  (or with a name).
+# repowise reads author identity through git's mailmap (%aN/%aE), so entries
+# here merge split contributor buckets in ownership / "last touched".
+
+Raghav Chamadiya <raghavchamadiya@gmail.com> <65403859+RaghavChamadiya@users.noreply.github.com>
+Raghav Chamadiya <raghavchamadiya@gmail.com> RaghavChamadiya <raghavchamadiya@gmail.com>
+
+Swati Ahuja <swatiahuja.ahuja@gmail.com> <35968565+swati510@users.noreply.github.com>
+Swati Ahuja <swatiahuja.ahuja@gmail.com> swati510 <swatiahuja.ahuja@gmail.com>
+
+joptimus <jlewan27@gmail.com> <joptimus@users.noreply.github.com>

@@ -259,6 +259,12 @@ def index_file(
         author_counts: Counter[str] = Counter()
         author_emails: dict[str, str] = {}
         recent_author_counts: Counter[str] = Counter()
+        # Per-author commit timestamps so a contributor's "last touched" reflects
+        # *their own* last commit to this file — not the file's last commit by
+        # anyone (which would credit you whenever a co-owner touches a shared
+        # file). Consumed downstream by the owner-profile aggregator.
+        author_last_ts: dict[str, int] = {}
+        author_first_ts: dict[str, int] = {}
 
         for c in commits:
             if c.ts >= ninety_days_ago_ts:
@@ -273,6 +279,13 @@ def index_file(
             author_counts[c.author_name] += 1
             if c.author_name not in author_emails and c.author_email:
                 author_emails[c.author_name] = c.author_email
+            if c.ts > 0:
+                prev_last = author_last_ts.get(c.author_name)
+                if prev_last is None or c.ts > prev_last:
+                    author_last_ts[c.author_name] = c.ts
+                prev_first = author_first_ts.get(c.author_name)
+                if prev_first is None or c.ts < prev_first:
+                    author_first_ts[c.author_name] = c.ts
 
         c90 = meta["commit_count_90d"]
         total_churn = meta["lines_added_90d"] + meta["lines_deleted_90d"]
@@ -306,13 +319,16 @@ def index_file(
         # full contributor surface for a file.
         top_authors = []
         for name, count in author_counts.most_common(_MAX_TOP_AUTHORS):
-            top_authors.append(
-                {
-                    "name": name,
-                    "email": author_emails.get(name, ""),
-                    "commit_count": count,
-                }
-            )
+            entry: dict[str, Any] = {
+                "name": name,
+                "email": author_emails.get(name, ""),
+                "commit_count": count,
+            }
+            if name in author_last_ts:
+                entry["last_commit_ts"] = author_last_ts[name]
+            if name in author_first_ts:
+                entry["first_commit_ts"] = author_first_ts[name]
+            top_authors.append(entry)
         meta["top_authors_json"] = json.dumps(top_authors)
 
         if top_authors:

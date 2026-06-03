@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +50,19 @@ def owner_key(name: str | None, email: str | None) -> str:
 def _module_of(file_path: str) -> str:
     parts = file_path.split("/", 1)
     return parts[0] if len(parts) > 1 else "root"
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Coerce a DB datetime to aware-UTC.
+
+    ``DateTime(timezone=True)`` round-trips as aware on Postgres but *naive* on
+    SQLite. Per-author timestamps are built aware (from a unix epoch); normalize
+    the file-level fallback to match so the ``min``/``max`` comparisons below
+    never mix naive and aware datetimes.
+    """
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +181,30 @@ async def aggregate_owners(
             acc.lines_deleted_90d_est += deleted * share
             for cat, n in categories.items():
                 acc.commit_categories[cat] += int(n * share)
-            if m.last_commit_at:
-                if acc.last_commit_at is None or m.last_commit_at > acc.last_commit_at:
-                    acc.last_commit_at = m.last_commit_at
-            if m.first_commit_at:
-                if acc.first_commit_at is None or m.first_commit_at < acc.first_commit_at:
-                    acc.first_commit_at = m.first_commit_at
+            # Prefer the author's *own* last/first commit to this file (added to
+            # top_authors by the git indexer); fall back to the file-level value
+            # for indexes built before that field existed.
+            a_last_ts = a.get("last_commit_ts")
+            a_last = (
+                datetime.fromtimestamp(a_last_ts, tz=UTC)
+                if a_last_ts
+                else _as_utc(m.last_commit_at)
+            )
+            if a_last is not None and (
+                acc.last_commit_at is None or a_last > acc.last_commit_at
+            ):
+                acc.last_commit_at = a_last
+
+            a_first_ts = a.get("first_commit_ts")
+            a_first = (
+                datetime.fromtimestamp(a_first_ts, tz=UTC)
+                if a_first_ts
+                else _as_utc(m.first_commit_at)
+            )
+            if a_first is not None and (
+                acc.first_commit_at is None or a_first < acc.first_commit_at
+            ):
+                acc.first_commit_at = a_first
             touchers.append(acc)
 
         # Primary owner — credit them for "files_owned" / hotspots / silo.
