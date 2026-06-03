@@ -1,4 +1,8 @@
-"""``repowise update`` — incremental wiki regeneration for changed files."""
+"""``repowise update`` — incremental wiki regeneration for changed files.
+
+Re-runs only the parts of the pipeline affected by files that changed since the
+last indexed commit, rather than regenerating the whole wiki.
+"""
 
 from __future__ import annotations
 
