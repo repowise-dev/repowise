@@ -26,12 +26,12 @@ export interface NodeShellProps {
 }
 
 function getBorderColor(props: NodeShellProps, fallbackBorder: string): string {
-  if (props.selected) return "#fbbf24";
-  if (props.diffState === "changed") return "#fca5a5";
-  if (props.diffState === "affected") return "#fbbf24";
-  if (props.tourHighlight) return "#f59520";
-  if (props.searchHighlight) return "#f59520";
-  if (props.focused) return "#f59520";
+  if (props.selected) return "var(--color-viz-selection)";
+  if (props.diffState === "changed") return "var(--color-viz-diff-changed)";
+  if (props.diffState === "affected") return "var(--color-viz-diff-affected)";
+  if (props.tourHighlight) return "var(--color-accent-fill)";
+  if (props.searchHighlight) return "var(--color-accent-fill)";
+  if (props.focused) return "var(--color-accent-fill)";
   return fallbackBorder;
 }
 
@@ -77,7 +77,7 @@ export function NodeShell(props: NodeShellProps) {
         height,
         background: s.bg,
         border: `1.5px ${getBorderStyle(props)} ${getBorderColor(props, s.border)}`,
-        borderLeft: `3px solid ${selected ? "#fbbf24" : s.band}`,
+        borderLeft: `3px solid ${selected ? "var(--color-viz-selection)" : s.band}`,
         borderRadius: 8,
         color: s.text,
         overflow: "hidden",

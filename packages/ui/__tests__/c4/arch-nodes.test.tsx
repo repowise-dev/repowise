@@ -9,12 +9,12 @@ vi.mock("@xyflow/react", () => ({
 }));
 
 describe("NodeShell", () => {
-  it("renders selected state with golden border", () => {
+  it("renders selected state with the brand selection token", () => {
     const { container } = render(
       <NodeShell tone="file" kindLabel="FILE" title="test.py" selected={true} />,
     );
     const root = container.firstElementChild as HTMLElement;
-    expect(root.style.border).toContain("rgb(251, 191, 36)");
+    expect(root.style.borderLeft).toContain("--color-viz-selection");
   });
 
   it("renders tour highlight with accentPulse animation", () => {
@@ -33,12 +33,12 @@ describe("NodeShell", () => {
     expect(root.style.opacity).toBe("0.25");
   });
 
-  it("renders diff changed state with red border", () => {
+  it("renders diff changed state with the diff-changed token", () => {
     const { container } = render(
       <NodeShell tone="file" kindLabel="FILE" title="test.py" diffState="changed" />,
     );
     const root = container.firstElementChild as HTMLElement;
-    expect(root.style.border).toContain("rgb(252, 165, 165)");
+    expect(root.style.border).toContain("--color-viz-diff-changed");
   });
 
   it("renders search highlight with dashed border", () => {

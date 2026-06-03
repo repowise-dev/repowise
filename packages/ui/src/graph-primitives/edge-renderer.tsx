@@ -18,14 +18,14 @@ export interface ArchEdgeData {
 }
 
 export const EDGE_CATEGORY_COLORS: Record<string, string> = {
-  structural: "#60a5fa",
-  behavioral: "#4ade80",
-  "data-flow": "#c084fc",
-  dependencies: "#fb923c",
-  semantic: "#94a3b8",
+  structural: "var(--color-accent-secondary)",
+  behavioral: "var(--color-success)",
+  "data-flow": "var(--color-edge-co-change)",
+  dependencies: "var(--color-accent-fill)",
+  semantic: "var(--color-text-tertiary)",
 };
 
-const EDGE_DEFAULT_COLOR = "#8b9dc3";
+const EDGE_DEFAULT_COLOR = "var(--color-text-tertiary)";
 
 function getEdgeColor(edgeType: string | undefined): string {
   if (!edgeType) return EDGE_DEFAULT_COLOR;
@@ -66,7 +66,7 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
   });
 
   const baseColor = getEdgeColor(edgeType);
-  const stroke = selected ? "#fbbf24" : baseColor;
+  const stroke = selected ? "var(--color-viz-selection)" : baseColor;
   const strokeWidth = dimmed ? 1 : computeEdgeStrokeWidth(count);
   const strokeOpacity = selected ? 1.0 : dimmed ? 0.06 : 0.75;
 
@@ -93,7 +93,7 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
             style={{
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              background: "rgba(15, 23, 42, 0.88)",
+              background: "var(--color-bg-overlay)",
               color: stroke,
               padding: "2px 6px",
               borderRadius: 4,
@@ -101,7 +101,7 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
               fontWeight: 500,
               letterSpacing: 0.3,
               pointerEvents: "none",
-              border: `1px solid ${stroke}33`,
+              border: "1px solid var(--color-border-default)",
               whiteSpace: "nowrap",
               opacity: selected ? 1 : 0.85,
             }}
