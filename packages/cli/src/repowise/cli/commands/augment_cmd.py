@@ -114,7 +114,16 @@ def _run_augment(*, client: str | None = None) -> None:
 
 
 def _emit_response(event: str, context: str) -> None:
-    """Write the hook JSON response to stdout."""
+    """Write the hook JSON response to stdout.
+
+    Suppressed when an identical emission was just produced (see
+    :func:`_claim_emission`) so two concurrently-registered repowise hooks —
+    one bundled in the Claude Code plugin, one written to
+    ``~/.claude/settings.json`` by ``repowise init`` — can't echo the same
+    enrichment block twice on a single tool event.
+    """
+    if not _claim_emission(event, context):
+        return
     response = {
         "hookSpecificOutput": {
             "hookEventName": event,
@@ -123,6 +132,54 @@ def _emit_response(event: str, context: str) -> None:
     }
     sys.stdout.write(json.dumps(response))
     sys.stdout.flush()
+
+
+# Window within which an identical (event, context) emission is treated as a
+# duplicate. Generous enough to cover two hook processes racing on the same
+# tool event, short enough that a genuinely repeated search later still speaks.
+_EMIT_DEDUP_TTL_SECONDS = 8.0
+
+
+def _claim_emission(event: str, context: str) -> bool:
+    """Return True if this caller may emit ``context`` for ``event`` now.
+
+    Both repowise PostToolUse hooks fire on the same tool call and compute the
+    same enrichment. A temp lock file keyed on the emission content lets
+    exactly one win: the first caller creates it atomically and emits; a second
+    caller within the TTL sees a fresh marker and stays silent. Fail-open — any
+    error returns True so a dedup glitch can never swallow a real emission.
+    """
+    import hashlib
+    import os
+    import tempfile
+    import time
+
+    try:
+        key = hashlib.sha1(f"{event}\x00{context}".encode()).hexdigest()[:16]
+        marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
+        now = time.time()
+        try:
+            # O_EXCL: only the first concurrent caller creates the file.
+            fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, str(now).encode())
+            finally:
+                os.close(fd)
+            return True
+        except FileExistsError:
+            # Someone emitted recently — defer unless the marker is stale, in
+            # which case take it over (handles a real repeat search later, and
+            # a crashed prior run that left the marker behind).
+            try:
+                if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
+                    return False
+            except OSError:
+                return True
+            with contextlib.suppress(OSError):
+                marker.write_text(str(now), encoding="utf-8")
+            return True
+    except Exception:
+        return True
 
 
 # ---------------------------------------------------------------------------

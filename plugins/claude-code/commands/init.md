@@ -41,8 +41,8 @@ Ask the user ONE question:
 
 "How would you like to set up Repowise?
 
-1. **Index-only mode** — no LLM needed. Builds the dependency graph, mines git history, detects dead code. Runs in under 60 seconds. You get graph intelligence, git ownership, hotspots, and dead code detection — but no generated documentation or semantic search.
-2. **Full mode** — generates rich documentation using an LLM. Requires an API key (Anthropic, OpenAI, Google Gemini, or Ollama for local). Takes longer but gives you the best results — full wiki, semantic search, and RAG context.
+1. **Index-only mode** — no LLM needed. Builds the dependency graph, mines git history, scores code health, and detects dead code. Fast. You get graph intelligence, git ownership, hotspots, the 1–10 code-health score, and dead-code detection — but no generated documentation or semantic search.
+2. **Full mode** — everything in index-only **plus** an LLM-generated wiki, semantic search, and architectural-decision mining. Requires an API key (Anthropic, OpenAI, Google Gemini, or Ollama for local). The graph/git/health layers are ready in minutes; the documentation layer runs after and can continue in the background.
 3. **I'll configure it myself** — just show me the available flags."
 
 ### If Index-only mode:

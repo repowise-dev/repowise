@@ -93,7 +93,13 @@ If Node.js 20+ is installed, the web UI starts automatically. Otherwise, use Doc
 repowise mcp --transport stdio
 ```
 
-> **Automatic for Claude Code:** `repowise init` already registers the MCP server and installs PostToolUse hooks in `~/.claude/settings.json`. Broad or zero-result `Grep`/`Glob` searches can receive graph context, and git operations can notify the agent when the wiki is stale.
+> **Automatic for Claude Code:** `repowise init` already registers the MCP server and installs a PostToolUse hook in `~/.claude/settings.json`. Broad or zero-result `Grep`/`Glob` searches can receive graph context, and git operations can notify the agent when the wiki is stale.
+
+> **Claude Code plugin (one-command):** install from the marketplace to get the MCP server, the hook, and `/repowise:*` slash commands together:
+> ```text
+> /plugin marketplace add repowise-dev/repowise
+> /plugin install repowise@repowise
+> ```
 
 > **Automatic for Codex:** run `repowise init --codex` to write project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. See [Codex Integration](CODEX.md).
 

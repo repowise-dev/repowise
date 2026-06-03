@@ -2,36 +2,55 @@
 name: codebase-exploration
 description: >
   Use when exploring, understanding, or answering questions about a codebase that has Repowise
-  indexed (indicated by a .repowise/ directory in the project root). Activates for questions like
-  "how does X work", "explain the architecture", "where is Y implemented", "what does this module do",
-  or any task requiring understanding of codebase structure before diving into source files.
+  indexed (a .repowise/ directory in the project root). Activates for "how does X work",
+  "explain the architecture", "where is Y implemented", "what does this module do", or any task
+  that needs an understanding of structure before diving into source files.
 user-invocable: false
 ---
 
 # Codebase Exploration with Repowise
 
-This project has a Repowise intelligence layer. Before reading raw source files to understand the codebase, use Repowise MCP tools — they provide richer context including documentation, ownership, history, and architectural decisions.
+This project has a Repowise intelligence layer. Before grepping and reading raw
+source to understand the codebase, reach for the Repowise MCP tools — they
+return documentation, ownership, history, decisions, and graph structure that
+plain file reads don't, usually in one round-trip instead of many.
 
-## When starting a new exploration task
+## Which tool for which question
 
-Call `get_overview()` first. This returns the architecture summary, module map, entry points, and tech stack. This single call replaces reading dozens of files to understand the project structure.
+| You want… | Call |
+|---|---|
+| First orientation in an unfamiliar repo | `get_overview()` — architecture summary, key modules, entry points, git health, knowledge map. Skip it once you have the map. |
+| A direct answer to "how/where/why does X work" | `get_answer(question="…")` — synthesised answer with citations + a `retrieval_quality` signal. Collapses the search → read → reason loop. |
+| Candidate files for a fuzzy concept | `search_codebase(query="…")` — semantic wiki search. Each hit reports `search_method` (`embedding` vs `bm25` fallback). Use Grep for exact identifiers. |
+| A triage card for specific files/symbols | `get_context(targets=[…])` — title, summary, signatures, hotspot bit, top callers, decision titles, symbol_ids. Batch many targets in one call. |
+| The actual source of one symbol | `get_symbol("path/to/file.py::Name")` — exact bytes with line bounds. Cheaper than Read + offset math. Use a `symbol_id` from `get_context`. |
 
-## When answering "how does X work" questions
+## Recommended flow
 
-1. Call `search_codebase(query="X")` to find the most relevant documented modules and files.
-2. Call `get_context(targets=[...relevant files from search results...])` to get full documentation, ownership, freshness, and decisions for those targets. Batch all targets in one call.
-3. Only read raw source files if the Repowise docs don't cover enough detail for the specific question.
+1. New area you don't know → `get_overview()` once.
+2. A specific question → `get_answer(question=…)` first.
+   - High confidence → answer it, cite the paths.
+   - `medium`/`low` confidence → follow `best_guesses[0].file` or
+     `fallback_targets[0]` into `get_context`, then `get_symbol` for bytes.
+3. More files around a concept → `search_codebase`, then `get_context` on the
+   hits (batched), then `get_symbol` only for the bodies you actually need.
 
-## When asked about connections between modules
+Fall back to raw Read/Grep only when the indexed context doesn't cover the
+specific detail the user asked about.
 
-Call `get_dependency_path(source="module_a", target="module_b")` to understand how two parts of the codebase are connected through the dependency graph.
+## Trust signals — verify when
 
-## When you need a visual overview
+- `_meta.stale_warning` is present (the index has diverged from HEAD), or
+- `retrieval_quality` is `partial`/`weak`, or
+- a result's `search_method` is `bm25`.
 
-Call `get_architecture_diagram(scope="module", path="path/to/module")` for a Mermaid diagram of a specific subsystem, or `get_architecture_diagram()` for the full repo.
+Otherwise the response is current — act on it.
 
 ## Error handling
 
-- If tools return "No repositories found. Run 'repowise init' first." — suggest the user run `/repowise:init`.
-- If `search_codebase` returns empty results — the repo may be in analysis-only mode (no wiki pages). Note this and fall back to `get_context` with specific file paths, or suggest upgrading to full mode.
-- If tools fail to connect entirely — the `repowise` binary may not be installed. Suggest `/repowise:init`.
+- "No repositories found. Run 'repowise init' first." → suggest `/repowise:init`.
+- `get_answer`/`search_codebase` come back empty → the repo may be in index-only
+  mode (no wiki). Fall back to `get_context` with explicit paths, and note that
+  full mode (`/repowise:init` with an LLM provider) unlocks docs + semantic search.
+- Tools fail to connect at all → the `repowise` binary may not be installed;
+  suggest `/repowise:init`.

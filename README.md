@@ -252,13 +252,22 @@ repowise init .      # scans for git repos, indexes each, runs cross-repo analys
 repowise serve       # workspace dashboard + per-repo pages
 ```
 
-`repowise init` automatically registers the MCP server, installs
-PreToolUse/PostToolUse hooks in `~/.claude/settings.json`, generates `.mcp.json`
-at the project root, and offers a post-commit hook that keeps everything in sync.
-If the Codex CLI is installed and logged in, interactive runs also offer to write
-project-local `.codex/config.toml`, `.codex/hooks.json`, and a managed `AGENTS.md`;
+`repowise init` automatically registers the MCP server, installs a PostToolUse
+hook in `~/.claude/settings.json`, generates `.mcp.json` at the project root, and
+offers a post-commit hook that keeps everything in sync. If the Codex CLI is
+installed and logged in, interactive runs also offer to write project-local
+`.codex/config.toml`, `.codex/hooks.json`, and a managed `AGENTS.md`;
 non-interactive runs require `--codex`. Skip Codex setup with `--no-codex`; force or
 skip `AGENTS.md` with `--agents` / `--no-agents`.
+
+**Claude Code plugin.** Prefer a one-command setup? Install the plugin from the
+marketplace — it registers the MCP server and hook and adds `/repowise:*` slash
+commands (`init`, `health`, `risk`, `dead-code`, `decision`, …):
+
+```text
+/plugin marketplace add repowise-dev/repowise
+/plugin install repowise@repowise
+```
 
 To add the MCP server to another editor manually:
 

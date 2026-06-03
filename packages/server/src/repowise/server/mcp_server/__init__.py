@@ -1,4 +1,4 @@
-"""repowise MCP Server — 8 tools for AI coding assistants.
+"""repowise MCP Server — 9 tools for AI coding assistants.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports both stdio transport (Claude Code, Cursor, Cline) and SSE transport

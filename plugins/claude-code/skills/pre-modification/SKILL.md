@@ -14,12 +14,15 @@ Before modifying files in a Repowise-indexed codebase, assess the impact.
 
 ## Before editing a file
 
-Call `get_risk(targets=["path/to/file.py"])` to understand:
-- **Hotspot status** — is this a high-churn file? Extra care needed.
-- **Dependents** — what other files/modules depend on this? How wide is the blast radius?
-- **Co-change partners** — what files typically change together with this one? You may need to update them too.
-- **Ownership** — who owns this code? Relevant for PR review routing.
-- **Bus factor** — if only 1 person owns this, changes need extra review.
+Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
+`hotspot_score`, `trend`, `risk_type`, `impact_surface` (top 3),
+`dependents_count`, `co_change_partners`, `primary_owner`, `bus_factor`,
+`test_gap`, and `security_signals`. Read it for:
+- **Hotspot status** (`hotspot_score`, `trend`) — high-churn × complex? Extra care needed.
+- **Dependents** (`dependents_count`, `impact_surface`) — how wide is the blast radius?
+- **Co-change partners** — files that change together with this one (often without an import link); you may need to update them too.
+- **Ownership / bus factor** — who owns it, and whether a single author maintains it.
+- **Test gap & security signals** — flag untested or security-sensitive files before touching them.
 
 ## When modifying multiple files
 
@@ -36,6 +39,10 @@ If `get_risk` shows:
 ## Before refactoring or moving code
 
 Call `get_context(targets=["file.py"])` first to understand the full context: what uses this file, what decisions govern it, and why it's structured this way. This prevents accidentally violating architectural decisions.
+
+For a heavy refactor, also call `get_health(targets=["file.py"])` — the
+biomarker findings (complexity, deep nesting, low cohesion, duplication) tell
+you *what* to improve while you're in there, and give you a before/after score.
 
 ## Error handling
 
