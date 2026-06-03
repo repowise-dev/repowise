@@ -50,6 +50,17 @@ _SUBSPLIT_DIR_THRESHOLD = 8
 # uncurated layers rather than ship an unreadable list.
 _MAX_LAYERS = 15
 
+# Entry-point precision (plan §Phase 2). A re-export *barrel* (typically an
+# ``index.ts``) carries the ``index`` stem heuristic's ``entry_point`` flag but
+# teaches a reader nothing, so it is demoted in the presentation view. Runtime
+# entries that survive are ranked by ``pagerank + betweenness`` and the surfaced
+# set is capped — the full ranked list is kept as ``entry_candidates``.
+_BARREL_STEMS = frozenset({"index"})
+_SUBSTANTIVE_KINDS = frozenset(
+    {"function", "method", "class", "struct", "interface", "enum", "trait", "impl", "macro"}
+)
+_MAX_ENTRY_POINTS = 8
+
 
 def curation_enabled() -> bool:
     """Whether KG curation is enabled via the ``REPOWISE_KG_CURATION`` env flag.
@@ -94,6 +105,11 @@ def curate_knowledge_graph(
             kg.layers = curated
     except Exception:  # pragma: no cover - defensive; keep uncurated layers
         logger.exception("kg_curation._curate_layers failed; keeping community layers")
+
+    try:
+        _curate_entry_points(kg, parsed_files, graph_builder)
+    except Exception:  # pragma: no cover - defensive; keep skeleton entry points
+        logger.exception("kg_curation._curate_entry_points failed; keeping raw entry points")
 
     return kg
 
@@ -226,3 +242,72 @@ def _curate_layers(kg: KnowledgeGraphResult, graph_builder: Any) -> list[dict] |
         )
         return None
     return layers
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — entry-point precision (demote barrels, rank + cap survivors)
+# ---------------------------------------------------------------------------
+
+
+def _is_barrel(parsed_file: Any) -> bool:
+    """True if *parsed_file* is a re-export barrel (``index`` shell, no runtime).
+
+    Conservative by design: a file is a barrel only when its stem is ``index``
+    and it defines no runtime-bearing symbol (function/class/method/…) — purely
+    re-exporting or empty. Anything that defines executable behaviour, even if
+    named ``index``, is kept as a genuine entry candidate.
+    """
+    fi = getattr(parsed_file, "file_info", None)
+    path = getattr(fi, "path", "")
+    if PurePosixPath(path).stem.lower() not in _BARREL_STEMS:
+        return False
+
+    symbols = getattr(parsed_file, "symbols", []) or []
+    if any(getattr(s, "kind", "") in _SUBSTANTIVE_KINDS for s in symbols):
+        return False
+
+    has_reexports = any(getattr(imp, "is_reexport", False) for imp in getattr(parsed_file, "imports", []) or [])
+    exports_only = bool(getattr(parsed_file, "exports", []))
+    return has_reexports or exports_only or not symbols
+
+
+def _curate_entry_points(kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any) -> None:
+    """Demote re-export barrels and surface a capped, ranked entry-point set.
+
+    Mutates only the presentation view: drops the ``entry_point`` *tag* from
+    barrel nodes (and adds a ``barrel`` tag) without touching the AST graph's
+    ``is_entry_point`` flag (the dead-code pass relies on it). Survivors are
+    ranked by ``pagerank + betweenness``; ``project.entry_points`` holds the top
+    few, ``project.entry_candidates`` the full ranked list.
+    """
+    pf_by_path = {pf.file_info.path: pf for pf in parsed_files if getattr(pf, "file_info", None)}
+    pagerank = graph_builder.pagerank() or {}
+    try:
+        betweenness = graph_builder.betweenness_centrality() or {}
+    except Exception:  # pragma: no cover - defensive
+        betweenness = {}
+
+    survivors: list[tuple[float, str]] = []
+    for node in kg.nodes:
+        nid = node.get("id", "")
+        if not (isinstance(nid, str) and nid.startswith("file:")):
+            continue
+        tags = node.get("tags") or []
+        if "entry_point" not in tags:
+            continue
+        path = node.get("filePath", "")
+        pf = pf_by_path.get(path)
+        if pf is not None and _is_barrel(pf):
+            new_tags = [t for t in tags if t != "entry_point"]
+            if "barrel" not in new_tags:
+                new_tags.append("barrel")
+            node["tags"] = new_tags
+            continue
+        score = pagerank.get(path, 0.0) + betweenness.get(path, 0.0)
+        survivors.append((score, path))
+
+    # Highest score first; path as a stable, deterministic tie-break.
+    survivors.sort(key=lambda sp: (-sp[0], sp[1]))
+    ranked = [path for _, path in survivors]
+    kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
+    kg.project["entry_candidates"] = ranked
