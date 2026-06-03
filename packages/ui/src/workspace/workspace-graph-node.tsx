@@ -15,9 +15,9 @@ export interface WorkspaceGraphNodeData {
 }
 
 function healthColor(score: number): string {
-  if (score >= 70) return "#22c55e";
-  if (score >= 40) return "#f59e0b";
-  return "#ef4444";
+  if (score >= 70) return "var(--color-risk-low)";
+  if (score >= 40) return "var(--color-risk-medium)";
+  return "var(--color-risk-high)";
 }
 
 function HealthRing({ score, size = 36 }: { score: number; size?: number }) {
@@ -33,7 +33,7 @@ function HealthRing({ score, size = 36 }: { score: number; size?: number }) {
         cy={size / 2}
         r={r}
         fill="none"
-        stroke="rgba(255,255,255,0.1)"
+        stroke="color-mix(in srgb, var(--color-border-default) 10%, transparent)"
         strokeWidth={3}
       />
       <circle
@@ -73,7 +73,7 @@ function WorkspaceGraphNodeInner({ data }: NodeProps) {
       style={{
         width: 160,
         minHeight: 100,
-        background: `linear-gradient(135deg, ${langColor}25 0%, rgba(30,41,59,0.95) 60%)`,
+        background: `linear-gradient(135deg, ${langColor}25 0%, color-mix(in srgb, var(--color-bg-surface) 95%, transparent) 60%)`,
         border: `2px solid ${langColor}60`,
         boxShadow: `0 2px 12px rgba(0,0,0,0.3), 0 0 0 1px ${langColor}20`,
         padding: "10px 12px",

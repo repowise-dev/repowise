@@ -9,10 +9,10 @@ interface CommitCategoryDonutProps {
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
-  feature: "#5b9cf6",
-  fix: "#ef4444",
-  refactor: "#a855f7",
-  dependency: "#f59520",
+  feature: "var(--color-info)",
+  fix: "var(--color-error)",
+  refactor: "var(--color-accent-secondary)",
+  dependency: "var(--color-accent-fill)",
 };
 
 const CATEGORY_ORDER = ["feature", "fix", "refactor", "dependency"];
@@ -55,7 +55,7 @@ export function CommitCategoryDonut({ categories }: CommitCategoryDonutProps) {
             {data.map((entry) => (
               <Cell
                 key={entry.key}
-                fill={CATEGORY_COLORS[entry.key] || "#8b5cf6"}
+                fill={CATEGORY_COLORS[entry.key] || "var(--color-accent-secondary)"}
                 strokeWidth={0}
               />
             ))}

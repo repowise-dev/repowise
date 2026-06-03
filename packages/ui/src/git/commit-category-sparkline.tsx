@@ -9,10 +9,10 @@ interface CommitCategorySparklineProps {
 }
 
 const CATEGORY_CONFIG: Record<string, { color: string; label: string }> = {
-  feature: { color: "#5b9cf6", label: "Feature" },
-  fix: { color: "#ef4444", label: "Fix" },
-  refactor: { color: "#a855f7", label: "Refactor" },
-  dependency: { color: "#f59520", label: "Dependency" },
+  feature: { color: "var(--color-info)", label: "Feature" },
+  fix: { color: "var(--color-error)", label: "Fix" },
+  refactor: { color: "var(--color-accent-secondary)", label: "Refactor" },
+  dependency: { color: "var(--color-accent-fill)", label: "Dependency" },
 };
 
 const CATEGORY_ORDER = ["feature", "fix", "refactor", "dependency"];

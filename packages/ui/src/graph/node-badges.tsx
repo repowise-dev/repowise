@@ -43,12 +43,12 @@ export const BADGE_DEFS: readonly BadgeDef[] = [
 
 /** Hex colors mirrored on the Sigma canvas dot renderer (see sigma-canvas). */
 export const BADGE_COLORS: Record<BadgeDef["tone"], string> = {
-  danger: "#ef4444",
-  warn: "#f59520",
-  success: "#22c55e",
-  info: "#a78bfa",
-  accent: "#60a5fa",
-  neutral: "#94a3b8",
+  danger: "var(--color-error)",
+  warn: "var(--color-accent-primary)",
+  success: "var(--color-success)",
+  info: "var(--color-plum-400)",
+  accent: "var(--color-info)",
+  neutral: "var(--color-text-tertiary)",
 };
 
 const TONE_CLASSES: Record<BadgeDef["tone"], string> = {

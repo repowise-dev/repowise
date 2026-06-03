@@ -31,10 +31,10 @@ function computeRiskScore(h: Hotspot): number {
 }
 
 function riskColor(score: number): string {
-  if (score >= 70) return "#ef4444";
-  if (score >= 45) return "#f59520";
-  if (score >= 25) return "#eab308";
-  return "#22c55e";
+  if (score >= 70) return "var(--color-error)";
+  if (score >= 45) return "var(--color-accent-fill)";
+  if (score >= 25) return "var(--color-warning)";
+  return "var(--color-success)";
 }
 
 export function RiskDistributionChart({ hotspots, maxBars = 30 }: RiskDistributionChartProps) {

@@ -9,11 +9,11 @@ interface CoverageDonutProps {
 }
 
 const COLORS: Record<string, string> = {
-  Fresh: "#22c55e",
-  Stale: "#eab308",
-  Outdated: "#ef4444",
+  Fresh: "var(--color-success)",
+  Stale: "var(--color-warning)",
+  Outdated: "var(--color-error)",
 };
-const FALLBACK_COLOR = "#22c55e";
+const FALLBACK_COLOR = "var(--color-success)";
 
 export function CoverageDonut({ fresh, stale, outdated }: CoverageDonutProps) {
   const total = fresh + stale + outdated;

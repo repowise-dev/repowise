@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { formatCost, formatTokens } from "../lib/format";
 
+// provider brand colors (allowlisted)
 const PROVIDER_PATTERNS: Array<{ provider: string; match: RegExp; color: string }> = [
   { provider: "Anthropic", match: /^claude/i, color: "#d97757" },
   { provider: "OpenAI", match: /^(gpt|o\d|chatgpt)/i, color: "#10a37f" },

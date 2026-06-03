@@ -150,15 +150,15 @@ export const GraphLegend = memo(function GraphLegend({
           {colorMode === "risk" && (
             <>
               <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                <span className="w-2 h-2 rounded-full shrink-0 bg-[#22c55e]" />
+                <span className="w-2 h-2 rounded-full shrink-0 bg-[var(--color-risk-low)]" />
                 <span>Low risk</span>
               </div>
               <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                <span className="w-2 h-2 rounded-full shrink-0 bg-[#f59520]" />
+                <span className="w-2 h-2 rounded-full shrink-0 bg-[var(--color-risk-medium)]" />
                 <span>Medium risk</span>
               </div>
               <div className="flex items-center gap-2 text-[var(--color-text-tertiary)]">
-                <span className="w-2 h-2 rounded-full shrink-0 bg-[#ef4444]" />
+                <span className="w-2 h-2 rounded-full shrink-0 bg-[var(--color-risk-high)]" />
                 <span>High risk</span>
               </div>
             </>

@@ -388,7 +388,7 @@ function ModuleMetadata({
   outDegree: number;
 }) {
   const docPct = Math.round((data.docCoveragePct ?? 0) * 100);
-  const docColor = docPct >= 70 ? "#22c55e" : docPct >= 30 ? "#f59e0b" : "#ef4444";
+  const docColor = docPct >= 70 ? "var(--color-success)" : docPct >= 30 ? "var(--color-warning)" : "var(--color-error)";
 
   return (
     <div className="space-y-2">

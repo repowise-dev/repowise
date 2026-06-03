@@ -21,9 +21,9 @@ interface GraphTooltipProps {
 }
 
 function importanceLabel(pagerank: number): { label: string; color: string } {
-  if (pagerank >= 0.01) return { label: "High", color: "#ef4444" };
-  if (pagerank >= 0.003) return { label: "Medium", color: "#f59520" };
-  return { label: "Low", color: "#22c55e" };
+  if (pagerank >= 0.01) return { label: "High", color: "var(--color-risk-high)" };
+  if (pagerank >= 0.003) return { label: "Medium", color: "var(--color-risk-medium)" };
+  return { label: "Low", color: "var(--color-risk-low)" };
 }
 
 export function GraphTooltip({
@@ -216,7 +216,7 @@ export function GraphTooltip({
                   className="h-full rounded-full transition-all duration-300"
                   style={{
                     width: `${Math.max(2, Math.round(docPct * 100))}%`,
-                    background: docPct >= 0.7 ? "#22c55e" : docPct >= 0.3 ? "#f59520" : "#ef4444",
+                    background: docPct >= 0.7 ? "var(--color-success)" : docPct >= 0.3 ? "var(--color-warning)" : "var(--color-error)",
                   }}
                 />
               </div>
