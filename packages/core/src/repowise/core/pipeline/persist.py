@@ -108,6 +108,114 @@ async def persist_graph_nodes(
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
 
 
+# Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
+_PRUNE_CHUNK = 500
+
+
+async def _prune_stale_file_rows(
+    session: Any,
+    repo_id: str,
+    current_graph_file_paths: set[str],
+    current_git_file_paths: set[str],
+) -> None:
+    """Delete file-scoped rows for files absent from the latest full pipeline run.
+
+    The parser and git indexer disagree on the file set — a file can be
+    git-tracked yet absent from ``parsed_files`` (parse failure, unparsed
+    extension, skipped) — so the tables use different sources of truth.
+    *current_graph_file_paths* (from ``parsed_files``) governs graph/analysis
+    tables; *current_git_file_paths* (from ``git_metadata_list``) governs
+    ``git_metadata`` only. Each set independently no-ops when empty to avoid
+    wiping rows on a broken run. FULL persistence only — not incremental paths.
+    """
+    from sqlalchemy import delete, or_, select
+
+    from repowise.core.persistence.models import (
+        DeadCodeFinding,
+        GitMetadata,
+        GraphEdge,
+        GraphMetric,
+        GraphNode,
+        HealthFileMetric,
+        HealthFinding,
+        SecurityFinding,
+        WikiSymbol,
+    )
+
+    async def _delete_stale_by_paths(model: Any, column: Any, current: set[str]) -> None:
+        # Diff persisted paths against *current* in Python so the IN (...) is
+        # bounded by the stale set, not the whole repo (SQLite param limit).
+        if not current:
+            return
+        existing = set(
+            (await session.execute(select(column).where(model.repository_id == repo_id).distinct()))
+            .scalars()
+            .all()
+        )
+        stale = [p for p in existing if p not in current]
+        for i in range(0, len(stale), _PRUNE_CHUNK):
+            await session.execute(
+                delete(model).where(
+                    model.repository_id == repo_id,
+                    column.in_(stale[i : i + _PRUNE_CHUNK]),
+                )
+            )
+
+    # ---- Graph nodes + edges -------------------------------------------------
+    # File nodes key on node_id; symbol nodes on file_path. Delete edges before
+    # nodes (no FK cascade between the tables).
+    if current_graph_file_paths:
+        node_rows = (
+            await session.execute(
+                select(GraphNode.node_id, GraphNode.node_type, GraphNode.file_path).where(
+                    GraphNode.repository_id == repo_id
+                )
+            )
+        ).all()
+        stale_node_ids = [
+            node_id
+            for node_id, node_type, file_path in node_rows
+            if (node_type == "file" and node_id not in current_graph_file_paths)
+            or (
+                node_type != "file"
+                and file_path is not None
+                and file_path not in current_graph_file_paths
+            )
+        ]
+        for i in range(0, len(stale_node_ids), _PRUNE_CHUNK):
+            batch = stale_node_ids[i : i + _PRUNE_CHUNK]
+            await session.execute(
+                delete(GraphEdge).where(
+                    GraphEdge.repository_id == repo_id,
+                    or_(
+                        GraphEdge.source_node_id.in_(batch),
+                        GraphEdge.target_node_id.in_(batch),
+                    ),
+                )
+            )
+            await session.execute(
+                delete(GraphNode).where(
+                    GraphNode.repository_id == repo_id,
+                    GraphNode.node_id.in_(batch),
+                )
+            )
+
+    # GraphMetric is file-level only (node_id == path).
+    await _delete_stale_by_paths(GraphMetric, GraphMetric.node_id, current_graph_file_paths)
+    await _delete_stale_by_paths(WikiSymbol, WikiSymbol.file_path, current_graph_file_paths)
+    await _delete_stale_by_paths(
+        SecurityFinding, SecurityFinding.file_path, current_graph_file_paths
+    )
+    await _delete_stale_by_paths(
+        DeadCodeFinding, DeadCodeFinding.file_path, current_graph_file_paths
+    )
+    await _delete_stale_by_paths(
+        HealthFileMetric, HealthFileMetric.file_path, current_graph_file_paths
+    )
+    await _delete_stale_by_paths(HealthFinding, HealthFinding.file_path, current_graph_file_paths)
+    await _delete_stale_by_paths(GitMetadata, GitMetadata.file_path, current_git_file_paths)
+
+
 async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     """Persist ingestion-phase outputs: graph nodes/edges, external systems,
     symbols, and the per-file security scan.
@@ -412,6 +520,18 @@ async def persist_pipeline_result(
     This function mutates ``sym.file_path`` on parsed-file symbols that
     lack one.  Callers should treat *result* as consumed after this call.
     """
+    # Prune rows for files absent from this full result before the phase
+    # persisters re-upsert. graph/analysis tables key off parsed_files;
+    # git_metadata keys off the git indexer's set (a file can be git-tracked
+    # but unparsed). Runs only here, never in the reusable phase persisters.
+    current_graph_file_paths = {pf.file_info.path for pf in result.parsed_files}
+    current_git_file_paths = {
+        (gm if isinstance(gm, dict) else dataclasses.asdict(gm)).get("file_path", "")
+        for gm in result.git_metadata_list
+    }
+    current_git_file_paths.discard("")
+    await _prune_stale_file_rows(session, repo_id, current_graph_file_paths, current_git_file_paths)
+
     symbol_count = await persist_ingestion(result, session, repo_id)
     await persist_git(result, session, repo_id)
     await persist_analysis(result, session, repo_id)
