@@ -152,25 +152,34 @@ def build_repo(
     tests: set[str] | None = None,
     entries: set[str] | None = None,
     edges: list[tuple[str, str]] | None = None,
-    reexport_only: set[str] | None = None,
+    barrels: set[str] | None = None,
+    pagerank: dict[str, float] | None = None,
+    betweenness: dict[str, float] | None = None,
 ):
     """Build a synthetic repo (parsed files + mock graph builder) from paths."""
     tests = tests or set()
     entries = entries or set()
-    reexport_only = reexport_only or set()
+    barrels = barrels or set()
 
     parsed = []
     nodes: dict[str, dict] = {}
     for p in paths:
         is_test = p in tests
         is_entry = p in entries
-        if p in reexport_only:
-            syms = [FakeSymbol(name="reexport", kind="variable", is_reexport=True)]
+        if p in barrels:
+            # A re-export shell: no runtime symbols, exports names only.
+            pf = FakeParsedFile(
+                FakeFileInfo(p, is_test=is_test, is_entry_point=is_entry),
+                symbols=[],
+                imports=[SimpleNamespace(is_reexport=True)],
+                exports=["A", "B"],
+            )
         else:
-            syms = [FakeSymbol(name="thing", kind="function")]
-        parsed.append(
-            FakeParsedFile(FakeFileInfo(p, is_test=is_test, is_entry_point=is_entry), symbols=syms)
-        )
+            pf = FakeParsedFile(
+                FakeFileInfo(p, is_test=is_test, is_entry_point=is_entry),
+                symbols=[FakeSymbol(name="thing", kind="function")],
+            )
+        parsed.append(pf)
         nodes[p] = {"node_type": "file", "language": "python"}
         if is_test:
             nodes[p]["is_test"] = True
@@ -180,8 +189,8 @@ def build_repo(
     graph_edges = [(u, v, {"edge_type": "imports", "confidence": 1.0}) for u, v in (edges or [])]
     communities = {p: 0 for p in paths}
     infos = {0: _community_info(0, "all", list(paths))}
-    pagerank = {p: 1.0 / max(len(paths), 1) for p in paths}
-    builder = _make_graph_builder(nodes, graph_edges, communities, infos, pagerank)
+    pr = pagerank or {p: 1.0 / max(len(paths), 1) for p in paths}
+    builder = _make_graph_builder(nodes, graph_edges, communities, infos, pr, betweenness)
     repo_structure = SimpleNamespace(
         is_monorepo=True, total_files=len(paths), entry_points=sorted(entries)
     )
@@ -322,3 +331,72 @@ class TestCuratedLayers:
         a = _curate(large_repo, enabled=True)
         b = _curate(large_repo, enabled=True)
         assert a.layers == b.layers
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — entry-point precision
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def entry_repo():
+    """Real runtime entries plus re-export barrels, all flagged entry_point."""
+    reals = [f"src/app{i}/main.py" for i in range(12)]
+    barrels = {f"packages/p{i}/index.ts" for i in range(5)}
+    paths = reals + sorted(barrels)
+    entries = set(reals) | barrels
+    # Give barrels deliberately high PageRank — they must still be demoted.
+    pagerank = {p: (12 - i) / 100.0 for i, p in enumerate(reals)}
+    for b in barrels:
+        pagerank[b] = 0.9
+    return build_repo(paths, entries=entries, barrels=barrels, pagerank=pagerank)
+
+
+def _project(kg) -> dict:
+    return kg.project
+
+
+class TestEntryPointPrecision:
+    def test_barrels_demoted_in_presentation(self, entry_repo):
+        kg = _curate(entry_repo, enabled=True)
+        for node in kg.nodes:
+            if node.get("filePath", "").endswith("index.ts"):
+                assert "entry_point" not in node["tags"]
+                assert "barrel" in node["tags"]
+
+    def test_no_barrel_in_surfaced_set(self, entry_repo):
+        kg = _curate(entry_repo, enabled=True)
+        assert all(not p.endswith("index.ts") for p in _project(kg)["entry_points"])
+        assert all(not p.endswith("index.ts") for p in _project(kg)["entry_candidates"])
+
+    def test_surfaced_set_capped(self, entry_repo):
+        kg = _curate(entry_repo, enabled=True)
+        assert len(_project(kg)["entry_points"]) <= 8
+
+    def test_ranked_by_centrality(self, entry_repo):
+        kg = _curate(entry_repo, enabled=True)
+        # app0 has the highest PageRank among reals → ranks first.
+        assert _project(kg)["entry_points"][0] == "src/app0/main.py"
+
+    def test_full_candidate_list_kept(self, entry_repo):
+        kg = _curate(entry_repo, enabled=True)
+        # All 12 real entries survive as candidates; 5 barrels excluded.
+        assert len(_project(kg)["entry_candidates"]) == 12
+
+    def test_ast_is_entry_point_flag_untouched(self, entry_repo):
+        """Demotion is presentation-only — the graph flag stays for dead-code."""
+        _curate(entry_repo, enabled=True)
+        g = entry_repo.builder.graph()
+        for path, data in g.nodes(data=True):
+            if path.endswith("index.ts"):
+                assert data.get("is_entry_point") is True
+
+    def test_deterministic(self, entry_repo):
+        a = _curate(entry_repo, enabled=True)
+        b = _curate(entry_repo, enabled=True)
+        assert a.project["entry_points"] == b.project["entry_points"]
+        assert a.project["entry_candidates"] == b.project["entry_candidates"]
+
+    def test_flag_off_leaves_entry_points_untouched(self, entry_repo):
+        kg = _curate(entry_repo, enabled=False)
+        assert "entry_candidates" not in kg.project
