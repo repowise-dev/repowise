@@ -9,7 +9,7 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-[var(--color-accent-fill)] text-[var(--color-text-on-accent)] shadow-[var(--shadow-button)] hover:bg-[var(--color-accent-fill-hover)]",
+          "bg-[var(--color-accent-fill)] [background-image:var(--gradient-ember)] text-[var(--color-text-on-accent)] shadow-[var(--shadow-button)] transition-[filter,box-shadow] hover:brightness-[1.06]",
         destructive:
           "bg-[var(--color-error)] text-[var(--color-text-inverse)] hover:opacity-90",
         outline:

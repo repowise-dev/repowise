@@ -144,6 +144,14 @@
   --gradient-peach: linear-gradient(160deg, #ffc4b1 0%, #f59520 100%);
   --gradient-plum: linear-gradient(135deg, #362945 0%, #58436c 100%);
 
+  /* Soft saturated -> pale warm gradient (the "smooth two-tone" style):
+     brand orange melting into a warm peach. For brand chips, icon blobs,
+     small accent panels, avatars, selected/active art. Dark text reads on
+     the whole sweep. `--gradient-warm-wash` is the ultra-subtle background
+     version (theme-aware) for empty-states, hero washes, and section bands. */
+  --gradient-warm: linear-gradient(135deg, #f59520 0%, #ffd9b0 100%);
+  --gradient-warm-wash: linear-gradient(160deg, #fff4ea 0%, #ffe6cf 55%, #ffd9bd 100%);
+
   /* ================================================================== */
   /* Elevation — warm/plum-tinted shadows (LIGHT; `.dark` overrides)    */
   /* ================================================================== */
@@ -256,6 +264,9 @@
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 240, 230, 0.05);
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 240, 230, 0.06);
   --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
+
+  /* Dark soft wash — warm plum-charcoal melt (keeps the warm family on dark) */
+  --gradient-warm-wash: linear-gradient(160deg, #241b2c 0%, #2c2030 55%, #34241f 100%);
 }
 
 /* -------------------------------------------------------------------- */
