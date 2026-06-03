@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -36,7 +37,14 @@ from repowise.core.generation.tour import (
     score_entry_points,
 )
 
-__all__ = ["apply_summary_floor", "curate_knowledge_graph", "curation_enabled"]
+__all__ = [
+    "KGValidation",
+    "apply_summary_floor",
+    "build_portable_kg",
+    "curate_knowledge_graph",
+    "curation_enabled",
+    "validate_kg",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -612,11 +620,171 @@ def apply_summary_floor(kg: KnowledgeGraphResult, parsed_files: list[Any] | None
     fallback uses the node's symbol count instead of naming top symbols.
     """
     pf_by_path = {
-        pf.file_info.path: pf
-        for pf in (parsed_files or [])
-        if getattr(pf, "file_info", None)
+        pf.file_info.path: pf for pf in (parsed_files or []) if getattr(pf, "file_info", None)
     }
     for node in _file_nodes(kg):
         if node.get("summary"):
             continue
         node["summary"] = _cheap_summary(node, pf_by_path.get(node["filePath"]))
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — invariant validation (shared by tests and the portable writer)
+# ---------------------------------------------------------------------------
+
+# Quality thresholds. The lower layer bound and coverage targets are *soft*
+# (warnings) because they depend on repo size/shape; the partition, hard count
+# bound, capped entry set, never-empty summaries, and tour budget are *hard*.
+_MIN_LAYERS = 6
+_MAX_LAYER_FRACTION = 0.35
+_MAX_CATCHALL_FRACTION = 0.20
+_MAX_SINGLETON_FRACTION = 0.10
+_MIN_TOUR_COVERAGE = 0.90
+
+
+@dataclass
+class KGValidation:
+    """Outcome of :func:`validate_kg` — hard errors, soft warnings, metrics."""
+
+    ok: bool
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "errors": self.errors,
+            "warnings": self.warnings,
+            "metrics": self.metrics,
+        }
+
+
+def validate_kg(kg: KnowledgeGraphResult) -> KGValidation:
+    """Validate a curated KG against the intuitiveness invariants (plan §5/§7).
+
+    Pure and side-effect free. Hard violations set ``ok=False`` and populate
+    ``errors``; size/shape-dependent shortfalls go to ``warnings``. The
+    ``metrics`` block is the per-repo intuitiveness scorecard.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    file_nodes = _file_nodes(kg)
+    file_count = len(file_nodes)
+    file_ids = {n["id"] for n in file_nodes}
+    tags_by_path = {n["filePath"]: (n.get("tags") or []) for n in file_nodes}
+    summary_by_id = {n["id"]: n.get("summary") for n in file_nodes}
+
+    layers = kg.layers or []
+    n_layers = len(layers)
+
+    # -- Layer count -------------------------------------------------------
+    if n_layers == 0:
+        errors.append("no layers")
+    elif n_layers > _MAX_LAYERS:
+        errors.append(f"too many layers: {n_layers} > {_MAX_LAYERS}")
+    elif n_layers < _MIN_LAYERS:
+        warnings.append(f"few layers: {n_layers} < {_MIN_LAYERS} (small/flat repo?)")
+
+    # -- Partition ---------------------------------------------------------
+    layered: list[str] = [nid for layer in layers for nid in layer.get("nodeIds", [])]
+    layered_set = set(layered)
+    if len(layered) != len(layered_set):
+        errors.append("partition: a file appears in more than one layer")
+    if file_count and layered_set != file_ids:
+        missing = len(file_ids - layered_set)
+        extra = len(layered_set - file_ids)
+        errors.append(f"partition: {missing} unlayered, {extra} unknown ids")
+
+    # -- Singleton spam & mega-layer balance -------------------------------
+    sizes = [len(layer.get("nodeIds", [])) for layer in layers]
+    singleton_frac = (sum(1 for s in sizes if s == 1) / n_layers) if n_layers else 0.0
+    if singleton_frac >= _MAX_SINGLETON_FRACTION:
+        warnings.append(f"singleton layers {singleton_frac:.0%} ≥ {_MAX_SINGLETON_FRACTION:.0%}")
+
+    largest_frac = (max(sizes) / file_count) if (sizes and file_count) else 0.0
+    if largest_frac > _MAX_LAYER_FRACTION:
+        warnings.append(f"largest layer {largest_frac:.0%} > {_MAX_LAYER_FRACTION:.0%}")
+
+    catchall = next((layer for layer in layers if layer.get("name") == "Application"), None)
+    catchall_frac = (
+        (len(catchall.get("nodeIds", [])) / file_count) if (catchall and file_count) else 0.0
+    )
+    if catchall_frac > _MAX_CATCHALL_FRACTION:
+        warnings.append(f"Application catch-all {catchall_frac:.0%} > {_MAX_CATCHALL_FRACTION:.0%}")
+
+    # -- Entry points ------------------------------------------------------
+    entry_points = kg.project.get("entry_points", []) if isinstance(kg.project, dict) else []
+    if len(entry_points) > _MAX_ENTRY_POINTS:
+        errors.append(f"too many entry points: {len(entry_points)} > {_MAX_ENTRY_POINTS}")
+    barrels_surfaced = [p for p in entry_points if "barrel" in tags_by_path.get(p, [])]
+    if barrels_surfaced:
+        errors.append(f"barrels surfaced as entry points: {barrels_surfaced}")
+
+    # -- Tour --------------------------------------------------------------
+    tour = kg.tour or []
+    tour_coverage = 0.0
+    if tour:
+        if len(tour) > DEFAULT_MAX_STOPS:
+            errors.append(f"tour too long: {len(tour)} > {DEFAULT_MAX_STOPS}")
+        if tour[0].get("kind") != "overview":
+            errors.append("tour does not open with an overview/README step")
+        layer_ids = {layer.get("id") for layer in layers}
+        covered = {
+            s.get("layer_id")
+            for s in tour
+            if s.get("kind") != "overview" and s.get("layer_id") in layer_ids
+        }
+        tour_coverage = (len(covered) / len(layer_ids)) if layer_ids else 0.0
+        if tour_coverage < _MIN_TOUR_COVERAGE:
+            warnings.append(f"tour covers {tour_coverage:.0%} of layers < {_MIN_TOUR_COVERAGE:.0%}")
+
+    # -- Summaries ---------------------------------------------------------
+    empty_summaries = [nid for nid, s in summary_by_id.items() if not s]
+    if empty_summaries:
+        errors.append(f"{len(empty_summaries)} file nodes have an empty summary")
+    summary_completeness = 1.0 - len(empty_summaries) / file_count if file_count else 1.0
+
+    metrics = {
+        "file_count": file_count,
+        "layer_count": n_layers,
+        "singleton_layer_pct": round(singleton_frac * 100, 1),
+        "largest_layer_pct": round(largest_frac * 100, 1),
+        "application_pct": round(catchall_frac * 100, 1),
+        "entry_point_count": len(entry_points),
+        "tour_steps": len(tour),
+        "tour_coverage_pct": round(tour_coverage * 100, 1),
+        "summary_completeness_pct": round(summary_completeness * 100, 1),
+    }
+
+    return KGValidation(ok=not errors, errors=errors, warnings=warnings, metrics=metrics)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — portable, self-validated export artifact
+# ---------------------------------------------------------------------------
+
+
+def build_portable_kg(kg: KnowledgeGraphResult) -> tuple[dict, KGValidation]:
+    """Assemble a self-contained, self-validated ``knowledge-graph.json`` dict.
+
+    Kept separate from :meth:`KnowledgeGraphResult.to_dict` so the *default*
+    export stays byte-identical (curation flag-off contract); the portable
+    artifact adds a ``meta`` block (counts, fingerprint) and an embedded
+    ``validation`` report so an external consumer can trust it without a server.
+    Returns ``(data, validation)`` so the writer can decide on hard violations.
+    """
+    data = kg.to_dict()
+    validation = validate_kg(kg)
+    data["meta"] = {
+        "schema_version": data.get("version", "1.0.0"),
+        "generator": "repowise-kg-curation",
+        "fingerprint": getattr(kg, "fingerprint", ""),
+        "file_count": validation.metrics.get("file_count", 0),
+        "layer_count": validation.metrics.get("layer_count", 0),
+        "entry_point_count": validation.metrics.get("entry_point_count", 0),
+        "tour_steps": validation.metrics.get("tour_steps", 0),
+        "validation": validation.as_dict(),
+    }
+    return data, validation
