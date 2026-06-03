@@ -108,7 +108,7 @@ def _run_augment(*, client: str | None = None) -> None:
         return
 
     tool_output = payload.get("tool_response", payload.get("tool_output", {}))
-    result = _handle_post_tool_use(tool_name, tool_input, tool_output, cwd)
+    result = _handle_post_tool_use(tool_name, tool_input, tool_output, cwd, client=client)
     if result:
         _emit_response(event, result)
 
@@ -543,9 +543,14 @@ def _handle_post_tool_use(
     tool_input: dict,
     tool_output: dict | str,
     cwd: str,
+    *,
+    client: str | None = None,
 ) -> str | None:
     """Dispatch PostToolUse events from Claude or Codex."""
-    if tool_name in _EDIT_TOOL_NAMES:
+    # The edit-tool freshness notice is a Codex-only lifecycle hook. Gate it on the
+    # Codex client so a future widening of the Claude installer's PostToolUse matcher
+    # can't start emitting Codex-flavored banners to existing Claude Code users.
+    if client == "codex" and tool_name in _EDIT_TOOL_NAMES:
         return _handle_post_edit_use(cwd)
     if tool_name == "Bash":
         return _handle_bash_post(tool_input, tool_output, cwd)

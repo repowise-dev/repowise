@@ -138,7 +138,31 @@ def test_codex_post_tool_use_apply_patch_flags_stale_context(
             "tool_response": {"success": True},
             "cwd": str(tmp_path),
         },
+        ["--client", "codex"],
     )
 
     assert result.exit_code == 0
     assert "Files were edited" in _hook_context(result.output)
+
+
+def test_edit_post_tool_use_stays_silent_without_codex_client(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    # The edit freshness notice is a Codex-only lifecycle hook; an Edit PostToolUse
+    # delivered by an existing Claude Code augment install (no --client) must not emit
+    # a Codex-flavored banner.
+    _init_repowise_repo(tmp_path)
+
+    result = _invoke_augment(
+        runner,
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "a.py"},
+            "tool_response": {"success": True},
+            "cwd": str(tmp_path),
+        },
+    )
+
+    assert result.exit_code == 0
+    assert result.output == ""

@@ -167,6 +167,27 @@ def _merge_server_entries(servers: dict, new_entry: dict) -> dict:
     return servers
 
 
+def _ensure_valid_toml(merged_text: str, config_path: Path) -> None:
+    """Abort before writing if the regex merge produced invalid TOML.
+
+    The merge validates the *existing* file, but the table-rewrite regex only
+    matches the bare ``[mcp_servers.repowise]`` / ``[features]`` spellings. A user
+    who expressed the same key differently (quoted ``["features"]`` or inline under
+    a parent table) would slip past the regex, and appending our block would yield a
+    duplicate-key file. Re-parsing the merged result turns every such case into a
+    clean abort with the original file untouched.
+    """
+
+    try:
+        tomllib.loads(merged_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise click.ClickException(
+            f"Cannot update {config_path}: merging the repowise entry would produce "
+            "invalid TOML (an existing entry may use a different key spelling). "
+            "No changes were written."
+        ) from exc
+
+
 def enable_codex_hooks_feature(repo_path: Path) -> Path:
     """Enable Codex hooks in project-local .codex/config.toml."""
 
@@ -199,6 +220,7 @@ def enable_codex_hooks_feature(repo_path: Path) -> Path:
     table_re = re.compile(r"(?ms)^\s*\[features\]\s*\n.*?(?=^\s*\[|\Z)")
     merged_text = table_re.sub("", existing_text).rstrip()
     merged_text = f"{merged_text}\n\n{feature_block}\n" if merged_text else f"{feature_block}\n"
+    _ensure_valid_toml(merged_text, config_path)
     config_path.write_text(merged_text, encoding="utf-8")
     return config_path
 
@@ -240,6 +262,7 @@ def save_codex_mcp_config(repo_path: Path) -> Path:
     table_re = re.compile(r"(?ms)^\s*\[mcp_servers\.repowise\]\s*\n.*?(?=^\s*\[|\Z)")
     merged_text = table_re.sub("", existing_text).rstrip()
     merged_text = f"{merged_text}\n\n{server_block}\n" if merged_text else f"{server_block}\n"
+    _ensure_valid_toml(merged_text, config_path)
     config_path.write_text(merged_text, encoding="utf-8")
     return config_path
 

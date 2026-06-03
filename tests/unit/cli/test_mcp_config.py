@@ -68,6 +68,23 @@ def test_save_codex_mcp_config_rejects_invalid_existing_file(tmp_path: Path) -> 
     assert config_path.read_text(encoding="utf-8") == original
 
 
+def test_save_codex_mcp_config_aborts_when_merge_would_duplicate_quoted_key(
+    tmp_path: Path,
+) -> None:
+    # A quoted table spelling the bare-key regex can't match. The pre-write merge
+    # validation must abort before producing a duplicate-key file, leaving the
+    # user's config untouched.
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    original = '["mcp_servers"."repowise"]\ncommand = "stale"\n'
+    config_path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(click.ClickException, match="invalid TOML"):
+        mcp_config.save_codex_mcp_config(tmp_path)
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
 def test_generate_codex_hooks_config_uses_supported_events_only() -> None:
     config = mcp_config.generate_codex_hooks_config()
     hooks = config["hooks"]

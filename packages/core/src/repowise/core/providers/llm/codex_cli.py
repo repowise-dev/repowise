@@ -425,7 +425,10 @@ class CodexCliProvider(BaseProvider):
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
-        cmd = self._build_command(reasoning=reasoning)
+        # _build_command may shell out to `codex debug models` (cached) to validate
+        # the reasoning effort; run it off the event loop so a cold catalog load
+        # can't stall every concurrent generation coroutine.
+        cmd = await asyncio.to_thread(self._build_command, reasoning=reasoning)
         prompt = _combine_prompt(system_prompt, user_prompt)
         log.debug(
             "codex_cli.generate.start",

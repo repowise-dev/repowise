@@ -251,7 +251,9 @@ class GeminiProvider(BaseProvider):
             self._model,
             base_url=self._base_url,
         ):
-            self.available_model_options()
+            # available_model_options() does blocking, paginated HTTP discovery to
+            # populate the thinking-model cache; keep it off the event loop.
+            await asyncio.to_thread(self.available_model_options)
         reasoning_mode = _resolve_gemini_reasoning_mode(
             reasoning,
             model=self._model,
