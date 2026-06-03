@@ -36,7 +36,7 @@ from repowise.core.generation.tour import (
     score_entry_points,
 )
 
-__all__ = ["curate_knowledge_graph", "curation_enabled"]
+__all__ = ["apply_summary_floor", "curate_knowledge_graph", "curation_enabled"]
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ def curate_knowledge_graph(
     repo_structure: Any,
     community_info: Any,
     enabled: bool = False,
+    defer_summary_floor: bool = False,
 ) -> KnowledgeGraphResult:
     """Reshape the KG skeleton into an intuitive presentation artifact.
 
@@ -93,8 +94,12 @@ def curate_knowledge_graph(
     ``False`` this is a strict no-op returning ``kg`` unchanged (the default, so
     the exported KG is unaffected until the flag flips).
 
-    Each curation step is added in a later phase and guarded so that a failure
-    degrades to the prior (uncurated) field rather than aborting the export.
+    ``defer_summary_floor`` skips the never-empty summary floor here so it can
+    run *after* the wiki-page backfill in generate mode (where richer summaries
+    exist); FAST mode leaves it ``False`` so the floor still lands at this seam.
+
+    Each curation step is guarded so that a failure degrades to the prior
+    (uncurated) field rather than aborting the export.
     """
     if not enabled:
         return kg
@@ -122,6 +127,17 @@ def curate_knowledge_graph(
             kg.tour = tour
     except Exception:  # pragma: no cover - defensive; keep skeleton/LLM tour
         logger.exception("kg_curation._curate_tour failed; keeping existing tour")
+
+    try:
+        _curate_node_types(kg)
+    except Exception:  # pragma: no cover - defensive; keep skeleton types
+        logger.exception("kg_curation._curate_node_types failed; keeping coarse types")
+
+    if not defer_summary_floor:
+        try:
+            apply_summary_floor(kg, parsed_files)
+        except Exception:  # pragma: no cover - defensive; leave summaries as-is
+            logger.exception("kg_curation summary floor failed; leaving summaries empty")
 
     return kg
 
@@ -478,3 +494,129 @@ def _curate_tour(
         tour.append(step)
 
     return tour
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — node typing & never-empty summaries
+# ---------------------------------------------------------------------------
+
+# Path signals for richer node typing than the skeleton's coarse
+# file/config/service/document. These run only in the presentation view; the
+# AST graph node_type used elsewhere is untouched.
+_CI_PATH_MARKERS = (
+    ".github/workflows/",
+    ".gitlab-ci",
+    ".circleci/",
+    "azure-pipelines",
+    "jenkinsfile",
+    "bitbucket-pipelines",
+)
+_INFRA_NAME_MARKERS = ("dockerfile", "docker-compose", "compose.yaml", "compose.yml")
+_INFRA_PATH_MARKERS = ("/k8s/", "/kubernetes/", "/helm/", "/terraform/")
+_INFRA_SUFFIXES = (".tf", ".hcl")
+_DATA_PATH_MARKERS = ("/migrations/", "/migration/")
+_DATA_SUFFIXES = (".sql", ".prisma")
+
+
+def _enrich_type(path: str, current_type: str) -> tuple[str, str | None]:
+    """Return a richer ``(type, extra_tag)`` for a file node, or keep current.
+
+    The tag (``ci``/``infra``/``data``) is additive; ``None`` means no new tag.
+    """
+    p = path.lower()
+    name = PurePosixPath(p).name
+    suffix = PurePosixPath(p).suffix
+
+    if any(m in p for m in _CI_PATH_MARKERS) or name == "jenkinsfile":
+        return "pipeline", "ci"
+    if (
+        name.startswith("dockerfile")
+        or any(m in name for m in _INFRA_NAME_MARKERS)
+        or any(m in p for m in _INFRA_PATH_MARKERS)
+        or suffix in _INFRA_SUFFIXES
+    ):
+        return "service", "infra"
+    if any(m in p for m in _DATA_PATH_MARKERS) or suffix in _DATA_SUFFIXES:
+        return "schema", "data"
+    return current_type, None
+
+
+def _curate_node_types(kg: KnowledgeGraphResult) -> None:
+    """Promote infra/CI/data file nodes to first-class presentation types."""
+    for node in _file_nodes(kg):
+        new_type, tag = _enrich_type(node["filePath"], node.get("type", "file"))
+        if new_type != node.get("type"):
+            node["type"] = new_type
+        if tag:
+            tags = node.setdefault("tags", [])
+            if tag not in tags:
+                tags.append(tag)
+
+
+def _infer_test_target(path: str) -> str:
+    """Best-effort name of what a test file covers (strip test markers)."""
+    stem = PurePosixPath(path).stem
+    for marker in (".test", ".spec", "_test", "test_", "_spec", "spec_"):
+        if marker in stem.lower():
+            cleaned = stem.lower().replace(marker, "")
+            return cleaned.strip("_.- ") or stem
+    return stem
+
+
+def _cheap_summary(node: dict, parsed_file: Any | None) -> str:
+    """A deterministic, honest fallback summary (zero LLM cost)."""
+    path = node["filePath"]
+    stem = PurePosixPath(path).stem
+    parent = PurePosixPath(path).parent.name or "root"
+    node_type = node.get("type", "file")
+    tags = node.get("tags") or []
+    layer = infer_layer(path)
+
+    if "barrel" in tags:
+        return f"Re-export barrel for {parent}/."
+    if node_type == "pipeline" or "ci" in tags:
+        return f"CI / pipeline definition: {PurePosixPath(path).name}."
+    if node_type == "service" or "infra" in tags:
+        return f"Infrastructure definition: {PurePosixPath(path).name}."
+    if node_type == "schema" or "data" in tags:
+        return f"Data / schema definition: {PurePosixPath(path).name}."
+    if node_type == "config" or "config" in tags:
+        return f"Configuration file: {PurePosixPath(path).name}."
+    if node_type == "document":
+        return f"Documentation: {PurePosixPath(path).name}."
+    if "test" in tags:
+        return f"Tests for {_infer_test_target(path)}."
+
+    # Code file: name the layer and its most prominent symbols.
+    symbol_names: list[str] = []
+    if parsed_file is not None:
+        symbol_names = [
+            getattr(s, "name", "")
+            for s in (getattr(parsed_file, "symbols", []) or [])
+            if getattr(s, "kind", "") in _SUBSTANTIVE_KINDS and getattr(s, "name", "")
+        ][:3]
+    if symbol_names:
+        return f"{layer} module {stem} defining {', '.join(symbol_names)}."
+    count = node.get("symbolCount", 0)
+    if count:
+        return f"{layer} module {stem} ({count} symbols)."
+    return f"{layer} module {stem}."
+
+
+def apply_summary_floor(kg: KnowledgeGraphResult, parsed_files: list[Any] | None = None) -> None:
+    """Ensure every file node carries a summary (cheap deterministic floor).
+
+    Idempotent and never clobbering: only fills nodes whose summary is still
+    empty, so a richer wiki-page summary (backfilled before this runs in
+    generate mode) always wins. ``parsed_files`` is optional — when absent the
+    fallback uses the node's symbol count instead of naming top symbols.
+    """
+    pf_by_path = {
+        pf.file_info.path: pf
+        for pf in (parsed_files or [])
+        if getattr(pf, "file_info", None)
+    }
+    for node in _file_nodes(kg):
+        if node.get("summary"):
+            continue
+        node["summary"] = _cheap_summary(node, pf_by_path.get(node["filePath"]))

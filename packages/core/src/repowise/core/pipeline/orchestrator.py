@@ -538,6 +538,10 @@ async def run_pipeline(
             )
 
             try:
+                # In generate mode the summary floor is deferred to run after
+                # the wiki-page backfill (in ``enrich_knowledge_graph``), so
+                # rich page summaries win; FAST mode floors here.
+                will_generate = generate_docs and llm_client is not None
                 knowledge_graph_result = curate_knowledge_graph(
                     knowledge_graph_result,
                     parsed_files=parsed_files,
@@ -545,6 +549,7 @@ async def run_pipeline(
                     repo_structure=repo_structure,
                     community_info=graph_builder.community_info(),
                     enabled=curation_enabled(),
+                    defer_summary_floor=will_generate,
                 )
             except (ValueError, KeyError, RuntimeError) as cur_err:
                 logger.error("kg_curation_failed", error=str(cur_err), exc_info=True)
