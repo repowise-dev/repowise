@@ -8,7 +8,6 @@ from repowise.core.generation.layers import (
     infer_layer,
 )
 
-
 # ---------------------------------------------------------------------------
 # infer_layer — every file maps to exactly one layer
 # ---------------------------------------------------------------------------
@@ -24,6 +23,13 @@ def test_infer_layer_matches_directory_hints():
     assert infer_layer("config/settings.py") == "Config"
     assert infer_layer("tests/test_user.py") == "Test"
     assert infer_layer("src/types/dtos.ts") == "Types"
+
+
+def test_infer_layer_recognizes_cli_command_surface():
+    # Edge case A: a CLI command surface must not fall through to Application.
+    assert infer_layer("packages/cli/src/repowise/cli/commands/init_cmd.py") == "CLI"
+    assert infer_layer("src/cli/main.py") == "CLI"
+    assert infer_layer("app/cmd/serve.py") == "CLI"
 
 
 def test_infer_layer_uses_deepest_matching_directory():
