@@ -8,6 +8,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
+import { useTheme } from "next-themes";
 import { ChevronRight, Home } from "lucide-react";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
@@ -126,7 +127,12 @@ export function GraphFlow(props: GraphFlowProps) {
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
   const [showPathFinder, setShowPathFinder] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
-  const [graphTheme, setGraphTheme] = useState<GraphTheme>("light");
+
+  // The dependency graph follows the global app theme rather than a separate
+  // local toggle. Sigma needs a concrete "light"/"dark" (never "system"), so
+  // resolve it; the in-graph Sun/Moon control flips the global theme below.
+  const { resolvedTheme, setTheme } = useTheme();
+  const graphTheme: GraphTheme = resolvedTheme === "dark" ? "dark" : "light";
 
   const [egoDepth, setEgoDepth] = useState(0);
 
@@ -620,9 +626,13 @@ export function GraphFlow(props: GraphFlowProps) {
     setLayoutMode(mode);
   }, []);
 
-  const handleGraphThemeChange = useCallback((theme: GraphTheme) => {
-    setGraphTheme(theme);
-  }, []);
+  const handleGraphThemeChange = useCallback(
+    (theme: GraphTheme) => {
+      // Drive the global theme; the graph re-reads it via resolvedTheme.
+      setTheme(theme);
+    },
+    [setTheme],
+  );
 
   const handleSignalToggle = useCallback((signal: Signal) => {
     setActiveSignals((prev) => {
@@ -713,7 +723,7 @@ export function GraphFlow(props: GraphFlowProps) {
 
   return (
     <GraphProvider value={ctxValue}>
-      <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "#0f0f1a" } : {}) }} aria-label="Dependency graph">
+      <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-inset)" } : {}) }} aria-label="Dependency graph">
         {sigmaGraph ? (
           <SigmaCanvas
             ref={sigmaRef}
