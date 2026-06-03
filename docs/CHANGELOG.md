@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.16.0] — 2026-06-03
+
+### Added
+- **Codex CLI provider and project integration.** A new local Codex CLI LLM provider runs documentation generation through authenticated `codex exec` sessions (argv-based subprocess, JSONL parsing tolerant of non-JSON noise, async concurrency cap, exec timeout, and zero-cost subscription usage tracking). Adds project-local Codex setup — a `.codex/config.toml` MCP server, `.codex` lifecycle hooks, `.codex-plugin` metadata and marketplace entry, and managed `AGENTS.md` generation. Reasoning effort is now wired across all LLM providers with per-provider model discovery and supported reasoning modes (#348).
+- **Native Ollama embedder.** Semantic indexing can now embed through a local Ollama instance directly, without routing through an OpenAI-compatible shim (#331).
+- **`repowise init --resume` actually resumes.** Persistence is split into per-phase persisters (ingestion, git, analysis, generation) so a re-run skips phases that already completed instead of redoing the whole pipeline. Public API and end-state are unchanged (#343).
+- **Advisory CLI-version check in `repowise doctor`.** `doctor` now shows current vs. latest published version and the exact install-method-aware upgrade command (uv tool / pipx / pip / editable). Advisory only — it never auto-updates, never flips doctor's pass/fail, and swallows network errors (#346, closes #338).
+
+### Fixed
+- **Owner "last touched" reflects your own last commit.** Previously a teammate's commit to a file you co-own bumped your "last touched" timestamp. Each author's own first/last commit timestamps are now recorded and aggregated, and author identity is read through git's `.mailmap` so one person's multiple names/emails fold into a single contributor (#349).
+- **`repowise update` re-runs health when config changes even if git is unchanged.** Editing `exclude_patterns` or `health-rules.json` used to have no effect until a code change touched each file. `update` now fingerprints the config and triggers a full health rescore when it changes (#337).
+- **Minified/generated bundles can no longer wedge `init`.** Duplication detection's O(k²) window comparison could explode on checked-in minified chunks, leaving `init` stuck at `health 0/N`. New layered resource guards skip minified files, cap per-file tokens and the repo-wide window budget, and drop degenerate hash buckets (#342, closes #341).
+- **`exclude_patterns` are enforced in MCP tool responses at query time.** Rows that predate an `exclude_patterns` change are now filtered out of every structured tool (context, answer, search, health, overview, dead_code, risk, and the rest) and out of aggregate KPIs, so excluded files never leak back into results or numbers (#339, #340).
+- **User-added MCP `env` survives re-registration.** `repowise init`/`update` re-registration did a shallow replace of the `repowise` MCP server entry, silently wiping any user-added `env` block (BYOK provider/embedder keys) and degrading semantic search to the mock embedder. Server definitions are now deep-merged (#336, fixes #307).
+- **Cost tracking no longer wedges `repowise update` on `database is locked`.** A second cost-tracking engine inserting per LLM call lost WAL's single-writer race against the doc-generation writer, blocking the full busy-timeout per call and turning `update` into an effectively non-terminating run. Persistence is now best-effort, plus a `--no-cost-tracking` flag and `REPOWISE_NO_COST_TRACKING` env var to opt out entirely (#330, closes #326).
+- **Rust sibling test modules are kept live** in dead-code reachability instead of being flagged as unused (#332).
+- **`reindex` uses the shared database engine** rather than opening its own (#333).
+
+### Documentation
+- **README and linked docs revamped** for accuracy, with a sharpened tagline, reframed layer positioning, and fixed README/CONTRIBUTING links (#334, #335, #345).
+
+---
+
 ## [0.15.2] — 2026-05-31
 
 ### Added
