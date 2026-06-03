@@ -400,3 +400,64 @@ class TestEntryPointPrecision:
     def test_flag_off_leaves_entry_points_untouched(self, entry_repo):
         kg = _curate(entry_repo, enabled=False)
         assert "entry_candidates" not in kg.project
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — canonical, layer-aware tour
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def readme_repo():
+    """large_repo shape plus a real root README to anchor the tour."""
+    paths = ["README.md", "src/api/route0.py", "src/api/route1.py"]
+    paths += [f"src/models/model{i}.py" for i in range(4)]
+    paths += [f"src/utils/util{i}.py" for i in range(3)]
+    paths += [f"packages/cli/src/cli/commands/cmd{i}.py" for i in range(3)]
+    return build_repo(paths)
+
+
+def _layer_ids(kg) -> set[str]:
+    return {layer["id"] for layer in kg.layers}
+
+
+class TestCuratedTour:
+    def test_within_step_budget(self, large_repo):
+        kg = _curate(large_repo, enabled=True)
+        assert 0 < len(kg.tour) <= 12
+
+    def test_opens_with_overview(self, large_repo):
+        kg = _curate(large_repo, enabled=True)
+        assert kg.tour[0]["kind"] == "overview"
+        assert kg.tour[0]["order"] == 1
+
+    def test_every_step_maps_to_a_curated_layer(self, large_repo):
+        kg = _curate(large_repo, enabled=True)
+        ids = _layer_ids(kg)
+        for step in kg.tour:
+            if step["kind"] == "overview":
+                continue  # overview maps to a layer only when a README exists
+            assert step["layer_id"] in ids
+
+    def test_covers_most_layers(self, large_repo):
+        kg = _curate(large_repo, enabled=True)
+        covered = {s["layer_id"] for s in kg.tour if s["kind"] != "overview"}
+        assert len(covered) / len(_layer_ids(kg)) >= 0.90
+
+    def test_orders_are_contiguous(self, large_repo):
+        kg = _curate(large_repo, enabled=True)
+        assert [s["order"] for s in kg.tour] == list(range(1, len(kg.tour) + 1))
+
+    def test_readme_is_first_stop(self, readme_repo):
+        kg = _curate(readme_repo, enabled=True)
+        assert kg.tour[0]["kind"] == "overview"
+        assert kg.tour[0]["target_path"] == "README.md"
+
+    def test_deterministic(self, large_repo):
+        a = _curate(large_repo, enabled=True)
+        b = _curate(large_repo, enabled=True)
+        assert a.tour == b.tour
+
+    def test_flag_off_leaves_tour_empty(self, large_repo):
+        kg = _curate(large_repo, enabled=False)
+        assert kg.tour == []
