@@ -24,6 +24,11 @@
    (`--color-accent-secondary`) is used for links-alt **and** data-viz.
 3. **Gradient intensity.** Restrained in-product (active states, small accent
    washes); bold in marketing (full hero meshes).
+4. **Dark-mode base — neutral charcoal (not plum).** Dark surfaces/text/borders
+   are neutral grays (`#1a1a1a`→`#353535`, text `#ededed`/`#a3a3a3`) in the
+   "Dark Orange UI-kit" style, so the orange accent pops against a clean base.
+   **Light mode is unchanged** (warm paper). Plum survives only as the sparse
+   `--color-accent-secondary` data-viz counterpoint, never as a surface tint.
 
 ### The fill-vs-text split (why two accent tokens)
 
@@ -33,8 +38,8 @@ A single accent can't be both AA-as-text on white *and* vivid-as-a-CTA. So:
 |-------|-------|------|----------|
 | `--color-accent-primary` | `#A16215` | `#F59520` | accent **text, icons, links, borders**; also a fill (white text on it) |
 | `--color-accent-fill` | `#F59520` | `#F59520` | brand-orange **CTA / selected fills** (dark text on it) |
-| `--color-text-inverse` | `#FFFFFF` | `#17121C` | text on an `accent-primary` fill |
-| `--color-text-on-accent` | `#241B2C` | `#17121C` | text on the brand `accent-fill` |
+| `--color-text-inverse` | `#FFFFFF` | `#1A1A1A` | text on an `accent-primary` fill |
+| `--color-text-on-accent` | `#241B2C` | `#1A1A1A` | text on the brand `accent-fill` |
 
 White on the bright `#f59520` fill is only ~2.0:1 — so CTAs use **dark** text
 (`text-on-accent`, 7.26:1). Existing `bg-accent-primary text-text-inverse`
@@ -45,19 +50,19 @@ the deep `#A16215` = 4.91:1; near-black in dark on bright `#F59520` = 8.07:1).
 
 | Token | Light (`:root`) | Dark (`.dark`) |
 |-------|-----------------|----------------|
-| `--color-bg-root` | `#FBF6F1` | `#17121C` |
-| `--color-bg-surface` | `#FFFFFF` | `#1F1826` |
-| `--color-bg-elevated` | `#FBF4EE` | `#271F30` |
-| `--color-bg-overlay` | `#FFFFFF` | `#2D2438` |
-| `--color-bg-inset` | `#F4EAE1` | `#120E17` |
-| `--color-border-default` | `rgba(88,67,108,.12)` | `rgba(255,240,230,.08)` |
-| `--color-border-hover` | `rgba(88,67,108,.22)` | `rgba(255,240,230,.16)` |
-| `--color-border-active` | `rgba(192,78,20,.80)` | `rgba(242,160,61,.55)` |
-| `--color-text-primary` | `#241B2C` | `#F5EAE3` |
-| `--color-text-secondary` | `#5E5360` | `#B7A9B2` |
-| `--color-text-tertiary` | `#8C7F88` | `#7E7186` |
-| `--color-text-inverse` | `#FFFFFF` | `#17121C` |
-| `--color-text-on-accent` | `#241B2C` | `#17121C` |
+| `--color-bg-root` | `#FBF6F1` | `#1A1A1A` |
+| `--color-bg-surface` | `#FFFFFF` | `#242424` |
+| `--color-bg-elevated` | `#FBF4EE` | `#2E2E2E` |
+| `--color-bg-overlay` | `#FFFFFF` | `#353535` |
+| `--color-bg-inset` | `#F4EAE1` | `#141414` |
+| `--color-border-default` | `rgba(88,67,108,.12)` | `rgba(255,255,255,.08)` |
+| `--color-border-hover` | `rgba(88,67,108,.22)` | `rgba(255,255,255,.15)` |
+| `--color-border-active` | `rgba(192,78,20,.80)` | `rgba(245,149,32,.55)` |
+| `--color-text-primary` | `#241B2C` | `#EDEDED` |
+| `--color-text-secondary` | `#5E5360` | `#A3A3A3` |
+| `--color-text-tertiary` | `#8C7F88` | `#757575` |
+| `--color-text-inverse` | `#FFFFFF` | `#1A1A1A` |
+| `--color-text-on-accent` | `#241B2C` | `#1A1A1A` |
 | `--color-accent-primary` | `#A16215` | `#F59520` |
 | `--color-accent-fill` | `#F59520` | `#F59520` |
 | `--color-accent-fill-hover` | `#E0850F` | `#F7A94D` |
@@ -126,21 +131,21 @@ selected/active accents — never behind body text. Text over gradients uses
 ### Dark mode
 | Pair | Ratio | Floor | Result |
 |------|-------|-------|--------|
-| Body text on page | 15.58 | 7.0 | PASS |
-| Body text on card | 14.60 | 7.0 | PASS |
-| Body text on elevated | 13.40 | 7.0 | PASS |
-| Secondary text on page | 8.19 | 4.5 | PASS |
-| Secondary text on card | 7.67 | 4.5 | PASS |
-| Tertiary/hint on card | 3.77 | 3.0 | PASS |
-| Accent text on card | 7.56 | 4.5 | PASS |
-| Accent text on page | 8.07 | 4.5 | PASS |
-| Plum link-alt on card | 6.09 | 4.5 | PASS |
-| Text on accent fill (CTA) | 8.07 | 4.5 | PASS |
-| Text on accent-primary fill | 8.07 | 4.5 | PASS |
-| Success text on card | 8.98 | 4.5 | PASS |
-| Warning text on card | 8.11 | 4.5 | PASS |
-| Error text on card | 5.24 | 4.5 | PASS |
-| Info text on card | 6.09 | 4.5 | PASS |
-| Active border on card | 3.17 | 3.0 | PASS |
+| Body text on page | 14.87 | 7.0 | PASS |
+| Body text on card | 13.26 | 7.0 | PASS |
+| Body text on elevated | 11.60 | 7.0 | PASS |
+| Secondary text on page | 6.90 | 4.5 | PASS |
+| Secondary text on card | 6.15 | 4.5 | PASS |
+| Tertiary/hint on card | 3.37 | 3.0 | PASS |
+| Accent text on card | 6.80 | 4.5 | PASS |
+| Accent text on page | 7.63 | 4.5 | PASS |
+| Plum link-alt on card | 5.48 | 4.5 | PASS |
+| Text on accent fill (CTA) | 7.63 | 4.5 | PASS |
+| Text on accent-primary fill | 7.63 | 4.5 | PASS |
+| Success text on card | 8.07 | 4.5 | PASS |
+| Warning text on card | 7.30 | 4.5 | PASS |
+| Error text on card | 4.72 | 4.5 | PASS |
+| Info text on card | 5.48 | 4.5 | PASS |
+| Active border on card | 3.02 | 3.0 | PASS |
 
 **32 pairs · 0 failures.**

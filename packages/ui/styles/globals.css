@@ -220,21 +220,22 @@
 /* -------------------------------------------------------------------- */
 
 .dark {
-  --color-bg-root: #17121c;
-  --color-bg-surface: #1f1826;
-  --color-bg-elevated: #271f30;
-  --color-bg-overlay: #2d2438;
-  --color-bg-inset: #120e17;
+  /* Neutral charcoal base (Dark Orange UI-kit style) — no plum tint. */
+  --color-bg-root: #1a1a1a;
+  --color-bg-surface: #242424;
+  --color-bg-elevated: #2e2e2e;
+  --color-bg-overlay: #353535;
+  --color-bg-inset: #141414;
 
-  --color-border-default: rgba(255, 240, 230, 0.08);
-  --color-border-hover: rgba(255, 240, 230, 0.16);
+  --color-border-default: rgba(255, 255, 255, 0.08);
+  --color-border-hover: rgba(255, 255, 255, 0.15);
   --color-border-active: rgba(245, 149, 32, 0.55);
 
-  --color-text-primary: #f5eae3;
-  --color-text-secondary: #b7a9b2;
-  --color-text-tertiary: #7e7186;
-  --color-text-inverse: #17121c;
-  --color-text-on-accent: #17121c;
+  --color-text-primary: #ededed;
+  --color-text-secondary: #a3a3a3;
+  --color-text-tertiary: #757575;
+  --color-text-inverse: #1a1a1a;
+  --color-text-on-accent: #1a1a1a;
 
   --color-accent-primary: #f59520;
   --color-accent-fill: #f59520;
@@ -252,21 +253,21 @@
   --color-error: #e06a5a;
   --color-info: #a98fc4;
 
-  --color-node-undocumented: #6e6276;
-  --viz-node-stroke: rgba(255, 240, 230, 0.25);
+  --color-node-undocumented: #6b6b6b;
+  --viz-node-stroke: rgba(255, 255, 255, 0.22);
 
   /* Edge hue that isn't a pure var() derivation gets a dark-legible tweak */
   --color-edge-inherits: #a98fc4; /* plum-300 reads better on dark */
 
-  /* Warm-but-deep shadows with an inset hairline for premium depth */
+  /* Deep shadows with a neutral inset hairline for premium depth */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 240, 230, 0.04);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 240, 230, 0.05);
-  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 240, 230, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
   --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
 
-  /* Dark soft wash — warm plum-charcoal melt (keeps the warm family on dark) */
-  --gradient-warm-wash: linear-gradient(160deg, #241b2c 0%, #2c2030 55%, #34241f 100%);
+  /* Dark soft wash — neutral charcoal with a faint warm lift at the end */
+  --gradient-warm-wash: linear-gradient(160deg, #1e1e1e 0%, #262626 55%, #2e2823 100%);
 }
 
 /* -------------------------------------------------------------------- */
@@ -318,11 +319,11 @@ body {
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 240, 230, 0.12);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 240, 230, 0.22);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 /* -------------------------------------------------------------------- */
