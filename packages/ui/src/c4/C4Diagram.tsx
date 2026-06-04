@@ -254,7 +254,7 @@ function exportFileStem(systemName: string, level: C4Level, activePath: string |
 function CenteredMessage({ tone, text }: { tone: "info" | "empty" | "error"; text: string }) {
   const color =
     tone === "error"
-      ? "#fca5a5"
+      ? "var(--color-error)"
       : tone === "empty"
       ? "var(--color-text-tertiary, #64748b)"
       : "var(--color-text-secondary, #94a3b8)";

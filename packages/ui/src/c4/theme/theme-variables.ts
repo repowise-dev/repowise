@@ -39,6 +39,20 @@ export const THEME = {
     complex: "var(--color-error, #b23a2e)",
   } as Record<string, string>,
 
+  /** Status badge glyphs (entry / hotspot / dead) — semantic tokens, both themes. */
+  status: {
+    entry: "var(--color-success)",
+    hotspot: "var(--color-error)",
+    dead: "var(--color-text-muted)",
+  },
+
+  /** Health-score buckets (≥80 / ≥60 / below). */
+  health: {
+    good: "var(--color-success)",
+    fair: "var(--color-warning)",
+    poor: "var(--color-error)",
+  },
+
   edge: {
     imports: "var(--color-edge-imports, #f59520)",
     depends_on: "var(--color-warning, #9a6614)",
@@ -70,6 +84,11 @@ export const THEME = {
     tooltip: "0 8px 24px rgba(0,0,0,0.4)",
   },
 } as const;
+
+/** Edge color for a relation type, falling back to the muted default. */
+export function edgeColor(edgeType: string): string {
+  return THEME.edge[edgeType] ?? "var(--color-text-tertiary)";
+}
 
 export const KEYFRAMES = {
   accentPulse: `

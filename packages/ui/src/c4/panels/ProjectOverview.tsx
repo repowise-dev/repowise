@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { Compass, LogIn } from "lucide-react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { getTone } from "../../graph-primitives/tone-styles";
+import { THEME } from "../theme/theme-variables";
 import { Section, Title, Sub, Pill, ActionButton } from "./panel-atoms";
 
 export function ProjectOverview() {
@@ -202,19 +203,19 @@ export function ProjectOverview() {
             {complexityCounts.simple > 0 && (
               <div
                 aria-label={`${complexityCounts.simple} simple`}
-                style={{ flex: complexityCounts.simple, background: "#22c55e" }}
+                style={{ flex: complexityCounts.simple, background: THEME.complexity.simple }}
               />
             )}
             {complexityCounts.moderate > 0 && (
               <div
                 aria-label={`${complexityCounts.moderate} moderate`}
-                style={{ flex: complexityCounts.moderate, background: "#f59e0b" }}
+                style={{ flex: complexityCounts.moderate, background: THEME.complexity.moderate }}
               />
             )}
             {complexityCounts.complex > 0 && (
               <div
                 aria-label={`${complexityCounts.complex} complex`}
-                style={{ flex: complexityCounts.complex, background: "#ef4444" }}
+                style={{ flex: complexityCounts.complex, background: THEME.complexity.complex }}
               />
             )}
           </div>

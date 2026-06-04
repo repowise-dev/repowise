@@ -30,7 +30,7 @@ function ArchFileNodeImpl(props: NodeProps) {
 
   const kindLabel = isBarrel ? "barrel" : node.node_type;
 
-  const complexityColor = THEME.complexity[node.complexity] ?? "#94a3b8";
+  const complexityColor = THEME.complexity[node.complexity] ?? THEME.text.muted;
 
   const badges = (
     <>
@@ -47,25 +47,25 @@ function ArchFileNodeImpl(props: NodeProps) {
             borderRadius: "50%",
             fontSize: 9,
             fontWeight: 700,
-            color: "#0b1220",
-            background: "var(--color-accent-primary, #f59520)",
+            color: "var(--color-text-on-accent)",
+            background: "var(--color-accent-fill)",
           }}
         >
           {tourStepNumber}
         </span>
       )}
       {node.is_entry_point && !isBarrel && (
-        <span title="Entry point" aria-label="Entry point" style={{ display: "inline-flex", color: "#4ade80" }}>
+        <span title="Entry point" aria-label="Entry point" style={{ display: "inline-flex", color: THEME.status.entry }}>
           <Play size={10} aria-hidden />
         </span>
       )}
       {node.is_hotspot && (
-        <span title="Hotspot" aria-label="Hotspot" style={{ display: "inline-flex", color: "#fca5a5" }}>
+        <span title="Hotspot" aria-label="Hotspot" style={{ display: "inline-flex", color: THEME.status.hotspot }}>
           <Flame size={10} aria-hidden />
         </span>
       )}
       {node.is_dead && (
-        <span title="Dead code" aria-label="Dead code" style={{ display: "inline-flex", color: "#cbd5e1" }}>
+        <span title="Dead code" aria-label="Dead code" style={{ display: "inline-flex", color: THEME.status.dead }}>
           <Skull size={10} aria-hidden />
         </span>
       )}

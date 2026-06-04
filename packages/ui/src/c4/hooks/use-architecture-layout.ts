@@ -22,7 +22,7 @@ import {
   type ContainerAtom,
   type PortalSpec,
 } from "../layout/two-stage-layout";
-import { THEME } from "../theme/theme-variables";
+import { THEME, edgeColor } from "../theme/theme-variables";
 
 export interface ArchitectureLayoutResult {
   nodes: Node[];
@@ -213,7 +213,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         type: MarkerType.ArrowClosed,
         width: 14,
         height: 14,
-        color: THEME.edge[agg.dominantType] ?? "#8b9dc3",
+        color: edgeColor(agg.dominantType),
       },
       data: {
         edge_type: agg.dominantType,
@@ -376,7 +376,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         type: MarkerType.ArrowClosed,
         width: 14,
         height: 14,
-        color: THEME.edge[agg.dominantType] ?? "#8b9dc3",
+        color: edgeColor(agg.dominantType),
       },
       data: {
         edge_type: agg.dominantType,
@@ -632,7 +632,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           type: MarkerType.ArrowClosed,
           width: 14,
           height: 14,
-          color: THEME.edge[agg.dominantType] ?? "#8b9dc3",
+          color: edgeColor(agg.dominantType),
         },
         data: {
           edge_type: agg.dominantType,

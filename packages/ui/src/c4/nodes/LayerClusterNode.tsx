@@ -64,7 +64,7 @@ function LayerClusterNodeImpl(props: NodeProps) {
         style={{
           fontSize: 12,
           fontWeight: 600,
-          color: layer.health_score >= 80 ? "#4ade80" : layer.health_score >= 60 ? "#fbbf24" : "#f87171",
+          color: layer.health_score >= 80 ? THEME.health.good : layer.health_score >= 60 ? THEME.health.fair : THEME.health.poor,
         }}
       >
         {Math.round(layer.health_score)}

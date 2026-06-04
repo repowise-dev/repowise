@@ -17,7 +17,7 @@ export function NodeTooltip({ node, position }: NodeTooltipProps) {
   if (!node || !position) return null;
 
   const tone = getTone(node.node_type);
-  const dotColor = THEME.complexity[node.complexity] ?? "#94a3b8";
+  const dotColor = THEME.complexity[node.complexity] ?? THEME.text.muted;
 
   const truncatedSummary =
     node.summary.length > MAX_SUMMARY_LEN
