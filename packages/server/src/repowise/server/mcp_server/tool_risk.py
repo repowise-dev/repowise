@@ -81,8 +81,17 @@ def _compute_trend(meta: Any) -> str:
     return "stable"
 
 
-def _classify_risk_type(meta: Any, dep_count: int) -> str:
-    """Classify risk as churn-heavy, bug-prone, high-coupling, or bus-factor-risk."""
+def _classify_risk_type(meta: Any, dep_count: int, team_size: int | None = None) -> str:
+    """Classify risk as churn-heavy, bug-prone, high-coupling, or bus-factor-risk.
+
+    *team_size* is the repo's active-contributor count (90d). On a small
+    team (≤ SMALL_TEAM_MAX_CONTRIBUTORS) a single-author file is the
+    expected operating model, so ``bus-factor-risk`` is reserved for
+    hotspot-active files there (issue #361). ``None`` = unknown → keep
+    the historical behaviour.
+    """
+    from repowise.core.analysis.health.biomarkers.base import SMALL_TEAM_MAX_CONTRIBUTORS
+
     # Count bug-fix commits from significant_commits messages
     commits = json.loads(meta.significant_commits_json) if meta.significant_commits_json else []
     fix_count = sum(1 for c in commits if _FIX_PATTERN.search(c.get("message", "")))
@@ -91,16 +100,43 @@ def _classify_risk_type(meta: Any, dep_count: int) -> str:
     bus_factor = getattr(meta, "bus_factor", 0) or 0
     total_commits = meta.commit_count_total or 0
 
+    small_team = team_size is not None and team_size <= SMALL_TEAM_MAX_CONTRIBUTORS
+
     # Bug-prone takes priority if fix ratio is high
     if commits and fix_count / len(commits) >= 0.4:
         return "bug-prone"
     if churn_score >= 0.7:
         return "churn-heavy"
-    if bus_factor == 1 and total_commits > 20:
+    if (
+        bus_factor == 1
+        and total_commits > 20
+        and (not small_team or bool(getattr(meta, "is_hotspot", False)))
+    ):
         return "bus-factor-risk"
     if dep_count >= 5:
         return "high-coupling"
     return "stable"
+
+
+async def _get_active_contributor_count(session: AsyncSession, repo_id: str) -> int | None:
+    """Repo-wide active-contributor count from persisted git metadata.
+
+    Reuses ``count_active_contributors`` (per-author ``last_commit_ts`` in
+    ``top_authors_json``) over all rows. ``None`` = unknown (no rows, or an
+    index that predates per-author timestamps).
+    """
+    from repowise.core.ingestion.git_indexer import count_active_contributors
+
+    try:
+        rows = await session.execute(
+            select(GitMetadata.top_authors_json).where(GitMetadata.repository_id == repo_id)
+        )
+        metas = [{"top_authors_json": r[0]} for r in rows.all() if r[0]]
+        if not metas:
+            return None
+        return count_active_contributors(metas)
+    except Exception:
+        return None
 
 
 def _compute_impact_surface(
@@ -205,6 +241,7 @@ async def _assess_one_target(
     reverse_deps: dict[str, set[str]],
     node_meta: dict[str, Any],
     exclude_spec: Any = None,
+    team_size: int | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -278,7 +315,7 @@ async def _assess_one_target(
     trend = _compute_trend(meta)
 
     # --- Risk type classification ---
-    risk_type = _classify_risk_type(meta, dep_count)
+    risk_type = _classify_risk_type(meta, dep_count, team_size)
 
     # --- Impact surface ---
     impact_surface = _compute_impact_surface(target, reverse_deps, node_meta, exclude_spec)
@@ -423,6 +460,10 @@ async def get_risk(
         )
         node_meta = {n.node_id: n for n in node_res.scalars().all()}
 
+        # Team size is repo-wide — compute once, share across targets
+        # (small-team calibration for bus-factor-risk, issue #361).
+        team_size = await _get_active_contributor_count(session, repo_id)
+
         # Assess each target
         results = await asyncio.gather(
             *[
@@ -435,6 +476,7 @@ async def get_risk(
                     reverse_deps,
                     node_meta,
                     exclude_spec,
+                    team_size,
                 )
                 for t in targets
             ]
@@ -451,9 +493,7 @@ async def get_risk(
             .order_by(GitMetadata.churn_percentile.desc())
             .limit(len(targets) + 5)
         )
-        all_hotspots = filter_rows_by_attr(
-            list(res.scalars().all()), "file_path", exclude_spec
-        )
+        all_hotspots = filter_rows_by_attr(list(res.scalars().all()), "file_path", exclude_spec)
         global_hotspots = [
             {
                 "file_path": h.file_path,

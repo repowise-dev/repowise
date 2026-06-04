@@ -31,7 +31,7 @@ def _authors(*pairs: tuple[str, int]) -> str:
     return json.dumps([{"name": n, "email": f"{n}@x", "commit_count": c} for n, c in pairs])
 
 
-def _ctx(meta: dict) -> FileContext:
+def _ctx(meta: dict, *, active_contributors: int | None = None) -> FileContext:
     return FileContext(
         file_path="src/payments.py",
         language="python",
@@ -42,6 +42,7 @@ def _ctx(meta: dict) -> FileContext:
         git_meta=meta,
         dependents_count=4,
         pagerank_score=0.0,
+        repo_active_contributors_90d=active_contributors,
     )
 
 
@@ -205,6 +206,72 @@ def test_ownership_risk_skips_clear_single_owner():
 def test_ownership_risk_skips_low_commit_files():
     meta = {"top_authors_json": _authors(("Alice", 2), ("Bob", 1))}
     assert OwnershipRiskDetector().detect(_ctx(meta)) == []
+
+
+# ---- small-team calibration (issue #361) ---------------------------------
+
+
+_FRAGMENTED = {
+    "top_authors_json": _authors(("Alice", 50), ("b", 1), ("c", 1), ("d", 1), ("e", 1), ("f", 1)),
+    "is_hotspot": False,
+}
+
+
+def test_ownership_risk_small_team_caps_at_low():
+    out = OwnershipRiskDetector().detect(_ctx(dict(_FRAGMENTED), active_contributors=2))
+    assert len(out) == 1
+    assert out[0].severity == "low"  # was high — capped on a 2-person team
+    assert out[0].details["small_team"] is True
+    assert "small team" in out[0].reason
+
+
+def test_ownership_risk_small_team_hotspot_keeps_severity():
+    meta = dict(_FRAGMENTED)
+    meta["is_hotspot"] = True
+    out = OwnershipRiskDetector().detect(_ctx(meta, active_contributors=2))
+    assert out
+    assert out[0].severity == "high"  # corroborated by hotspot — not capped
+
+
+def test_ownership_risk_unknown_team_size_keeps_severity():
+    out = OwnershipRiskDetector().detect(_ctx(dict(_FRAGMENTED), active_contributors=None))
+    assert out
+    assert out[0].severity == "high"  # None = unknown → historical behaviour
+    assert out[0].details["small_team"] is False
+
+
+def test_ownership_risk_large_team_keeps_severity():
+    out = OwnershipRiskDetector().detect(_ctx(dict(_FRAGMENTED), active_contributors=12))
+    assert out
+    assert out[0].severity == "high"
+
+
+def test_knowledge_loss_small_team_caps_at_low():
+    meta = {
+        "bus_factor": 1,
+        "primary_owner_name": "Alice",
+        "recent_owner_name": "Bob",
+        "recent_owner_commit_pct": 0.05,
+        "is_hotspot": False,
+        "commit_count_90d": 3,
+    }
+    out = KnowledgeLossDetector().detect(_ctx(meta, active_contributors=2))
+    assert len(out) == 1
+    assert out[0].severity == "low"  # was medium (gone + quiet) — capped
+    assert out[0].details["small_team"] is True
+
+
+def test_knowledge_loss_small_team_hotspot_keeps_high():
+    meta = {
+        "bus_factor": 1,
+        "primary_owner_name": "Alice",
+        "recent_owner_name": "Bob",
+        "recent_owner_commit_pct": 0.8,
+        "is_hotspot": True,
+    }
+    out = KnowledgeLossDetector().detect(_ctx(meta, active_contributors=2))
+    assert len(out) == 1
+    assert out[0].severity == "high"  # hotspot corroboration wins
 
 
 # ---- churn_risk ----------------------------------------------------------

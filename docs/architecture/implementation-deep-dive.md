@@ -264,7 +264,7 @@ Churn
 ├── lines_added_90d, lines_deleted_90d
 ├── avg_commit_size
 ├── churn_percentile (rank among all files, 0.0-1.0)
-├── is_hotspot (churn_percentile >= 0.75 AND active in 90d)
+├── is_hotspot (churn_percentile >= 0.75 AND >= 3 commits in 90d AND real line movement)
 └── is_stable (> 10 total commits BUT 0 in 90d)
 
 Significant Commits

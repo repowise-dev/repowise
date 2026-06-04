@@ -248,6 +248,128 @@ class TestHotspotClassification:
             assert 0.0 <= m["churn_percentile"] <= 1.0
 
 
+class TestHotspotAbsoluteFloors:
+    """Issue #361: top-quartile percentile alone must not flag a hotspot on
+    a quiet repo — the file also needs absolute recent activity."""
+
+    @staticmethod
+    def _quiet_repo(active_meta: dict) -> list[dict]:
+        """9 dormant files + the file under test → it always tops the
+        percentile ranking, isolating the absolute floors."""
+        from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+        metadata_list = [
+            {
+                "file_path": f"dormant_{i}.py",
+                "commit_count_90d": 0,
+                "temporal_hotspot_score": 0.0,
+                "is_hotspot": False,
+            }
+            for i in range(9)
+        ]
+        metadata_list.append({"is_hotspot": False, **active_meta})
+        compute_percentiles(metadata_list)
+        return metadata_list
+
+    def test_single_drive_by_commit_is_not_a_hotspot(self) -> None:
+        """The issue's exact failure mode: one maintenance commit on an
+        otherwise-quiet repo made the file a top-quartile 'hotspot'."""
+        metas = self._quiet_repo(
+            {"file_path": "touched.py", "commit_count_90d": 1, "temporal_hotspot_score": 0.2}
+        )
+        touched = next(m for m in metas if m["file_path"] == "touched.py")
+        assert touched["churn_percentile"] >= 0.75  # top quartile, as before
+        assert touched["is_hotspot"] is False  # but floors hold it back
+
+    def test_repeated_trivial_commits_are_not_a_hotspot(self) -> None:
+        """3 one-line maintenance commits clear the count floor but not the
+        decayed-churn floor."""
+        metas = self._quiet_repo(
+            {"file_path": "config.py", "commit_count_90d": 3, "temporal_hotspot_score": 0.03}
+        )
+        cfg = next(m for m in metas if m["file_path"] == "config.py")
+        assert cfg["is_hotspot"] is False
+
+    def test_real_activity_is_a_hotspot(self) -> None:
+        """Repeated commits moving real lines clear both floors."""
+        metas = self._quiet_repo(
+            {"file_path": "core.py", "commit_count_90d": 4, "temporal_hotspot_score": 1.2}
+        )
+        core = next(m for m in metas if m["file_path"] == "core.py")
+        assert core["is_hotspot"] is True
+
+    def test_high_commit_volume_escape_hatch(self) -> None:
+        """8+ commits in 90d is hotspot-grade even with no line counts
+        (binary files / missing numstat)."""
+        metas = self._quiet_repo(
+            {"file_path": "assets.bin", "commit_count_90d": 9, "temporal_hotspot_score": 0.0}
+        )
+        assets = next(m for m in metas if m["file_path"] == "assets.bin")
+        assert assets["is_hotspot"] is True
+
+
+class TestCountActiveContributors:
+    """count_active_contributors derives the repo's 90-day team size from
+    per-author last_commit_ts in top_authors_json."""
+
+    @staticmethod
+    def _meta(*authors: tuple[str, int]) -> dict:
+        import json as _json
+
+        return {
+            "top_authors_json": _json.dumps(
+                [
+                    {"name": n, "email": f"{n}@x", "commit_count": 5, "last_commit_ts": ts}
+                    for n, ts in authors
+                ]
+            )
+        }
+
+    def test_counts_distinct_recent_authors(self) -> None:
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        anchor = 1_700_000_000
+        old = anchor - 200 * 86400  # well outside the 90d window
+        metas = [
+            self._meta(("Alice", anchor), ("Bob", anchor - 86400)),
+            self._meta(("Alice", anchor - 5 * 86400), ("Carol", old)),
+        ]
+        assert count_active_contributors(metas) == 2  # Alice + Bob; Carol aged out
+
+    def test_bots_are_excluded(self) -> None:
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        anchor = 1_700_000_000
+        metas = [self._meta(("Alice", anchor), ("dependabot[bot]", anchor))]
+        assert count_active_contributors(metas) == 1
+
+    def test_unknown_when_no_timestamps(self) -> None:
+        """Indexes predating per-author last_commit_ts must yield None
+        (unknown), never a phantom team size of 0."""
+        import json as _json
+
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        metas = [
+            {
+                "top_authors_json": _json.dumps(
+                    [{"name": "Alice", "email": "a@x", "commit_count": 7}]
+                )
+            }
+        ]
+        assert count_active_contributors(metas) is None
+        assert count_active_contributors([]) is None
+
+    def test_window_anchors_to_most_recent_author(self) -> None:
+        """Anchored to the repo's own most recent activity, not wall clock —
+        a historical checkout still gets a correct window."""
+        from repowise.core.ingestion.git_indexer.enrich import count_active_contributors
+
+        anchor = 900_000_000  # ancient wall-clock-wise; irrelevant
+        metas = [self._meta(("Alice", anchor), ("Bob", anchor - 30 * 86400))]
+        assert count_active_contributors(metas) == 2
+
+
 # ---------------------------------------------------------------------------
 # 4. test_stable_classification
 # ---------------------------------------------------------------------------

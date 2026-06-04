@@ -24,9 +24,11 @@ from .backfill import BACKFILL_PHASE, backfill_full_tier
 from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import (
     compute_percentiles,
+    count_active_contributors,
     detect_original_path,
     get_blame_ownership,
     is_significant_commit,
+    meets_hotspot_floors,
 )
 from .file_history import index_file
 from .indexer import GitIndexer
@@ -62,9 +64,11 @@ __all__ = [
     "compute_co_changes_and_entropy",
     "compute_percentiles",
     "compute_prior_defects",
+    "count_active_contributors",
     "detect_original_path",
     "get_blame_ownership",
     "index_file",
     "is_fix_commit",
     "is_significant_commit",
+    "meets_hotspot_floors",
 ]

@@ -26,6 +26,7 @@ from typing import Any
 
 import structlog
 
+from ...ingestion.git_indexer.enrich import count_active_contributors
 from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
     distinct_commits_in_range,
@@ -188,6 +189,24 @@ def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | N
     return _percentile_p80(counts)
 
 
+def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | None:
+    """Distinct non-bot contributors active in the repo's trailing 90 days.
+
+    Derived from the per-author ``last_commit_ts`` timestamps already in
+    ``top_authors_json`` — no extra git work. ``None`` = unknown (git
+    skipped, or a pre-timestamp index); biomarkers then keep their
+    historical behaviour rather than mis-gating on a phantom team size.
+    """
+    metas = [m for m in git_meta_map.values() if isinstance(m, dict)]
+    if not metas:
+        return None
+    try:
+        return count_active_contributors(metas)
+    except Exception as exc:
+        log.debug("health_active_contributors_failed", error=str(exc))
+        return None
+
+
 def _build_repo_commit_counts(git_meta_map: dict[str, dict]) -> dict[str, int]:
     out: dict[str, int] = {}
     for path, meta in git_meta_map.items():
@@ -315,6 +334,7 @@ class HealthAnalyzer:
 
         repo_fn_mod_p80 = _compute_repo_function_mod_p80(walked, self.git_meta_map)
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
+        repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
         for pf, fcx in walked:
             # Side-effect: bump Symbol.complexity_estimate when we can
@@ -338,6 +358,7 @@ class HealthAnalyzer:
                 repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
                 repo_dependents_p80=repo_dependents_p80,
+                repo_active_contributors_90d=repo_active_contributors,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -436,6 +457,7 @@ class HealthAnalyzer:
         walked = await asyncio.gather(*[_one(pf) for pf in target_files])
         repo_fn_mod_p80 = _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
+        repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
@@ -457,6 +479,7 @@ class HealthAnalyzer:
                 repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
                 repo_dependents_p80=repo_dependents_p80,
+                repo_active_contributors_90d=repo_active_contributors,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -534,6 +557,7 @@ class HealthAnalyzer:
         repo_commit_counts: dict[str, int] | None = None,
         repo_function_mod_p80: int | None = None,
         repo_dependents_p80: int | None = None,
+        repo_active_contributors_90d: int | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData]]:
         file_path = pf.file_info.path
 
@@ -591,6 +615,7 @@ class HealthAnalyzer:
             repo_commit_counts=repo_commit_counts or {},
             blame_index=blame_index,
             repo_function_mod_p80=repo_function_mod_p80,
+            repo_active_contributors_90d=repo_active_contributors_90d,
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)

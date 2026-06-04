@@ -86,6 +86,23 @@ class FileContext:
     # blame is unavailable or no functions exist. ``function_hotspot``
     # uses this as the churn threshold for its top-quintile gate.
     repo_function_mod_p80: int | None = None
+    # Distinct non-bot contributors active in the repo's trailing 90-day
+    # window, computed once by the engine from ``top_authors_json``
+    # timestamps. ``None`` = unknown (git skipped, or the index predates
+    # per-author timestamps) — ownership biomarkers must treat ``None``
+    # as "no team-size signal" and keep their historical behaviour. On
+    # small teams (≤ SMALL_TEAM_MAX_CONTRIBUTORS) concentration-only
+    # ownership findings are downgraded to informational severity unless
+    # corroborated (issue #361).
+    repo_active_contributors_90d: int | None = None
+
+
+# A repo whose trailing-90-day window has at most this many active human
+# contributors is a "small team": concentrated ownership there is the normal
+# operating model, not a silo warning. Used by ``ownership_risk`` /
+# ``knowledge_loss`` (and the server's risk classifier) to cap severity of
+# concentration-only findings at LOW unless corroborated by a hotspot signal.
+SMALL_TEAM_MAX_CONTRIBUTORS: int = 3
 
 
 @dataclass

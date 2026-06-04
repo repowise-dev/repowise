@@ -143,7 +143,17 @@ async def recompute_git_percentiles(
     change_entropy ascending — zero-entropy files tie at the minimum (0.0), so
     they stay below the biomarker's ≥0.80 gate. Works on both SQLite (3.25+) and
     PostgreSQL.
+
+    Hotspot classification mirrors ``enrich.meets_hotspot_floors`` (issue #361):
+    the repo-relative top-quartile gate AND the absolute activity floors —
+    keep the two paths in sync.
     """
+    from repowise.core.ingestion.git_indexer._constants import (
+        HOTSPOT_HIGH_COMMITS_90D,
+        HOTSPOT_MIN_COMMITS_90D,
+        HOTSPOT_MIN_TEMPORAL_SCORE,
+    )
+
     # First check how many rows exist so we can return the count without an
     # extra query after the UPDATE.
     count_result = await session.execute(
@@ -170,11 +180,22 @@ WITH ranked AS (
 UPDATE git_metadata
 SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
     is_hotspot = ((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id) >= 0.75
-                  AND git_metadata.commit_count_90d > 0),
+                  AND git_metadata.commit_count_90d >= :min_commits_90d
+                  AND (git_metadata.commit_count_90d >= :high_commits_90d
+                       OR COALESCE(git_metadata.temporal_hotspot_score, 0.0)
+                          >= :min_temporal_score)),
     change_entropy_pct = (SELECT erank FROM ranked WHERE ranked.id = git_metadata.id)
 WHERE repository_id = :repo_id;
 """
-    await session.execute(text(sql), {"repo_id": repository_id})
+    await session.execute(
+        text(sql),
+        {
+            "repo_id": repository_id,
+            "min_commits_90d": HOTSPOT_MIN_COMMITS_90D,
+            "high_commits_90d": HOTSPOT_HIGH_COMMITS_90D,
+            "min_temporal_score": HOTSPOT_MIN_TEMPORAL_SCORE,
+        },
+    )
     await session.flush()
     return len(rows)
 
@@ -241,9 +262,7 @@ async def get_latest_commit_committed_at(session: AsyncSession, repository_id: s
     capturing on a ``repowise update``.
     """
     result = await session.execute(
-        select(func.max(GitCommit.committed_at)).where(
-            GitCommit.repository_id == repository_id
-        )
+        select(func.max(GitCommit.committed_at)).where(GitCommit.repository_id == repository_id)
     )
     return result.scalar_one_or_none()
 
