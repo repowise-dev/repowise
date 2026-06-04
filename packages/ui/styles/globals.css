@@ -235,22 +235,25 @@
 /* -------------------------------------------------------------------- */
 
 .dark {
-  /* Neutral charcoal base (Dark Orange UI-kit style) — no plum tint. */
-  --color-bg-root: #1a1a1a;
-  --color-bg-surface: #242424;
-  --color-bg-elevated: #2e2e2e;
-  --color-bg-overlay: #353535;
-  --color-bg-inset: #141414;
+  /* Plum-tinted charcoal base — October Sunset's own dark identity.
+     A restrained violet cast (hue ~270, low sat) differentiates the product
+     from the many neutral-charcoal + orange UIs while keeping the brand
+     orange accent popping. Verified in docs/design/contrast_check.py. */
+  --color-bg-root: #17131d;
+  --color-bg-surface: #211b29;
+  --color-bg-elevated: #2a2335;
+  --color-bg-overlay: #322a3e;
+  --color-bg-inset: #110d17;
 
-  --color-border-default: rgba(255, 255, 255, 0.08);
-  --color-border-hover: rgba(255, 255, 255, 0.15);
+  --color-border-default: rgba(213, 197, 232, 0.1);
+  --color-border-hover: rgba(213, 197, 232, 0.18);
   --color-border-active: rgba(245, 149, 32, 0.55);
 
-  --color-text-primary: #ededed;
-  --color-text-secondary: #a3a3a3;
-  --color-text-tertiary: #757575;
-  --color-text-inverse: #1a1a1a;
-  --color-text-on-accent: #1a1a1a;
+  --color-text-primary: #eeeaf4;
+  --color-text-secondary: #a79db3;
+  --color-text-tertiary: #786f84;
+  --color-text-inverse: #17131d;
+  --color-text-on-accent: #17131d;
 
   --color-accent-primary: #f59520;
   --color-accent-fill: #f59520;
@@ -268,26 +271,26 @@
   --color-error: #e06a5a;
   --color-info: #a98fc4;
 
-  --color-node-undocumented: #6b6b6b;
-  --viz-node-stroke: rgba(255, 255, 255, 0.22);
+  --color-node-undocumented: #6f6678;
+  --viz-node-stroke: rgba(222, 210, 235, 0.22);
 
   /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
      flip on their own; only the explicit rgbas need a dark override). */
-  --color-canvas-dot: rgba(255, 255, 255, 0.06);
-  --color-bg-glass: rgba(36, 36, 36, 0.72);
+  --color-canvas-dot: rgba(222, 210, 235, 0.06);
+  --color-bg-glass: rgba(33, 27, 41, 0.72);
 
   /* Edge hue that isn't a pure var() derivation gets a dark-legible tweak */
   --color-edge-inherits: #a98fc4; /* plum-300 reads better on dark */
 
   /* Deep shadows with a neutral inset hairline for premium depth */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(222, 210, 235, 0.05);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(222, 210, 235, 0.06);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(222, 210, 235, 0.07);
   --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
 
-  /* Dark soft wash — neutral charcoal with a faint warm lift at the end */
-  --gradient-warm-wash: linear-gradient(160deg, #1e1e1e 0%, #262626 55%, #2e2823 100%);
+  /* Dark soft wash — plum charcoal with a faint warm lift at the end */
+  --gradient-warm-wash: linear-gradient(160deg, #1b1622 0%, #241d2e 55%, #2e2629 100%);
 }
 
 /* -------------------------------------------------------------------- */
@@ -339,11 +342,11 @@ body {
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(222, 210, 235, 0.12);
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(222, 210, 235, 0.22);
 }
 
 /* -------------------------------------------------------------------- */
