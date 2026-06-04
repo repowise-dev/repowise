@@ -8,6 +8,8 @@ without a tier — silently FULL for every repo.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from repowise.cli.commands.update_cmd import _rebuild_graph_and_git
@@ -30,7 +32,7 @@ def _init_repo(tmp_path):
 class _RecordingIndexer:
     """Stands in for GitIndexer; records the tier the CLI passed."""
 
-    instances: list["_RecordingIndexer"] = []
+    instances: ClassVar[list] = []
 
     def __init__(self, repo_path, **kwargs):
         self.kwargs = kwargs

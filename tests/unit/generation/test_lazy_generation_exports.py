@@ -9,6 +9,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
 import repowise.core.generation as generation
 
 
@@ -24,12 +26,8 @@ def test_dir_includes_lazy_exports():
 
 
 def test_unknown_attribute_raises():
-    try:
-        generation.does_not_exist
-    except AttributeError as exc:
-        assert "does_not_exist" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("expected AttributeError")
+    with pytest.raises(AttributeError, match="does_not_exist"):
+        _ = generation.does_not_exist
 
 
 def test_light_leaf_import_does_not_load_heavy_stack():

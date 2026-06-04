@@ -7,6 +7,7 @@ orchestrator.py) imports these phase functions. No CLI/click/rich imports.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -83,6 +84,57 @@ def _parse_one(path_and_fi_and_bytes: tuple) -> Any:
         return _WORKER_PARSER.parse_file(fi, source)
     except Exception as exc:
         return (fi.abs_path, str(exc))
+
+
+def _split_cached(
+    repo_path: Path,
+    fi_and_bytes: list[tuple],
+    progress: ProgressCallback | None,
+) -> tuple[Any, dict[int, Any], list[tuple[int, tuple, str]]]:
+    """Partition pre-read files into parse-cache hits and misses.
+
+    Returns ``(cache, hits, misses)`` where *hits* maps the position in
+    *fi_and_bytes* to a cached ParsedFile and *misses* keeps ``(position,
+    (FileInfo, bytes), content_hash)`` triples that still need a real parse
+    (the hash rides along so the post-parse ``put`` doesn't re-digest).
+    Positions let the caller reassemble results in traversal order. Hits
+    tick the parse progress bar here (misses tick when their worker
+    finishes). Cache failures degrade to all-miss.
+    """
+    from repowise.core.ingestion import compute_content_hash
+    from repowise.core.ingestion.parse_cache import ParseCache
+
+    cache = None
+    hits: dict[int, Any] = {}
+    misses: list[tuple[int, tuple, str]] = []
+    try:
+        cache = ParseCache(repo_path / ".repowise")
+        cache.load()
+    except Exception as exc:
+        logger.debug("parse_cache_init_failed", error=str(exc))
+        return None, hits, [(idx, item, "") for idx, item in enumerate(fi_and_bytes)]
+
+    for idx, (fi, source) in enumerate(fi_and_bytes):
+        content_hash = compute_content_hash(source)
+        parsed = cache.get(fi, content_hash)
+        if parsed is not None:
+            hits[idx] = parsed
+            if progress:
+                progress.on_item_done("parse")
+        else:
+            misses.append((idx, (fi, source), content_hash))
+    if hits:
+        logger.info("parse_cache_used", hits=cache.hits, misses=cache.misses)
+    return cache, hits, misses
+
+
+def _cache_parsed(cache: Any, parsed: Any, content_hash: str) -> None:
+    """Best-effort put of a freshly parsed file into the parse cache."""
+    if cache is None or not content_hash:
+        return
+    # Cache failures must never fail the parse phase.
+    with contextlib.suppress(Exception):
+        cache.put(parsed, content_hash)
 
 
 def _read_sources(
@@ -193,54 +245,69 @@ async def _run_ingestion(
     graph_builder = GraphBuilder(repo_path=repo_path, exclude_patterns=exclude_patterns)
 
     loop = asyncio.get_running_loop()
-    workers = max(1, os.cpu_count() or 4)
 
-    _use_process_pool = True
+    # Content-hash parse cache: unchanged files skip the worker pool
+    # entirely (an incremental update re-ingests the whole repo for one
+    # changed file). Misses parse exactly as before.
+    parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
+    workers = max(1, min(os.cpu_count() or 4, len(to_parse) or 1))
+
     parse_results: list[Any] = []
 
-    try:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            tasks = [loop.run_in_executor(pool, _parse_one, item) for item in fi_and_bytes]
-            # Tick the parse-progress bar as each worker finishes —
-            # ``asyncio.gather`` would otherwise hold every event back
-            # until the last file is done, which on PowerToys-scale
-            # repos looked like a hang at ``0/N`` for many minutes.
-            # Per-task done-callbacks fire on the event loop thread and
-            # preserve gather's ordered results, so the aggregation
-            # loop below still indexes ``fi_and_bytes`` correctly.
-            if progress is not None:
-                _parse_tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
-                for fut in tasks:
-                    fut.add_done_callback(_parse_tick)
-            parse_results = await asyncio.gather(*tasks, return_exceptions=True)
-    except Exception as pool_exc:
-        logger.warning(
-            "process_pool_parse_failed_falling_back",
-            error=str(pool_exc),
-        )
-        _use_process_pool = False
-        # Fallback: in-process sequential parse
-        _fallback_parser = ASTParser()
-        for i, (fi, source) in enumerate(fi_and_bytes):
-            try:
-                result = _fallback_parser.parse_file(fi, source)
-                parse_results.append(result)
-            except Exception as exc:
-                parse_results.append((fi.abs_path, str(exc)))
-            if progress:
-                progress.on_item_done("parse")
-            if i % 50 == 49:
-                await asyncio.sleep(0)
+    if to_parse:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                tasks = [
+                    loop.run_in_executor(pool, _parse_one, item) for _idx, item, _h in to_parse
+                ]
+                # Tick the parse-progress bar as each worker finishes —
+                # ``asyncio.gather`` would otherwise hold every event back
+                # until the last file is done, which on PowerToys-scale
+                # repos looked like a hang at ``0/N`` for many minutes.
+                # Per-task done-callbacks fire on the event loop thread and
+                # preserve gather's ordered results, so the aggregation
+                # loop below still indexes ``to_parse`` correctly.
+                if progress is not None:
+                    _parse_tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
+                    for fut in tasks:
+                        fut.add_done_callback(_parse_tick)
+                parse_results = await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as pool_exc:
+            logger.warning(
+                "process_pool_parse_failed_falling_back",
+                error=str(pool_exc),
+            )
+            # Fallback: in-process sequential parse
+            parse_results = []
+            _fallback_parser = ASTParser()
+            for i, (_idx, (fi, source), _h) in enumerate(to_parse):
+                try:
+                    result = _fallback_parser.parse_file(fi, source)
+                    parse_results.append(result)
+                except Exception as exc:
+                    parse_results.append((fi.abs_path, str(exc)))
+                if progress:
+                    progress.on_item_done("parse")
+                if i % 50 == 49:
+                    await asyncio.sleep(0)
+
+    # Merge fresh parses back into traversal order alongside cache hits.
+    merged: dict[int, Any] = dict(cached_hits)
+    for (idx, _item, content_hash), result in zip(to_parse, parse_results, strict=True):
+        merged[idx] = result
+        if not isinstance(result, tuple | Exception):
+            _cache_parsed(parse_cache, result, content_hash)
 
     # Aggregate results into GraphBuilder on the main loop (not thread-safe).
-    for idx, result in enumerate(parse_results):
+    for idx in range(len(fi_and_bytes)):
         fi, source = fi_and_bytes[idx]
+        result = merged.get(idx)
         if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], str):
             # Error tuple: (abs_path_str, error_str)
             logger.debug("parse_error_in_worker", path=result[0], error=result[1])
         elif isinstance(result, Exception):
             logger.debug("parse_exception_in_worker", path=fi.abs_path, error=str(result))
-        else:
+        elif result is not None:
             parsed_files.append(result)
             source_map[fi.path] = source
             graph_builder.add_file(result)
@@ -248,6 +315,8 @@ async def _run_ingestion(
         # attached above; only the fallback path ticks here (handled in
         # its own loop). No tick needed in aggregation.
 
+    if parse_cache is not None:
+        parse_cache.save()
     _phase_done(progress, "parse")
 
     # ---- tsconfig path-alias resolver (before graph build) ------------------
@@ -460,39 +529,55 @@ async def reparse_for_resume(
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
     loop = asyncio.get_running_loop()
-    workers = max(1, os.cpu_count() or 4)
+
+    parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
+    workers = max(1, min(os.cpu_count() or 4, len(to_parse) or 1))
     parse_results: list[Any] = []
 
-    try:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            tasks = [loop.run_in_executor(pool, _parse_one, item) for item in fi_and_bytes]
-            if progress is not None:
-                _tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
-                for fut in tasks:
-                    fut.add_done_callback(_tick)
-            parse_results = await asyncio.gather(*tasks, return_exceptions=True)
-    except Exception as pool_exc:
-        logger.warning("resume_reparse_pool_failed_falling_back", error=str(pool_exc))
-        _fallback_parser = ASTParser()
-        for i, (fi, source) in enumerate(fi_and_bytes):
-            try:
-                parse_results.append(_fallback_parser.parse_file(fi, source))
-            except Exception as exc:
-                parse_results.append((fi.abs_path, str(exc)))
-            if progress:
-                progress.on_item_done("parse")
-            if i % 50 == 49:
-                await asyncio.sleep(0)
+    if to_parse:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                tasks = [
+                    loop.run_in_executor(pool, _parse_one, item) for _idx, item, _h in to_parse
+                ]
+                if progress is not None:
+                    _tick = lambda _fut: progress.on_item_done("parse")  # noqa: E731
+                    for fut in tasks:
+                        fut.add_done_callback(_tick)
+                parse_results = await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as pool_exc:
+            logger.warning("resume_reparse_pool_failed_falling_back", error=str(pool_exc))
+            parse_results = []
+            _fallback_parser = ASTParser()
+            for i, (_idx, (fi, source), _h) in enumerate(to_parse):
+                try:
+                    parse_results.append(_fallback_parser.parse_file(fi, source))
+                except Exception as exc:
+                    parse_results.append((fi.abs_path, str(exc)))
+                if progress:
+                    progress.on_item_done("parse")
+                if i % 50 == 49:
+                    await asyncio.sleep(0)
 
-    for idx, result in enumerate(parse_results):
+    merged: dict[int, Any] = dict(cached_hits)
+    for (idx, _item, content_hash), result in zip(to_parse, parse_results, strict=True):
+        merged[idx] = result
+        if not isinstance(result, tuple | Exception):
+            _cache_parsed(parse_cache, result, content_hash)
+
+    for idx in range(len(fi_and_bytes)):
         fi, source = fi_and_bytes[idx]
+        result = merged.get(idx)
         if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], str):
             logger.debug("parse_error_in_worker", path=result[0], error=result[1])
         elif isinstance(result, Exception):
             logger.debug("parse_exception_in_worker", path=fi.abs_path, error=str(result))
-        else:
+        elif result is not None:
             parsed_files.append(result)
             source_map[fi.path] = source
+
+    if parse_cache is not None:
+        parse_cache.save()
     _phase_done(progress, "parse")
 
     tech_items: list = []

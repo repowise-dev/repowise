@@ -346,13 +346,25 @@ def _build_repo_graph(
     """
     from pathlib import Path as PathlibPath
 
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder, compute_content_hash
 
     traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
     file_infos = list(traverser.traverse())
     repo_structure = traverser.get_repo_structure()
 
-    parser = ASTParser()
+    # Content-hash parse cache: an incremental update re-ingests the whole
+    # repo, but only the changed files actually need a tree-sitter parse.
+    # Best-effort — any cache failure falls back to a full parse.
+    parse_cache = None
+    try:
+        from repowise.core.ingestion.parse_cache import ParseCache
+
+        parse_cache = ParseCache(PathlibPath(repo_path) / ".repowise")
+        parse_cache.load()
+    except Exception:
+        parse_cache = None
+
+    parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
     parsed_files: list = []
     source_map: dict[str, bytes] = {}
     graph_builder = GraphBuilder(repo_path, exclude_patterns=exclude_patterns)
@@ -361,7 +373,14 @@ def _build_repo_graph(
     for fi in file_infos:
         try:
             source = PathlibPath(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
+            content_hash = compute_content_hash(source)
+            parsed = parse_cache.get(fi, content_hash) if parse_cache is not None else None
+            if parsed is None:
+                if parser is None:
+                    parser = ASTParser()
+                parsed = parser.parse_file(fi, source)
+                if parse_cache is not None:
+                    parse_cache.put(parsed, content_hash)
         except Exception:
             skipped += 1
             continue
@@ -370,6 +389,8 @@ def _build_repo_graph(
             source_map[fi.path] = source
         graph_builder.add_file(parsed)
     graph_builder.build()
+    if parse_cache is not None:
+        parse_cache.save()
 
     if skipped:
         console.print(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
