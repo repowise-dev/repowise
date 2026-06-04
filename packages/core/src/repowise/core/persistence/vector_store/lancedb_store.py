@@ -10,6 +10,17 @@ from ._base import VectorStore
 __all__ = ["LanceDBVectorStore"]
 
 
+def _paths_in_filter(paths: list[str]) -> str:
+    """Build an SQL-injection-safe ``target_path IN (...)`` LanceDB filter.
+
+    LanceDB's ``.where()`` takes a DataFusion SQL string with no bind
+    parameters, so each path is quoted with the same quote-doubling escape
+    the single-path lookup uses.
+    """
+    quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in paths)
+    return f"target_path IN ({quoted})"
+
+
 class LanceDBVectorStore(VectorStore):
     """Vector store backed by LanceDB (embedded, local file storage).
 
@@ -249,3 +260,35 @@ class LanceDBVectorStore(VectorStore):
 
         summary = rows[0].get("content_snippet") or ""
         return {"summary": str(summary), "key_exports": []}
+
+    async def get_page_summaries_by_paths(self, paths: list[str]) -> dict[str, dict]:
+        """One ``IN``-filtered scan instead of one filtered query per path.
+
+        Mirrors the single-path semantics (first row per path wins, empty
+        summaries dropped, ``key_exports`` not stored in this schema).
+        """
+        if not paths:
+            return {}
+        await self._ensure_connected()
+        if self._table is None:
+            return {}
+
+        try:
+            rows = (
+                await self._table.query()  # type: ignore[union-attr]
+                .where(_paths_in_filter(paths))
+                .select(["target_path", "content_snippet"])
+                .to_list()
+            )
+        except Exception:
+            return {}
+
+        out: dict[str, dict] = {}
+        for r in rows:
+            tp = str(r.get("target_path") or "")
+            if not tp or tp in out:
+                continue
+            summary = r.get("content_snippet") or ""
+            if summary:
+                out[tp] = {"summary": str(summary), "key_exports": []}
+        return out

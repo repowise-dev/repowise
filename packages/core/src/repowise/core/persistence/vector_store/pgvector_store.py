@@ -20,6 +20,23 @@ def _encode(vector: list[float]) -> str:
     return "[" + ",".join(str(v) for v in vector) + "]"
 
 
+def _summary_payload(content: object, metadata: object) -> dict:
+    """Build the ``{'summary', 'key_exports'}`` payload from a wiki_pages row."""
+    key_exports: list[str] = []
+    if metadata and isinstance(metadata, dict):
+        key_exports = list(metadata.get("exports", []))
+    elif metadata and isinstance(metadata, str):
+        import json
+
+        try:
+            meta = json.loads(metadata)
+            key_exports = list(meta.get("exports", []))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    return {"summary": str(content or "")[:500], "key_exports": key_exports}
+
+
 class PgVectorStore(VectorStore):
     """Vector store that writes embeddings to the ``wiki_pages.embedding`` column.
 
@@ -71,8 +88,9 @@ class PgVectorStore(VectorStore):
             "UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"
         )
         async with self._session_factory() as session:
-            for p in params:
-                await session.execute(stmt, p)
+            # executemany: one driver round-trip batch instead of one UPDATE
+            # round-trip per row.
+            await session.execute(stmt, params)
             await session.commit()
 
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
@@ -198,17 +216,36 @@ class PgVectorStore(VectorStore):
         if row is None:
             return None
 
-        content = str(row[0] or "")[:500]
-        key_exports: list[str] = []
-        if row[1] and isinstance(row[1], dict):
-            key_exports = list(row[1].get("exports", []))
-        elif row[1] and isinstance(row[1], str):
-            import json
+        return _summary_payload(row[0], row[1])
 
-            try:
-                meta = json.loads(row[1])
-                key_exports = list(meta.get("exports", []))
-            except (json.JSONDecodeError, AttributeError):
-                pass
+    async def get_page_summaries_by_paths(self, paths: list[str]) -> dict[str, dict]:
+        """One ``IN``-filtered SELECT instead of one query per path.
 
-        return {"summary": content, "key_exports": key_exports}
+        Like the single-path variant (``LIMIT 1`` with no ``ORDER BY``), when
+        several pages share a ``target_path`` an arbitrary one wins — here the
+        first row returned per path.
+        """
+        if not paths:
+            return {}
+
+        from sqlalchemy import bindparam
+        from sqlalchemy.sql import text as sa_text
+
+        stmt = sa_text(
+            "SELECT target_path, content, metadata FROM wiki_pages "
+            "WHERE target_path IN :paths"
+        ).bindparams(bindparam("paths", expanding=True))
+
+        async with self._session_factory() as session:
+            rows = await session.execute(stmt, {"paths": list(paths)})
+            raw = rows.fetchall()
+
+        out: dict[str, dict] = {}
+        for r in raw:
+            tp = str(r[0])
+            if tp in out:
+                continue
+            payload = _summary_payload(r[1], r[2])
+            if payload.get("summary"):
+                out[tp] = payload
+        return out
