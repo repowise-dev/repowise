@@ -60,22 +60,18 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
 
 
 def extract_heritage(
-    tree: object,
-    query: object,
+    matches: list[dict],
     config: object,
     file_info: object,
     src: str,
-    *,
-    run_query: Callable,
 ) -> list[HeritageRelation]:
     """Extract inheritance/implementation relationships from class definitions.
 
-    Walks the same @symbol.def captures used by _extract_symbols, extracting
-    superclass/interface/trait information from the definition AST nodes.
+    Walks the same @symbol.def captures used by _extract_symbols (the parser
+    executes the compiled query once per file and shares the capture dicts
+    across all extraction passes), extracting superclass/interface/trait
+    information from the definition AST nodes.
     """
-    if query is None:
-        return []
-
     lang = file_info.language  # type: ignore[attr-defined]
     heritage_types = heritage_node_types_for(lang)
     if not heritage_types:
@@ -88,7 +84,7 @@ def extract_heritage(
     relations: list[HeritageRelation] = []
     seen: set[tuple[int, str]] = set()
 
-    for capture_dict in run_query(query, tree.root_node):  # type: ignore[attr-defined]
+    for capture_dict in matches:
         def_nodes = capture_dict.get("symbol.def", [])
         name_nodes = capture_dict.get("symbol.name", [])
 

@@ -257,7 +257,13 @@ class ASTParser:
         parse_errors = _collect_error_nodes(root)
         query = self._get_query(lang, language, grammar_tag)
 
-        symbols = self._extract_symbols(tree, query, config, file_info, src)
+        # Execute the compiled query ONCE per file. The five extraction
+        # passes below all consume the same capture dicts read-only;
+        # re-running ``cursor.matches()`` per pass multiplied the most
+        # expensive part of parsing by five.
+        matches = _run_query(query, root) if query is not None else []
+
+        symbols = self._extract_symbols(matches, config, file_info, src)
         # Per-language synthetic-symbol pass — recognises source-generator
         # attributes (e.g. CommunityToolkit.Mvvm) and adds the symbols the
         # generator would emit at compile time. No-op for languages
@@ -266,12 +272,12 @@ class ASTParser:
         if synthetic:
             existing_ids = {s.id for s in symbols}
             symbols.extend(s for s in synthetic if s.id not in existing_ids)
-        imports = self._extract_imports(tree, query, config, file_info, src)
-        calls = self._extract_calls(tree, query, config, file_info, src, symbols)
-        heritage = extract_heritage(tree, query, config, file_info, src, run_query=_run_query)
+        imports = self._extract_imports(matches, config, file_info, src)
+        calls = self._extract_calls(matches, config, file_info, src, symbols)
+        heritage = extract_heritage(matches, config, file_info, src)
         exports = self._derive_exports(symbols, config, src)
         docstring = extract_module_docstring(root, src, lang)
-        type_refs = self._extract_type_refs(tree, query, src, lang)
+        type_refs = self._extract_type_refs(matches, src, lang)
 
         if len(symbols) > _SYMBOL_COUNT_WARN_THRESHOLD:
             log.warning(
@@ -310,19 +316,15 @@ class ASTParser:
 
     def _extract_symbols(
         self,
-        tree: object,
-        query: object,
+        matches: list[dict],
         config: LanguageConfig,
         file_info: FileInfo,
         src: str,
     ) -> list[Symbol]:
-        if query is None:
-            return []
-
         symbols: list[Symbol] = []
         seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
 
-        for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+        for capture_dict in matches:
             def_nodes = capture_dict.get("symbol.def", [])
             name_nodes = capture_dict.get("symbol.name", [])
             params_nodes = capture_dict.get("symbol.params", [])
@@ -502,19 +504,15 @@ class ASTParser:
 
     def _extract_imports(
         self,
-        tree: object,
-        query: object,
+        matches: list[dict],
         config: LanguageConfig,
         file_info: FileInfo,
         src: str,
     ) -> list[Import]:
-        if query is None:
-            return []
-
         imports: list[Import] = []
         seen_raws: set[str] = set()
 
-        for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+        for capture_dict in matches:
             stmt_nodes = capture_dict.get("import.statement", [])
             module_nodes = capture_dict.get("import.module", [])
 
@@ -588,17 +586,13 @@ class ASTParser:
 
     def _extract_calls(
         self,
-        tree: object,
-        query: object,
+        matches: list[dict],
         config: LanguageConfig,
         file_info: FileInfo,
         src: str,
         symbols: list[Symbol],
     ) -> list[CallSite]:
         """Extract function/method call sites from the AST."""
-        if query is None:
-            return []
-
         from .language_data import get_builtin_calls
 
         _call_builtins = get_builtin_calls(file_info.language)
@@ -611,7 +605,7 @@ class ASTParser:
         calls: list[CallSite] = []
         seen: set[tuple[int, str, str | None]] = set()
 
-        for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+        for capture_dict in matches:
             site_nodes = capture_dict.get("call.site", [])
             target_nodes = capture_dict.get("call.target", [])
             arg_nodes = capture_dict.get("call.arguments", [])
@@ -676,8 +670,7 @@ class ASTParser:
 
     def _extract_type_refs(
         self,
-        tree: object,
-        query: object,
+        matches: list[dict],
         src: str,
         lang: str = "",
     ) -> list[TypeReference]:
@@ -697,15 +690,12 @@ class ASTParser:
         ``field_declaration`` → ``field_type``, ``composite_literal`` →
         ``composite_literal`` (Go).
         """
-        if query is None:
-            return []
-
         head_of = TYPE_HEAD_EXTRACTORS.get(lang, _head_type_identifier)
 
         refs: list[TypeReference] = []
         seen: set[tuple[str, int]] = set()
 
-        for capture_dict in _run_query(query, tree.root_node):  # type: ignore[attr-defined]
+        for capture_dict in matches:
             type_nodes = capture_dict.get("param.type", [])
             if not type_nodes:
                 continue
