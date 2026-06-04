@@ -41,7 +41,13 @@ function ClientCodeBlock({ code, language }: { code: string; language: string })
     let cancelled = false;
     import("shiki")
       .then(({ codeToHtml }) =>
-        codeToHtml(code, { lang: language as never, theme: "vesper" }),
+        // Dual themes: tokens carry --shiki-light/--shiki-dark CSS vars and
+        // globals.css picks one per theme (see ".shiki span" rules there).
+        codeToHtml(code, {
+          lang: language as never,
+          themes: { light: "github-light", dark: "vesper" },
+          defaultColor: false,
+        }),
       )
       .then((result) => {
         if (!cancelled) setHtml(result);

@@ -429,6 +429,29 @@ body {
 }
 
 /* -------------------------------------------------------------------- */
+/* Shiki dual themes (light: github-light · dark: vesper)                */
+/* Tokens are emitted as --shiki-light/--shiki-dark CSS vars             */
+/* (defaultColor: false); pick one per theme so code stays readable on   */
+/* warm paper. Backgrounds stay token-driven via the pre wrappers.       */
+/* -------------------------------------------------------------------- */
+
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  font-style: var(--shiki-light-font-style, inherit);
+  font-weight: var(--shiki-light-font-weight, inherit);
+  text-decoration: var(--shiki-light-text-decoration, inherit);
+}
+
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+  font-style: var(--shiki-dark-font-style, inherit);
+  font-weight: var(--shiki-dark-font-weight, inherit);
+  text-decoration: var(--shiki-dark-text-decoration, inherit);
+}
+
+/* -------------------------------------------------------------------- */
 /* Tabular numbers for data tables                                       */
 /* -------------------------------------------------------------------- */
 
