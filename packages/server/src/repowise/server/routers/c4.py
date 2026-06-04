@@ -22,6 +22,7 @@ from repowise.server.schemas import (
     ArchitectureViewResponse,
     ArchLayerResponse,
     ArchNodeResponse,
+    ArchSubGroupResponse,
     ArchTourStepResponse,
     C4ComponentResponse,
     C4ContainerResponse,
@@ -222,6 +223,11 @@ def _arch_layer(layer: ArchLayer) -> ArchLayerResponse:
         file_count=layer.file_count,
         complexity_distribution=layer.complexity_distribution,
         health_score=layer.health_score,
+        sub_groups=[
+            ArchSubGroupResponse(id=sg.id, name=sg.name, node_ids=sg.node_ids)
+            for sg in layer.sub_groups
+        ],
+        display_order=layer.display_order,
     )
 
 
@@ -270,6 +276,12 @@ def _arch_tour_step(s: ArchTourStep) -> ArchTourStepResponse:
         title=s.title,
         description=s.description,
         node_ids=s.node_ids,
+        target_path=s.target_path,
+        layer_id=s.layer_id,
+        reason=s.reason,
+        depth=s.depth,
+        kind=s.kind,
+        page_type=s.page_type,
     )
 
 
@@ -287,4 +299,6 @@ def _architecture_view_response(view: ArchitectureView) -> ArchitectureViewRespo
         languages=view.languages,
         frameworks=view.frameworks,
         external_systems=[_external(e) for e in view.external_systems],
+        entry_points=view.entry_points,
+        entry_candidates=view.entry_candidates,
     )

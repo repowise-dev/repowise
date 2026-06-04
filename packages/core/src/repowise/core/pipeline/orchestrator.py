@@ -525,6 +525,34 @@ async def run_pipeline(
                     f"{len(knowledge_graph_result.layers)} layers",
                 )
         _phase_done(progress, "knowledge_graph.skeleton")
+
+        # ---- KG curation/presentation pass (flagged, default off) --------
+        # Reshapes only the exported KG (layers/tour/entry-points/summaries);
+        # never touches the AST graph, communities, or centrality. No-op when
+        # the REPOWISE_KG_CURATION flag is off, so default output is unchanged.
+        # Runs in BOTH FAST and STANDARD (it sits before the generate branch).
+        if knowledge_graph_result is not None:
+            from repowise.core.analysis.kg_curation import (
+                curate_knowledge_graph,
+                curation_enabled,
+            )
+
+            try:
+                # In generate mode the summary floor is deferred to run after
+                # the wiki-page backfill (in ``enrich_knowledge_graph``), so
+                # rich page summaries win; FAST mode floors here.
+                will_generate = generate_docs and llm_client is not None
+                knowledge_graph_result = curate_knowledge_graph(
+                    knowledge_graph_result,
+                    parsed_files=parsed_files,
+                    graph_builder=graph_builder,
+                    repo_structure=repo_structure,
+                    community_info=graph_builder.community_info(),
+                    enabled=curation_enabled(),
+                    defer_summary_floor=will_generate,
+                )
+            except (ValueError, KeyError, RuntimeError) as cur_err:
+                logger.error("kg_curation_failed", error=str(cur_err), exc_info=True)
     except (ValueError, KeyError, OSError, RuntimeError) as kg_err:
         logger.error("kg_skeleton_building_failed", error=str(kg_err), exc_info=True)
 

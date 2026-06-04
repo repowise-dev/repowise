@@ -58,13 +58,34 @@ async def enrich_knowledge_graph(
         reasoning=reasoning,
     )
 
-    tour = await _generate_tour(
-        enriched_layers, llm_client, graph_builder, repo_structure, kg_skeleton,
-        reasoning=reasoning,
-    )
+    # When curation is enabled it has already written the canonical,
+    # layer-aware tour (deterministic, one per layer top→bottom). The LLM must
+    # not reselect or reorder it — keep the curated tour as-is (prose narration
+    # can be layered on separately). Otherwise fall back to LLM tour generation.
+    from repowise.core.analysis.kg_curation import curation_enabled
+
+    if curation_enabled() and kg_skeleton.tour:
+        tour = kg_skeleton.tour
+    else:
+        tour = await _generate_tour(
+            enriched_layers, llm_client, graph_builder, repo_structure, kg_skeleton,
+            reasoning=reasoning,
+        )
 
     if generated_pages:
         _backfill_summaries(kg_skeleton, generated_pages)
+
+    # Deterministic summary floor, applied *after* the page backfill so rich
+    # page summaries always win and only never-paged files fall back. Gated by
+    # the curation flag (the seam already floored FAST-mode output; this covers
+    # the generate-mode path where the seam deferred to let backfill run first).
+    if curation_enabled():
+        from repowise.core.analysis.kg_curation import apply_summary_floor
+
+        try:
+            apply_summary_floor(kg_skeleton)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("kg_summary_floor_failed", error=str(exc))
 
     kg_skeleton.layers = enriched_layers
     kg_skeleton.tour = tour
@@ -328,10 +349,15 @@ def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
             page_summaries[target] = summary
 
     for node in kg_result.nodes:
-        if node["type"] in ("file", "config", "service", "document"):
-            path = node.get("filePath", node["id"].removeprefix("file:"))
-            if path in page_summaries and not node.get("summary"):
-                node["summary"] = page_summaries[path]
+        # Any file-level node (any presentation type — file/config/service/
+        # pipeline/schema/document). Only fill empties: a page summary is the
+        # richest source, and the deterministic curation floor is applied
+        # *after* this backfill so it never blocks a real page summary.
+        if not str(node.get("id", "")).startswith("file:"):
+            continue
+        path = node.get("filePath", node["id"].removeprefix("file:"))
+        if path in page_summaries and not node.get("summary"):
+            node["summary"] = page_summaries[path]
 
 
 # ---------------------------------------------------------------------------

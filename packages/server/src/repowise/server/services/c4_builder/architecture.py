@@ -16,9 +16,14 @@ from repowise.core.persistence import (
     GraphNode,
 )
 from repowise.core.persistence.crud import (
+    file_node_meta_from_kg_nodes,
     get_kg_layers,
+    get_kg_node_meta,
+    get_kg_project_meta,
     get_kg_tour_steps,
     upsert_kg_layers,
+    upsert_kg_node_meta,
+    upsert_kg_project_meta,
     upsert_kg_tour_steps,
 )
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata, Page
@@ -28,6 +33,7 @@ from .models import (
     ArchitectureView,
     ArchLayer,
     ArchNode,
+    ArchSubGroup,
     ArchTourStep,
     ExternalSystemView,
 )
@@ -131,11 +137,29 @@ def _load_knowledge_graph(path: str) -> dict | None:
         return json.load(f)
 
 
+def _sub_groups_from_raw(raw_sub_groups: list[dict] | None, node_ids: set[str]) -> list[dict]:
+    """Map curated subGroups to plain dicts, dropping ids absent from the graph."""
+    groups: list[dict] = []
+    for sg in raw_sub_groups or []:
+        mapped = [
+            nid.removeprefix("file:")
+            for nid in sg.get("nodeIds", sg.get("node_ids", []))
+        ]
+        matched = [nid for nid in mapped if nid in node_ids]
+        if matched:
+            groups.append({
+                "id": sg.get("id", ""),
+                "name": sg.get("name", ""),
+                "node_ids": matched,
+            })
+    return groups
+
+
 def _layers_from_knowledge_graph(
     kg: dict, node_ids: set[str],
 ) -> list[dict]:
     layers = []
-    for layer in kg.get("layers", []):
+    for i, layer in enumerate(kg.get("layers", [])):
         raw_ids = layer.get("nodeIds", [])
         mapped = [nid.removeprefix("file:") for nid in raw_ids]
         matched = [nid for nid in mapped if nid in node_ids]
@@ -144,6 +168,8 @@ def _layers_from_knowledge_graph(
             "name": layer.get("name", ""),
             "description": layer.get("description", ""),
             "node_ids": matched,
+            "display_order": layer.get("display_order", i),
+            "sub_groups": _sub_groups_from_raw(layer.get("subGroups"), node_ids),
         })
     return layers
 
@@ -195,12 +221,22 @@ def _tour_from_knowledge_graph(kg: dict) -> list[ArchTourStep]:
     steps = []
     for entry in kg.get("tour", []):
         node_ids = [nid.removeprefix("file:") for nid in entry.get("nodeIds", [])]
+        target_path = entry.get("target_path")
+        if not node_ids and target_path:
+            # Curated steps address one file by path, not a nodeIds list.
+            node_ids = [target_path]
         steps.append(
             ArchTourStep(
                 order=entry.get("order", 0),
                 title=entry.get("title", ""),
                 description=entry.get("description", ""),
                 node_ids=node_ids,
+                target_path=target_path,
+                layer_id=entry.get("layer_id"),
+                reason=entry.get("reason", ""),
+                depth=entry.get("depth"),
+                kind=entry.get("kind", ""),
+                page_type=entry.get("page_type"),
             )
         )
     return steps
@@ -208,15 +244,19 @@ def _tour_from_knowledge_graph(kg: dict) -> list[ArchTourStep]:
 
 def _layers_from_db(db_layers: list, node_ids: set[str]) -> list[dict]:
     layers = []
-    for row in db_layers:
+    for i, row in enumerate(db_layers):
         raw_ids = json.loads(row.node_ids_json) if row.node_ids_json else []
         mapped = [nid.removeprefix("file:") for nid in raw_ids]
         matched = [nid for nid in mapped if nid in node_ids]
+        raw_sub_groups_json = getattr(row, "sub_groups_json", None)
+        raw_sub_groups = json.loads(raw_sub_groups_json) if raw_sub_groups_json else []
         layers.append({
             "id": row.layer_id,
             "name": row.name,
             "description": row.description or "",
             "node_ids": matched,
+            "display_order": getattr(row, "display_order", i),
+            "sub_groups": _sub_groups_from_raw(raw_sub_groups, node_ids),
         })
     return layers
 
@@ -226,12 +266,21 @@ def _tour_from_db(db_steps: list) -> list[ArchTourStep]:
     for row in db_steps:
         node_ids = json.loads(row.node_ids_json) if row.node_ids_json else []
         node_ids = [nid.removeprefix("file:") for nid in node_ids]
+        target_path = getattr(row, "target_path", None)
+        if not node_ids and target_path:
+            node_ids = [target_path]
         steps.append(
             ArchTourStep(
                 order=row.step_order,
                 title=row.title,
                 description=row.description or "",
                 node_ids=node_ids,
+                target_path=target_path,
+                layer_id=getattr(row, "layer_id", None),
+                reason=getattr(row, "reason", "") or "",
+                depth=getattr(row, "depth", None),
+                kind=getattr(row, "kind", "") or "",
+                page_type=getattr(row, "page_type", None),
             )
         )
     return steps
@@ -246,6 +295,17 @@ async def _migrate_kg_file_to_db(
     tour = kg.get("tour", [])
     if tour:
         await upsert_kg_tour_steps(session, repo_id, tour)
+    project = kg.get("project") or {}
+    if project.get("entry_points"):
+        await upsert_kg_project_meta(
+            session,
+            repo_id,
+            entry_points=project["entry_points"],
+            entry_candidates=project.get("entry_candidates", []),
+        )
+    node_meta = file_node_meta_from_kg_nodes(kg.get("nodes", []))
+    if node_meta:
+        await upsert_kg_node_meta(session, repo_id, node_meta)
 
 
 async def build_architecture_view(
@@ -362,33 +422,45 @@ async def build_architecture_view(
         else:
             raw_layers = _layers_from_directories(file_nodes)
 
+    # -- Curated node meta (type/summary/tags) — file if just loaded, else DB --
+    # node_id -> (node_type, summary, tags)
+    curated_meta: dict[str, tuple[str, str, list[str]]] = {}
+    if kg:
+        for meta in file_node_meta_from_kg_nodes(kg.get("nodes", [])):
+            curated_meta[meta["node_id"]] = (meta["node_type"], meta["summary"], meta["tags"])
+    else:
+        for row in await get_kg_node_meta(session, repo_id):
+            row_tags = json.loads(row.tags_json) if row.tags_json else []
+            curated_meta[row.node_id] = (row.node_type, row.summary, row_tags)
+
     # -- Build ArchNodes --
     arch_nodes: list[ArchNode] = []
     for i, n in enumerate(all_nodes):
         gm = git_by_path.get(n.node_id) or git_by_path.get(n.file_path or "")
         page_summary = _find_page_summary(n.node_id)
+        curated_type, curated_summary, curated_tags = curated_meta.get(n.node_id, ("", "", []))
 
         if n.node_type == "file":
             name = n.node_id.rsplit("/", 1)[-1]
             file_path = n.node_id
             line_range = None
-            summary = page_summary or f"Handles {_top_dir(n.node_id)} logic"
+            summary = curated_summary or page_summary or f"Handles {_top_dir(n.node_id)} logic"
         else:
             name = n.name or n.node_id.rsplit("::", 1)[-1]
             file_path = n.file_path
             line_range = (n.start_line, n.end_line) if n.start_line and n.end_line else None
-            summary = page_summary or ""
+            summary = curated_summary or page_summary or ""
 
         arch_nodes.append(
             ArchNode(
                 id=n.node_id,
-                node_type=n.node_type,
+                node_type=curated_type or n.node_type,
                 name=name,
                 file_path=file_path,
                 line_range=line_range,
                 summary=summary,
                 complexity=_classify_complexity(n.symbol_count, (n.end_line or 0) - (n.start_line or 0)),
-                tags=_tags_for(n.node_id, n.node_type, n.language),
+                tags=curated_tags or _tags_for(n.node_id, n.node_type, n.language),
                 language=n.language or None,
                 pagerank=n.pagerank,
                 pagerank_percentile=round(pr_pcts.get(i, 0.0), 1),
@@ -433,10 +505,25 @@ async def build_architecture_view(
     elif kg:
         tour = _tour_from_knowledge_graph(kg)
 
+    # -- Curated entry points (file if just loaded, else DB; empty otherwise) --
+    entry_points: list[str] = []
+    entry_candidates: list[str] = []
+    if kg:
+        project = kg.get("project") or {}
+        entry_points = list(project.get("entry_points", []))
+        entry_candidates = list(project.get("entry_candidates", []))
+    else:
+        project_meta = await get_kg_project_meta(session, repo_id)
+        if project_meta:
+            entry_points = json.loads(project_meta.entry_points_json or "[]")
+            entry_candidates = json.loads(project_meta.entry_candidates_json or "[]")
+    entry_points = [p for p in entry_points if p in node_id_set]
+    entry_candidates = [p for p in entry_candidates if p in node_id_set]
+
     # -- Finalize layers with complexity distribution --
     node_complexity: dict[str, str] = {an.id: an.complexity for an in arch_nodes}
     arch_layers: list[ArchLayer] = []
-    for rl in raw_layers:
+    for idx, rl in enumerate(raw_layers):
         dist: dict[str, int] = {"simple": 0, "moderate": 0, "complex": 0}
         for nid in rl["node_ids"]:
             c = node_complexity.get(nid, "simple")
@@ -450,6 +537,11 @@ async def build_architecture_view(
                 file_count=len(rl["node_ids"]),
                 complexity_distribution=dist,
                 health_score=None,
+                sub_groups=[
+                    ArchSubGroup(id=sg["id"], name=sg["name"], node_ids=sg["node_ids"])
+                    for sg in rl.get("sub_groups", [])
+                ],
+                display_order=rl.get("display_order", idx),
             )
         )
 
@@ -474,4 +566,6 @@ async def build_architecture_view(
         languages=sorted(langs),
         frameworks=sorted(fw_names),
         external_systems=externals,
+        entry_points=entry_points,
+        entry_candidates=entry_candidates,
     )

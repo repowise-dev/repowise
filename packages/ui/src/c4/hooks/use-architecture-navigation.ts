@@ -22,7 +22,7 @@ export function useArchitectureNavigation(): void {
             state.closeCodeViewer();
           } else if (state.selectedNodeId !== null) {
             state.selectNode(null);
-          } else if (state.navigationLevel === "layer-detail") {
+          } else if (state.navigationLevel !== "overview") {
             state.drillOut();
           }
           break;

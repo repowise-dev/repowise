@@ -32,6 +32,7 @@ from pathlib import PurePosixPath
 # ---------------------------------------------------------------------------
 
 _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("CLI", frozenset({"cli", "commands", "cmd", "cli_commands"})),
     ("API", frozenset({"routes", "api", "controllers", "endpoints", "handlers", "routers"})),
     ("Service", frozenset({"services", "core", "lib", "domain", "logic", "usecases"})),
     ("Data", frozenset({"models", "db", "data", "persistence", "repository", "repositories", "store", "stores", "entities"})),
@@ -52,15 +53,16 @@ DEFAULT_LAYER = "Application"
 # (foundational): top imports middle imports bottom.
 _CANONICAL_RANK: dict[str, int] = {
     "UI": 0,
-    "API": 1,
-    "Middleware": 2,
-    "Service": 3,
-    DEFAULT_LAYER: 4,
-    "Data": 5,
-    "Types": 6,
-    "Config": 7,
-    "Utility": 8,
-    "Test": 9,
+    "CLI": 1,
+    "API": 2,
+    "Middleware": 3,
+    "Service": 4,
+    DEFAULT_LAYER: 5,
+    "Data": 6,
+    "Types": 7,
+    "Config": 8,
+    "Utility": 9,
+    "Test": 10,
 }
 
 

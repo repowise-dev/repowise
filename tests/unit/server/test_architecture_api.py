@@ -10,6 +10,10 @@ from repowise.core.persistence import (
     batch_upsert_graph_nodes,
     bulk_upsert_external_systems,
     link_graph_nodes_to_external_systems,
+    upsert_kg_layers,
+    upsert_kg_node_meta,
+    upsert_kg_project_meta,
+    upsert_kg_tour_steps,
 )
 
 
@@ -80,6 +84,93 @@ async def test_api_architecture_endpoint(client: AsyncClient, app) -> None:
     for edge in body["edges"]:
         assert edge["direction"] == "forward"
         assert edge["confidence"] > 0
+
+
+async def test_api_architecture_curated_fields(client: AsyncClient, app) -> None:
+    """Curated KG fields (sub_groups, tour, entry points, node meta) reach the
+    HTTP response — the Phase-A acceptance, DB-served path."""
+    repo_id = await _seed(client, app)
+
+    async with app.state.session_factory() as session:
+        await upsert_kg_layers(session, repo_id, [
+            {
+                "id": "layer:api",
+                "name": "API",
+                "description": "Service edge",
+                "nodeIds": ["file:src/app.py", "file:src/db.py"],
+                "display_order": 0,
+                "subGroups": [
+                    {"id": "layer:api:app", "name": "app", "nodeIds": ["file:src/app.py"]},
+                    {"id": "layer:api:db", "name": "db", "nodeIds": ["file:src/db.py"]},
+                ],
+            },
+        ])
+        await upsert_kg_tour_steps(session, repo_id, [
+            {
+                "order": 1,
+                "title": "app.py",
+                "target_path": "src/app.py",
+                "page_type": "file_page",
+                "depth": 0,
+                "kind": "code",
+                "reason": "Top of the stack.",
+                "layer_id": "layer:api",
+            },
+        ])
+        await upsert_kg_project_meta(
+            session, repo_id,
+            entry_points=["src/app.py"],
+            entry_candidates=["src/app.py", "src/db.py"],
+        )
+        await upsert_kg_node_meta(session, repo_id, [
+            {"id": "src/app.py", "type": "file",
+             "summary": "Curated app summary.", "tags": ["entry_point", "python"]},
+        ])
+        await session.commit()
+
+    resp = await client.get(f"/api/graph/{repo_id}/architecture-view")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    layer = next(la for la in body["layers"] if la["id"] == "layer:api")
+    assert layer["display_order"] == 0
+    assert layer["sub_groups"] == [
+        {"id": "layer:api:app", "name": "app", "node_ids": ["src/app.py"]},
+        {"id": "layer:api:db", "name": "db", "node_ids": ["src/db.py"]},
+    ]
+
+    step = body["tour"][0]
+    assert step["target_path"] == "src/app.py"
+    assert step["layer_id"] == "layer:api"
+    assert step["reason"] == "Top of the stack."
+    assert step["depth"] == 0
+    assert step["kind"] == "code"
+    assert step["page_type"] == "file_page"
+    assert step["node_ids"] == ["src/app.py"]
+
+    assert body["entry_points"] == ["src/app.py"]
+    assert body["entry_candidates"] == ["src/app.py", "src/db.py"]
+
+    app_node = next(n for n in body["nodes"] if n["id"] == "src/app.py")
+    assert app_node["summary"] == "Curated app summary."
+    assert app_node["tags"] == ["entry_point", "python"]
+
+
+async def test_api_architecture_uncurated_defaults(client: AsyncClient, app) -> None:
+    """Flag-off contract: uncurated repos serve the new keys as safe defaults."""
+    repo_id = await _seed(client, app)
+
+    resp = await client.get(f"/api/graph/{repo_id}/architecture-view")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["entry_points"] == []
+    assert body["entry_candidates"] == []
+    for layer in body["layers"]:
+        assert layer["sub_groups"] == []
+    for step in body["tour"]:
+        assert step["target_path"] is None
+        assert step["kind"] == ""
 
 
 async def test_api_architecture_with_symbols(client: AsyncClient, app) -> None:

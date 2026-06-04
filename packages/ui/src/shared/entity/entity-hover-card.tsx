@@ -10,6 +10,8 @@ interface EntityHoverCardProps {
   entity: EntityRef;
   meta?: EntityMeta | undefined;
   children: React.ReactNode;
+  /** Render the card open immediately (tests / previews). */
+  defaultOpen?: boolean | undefined;
 }
 
 /**
@@ -17,9 +19,9 @@ interface EntityHoverCardProps {
  * Card content is purely presentational — the caller supplies whatever
  * metadata is already in scope. Missing fields gracefully degrade.
  */
-export function EntityHoverCard({ entity, meta, children }: EntityHoverCardProps) {
+export function EntityHoverCard({ entity, meta, children, defaultOpen }: EntityHoverCardProps) {
   return (
-    <HoverCardPrimitive.Root openDelay={250} closeDelay={120}>
+    <HoverCardPrimitive.Root openDelay={250} closeDelay={120} defaultOpen={defaultOpen ?? false}>
       <HoverCardPrimitive.Trigger asChild>{children}</HoverCardPrimitive.Trigger>
       <HoverCardPrimitive.Portal>
         <HoverCardPrimitive.Content
@@ -83,6 +85,20 @@ function FileMeta({ data }: { data?: import("./types").FileEntityMeta | undefine
   if (!data) return null;
   return (
     <div className="space-y-1">
+      {data.summary && (
+        <p className="text-[11px] leading-snug text-[var(--color-text-secondary)] line-clamp-3">
+          {data.summary}
+        </p>
+      )}
+      {data.tags && data.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 pb-1">
+          {data.tags.slice(0, 6).map((tag) => (
+            <Pill key={tag} tone="info">
+              {tag}
+            </Pill>
+          ))}
+        </div>
+      )}
       <Row label="Owner" value={data.owner ?? null} />
       <Row
         label="Churn"

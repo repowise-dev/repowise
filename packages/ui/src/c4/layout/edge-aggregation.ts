@@ -60,3 +60,24 @@ export function aggregateEdges(
   result.sort((a, b) => b.count - a.count);
   return result;
 }
+
+/** Hard budget for aggregated arrows per viewport (viewer plan P2). */
+export const MAX_VISIBLE_AGGREGATED_EDGES = 24;
+
+export interface CappedEdges {
+  visible: AggregatedEdge[];
+  /** Number of aggregated arrows dropped (the "+N weaker links" affordance). */
+  hiddenCount: number;
+}
+
+/** Keep only the heaviest aggregated arrows at the visible tier.
+ * Input is already sorted by weight (count) descending. */
+export function capAggregatedEdges(
+  edges: AggregatedEdge[],
+  max: number = MAX_VISIBLE_AGGREGATED_EDGES,
+): CappedEdges {
+  if (edges.length <= max) {
+    return { visible: edges, hiddenCount: 0 };
+  }
+  return { visible: edges.slice(0, max), hiddenCount: edges.length - max };
+}

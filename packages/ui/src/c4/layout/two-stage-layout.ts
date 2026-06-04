@@ -88,6 +88,34 @@ export function estimateContainerSize(childCount: number): { width: number; heig
   return { width, height };
 }
 
+/** Re-assign uniform card slots so reading order (top→bottom, left→right)
+ * follows the curated rank (position = meaning, viewer plan B-4).
+ *
+ * ELK's layered algorithm stacks by edge direction, which on real graphs can
+ * contradict the artifact's dependency order (and elkjs partitioning is
+ * unreliable once edges exist). Since the ranked cards are uniformly sized,
+ * permuting which card occupies which slot is safe and deterministic; edge
+ * paths follow automatically because the renderer draws from node positions.
+ * Unranked entries (portals, …) keep their slots. */
+export function assignSlotsByRank(
+  positions: Map<string, { x: number; y: number; width: number; height: number }>,
+  ranks: Map<string, number>,
+): Map<string, { x: number; y: number; width: number; height: number }> {
+  const rankedIds = [...positions.keys()].filter((id) => ranks.has(id));
+  if (rankedIds.length < 2) return positions;
+
+  const slots = rankedIds
+    .map((id) => positions.get(id)!)
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const order = [...rankedIds].sort(
+    (a, b) => ranks.get(a)! - ranks.get(b)! || a.localeCompare(b),
+  );
+
+  const out = new Map(positions);
+  order.forEach((id, i) => out.set(id, slots[i]!));
+  return out;
+}
+
 export async function computeStage1Layout(
   containers: ContainerAtom[],
   standaloneNodes: { id: string; width: number; height: number }[],
@@ -145,6 +173,45 @@ export async function computeStage1Layout(
   }
 
   return { positions, issues };
+}
+
+/** Bubble priority nodes (curated entry points) to the top-left slots of
+ * their group (viewer plan C-3). Permutes slots only among children of the
+ * same size so the layout stays overlap-free; non-priority nodes keep their
+ * relative order. */
+export function hoistPrioritySlots(
+  positions: Map<string, { x: number; y: number }>,
+  children: { id: string; width: number; height: number }[],
+  isPriority: (id: string) => boolean,
+): Map<string, { x: number; y: number }> {
+  const bySize = new Map<string, string[]>();
+  for (const child of children) {
+    if (!positions.has(child.id)) continue;
+    const key = `${child.width}x${child.height}`;
+    const group = bySize.get(key);
+    if (group) {
+      group.push(child.id);
+    } else {
+      bySize.set(key, [child.id]);
+    }
+  }
+
+  const out = new Map(positions);
+  for (const ids of bySize.values()) {
+    if (ids.length < 2 || !ids.some(isPriority)) continue;
+    const slotOrder = [...ids].sort((a, b) => {
+      const pa = positions.get(a)!;
+      const pb = positions.get(b)!;
+      return pa.y - pb.y || pa.x - pb.x;
+    });
+    const slots = slotOrder.map((id) => positions.get(id)!);
+    const order = [
+      ...slotOrder.filter(isPriority),
+      ...slotOrder.filter((id) => !isPriority(id)),
+    ];
+    order.forEach((id, i) => out.set(id, slots[i]!));
+  }
+  return out;
 }
 
 export async function computeStage2Layout(

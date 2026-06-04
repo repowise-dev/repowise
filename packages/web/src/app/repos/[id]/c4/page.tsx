@@ -22,6 +22,9 @@ import {
   archNodeTypes,
   archEdgeTypes,
   SearchBar,
+  ArchBreadcrumb,
+  ProjectOverview,
+  LearnPanel,
   PersonaSelector,
   NodeTypeCategoryFilters,
   FilterPanel,
@@ -48,9 +51,9 @@ import { C4DetailPanelHost } from "@/components/c4/c4-detail-panel-host";
 import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
 
 const MODE_VALUES = ["c4", "architecture"] as const;
-const VIEW_VALUES = ["overview", "detail"] as const;
+const VIEW_VALUES = ["overview", "groups", "detail"] as const;
 const PERSONA_VALUES = ["overview", "learn", "deep-dive"] as const;
-const SYNTHETIC_NODE_TYPES = new Set(["layerCluster", "archContainer", "portal"]);
+const SYNTHETIC_NODE_TYPES = new Set(["layerCluster", "subGroupCluster", "archContainer", "portal"]);
 
 function clampLevel(n: number | null): C4Level {
   return n === 1 ? 1 : n === 3 ? 3 : 2;
@@ -97,6 +100,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     parseAsStringLiteral(VIEW_VALUES).withDefault("overview"),
   );
   const [layerParam, setLayerParam] = useQueryState("layer", parseAsString);
+  const [groupParam, setGroupParam] = useQueryState("group", parseAsString);
   const [nodeParam, setNodeParam] = useQueryState("node", parseAsString);
   const [personaParam, setPersonaParam] = useQueryState(
     "persona",
@@ -106,13 +110,16 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
   const setView = useArchitectureStore((s) => s.setView);
   const navigationLevel = useArchitectureStore((s) => s.navigationLevel);
   const activeLayerId = useArchitectureStore((s) => s.activeLayerId);
+  const activeSubGroupId = useArchitectureStore((s) => s.activeSubGroupId);
   const selectedNodeId = useArchitectureStore((s) => s.selectedNodeId);
   const persona = useArchitectureStore((s) => s.persona);
   const drillIntoLayer = useArchitectureStore((s) => s.drillIntoLayer);
+  const drillIntoSubGroup = useArchitectureStore((s) => s.drillIntoSubGroup);
   const selectNode = useArchitectureStore((s) => s.selectNode);
   const setPersona = useArchitectureStore((s) => s.setPersona);
   const setReactFlowInstance = useArchitectureStore((s) => s.setReactFlowInstance);
   const pathFinderOpen = useArchitectureStore((s) => s.pathFinderOpen);
+  const tourActive = useArchitectureStore((s) => s.tourActive);
 
   useEffect(() => {
     if (view) setView(view);
@@ -129,26 +136,37 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     if (layerParam) {
       drillIntoLayer(layerParam);
     }
+    if (groupParam) {
+      drillIntoSubGroup(groupParam);
+    }
     if (nodeParam) {
       selectNode(nodeParam);
     }
-  }, [view, layerParam, nodeParam, personaParam, drillIntoLayer, selectNode, setPersona]);
+  }, [view, layerParam, groupParam, nodeParam, personaParam,
+      drillIntoLayer, drillIntoSubGroup, selectNode, setPersona]);
 
   const syncingRef = useRef(false);
   useEffect(() => {
     if (syncingRef.current) return;
     syncingRef.current = true;
-    void setViewParam(navigationLevel === "layer-detail" ? "detail" : "overview");
+    void setViewParam(
+      navigationLevel === "layer-detail"
+        ? "detail"
+        : navigationLevel === "layer-groups"
+          ? "groups"
+          : "overview",
+    );
     void setLayerParam(activeLayerId);
+    void setGroupParam(activeSubGroupId);
     void setNodeParam(selectedNodeId);
     void setPersonaParam(persona);
     syncingRef.current = false;
-  }, [navigationLevel, activeLayerId, selectedNodeId, persona,
-      setViewParam, setLayerParam, setNodeParam, setPersonaParam]);
+  }, [navigationLevel, activeLayerId, activeSubGroupId, selectedNodeId, persona,
+      setViewParam, setLayerParam, setGroupParam, setNodeParam, setPersonaParam]);
 
   useArchitectureNavigation();
 
-  const { nodes, edges, loading: layoutLoading } = useArchitectureLayout();
+  const { nodes, edges, loading: layoutLoading, hiddenEdgeCount } = useArchitectureLayout();
 
   const pendingFitRef = useRef(false);
   const prevNavRef = useRef({ navigationLevel, activeLayerId });
@@ -236,12 +254,18 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
             <NodeTypeCategoryFilters />
           </div>
         </div>
-        <div className="mt-2">
+        <div className="mt-2 flex items-center gap-4">
           <SearchBar />
+          <ArchBreadcrumb />
         </div>
       </div>
 
-      <style>{KEYFRAMES.accentPulse}{KEYFRAMES.edgeFlow}</style>
+      <style>{KEYFRAMES.accentPulse}{KEYFRAMES.edgeFlow}{`
+        /* Zoom-into-tier feel: nodes glide to their next slot (plan D). */
+        @media (prefers-reduced-motion: no-preference) {
+          .react-flow__node { transition: transform 180ms ease; }
+        }
+      `}</style>
       <div className="flex-1 min-h-0 relative">
         {error && (
           <div className="absolute inset-0 flex items-center justify-center text-red-300 text-sm z-10 pointer-events-none">
@@ -275,6 +299,35 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable maskColor="rgba(11,18,32,0.85)" />
         </ReactFlow>
+
+        {/* Orientation-first landing: story before scene (plan C-1). */}
+        {navigationLevel === "overview" && !selectedNodeId && !tourActive && (
+          <aside
+            aria-label="Project orientation"
+            className="absolute top-3 left-3 bottom-3 z-10 w-72 overflow-y-auto rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated,rgba(17,24,39,0.96))] shadow-xl"
+          >
+            <ProjectOverview />
+          </aside>
+        )}
+
+        {/* Guided tour player — the canvas follows each step (plan C-2). */}
+        {tourActive && (
+          <aside
+            aria-label="Guided tour"
+            className="absolute top-3 left-3 z-10 w-72 max-h-[calc(100%-24px)] overflow-y-auto rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated,rgba(17,24,39,0.96))] shadow-xl"
+          >
+            <LearnPanel />
+          </aside>
+        )}
+
+        {hiddenEdgeCount > 0 && (
+          <div
+            className="absolute bottom-4 left-14 z-10 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]/90 px-3 py-1 text-xs text-[var(--color-text-secondary)]"
+            title="Weakest aggregated connections are hidden to keep the view legible. Drill in to see them."
+          >
+            +{hiddenEdgeCount} weaker link{hiddenEdgeCount === 1 ? "" : "s"} hidden
+          </div>
+        )}
 
         <ArchDetailPanelHost repoId={repoId} />
 
@@ -350,12 +403,23 @@ function LegacyC4View({ repoId, repoName }: { repoId: string; repoName: string }
   return (
     <>
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
-        <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          Knowledge Graph
-        </h1>
-        <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-          System context, containers, and components — drill in to navigate.
-        </p>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
+              Knowledge Graph
+            </h1>
+            <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+              System context, containers, and components — drill in to navigate.
+            </p>
+          </div>
+          {/* Legacy mode is frozen (locked decision 4) — point at the new view. */}
+          <a
+            href="?mode=architecture"
+            className="shrink-0 rounded-full border border-[var(--color-accent-primary,#f59520)]/50 bg-[var(--color-accent-primary,#f59520)]/10 px-3 py-1 text-xs text-[var(--color-accent-primary,#f59520)] hover:bg-[var(--color-accent-primary,#f59520)]/20"
+          >
+            Try the new architecture view →
+          </a>
+        </div>
       </div>
       <div className="flex-1 min-h-0">
         <C4Diagram

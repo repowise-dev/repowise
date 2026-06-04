@@ -133,6 +133,12 @@ export interface ArchEdge {
   confidence: number;
 }
 
+export interface ArchSubGroup {
+  id: string;
+  name: string;
+  node_ids: string[];
+}
+
 export interface ArchLayer {
   id: string;
   name: string;
@@ -141,13 +147,26 @@ export interface ArchLayer {
   file_count: number;
   complexity_distribution: Record<string, number>;
   health_score: number | null;
+  /** Curated drill-down groups within the layer (empty when uncurated). */
+  sub_groups: ArchSubGroup[];
+  /** Dependency-ordered stacking position (0 = top of the stack). */
+  display_order: number;
 }
+
+export type ArchTourStepKind = "overview" | "code" | "infra" | "";
 
 export interface ArchTourStep {
   order: number;
   title: string;
   description: string;
   node_ids: string[];
+  /** Curated, layer-aware fields (null/empty for legacy LLM tours). */
+  target_path: string | null;
+  layer_id: string | null;
+  reason: string;
+  depth: number | null;
+  kind: ArchTourStepKind;
+  page_type: string | null;
 }
 
 export interface ArchitectureView {
@@ -163,13 +182,16 @@ export interface ArchitectureView {
   languages: string[];
   frameworks: string[];
   external_systems: C4ExternalSystem[];
+  /** Curated, ranked entry points (repo-relative paths; empty when uncurated). */
+  entry_points: string[];
+  entry_candidates: string[];
 }
 
 // ---------------------------------------------------------------------------
 // Architecture store types
 // ---------------------------------------------------------------------------
 
-export type NavigationLevel = "overview" | "layer-detail";
+export type NavigationLevel = "overview" | "layer-groups" | "layer-detail";
 export type Persona = "overview" | "learn" | "deep-dive";
 export type DetailLevel = "file" | "class" | "symbol";
 export type SearchMode = "fuzzy" | "semantic";

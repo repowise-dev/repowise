@@ -22,6 +22,8 @@ export const archNodeTypes: NodeTypes = {
   archFile: ArchFileNode,
   archContainer: ArchContainerNode,
   layerCluster: LayerClusterNode,
+  // Curated sub-group card — same component, "subGroup" kind via data.
+  subGroupCluster: LayerClusterNode,
   portal: PortalNode,
 };
 

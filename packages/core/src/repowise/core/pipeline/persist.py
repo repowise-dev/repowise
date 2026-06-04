@@ -371,15 +371,38 @@ async def persist_generation(result: Any, session: Any, repo_id: str) -> None:
         for page in result.generated_pages:
             await upsert_page_from_generated(session, page, repo_id)
 
-    # ---- Knowledge graph layers & tour steps --------------------------------
+    # ---- Knowledge graph layers, tour steps & curated meta ------------------
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
-        from repowise.core.persistence.crud import upsert_kg_layers, upsert_kg_tour_steps
+        from repowise.core.persistence.crud import (
+            file_node_meta_from_kg_nodes,
+            upsert_kg_layers,
+            upsert_kg_node_meta,
+            upsert_kg_project_meta,
+            upsert_kg_tour_steps,
+        )
 
         if hasattr(kg, "layers") and kg.layers:
             await upsert_kg_layers(session, repo_id, kg.layers)
         if hasattr(kg, "tour") and kg.tour:
             await upsert_kg_tour_steps(session, repo_id, kg.tour)
+
+        # Project-level curated meta (ranked entry points from the curation pass).
+        project = getattr(kg, "project", None)
+        if isinstance(project, dict) and project.get("entry_points"):
+            await upsert_kg_project_meta(
+                session,
+                repo_id,
+                entry_points=project["entry_points"],
+                entry_candidates=project.get("entry_candidates", []),
+            )
+
+        # Per-node curated meta (type/summary/tags) for file nodes, stored with
+        # the "file:" prefix stripped so the architecture view can match its
+        # node ids (plain repo-relative paths) directly.
+        file_node_meta = file_node_meta_from_kg_nodes(getattr(kg, "nodes", None) or [])
+        if file_node_meta:
+            await upsert_kg_node_meta(session, repo_id, file_node_meta)
 
 
 async def persist_pipeline_result(
