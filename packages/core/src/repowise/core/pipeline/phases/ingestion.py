@@ -242,7 +242,11 @@ async def _run_ingestion(
 
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(repo_path=repo_path, exclude_patterns=exclude_patterns)
+    graph_builder = GraphBuilder(
+        repo_path=repo_path,
+        exclude_patterns=exclude_patterns,
+        centrality_cache_dir=repo_path / ".repowise",
+    )
 
     loop = asyncio.get_running_loop()
 

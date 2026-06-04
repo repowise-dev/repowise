@@ -45,12 +45,24 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         repo_path: Path | str | None = None,
         *,
         exclude_patterns: list[str] | None = None,
+        centrality_cache_dir: Path | str | None = None,
     ) -> None:
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
         self._built = False
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
         self._tsconfig_resolver: Any | None = None  # TsconfigResolver (lazy import)
+        # Optional structure-keyed disk cache for betweenness (the most
+        # expensive metric kernel). Opt-in via *centrality_cache_dir* — the
+        # ingest paths pass ``<repo>/.repowise``; ad-hoc builders are unchanged.
+        self._centrality_cache: Any | None = None
+        if centrality_cache_dir is not None:
+            try:
+                from ._centrality_cache import CentralityCache
+
+                self._centrality_cache = CentralityCache(centrality_cache_dir)
+            except Exception:
+                self._centrality_cache = None
 
         import pathspec
 

@@ -164,17 +164,10 @@ class MetricsMixin:
         if self._betweenness_cache is not None:
             return self._betweenness_cache
         g = self.file_subgraph()
-        n = g.number_of_nodes()
-        if n == 0:
+        if g.number_of_nodes() == 0:
             self._betweenness_cache = {}
             return self._betweenness_cache
-        if n > _LARGE_REPO_THRESHOLD:
-            k = min(500, n)
-            self._betweenness_cache = nx.betweenness_centrality(g, k=k, normalized=True)
-        else:
-            from ._betweenness import betweenness_centrality_fast
-
-            self._betweenness_cache = betweenness_centrality_fast(g, normalized=True)
+        self._betweenness_cache = self._betweenness_with_disk_cache("file", g)
         return self._betweenness_cache
 
     def in_degree(self) -> dict[str, int]:
@@ -269,18 +262,51 @@ class MetricsMixin:
         if self._symbol_betweenness_cache is not None:
             return self._symbol_betweenness_cache
         sub = self.symbol_subgraph()
-        n = sub.number_of_nodes()
-        if n == 0:
+        if sub.number_of_nodes() == 0:
             self._symbol_betweenness_cache = {}
             return self._symbol_betweenness_cache
+        self._symbol_betweenness_cache = self._betweenness_with_disk_cache("symbol", sub)
+        return self._symbol_betweenness_cache
+
+    def _betweenness_with_disk_cache(self, kind: str, g: nx.DiGraph) -> dict[str, float]:
+        """Compute betweenness for *g*, consulting the structure-keyed disk cache.
+
+        With a cache attached (see ``GraphBuilder(centrality_cache_dir=...)``)
+        and an unchanged subgraph structure, the previous run's values are
+        returned without re-running Brandes — the dominant metric cost of an
+        incremental update whose change didn't move any edges. Structural
+        changes, cache errors, or no cache all fall through to the exact
+        computation used before.
+        """
+        cache = getattr(self, "_centrality_cache", None)
+        signature: str | None = None
+        if cache is not None:
+            try:
+                from ._centrality_cache import subgraph_signature
+
+                signature = subgraph_signature(g)
+                hit = cache.get(kind, signature)
+                if hit is not None:
+                    log.info("betweenness_reused_from_cache", kind=kind, nodes=len(hit))
+                    return hit
+            except Exception as exc:
+                log.debug("centrality_cache_lookup_failed", kind=kind, error=str(exc))
+                signature = None
+
+        n = g.number_of_nodes()
         if n > _LARGE_REPO_THRESHOLD:
             k = min(500, n)
-            self._symbol_betweenness_cache = nx.betweenness_centrality(sub, k=k, normalized=True)
+            values = nx.betweenness_centrality(g, k=k, normalized=True)
         else:
             from ._betweenness import betweenness_centrality_fast
 
-            self._symbol_betweenness_cache = betweenness_centrality_fast(sub, normalized=True)
-        return self._symbol_betweenness_cache
+            values = betweenness_centrality_fast(g, normalized=True)
+        if cache is not None and signature is not None:
+            try:
+                cache.put(kind, signature, values)
+            except Exception as exc:
+                log.debug("centrality_cache_store_failed", kind=kind, error=str(exc))
+        return values
 
     # ------------------------------------------------------------------
     # Execution flows + bulk priming

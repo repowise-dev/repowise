@@ -367,7 +367,11 @@ def _build_repo_graph(
     parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
     parsed_files: list = []
     source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(repo_path, exclude_patterns=exclude_patterns)
+    graph_builder = GraphBuilder(
+        repo_path,
+        exclude_patterns=exclude_patterns,
+        centrality_cache_dir=PathlibPath(repo_path) / ".repowise",
+    )
 
     skipped = 0
     for fi in file_infos:
