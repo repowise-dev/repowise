@@ -1,12 +1,17 @@
 "use client";
 
 /**
- * ThemeToggle — shared segmented System / Light / Dark control.
+ * ThemeToggle — shared segmented Light / Dark control.
  *
  * Canonical implementation consumed by both `packages/web` and the hosted
  * frontend so the toggle UX stays identical across surfaces. Relies on
  * `next-themes` (a peer dependency of consumers) for state + persistence;
  * this component just calls `setTheme()`.
+ *
+ * Deliberately two-state — no "System" option (product decision: keep the
+ * choice explicit). Consumers set `enableSystem={false}` on their provider;
+ * the mount effect below migrates any stale persisted "system" value to the
+ * dark default so pre-simplification visitors don't keep an unknown theme.
  *
  * Renders nothing theme-dependent until mounted so the control doesn't flash
  * the wrong selection during hydration (next-themes returns `undefined` on
@@ -15,11 +20,10 @@
 
 import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
-import { Monitor, Sun, Moon } from "lucide-react";
+import { Sun, Moon } from "lucide-react";
 import { cn } from "../lib/cn";
 
 const OPTIONS = [
-  { value: "system" as const, label: "System", icon: Monitor },
   { value: "light" as const, label: "Light", icon: Sun },
   { value: "dark" as const, label: "Dark", icon: Moon },
 ];
@@ -37,6 +41,12 @@ export function ThemeToggle({ compact = false, className }: ThemeToggleProps) {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Migrate a persisted "system" (or any unknown) theme from before the
+  // simplification to the explicit dark default.
+  useEffect(() => {
+    if (mounted && theme !== "light" && theme !== "dark") setTheme("dark");
+  }, [mounted, theme, setTheme]);
 
   return (
     <div

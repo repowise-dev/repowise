@@ -13,9 +13,12 @@
 
 ## §6 decisions (resolved)
 
-1. **Default theme — Dark.** Preserves current product behavior; System/Light
-   are opt-in via the toggle. (`next-themes` `defaultTheme="dark"`,
-   `enableSystem`.)
+1. **Default theme — Dark; explicit two-state toggle.** Preserves current
+   product behavior; Light is opt-in via the toggle. No "System" option —
+   product decision (2026-06-04): with the OS in dark mode System and Dark
+   looked identical and read as redundant; the choice stays explicit.
+   (`next-themes` `defaultTheme="dark"`, `enableSystem={false}`; the shared
+   ThemeToggle migrates stale persisted `"system"` values to dark.)
 2. **Light-mode accent strategy.** The brand accent stays repowise orange
    `#f59520` — it's `--color-accent-fill` (CTAs, active fills, focus ring) in
    **both** modes. Only accent *text/icons/links* darken to `#A16215`

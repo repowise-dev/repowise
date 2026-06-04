@@ -7,9 +7,11 @@
  * / `class="light"`, which the October Sunset token contract keys off
  * (`:root` = light, `.dark` = dark overrides in @repowise-dev/ui globals).
  *
- * `defaultTheme="dark"` preserves the product's historical default; System and
- * Light are opt-in via the shared ThemeToggle. `disableTransitionOnChange`
- * prevents a color-transition smear when the user flips themes.
+ * `defaultTheme="dark"` preserves the product's historical default; Light is
+ * opt-in via the shared ThemeToggle. Explicit two-state — no "System" option
+ * (product decision; the toggle migrates stale persisted "system" values).
+ * `disableTransitionOnChange` prevents a color-transition smear when the
+ * user flips themes.
  */
 
 import { ThemeProvider as NextThemesProvider } from "next-themes";
@@ -20,8 +22,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     <NextThemesProvider
       attribute="class"
       defaultTheme="dark"
-      enableSystem
-      themes={["light", "dark", "system"]}
+      enableSystem={false}
+      themes={["light", "dark"]}
       disableTransitionOnChange
     >
       {children}
