@@ -2,7 +2,7 @@ import { Landmark, Lightbulb } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { EmptyState } from "../shared/empty-state";
-import { formatRelativeTime } from "../lib/format";
+import { formatRelativeTime, stripMarkdown } from "../lib/format";
 import type { DecisionRecord } from "@repowise-dev/types/decisions";
 
 interface DecisionsTimelineProps {
@@ -76,7 +76,7 @@ export function DecisionsTimeline({ decisions, repoId, linkPrefix }: DecisionsTi
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium text-[var(--color-text-primary)] truncate group-hover:text-[var(--color-accent-primary)] transition-colors">
-                      {d.title}
+                      {stripMarkdown(d.title)}
                     </span>
                     <Badge
                       variant="outline"

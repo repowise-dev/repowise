@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { ChevronLeft, FileSearch } from "lucide-react";
 import { Badge } from "@repowise-dev/ui/ui/badge";
+import { stripMarkdown } from "@repowise-dev/ui/lib/format";
 import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
 import { ModuleLinkEditor } from "@repowise-dev/ui/decisions/module-link-editor";
 import { VerificationBadge } from "@repowise-dev/ui/decisions/verification-badge";
@@ -186,7 +187,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">
-            {decision.title}
+            {stripMarkdown(decision.title)}
           </h1>
           <Badge variant={STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>
           {decision.verification && (
