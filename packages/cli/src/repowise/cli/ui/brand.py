@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from rich.console import Console
 from rich.rule import Rule
-from rich.text import Text
 
 # ---------------------------------------------------------------------------
 # Brand / theme
@@ -18,24 +17,44 @@ WARN = "yellow"
 ERR = "bold red"
 
 # ---------------------------------------------------------------------------
-# ASCII art  —  bold half-block, compact lowercase, 2 lines
+# ASCII art  —  owl mascot + heatmap wordmark (see ui/mascot.py)
 # ---------------------------------------------------------------------------
 
-_LOGO = " █▀█ █▀▀ █▀█ █▀█ █ █ █ ▀ █▀▀ █▀▀\n █▀▄ ██▄ █▀▀ █▄█ ▀▄▀▄▀ █ ▄▄█ ██▄"
+# Plain-text compact render, kept as cheap insurance for anything that ever
+# reached for the private ``_LOGO`` name. The real banner is composed (and
+# coloured) by ``mascot.banner_text``.
+_LOGO = (
+    " ,___,  ███▄  ███ ███▄ ▄██▄ █   █ ███ ▄██▄ ███\n"
+    " (◉,◉)  █  █  █   █  █ █  █ █   █  █  █    █\n"
+    " ( ▼ )  ███▀  ██  ███▀ █  █ █ █ █  █  ▀██▄ ██\n"
+    " /)_(\\  █ ▀▄  █   █    █  █ █ █ █  █     █ █\n"
+    '  " "   █  ▀▄ ███ █    ▀██▀ ▀█▀█▀ ███ ▀██▀ ███'
+)
+
+# Full banner is 78 cols; below this width fall back to the compact variant
+# (same design at 1-char strokes, 47 cols).
+_FULL_BANNER_MIN_WIDTH = 82
 
 
 def print_banner(console: Console, repo_name: str | None = None) -> None:
-    """Print the repowise logo, tagline, and optional repo name."""
+    """Print the repowise owl banner, tagline, and optional repo name."""
     from repowise.cli import __version__
+    from repowise.cli.ui import mascot
 
+    compact = console.width < _FULL_BANNER_MIN_WIDTH
     console.print()
-    console.print(Text(_LOGO, style=BRAND_STYLE))
-    console.print(
-        f"  [dim]codebase intelligence for developers and AI[/dim]  [dim]v{__version__}[/dim]"
-    )
+    console.print(mascot.banner_text(repo_name, compact=compact))
+    console.print()
+    if compact:
+        console.print(f" [dim]codebase intelligence · v{__version__}[/dim]", highlight=False)
+    else:
+        console.print(
+            f" [dim]codebase intelligence for developers and AI  ·  v{__version__}[/dim]",
+            highlight=False,
+        )
     if repo_name:
         console.print()
-        console.print(f"  Repository: [bold]{repo_name}[/bold]")
+        console.print(f" Repository: [bold]{repo_name}[/bold]", highlight=False)
     console.print()
 
 
