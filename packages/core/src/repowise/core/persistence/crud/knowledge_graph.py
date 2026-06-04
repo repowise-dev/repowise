@@ -117,6 +117,25 @@ async def get_kg_project_meta(
     return result.scalars().first()
 
 
+def file_node_meta_from_kg_nodes(nodes: list[dict]) -> list[dict]:
+    """Extract per-file curated metadata from exported KG ``nodes``.
+
+    Keeps only ``file:``-prefixed nodes and strips the prefix so the stored
+    ``node_id`` matches the architecture view's plain repo-relative paths.
+    Shared by the pipeline persister and the on-read file → DB migration.
+    """
+    return [
+        {
+            "node_id": node["id"].removeprefix("file:"),
+            "node_type": node.get("type", "file"),
+            "summary": node.get("summary", ""),
+            "tags": node.get("tags", []),
+        }
+        for node in nodes
+        if isinstance(node.get("id"), str) and node["id"].startswith("file:")
+    ]
+
+
 async def upsert_kg_node_meta(session: AsyncSession, repo_id: str, nodes: list[dict]) -> None:
     """Replace all per-node curated KG metadata for a repo (delete + bulk insert).
 

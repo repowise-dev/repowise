@@ -375,6 +375,7 @@ async def persist_generation(result: Any, session: Any, repo_id: str) -> None:
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         from repowise.core.persistence.crud import (
+            file_node_meta_from_kg_nodes,
             upsert_kg_layers,
             upsert_kg_node_meta,
             upsert_kg_project_meta,
@@ -399,17 +400,7 @@ async def persist_generation(result: Any, session: Any, repo_id: str) -> None:
         # Per-node curated meta (type/summary/tags) for file nodes, stored with
         # the "file:" prefix stripped so the architecture view can match its
         # node ids (plain repo-relative paths) directly.
-        nodes = getattr(kg, "nodes", None) or []
-        file_node_meta = [
-            {
-                "node_id": node["id"].removeprefix("file:"),
-                "node_type": node.get("type", "file"),
-                "summary": node.get("summary", ""),
-                "tags": node.get("tags", []),
-            }
-            for node in nodes
-            if isinstance(node.get("id"), str) and node["id"].startswith("file:")
-        ]
+        file_node_meta = file_node_meta_from_kg_nodes(getattr(kg, "nodes", None) or [])
         if file_node_meta:
             await upsert_kg_node_meta(session, repo_id, file_node_meta)
 
