@@ -17,6 +17,10 @@ from repowise.cli.ui import (
     build_contextual_next_steps,
     format_elapsed,
 )
+from repowise.cli.ui.mascot import EYES_HAPPY, mini
+
+# Happy owl prefix for completion panel titles, e.g. "{^ ^}  repowise init complete".
+_HAPPY = mini(EYES_HAPPY)
 
 
 def show_analysis_summary(result: Any) -> None:
@@ -160,7 +164,9 @@ def show_completion(
         )
         console.print()
         console.print(
-            build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
+            build_completion_panel(
+                f"{_HAPPY}  repowise index complete", metrics, next_steps=next_steps
+            )
         )
         console.print()
     else:
@@ -195,7 +201,9 @@ def show_completion(
 
         console.print()
         console.print(
-            build_completion_panel("repowise init complete", metrics, next_steps=next_steps)
+            build_completion_panel(
+                f"{_HAPPY}  repowise init complete", metrics, next_steps=next_steps
+            )
         )
         console.print()
         console.print(format_setup_instructions(repo_path))
@@ -244,7 +252,9 @@ def show_workspace_completion(
 
     console.print()
     console.print(
-        build_completion_panel("repowise workspace init complete", metrics, next_steps=next_steps)
+        build_completion_panel(
+            f"{_HAPPY}  repowise workspace init complete", metrics, next_steps=next_steps
+        )
     )
     console.print()
 

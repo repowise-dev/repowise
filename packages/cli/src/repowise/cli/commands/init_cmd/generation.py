@@ -27,7 +27,7 @@ from repowise.cli.providers import (
     build_vector_store,
     flush_cost_tracker,
 )
-from repowise.cli.ui import MaybeCountColumn, RichProgressCallback
+from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER, MaybeCountColumn, RichProgressCallback
 
 # The LLM-cost confirmation threshold. A run whose estimate exceeds this asks
 # for confirmation (unless ``--yes``); below it generation proceeds silently.
@@ -187,7 +187,7 @@ def _enrich_knowledge_graph(
             result.knowledge_graph_result = _run()
         return
 
-    with console.status("  Enriching knowledge graph (layers + tour)…", spinner="dots"):
+    with console.status("  Enriching knowledge graph (layers + tour)…", spinner=OWL_SPINNER):
         try:
             result.knowledge_graph_result = _run()
             enriched = result.knowledge_graph_result
@@ -237,7 +237,7 @@ def run_repo_generation(
     provider._cost_tracker = cost_tracker
 
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         MaybeCountColumn(),

@@ -47,6 +47,8 @@ from repowise.cli.providers import resolve_embedder
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
+    BRAND_STYLE,
+    OWL_SPINNER,
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
@@ -455,7 +457,7 @@ def init_command(
     scan_info = None
     if is_interactive:
         print_banner(console, repo_name=repo_path.name)
-        with console.status("  Scanning repository…", spinner="dots"):
+        with console.status("  Scanning repository…", spinner=OWL_SPINNER):
             scan_info = quick_repo_scan(repo_path)
         print_scan_summary(console, scan_info)
         mode = interactive_mode_select(console)
@@ -616,7 +618,7 @@ def init_command(
         # Validate provider connection
         from repowise.core.providers.llm.base import ProviderError
 
-        with console.status("  Verifying provider connection…", spinner="dots"):
+        with console.status("  Verifying provider connection…", spinner=OWL_SPINNER):
             try:
                 run_async(
                     provider.generate(
@@ -645,7 +647,7 @@ def init_command(
     orchestrator_mode = OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
 
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         MaybeCountColumn(),
@@ -708,9 +710,11 @@ def init_command(
             with cancellation_scope():
                 result = run_async(_index_with_resume())
         except (PipelineCancelled, KeyboardInterrupt):
+            from repowise.cli.ui.mascot import EYES_SLEEPY, mini
+
             console.print(
-                "\n[yellow]Interrupted.[/] Indexed work so far has been saved — "
-                "run [bold]repowise init --resume[/] to continue where it stopped."
+                f"\n{mini(EYES_SLEEPY)} [yellow]Interrupted.[/] Indexed work so far has been "
+                "saved — run [bold]repowise init --resume[/] to continue where it stopped."
             )
             return
 
@@ -757,7 +761,7 @@ def init_command(
             console, 4, total_phases, "Persistence", "Saving to database and building search index"
         )
 
-    with console.status("  Persisting to database…", spinner="dots"):
+    with console.status("  Persisting to database…", spinner=OWL_SPINNER):
         run_async(persist_result(result, repo_path))
     console.print("  [green]✓[/green] Database updated")
 

@@ -45,6 +45,8 @@ from repowise.cli.providers import resolve_embedder
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
+    BRAND_STYLE,
+    OWL_SPINNER,
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
@@ -211,7 +213,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
 
     try:
         with Progress(
-            SpinnerColumn(),
+            SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             MaybeCountColumn(),

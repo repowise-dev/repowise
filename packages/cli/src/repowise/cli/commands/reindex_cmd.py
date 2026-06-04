@@ -12,6 +12,7 @@ from repowise.cli.helpers import (
     resolve_repo_path,
     run_async,
 )
+from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
 
 
 @click.command("reindex")
@@ -115,7 +116,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     failed = 0
 
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TextColumn("{task.completed}/{task.total}"),
