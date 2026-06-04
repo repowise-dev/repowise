@@ -186,9 +186,9 @@ describe("SVG export - new node types", () => {
     ];
     const svg = buildC4Svg(nodes, []);
 
-    // Headless export resolves the light-mode fallbacks of the ink tokens.
-    expect(svg).toContain("#241b2c"); // --color-diagram-node-fill (ink block)
-    expect(svg).toContain("#fbf6f1"); // --color-diagram-node-text
+    // Headless export resolves the light-mode fallbacks of the kg tokens.
+    expect(svg).toContain("#fffdf8"); // --color-kg-node-fill (paper card)
+    expect(svg).toContain("#241b2c"); // --color-kg-node-text / ink outline
     expect(svg).toContain("#826aa0"); // --color-diagram-cluster-border (ghost portal)
     expect(svg).toContain("#f4eae1"); // warm paper canvas
     expect(svg).toContain("kg-grid"); // graph-paper pattern

@@ -51,14 +51,14 @@ const FACES: Record<InkRole, { background: string; backgroundImage?: string; tex
     border: "transparent",
   },
   primary: {
-    background: "var(--color-diagram-node-fill)",
-    text: "var(--color-diagram-node-text)",
-    border: "var(--color-diagram-node-border)",
+    background: "var(--color-kg-node-fill)",
+    text: "var(--color-kg-node-text)",
+    border: "var(--color-kg-node-border)",
   },
   secondary: {
-    background: "var(--color-diagram-node-fill-2)",
-    text: "var(--color-diagram-node-text)",
-    border: "var(--color-diagram-node-border)",
+    background: "var(--color-kg-node-fill-2)",
+    text: "var(--color-kg-node-text)",
+    border: "var(--color-kg-node-border-2)",
   },
   ghost: {
     background: "transparent",

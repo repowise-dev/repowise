@@ -103,6 +103,12 @@ LIGHT = {
     "diagram-node-text": "#FBF6F1",
     "diagram-node-border": "#241B2C",
     "gradient-ember-end": "#F7A94D",
+    # KG node faces (light) — paper cards with ink outline.
+    "kg-node-fill": "#FFFDF8",
+    "kg-node-fill-2": "#F3ECE2",
+    "kg-node-text": "#241B2C",
+    "kg-node-border": "#241B2C",
+    "kg-node-border-2": "#8C7F88",
     # Community family hubs (light) — graph clustering palette.
     "community-1": "#C0641A",  "community-2": "#58436C",  "community-3": "#B23A2E",
     "community-4": "#6B7A3D",  "community-5": "#B06A86",  "community-6": "#4A5D7A",
@@ -136,6 +142,12 @@ DARK = {
     "diagram-node-text": "#EEEAF4",
     "diagram-node-border": "rgba(222,210,235,0.45)",
     "gradient-ember-end": "#F7A94D",
+    # KG node faces (dark) — alias back to the solid ink blocks.
+    "kg-node-fill": "#322A3E",
+    "kg-node-fill-2": "#261F30",
+    "kg-node-text": "#EEEAF4",
+    "kg-node-border": "rgba(222,210,235,0.45)",
+    "kg-node-border-2": "rgba(222,210,235,0.45)",
     # Community family hubs (dark) — lifted to read on the near-black canvas.
     "community-1": "#F59520",  "community-2": "#A98FC4",  "community-3": "#E06A5A",
     "community-4": "#A9BB6F",  "community-5": "#D795B1",  "community-6": "#8FA3C0",
@@ -166,6 +178,10 @@ CHECKS = [
     ("diagram-node-text", "diagram-node-fill", 4.5, "Ink node text on primary fill"),
     ("diagram-node-text", "diagram-node-fill-2", 4.5, "Ink node text on secondary fill"),
     ("diagram-node-border", "bg-canvas", 3.0, "Ink node boundary on canvas"),
+    ("kg-node-text", "kg-node-fill", 4.5, "KG card text on primary face"),
+    ("kg-node-text", "kg-node-fill-2", 4.5, "KG card text on secondary face"),
+    ("kg-node-border", "bg-canvas", 3.0, "KG card outline on canvas"),
+    ("kg-node-border-2", "bg-canvas", 3.0, "KG supporting outline on canvas"),
     ("text-on-accent", "gradient-ember-end", 4.5, "Text on ember gradient end"),
     # Community hubs are non-text node fills on the graph canvas — floor 3.0:1.
     *[

@@ -56,10 +56,10 @@ export function ArchLegend() {
           <Row swatch={<span style={{ ...SWATCH_BASE, backgroundImage: "var(--gradient-ember)" }} />}>
             Start here — entry points
           </Row>
-          <Row swatch={<span style={{ ...SWATCH_BASE, background: "var(--color-diagram-node-fill)", border: "1px solid var(--color-diagram-node-border)" }} />}>
+          <Row swatch={<span style={{ ...SWATCH_BASE, background: "var(--color-kg-node-fill)", border: "1px solid var(--color-kg-node-border)" }} />}>
             This scope
           </Row>
-          <Row swatch={<span style={{ ...SWATCH_BASE, background: "var(--color-diagram-node-fill-2)", border: "1px solid var(--color-diagram-node-border)" }} />}>
+          <Row swatch={<span style={{ ...SWATCH_BASE, background: "var(--color-kg-node-fill-2)", border: "1px solid var(--color-kg-node-border-2)" }} />}>
             Supporting — siblings, tests, barrels
           </Row>
           <Row swatch={<span style={{ ...SWATCH_BASE, background: "transparent", border: "1.5px dashed var(--color-diagram-cluster-border)" }} />}>

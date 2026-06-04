@@ -131,6 +131,16 @@
   --color-diagram-node-text: #fbf6f1; /* warm paper on ink */
   --color-diagram-node-border: #241b2c;
   --color-diagram-edge: #4a3d59; /* plum line, dashed */
+
+  /* KG canvas node faces — light mode is "blueprint drawn ON the paper":
+     warm-white cards with a crisp ink outline (user pick, 2026-06-05);
+     dark mode aliases back to the solid ink blocks. Mermaid keeps using
+     the diagram-node tokens above. */
+  --color-kg-node-fill: #fffdf8; /* warm white card */
+  --color-kg-node-fill-2: #f3ece2; /* cream-taupe supporting card */
+  --color-kg-node-text: #241b2c; /* dark plum ink text */
+  --color-kg-node-border: #241b2c; /* ink outline */
+  --color-kg-node-border-2: #8c7f88; /* faded ink outline (supporting) */
   --color-diagram-cluster-border: #826aa0; /* plum-400 */
   --color-diagram-grid: rgba(245, 149, 32, 0.10); /* faint orange grid */
 
@@ -311,6 +321,13 @@
   --color-diagram-node-fill-2: #261f30; /* recessed ink (supporting cast) */
   --color-diagram-node-text: #eeeaf4;
   --color-diagram-node-border: rgba(222, 210, 235, 0.45);
+
+  /* KG node faces — dark keeps the solid ink blocks (alias the ink tokens) */
+  --color-kg-node-fill: var(--color-diagram-node-fill);
+  --color-kg-node-fill-2: var(--color-diagram-node-fill-2);
+  --color-kg-node-text: var(--color-diagram-node-text);
+  --color-kg-node-border: var(--color-diagram-node-border);
+  --color-kg-node-border-2: var(--color-diagram-node-border);
   --color-diagram-edge: #b3a6c4; /* lavender line, dashed */
   --color-diagram-cluster-border: #a98fc4;
   --color-diagram-grid: rgba(222, 210, 235, 0.05);
