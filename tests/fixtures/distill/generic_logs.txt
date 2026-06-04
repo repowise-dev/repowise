@@ -1,0 +1,70 @@
+2026-06-05 10:12:01,118 INFO  uvicorn.access 127.0.0.1:52214 - "GET /api/graph/repo-7f3a/c4/l1 HTTP/1.1" 200
+2026-06-05 10:12:01,204 INFO  repowise.server.services.c4_builder derived containers count=9 repo=repo-7f3a
+2026-06-05 10:12:01,377 INFO  uvicorn.access 127.0.0.1:52214 - "GET /api/graph/repo-7f3a/c4/l2 HTTP/1.1" 200
+2026-06-05 10:12:02,021 INFO  uvicorn.access 127.0.0.1:52215 - "GET /api/health/repo-7f3a/kpis HTTP/1.1" 200
+2026-06-05 10:12:02,114 DEBUG repowise.core.persistence pool checkout conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:02,118 DEBUG repowise.core.persistence pool checkin conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:02,409 INFO  uvicorn.access 127.0.0.1:52216 - "GET /api/docs/repo-7f3a/pages HTTP/1.1" 200
+2026-06-05 10:12:03,001 DEBUG repowise.core.persistence pool checkout conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:03,006 DEBUG repowise.core.persistence pool checkin conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:03,118 INFO  uvicorn.access 127.0.0.1:52217 - "GET /api/graph/repo-7f3a/nodes?layer=web HTTP/1.1" 200
+2026-06-05 10:12:03,544 INFO  repowise.core.pipeline.orchestrator phase started phase=ingestion repo=repo-9b1c
+2026-06-05 10:12:03,798 DEBUG repowise.core.ingestion.parser parsed file path=packages/web/src/app/page.tsx symbols=14 took_ms=11
+2026-06-05 10:12:03,811 DEBUG repowise.core.ingestion.parser parsed file path=packages/web/src/app/layout.tsx symbols=6 took_ms=4
+2026-06-05 10:12:03,838 DEBUG repowise.core.ingestion.parser parsed file path=packages/web/src/lib/api.ts symbols=22 took_ms=9
+2026-06-05 10:12:03,861 DEBUG repowise.core.ingestion.parser parsed file path=packages/web/src/lib/format.ts symbols=8 took_ms=3
+2026-06-05 10:12:03,902 DEBUG repowise.core.ingestion.parser parsed file path=packages/server/src/api/graph.py symbols=31 took_ms=14
+2026-06-05 10:12:03,944 DEBUG repowise.core.ingestion.parser parsed file path=packages/server/src/api/docs.py symbols=18 took_ms=8
+2026-06-05 10:12:04,012 DEBUG repowise.core.ingestion.parser parsed file path=packages/core/src/pipeline/orchestrator.py symbols=42 took_ms=21
+2026-06-05 10:12:04,118 INFO  uvicorn.access 127.0.0.1:52218 - "GET /api/graph/repo-7f3a/c4/l3?container=server HTTP/1.1" 200
+2026-06-05 10:12:04,377 WARNING repowise.server.services.c4_builder container has no components container=migrations repo=repo-7f3a
+2026-06-05 10:12:04,561 DEBUG repowise.core.ingestion.parser parsed file path=packages/core/src/ingestion/parser.py symbols=38 took_ms=19
+2026-06-05 10:12:04,598 DEBUG repowise.core.ingestion.parser parsed file path=packages/core/src/ingestion/graph.py symbols=27 took_ms=12
+2026-06-05 10:12:04,633 DEBUG repowise.core.ingestion.parser parsed file path=packages/core/src/analysis/dead_code/analyzer.py symbols=33 took_ms=16
+2026-06-05 10:12:04,701 INFO  uvicorn.access 127.0.0.1:52219 - "GET /api/health/repo-7f3a/biomarkers HTTP/1.1" 200
+2026-06-05 10:12:05,118 ERROR repowise.server.api.chat SSE stream aborted repo=repo-7f3a err=ClientDisconnected attempt=1
+2026-06-05 10:12:05,204 INFO  repowise.server.api.chat reconnecting stream repo=repo-7f3a backoff_ms=250
+2026-06-05 10:12:05,455 INFO  uvicorn.access 127.0.0.1:52220 - "GET /api/chat/repo-7f3a/stream HTTP/1.1" 200
+2026-06-05 10:12:05,977 DEBUG repowise.core.persistence pool checkout conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:05,981 DEBUG repowise.core.persistence pool checkin conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:06,099 INFO  uvicorn.access 127.0.0.1:52221 - "GET /api/graph/repo-7f3a/nodes?layer=server HTTP/1.1" 200
+2026-06-05 10:12:06,381 DEBUG repowise.core.ingestion.parser parsed file path=packages/core/src/analysis/change_risk.py symbols=19 took_ms=7
+2026-06-05 10:12:06,414 DEBUG repowise.core.ingestion.parser parsed file path=packages/core/src/generation/context/token_budget.py symbols=9 took_ms=3
+2026-06-05 10:12:06,467 DEBUG repowise.core.ingestion.parser parsed file path=packages/core/src/workspace/extractors/http_extractor.py symbols=24 took_ms=13
+2026-06-05 10:12:06,521 INFO  uvicorn.access 127.0.0.1:52222 - "GET /api/docs/repo-7f3a/page/architecture HTTP/1.1" 200
+2026-06-05 10:12:07,004 ERROR repowise.core.pipeline.orchestrator phase failed phase=ingestion repo=repo-9b1c err=UnicodeDecodeError file=packages/legacy/data.bin
+2026-06-05 10:12:07,011 INFO  repowise.core.pipeline.orchestrator retrying file with latin-1 fallback file=packages/legacy/data.bin
+2026-06-05 10:12:07,118 INFO  uvicorn.access 127.0.0.1:52223 - "GET /api/graph/repo-7f3a/c4/l1 HTTP/1.1" 200
+2026-06-05 10:12:07,392 DEBUG repowise.core.ingestion.parser parsed file path=packages/cli/src/commands/update_cmd.py symbols=29 took_ms=15
+2026-06-05 10:12:07,433 DEBUG repowise.core.ingestion.parser parsed file path=packages/cli/src/commands/augment_cmd.py symbols=21 took_ms=9
+2026-06-05 10:12:07,489 DEBUG repowise.core.ingestion.parser parsed file path=packages/cli/src/augment_hook.py symbols=4 took_ms=2
+2026-06-05 10:12:07,551 INFO  uvicorn.access 127.0.0.1:52224 - "GET /api/health/repo-7f3a/trends HTTP/1.1" 200
+2026-06-05 10:12:08,118 INFO  uvicorn.access 127.0.0.1:52225 - "GET /api/graph/repo-7f3a/c4/l2 HTTP/1.1" 200
+2026-06-05 10:12:08,204 DEBUG repowise.core.persistence pool checkout conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:08,209 DEBUG repowise.core.persistence pool checkin conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:08,377 INFO  uvicorn.access 127.0.0.1:52226 - "GET /api/graph/repo-7f3a/nodes?layer=core HTTP/1.1" 200
+2026-06-05 10:12:08,561 DEBUG repowise.core.ingestion.parser parsed file path=packages/server/src/mcp_server/tool_context.py symbols=26 took_ms=11
+2026-06-05 10:12:08,633 DEBUG repowise.core.ingestion.parser parsed file path=packages/server/src/mcp_server/tool_overview.py symbols=12 took_ms=5
+2026-06-05 10:12:08,701 INFO  uvicorn.access 127.0.0.1:52227 - "GET /api/decisions/repo-7f3a HTTP/1.1" 200
+2026-06-05 10:12:09,118 WARNING repowise.server.api.graph slow query path=/api/graph/repo-7f3a/blast-radius took_ms=1840 threshold_ms=1000
+2026-06-05 10:12:09,377 INFO  uvicorn.access 127.0.0.1:52228 - "GET /api/graph/repo-7f3a/blast-radius?node=parser HTTP/1.1" 200
+2026-06-05 10:12:09,561 DEBUG repowise.core.ingestion.parser parsed file path=packages/web/src/components/chat/chat-interface.tsx symbols=35 took_ms=18
+2026-06-05 10:12:09,633 DEBUG repowise.core.ingestion.parser parsed file path=packages/web/src/components/docs/docs-viewer.tsx symbols=28 took_ms=14
+2026-06-05 10:12:09,704 INFO  uvicorn.access 127.0.0.1:52229 - "GET /api/graph/repo-7f3a/c4/l3?container=web HTTP/1.1" 200
+2026-06-05 10:12:10,118 INFO  repowise.core.pipeline.orchestrator phase completed phase=ingestion repo=repo-9b1c files=412 took_s=6.6
+2026-06-05 10:12:10,377 INFO  uvicorn.access 127.0.0.1:52230 - "GET /api/health/repo-9b1c/kpis HTTP/1.1" 200
+2026-06-05 10:12:10,561 INFO  repowise.core.pipeline.orchestrator phase started phase=graph repo=repo-9b1c
+2026-06-05 10:12:10,633 DEBUG repowise.core.persistence pool checkout conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:10,638 DEBUG repowise.core.persistence pool checkin conn=0x7f3aa1b2c4d8
+2026-06-05 10:12:11,118 INFO  uvicorn.access 127.0.0.1:52231 - "GET /api/graph/repo-9b1c/c4/l1 HTTP/1.1" 200
+2026-06-05 10:12:11,377 ERROR repowise.server.api.chat SSE stream aborted repo=repo-7f3a err=ClientDisconnected attempt=2
+2026-06-05 10:12:11,402 INFO  repowise.server.api.chat reconnecting stream repo=repo-7f3a backoff_ms=500
+2026-06-05 10:12:11,561 INFO  uvicorn.access 127.0.0.1:52232 - "GET /api/chat/repo-7f3a/stream HTTP/1.1" 200
+2026-06-05 10:12:12,118 INFO  uvicorn.access 127.0.0.1:52233 - "GET /api/graph/repo-9b1c/c4/l2 HTTP/1.1" 200
+2026-06-05 10:12:12,377 DEBUG repowise.core.ingestion.parser parsed file path=packages/core/src/distill/router.py symbols=7 took_ms=3
+2026-06-05 10:12:12,561 INFO  uvicorn.access 127.0.0.1:52234 - "GET /api/docs/repo-9b1c/pages HTTP/1.1" 200
+2026-06-05 10:12:13,118 INFO  repowise.core.pipeline.orchestrator phase completed phase=graph repo=repo-9b1c nodes=2841 edges=11427 took_s=2.4
+2026-06-05 10:12:13,377 INFO  uvicorn.access 127.0.0.1:52235 - "GET /api/health/repo-9b1c/biomarkers HTTP/1.1" 200
+2026-06-05 10:12:14,118 INFO  uvicorn.access 127.0.0.1:52236 - "GET /api/graph/repo-9b1c/nodes?layer=core HTTP/1.1" 200
+2026-06-05 10:12:14,377 INFO  uvicorn.access 127.0.0.1:52237 - "GET /api/decisions/repo-9b1c HTTP/1.1" 200
+2026-06-05 10:12:15,118 INFO  uvicorn.access 127.0.0.1:52238 - "GET /api/graph/repo-9b1c/c4/l3?container=core HTTP/1.1" 200

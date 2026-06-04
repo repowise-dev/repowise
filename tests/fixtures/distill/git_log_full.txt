@@ -1,0 +1,1357 @@
+commit 2ef3f76cfd79821109155d06be961dff54a78b60
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Fri Jun 5 01:06:10 2026 +0530
+
+    perf: cache parsing and betweenness across incremental updates (#369)
+    
+    * perf(cli): keep the generation stack out of index-only updates
+    
+    Index-only updates (the post-commit hook hot path) imported
+    ContextAssembler/PageGenerator before the index-only branch, and even
+    leaf imports like generation.report paid for the full package __init__.
+    Move the generation import + GenerationConfig construction below the
+    index-only return, and make the package exports lazy (PEP 562) so light
+    leaves no longer pull the assembler/generator/editor_files stack.
+    Guarded by a subprocess test asserting generation.report leaves the
+    heavy modules unloaded.
+    
+    * fix(cli): honor the persisted git tier on incremental updates
+    
+    update_cmd constructed GitIndexer without a tier, so every update ran
+    FULL per-file blame — even for fast-mode (ESSENTIAL) repos whose index
+    deliberately skipped it. Thread state.json's git_tier through
+    _rebuild_graph_and_git; unknown/missing values keep the historical FULL
+    behavior for legacy state files.
+    
+    * perf(ingestion): content-hash parse cache for unchanged files
+    
+    Parsing is the repo-proportional term of every ingest: repowise update
+    re-parses the whole repo when one file changed, and large-repo inits pay
+    minutes of tree-sitter time for files that haven't moved. Cache
+    ParsedFiles keyed by (path, content hash) under a parser fingerprint
+    (.scm query sources + package version), stored as pickle snapshots taken
+    at parse time — graph builds mutate ParsedFile in place, so hits
+    deserialize a fresh object graph and rebind the current FileInfo.
+    
+    Wired into the init pipeline (_run_ingestion + reparse_for_resume; hits
+    skip the worker pool entirely) and the update path's _build_repo_graph.
+    Best-effort throughout: corrupt cache, stale fingerprint, or any cache
+    error degrades silently to a full parse; the cache file is rewritten
+    with only entries touched per run so deleted files age out.
+    
+    Update-path ingest on this repo: 6.8s cold -> 2.7s warm (isolated).
+    Equivalence suite: cached run is ParsedFile-equal + graph-isomorphic to
+    a from-scratch build after edit/add/delete/rename/import-changing edit.
+    
+    * perf(graph): reuse betweenness when the subgraph structure is unchanged
+    
+    Exact Brandes betweenness was the largest remaining block of an
+    incremental update (~8s on this repo, recomputed every run even for
+    docstring-only edits). Betweenness is a pure function of the unweighted
+    subgraph structure, so cache the values on disk keyed by a signature
+    over the sorted node + edge sets: content edits that don't move
+    call/heritage/import edges reuse the previous run's exact values; any
+    structural change misses and recomputes as before.
+    
+    Opt-in via GraphBuilder(centrality_cache_dir=...) — wired from the init
+    pipeline and the update path; ad-hoc builders are unchanged. Thread-safe
+    (file + symbol kinds compute concurrently) and best-effort: corrupt or
+    missing cache falls back to a fresh computation. For >30k-node graphs
+    the sampled-betweenness path also caches, which makes its previously
+    seedless (run-to-run varying) values stable for an unchanged graph.
+    
+    Update wall on this repo: both kinds reused, ~31s -> ~19s with warm
+    parse + centrality caches.
+
+commit d0f2315c87ea43683e719af73e48b3ae31b96345
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Fri Jun 5 00:08:38 2026 +0530
+
+    perf: make indexing & incremental update scale with change size (#368)
+    
+    * perf(pipeline): read source bytes with a thread pool before parsing
+    
+    The parse phase read every file sequentially before handing bytes to the
+    ProcessPoolExecutor. Extract the loop into _read_sources() backed by a
+    ThreadPoolExecutor (I/O-bound), preserving input order, per-file error
+    handling, and parse-bar ticks. Applies to both _run_ingestion and
+    reparse_for_resume.
+    
+    * perf(graph): cache file/symbol subgraphs across metric kernels
+    
+    file_subgraph()/symbol_subgraph() were rebuilt (full filtered copy,
+    O(V+E)) on every metric call - seven kernels between them. Cache the
+    filtered copies per build behind a lock (init computes metrics
+    concurrently via asyncio.to_thread), invalidate on every structural
+    mutation (build/add_file, co-change refresh, dynamic + framework edges)
+    and on release_graph so the memory release stays effective.
+    
+    Also fold compute_percentiles' is_hotspot + entropy-default passes into
+    the rank-assignment loop (one scan instead of three; same output).
+    
+    * perf(ingestion): one pruned walk for ts_workspace file discovery
+    
+    The mdx / vitest-config / package.json finders each rglob'd the entire
+    tree - 12+ full walks with no pruning of node_modules, virtualenvs or
+    .git. Measured at ~365s of a 737s --index-only init on a medium repo
+    with a checked-in .venv; any repo with node_modules installed pays the
+    same on every init and update.
+    
+    Replace them with a single os.walk (memoized per ResolverContext) that
+    prunes vendored/derived dirs and collects all three target sets in one
+    pass: 365s -> 0.02s on the same tree. The npm-script finder now derives
+    package-relative paths against the unresolved repo_path to match the
+    shared scan's base.
+    
+    * perf(update): pre-compute graph metrics with fan-out parallelism
+    
+    The update path's persist_graph_nodes computed pagerank/betweenness/
+    symbol variants/communities lazily and sequentially. Reuse the init
+    path's compute_metrics_parallel() at the end of _rebuild_graph_and_git
+    (after the co-change edge refresh so cached subgraphs see the final
+    structure) and in the config-triggered full health rescore. Best-effort:
+    all metrics still fall back to lazy computation.
+    
+    * perf(graph): O(1) Tier-2b resolution + shared import-name index
+    
+    Tier-2b in both resolvers scanned every imported file's symbol dict per
+    unresolved call/heritage ref, and the trait-dispatch fallback scanned
+    every file in the repo per unresolved member call. Replace with:
+    
+    - lazy per-file merged {name -> symbol_id} / {(class,method) -> id} /
+      {type -> id} views of the imported files' tables, merged in sorted
+      path order with first-wins. The old set iteration order was
+      hash-randomized per process, so shadowed names resolved
+      non-deterministically; sorted order makes the winner stable.
+    - a global {(class,method) -> [(path, id)]} index in file-insertion
+      order for trait dispatch, preserving the old first-match identity
+      and the skip-own-file rule.
+    
+    The byte-identical import-name maps both resolvers built independently
+    now come from import_index.build_import_name_maps, constructed once per
+    GraphBuilder.build() and injected (constructors keep a build-it-locally
+    fallback, and the builder resets the memo whenever files change). The
+    binding.source_file back-fill side effect moves with it.
+    
+    * perf(git): reuse per-thread Repo handles; batch the update commit walk
+    
+    Isolated measurement showed the git phase cost was NOT the repo-wide
+    walks (commit index 1.1s, co-change 0.4s, prior-defects 0.4s on a 1.9k
+    file repo) but constructing a fresh gitpython.Repo per FILE in the
+    worker threads (~40ms each, ~64s serial). Reuse one Repo per worker
+    thread via a small pool (closed when the index pass completes):
+    index_repo FULL drops 101.6s -> 18.4s isolated (ESSENTIAL 77.7s -> 3.1s).
+    
+    index_changed_files (the update path) now also reads from the batched
+    repo-wide commit index instead of spawning one `git log -- <file>` per
+    changed file, making update metadata identical to a fresh full index --
+    including the agent-provenance rollup, which the per-file fallback never
+    classified (updates silently zeroed agent_commit_count/agent_authored_pct
+    for changed files).
+    
+    Equivalence-tested: update-path metadata == full-index metadata per file.
+    
+    * perf(generation): batch RAG prefetch for level-2 file pages
+    
+    Each tier-1 file page used to fire its own vector_store.search() inside
+    the LLM semaphore -- one embedder round-trip (50-200ms network) per page,
+    serialized against generation slots, plus a per-page list_page_ids()
+    store-size probe.
+    
+    Add VectorStore.search_many (default: concurrent per-query gather;
+    InMemory/LanceDB/PgVector override to embed ALL queries in one embedder
+    call -- N network round-trips become 1) and resolve RAG context for the
+    whole level in one prefetch before level 2 starts, outside the semaphore.
+    The store is static for the level (pages embed in one batch at level
+    end), so prefetched results are identical to per-page fetches. On batch
+    failure pages fall back to the unchanged per-page path.
+    
+    * perf(persistence): batch pgvector embed UPDATEs + IN-filtered summary lookups
+    
+    - PgVectorStore.embed_batch: pass the param list to one execute()
+      (executemany) instead of looping one UPDATE round-trip per row.
+    - PgVectorStore.get_page_summaries_by_paths: one parameterized
+      expanding-IN SELECT instead of the base-class per-path gather
+      (N queries -> 1 for the level-2 dependency-summary prefetch).
+    - LanceDBVectorStore.get_page_summaries_by_paths: one IN-filtered scan
+      with the same quote-doubling escape the single-path lookup uses.
+    
+    Both overrides keep the single-path semantics: first row per path wins,
+    empty summaries dropped.
+    
+    * perf(generation): index symbol nodes once for call-graph/heritage extraction
+    
+    extract_call_graph and extract_heritage each scanned EVERY graph node per
+    file, and level-2 context assembly runs them for every code file --
+    O(files x nodes) per generation run (8s+ at 2k files / 30k symbol nodes,
+    growing quadratically with repo size). Build a file_path -> symbol-nodes
+    index in one pass and share it across the level (8s -> 0.27s measured on
+    a synthetic 2k-file graph).
+    
+    Buckets preserve graph node iteration order, so extraction results are
+    byte-identical to the scan (equivalence-tested); the scan path remains
+    the default for single-file callers.
+    
+    * style: fix lint in new phase-2 files (docstring glyph, import order)
+    
+    * perf(graph): parallelize exact betweenness centrality over a process pool
+    
+    nx.betweenness_centrality is single-threaded pure-Python Brandes; on the
+    ~11k-node symbol subgraph it was 54s isolated - the single largest block
+    of both init's graph.metrics phase and every incremental update. Brandes
+    is embarrassingly parallel over source nodes, so fan the source set out
+    across a ProcessPoolExecutor (attribute-free int-relabeled edge list per
+    worker) and sum the partials. Values are identical to the sequential
+    call modulo float summation order (equivalence-tested at rel 1e-9).
+    
+    Small graphs and any pool failure fall back to the sequential NetworkX
+    path. Measured: symbol betweenness 54.0s -> 8.3s isolated.
+    
+    * perf(dead-code): compile never-flag globs into one alternation regex
+    
+    _should_never_flag ran fnmatch.fnmatch per (node x pattern) - ~540
+    patterns x 27k calls = 14.6M fnmatch invocations, each normcasing both
+    sides (29M normcase calls; LCMapStringEx dominates on Windows). Profiled
+    at 50.7s of a 51.5s dead-code analyze() on the repowise graph.
+    
+    Pre-normcase and translate each glob once, join into a single compiled
+    alternation, and match the normcased path - byte-for-byte the same
+    semantics fnmatch implements internally (equivalence-tested per glob
+    and against a probe-path corpus). Measured: dead-code pass 20.7s ->
+    3.7s isolated.
+    
+    * perf(persistence): replace per-item SELECTs in batch upserts with one keyed query
+    
+    The generic _batch_upsert issued a SELECT round-trip per item; persisting
+    13k graph nodes meant 13k SELECTs (9.3s isolated), and the same pattern
+    taxed edges (31k), symbols (11k), git metadata, commits, and function
+    blame on every init and update. The keyed variant fetches all candidate
+    rows for the repo once, matches natural keys in memory, and keeps the
+    ORM update/insert + flush semantics (within-batch duplicate keys still
+    converge to one row, equivalent to the old autoflush-visible behavior).
+    
+    All seven callers converted; the per-item loop had no remaining users
+    and is removed. Measured: persist_graph_nodes 9.3s -> 2.5s isolated.
+    
+    * perf(parser): execute the compiled tree-sitter query once per file
+    
+    parse_file ran cursor.matches() over the whole tree five times - once
+    each for symbols, imports, calls, heritage, and type refs - against the
+    same compiled query. The plan's 3.2 ambiguity resolves to the contained
+    case: one query, re-iterated; no .scm changes needed. Materialize the
+    capture list once and route it through all five extraction passes
+    (read-only consumers, verified). extract_heritage drops its tree/query/
+    run_query params for the shared match list.
+    
+    Output is identical by construction (same capture dicts in the same
+    order); the per-language fixture suites pin correctness and a new guard
+    test asserts the query executes exactly once per file. Measured:
+    sequential full-repo parse 4.7s -> 2.7s.
+    
+    * perf(health): cache duplication token streams + windows by content hash
+    
+    The duplication pass re-tokenized every file (a second tree-sitter parse
+    plus a pure-Python leaf walk) and re-rolled 1.2M window hashes on every
+    run - ~11s isolated on the repowise repo, paid in full by incremental
+    updates that changed one file. Both outputs are pure functions of the
+    file bytes given a fixed window size, so cache them per content hash in
+    .repowise/duplication_cache.pkl: unchanged files replay their cached
+    kind sequence + window tuples (WindowHash is rebuilt with the current
+    path, making hits rename-proof); changed files tokenize as before.
+    
+    The minified/token-cap/window-budget gates stay live against cached
+    lengths, the verifier now compares per-file kind lists (the only Token
+    field it ever read), and any cache error degrades to a full re-tokenize.
+    Cache equivalence, hit/miss/invalidation, and corrupt-file fallback are
+    unit-tested; wired through HealthAnalyzer for init, update, rescore, and
+    the health CLI.
+
+commit bd1f1f1d3f27d0cb47c6fe73e3876520f45e2a5f
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Thu Jun 4 20:26:41 2026 +0530
+
+    feat(git): deterministic agent-provenance layer in the git indexer (#366)
+    
+    Classify every walked commit {agent, autonomy_tier, channel, confidence}
+    from local-git attribution channels (bot/service identities, message
+    footers, co-author trailers), riding the existing commit-index walk with
+    no extra git pass (~20 us/commit). Persist per-commit columns on
+    git_commits and per-file rollups (agent_commit_count, agent_authored_pct,
+    agent_tier_counts_json) on git_metadata, with an Alembic migration.
+    
+    Patterns are precision-first (anchored to service identities, never bare
+    names; service committer over a human author is tier 2, not 1) and
+    config-extensible via an agent_provenance block in .repowise/config.yaml.
+    Surfaced in the /git-metadata file view, the wiki At-a-glance panel, and
+    the MCP get_context ownership block.
+
+commit d30c3752085cbb63921f4356f60f00f28edbabce
+Author: Swati Ahuja <swatiahuja.ahuja@gmail.com>
+Date:   Thu Jun 4 17:46:37 2026 +0530
+
+    feat(cli): owl mascot init banner with repo-seeded heatmap wordmark (#364)
+    
+    * feat(cli): owl mascot banner with repo-seeded heatmap wordmark
+    
+    New ui/mascot.py: owl art, REPOWISE block wordmark (full + compact),
+    GitHub-heatmap colouring seeded from the repo name (zlib.crc32 — stable
+    across processes), and owl spinner frames registered with rich.
+    
+    print_banner keeps its signature but now renders the owl banner,
+    width-adaptive: full design >= 82 cols, same design at 1-char strokes
+    below. Facade gains banner_text/mini/OWL_SPINNER/THINKING_FRAMES
+    (additive only).
+    
+    * feat(cli): owl spinner everywhere + completion/interrupt mascot moments
+    
+    All 10 spinner sites (4 SpinnerColumn, 6 console.status) now use
+    OWL_SPINNER — the eye-roll owl frames, falling back to "dots" if rich's
+    private spinner registry ever moves. Completion panels get a happy owl
+    {^ ^} in the title; the Ctrl-C interrupt message a sleepy {─ ─}.
+    Provider/validation errors stay sober on purpose.
+    
+    * fix(cli): review fixes — escape repo name, brand status spinners, derive width threshold
+    
+    - print_banner escapes repo_name before markup interpolation: a directory
+      name containing a closing-tag sequence (e.g. 'evil[/bold]name') crashed
+      with MarkupError; now renders literally (pre-existing, exposed by review)
+    - the 6 console.status sites pass spinner_style=BRAND_STYLE so the owl is
+      brand orange everywhere, matching the SpinnerColumn sites
+    - full/compact switch threshold now derives from mascot.banner_width()
+      (+4-col margin) instead of a hardcoded 82 in brand.py — font changes
+      can't silently desync the layout; width pinned by a new test
+    
+    * polish(cli): nitpick fixes from review
+    
+    - status spinners back to rich's default green (owl frames kept) — the
+      orange was only ever specified for the Progress columns
+    - happy-owl prefix moves into build_completion_panel so future panels
+      can't forget it; reporting.py reverts to plain titles
+    - drop _LOGO: hand-pasted duplicate of art mascot.py owns (drift risk),
+      and nothing reads it
+    - seed-parity test rewritten behaviorally: asserts rendered span colors
+      equal heat_grid(seed_for(repo)) predictions for both sizes, instead of
+      monkeypatch-spying on seed_for
+    - EYES_ERROR documented as reserved (errors stay sober by design)
+
+commit 08cf155c5b43742eca351cc870c183efb05730e4
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Thu Jun 4 17:45:14 2026 +0530
+
+    fix(generation): close never-started page coroutines on cancellation (#365)
+    
+    Ctrl+C during generation cancels the run_level gather; pages still
+    queued on the concurrency semaphore never start their inner coroutine.
+    CancelledError is a BaseException, so it bypassed the except-Exception
+    handler in guarded_named and the coroutine objects leaked, spraying one
+    "coroutine ... was never awaited" RuntimeWarning per pending page at
+    interpreter shutdown (~980 with default concurrency on a 985-page run).
+    
+    Add a BaseException handler that closes the inner coroutine before
+    re-raising. close() is a no-op on a coroutine that already ran, so the
+    in-flight page is unaffected. No behaviour change beyond silencing the
+    teardown warnings - completed pages were already persisted and --resume
+    already picked up cleanly.
+    
+    Fixes the RuntimeWarning reported in #358.
+
+commit dafde049092267cb696e64cf1704e812df95d2b0
+Author: joptimus <jlewan27@gmail.com>
+Date:   Thu Jun 4 06:57:05 2026 -0500
+
+    fix(server): honor exclude_patterns in server jobs; prune stale rows (#354)
+    
+    Server-triggered jobs (web sync/full-resync, workspace sync, webhooks,
+    scheduler) ran the shared pipeline without exclude_patterns, so excluded
+    paths kept getting re-indexed even when set in repo settings or
+    .repowise/config.yaml. execute_job() now resolves excludes from both
+    sources and passes them into run_pipeline().
+    
+    Full pipeline persistence also did not remove rows for files that
+    disappeared from the latest result, so a directory newly added to
+    exclude_patterns left stale graph/dead-code/health/git data behind.
+    persist_pipeline_result() now prunes file-scoped rows before re-upserting,
+    using parsed_files as the source of truth for graph/analysis tables and
+    git_metadata_list for git_metadata (a file can be git-tracked but unparsed).
+
+commit 61b84e29191b4a1154d35ee160b5310031a613ed
+Author: joptimus <jlewan27@gmail.com>
+Date:   Thu Jun 4 06:46:11 2026 -0500
+
+    fix(web): decode breadcrumb path labels (#359)
+
+commit b6bbe1f8856ca004bbc7214b093689fcb3e29dc7
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Thu Jun 4 16:47:55 2026 +0530
+
+    fix(health): calibrate hotspot + ownership signals for small teams and quiet repos (#361) (#363)
+    
+    Hotspot classification was purely repo-relative (top-quartile decayed churn
+    + any 90d activity), so on a quiet repo a single drive-by maintenance commit
+    was enough to flag a file as a hotspot - inflating the hotspot table, the
+    hotspot-health KPI, and the HIGH->CRITICAL severity escalations that key off
+    the flag. Ownership signals had no team-size awareness, so 1-3 person repos
+    saw bus-factor/concentration warnings for what is simply their normal
+    operating model.
+    
+    Three changes:
+    
+    1. Absolute activity floors on is_hotspot (both classification paths -
+       enrich.compute_percentiles and the SQL PERCENT_RANK recompute): a hotspot
+       now also needs >= 3 commits in 90d AND real line movement
+       (temporal_hotspot_score >= 0.5, with a >= 8-commits escape hatch for
+       files whose numstat carries no line counts).
+    
+    2. Repo-level active-contributor count (90d, bot-filtered, anchored to the
+       repo's own most recent activity so historical checkouts stay correct),
+       computed once per health run from per-author timestamps already in
+       top_authors_json and exposed on FileContext.
+    
+    3. Small-team severity gating: with <= 3 active contributors,
+       concentration-only ownership_risk / knowledge_loss findings are capped at
+       LOW (kept, annotated as informational) unless corroborated by hotspot
+       activity; the get_risk bus-factor-risk label gets the same gate. Unknown
+       team size (pre-timestamp indexes) keeps historical behaviour.
+    
+    Validated against the 21-repo / 9-language defect benchmark at T0
+    (t0_floor_experiment.py, re-scoring cached findings through the product
+    scorer with the demoted-flag transformations): corpus pooled AUC
+    0.7319 -> 0.7334 (keyword labels; bootstrap CI [-0.0022, +0.0045]) and
+    0.7446 -> 0.7473 under SZZ labels (CI [+0.0003, +0.0049] - excludes zero),
+    mean Popt up on both. On quiet repos the floors demote ~70% of flags, all
+    with 1-2 drive-by commits; the small-team gate touches no corpus repo
+    (all have > 3 active contributors).
+
+commit 413e82905e2d48b8699c7a61c2b98920c2fc555a
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Wed Jun 3 22:05:53 2026 +0530
+
+    feat(plugin): Claude Code plugin + root marketplace, refreshed to current surface (#356)
+    
+    Distribute the Claude Code plugin through a marketplace manifest at the repo
+    root and bring it up to date with the shipped product.
+    
+    - Add .claude-plugin/marketplace.json (source: ./plugins/claude-code) so users
+      install with `/plugin marketplace add repowise-dev/repowise`.
+    - Correct the MCP surface to the nine exposed tools; drop references to the
+      unexposed get_dependency_path / get_architecture_diagram.
+    - Add commands: health, risk, dead-code, decision, doctor.
+    - Add skills: code-health and change-review; refresh the existing four.
+    - Bundle a PostToolUse hook (repowise-augment) and de-duplicate emissions so
+      the bundled hook and the init-installed settings.json hook never double-fire.
+    - Document the fifth layer (Code Health) across commands and docs.
+    - README + Quickstart: add the plugin install path and fix stale
+      PreToolUse/PostToolUse wording (hooks are PostToolUse-only).
+
+commit 4a280c4b7eb0ecf547f3a2b899dbd2e588bd5040
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Wed Jun 3 17:34:36 2026 +0530
+
+    release: v0.16.0 (#350)
+
+commit a57d7958aa5576adae9f98ec2e9e5e0dbace7a6f
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Wed Jun 3 17:22:49 2026 +0530
+
+    fix(git): make "last touched" the contributor's own last commit + honor .mailmap (#349)
+    
+    Owner "last touched" showed a file's last commit by *anyone* among files the
+    person co-owns, so a teammate's commit to a shared file bumped your timestamp.
+    Two fixes:
+    
+    - Record each author's own first/last commit timestamp in top_authors_json and
+      aggregate "last touched" / "first commit" from that, falling back to the
+      file-level value for indexes built before the field existed.
+    - Read author identity through git's mailmap (%aN/%aE instead of %an/%ae) so a
+      repo's .mailmap folds one person's multiple names/emails (personal vs. GitHub
+      noreply, second machine) into a single contributor bucket.
+    
+    Adds a .mailmap coalescing the duplicated identities in this repo.
+
+commit 2e21dad38c7ea4c2da00d0191b0a62c1eeed2b96
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Wed Jun 3 14:36:15 2026 +0530
+
+    Add Codex CLI provider and project integration (#348)
+    
+    * feat: add Codex CLI provider and project integration (#195)
+    
+    Add a local Codex CLI LLM provider built on authenticated `codex exec`
+    sessions: argv-based subprocess (no shell), JSONL parsing tolerant of
+    non-JSON noise, an async semaphore, a 600s exec timeout with kill, reasoning
+    mapped to `model_reasoning_effort`, and zero-cost subscription usage tracking
+    (flagged `estimated` when Codex omits usage).
+    
+    Add project-local Codex setup: `.codex/config.toml` MCP server, `.codex`
+    lifecycle hooks (SessionStart / UserPromptSubmit / PostToolUse) installed via
+    the import-isolated `repowise-augment` entry point, `.codex-plugin` metadata,
+    skills, a plugin marketplace entry, and managed `AGENTS.md` generation reusing
+    the existing marker-merge generator.
+    
+    Wire reasoning across all LLM providers (base interface + per-provider model
+    discovery and supported reasoning modes) and add a richer interactive
+    provider / model / reasoning selection flow to `repowise init`, with new
+    `--codex/--no-codex` and `--agents/--no-agents` flags. Codex setup is opt-in:
+    interactive runs prompt (default no); non-interactive runs require `--codex`.
+    
+    Squashes the six commits from #195 and rebases them onto current main,
+    resolving conflicts from the init_cmd/ and ui/ package splits, the
+    editor-setup integration abstraction, and the provider cost-tracker
+    inline-await change:
+      - feat: add Codex editor integration
+      - docs: document Codex setup
+      - Reasoning work
+      - Add provider model discovery to init
+      - Accept cache hints in Codex provider
+      - Close Codex subprocess transport
+    
+    * fix(codex): address review — event-loop blocking, TOML safety, hook gating
+    
+    Follow-up fixes from a post-merge review of the Codex integration:
+    
+    - Run the Codex `_build_command` reasoning-catalog load and Gemini's lazy
+      model discovery via `asyncio.to_thread`, so a cold `codex debug models`
+      call or a paginated Gemini `/models` fetch can't stall every concurrent
+      generation coroutine on the event loop.
+    - Re-validate the merged `.codex/config.toml` with `tomllib` before writing
+      in `save_codex_mcp_config` / `enable_codex_hooks_feature`. The table-rewrite
+      regex only matches the bare key spelling; a quoted or inline `repowise`/
+      `features` entry would otherwise append a duplicate-key block and corrupt
+      the user's file. Now it aborts cleanly, original file untouched.
+    - Gate the edit-tool PostToolUse freshness notice on `client == "codex"` so a
+      future widening of the Claude installer's matcher can't emit Codex banners
+      to existing Claude Code users. Adds a regression test.
+    
+    ---------
+    
+    Co-authored-by: Selene29 <funmailfach@web.de>
+
+commit b0c8954031ec98eece57bdd595f8fa6ef90414db
+Author: joptimus <jlewan27@gmail.com>
+Date:   Wed Jun 3 02:40:10 2026 -0500
+
+    feat(cli): add advisory update check to doctor (#346)
+    
+    Surface when the installed repowise CLI is out of date and the exact
+    command to update it, without ever auto-updating the user's environment.
+    
+    - Add `repowise.cli.update_check`: a conservative, never-raising helper
+      that reads the current version, queries the PyPI JSON endpoint via the
+      bundled httpx (short timeout), and suggests an install-method-aware
+      upgrade command (uv tool / pipx / pip / editable checkout).
+    - Add a `CLI version` row to `repowise doctor`: advisory only — it shows
+      current vs latest plus both the resolved PATH executable and the full
+      running command (these can differ), never flips doctor's pass/fail, and
+      swallows network errors. Reminds the user to restart their MCP client
+      when an update is available.
+    - Treat an unparsable PyPI version as "unknown" rather than "up to date".
+    - Document the check in CLI_REFERENCE.md and USER_GUIDE.md.
+    
+    Closes #338
+
+commit bbb568d87c8b5e0b046e6e016d20b0f90b4dab67
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Tue Jun 2 22:48:37 2026 +0530
+
+    docs: fix broken README and CONTRIBUTING links (#345)
+    
+    The repowise-bench repo uses `master` as its default branch, but the README linked its reports via /blob/main/, producing four 404s (COMPARISON_REPORT, BENCHMARK_REPORT, flask48, sklearn48). Point them at /blob/master/. Also fix the root CONTRIBUTING link to its actual path under .github/.
+    
+    Refresh CONTRIBUTING.md while here: use the workspace-correct `uv sync --all-packages`, run tests via `uv run pytest`, list the types and ui packages, fix the LICENSE link, and add Conventional Commits and language/provider-recipe pointers.
+
+commit 034876b053cf70b889979d2552c6a2bf9763df37
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Tue Jun 2 22:34:38 2026 +0530
+
+    refactor(cli): split init_cmd into a structured package (#344)
+    
+    Break the 2k-line init_cmd.py into a cohesive init_cmd/ package —
+    command, workspace, generation, persistence, reporting, and the
+    interactive prompts — and collapse the duplicated single-repo and
+    per-repo workspace generation paths into one shared core (coverage
+    selection, cost gate, generation + KG enrichment + cost flush).
+    
+    Also replace the two hand-rolled config.yaml yaml.dump writes with
+    save_config_partial (extended to take arbitrary keys), and route the
+    DB-engine setup through the existing open_repo_db helper.
+    
+    The public import surface is preserved: init_command plus the
+    leading-underscore names sibling commands (search/reindex) and the
+    test-suite import from repowise.cli.commands.init_cmd still resolve.
+
+commit f433e4c970301829d57f9cd10184f48768bf056e
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Tue Jun 2 21:40:51 2026 +0530
+
+    feat(pipeline): make `repowise init --resume` actually resume (#343)
+    
+    * refactor(pipeline): split persist_pipeline_result into per-phase persisters
+    
+    Decompose the monolithic persist recipe into four independently-callable,
+    phase-scoped functions — persist_ingestion (graph nodes/edges, external
+    systems, symbols, security), persist_git (metadata, commits),
+    persist_analysis (dead code, health, decisions, governance), and
+    persist_generation (pages, KG). persist_pipeline_result now just composes
+    them in dependency order.
+    
+    This is the backbone for incremental, resumable persistence: the
+    orchestrator can persist a single phase's outputs the moment it completes
+    instead of holding everything in memory until one terminal write. Public
+    API (persist_pipeline_result, persist_graph_nodes) is unchanged and the
+    end-state is identical — verified against the persistence + pipeline
+    integration suites (235 tests green).
+    
+    * fix(init): persist + restore git tier across resume; honor fast mode in workspaces
+    
+    Two related fixes so `--resume` and multi-repo init respect the fast/index
+    tier instead of silently doing more work than asked:
+    
+    - Record `run_mode`/`git_tier` in state.json on every init (both index-only
+      and full paths). On `--resume`, continue the prior run's tier via
+      `_effective_run_mode_for_resume` so a resumed fast index no longer falls
+      back to STANDARD and redoes the FULL git indexing (per-file blame +
+      co-change) the first run deliberately skipped. An explicit `--mode fast`
+      on the resume still wins.
+    - Thread `run_mode` through `_workspace_init` → `_WorkspaceCtx` → the
+      per-repo `run_pipeline` call, mapping it to `OrchestratorMode.FAST`.
+      Previously the multi-repo flow never passed `mode=`, so `--mode fast` was
+      silently ignored for workspaces.
+    
+    Adds unit coverage for the resume tier-restore logic.
+    
+    * feat(pipeline): add resume building blocks — ledger, rehydration, controller
+    
+    Introduce a modular `pipeline/resume/` package, the foundation for skipping
+    already-completed work on `repowise init --resume`. Nothing imports it yet,
+    so this is behaviour-neutral; the orchestrator/CLI wiring follows.
+    
+    - phases.py: coarse checkpoint vocabulary (INDEX → ANALYSIS → GENERATION)
+      chosen for resume value; INDEX bundles the expensive git history +
+      graph centrality so a health-phase interrupt resumes cheaply.
+    - ledger.py: ResumeLedger — durable "which phases completed" record over the
+      existing pipeline_jobs table / SqlJobStore. Each write commits its own
+      session so a completion survives the process being killed. Best-effort.
+    - rehydrate.py: rehydrate_git_meta_map rebuilds git_meta_map from persisted
+      rows via column introspection (graph side reuses rehydrate_graph_builder).
+      Documents that the transient BlameIndex is intentionally not persisted.
+    - controller.py: ResumeController — the single object the orchestrator will
+      consult at phase boundaries (can_skip with a prefix rule, checkpoint_index,
+      rehydrate_index). Builds its ledger from the session factory; requires a
+      real Repository.id (fixes the old str(repo_path) FK violation).
+    
+    Unit-tested against in-memory SQLite: ledger lifecycle + cross-process
+    visibility, git_meta_map round-trip, and the controller skip/prefix logic.
+    
+    * feat(pipeline): wire resume fast-path into the orchestrator
+    
+    run_pipeline now accepts an opt-in ResumeController. When a prior run
+    persisted the INDEX phase, the resumed run rehydrates the graph + git
+    metadata from the DB and only re-parses source (new parse-only
+    `reparse_for_resume`), skipping the git-history walk and the four graph
+    centrality kernels — the minutes-long work behind the "safe to Ctrl-C,
+    then --resume" message. When not resuming, the freshly-built index is
+    checkpointed right after external-systems extraction so an interrupt
+    during analysis can resume.
+    
+    Strictly opt-in: with resume_controller=None (every current caller) the
+    gather path and behaviour are byte-identical. Verified by a new
+    integration test that runs the real pipeline twice on the sample repo and
+    asserts the resumed run never calls _run_ingestion / _run_git_indexing yet
+    still produces a rehydrated graph + re-parsed files.
+    
+    * feat(init): wire resume controller into `repowise init`
+    
+    `repowise init` now creates the repository row + engine before the pipeline
+    (in the same event loop) and passes a ResumeController, so the index is
+    checkpointed to the DB the moment it's built. An interrupt during analysis
+    now leaves a resumable, persisted index; `repowise init --resume`
+    rehydrates the graph + git metadata and only re-parses source, skipping the
+    git-history walk and graph centrality — making the long-standing "safe to
+    Ctrl-C, then --resume" message true.
+    
+    Details:
+    - ResumeController tracks whether the INDEX was *actually* persisted
+      (checkpoint success) or rehydrated; PipelineResult.index_persisted_
+      incrementally reflects that. The final persist then writes only analysis +
+      generation when the index is already on disk — avoiding a redundant write
+      and never re-persisting a rehydrated graph. A best-effort checkpoint
+      failure leaves the flag False, so the full persist still runs (no data
+      loss).
+    - Repository row created up front fixes the pipeline_jobs.repository_id FK
+      (was str(repo_path), now the real Repository.id).
+    - Dry runs skip all of this — they must not touch the database.
+    
+    Verified: full CLI integration suite (16) green, including dry-run and
+    init-twice; resume integration + unit suites green.
+    
+    * feat(init): persist generated pages incrementally + reuse prior pages on resume
+    
+    Generation buffered every page in memory and only wrote them to the DB once,
+    at the very end of the run. An interrupt mid-generation therefore lost the
+    whole batch: pages already embedded into the vector store are skipped on the
+    next resume (the store is the resume ground truth) yet were never written to
+    the pages table, so the wiki stayed permanently incomplete.
+    
+    Wrap init's generation in run_generation_with_persistence, which:
+    - loads persisted pages up front and hands them to the generator as
+      prior_pages, so unchanged pages skip the LLM call (same reuse as update);
+    - flushes each page to the DB the instant it is generated via the on_page_ready
+      sink, on a dedicated engine (the sole wiki.db writer during generation, since
+      cost rows are buffered until afterwards), so an interrupt leaves a usable
+      partial wiki the next resume reuses.
+    
+    upsert_page is now a no-op when content, source_hash and model are unchanged,
+    so the end-of-run persist of the same pages neither bumps the version nor
+    archives a redundant PageVersion.
+    
+    * feat(init): make long synchronous index phases interruptible with Ctrl-C
+    
+    The #341 repro had two halves: the duplication-detector hang (fixed in #342)
+    and 'Ctrl-C didn't return the terminal.' The latter is structural — heavy CPU
+    phases run in asyncio.to_thread workers, and a bare SIGINT frees the event
+    loop's main thread while the non-daemon worker keeps grinding, so the process
+    never exits.
+    
+    Add cooperative cancellation: a process-global CancellationToken, armed for the
+    run by a cancellation_scope() context manager in 'repowise init'. The first
+    Ctrl-C flips the token (and the long duplication loops, which now poll
+    check_cancelled() once per file / per hash bucket, unwind promptly); a second
+    forces a hard quit. The token's PipelineCancelled subclasses BaseException so
+    the pipeline's broad 'except Exception' phase guards can't swallow it — it
+    always propagates to the CLI, which prints a 'run --resume' hint and exits.
+    
+    The interrupted run keeps its INDEX checkpoint on disk, so --resume reuses the
+    expensive graph + git index rather than rebuilding it.
+    
+    * feat(pipeline): skip analysis recompute on a generation-interrupted resume
+    
+    Resume previously skipped only the INDEX phase; a run interrupted during the
+    long generation phase still re-ran dead-code, health and (the costly,
+    LLM-backed) decision extraction on resume.
+    
+    Checkpoint ANALYSIS mid-run — after decision extraction, before generation —
+    via ResumeController.checkpoint_analysis, mirroring the existing INDEX
+    checkpoint, so a generation interrupt leaves ANALYSIS marked complete. On
+    resume, can_skip(ANALYSIS) rehydrates thin dead-code + decision reports
+    (rehydrate_dead_code_report / rehydrate_decision_report) as generation input
+    only and skips the recompute entirely.
+    
+    The rehydrated views carry just the fields the page generator reads and are
+    never written back: the persisted analysis rows are authoritative, and
+    persist_analysis (guarded on truthy reports) no-ops on the result's None
+    reports while still folding harvested decisions + governance. Falls back to a
+    full recompute if rehydration errors — the default (no controller) path is
+    unchanged.
+    
+    * fix(init): forward repo_path to run_generation in the persistence wrapper
+    
+    run_generation_with_persistence consumed repo_path as its own parameter
+    (to build the incremental-flush engine) but never forwarded it to
+    run_generation, which requires it keyword-only. Every full (non
+    index-only) init crashed at the generation phase with a missing-argument
+    TypeError; index-only runs skip the wrapper and were unaffected.
+    
+    The unit fakes accepted **_kw, silently swallowing the unforwarded
+    argument and hiding the broken contract. Harden all three to take
+    repo_path as a required parameter and assert it, so a regression fails
+    the test.
+    
+    * feat(ingestion): honour nested .gitignore files, not just the repo root
+    
+    FileTraverser only loaded the repo-root .gitignore; nested .gitignore
+    files in subdirectories were ignored. In a monorepo or yarn/npm
+    workspace, a package keeping its own .gitignore (excluding its build
+    output, generated bundles, coverage, etc.) was not respected, so that
+    generated content got pulled into the index.
+    
+    Git reads a .gitignore in every directory, not just the root. The
+    per-directory ignore machinery already existed for .repowiseIgnore, so
+    _get_dir_ignore now merges each directory's nested .gitignore and
+    .repowiseIgnore into one spec. The root stays handled by the existing
+    full-path self._gitignore / self._extra_ignore (no double-reads), and
+    matching semantics are unchanged from the existing per-directory
+    .repowiseIgnore handling.
+    
+    Also documents .gitignore / .repowiseIgnore / exclude precedence in
+    docs/CONFIG.md. Adds TestNestedGitignore (4 cases).
+
+commit 8cad94696a992500300565eb29926eea2e773c88
+Author: joptimus <jlewan27@gmail.com>
+Date:   Tue Jun 2 09:50:10 2026 -0500
+
+    fix(update): re-run health on config change even when git is unchanged (#337)
+    
+    * fix(update): re-run health on config change even when git is unchanged
+    
+    `repowise update` only re-scored health for files that changed in git, so
+    editing `.repowise/config.yaml` (exclude_patterns) or `health-rules.json` had no
+    effect until a code change happened to touch each file. Issue 3 of #296.
+    
+    - Add `config_fingerprint(repo_path)` (sha256 of config.yaml + health-rules.json)
+      to helpers; `repowise init` stores it in state after the config is written so
+      the first update does not false-positive.
+    - `repowise update` compares the stored fingerprint to the current one. A real
+      change triggers `_run_full_health_rescore`: rebuild the graph with current
+      exclude_patterns, load GitMetadata from the DB (so biomarkers keep accurate
+      churn/ownership data, including the newer prior_defect_count / change_entropy
+      columns), drop excluded git rows, full-replace health metrics/findings, and
+      refresh graph nodes. A missing prior fingerprint is backfilled, not treated as
+      a change.
+    - The config-change path takes precedence over the partial update (so unchanged
+      files are re-scored under the new rules), is skipped under `--dry-run`, and
+      does not advance the fingerprint if the re-score fails (so it retries).
+    
+    Tests: config_fingerprint, _git_metadata_to_dict, a failed-rescore-keeps-old-
+    fingerprint unit test, and integration tests covering init storage, the
+    unchanged/changed/dry-run paths, and config-change-with-source-diffs.
+    
+    Closes #296 (issue 3)
+    
+    * refactor(update): share rebuild path between incremental update and health re-score
+    
+    Maintainer feedback on #337:
+    
+    - Extract the traverse/parse/graph-build (+ framework-aware synthetic edges)
+      into a shared _build_repo_graph helper, used by both _rebuild_graph_and_git
+      and _run_full_health_rescore — instead of a second graph-rebuild copy inside
+      the re-score. The config re-score now includes the framework-edge step it
+      was previously missing, so both paths build the same graph. (Not routed
+      through _persist_index_only: config re-score needs full health replacement,
+      not partial upsert.)
+    - Drop the unused cfg parameter from _run_full_health_rescore (git metadata is
+      loaded from the DB, not re-indexed, so commit_limit/follow_renames are moot).
+    - Replace the silent 'except Exception: pass' parse swallow with a skipped-file
+      count warning in the shared helper.
+    
+    Adds TestBuildRepoGraph covering the parse-skip warning and the framework-edge
+    step; updates the existing re-score test for the new signature.
+
+commit 5ecff5aa00a4f4788df197acf2f9e5a3bb3f7ffa
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Tue Jun 2 18:00:51 2026 +0530
+
+    fix(health): bound duplication detection so minified bundles can't wedge `init` (#342)
+    
+    Clone detection tokenized every file and compared all window pairs within
+    each hash bucket — an O(k^2) loop guarded only by the assumption that
+    "buckets are small in practice." Minified/generated bundles (e.g. a
+    checked-in `storybook-static/` chunk) collapse into hundreds of thousands
+    of near-identical windows, so one bucket explodes into billions of
+    comparisons. Because this runs before the per-file progress loop, `init`
+    sat at `health 0/N` indefinitely (#341).
+    
+    Add layered, independent resource guards in a new `duplication/limits.py`:
+    
+    - skip minified/generated files via a cheap pre-tokenize byte scan
+      (average / longest line length);
+    - cap per-file tokens and the repo-wide window budget;
+    - skip degenerate hash buckets larger than a threshold (the direct
+      O(k^2) cap — oversized buckets are boilerplate noise, never real
+      clones);
+    - a soft wall-clock deadline as the final backstop.
+    
+    Any single layer suffices, so no repo shape can wedge the run again.
+    `detect_clones` is refactored into bounded named stages, and the engine
+    logs `health_duplication_limits` when a guard fires so skipped bundles
+    are no longer invisible.
+
+commit 8f9fc1ba5837af59f2e216c511549f19d5773bbc
+Author: joptimus <jlewan27@gmail.com>
+Date:   Tue Jun 2 05:26:55 2026 -0500
+
+    fix(mcp): exclude_patterns filtering for context, answer, and federated search (PR 4b) (#340)
+    
+    * fix(mcp): filter exclude_patterns from MCP tool responses
+    
+    Excluded files are skipped at ingest time, but rows may predate an
+    exclude_patterns change, so MCP tools now also filter their results against the
+    repo's exclude_patterns at query time. Issue 5 of #296.
+    
+    Adds per-repo filter helpers to _helpers.py (a compiled PathSpec from the repo
+    config plus shape-specific filters: ORM rows by attribute, GraphNode file vs
+    symbol nodes, result dicts by key, path lists, and "path::Name" node ids), each
+    covered by parametrized tests, then wires them into the structured tools:
+    
+    - health, overview, dead_code, community, metrics, callers, symbol, diagram,
+      dependency, risk, flows, why, decision_records
+    - search (single-repo path)
+    
+    Single-file/target tools (annotate, dependency, metrics, callers, symbol, why,
+    risk) reject or omit excluded targets; list/aggregate tools drop excluded rows
+    before KPIs/rollups so excluded files never affect the numbers.
+    
+    Includes an end-to-end test proving get_health honors exclude_patterns from
+    .repowise/config.yaml.
+    
+    Out of scope (follow-up): tool_context enrichment, tool_answer retrieval, and the
+    federated ("all repos") search path, which need filtering inside their
+    context/retrieval pipelines rather than a result-level helper call.
+    
+    Part of #296 (issue 5)
+    
+    * fix(mcp): filter exclude_patterns in context, answer, and federated search
+    
+    PR 4b — the custom-logic MCP surfaces deferred from PR 4a (#339), where
+    filtering must happen inside each pipeline rather than at a single result list.
+    
+    - get_context: gate excluded file/symbol-id targets; filter imported_by,
+      used_by, module child files, candidates, callers/callees, community
+      members, and fuzzy not-found suggestions.
+    - get_answer: drop excluded hits after hydration and after 1-hop graph
+      expansion; bypass a cached answer to re-synthesis when it references a
+      now-excluded path (in its fields or prose).
+    - search (federated): attach target_path inside _search_single_repo and
+      filter each repo by its own exclude_patterns before RRF aggregation.
+    
+    Adds tests for all three surfaces plus the cache-bypass and suggestion
+    regressions.
+
+commit 1fd50a5a663805cc28368cee0a07daf70cc22995
+Author: joptimus <jlewan27@gmail.com>
+Date:   Tue Jun 2 05:26:07 2026 -0500
+
+    fix(mcp): filter exclude_patterns from MCP tool responses (#339)
+    
+    Excluded files are skipped at ingest time, but rows may predate an
+    exclude_patterns change, so MCP tools now also filter their results against the
+    repo's exclude_patterns at query time. Issue 5 of #296.
+    
+    Adds per-repo filter helpers to _helpers.py (a compiled PathSpec from the repo
+    config plus shape-specific filters: ORM rows by attribute, GraphNode file vs
+    symbol nodes, result dicts by key, path lists, and "path::Name" node ids), each
+    covered by parametrized tests, then wires them into the structured tools:
+    
+    - health, overview, dead_code, community, metrics, callers, symbol, diagram,
+      dependency, risk, flows, why, decision_records
+    - search (single-repo path)
+    
+    Single-file/target tools (annotate, dependency, metrics, callers, symbol, why,
+    risk) reject or omit excluded targets; list/aggregate tools drop excluded rows
+    before KPIs/rollups so excluded files never affect the numbers.
+    
+    Includes an end-to-end test proving get_health honors exclude_patterns from
+    .repowise/config.yaml.
+    
+    Out of scope (follow-up): tool_context enrichment, tool_answer retrieval, and the
+    federated ("all repos") search path, which need filtering inside their
+    context/retrieval pipelines rather than a result-level helper call.
+    
+    Part of #296 (issue 5)
+
+commit 24ab62156b4d941c9c6224728d838c82d17e01af
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Mon Jun 1 23:47:26 2026 +0530
+
+    fix(mcp): deep-merge per-server entry so user-added `env` survives re-registration (#336)
+    
+    `merge_mcp_entry()` and `save_root_mcp_config()` did a shallow
+    `servers.update(new_entry)`, which replaced the entire `repowise` server
+    value. Since `generate_mcp_config()` emits no `env` key, any user-added
+    `env` block (BYOK provider/embedder keys for the stdio server) was
+    silently wiped on every re-registration — `repowise init`, `update`, and
+    anything calling `register_with_claude_*`. That dropped the configured
+    embedder back to a mock and quietly degraded semantic search.
+    
+    Merge each server definition into the existing dict instead: generated
+    `command`/`args`/`description` are refreshed, but other keys the user
+    added (notably `env`) are preserved.
+    
+    Fixes #307.
+
+commit b6b7a93bd59c42a8641859de1d7620515e71b813
+Author: biggiesmallcap-blip <264077051+biggiesmallcap-blip@users.noreply.github.com>
+Date:   Tue Jun 2 00:16:39 2026 +1000
+
+    feat(embeddings): add native ollama embedder (#331)
+
+commit 03a268940a331352557009e19ab407a0a115e7ad
+Author: biggiesmallcap-blip <264077051+biggiesmallcap-blip@users.noreply.github.com>
+Date:   Mon Jun 1 22:58:54 2026 +1000
+
+    fix(dead-code): keep rust sibling test modules live (#332)
+
+commit 43f09e322a54568487c86abd5c7d0658c594d6b6
+Author: biggiesmallcap-blip <264077051+biggiesmallcap-blip@users.noreply.github.com>
+Date:   Mon Jun 1 22:58:25 2026 +1000
+
+    fix(cli): use shared database engine for reindex (#333)
+
+commit 604d2429026eafaa6be0d65ce396d826d7dadf14
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Mon Jun 1 18:21:31 2026 +0530
+
+    docs: sharpen tagline, reframe layer positioning, lift dashboard (#335)
+    
+    * docs: reframe layer positioning — stop calling our own layers commodity
+    
+    Drop the 'table stakes' / 'graph and wiki have competition' framing,
+    which devalued genuinely strong layers. Elevate the differentiators
+    (Decisions, Code Health) with a positive 'Edge' column instead of
+    labeling the others as commodities.
+    
+    * docs: sharpen tagline, reframe layer positioning, lift dashboard
+    
+    - Tagline now leads with the code-health proof point instead of
+      restating the banner.
+    - Drop 'table stakes' / 'graph and wiki have competition' framing that
+      devalued strong layers; rename the column to 'Edge' with positive
+      one-liners and star the two true differentiators.
+    - Move the Local dashboard section up to right after Benchmarks so the
+      web-UI visual lands higher on the page.
+
+commit 21dffbb47be9f799968f77f055b05db849383a51
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Mon Jun 1 17:33:16 2026 +0530
+
+    docs: revamp README and align linked docs for accuracy (#334)
+    
+    Rewrite the README into a tighter, more skimmable form: a five-layer
+    overview table, a dedicated Code Health section leading with the
+    head-to-head defect-prediction results, a visual language showcase,
+    persona-based routing, and condensed MCP/CLI/dashboard sections. Deep
+    prose moves into a new docs/INTELLIGENCE_LAYERS.md.
+    
+    Correct stale figures across README and linked docs:
+    - code-health biomarkers 12/15 -> 25
+    - Full-tier languages 8 -> 9, total AST languages 14 -> 15
+    - MCP tools 7 -> 9 (document the missing get_symbol and get_health)
+    - health-defect benchmark -> 21 repos / 9 languages / mean ROC AUC 0.74
+    - add the undocumented risk and delete CLI commands; add init --mode
+    
+    Add docs/CONFIG.md (the README linked to a file that did not exist) and
+    docs/INTELLIGENCE_LAYERS.md.
+
+commit b55e3c5a66cd0b889a1f431661f7ec3efefa2106
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sun May 31 20:09:16 2026 +0530
+
+    fix(cost-tracking): stop second cost engine from wedging `repowise update` on 'database is locked' (#326) (#330)
+    
+    * fix(cost-tracking): stop second cost engine from wedging update on 'database is locked'
+    
+    DB-backed cost tracking opens a second SQLAlchemy engine on wiki.db and does an
+    INSERT INTO llm_costs per LLM call. During doc generation a writer is held on
+    the same file, so each cost insert loses WAL's single-writer race and blocks the
+    full 30s busy_timeout before failing — turning a minutes-long `repowise update`
+    into an effectively non-terminating one (issue #326).
+    
+    Two guards:
+    
+    1. Opt-out: `--no-cost-tracking` flag on `repowise update` and the
+       REPOWISE_NO_COST_TRACKING env var (honored by build_cost_tracker, so init and
+       the --full upgrade path respect it too). When set, no second engine is opened
+       — an in-memory CostTracker still powers the live cost readout.
+    
+    2. Best-effort persistence when tracking is enabled: the cost engine now uses a
+       short (2s) busy_timeout via a new create_engine(busy_timeout_ms=...) override,
+       threaded through open_repo_db. A contended cost insert fails fast and is
+       dropped by _persist instead of stalling the generation writer. The default
+       30s headroom for legitimate bulk graph-edge writes is unchanged.
+    
+    Tests: per-engine busy_timeout override, env/flag resolution, in-memory
+    fallback, and an end-to-end held-write-lock contention test proving record()
+    never raises and drops the row under contention while persisting uncontended.
+    
+    * fix(cost-tracking): defer cost writes out of the generation window by default
+    
+    Make the default `repowise update` / `init` path safe without requiring the
+    opt-out flag. The DB-backed CostTracker used by the CLI is now *buffered*: each
+    per-call row is held in memory and persisted in a single transaction by a new
+    `flush()` after generation (and KG enrichment) completes — so cost INSERTs never
+    land inside the contended generation window at all, for every flow including the
+    streaming on_page_ready path. This removes the contention by construction rather
+    than merely bounding it.
+    
+    - CostTracker gains `buffered` (opt-in; default False so external callers such
+      as the hosted backend keep immediate writes) and `flush()`; `record()` appends
+      to an in-memory buffer when buffered. `_persist_rows` writes the batch in one
+      transaction.
+    - make_cost_tracker / upgrade_flow build buffered trackers; update_cmd, init_cmd
+      (x2) and upgrade_flow flush after generation via a new flush_cost_tracker
+      helper. The live cost readout (session_cost) is unaffected.
+    
+    The short cost-engine busy_timeout and the --no-cost-tracking /
+    REPOWISE_NO_COST_TRACKING opt-out from the previous commit remain as defense and
+    convenience. Rows still live in wiki.db, so repowise costs and the web/hosted
+    readers are unchanged.
+    
+    Tests: buffered record() writes nothing until flush; flush persists the batch
+    after a held writer releases; flush is a no-op for in-memory trackers; the sync
+    flush_cost_tracker helper works across asyncio.run loops.
+
+commit 61fce0ab87b3612f465c37ed0b55d5eade12da8f
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sun May 31 16:59:19 2026 +0530
+
+    release: v0.15.2 — on_page_ready streaming callback (#329)
+    
+    * release: v0.15.2
+    
+    * docs(changelog): add 0.15.2 entry
+
+commit 5a776a4b27532ae555b35b8ef246d5100c4db04d
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sun May 31 16:52:05 2026 +0530
+
+    feat(generation): add on_page_ready streaming callback (#328)
+    
+    Thread an optional on_page_ready callback through run_pipeline ->
+    run_generation -> generate_all -> the level orchestrator, invoked with
+    each GeneratedPage the moment it completes (alongside the existing
+    on_page_done, which only receives the page type).
+    
+    This lets callers persist or stream pages incrementally instead of
+    waiting for the whole run to return — e.g. flushing pages to storage
+    per page so a generation cut-off yields a partial-but-usable set rather
+    than nothing. The callback is best-effort: a sink exception is logged
+    and swallowed so it can never drop a page or abort a level.
+    
+    Additive and fully backward-compatible (defaults to None).
+
+commit 2deede96466abfb5e09a9a2f36e2df5fdce03307
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 18:55:46 2026 +0530
+
+    release: v0.15.1 (#325)
+    
+    Bump version to 0.15.1 across pyproject, package __init__ files, web
+    footer, and uv.lock; add changelog entry.
+    
+    Patch release shipping two fixes:
+    - mcp: surface embedder init failure instead of silent mock fallback (#324)
+    - pipeline: drop transient BlameIndex before serialization (#323)
+
+commit 910d374805d2685dcfbb4fa278400a6151f0ead0
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 18:48:31 2026 +0530
+
+    fix(mcp): surface embedder init failure instead of silent mock fallback (#324)
+    
+    When an embedder is explicitly configured (REPOWISE_EMBEDDER or
+    .repowise/config.yaml) but fails to initialise at runtime — most often a
+    missing API key — the MCP server swallowed the exception, fell back to
+    MockEmbedder with a single WARNING, then reported ready and listed every
+    tool. Semantic search (search_codebase, get_answer) silently ran on 8-dim
+    mock vectors that cannot match a real index, returning empty/irrelevant
+    results with no signal to the caller (#306).
+    
+    Two fixes:
+    
+    - Resolve through the shared embedder registry (get_embedder) so every
+      backend is honoured — openai, gemini, openrouter, and any custom embedder
+      registered via register_embedder. The old code hardcoded only the gemini
+      and openai branches, so an explicit `embedder: openrouter` (or any custom
+      name) was silently treated as mock with no warning at all.
+    
+    - Stop pretending to be healthy on failure. An explicitly-configured
+      embedder that fails to initialise now logs at ERROR with the missing key
+      and remediation, and records the degradation in _state._embedder_status.
+      build_meta() surfaces `embedder: "mock"`, `embedder_degraded: true`, and a
+      human-readable `embedder_warning` in every tool's _meta envelope so an
+      agent can detect the misconfiguration programmatically. MockEmbedder is
+      still returned so non-RAG tools keep working; an unconfigured embedder (or
+      an explicit `mock`) is the intended default and is never flagged degraded.
+
+commit 9a435b9bdf2ffdac7ceefa9c19e0c4b0e17aeed2
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 18:34:24 2026 +0530
+
+    fix(pipeline): drop transient BlameIndex before serialization (#323)
+    
+    The per-file BlameIndex is an in-memory-only signal consumed by the health
+    biomarkers (function_hotspot / code_age_volatility); its own docstring notes
+    it must never round-trip through the DB or artifacts. It was being attached to
+    the git-metadata dicts that escape the pipeline in PipelineResult.git_metadata_list,
+    so any JSON serialization of git metadata raised "Object of type BlameIndex is
+    not JSON serializable", aborting the whole artifact build.
+    
+    Strip it once the health phase has consumed it, in both the full pipeline
+    (orchestrator) and the incremental `update` path, via a shared
+    drop_transient_git_signals() helper. DB persistence already filtered it out by
+    column, so this is behaviour-preserving for OSS DB users and fixes JSON
+    artifact writers (e.g. the hosted backend's git_metadata.json).
+
+commit 300bd5d369992ca9aa3b40c968da56dacfc8826c
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 16:32:10 2026 +0530
+
+    release: v0.15.0 (#321)
+
+commit 23f6cb94095ca00f478558c30bbcddb611d8b3ff
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 16:25:33 2026 +0530
+
+    fix(ui): use extensionless relative imports across package (#320)
+    
+    The commits/git feature files imported relative modules with explicit
+    .js extensions (e.g. "./priority-badge.js"), but the rest of the ui
+    package — and the web app's webpack resolution — use extensionless
+    relative imports. With no .js->.tsx extension alias configured, those
+    specifiers failed to resolve and broke the web build.
+    
+    Strip the .js extension from all relative import/export specifiers so
+    the new files match the package convention and the build resolves.
+
+commit f00e7995d581069d78b45419dbf98868f3f84afe
+Author: joptimus <jlewan27@gmail.com>
+Date:   Sat May 30 03:04:24 2026 -0500
+
+    fix(exclude-patterns): enforce exclude_patterns in git indexer and dynamic edges (#308)
+    
+    exclude_patterns was honored by file traversal but bypassed by the git indexer
+    and by dynamic-edge creation, so excluded files still appeared in git metadata
+    and as phantom graph nodes (issues 1 and 2 of #296).
+    
+    - GitIndexer accepts exclude_patterns and filters them out of `git ls-files`;
+      threaded through _run_git_indexing and the orchestrator git stage (init path).
+    - The incremental update path passes exclude_patterns to GitIndexer and filters
+      changed paths via a new _build_filtered_changed_paths helper.
+    - GraphBuilder accepts exclude_patterns; add_dynamic_edges no longer creates
+      phantom nodes for excluded targets. Threaded into the ingestion phase and the
+      update rebuild path.
+    
+    Tests: GitIndexer ls-files filtering, _build_filtered_changed_paths, and
+    dynamic-edge phantom-node skipping.
+    
+    Closes #296 (issues 1 and 2)
+
+commit 950269f5dd79d96343633c90927392670881da51
+Author: joptimus <jlewan27@gmail.com>
+Date:   Sat May 30 02:59:06 2026 -0500
+
+    feat(typescript): support .mts/.cts as TypeScript (#310)
+    
+    Files with the .mts (ESM) and .cts (CommonJS) TypeScript module extensions
+    were skipped by the indexer because the TypeScript language spec only mapped
+    .ts/.tsx, so they were detected as unknown (issue #288). .cts is included
+    because it is the paired CommonJS module extension and shares the parser and
+    resolver path.
+    
+    - Register .mts/.cts in the TypeScript language spec; they propagate to
+      EXTENSION_TO_LANGUAGE automatically and route to the plain TypeScript grammar
+      (only .tsx needs the JSX variant).
+    - Resolve extensionless imports to .mts/.cts across all three resolvers: the
+      relative resolver (probe list, directory-barrel /index.mts and /index.cts,
+      and the fake-extension fallback), tsconfig path-alias resolution
+      (_TS_EXTENSIONS, _INDEX_FILES), and workspace exports (_PROBE_EXTENSIONS).
+    - Recognize .mts/.cts test files (.test.mts, .spec.cts, etc.) in every
+      test-classification list: dead-code never-flag, health engine _is_test_file
+      and _has_paired_test_file, hidden_coupling, coverage detector
+      (_TEST_FILE_SUFFIXES and paired_test_file), and coverage_gap.
+    
+    Out of scope (follow-up): framework-edge route detection for module-script
+    extensions (next_app, remix), and full Node ESM/CJS output-mapping semantics.
+    
+    Closes #288
+
+commit 1ae19dac192fe82aea9afccb80095ccbfaf9c41f
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 13:18:21 2026 +0530
+
+    feat(git): add commits change-risk page, per-function blame, coverage-gradient breakdown (#319)
+    
+    Surfaces and captures git/health signals the engine produced but never exposed.
+    
+    Commits / change-risk page (the per-commit table payoff):
+    - GET /api/repos/{id}/commits (paginated, sort=risk|date) + /commits/{sha}
+      drill-down with an exact per-feature risk-driver breakdown.
+    - Normalize change-risk for display: a repo-relative percentile + tercile
+      review_priority (RiskNormalizer), so the ranking is portable across repos
+      rather than skewing high on repos with large typical commits. The raw
+      calibrated score/level are kept but de-emphasized.
+    - Persist author_experience on git_commits (migration 0028) so the breakdown
+      reproduces the stored score exactly.
+    - New packages/ui/src/commits module (review-priority queue, driver breakdown,
+      priority badge, credibility strip) + web /commits page + nav entry.
+    
+    Per-function blame rollup:
+    - New git_function_blame table (migration 0029) + rollup builder, persisting the
+      per-function modification count, median line age, recent-mod count, and blame
+      owner derived from the FULL-tier blame index (previously discarded).
+    
+    Coverage-gradient surfacing + score breakdown:
+    - The score-breakdown endpoint now reads each finding's stored health_impact
+      (continuous, weighted, capped) instead of recomputing from the severity band,
+      so it reproduces the file score and shows the coverage gradient. coverage_gradient
+      records its base deduction; the UI biomarker glossary gains the gradient category.
+    
+    Incremental / backfill commit capture:
+    - Backfill (essential->full) and repowise update now keep git_commits current:
+      a bounded walk captures only commits newer than the newest persisted one and
+      idempotently upserts; the partial blame rollup is persisted too.
+
+commit dfeeb705539f732449ac0f77381196741c6ecc0c
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 12:05:22 2026 +0530
+
+    feat(git): surface change-complexity and defect-history signals (#318)
+    
+    Several per-file git signals were computed on every index but never left the
+    database: change entropy (Hassan's History Complexity Metric) and its
+    percentile, prior bug-fix count, rename lineage, and the temporal hotspot
+    score / commit-cap flag (the latter two were already on the hotspots
+    endpoint but missing from git-metadata).
+    
+    Expose them on the git-metadata and hotspots responses (change_entropy_pct
+    normalized to 0-100 like churn_percentile), thread them through the shared
+    and web TypeScript types, and add a "Change Complexity & Defect History"
+    card to the per-file git panel: change entropy as a percentile bar, prior
+    bug-fix count, and rename lineage when present. The card renders nothing when
+    a file has no such signal.
+    
+    Pure read-path — no new capture, no re-index. Adds response-shape tests for
+    the surfaced fields.
+
+commit 5be3cdadfefe52459bd3582698037074a068a40e
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 11:36:32 2026 +0530
+
+    feat(git): persist per-commit change-risk history (#317)
+    
+    Add a per-commit `git_commits` table capturing one row per commit in the
+    indexed window: author, timestamp, subject, Kamei change features
+    (lines/files/dirs/subsystems touched, churn entropy, fix-flag) and a
+    calibrated just-in-time change-risk score/level.
+    
+    The rows are collected during the existing repo-wide commit-index walk via
+    an optional sink (no extra git pass) and scored by the existing linear,
+    interpretable change-risk model — pure arithmetic, no LLM or blame at
+    runtime. Author experience, the one change-risk feature that costs a
+    subprocess in the live `repowise risk` path, is reconstructed in-memory as a
+    cumulative per-author commit tally, so the whole pass stays zero-extra-git
+    (~14 ms for 273 commits on this repo).
+    
+    Wiring is additive and non-breaking: rows ride on `GitIndexSummary` and are
+    upserted alongside file-level git metadata. Includes the model, an Alembic
+    migration, bulk-upsert/delete/paginated CRUD (sortable by risk or date), and
+    unit + integration coverage.
+
+commit be3ea565161fb94788ebe8b5fe523d2a9f9d94a4
+Author: Raghav Chamadiya <raghavchamadiya@gmail.com>
+Date:   Sat May 30 10:46:16 2026 +0530
+
+    feat(health): extend code-health biomarkers to Kotlin, C++, and C# (#316)
+    
+    The code-health complexity walker shipped per-language node maps for
+    Python, TypeScript, JavaScript, Go, Java, and Rust, but Kotlin, C++, and
+    C# had no map — so files in those languages produced no complexity,
+    cohesion, or test-quality biomarkers even though they are listed as
+    Full-tier. This adds their LanguageNodeMap entries so all nine Full-tier
+    languages compute the same biomarker set.
+    
+    - Kotlin / C++ / C#: control-flow, class-level (LCOM4 / god-class), and
+      assertion-block node maps, with handcrafted fixtures and walker tests
+      asserting nesting, cyclomatic complexity, class cohesion, and
+      assertion-run detection.
+    - Walker generalizations (additive; existing languages unchanged):
+      follow C/C++ declarator chains to recover the function name; match an
+      assertion call that is itself the statement (grammars without an
+      expression-statement wrapper); consult the receiver `expression` field
+      used by C# member access.
+    - Document the implicit-receiver limit (bare `field` vs `this.field`
+      degrades cohesion to "no signal", never a false positive).
+    - LANGUAGE_SUPPORT.md gains a code-health-biomarker support row plus a
+      per-language coverage checklist, and reconciles Go as the one gap
+      (no class-grouping node, so no class-level metrics).
+    
+    No scoring constants change; the snapshot test is untouched.
