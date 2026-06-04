@@ -12,7 +12,8 @@ interface GraphKeyboardShortcutOptions {
   setCommunityPanelId: Dispatch<SetStateAction<number | null>>;
   setColorMode: Dispatch<SetStateAction<ColorMode>>;
   /** Optional Escape pre-handler. Return true to consume the keystroke and skip
-   *  the default clear (used to collapse one constellation hub per Esc). */
+   *  the default clear. Used to dismiss the top UI layer first: clear an open
+   *  selection/panel, else collapse the most recent constellation hub. */
   onEscape?: (() => boolean) | undefined;
 }
 
@@ -45,7 +46,8 @@ export function useGraphKeyboardShortcuts(opts: GraphKeyboardShortcutOptions): v
           sigmaRef.current?.fitView();
           break;
         case "Escape":
-          // Collapse one expanded hub per Esc before the default clear.
+          // Let the host peel the top UI layer first (selection/panel, then
+          // hub); only fall through to the blanket clear if nothing was open.
           if (onEscape?.()) {
             e.preventDefault();
             break;

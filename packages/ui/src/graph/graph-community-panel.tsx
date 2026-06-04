@@ -1,6 +1,6 @@
 "use client";
 
-import { X, ArrowRight } from "lucide-react";
+import { X, ArrowRight, Sparkles } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
@@ -15,6 +15,10 @@ export interface GraphCommunityPanelProps {
   /** Loading flag from the consumer's data hook. */
   isLoading: boolean;
   onClose: () => void;
+  /** Optional: blossom this community's files on the canvas. When provided, an
+   *  "Expand on canvas" affordance is shown (the constellation single-click now
+   *  opens this panel instead of expanding, so the panel offers the expand). */
+  onExpandOnCanvas?: (() => void) | undefined;
 }
 
 export function GraphCommunityPanel({
@@ -22,6 +26,7 @@ export function GraphCommunityPanel({
   community,
   isLoading,
   onClose,
+  onExpandOnCanvas,
 }: GraphCommunityPanelProps) {
   return (
     <div className="absolute right-0 top-0 bottom-0 w-full sm:w-[360px] border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-20 flex flex-col shadow-lg shadow-black/20">
@@ -44,6 +49,19 @@ export function GraphCommunityPanel({
           <X className="h-4 w-4 text-[var(--color-text-tertiary)]" />
         </button>
       </div>
+
+      {/* Expand-on-canvas affordance — mirrors the double-click blossom. */}
+      {onExpandOnCanvas && (
+        <div className="px-4 py-2 border-b border-[var(--color-border-default)]">
+          <button
+            onClick={onExpandOnCanvas}
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1.5 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            <Sparkles className="h-3 w-3" />
+            Expand on canvas
+          </button>
+        </div>
+      )}
 
       {/* Content */}
       {isLoading ? (

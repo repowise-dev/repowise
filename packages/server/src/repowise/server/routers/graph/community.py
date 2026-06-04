@@ -32,6 +32,9 @@ from repowise.server.schemas import (
 # few mega-clusters exist; this keeps the blossom payload in the 50-300 target
 # band and the satellite layout responsive.
 _SLICE_MEMBER_CAP = 300
+# Boundary stubs per slice: only the most-connected outside neighbors survive,
+# so a blossom shows its strongest cross-cluster ties instead of a dust cloud.
+_SLICE_BOUNDARY_CAP = 40
 
 router = APIRouter()
 
@@ -164,7 +167,7 @@ async def community_slice(
     # cross-cluster links that pull in a boundary stub for the outside endpoint.
     edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     kept_edges: list[GraphEdge] = []
-    boundary_ids: set[str] = set()
+    boundary_degree: dict[str, int] = {}
     for e in edge_result.scalars():
         src_in = e.source_node_id in member_ids
         tgt_in = e.target_node_id in member_ids
@@ -172,9 +175,16 @@ async def community_slice(
             continue
         kept_edges.append(e)
         if not src_in:
-            boundary_ids.add(e.source_node_id)
+            boundary_degree[e.source_node_id] = boundary_degree.get(e.source_node_id, 0) + 1
         if not tgt_in:
-            boundary_ids.add(e.target_node_id)
+            boundary_degree[e.target_node_id] = boundary_degree.get(e.target_node_id, 0) + 1
+
+    # Cap boundary stubs to the most-connected neighbors: hub communities can
+    # touch thousands of outside files, which would flood the blossom with
+    # dust. Edges to dropped stubs are filtered by the visible_ids pass below.
+    boundary_ids = set(
+        sorted(boundary_degree, key=lambda n: (-boundary_degree[n], n))[:_SLICE_BOUNDARY_CAP]
+    )
 
     # Resolve boundary stub rows (minimal: just need a node row to render).
     boundary_nodes: list[GraphNode] = []

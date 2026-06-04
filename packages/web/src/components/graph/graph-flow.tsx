@@ -149,6 +149,7 @@ export function GraphFlow({
           repoId={repoId}
           communityId={props.communityId}
           onClose={props.onClose}
+          onExpandOnCanvas={props.onExpandOnCanvas}
         />
       )}
     />

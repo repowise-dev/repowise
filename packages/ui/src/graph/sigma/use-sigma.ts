@@ -140,7 +140,10 @@ export interface UseSigmaOptions {
 
 export interface UseSigmaReturn {
   sigma: Sigma | null;
-  focusNode: (nodeId: string) => void;
+  /** Ease the camera onto a node. `ratio` controls the resting zoom (smaller =
+   *  closer); defaults to 0.15 (tight, for small file nodes). Pass a larger
+   *  ratio for big constellation hubs so the surrounding cluster stays visible. */
+  focusNode: (nodeId: string, ratio?: number) => void;
   fitView: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -624,13 +627,18 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     sigma.getCamera().animatedReset({ duration: 500 });
   }, [options.graph]);
 
-  const focusNode = useCallback((nodeId: string) => {
+  const focusNode = useCallback((nodeId: string, ratio = 0.15) => {
     const sigma = sigmaRef.current;
     const graph = graphRef.current;
     if (!sigma || !graph || !graph.hasNode(nodeId)) return;
-    const attrs = graph.getNodeAttributes(nodeId);
+    // Camera state lives in Sigma's *framed* (normalized) coordinate space, NOT
+    // raw graph coords. Raw graph x/y (radial hubs sit hundreds of units from
+    // the origin) would fly the camera off into blank canvas. getNodeDisplayData
+    // returns the node's position already in the camera's coordinate system.
+    const display = sigma.getNodeDisplayData(nodeId);
+    if (!display) return;
     sigma.getCamera().animate(
-      { x: attrs.x, y: attrs.y, ratio: 0.15 },
+      { x: display.x, y: display.y, ratio },
       { duration: 400 },
     );
   }, []);

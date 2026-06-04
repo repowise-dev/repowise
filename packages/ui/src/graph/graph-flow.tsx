@@ -16,6 +16,10 @@ import { GraphProvider, type GraphContextValue, type Signal } from "./context";
 import { groupNodesAsModules, type FileNodeData, type ModuleNodeData } from "./elk-layout";
 
 const EMPTY_STRING_SET = new Set<string>();
+// Resting zoom when easing the camera onto a constellation hub. Looser than the
+// default file-node focus (0.15) so the hub *and* its surrounding cluster stay
+// visible instead of the disc filling the whole viewport.
+const HUB_FOCUS_RATIO = 0.45;
 // Below this node count file graphs build synchronously; at or above it we
 // build in chunks off the critical path (see sigmaGraph below).
 const ASYNC_BUILD_THRESHOLD = 1000;
@@ -103,6 +107,8 @@ export interface GraphFlowProps {
   renderCommunityPanel?: (props: {
     communityId: number;
     onClose: () => void;
+    /** Blossom this community's files on the canvas (expand affordance). */
+    onExpandOnCanvas: () => void;
   }) => ReactNode;
   /** Fired when the community detail panel transitions to open. Lets the
    *  hosting page dismiss any competing right-rail panel (doc panel etc.)
@@ -192,7 +198,7 @@ export function GraphFlow(props: GraphFlowProps) {
 
   // Expand/collapse constellation hubs (radial blossom). Esc collapses the most
   // recently expanded hub; multiple hubs may be open at once.
-  const { expandedHubs, toggleHub, expandHub, collapseLast, collapseAll: collapseAllHubs } =
+  const { expandedHubs, toggleHub, collapseLast, collapseAll: collapseAllHubs } =
     useExpandedHubs();
 
   useEffect(() => {
@@ -241,21 +247,21 @@ export function GraphFlow(props: GraphFlowProps) {
     [onCommunityPanelOpen],
   );
 
-  // Legend click in the constellation: expand the hub's blossom, ease the
-  // camera onto it, and surface the community in the existing detail panel.
-  // (G4 makes expand the primary action; focus + panel are retained.)
+  // Legend click in the constellation: select the hub, ease the camera onto it,
+  // and surface the community in the detail panel — NO expand. This mirrors the
+  // unified single-click grammar (expansion is reserved for double-click).
   const handleConstellationHubClick = useCallback(
     (cid: number) => {
       const nodeId = hubNodeId(cid);
-      expandHub(cid);
       setSelectedNodeId(nodeId);
-      sigmaRef.current?.focusNode(nodeId);
+      sigmaRef.current?.focusNode(nodeId, HUB_FOCUS_RATIO);
       openCommunityPanel(cid);
     },
-    [openCommunityPanel, expandHub],
+    [openCommunityPanel],
   );
 
-  // Hub *node* click toggles the blossom: expand (focus + panel) or collapse.
+  // Hub double-click toggles the blossom: expand eases the camera to frame the
+  // cluster (and opens the panel); collapse just folds it back.
   const handleConstellationHubToggle = useCallback(
     (cid: number) => {
       const willExpand = !expandedHubs.includes(cid);
@@ -263,7 +269,7 @@ export function GraphFlow(props: GraphFlowProps) {
       if (willExpand) {
         const nodeId = hubNodeId(cid);
         setSelectedNodeId(nodeId);
-        sigmaRef.current?.focusNode(nodeId);
+        sigmaRef.current?.focusNode(nodeId, HUB_FOCUS_RATIO);
         openCommunityPanel(cid);
       }
     },
@@ -724,36 +730,57 @@ export function GraphFlow(props: GraphFlowProps) {
 
   // ---- Handlers ----
 
+  // Unified grammar — DOUBLE CLICK = drill deeper (all views):
+  //   module    → expand/collapse the module's children
+  //   hub       → toggle the radial blossom (expand eases the camera onto it)
+  //   file/sat. → open the doc panel
+  //   core      → no-op (Sigma's default camera zoom is allowed)
+  // Returns true when an action ran so the canvas suppresses Sigma's default
+  // double-click zoom; core returns void so the zoom-jump is kept.
   const handleSigmaDoubleClick = useCallback(
-    (nodeId: string, nodeType: string) => {
+    (nodeId: string, nodeType: string): boolean | void => {
       if (nodeType === "module") {
         toggleModule(nodeId);
-      } else {
-        onNodeViewDocs?.(nodeId);
+        return true;
       }
-    },
-    [onNodeViewDocs, toggleModule],
-  );
-
-  const handleSigmaNodeClick = useCallback(
-    (nodeId: string, nodeType: string) => {
-      // Constellation hub click → toggle the radial blossom (expand/collapse).
       if (nodeType === "hub" && sigmaGraph?.hasNode(nodeId)) {
         const cid = sigmaGraph.getNodeAttribute(nodeId, "communityId");
         if (typeof cid === "number" && cid >= 0) {
           handleConstellationHubToggle(cid);
+          return true;
+        }
+        return;
+      }
+      if (nodeType === "core") return;
+      onNodeViewDocs?.(nodeId);
+      return true;
+    },
+    [onNodeViewDocs, toggleModule, sigmaGraph, handleConstellationHubToggle],
+  );
+
+  // Unified grammar — SINGLE CLICK = select + inspect (never structural):
+  //   file/module → select (no expansion; drill-down moved to double-click)
+  //   hub         → select + focus + open the community panel (NO expand)
+  //   core        → no-op
+  // Clicking an already-selected node is a no-op (keeps it selected); the two
+  // pre-clicks Sigma fires before a double-click therefore can't churn the
+  // selection. Deselection happens via stage click or Esc.
+  const handleSigmaNodeClick = useCallback(
+    (nodeId: string, nodeType: string) => {
+      if (nodeType === "core") return;
+      if (selectedNodeId === nodeId) return;
+      if (nodeType === "hub" && sigmaGraph?.hasNode(nodeId)) {
+        const cid = sigmaGraph.getNodeAttribute(nodeId, "communityId");
+        if (typeof cid === "number" && cid >= 0) {
+          setSelectedNodeId(nodeId);
+          sigmaRef.current?.focusNode(nodeId, HUB_FOCUS_RATIO);
+          openCommunityPanel(cid);
           return;
         }
       }
-      if (nodeType === "core") return;
-      if (selectedNodeId === nodeId) {
-        setSelectedNodeId(null);
-        setEgoDepth(0);
-      } else {
-        setSelectedNodeId(nodeId);
-      }
+      setSelectedNodeId(nodeId);
     },
-    [selectedNodeId, sigmaGraph, handleConstellationHubToggle],
+    [selectedNodeId, sigmaGraph, openCommunityPanel],
   );
 
   const handleSigmaNodeContextMenu = useCallback(
@@ -768,15 +795,25 @@ export function GraphFlow(props: GraphFlowProps) {
     [setCtxMenu],
   );
 
-  // Esc collapses the most recently expanded constellation hub (one per press),
-  // consuming the keystroke so the default clear only fires once all hubs close.
+  // Esc dismisses the top UI layer first (unified grammar): clear an open
+  // selection/panel before collapsing a constellation hub. Each press peels one
+  // layer; the keyboard hook's default clear only runs once nothing is open.
+  //   1. node selected OR community panel open → clear selection + panel + ego
+  //   2. else any hub expanded → collapse the most recent
+  //   3. else → fall through to the default clear (search, ctx menu, …)
   const handleEscapeCollapse = useCallback((): boolean => {
+    if (selectedNodeId !== null || communityPanelId !== null) {
+      setSelectedNodeId(null);
+      setCommunityPanelId(null);
+      setEgoDepth(0);
+      return true;
+    }
     if (isConstellation && expandedHubs.length > 0) {
       collapseLast();
       return true;
     }
     return false;
-  }, [isConstellation, expandedHubs.length, collapseLast]);
+  }, [selectedNodeId, communityPanelId, isConstellation, expandedHubs.length, collapseLast]);
 
   // Global keyboard shortcuts (f/Escape/1-3//, cmd+k)
   useGraphKeyboardShortcuts({
@@ -1140,6 +1177,7 @@ export function GraphFlow(props: GraphFlowProps) {
           renderCommunityPanel({
             communityId: communityPanelId,
             onClose: () => setCommunityPanelId(null),
+            onExpandOnCanvas: () => handleConstellationHubToggle(communityPanelId),
           })}
 
         {/* Inspection panel — works for both file and module nodes */}

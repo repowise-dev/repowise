@@ -8,12 +8,14 @@ interface GraphCommunityPanelWrapperProps {
   repoId: string;
   communityId: number;
   onClose: () => void;
+  onExpandOnCanvas?: (() => void) | undefined;
 }
 
 export function GraphCommunityPanel({
   repoId,
   communityId,
   onClose,
+  onExpandOnCanvas,
 }: GraphCommunityPanelWrapperProps) {
   const { community, isLoading } = useCommunityDetail(repoId, communityId);
 
@@ -23,6 +25,7 @@ export function GraphCommunityPanel({
       community={community as CommunityDetail | null | undefined}
       isLoading={isLoading}
       onClose={onClose}
+      onExpandOnCanvas={onExpandOnCanvas}
     />
   );
 }
