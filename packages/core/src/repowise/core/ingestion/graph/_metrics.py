@@ -172,7 +172,9 @@ class MetricsMixin:
             k = min(500, n)
             self._betweenness_cache = nx.betweenness_centrality(g, k=k, normalized=True)
         else:
-            self._betweenness_cache = nx.betweenness_centrality(g, normalized=True)
+            from ._betweenness import betweenness_centrality_fast
+
+            self._betweenness_cache = betweenness_centrality_fast(g, normalized=True)
         return self._betweenness_cache
 
     def in_degree(self) -> dict[str, int]:
@@ -275,7 +277,9 @@ class MetricsMixin:
             k = min(500, n)
             self._symbol_betweenness_cache = nx.betweenness_centrality(sub, k=k, normalized=True)
         else:
-            self._symbol_betweenness_cache = nx.betweenness_centrality(sub, normalized=True)
+            from ._betweenness import betweenness_centrality_fast
+
+            self._symbol_betweenness_cache = betweenness_centrality_fast(sub, normalized=True)
         return self._symbol_betweenness_cache
 
     # ------------------------------------------------------------------
