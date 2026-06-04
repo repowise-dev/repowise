@@ -23,9 +23,11 @@ function getLangColor(lang: string): string {
 interface LanguageDonutProps {
   /** Map of language → file count */
   distribution: Record<string, number>;
+  /** Optional "View in Graph →" target, rendered in the card header. */
+  viewAllHref?: string;
 }
 
-export function LanguageDonut({ distribution }: LanguageDonutProps) {
+export function LanguageDonut({ distribution, viewAllHref }: LanguageDonutProps) {
   const entries = Object.entries(distribution)
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value);
@@ -38,11 +40,21 @@ export function LanguageDonut({ distribution }: LanguageDonutProps) {
   if (otherValue > 0) shown.push({ name: "other", value: otherValue });
 
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <Code className="h-4 w-4 text-[var(--color-text-secondary)]" />
-          Languages
+        <CardTitle className="text-sm flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <Code className="h-4 w-4 text-[var(--color-text-secondary)]" />
+            Languages
+          </span>
+          {viewAllHref && (
+            <a
+              href={viewAllHref}
+              className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
+            >
+              View in Graph →
+            </a>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="pt-0">
