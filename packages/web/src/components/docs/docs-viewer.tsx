@@ -510,12 +510,6 @@ function DocsViewerBody({
             showScore
           />
 
-          {/* Provider */}
-          <Badge variant="outline" className="font-mono text-[10px] hidden sm:flex shrink-0">
-            <Cpu className="h-2.5 w-2.5 mr-1" />
-            <span className="truncate max-w-[100px]">{page.model_name}</span>
-          </Badge>
-
           {/* Download as markdown */}
           <button
             onClick={() => {
@@ -639,6 +633,12 @@ function DocsViewerBody({
               <span className="font-mono">
                 {formatTokens(page.input_tokens)} in · {formatTokens(page.output_tokens)} out
               </span>
+              {page.model_name && (
+                <span className="flex items-center gap-1 font-mono">
+                  <Cpu className="h-3 w-3" />
+                  {page.model_name}
+                </span>
+              )}
             </div>
 
             {/* Human notes */}

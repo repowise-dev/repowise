@@ -645,12 +645,11 @@ function TreeItem({
 }
 
 function FreshnessDot({ status }: { status: FreshnessStatus }) {
+  // Fresh is the expected state — only flag pages that need attention, so a
+  // healthy tree stays visually quiet instead of showing hundreds of dots.
+  if (status === "fresh") return null;
   const color =
-    status === "fresh"
-      ? "bg-green-500"
-      : status === "stale"
-        ? "bg-yellow-500"
-        : "bg-red-500";
+    status === "stale" ? "bg-[var(--color-warning)]" : "bg-[var(--color-error)]";
   return <span className={cn("ml-auto h-1.5 w-1.5 rounded-full shrink-0", color)} />;
 }
 
@@ -678,7 +677,9 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
     }
     return dirs;
   });
-  const [showFilters, setShowFilters] = useState(true);
+  // Filters are a power-user affordance — start hidden so the panel opens
+  // calm; the funnel button shows a count when any filter is active.
+  const [showFilters, setShowFilters] = useState(false);
 
   const tree = useMemo(
     () => (viewMode === "domain" ? buildDomainTree(pages) : buildTree(pages)),
@@ -701,6 +702,9 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   // Stats
   const totalPages = pages.length;
   const freshCount = pages.filter((p) => p.freshness_status === "fresh").length;
+  const needAttention = totalPages - freshCount;
+  const activeFilterCount =
+    (typeFilter !== "all" ? 1 : 0) + (freshnessFilter !== "all" ? 1 : 0);
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
@@ -740,14 +744,21 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
           </div>
           <button
             onClick={() => setShowFilters((s) => !s)}
+            aria-label="Toggle filters"
+            aria-expanded={showFilters}
             className={cn(
-              "rounded-md p-1.5 transition-colors",
-              showFilters
+              "relative rounded-md p-1.5 transition-colors",
+              showFilters || activeFilterCount > 0
                 ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                 : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]",
             )}
           >
             <Filter className="h-3.5 w-3.5" />
+            {activeFilterCount > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-accent-fill)] text-[9px] font-semibold text-[var(--color-text-on-accent)]">
+                {activeFilterCount}
+              </span>
+            )}
           </button>
         </div>
 
@@ -792,10 +803,14 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
           </div>
         )}
 
-        {/* Stats line */}
-        <div className="flex items-center justify-between text-[10px] text-[var(--color-text-tertiary)]">
-          <span>{totalPages} pages</span>
-          <span>{freshCount} fresh · {totalPages - freshCount} need attention</span>
+        {/* Stats line — quiet when everything is fresh */}
+        <div className="text-[10px] text-[var(--color-text-tertiary)]">
+          {totalPages} pages
+          {needAttention === 0 ? (
+            <span> · all fresh</span>
+          ) : (
+            <span className="text-[var(--color-warning)]"> · {needAttention} need attention</span>
+          )}
         </div>
       </div>
 
