@@ -13,7 +13,7 @@ def build_symbol_index(graph: Any) -> dict[str, list[tuple[Any, dict]]]:
     """Bucket symbol nodes by ``file_path`` in one pass over the graph.
 
     ``extract_call_graph`` / ``extract_heritage`` historically scanned every
-    graph node per file — O(files × nodes) across a generation run. Callers
+    graph node per file — O(files x nodes) across a generation run. Callers
     that assemble context for many files build this index once and pass it
     in; per-file extraction becomes a dict lookup. Buckets preserve the
     graph's node iteration order, so results are byte-identical to the scan.

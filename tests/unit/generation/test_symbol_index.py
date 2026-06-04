@@ -70,9 +70,9 @@ def test_index_buckets_only_symbol_nodes() -> None:
 def test_assemble_file_page_identical_with_index() -> None:
     from repowise.core.generation.context_assembler import ContextAssembler
     from repowise.core.generation.models import GenerationConfig
+    from repowise.core.ingestion.models import ParsedFile
 
     from .conftest import _make_file_info, _make_symbol
-    from repowise.core.ingestion.models import ParsedFile
 
     g = _mixed_graph()
     path = "pkg/f1.py"
