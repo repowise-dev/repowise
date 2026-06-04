@@ -195,6 +195,9 @@
   /* ================================================================== */
   --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Geist Mono", "JetBrains Mono", "Fira Code", monospace;
+  /* Serif display face for docs/wiki headings (loaded via next/font as
+     --font-lora; Georgia fallback keeps SSR/storybook surfaces sane). */
+  --font-serif: var(--font-lora), "Lora", Georgia, serif;
 
   --text-xs: 0.8125rem;
   --text-sm: 0.875rem;

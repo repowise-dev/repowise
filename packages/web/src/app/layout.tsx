@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
+import { Lora } from "next/font/google";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { TooltipProvider } from "@repowise-dev/ui/ui/tooltip";
 import { ThemeProvider } from "@/components/layout/theme-provider";
@@ -15,6 +16,9 @@ import { listRepos } from "@/lib/api/repos";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceResponse } from "@/lib/api/types";
 import "@/styles/globals.css";
+
+// Serif display face for the docs/wiki reading surfaces (--font-serif token).
+const lora = Lora({ subsets: ["latin"], variable: "--font-lora", display: "swap" });
 
 export const metadata: Metadata = {
   title: {
@@ -48,7 +52,7 @@ export default async function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${GeistSans.variable} ${GeistMono.variable}`}
+      className={`${GeistSans.variable} ${GeistMono.variable} ${lora.variable}`}
     >
       <body className="bg-[var(--color-bg-root)] text-[var(--color-text-primary)] antialiased">
         <ThemeProvider>
