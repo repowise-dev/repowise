@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Bind Tailwind's `dark:` variant to next-themes' `.dark` class. Without
+   this, Tailwind v4 defaults `dark:` to prefers-color-scheme — utilities
+   would follow the OS appearance instead of the in-app Light/Dark toggle. */
+@custom-variant dark (&:is(.dark *));
+
 /*
  * @repowise-dev/ui — canonical design tokens (October Sunset).
  *
