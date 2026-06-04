@@ -8,6 +8,7 @@ blocks delegated to ``enrichment``).
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 
@@ -502,6 +503,15 @@ async def _resolve_one_target(
                 if recent and recent != meta.primary_owner_name:
                     ownership["recent_owner"] = recent
                     ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
+                # Agent provenance — only surfaced when agent-attributed
+                # commits exist, so human-only files stay noise-free.
+                if getattr(meta, "agent_commit_count", 0):
+                    ownership["agent_authored_pct"] = getattr(meta, "agent_authored_pct", None)
+                    ownership["agent_commit_count"] = meta.agent_commit_count
+                    with contextlib.suppress(TypeError, ValueError):
+                        ownership["agent_tier_counts"] = json.loads(
+                            getattr(meta, "agent_tier_counts_json", None) or "{}"
+                        )
             else:
                 ownership["primary_owner"] = None
                 ownership["owner_pct"] = None

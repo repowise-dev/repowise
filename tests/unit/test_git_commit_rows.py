@@ -25,6 +25,10 @@ def _build_log(commits: list[dict]) -> str:
             + "\x1f"
             + c["ae"]
             + "\x1f"
+            + c.get("cn", c["an"])
+            + "\x1f"
+            + c.get("ce", c["ae"])
+            + "\x1f"
             + str(c["ct"])
             + "\x1f"
             + c.get("parents", "")

@@ -98,6 +98,12 @@ def build_commit_rows(parsed_commits: list[dict]) -> list[dict]:
                 "author_experience": exp,
                 "change_risk_score": risk.score,
                 "change_risk_level": risk.level,
+                # Agent provenance — classified during the walk (commit-index
+                # sink); pure passthrough here so this transform stays git-free.
+                "agent_name": c.get("agent_name"),
+                "agent_autonomy_tier": c.get("agent_autonomy_tier"),
+                "agent_channel": c.get("agent_channel"),
+                "agent_confidence": c.get("agent_confidence"),
             }
         )
     return rows

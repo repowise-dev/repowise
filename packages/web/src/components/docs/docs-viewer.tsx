@@ -241,6 +241,14 @@ function AtAGlance({ repoId, targetPath }: { repoId: string; targetPath: string 
           <span className="text-[var(--color-text-tertiary)]">Contributors</span>
           <span className="font-mono">{data.contributor_count}</span>
         </div>
+        {data.agent_authored_pct != null && (data.agent_commit_count ?? 0) > 0 && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[var(--color-text-tertiary)]">Agent-authored</span>
+            <span className="font-mono">
+              {Math.round(data.agent_authored_pct * 100)}% · {data.agent_commit_count}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

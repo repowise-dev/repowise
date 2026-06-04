@@ -36,6 +36,7 @@ def load_commit_index(
     *,
     commit_sink: list[dict] | None = None,
     since_ts: int | None = None,
+    provenance_classifier: object | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -66,6 +67,13 @@ def load_commit_index(
     without re-walking the full window. Default (``None``) processes the whole
     depth.
 
+    *provenance_classifier* (an
+    :class:`~.git_indexer.agent_provenance.AgentProvenanceClassifier`) labels
+    each commit's agent provenance once per commit — pure in-memory regex on
+    the already-parsed record, no extra git pass. ``None`` uses the built-in
+    pattern registry; callers with repo-local pattern extensions pass the
+    config-aware instance instead.
+
     Failures (git unavailable, corrupt log output, etc.) return an
     empty dict so the caller can fall back to per-file indexing.
     """
@@ -78,6 +86,10 @@ def load_commit_index(
         _extract_rename_paths,
         _parse_commit_record,
     )
+    from .git_indexer.agent_provenance import AgentProvenanceClassifier
+
+    if provenance_classifier is None:
+        provenance_classifier = AgentProvenanceClassifier()
 
     try:
         raw = repo.git.log(  # type: ignore[attr-defined]
@@ -113,6 +125,16 @@ def load_commit_index(
         if since_ts is not None and header["ts"] <= since_ts:
             continue
         commits_parsed += 1
+
+        # Agent provenance — classified ONCE per commit here (not per touched
+        # file): the per-file records below share the result by reference.
+        prov = provenance_classifier.classify(  # type: ignore[attr-defined]
+            header["author_name"],
+            header["author_email"],
+            header["committer_name"],
+            header["committer_email"],
+            f"{header['subject']}\n{header['body']}",
+        )
 
         # Full change footprint of this commit (every file, not just the
         # indexable subset) — only accumulated when a sink is requested so the
@@ -162,6 +184,8 @@ def load_commit_index(
                     body=header["body"],
                     added=added,
                     deleted=deleted,
+                    agent=prov.agent,
+                    agent_tier=prov.autonomy_tier,
                 )
             )
 
@@ -174,6 +198,10 @@ def load_commit_index(
                     "ts": header["ts"],
                     "subject": header["subject"],
                     "changes": commit_changes,
+                    "agent_name": prov.agent,
+                    "agent_autonomy_tier": prov.autonomy_tier,
+                    "agent_channel": prov.channel,
+                    "agent_confidence": prov.confidence,
                 }
             )
 

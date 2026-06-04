@@ -385,13 +385,13 @@ class TestStableClassification:
 
         # Build 15 commits all older than 90 days.
         # _index_file now uses repo.git.log with NUL-delimited format:
-        # \x00<sha>\x1f<author>\x1f<email>\x1f<unix_ts>\x1f<parents>\x1f<subject>\x1f<body>
+        # \x00<sha>\x1f<author>\x1f<email>\x1f<committer>\x1f<committer_email>\x1f<unix_ts>\x1f<parents>\x1f<subject>\x1f<body>
         old_date = datetime.now(UTC) - timedelta(days=180)
         log_lines = []
         for i in range(15):
             ts = int((old_date - timedelta(days=i)).timestamp())
             log_lines.append(
-                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1f{ts}\x1f\x1ffeat: old commit {i}\x1f"
+                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f\x1ffeat: old commit {i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
 
@@ -420,7 +420,7 @@ class TestStableClassification:
         for i, (name, email, when) in enumerate(specs):
             ts = int(when.timestamp())
             log_lines.append(
-                f"\x00sha{i:04d}\x1f{name}\x1f{email}\x1f{ts}\x1f\x1ffeat: c{i}\x1f"
+                f"\x00sha{i:04d}\x1f{name}\x1f{email}\x1f{name}\x1f{email}\x1f{ts}\x1f\x1ffeat: c{i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
 
@@ -448,7 +448,7 @@ class TestGitWindowAnchor:
         for i in range(15):
             ts = int((old_date - timedelta(days=i)).timestamp())
             log_lines.append(
-                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1f{ts}\x1f\x1ffeat: old {i}\x1f"
+                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f\x1ffeat: old {i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
         # HEAD tip = the newest of the (old) batch.
@@ -600,6 +600,8 @@ class TestNumstatParsing:
             header = (
                 f"\x00{e['sha']}\x1f{e.get('author', 'Dev')}"
                 f"\x1f{e.get('email', 'dev@x.com')}"
+                f"\x1f{e.get('committer', e.get('author', 'Dev'))}"
+                f"\x1f{e.get('committer_email', e.get('email', 'dev@x.com'))}"
                 f"\x1f{e['ts']}\x1f{e.get('parents', '')}"
                 f"\x1f{e.get('subject', 'some commit')}"
                 f"\x1f{e.get('body', '')}"
@@ -688,7 +690,7 @@ class TestNumstatParsing:
         # First record is malformed (only 3 fields), second is valid
         raw = (
             f"\x00badsha\x1fAlice\x1falice@x.com\n"  # only 3 fields
-            f"\x00goodsha\x1fBob\x1fbob@x.com\x1f{recent_ts}\x1f\x1ffeat: valid commit\x1f\n"
+            f"\x00goodsha\x1fBob\x1fbob@x.com\x1fBob\x1fbob@x.com\x1f{recent_ts}\x1f\x1ffeat: valid commit\x1f\n"
             f"10\t5\ttest.py\n"
         )
         mock_repo.git.log.return_value = raw
@@ -705,7 +707,7 @@ class TestNumstatParsing:
 
         recent_ts = int((datetime.now(UTC) - timedelta(days=5)).timestamp())
         raw = (
-            f"\x00sha1\x1fAlice\x1fa@x.com\x1f{recent_ts}"
+            f"\x00sha1\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{recent_ts}"
             f"\x1fparent1 parent2\x1fMerge branch main\x1f\n"
             f"5\t2\tmerged.py\n"
         )
@@ -726,13 +728,13 @@ class TestNumstatParsing:
         # Simulates --follow output: recent commit uses new name,
         # older commit uses rename notation, oldest uses old name.
         raw = (
-            f"\x00sha1\x1fAlice\x1fa@x.com\x1f{recent_ts}\x1f\x1ffeat: update\x1f\n"
+            f"\x00sha1\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{recent_ts}\x1f\x1ffeat: update\x1f\n"
             f"10\t3\tsrc/new_name.py\n"
             f"\n"
-            f"\x00sha2\x1fAlice\x1fa@x.com\x1f{old_ts}\x1f\x1frename file\x1f\n"
+            f"\x00sha2\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{old_ts}\x1f\x1frename file\x1f\n"
             f"0\t0\t{{src/old_name.py => src/new_name.py}}\n"
             f"\n"
-            f"\x00sha3\x1fAlice\x1fa@x.com\x1f{old_ts - 86400}\x1f\x1ffeat: old work\x1f\n"
+            f"\x00sha3\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{old_ts - 86400}\x1f\x1ffeat: old work\x1f\n"
             f"20\t5\tsrc/old_name.py\n"
         )
         mock_repo.git.log.return_value = raw

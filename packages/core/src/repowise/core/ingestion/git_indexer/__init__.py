@@ -20,6 +20,11 @@ This package was split out of a single 1k-line module; the public import path
 from __future__ import annotations
 
 from ._constants import HOTSPOT_HALFLIFE_DAYS, is_fix_commit
+from .agent_provenance import (
+    AgentProvenance,
+    AgentProvenanceClassifier,
+    classifier_from_repo_config,
+)
 from .backfill import BACKFILL_PHASE, backfill_full_tier
 from .co_change import compute_co_changes, compute_co_changes_and_entropy
 from .enrich import (
@@ -52,6 +57,8 @@ __all__ = [
     "_FIELD_SEP",
     "_LOG_FORMAT",
     "_RECORD_SEP",
+    "AgentProvenance",
+    "AgentProvenanceClassifier",
     "GitIndexSummary",
     "GitIndexTier",
     "GitIndexer",
@@ -60,6 +67,7 @@ __all__ = [
     "_parse_commit_record",
     "_should_skip_index",
     "backfill_full_tier",
+    "classifier_from_repo_config",
     "compute_co_changes",
     "compute_co_changes_and_entropy",
     "compute_percentiles",

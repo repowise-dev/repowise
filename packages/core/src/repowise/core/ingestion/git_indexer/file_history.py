@@ -110,6 +110,12 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # ``prior_defect`` health biomarker; mirrors the benchmark's
         # prior-defects baseline definition (product == benchmark).
         "prior_defect_count": 0,
+        # Agent provenance rollup: how much of this file's indexed history is
+        # agent-attributed (local channels only — see agent_provenance module).
+        # agent_authored_pct stays None when the file has no commits at all.
+        "agent_commit_count": 0,
+        "agent_authored_pct": None,
+        "agent_tier_counts_json": "{}",
         # Temporal hotspot score (exponentially decayed churn)
         "temporal_hotspot_score": 0.0,
         # Change entropy (Hassan HCM) — populated repo-wide by the co-change
@@ -126,6 +132,7 @@ def _parse_per_file_log(
     *,
     commit_limit: int,
     follow_renames: bool,
+    provenance_classifier: Any | None = None,
 ) -> tuple[list[_CommitRec], str | None]:
     """Run a per-file ``git log --numstat`` and parse it into commit records.
 
@@ -176,6 +183,16 @@ def _parse_per_file_log(
             subject=header["subject"],
             body=header["body"],
         )
+        if provenance_classifier is not None:
+            prov = provenance_classifier.classify(
+                header["author_name"],
+                header["author_email"],
+                header["committer_name"],
+                header["committer_email"],
+                f"{header['subject']}\n{header['body']}",
+            )
+            current.agent = prov.agent
+            current.agent_tier = prov.autonomy_tier
         commits.append(current)
         for line in numstat_lines:
             numstat_parts = line.split("\t")
@@ -205,6 +222,7 @@ def index_file(
     include_blame: bool = True,
     precomputed_commits: list[_CommitRec] | None = None,
     as_of_ts: float | None = None,
+    provenance_classifier: Any | None = None,
 ) -> dict:
     """Index a single file's git history. Runs in executor.
 
@@ -239,6 +257,7 @@ def index_file(
             file_path,
             commit_limit=commit_limit,
             follow_renames=follow_renames,
+            provenance_classifier=provenance_classifier,
         )
 
     if not commits:
@@ -290,6 +309,18 @@ def index_file(
         c90 = meta["commit_count_90d"]
         total_churn = meta["lines_added_90d"] + meta["lines_deleted_90d"]
         meta["avg_commit_size"] = total_churn / c90 if c90 > 0 else 0.0
+
+        # Agent-provenance rollup: share of this file's indexed commits that
+        # are agent-attributed, plus the per-autonomy-tier breakdown. The
+        # per-commit labels were classified once during the walk; this is a
+        # pure count over the already-carried records.
+        agent_commits = [c for c in commits if getattr(c, "agent", None)]
+        meta["agent_commit_count"] = len(agent_commits)
+        meta["agent_authored_pct"] = len(agent_commits) / len(commits)
+        tier_counts: Counter[str] = Counter(
+            str(c.agent_tier) for c in agent_commits if c.agent_tier
+        )
+        meta["agent_tier_counts_json"] = json.dumps(dict(tier_counts))
 
         # Temporal hotspot score: exponentially decayed per-commit churn.
         _ln2 = math.log(2)

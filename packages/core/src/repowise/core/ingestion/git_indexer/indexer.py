@@ -120,6 +120,7 @@ class GitIndexer:
         # ``git log -- <file>`` — turning O(files) process spawns into O(1).
         commit_index: dict[str, list[_CommitRec]] = {}
         commit_sink: list[dict] = []
+        prov_clf = self._provenance_classifier()
         if not self.follow_renames:
             from ..git_commit_index import load_commit_index
 
@@ -128,6 +129,7 @@ class GitIndexer:
                 self.commit_limit,
                 set(indexable_files),
                 commit_sink=commit_sink,
+                provenance_classifier=prov_clf,
             )
 
         include_blame = self.tier.includes_blame
@@ -150,6 +152,7 @@ class GitIndexer:
                         include_blame=include_blame,
                         precomputed_commits=precomputed,
                         as_of_ts=as_of_ts,
+                        provenance_classifier=prov_clf,
                     )
                 finally:
                     thread_repo.close()
@@ -373,7 +376,12 @@ class GitIndexer:
             # Empty indexable set: we only want the full-footprint sink, not the
             # per-file bucket (which the incremental file pass already rebuilt).
             load_commit_index(
-                repo, self.commit_limit, set(), commit_sink=sink, since_ts=since_ts
+                repo,
+                self.commit_limit,
+                set(),
+                commit_sink=sink,
+                since_ts=since_ts,
+                provenance_classifier=self._provenance_classifier(),
             )
             return build_commit_rows(sink)
         except Exception as exc:
@@ -385,6 +393,22 @@ class GitIndexer:
     # ------------------------------------------------------------------
     # Internal methods
     # ------------------------------------------------------------------
+
+    def _provenance_classifier(self) -> Any:
+        """Config-aware agent-provenance classifier, built once per index run.
+
+        Failure-isolated: a malformed repo config falls back to the built-in
+        pattern registry rather than breaking the git phase.
+        """
+        try:
+            from .agent_provenance import classifier_from_repo_config
+
+            return classifier_from_repo_config(self.repo_path)
+        except Exception as exc:
+            logger.debug("agent_provenance_classifier_failed", error=str(exc))
+            from .agent_provenance import AgentProvenanceClassifier
+
+            return AgentProvenanceClassifier()
 
     def _resolve_as_of_ts(
         self, repo: Any, commit_index: dict[str, list[_CommitRec]] | None = None

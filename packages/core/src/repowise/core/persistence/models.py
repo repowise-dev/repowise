@@ -403,6 +403,16 @@ class GitMetadata(Base):
     change_entropy: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     change_entropy_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
+    # Agent-provenance rollup: how much of this file's indexed history is
+    # agent-attributed (deterministic local-channel classification — identity
+    # fields, message footers, co-author trailers; see
+    # ingestion.git_indexer.agent_provenance). agent_tier_counts_json maps
+    # autonomy tier ("1" near-autonomous / "2" human-driven / "3" assisted)
+    # to commit counts. agent_authored_pct stays NULL until the next reindex.
+    agent_commit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    agent_authored_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agent_tier_counts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -462,6 +472,16 @@ class GitCommit(Base):
     # score is pure arithmetic on already-parsed diff data (zero LLM, no blame).
     change_risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # Agent provenance: which coding agent (if any) authored this commit, at
+    # what autonomy tier (1 near-autonomous bot account · 2 human-driven agent
+    # · 3 assisted/co-authored), via which attribution channel, and with what
+    # confidence band. NULL throughout = human-authored (or pre-migration rows;
+    # back-populated on the next index). Deterministic local-git channels only.
+    agent_name: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_autonomy_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    agent_channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
