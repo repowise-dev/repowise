@@ -22,7 +22,6 @@ export interface ArchFileNodeProps {
 function ArchFileNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: ArchFileNodeProps };
   const { node, hasDocs, searchHighlight, tourHighlight, tourStepNumber, diffState, dimmed } = data;
-  const effectiveDiffState = dimmed && !diffState ? "faded" : diffState;
 
   // Re-export barrels are de-emphasized with their honest summary (plan C-3):
   // faded card, no entry-point badge — they are shells, not destinations.
@@ -107,7 +106,17 @@ function ArchFileNodeImpl(props: NodeProps) {
         },
       }}
     >
-      <div style={barrelFaded ? { opacity: 0.55 } : undefined}>
+      {/* Dimming discipline (plan D): unrelated cards fade, never vanish —
+          the diff overlay keeps its stronger "faded" treatment. */}
+      <div
+        style={
+          barrelFaded
+            ? { opacity: 0.55, transition: "opacity 0.2s ease" }
+            : dimmed && !diffState
+              ? { opacity: 0.45, transition: "opacity 0.2s ease" }
+              : { transition: "opacity 0.2s ease" }
+        }
+      >
         <NodeShell
           tone={node.node_type}
           kindLabel={kindLabel}
@@ -117,7 +126,7 @@ function ArchFileNodeImpl(props: NodeProps) {
           selected={selected}
           searchHighlight={searchHighlight}
           tourHighlight={tourHighlight}
-          diffState={effectiveDiffState}
+          diffState={diffState}
           hasDocs={hasDocs ?? node.has_doc}
           badges={badges}
           width={300}

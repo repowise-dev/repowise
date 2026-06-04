@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import type { NodeProps } from "@xyflow/react";
 import { NodeShell } from "../../src/graph-primitives/node-shell";
 import { ArchFileNode } from "../../src/c4/nodes/ArchFileNode";
+import { LayerClusterNode } from "../../src/c4/nodes/LayerClusterNode";
+import { useArchitectureStore } from "../../src/c4/store/use-architecture-store";
+import { createMockView } from "./fixtures";
 import type { ArchNode, ArchLayer } from "../../src/c4/types";
 
 vi.mock("@xyflow/react", () => ({
@@ -136,6 +139,49 @@ describe("ArchFileNode barrels + tour badge (plan C-2/C-3)", () => {
   it("shows the numbered tour-step badge when highlighted by the tour", () => {
     const { getByLabelText } = renderArchFile({}, { tourStepNumber: 3, tourHighlight: true });
     expect(getByLabelText("Tour step 3")).toBeDefined();
+  });
+
+  it("selection dimming fades unrelated cards to 0.45, never vanishes them", () => {
+    const { container } = renderArchFile({}, { dimmed: true });
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.style.opacity).toBe("0.45");
+    // The diff overlay keeps its own stronger fade — dimming must not hijack it.
+    const inner = wrapper.firstElementChild as HTMLElement;
+    expect(inner.style.opacity).not.toBe("0.25");
+  });
+});
+
+describe("a11y: tier cards are keyboard-operable (plan D)", () => {
+  function renderCard(kind: "layer" | "subGroup", layerId: string) {
+    const store = useArchitectureStore;
+    store.setState(store.getInitialState());
+    const view = createMockView();
+    // Give layer:api curated sub-groups so drilling lands on the groups tier.
+    view.layers[0]!.sub_groups = [
+      { id: "layer:api:app", name: "app", node_ids: ["src/app.py"] },
+      { id: "layer:api:routes", name: "routes", node_ids: ["src/routes.py"] },
+    ];
+    store.getState().setView(view);
+    const layer = { ...view.layers[0]!, id: layerId, name: "API" };
+    const props = {
+      data: { layer, kind },
+      selected: false,
+    } as unknown as NodeProps;
+    return render(<LayerClusterNode {...props} />);
+  }
+
+  it("Enter on a layer card drills into the layer", () => {
+    const { getByRole } = renderCard("layer", "layer:api");
+    fireEvent.keyDown(getByRole("button"), { key: "Enter" });
+    expect(useArchitectureStore.getState().activeLayerId).toBe("layer:api");
+    expect(useArchitectureStore.getState().navigationLevel).toBe("layer-groups");
+  });
+
+  it("Space on a sub-group card drills into the group", () => {
+    const { getByRole } = renderCard("subGroup", "layer:api:app");
+    fireEvent.keyDown(getByRole("button"), { key: " " });
+    expect(useArchitectureStore.getState().activeSubGroupId).toBe("layer:api:app");
+    expect(useArchitectureStore.getState().navigationLevel).toBe("layer-detail");
   });
 });
 

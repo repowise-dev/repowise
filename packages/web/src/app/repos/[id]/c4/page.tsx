@@ -260,7 +260,12 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
         </div>
       </div>
 
-      <style>{KEYFRAMES.accentPulse}{KEYFRAMES.edgeFlow}</style>
+      <style>{KEYFRAMES.accentPulse}{KEYFRAMES.edgeFlow}{`
+        /* Zoom-into-tier feel: nodes glide to their next slot (plan D). */
+        @media (prefers-reduced-motion: no-preference) {
+          .react-flow__node { transition: transform 180ms ease; }
+        }
+      `}</style>
       <div className="flex-1 min-h-0 relative">
         {error && (
           <div className="absolute inset-0 flex items-center justify-center text-red-300 text-sm z-10 pointer-events-none">
@@ -398,12 +403,23 @@ function LegacyC4View({ repoId, repoName }: { repoId: string; repoName: string }
   return (
     <>
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
-        <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          Knowledge Graph
-        </h1>
-        <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-          System context, containers, and components — drill in to navigate.
-        </p>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
+              Knowledge Graph
+            </h1>
+            <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+              System context, containers, and components — drill in to navigate.
+            </p>
+          </div>
+          {/* Legacy mode is frozen (locked decision 4) — point at the new view. */}
+          <a
+            href="?mode=architecture"
+            className="shrink-0 rounded-full border border-[var(--color-accent-primary,#f59520)]/50 bg-[var(--color-accent-primary,#f59520)]/10 px-3 py-1 text-xs text-[var(--color-accent-primary,#f59520)] hover:bg-[var(--color-accent-primary,#f59520)]/20"
+          >
+            Try the new architecture view →
+          </a>
+        </div>
       </div>
       <div className="flex-1 min-h-0">
         <C4Diagram

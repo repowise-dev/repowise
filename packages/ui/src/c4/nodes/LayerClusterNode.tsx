@@ -97,7 +97,16 @@ function LayerClusterNodeImpl(props: NodeProps) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`${kind === "subGroup" ? "Explore group" : "Explore layer"} ${layer.name}`}
       onClick={handleClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleClick();
+        }
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
