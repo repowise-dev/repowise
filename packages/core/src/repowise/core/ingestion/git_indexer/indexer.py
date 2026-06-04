@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import os
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -134,28 +135,30 @@ class GitIndexer:
 
         include_blame = self.tier.includes_blame
         as_of_ts = self._resolve_as_of_ts(repo, commit_index)
+        get_thread_repo, close_thread_repos = self._thread_repo_pool()
 
         def _index_one_sync(file_path: str) -> dict:
-            """Use a per-thread Repo to avoid shared-handle issues on Windows."""
-            try:
-                import git as gitpython
+            """Use a per-thread Repo to avoid shared-handle issues on Windows.
 
-                thread_repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
-                try:
-                    precomputed = commit_index.get(file_path) if commit_index else None
-                    return index_file(
-                        thread_repo,
-                        file_path,
-                        repo_path=self.repo_path,
-                        commit_limit=self.commit_limit,
-                        follow_renames=self.follow_renames,
-                        include_blame=include_blame,
-                        precomputed_commits=precomputed,
-                        as_of_ts=as_of_ts,
-                        provenance_classifier=prov_clf,
-                    )
-                finally:
-                    thread_repo.close()
+            The Repo is created once per worker thread and reused across files
+            — constructing a fresh ``gitpython.Repo`` per file costs ~40 ms
+            each (config + ref resolution), which dominated the git phase on
+            repos with thousands of files.
+            """
+            try:
+                thread_repo = get_thread_repo()
+                precomputed = commit_index.get(file_path) if commit_index else None
+                return index_file(
+                    thread_repo,
+                    file_path,
+                    repo_path=self.repo_path,
+                    commit_limit=self.commit_limit,
+                    follow_renames=self.follow_renames,
+                    include_blame=include_blame,
+                    precomputed_commits=precomputed,
+                    as_of_ts=as_of_ts,
+                    provenance_classifier=prov_clf,
+                )
             except Exception:
                 return {"file_path": file_path}
 
@@ -215,6 +218,7 @@ class GitIndexer:
         # Abandon any timed-out threads immediately instead of letting
         # asyncio.run() block for minutes during default-executor cleanup.
         executor.shutdown(wait=False, cancel_futures=True)
+        close_thread_repos()
 
         results: list[dict] = []
         for r in metadata_list:
@@ -282,7 +286,14 @@ class GitIndexer:
         return summary, results
 
     async def index_changed_files(self, changed_file_paths: list[str]) -> list[dict]:
-        """Incremental update: re-index only changed files."""
+        """Incremental update: re-index only changed files.
+
+        Mirrors ``index_repo``'s batched shape: one repo-wide commit-index
+        walk feeds every per-file worker (instead of one ``git log -- <file>``
+        subprocess per changed file), so the metadata an update produces is
+        identical to what a fresh full index would produce — including the
+        agent-provenance rollup, which the old per-file path never classified.
+        """
         repo = self._get_repo()
         if repo is None:
             return []
@@ -290,25 +301,36 @@ class GitIndexer:
         loop = asyncio.get_event_loop()
         semaphore = asyncio.Semaphore(20)
         include_blame = self.tier.includes_blame
-        as_of_ts = self._resolve_as_of_ts(repo)
+
+        prov_clf = self._provenance_classifier()
+        commit_index: dict[str, list[_CommitRec]] = {}
+        if not self.follow_renames:
+            from ..git_commit_index import load_commit_index
+
+            commit_index = load_commit_index(
+                repo,
+                self.commit_limit,
+                set(changed_file_paths),
+                provenance_classifier=prov_clf,
+            )
+        as_of_ts = self._resolve_as_of_ts(repo, commit_index)
+        get_thread_repo, close_thread_repos = self._thread_repo_pool()
 
         def _index_one_sync(file_path: str) -> dict:
             try:
-                import git as gitpython
-
-                thread_repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
-                try:
-                    return index_file(
-                        thread_repo,
-                        file_path,
-                        repo_path=self.repo_path,
-                        commit_limit=self.commit_limit,
-                        follow_renames=self.follow_renames,
-                        include_blame=include_blame,
-                        as_of_ts=as_of_ts,
-                    )
-                finally:
-                    thread_repo.close()
+                thread_repo = get_thread_repo()
+                precomputed = commit_index.get(file_path) if commit_index else None
+                return index_file(
+                    thread_repo,
+                    file_path,
+                    repo_path=self.repo_path,
+                    commit_limit=self.commit_limit,
+                    follow_renames=self.follow_renames,
+                    include_blame=include_blame,
+                    precomputed_commits=precomputed,
+                    as_of_ts=as_of_ts,
+                    provenance_classifier=prov_clf,
+                )
             except Exception:
                 return {"file_path": file_path}
 
@@ -328,7 +350,10 @@ class GitIndexer:
                     return {"file_path": file_path}
 
         tasks = [index_one(fp) for fp in changed_file_paths]
-        results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            close_thread_repos()
 
         results: list[dict] = []
         for r in results_raw:
@@ -440,6 +465,42 @@ class GitIndexer:
             return float(repo.head.commit.committed_date)
         except Exception:
             return None
+
+    def _thread_repo_pool(self) -> tuple[Callable[[], Any], Callable[[], None]]:
+        """Return ``(get_thread_repo, close_all)`` for per-thread Repo reuse.
+
+        gitpython ``Repo`` handles can't be shared across threads on Windows,
+        but constructing one per *file* costs ~40 ms each. This pool hands
+        each worker thread its own lazily-created ``Repo`` and reuses it for
+        every file that thread processes. ``close_all()`` closes every repo
+        the pool created; a worker thread abandoned mid-file (timeout) will
+        see its repo closed underneath it and fall into the existing
+        per-file exception path, which is the same partial-data outcome the
+        old per-file construction produced on failure.
+        """
+        tls = threading.local()
+        created: list[Any] = []
+        lock = threading.Lock()
+
+        def get_thread_repo() -> Any:
+            repo = getattr(tls, "repo", None)
+            if repo is None:
+                import git as gitpython
+
+                repo = gitpython.Repo(self.repo_path, search_parent_directories=True)
+                tls.repo = repo
+                with lock:
+                    created.append(repo)
+            return repo
+
+        def close_all() -> None:
+            with lock:
+                repos, created[:] = list(created), []
+            for repo in repos:
+                with contextlib.suppress(Exception):
+                    repo.close()
+
+        return get_thread_repo, close_all
 
     def _get_repo(self) -> Any | None:
         try:
