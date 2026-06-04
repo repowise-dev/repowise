@@ -212,7 +212,9 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           searchHighlight: hasSearchHit,
           // Tests mirror the code — demoted unless restored (decision 2).
           demoted: layer.id === "layer:test" && !showTests,
-          dimmed: selectedLayerId ? !connectedLayers.has(layer.id) : false,
+          dimmed:
+            (selectedLayerId ? !connectedLayers.has(layer.id) : false) ||
+            (searchHighlightIds.size > 0 && !hasSearchHit),
         },
         width: ARCH_NODE_SIZES.layerCluster.width,
         height: ARCH_NODE_SIZES.layerCluster.height,
@@ -374,7 +376,10 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           layer: synthesizeCardLayer(card, nodesById),
           kind: "subGroup",
           searchHighlight: card.node_ids.some((nid) => searchHighlightIds.has(nid)),
-          dimmed: selectedCardId ? !connectedCards.has(card.id) : false,
+          dimmed:
+            (selectedCardId ? !connectedCards.has(card.id) : false) ||
+            (searchHighlightIds.size > 0 &&
+              !card.node_ids.some((nid) => searchHighlightIds.has(nid))),
         },
         width: ARCH_NODE_SIZES.layerCluster.width,
         height: ARCH_NODE_SIZES.layerCluster.height,
@@ -586,10 +591,12 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           childCount: container.childNodeIds.length,
           expanded: isExpanded,
           searchHitCount,
-          dimmed: selectedBox
-            ? container.id !== selectedBox &&
-              !container.childNodeIds.some((id) => selectedConnectedNodes.has(id))
-            : false,
+          dimmed:
+            (selectedBox
+              ? container.id !== selectedBox &&
+                !container.childNodeIds.some((id) => selectedConnectedNodes.has(id))
+              : false) ||
+            (searchHighlightIds.size > 0 && searchHitCount === 0),
         },
         width: pos.width,
         height: pos.height,
@@ -676,10 +683,13 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           kind: "subGroup",
           sibling: true,
           searchHighlight: sibling.node_ids.some((nid) => searchHighlightIds.has(nid)),
-          dimmed: selectedBox
-            ? sibling.id !== selectedBox &&
-              !sibling.node_ids.some((id) => selectedConnectedNodes.has(id))
-            : false,
+          dimmed:
+            (selectedBox
+              ? sibling.id !== selectedBox &&
+                !sibling.node_ids.some((id) => selectedConnectedNodes.has(id))
+              : false) ||
+            (searchHighlightIds.size > 0 &&
+              !sibling.node_ids.some((nid) => searchHighlightIds.has(nid))),
         },
         width: ARCH_NODE_SIZES.layerCluster.width,
         height: ARCH_NODE_SIZES.layerCluster.height,
@@ -795,9 +805,13 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       if (changedNodeIds.has(node.id)) diffState = "changed";
       else if (affectedNodeIds.has(node.id)) diffState = "affected";
     }
-    const dimmed = connectedNodes && selectedNodeId
+    const selectionDim = connectedNodes && selectedNodeId
       ? !connectedNodes.has(node.id)
       : false;
+    // Search recedes everything that doesn't match (kg-ux plan B6) —
+    // matches keep the accent highlight, the rest fades.
+    const searchDim = searchHighlightIds.size > 0 && !searchHighlightIds.has(node.id);
+    const dimmed = selectionDim || searchDim;
     const isTourTarget = tourActive && tourHighlightedNodeIds.has(node.id);
     return {
       node,

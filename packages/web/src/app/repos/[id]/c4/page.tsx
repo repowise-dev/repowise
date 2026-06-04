@@ -23,6 +23,7 @@ import {
   archEdgeTypes,
   SearchBar,
   ArchBreadcrumb,
+  ArchLegend,
   ProjectOverview,
   LearnPanel,
   PersonaSelector,
@@ -50,6 +51,9 @@ import { useRepo } from "@/lib/hooks/use-repo";
 import { getC4Mermaid } from "@/lib/api/c4";
 import { C4DetailPanelHost } from "@/components/c4/c4-detail-panel-host";
 import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { OwlLoader } from "@/components/shared/owl-loader";
+import { AlertTriangle } from "lucide-react";
 
 const MODE_VALUES = ["c4", "architecture"] as const;
 const VIEW_VALUES = ["overview", "groups", "detail"] as const;
@@ -294,13 +298,25 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
       `}</style>
       <div className="flex-1 min-h-0 relative bg-[var(--color-bg-canvas)]">
         {error && (
-          <div className="absolute inset-0 flex items-center justify-center text-[var(--color-error)] text-sm z-10 pointer-events-none">
-            {error.message}
+          <div className="absolute inset-0 flex items-center justify-center z-10">
+            <EmptyState
+              icon={<AlertTriangle className="h-5 w-5" aria-hidden />}
+              title="Couldn't load the knowledge graph"
+              description={error.message}
+              className="max-w-md p-8"
+            />
           </div>
         )}
         {anyLoading && nodes.length === 0 && !error && (
-          <div className="absolute inset-0 flex items-center justify-center text-[var(--color-text-secondary)] text-sm z-10 pointer-events-none">
-            Loading knowledge graph…
+          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+            <OwlLoader size={120} label="Loading knowledge graph…" className="min-h-0" />
+          </div>
+        )}
+        {/* Re-layout feedback (B6): ELK stage-2 on big layers used to freeze
+            silently — a small owl chip says the canvas is thinking. */}
+        {anyLoading && nodes.length > 0 && !error && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 px-3 py-1 shadow-sm">
+            <OwlLoader size={28} label="Laying out…" className="min-h-0 flex-row gap-2 text-[10px]" />
           </div>
         )}
 
@@ -357,6 +373,11 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
             +{hiddenEdgeCount} weaker link{hiddenEdgeCount === 1 ? "" : "s"} hidden
           </div>
         )}
+
+        {/* Decoder ring — collapsible, every tier (B6). */}
+        <div className="absolute bottom-4 right-[224px] z-10">
+          <ArchLegend />
+        </div>
 
         <ArchDetailPanelHost repoId={repoId} />
 
