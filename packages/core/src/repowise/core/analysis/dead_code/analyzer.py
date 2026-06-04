@@ -12,7 +12,10 @@ this package.
 from __future__ import annotations
 
 import fnmatch
+import os
+import re
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -319,6 +322,20 @@ def _is_synthetic_node(node: str) -> bool:
     mediated dependencies), whereas ``external:`` predecessors do not.
     """
     return node.startswith("external:") or node.startswith("framework:")
+
+
+@lru_cache(maxsize=8)
+def _never_flag_regex(patterns: tuple[str, ...]) -> re.Pattern[str]:
+    """Compile *patterns* into one alternation regex equivalent to fnmatch.
+
+    ``fnmatch.fnmatch(path, p)`` normcases both sides and matches the
+    translated glob; doing that per (node x pattern) costs ~540 fnmatch
+    calls per node and dominated the whole dead-code pass (measured: 50s of
+    a 51s analyze() on a 13k-node graph, mostly Windows ``normcase``).
+    One pre-normcased alternation keeps the exact same match semantics at
+    one regex match per node.
+    """
+    return re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in patterns))
 
 
 class DeadCodeAnalyzer:
@@ -1138,9 +1155,8 @@ class DeadCodeAnalyzer:
         """Return True if path should never be flagged as dead."""
         if path in whitelist:
             return True
-        for pattern in _NEVER_FLAG_PATTERNS:
-            if fnmatch.fnmatch(path, pattern):
-                return True
+        if _never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)):
+            return True
         # Workspace-driven never-flag — set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo
         # ``[[example]]`` / ``[[bench]]`` targets, …). Lets each language
