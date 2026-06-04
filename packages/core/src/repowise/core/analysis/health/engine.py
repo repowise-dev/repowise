@@ -256,6 +256,7 @@ class HealthAnalyzer:
         parsed_files: list[Any] | None = None,
         coverage_map: dict[str, dict[str, Any]] | None = None,
         module_map: dict[str, str] | None = None,
+        duplication_cache_dir: Any | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -271,6 +272,10 @@ class HealthAnalyzer:
         # module rollups still group sensibly on small repos that didn't
         # produce community labels.
         self.module_map = module_map or {}
+        # Directory for the duplication token/window cache (typically the
+        # repo's ``.repowise``). None disables caching — the duplication
+        # pass then re-tokenizes everything, exactly as before.
+        self.duplication_cache_dir = duplication_cache_dir
 
     def analyze(
         self,
@@ -309,7 +314,11 @@ class HealthAnalyzer:
             dup_report = DuplicationReport()
         else:
             try:
-                dup_report = detect_clones(self.parsed_files, self.git_meta_map)
+                dup_report = detect_clones(
+                    self.parsed_files,
+                    self.git_meta_map,
+                    cache_dir=self.duplication_cache_dir,
+                )
                 _log_duplication_diagnostics(dup_report)
             except Exception as exc:
                 log.debug("health_duplication_failed", error=str(exc))
@@ -418,7 +427,10 @@ class HealthAnalyzer:
         else:
             try:
                 dup_report = await asyncio.to_thread(
-                    detect_clones, self.parsed_files, self.git_meta_map
+                    detect_clones,
+                    self.parsed_files,
+                    self.git_meta_map,
+                    cache_dir=self.duplication_cache_dir,
                 )
                 _log_duplication_diagnostics(dup_report)
             except Exception as exc:

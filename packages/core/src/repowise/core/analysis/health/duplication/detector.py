@@ -34,7 +34,7 @@ from repowise.core.cancellation import check_cancelled
 
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
 from .rabin_karp import WindowHash, index_by_hash, rolling_hashes
-from .tokenizer import Token, tokenize_file
+from .tokenizer import tokenize_file
 
 log = structlog.get_logger(__name__)
 
@@ -132,19 +132,21 @@ def _co_change_score(
 
 
 def _tokens_equal(
-    a_tokens: list[Token],
-    b_tokens: list[Token],
+    a_kinds: list[str],
+    b_kinds: list[str],
     a_start: int,
     b_start: int,
     window: int,
 ) -> bool:
-    """Verify hash-collision by comparing token ``kind`` sequences."""
-    if a_start + window > len(a_tokens) or b_start + window > len(b_tokens):
+    """Verify hash-collision by comparing token ``kind`` sequences.
+
+    Operates on the per-file kind list (all the verifier ever compared of
+    the full ``Token`` records) so cached token streams round-trip without
+    rebuilding Token objects.
+    """
+    if a_start + window > len(a_kinds) or b_start + window > len(b_kinds):
         return False
-    for offset in range(window):
-        if a_tokens[a_start + offset].kind != b_tokens[b_start + offset].kind:
-            return False
-    return True
+    return a_kinds[a_start : a_start + window] == b_kinds[b_start : b_start + window]
 
 
 def _merge_adjacent_pairs(raw: list[ClonePair]) -> list[ClonePair]:
@@ -195,6 +197,7 @@ def detect_clones(
     window_tokens: int = DEFAULT_WINDOW_TOKENS,
     min_lines: int = DEFAULT_MIN_LINES,
     limits: DuplicationLimits | None = None,
+    cache_dir: Path | None = None,
 ) -> DuplicationReport:
     """Run the duplication pipeline over the supplied parsed files.
 
@@ -216,14 +219,28 @@ def detect_clones(
     lim = limits or DuplicationLimits()
     diag = DuplicationDiagnostics()
 
-    per_file_tokens, per_file_nloc, all_windows = _collect_windows(
-        parsed_files, window_tokens, lim, diag
+    cache = None
+    if cache_dir is not None:
+        from .token_cache import DuplicationTokenCache
+
+        cache = DuplicationTokenCache(cache_dir, window_tokens)
+        cache.load()
+
+    per_file_kinds, per_file_nloc, all_windows = _collect_windows(
+        parsed_files, window_tokens, lim, diag, cache
     )
+    if cache is not None:
+        cache.save()
+        log.debug(
+            "duplication_token_cache",
+            hits=cache.hits,
+            misses=cache.misses,
+        )
     if not all_windows:
         return DuplicationReport(diagnostics=diag.as_log_fields())
 
     bucket = index_by_hash(all_windows)
-    raw_pairs = _pairs_from_buckets(bucket, per_file_tokens, window_tokens, lim, diag)
+    raw_pairs = _pairs_from_buckets(bucket, per_file_kinds, window_tokens, lim, diag)
 
     final = _finalize_pairs(_merge_adjacent_pairs(raw_pairs), min_lines, meta_map)
     pairs_by_file, duplication_pct = _aggregate(final, per_file_nloc)
@@ -246,15 +263,23 @@ def _collect_windows(
     window_tokens: int,
     limits: DuplicationLimits,
     diag: DuplicationDiagnostics,
-) -> tuple[dict[str, list[Token]], dict[str, int], list[WindowHash]]:
+    cache: Any | None = None,
+) -> tuple[dict[str, list[str]], dict[str, int], list[WindowHash]]:
     """Tokenize each file once and emit its rolling-hash windows.
 
     Files are dropped (and counted in *diag*) when they are unreadable,
     minified/generated, shorter than one window, or exceed the per-file
     token cap. Collection stops cleanly once the repo-wide window budget
     is reached so peak memory stays bounded.
+
+    When a :class:`~.token_cache.DuplicationTokenCache` is supplied,
+    unchanged files (by content hash) skip the tokenize + rolling-hash
+    work and replay their cached kind sequence and window tuples; every
+    gate above still re-evaluates live against the cached lengths.
     """
-    per_file_tokens: dict[str, list[Token]] = {}
+    import hashlib
+
+    per_file_kinds: dict[str, list[str]] = {}
     per_file_nloc: dict[str, int] = {}
     all_windows: list[WindowHash] = []
 
@@ -272,25 +297,57 @@ def _collect_windows(
             diag.skipped_minified += 1
             continue
 
-        toks = tokenize_file(language, source)
-        if len(toks) < window_tokens:
+        cached = None
+        content_hash = ""
+        if cache is not None:
+            content_hash = hashlib.sha256(source).hexdigest()
+            cached = cache.get(content_hash)
+
+        if cached is not None:
+            kinds, nloc, window_tuples = cached
+            windows = [
+                WindowHash(
+                    file_path=path,
+                    hash_value=h,
+                    start_index=si,
+                    start_line=sl,
+                    end_line=el,
+                )
+                for h, si, sl, el in window_tuples
+            ]
+        else:
+            toks = tokenize_file(language, source)
+            if len(toks) > limits.max_tokens_per_file:
+                diag.skipped_token_cap += 1
+                continue
+            kinds = [t.kind for t in toks]
+            nloc = _nloc(source)
+            windows = rolling_hashes(path, toks, window_tokens)
+            if cache is not None:
+                cache.put(
+                    content_hash,
+                    kinds,
+                    nloc,
+                    [(w.hash_value, w.start_index, w.start_line, w.end_line) for w in windows],
+                )
+
+        if len(kinds) < window_tokens:
             continue
-        if len(toks) > limits.max_tokens_per_file:
+        if len(kinds) > limits.max_tokens_per_file:
             diag.skipped_token_cap += 1
             continue
 
-        windows = rolling_hashes(path, toks, window_tokens)
         if len(all_windows) + len(windows) > limits.max_total_windows:
             diag.window_budget_hit = True
             break
 
-        per_file_tokens[path] = toks
-        per_file_nloc[path] = _nloc(source)
+        per_file_kinds[path] = kinds
+        per_file_nloc[path] = nloc
         all_windows.extend(windows)
         diag.files_tokenized += 1
 
     diag.total_windows = len(all_windows)
-    return per_file_tokens, per_file_nloc, all_windows
+    return per_file_kinds, per_file_nloc, all_windows
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +357,7 @@ def _collect_windows(
 
 def _pairs_from_buckets(
     bucket: dict[int, list[WindowHash]],
-    per_file_tokens: dict[str, list[Token]],
+    per_file_kinds: dict[str, list[str]],
     window_tokens: int,
     limits: DuplicationLimits,
     diag: DuplicationDiagnostics,
@@ -329,14 +386,14 @@ def _pairs_from_buckets(
         if deadline is not None and (i & 0x3FF) == 0 and time.monotonic() > deadline:
             diag.timed_out = True
             break
-        _verify_bucket(windows, per_file_tokens, window_tokens, seen, raw_pairs)
+        _verify_bucket(windows, per_file_kinds, window_tokens, seen, raw_pairs)
 
     return raw_pairs
 
 
 def _verify_bucket(
     windows: list[WindowHash],
-    per_file_tokens: dict[str, list[Token]],
+    per_file_kinds: dict[str, list[str]],
     window_tokens: int,
     seen: set[tuple[str, int, str, int]],
     out: list[ClonePair],
@@ -357,8 +414,8 @@ def _verify_bucket(
                 continue
             seen.add(key)
             if not _tokens_equal(
-                per_file_tokens[a.file_path],
-                per_file_tokens[b.file_path],
+                per_file_kinds[a.file_path],
+                per_file_kinds[b.file_path],
                 a.start_index,
                 b.start_index,
                 window_tokens,

@@ -463,6 +463,7 @@ def _run_partial_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            duplication_cache_dir=Path(repo_path) / ".repowise",
         )
         _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
         if _health_changed:
@@ -754,6 +755,7 @@ def _run_full_health_rescore(
                 graph_builder.graph(),
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
+                duplication_cache_dir=Path(repo_path) / ".repowise",
             )
             hcfg = HealthConfig.load(repo_path)
             analyzer_config = (
