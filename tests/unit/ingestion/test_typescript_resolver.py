@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import networkx as nx
+import pytest
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.ts_workspace import (
@@ -46,6 +47,34 @@ class TestSfcExtensions:
         assert ctx.has_sfc_files is False
         result = resolve_ts_js_import("./missing", "src/foo.ts", ctx)
         assert result is None
+
+
+class TestExplicitRelativeExtensions:
+    @pytest.mark.parametrize(
+        "extension",
+        [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"],
+    )
+    def test_existing_explicit_relative_file_wins(
+        self, tmp_path: Path, extension: str
+    ) -> None:
+        ctx = _ctx(tmp_path, [f"data/example{extension}", "services/reader.js"])
+        result = resolve_ts_js_import(
+            f"../data/example{extension}",
+            "services/reader.js",
+            ctx,
+        )
+        assert result == f"data/example{extension}"
+
+    def test_ts_rewrite_fallback_still_resolves_when_js_file_absent(
+        self, tmp_path: Path
+    ) -> None:
+        ctx = _ctx(tmp_path, ["data/example.ts", "services/reader.js"])
+        result = resolve_ts_js_import(
+            "../data/example.js",
+            "services/reader.js",
+            ctx,
+        )
+        assert result == "data/example.ts"
 
 
 class TestWorkspaceMap:

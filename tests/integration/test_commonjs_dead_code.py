@@ -15,7 +15,7 @@ import pytest
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 
-ENTRY_JS = """const svc = require('./svc');
+ENTRY_JS = """const svc = require('./svc.js');
 
 function main() {
   return svc.used();
