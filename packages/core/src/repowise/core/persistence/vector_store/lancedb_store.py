@@ -154,14 +154,7 @@ class LanceDBVectorStore(VectorStore):
         ]
         await self._upsert_rows(rows)
 
-    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
-        await self._ensure_connected()
-        if self._table is None:
-            return []
-
-        q_vecs = await self._embedder.embed([query])
-        q_vec = [float(v) for v in q_vecs[0]]
-
+    async def _search_by_vector(self, q_vec: list[float], limit: int) -> list[SearchResult]:
         # Query with explicit cosine distance so ``_distance`` is a cosine
         # distance (1 - cos); we return ``1 - _distance`` = cosine similarity.
         # This makes the score semantics match the other backends
@@ -184,6 +177,32 @@ class LanceDBVectorStore(VectorStore):
             )
             for r in raw
         ]
+
+    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        await self._ensure_connected()
+        if self._table is None:
+            return []
+
+        q_vecs = await self._embedder.embed([query])
+        return await self._search_by_vector([float(v) for v in q_vecs[0]], limit)
+
+    async def search_many(
+        self, queries: list[str], limit: int = 10
+    ) -> list[list[SearchResult]]:
+        """One embedder call for all queries; the vector lookups are local."""
+        if not queries:
+            return []
+        await self._ensure_connected()
+        if self._table is None:
+            return [[] for _ in queries]
+        q_vecs = await self._embedder.embed(list(queries))
+        out: list[list[SearchResult]] = []
+        for q_vec in q_vecs:
+            try:
+                out.append(await self._search_by_vector([float(v) for v in q_vec], limit))
+            except Exception:
+                out.append([])
+        return out
 
     async def delete(self, page_id: str) -> None:
         await self._ensure_connected()

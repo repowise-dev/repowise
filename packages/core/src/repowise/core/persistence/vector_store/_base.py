@@ -52,6 +52,28 @@ class VectorStore(ABC):
         """Embed *query* and return the *limit* nearest pages."""
         ...
 
+    async def search_many(
+        self, queries: list[str], limit: int = 10
+    ) -> list[list[SearchResult]]:
+        """Batch variant of :meth:`search` — one result list per query, aligned
+        by index.
+
+        The default implementation fires the per-query searches concurrently
+        via ``asyncio.gather``; a failed query yields an empty list (matching
+        the caller-side behaviour of swallowing a single failed search).
+        Backends override this to embed *all* queries in a single embedder
+        call — the network round-trip dominates each search, so batching the
+        embedding turns N round-trips into 1.
+        """
+        import asyncio as _asyncio
+
+        if not queries:
+            return []
+        results = await _asyncio.gather(
+            *(self.search(q, limit=limit) for q in queries), return_exceptions=True
+        )
+        return [r if isinstance(r, list) else [] for r in results]
+
     @abstractmethod
     async def delete(self, page_id: str) -> None:
         """Remove the vector for *page_id* from the store."""

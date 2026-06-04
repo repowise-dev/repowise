@@ -108,6 +108,51 @@ class PgVectorStore(VectorStore):
             for r in raw
         ]
 
+    async def search_many(
+        self, queries: list[str], limit: int = 10
+    ) -> list[list[SearchResult]]:
+        """One embedder call for all queries; per-query SELECTs share a session."""
+        if not queries:
+            return []
+        q_vecs = await self._embedder.embed(list(queries))
+
+        from sqlalchemy.sql import text as sa_text
+
+        stmt = sa_text(
+            "SELECT id, title, content, page_type, target_path, "
+            "  1 - (embedding <=> CAST(:q AS vector)) AS score "
+            "FROM wiki_pages "
+            "WHERE embedding IS NOT NULL "
+            "ORDER BY embedding <=> CAST(:q AS vector) "
+            "LIMIT :lim"
+        )
+        out: list[list[SearchResult]] = []
+        async with self._session_factory() as session:
+            for q_vec in q_vecs:
+                try:
+                    rows = await session.execute(
+                        stmt, {"q": _encode(q_vec), "lim": limit}
+                    )
+                    raw = rows.fetchall()
+                except Exception:
+                    out.append([])
+                    continue
+                out.append(
+                    [
+                        SearchResult(
+                            page_id=r[0],
+                            title=r[1],
+                            page_type=r[3],
+                            target_path=r[4],
+                            score=float(r[5]),
+                            snippet=str(r[2])[:200].rstrip(),
+                            search_type="vector",
+                        )
+                        for r in raw
+                    ]
+                )
+        return out
+
     async def delete(self, page_id: str) -> None:
         from sqlalchemy.sql import text as sa_text
 
