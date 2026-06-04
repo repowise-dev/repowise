@@ -52,6 +52,8 @@ const FACES: Record<InkRole, { background: string; backgroundImage?: string; tex
   },
   primary: {
     background: "var(--color-kg-node-fill)",
+    // Ruled-paper texture in light mode (token resolves to none in dark).
+    backgroundImage: "var(--kg-card-texture)",
     text: "var(--color-kg-node-text)",
     border: "var(--color-kg-node-border)",
   },
@@ -122,7 +124,9 @@ export function InkNodeShell(props: InkNodeShellProps) {
         width,
         height,
         background: face.background,
-        ...(face.backgroundImage ? { backgroundImage: face.backgroundImage } : {}),
+        ...(face.backgroundImage
+          ? { backgroundImage: face.backgroundImage, backgroundSize: "cover", backgroundPosition: "center" }
+          : {}),
         border: `1.5px ${dashed ? "dashed" : "solid"} ${stateBorderColor(props, face.border)}`,
         borderRadius: 12,
         color: face.text,

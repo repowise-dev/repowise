@@ -24,8 +24,6 @@ import {
   SearchBar,
   ArchBreadcrumb,
   ArchLegend,
-  ProjectOverview,
-  LearnPanel,
   PersonaSelector,
   NodeTypeCategoryFilters,
   FilterPanel,
@@ -127,7 +125,6 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
   const setPersona = useArchitectureStore((s) => s.setPersona);
   const setReactFlowInstance = useArchitectureStore((s) => s.setReactFlowInstance);
   const pathFinderOpen = useArchitectureStore((s) => s.pathFinderOpen);
-  const tourActive = useArchitectureStore((s) => s.tourActive);
 
   useEffect(() => {
     if (view) setView(view);
@@ -345,25 +342,9 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
           <MiniMap pannable zoomable />
         </ReactFlow>
 
-        {/* Orientation-first landing: story before scene (plan C-1). */}
-        {navigationLevel === "overview" && !selectedNodeId && !tourActive && (
-          <aside
-            aria-label="Project orientation"
-            className="absolute top-3 left-3 bottom-3 z-10 w-72 overflow-y-auto rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated,rgba(17,24,39,0.96))] shadow-xl"
-          >
-            <ProjectOverview />
-          </aside>
-        )}
-
-        {/* Guided tour player — the canvas follows each step (plan C-2). */}
-        {tourActive && (
-          <aside
-            aria-label="Guided tour"
-            className="absolute top-3 left-3 z-10 w-72 max-h-[calc(100%-24px)] overflow-y-auto rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated,rgba(17,24,39,0.96))] shadow-xl"
-          >
-            <LearnPanel />
-          </aside>
-        )}
+        {/* Orientation (plan C-1) and the tour player (C-2) render in the
+            right Sidebar only — the floating left asides duplicated them
+            (user feedback 2026-06-05: one place). */}
 
         {hiddenEdgeCount > 0 && (
           <div

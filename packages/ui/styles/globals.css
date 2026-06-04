@@ -394,6 +394,21 @@
   --color-community-10: #b85a38; --color-community-10-soft: #eba585; /* peach (deepened for 3:1 on warm canvas) */
   --color-community-11: #2f6b66; --color-community-11-soft: #558f89; /* deep teal */
   --color-community-12: #5e5360; --color-community-12-soft: #84778a; /* charcoal mauve */
+
+  /* KG card texture — ruled-paper photo under a warm translucent wash
+     (keeps text contrast); asset in packages/web/public. Light only; the
+     .dark override resolves to none (solid ink blocks). Plain :root, not
+     @theme: referenced only from inline styles, so Tailwind would
+     tree-shake it out of @theme (same lesson as the community tokens). */
+  --kg-card-texture: linear-gradient(rgba(255, 253, 248, 0.78), rgba(255, 253, 248, 0.78)),
+    url("/kg-card-paper.jpg");
+}
+
+.dark {
+  /* Dark keeps the solid ink blocks — no photo texture. Declared AFTER the
+     :root block so the cascade is unambiguous (same pattern as
+     color-scheme below). */
+  --kg-card-texture: none;
 }
 
 /* -------------------------------------------------------------------- */
