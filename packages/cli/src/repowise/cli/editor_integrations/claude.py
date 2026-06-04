@@ -124,12 +124,10 @@ def maybe_generate_claude_md(
     if not _claude_md_enabled(repo_path):
         return
 
-    from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
+    from repowise.cli.ui import OWL_SPINNER
 
     try:
-        with console_obj.status(
-            "  Generating .claude/CLAUDE.md…", spinner=OWL_SPINNER, spinner_style=BRAND_STYLE
-        ):
+        with console_obj.status("  Generating .claude/CLAUDE.md…", spinner=OWL_SPINNER):
             run_async(_write_claude_md_async(repo_path))
         console_obj.print("  [green]✓[/green] .claude/CLAUDE.md updated")
     except Exception as exc:

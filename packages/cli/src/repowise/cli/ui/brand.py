@@ -18,19 +18,8 @@ WARN = "yellow"
 ERR = "bold red"
 
 # ---------------------------------------------------------------------------
-# ASCII art  —  owl mascot + heatmap wordmark (see ui/mascot.py)
+# Banner  —  owl mascot + heatmap wordmark (art lives in ui/mascot.py)
 # ---------------------------------------------------------------------------
-
-# Plain-text compact render, kept as cheap insurance for anything that ever
-# reached for the private ``_LOGO`` name. The real banner is composed (and
-# coloured) by ``mascot.banner_text``.
-_LOGO = (
-    " ,___,  ███▄  ███ ███▄ ▄██▄ █   █ ███ ▄██▄ ███\n"
-    " (◉,◉)  █  █  █   █  █ █  █ █   █  █  █    █\n"
-    " ( ▼ )  ███▀  ██  ███▀ █  █ █ █ █  █  ▀██▄ ██\n"
-    " /)_(\\  █ ▀▄  █   █    █  █ █ █ █  █     █ █\n"
-    '  " "   █  ▀▄ ███ █    ▀██▀ ▀█▀█▀ ███ ▀██▀ ███'
-)
 
 # Breathing room required beyond the rendered banner width before we pick the
 # full variant; below that we fall back to compact (same design, 1-char strokes).

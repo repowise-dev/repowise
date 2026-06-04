@@ -147,12 +147,24 @@ def test_full_banner_at_wide_width() -> None:
     assert "Repository: my-cool-repo" in out
 
 
-def test_compact_full_same_seed_same_shape(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Full and compact banners must derive their heat pattern from the same
-    # seed function -> pattern parity across sizes for a given repo.
-    seen: list[int] = []
-    real = mascot.seed_for
-    monkeypatch.setattr(mascot, "seed_for", lambda name: seen.append(real(name)) or real(name))
-    mascot.banner_text("repo-x", compact=False)
-    mascot.banner_text("repo-x", compact=True)
-    assert seen == [real("repo-x")] * 2
+@pytest.mark.parametrize("compact", [False, True])
+def test_banner_colors_derive_from_repo_seed(compact: bool) -> None:
+    # Behavioral pin: every painted wordmark cell in the rendered banner must
+    # carry exactly the shade predicted by heat_grid(seed_for(repo), n) — for
+    # BOTH sizes, so full and compact share one seed (pattern parity).
+    rows, cellmap = mascot.render_wordmark(compact)
+    n_cells = max(c for c in cellmap if c >= 0) + 1
+    grid = mascot.heat_grid(mascot.seed_for("repo-x"), n_cells)
+
+    text = mascot.banner_text("repo-x", compact=compact)
+    owl = mascot.OWL_COMPACT if compact else mascot.OWL_FULL
+    offset = 1 + max(len(line) for line in owl) + 2  # indent + owl + gap
+    style_at = {span.start: str(span.style) for span in text.spans}
+
+    checked = 0
+    for x, ch in enumerate(rows[0]):
+        if ch == " " or cellmap[x] < 0:
+            continue
+        assert style_at[offset + x] == f"bold {mascot.HEAT[grid[0][cellmap[x]]]}"
+        checked += 1
+    assert checked > 20  # the whole top row of the wordmark was verified

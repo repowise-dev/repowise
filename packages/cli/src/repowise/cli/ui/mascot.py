@@ -48,11 +48,11 @@ OWL_COMPACT = [
     '  " " ',
 ]
 
-EYES_THINKING = ["◐", "◓", "◑", "◒"]  # eye-roll cycle
+EYES_THINKING = ["◐", "◓", "◑", "◒"]  # eye-roll cycle (spinner frames)
 EYES_IDLE = "◉"
-EYES_SLEEPY = "─"
-EYES_HAPPY = "^"
-EYES_ERROR = "x"
+EYES_SLEEPY = "─"  # interrupt message
+EYES_HAPPY = "^"  # completion panels
+EYES_ERROR = "x"  # reserved: error output deliberately stays sober (no owl) for now
 
 
 def mini(eyes: str = EYES_IDLE) -> str:
