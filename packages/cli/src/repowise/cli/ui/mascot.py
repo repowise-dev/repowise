@@ -138,6 +138,18 @@ def render_wordmark(compact: bool = False) -> tuple[tuple[str, ...], tuple[int, 
     return tuple(rows), tuple(cellmap)
 
 
+def banner_width(compact: bool = False) -> int:
+    """Total rendered banner width in columns (indent + owl + gap + wordmark).
+
+    Single source of truth for layout maths — ``print_banner`` derives its
+    full/compact switch threshold from this, so font or owl changes can't
+    silently desync the two.
+    """
+    owl = OWL_COMPACT if compact else OWL_FULL
+    rows, _ = render_wordmark(compact)
+    return 1 + max(len(line) for line in owl) + 2 + len(rows[0])
+
+
 def seed_for(repo_name: str | None) -> int:
     """Stable cross-process seed for a repo's heatmap pattern.
 

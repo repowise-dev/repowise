@@ -123,7 +123,7 @@ def maybe_generate_agents_md(
 
     from repowise.cli.editor_files import should_generate_editor_file
     from repowise.cli.helpers import run_async
-    from repowise.cli.ui import OWL_SPINNER
+    from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
 
     if not should_generate_editor_file(
         repo_path,
@@ -133,7 +133,9 @@ def maybe_generate_agents_md(
     ):
         return
     try:
-        with console_obj.status("  Generating AGENTS.md...", spinner=OWL_SPINNER):
+        with console_obj.status(
+            "  Generating AGENTS.md...", spinner=OWL_SPINNER, spinner_style=BRAND_STYLE
+        ):
             run_async(_write_agents_md_async(repo_path))
         console_obj.print("  [green]✓[/green] AGENTS.md updated")
     except Exception as exc:

@@ -120,6 +120,24 @@ def test_compact_banner_under_80() -> None:
         assert len(line.rstrip()) <= COMPACT_BANNER_MAX_COLS
 
 
+def test_banner_width_single_source_of_truth() -> None:
+    # print_banner derives its full/compact threshold from these — pin the
+    # current layout so an accidental font/owl width change fails loudly.
+    assert mascot.banner_width() == 78
+    assert mascot.banner_width(compact=True) == 47
+    for compact, width in ((False, mascot.banner_width()), (True, 47)):
+        for line in _banner_lines("my-cool-repo", compact=compact):
+            assert len(line.rstrip()) <= width
+
+
+def test_repo_name_with_markup_is_escaped() -> None:
+    # A directory name containing rich markup must render literally, not
+    # crash with MarkupError or inject styling.
+    console = Console(width=100, record=True, force_terminal=True)
+    print_banner(console, repo_name="evil[/bold]name")
+    assert "evil[/bold]name" in console.export_text()
+
+
 def test_full_banner_at_wide_width() -> None:
     console = Console(width=100, record=True, force_terminal=True)
     print_banner(console, repo_name="my-cool-repo")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rich.console import Console
+from rich.markup import escape
 from rich.rule import Rule
 
 # ---------------------------------------------------------------------------
@@ -31,9 +32,9 @@ _LOGO = (
     '  " "   █  ▀▄ ███ █    ▀██▀ ▀█▀█▀ ███ ▀██▀ ███'
 )
 
-# Full banner is 78 cols; below this width fall back to the compact variant
-# (same design at 1-char strokes, 47 cols).
-_FULL_BANNER_MIN_WIDTH = 82
+# Breathing room required beyond the rendered banner width before we pick the
+# full variant; below that we fall back to compact (same design, 1-char strokes).
+_BANNER_WIDTH_MARGIN = 4
 
 
 def print_banner(console: Console, repo_name: str | None = None) -> None:
@@ -41,7 +42,7 @@ def print_banner(console: Console, repo_name: str | None = None) -> None:
     from repowise.cli import __version__
     from repowise.cli.ui import mascot
 
-    compact = console.width < _FULL_BANNER_MIN_WIDTH
+    compact = console.width < mascot.banner_width() + _BANNER_WIDTH_MARGIN
     console.print()
     console.print(mascot.banner_text(repo_name, compact=compact))
     console.print()
@@ -54,7 +55,7 @@ def print_banner(console: Console, repo_name: str | None = None) -> None:
         )
     if repo_name:
         console.print()
-        console.print(f" Repository: [bold]{repo_name}[/bold]", highlight=False)
+        console.print(f" Repository: [bold]{escape(repo_name)}[/bold]", highlight=False)
     console.print()
 
 

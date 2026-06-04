@@ -187,7 +187,11 @@ def _enrich_knowledge_graph(
             result.knowledge_graph_result = _run()
         return
 
-    with console.status("  Enriching knowledge graph (layers + tour)…", spinner=OWL_SPINNER):
+    with console.status(
+        "  Enriching knowledge graph (layers + tour)…",
+        spinner=OWL_SPINNER,
+        spinner_style=BRAND_STYLE,
+    ):
         try:
             result.knowledge_graph_result = _run()
             enriched = result.knowledge_graph_result

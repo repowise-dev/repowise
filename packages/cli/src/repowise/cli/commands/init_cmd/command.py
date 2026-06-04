@@ -457,7 +457,9 @@ def init_command(
     scan_info = None
     if is_interactive:
         print_banner(console, repo_name=repo_path.name)
-        with console.status("  Scanning repository…", spinner=OWL_SPINNER):
+        with console.status(
+            "  Scanning repository…", spinner=OWL_SPINNER, spinner_style=BRAND_STYLE
+        ):
             scan_info = quick_repo_scan(repo_path)
         print_scan_summary(console, scan_info)
         mode = interactive_mode_select(console)
@@ -618,7 +620,9 @@ def init_command(
         # Validate provider connection
         from repowise.core.providers.llm.base import ProviderError
 
-        with console.status("  Verifying provider connection…", spinner=OWL_SPINNER):
+        with console.status(
+            "  Verifying provider connection…", spinner=OWL_SPINNER, spinner_style=BRAND_STYLE
+        ):
             try:
                 run_async(
                     provider.generate(
@@ -761,7 +765,9 @@ def init_command(
             console, 4, total_phases, "Persistence", "Saving to database and building search index"
         )
 
-    with console.status("  Persisting to database…", spinner=OWL_SPINNER):
+    with console.status(
+        "  Persisting to database…", spinner=OWL_SPINNER, spinner_style=BRAND_STYLE
+    ):
         run_async(persist_result(result, repo_path))
     console.print("  [green]✓[/green] Database updated")
 
