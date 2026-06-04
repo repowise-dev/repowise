@@ -203,6 +203,33 @@ function drillStateForNode(
   };
 }
 
+/** Drill state for a tour step: follow the step's node when it's in the
+ * graph, else fall back to the step's curated layer_id so the canvas still
+ * follows the walk (viewer plan C-2). */
+function drillStateForStep(
+  state: ArchitectureStoreState,
+  nodeId: string | null,
+  layerId: string | null | undefined,
+): Partial<ArchitectureStoreState> {
+  if (nodeId && state.nodeIdToLayerId.has(nodeId)) {
+    return drillStateForNode(state, nodeId);
+  }
+  if (
+    layerId &&
+    layerId !== state.activeLayerId &&
+    state.view?.layers.some((l: ArchLayer) => l.id === layerId)
+  ) {
+    return {
+      navigationLevel: "layer-detail" as NavigationLevel,
+      activeLayerId: layerId,
+      activeSubGroupId: null,
+      expandedContainers: new Set<string>(),
+      containerLayoutCache: new Map<string, ContainerLayoutResult>(),
+    };
+  }
+  return {};
+}
+
 const INITIAL_STATE: ArchitectureStoreState = {
   view: null,
   nodesById: new Map(),
@@ -500,7 +527,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           tourHighlightedNodeIds: new Set(nodeIds),
           selectedNodeId: firstNodeId,
           focusNodeId: null,
-          ...drillStateForNode(state, firstNodeId),
+          ...drillStateForStep(state, firstNodeId, firstStep?.layer_id),
         });
       },
 
@@ -542,7 +569,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           tourHighlightedNodeIds: new Set(nodeIds),
           selectedNodeId: firstNodeId,
           focusNodeId: null,
-          ...drillStateForNode(state, firstNodeId),
+          ...drillStateForStep(state, firstNodeId, tourStep?.layer_id),
         });
       },
 

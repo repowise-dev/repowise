@@ -12,13 +12,15 @@ export interface ArchFileNodeProps {
   hasDocs?: boolean | undefined;
   searchHighlight?: boolean | undefined;
   tourHighlight?: boolean | undefined;
+  /** 1-based step number shown while the guided tour highlights this node. */
+  tourStepNumber?: number | undefined;
   diffState?: "changed" | "affected" | "faded" | undefined;
   dimmed?: boolean | undefined;
 }
 
 function ArchFileNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: ArchFileNodeProps };
-  const { node, hasDocs, searchHighlight, tourHighlight, diffState, dimmed } = data;
+  const { node, hasDocs, searchHighlight, tourHighlight, tourStepNumber, diffState, dimmed } = data;
   const effectiveDiffState = dimmed && !diffState ? "faded" : diffState;
 
   const kindLabel = node.node_type;
@@ -27,6 +29,26 @@ function ArchFileNodeImpl(props: NodeProps) {
 
   const badges = (
     <>
+      {typeof tourStepNumber === "number" && (
+        <span
+          title={`Tour step ${tourStepNumber}`}
+          aria-label={`Tour step ${tourStepNumber}`}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 14,
+            height: 14,
+            borderRadius: "50%",
+            fontSize: 9,
+            fontWeight: 700,
+            color: "#0b1220",
+            background: "var(--color-accent-primary, #f59520)",
+          }}
+        >
+          {tourStepNumber}
+        </span>
+      )}
       {node.is_entry_point && (
         <span title="Entry point" aria-label="Entry point" style={{ display: "inline-flex", color: "#4ade80" }}>
           <Play size={10} aria-hidden />

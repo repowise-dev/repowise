@@ -47,6 +47,8 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
   const focusNodeId = useArchitectureStore((s) => s.focusNodeId);
   const selectedNodeId = useArchitectureStore((s) => s.selectedNodeId);
   const tourHighlightedNodeIds = useArchitectureStore((s) => s.tourHighlightedNodeIds);
+  const tourActive = useArchitectureStore((s) => s.tourActive);
+  const currentTourStep = useArchitectureStore((s) => s.currentTourStep);
   const searchResults = useArchitectureStore((s) => s.searchResults);
   const diffMode = useArchitectureStore((s) => s.diffMode);
   const changedNodeIds = useArchitectureStore((s) => s.changedNodeIds);
@@ -102,6 +104,8 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     focusNodeId,
     selectedNodeId,
     tourHighlightedNodeIds,
+    tourActive,
+    currentTourStep,
     searchResults,
     diffMode,
     changedNodeIds,
@@ -694,11 +698,14 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     const dimmed = connectedNodes && selectedNodeId
       ? !connectedNodes.has(node.id)
       : false;
+    const isTourTarget = tourActive && tourHighlightedNodeIds.has(node.id);
     return {
       node,
       hasDocs: node.has_doc,
       searchHighlight: searchHighlightIds.has(node.id),
       tourHighlight: tourHighlightedNodeIds.has(node.id),
+      // Numbered step badge on the highlighted node (plan C-2).
+      tourStepNumber: isTourTarget ? currentTourStep + 1 : undefined,
       diffState,
       dimmed,
     };
