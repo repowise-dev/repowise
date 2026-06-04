@@ -64,12 +64,18 @@ class CallResolver:
         import_targets: dict[str, set[str]],
         *,
         repo_path: str | None = None,
+        import_maps: Any | None = None,
     ) -> None:
         # Per-file symbol index: {file_path: {symbol_name: symbol_id}}
         self._file_symbols: dict[str, dict[str, str]] = {}
 
         # Per-file method index: {file_path: {(class_name, method_name): symbol_id}}
         self._file_methods: dict[str, dict[tuple[str, str], str]] = {}
+
+        # Global method index: {(class_name, method_name): [(file_path, symbol_id)]}
+        # in file-insertion order — replaces the trait-dispatch scan over
+        # every file's method dict with one short-list lookup.
+        self._global_methods: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
 
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
@@ -80,14 +86,27 @@ class CallResolver:
         # Import graph: {file_path: set of imported file paths}
         self._import_targets = import_targets
 
+        # Shared import-name maps (built once per GraphBuilder.build() and
+        # injected; standalone construction builds them locally).
+        if import_maps is None:
+            from .import_index import build_import_name_maps
+
+            import_maps = build_import_name_maps(parsed_files)
         # Import name mapping: {file_path: {local_name: source_file}}
-        self._import_names: dict[str, dict[str, str]] = defaultdict(dict)
-
+        self._import_names: dict[str, dict[str, str]] = import_maps.import_names
         # Full binding data: {file_path: {local_name: NamedBinding}}
-        self._import_bindings: dict[str, dict[str, NamedBinding]] = defaultdict(dict)
-
+        self._import_bindings: dict[str, dict[str, NamedBinding]] = import_maps.import_bindings
         # Module alias mapping: {file_path: {alias: source_file}}
-        self._module_aliases: dict[str, dict[str, str]] = defaultdict(dict)
+        self._module_aliases: dict[str, dict[str, str]] = import_maps.module_aliases
+
+        # Lazy per-file merged views of every imported file's symbol /
+        # method tables — turns the Tier-2b "scan each imported file"
+        # loops into single dict lookups. Built on first miss per file;
+        # merge order is sorted(import paths) with first-wins so shadowed
+        # names resolve deterministically (the old set-iteration order was
+        # hash-randomized per process).
+        self._merged_import_symbols: dict[str, dict[str, str]] = {}
+        self._merged_import_methods: dict[str, dict[tuple[str, str], str]] = {}
 
         # Barrel re-export origins: {barrel_file: {name: origin_file}}
         self._barrel_origins: dict[str, dict[str, str]] = defaultdict(dict)
@@ -366,7 +385,10 @@ class CallResolver:
         return None
 
     def _build_indices(self, parsed_files: dict[str, ParsedFile]) -> None:
-        """Build all lookup indices from parsed file data."""
+        """Build symbol lookup indices from parsed file data.
+
+        (Import-name maps are shared — see ``import_index.build_import_name_maps``.)
+        """
         for path, parsed in parsed_files.items():
             file_syms: dict[str, str] = {}
             file_methods: dict[tuple[str, str], str] = {}
@@ -377,7 +399,9 @@ class CallResolver:
 
                 # Method index: (class_name, method_name) → symbol_id
                 if sym.parent_name:
-                    file_methods[(sym.parent_name, sym.name)] = sym.id
+                    key = (sym.parent_name, sym.name)
+                    file_methods[key] = sym.id
+                    self._global_methods[key].append((path, sym.id))
 
                 # Global indices
                 self._global_symbols[sym.name].append(sym.id)
@@ -387,25 +411,35 @@ class CallResolver:
             self._file_symbols[path] = file_syms
             self._file_methods[path] = file_methods
 
-            # Build import-name mapping using per-import resolved_file
-            for imp in parsed.imports:
-                if imp.resolved_file is None:
+    def _merged_symbols_for(self, file_path: str) -> dict[str, str]:
+        """Merged ``{name → symbol_id}`` across every file *file_path* imports.
+
+        Sorted-path merge order with first-wins gives deterministic
+        precedence for names exported by multiple imports.
+        """
+        merged = self._merged_import_symbols.get(file_path)
+        if merged is None:
+            merged = {}
+            for imported_file in sorted(self._import_targets.get(file_path, ())):
+                if imported_file.startswith("external:"):
                     continue
-                resolved = imp.resolved_file
-                if imp.bindings:
-                    for binding in imp.bindings:
-                        if binding.local_name == "*":
-                            continue
-                        binding.source_file = resolved
-                        self._import_names[path][binding.local_name] = resolved
-                        self._import_bindings[path][binding.local_name] = binding
-                        if binding.is_module_alias:
-                            self._module_aliases[path][binding.local_name] = resolved
-                else:
-                    # Fallback for imports without binding data
-                    for name in imp.imported_names:
-                        if name != "*":
-                            self._import_names[path][name] = resolved
+                for name, sym_id in self._file_symbols.get(imported_file, {}).items():
+                    merged.setdefault(name, sym_id)
+            self._merged_import_symbols[file_path] = merged
+        return merged
+
+    def _merged_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
+        """Merged ``{(class, method) → symbol_id}`` across imports (see above)."""
+        merged = self._merged_import_methods.get(file_path)
+        if merged is None:
+            merged = {}
+            for imported_file in sorted(self._import_targets.get(file_path, ())):
+                if imported_file.startswith("external:"):
+                    continue
+                for key, sym_id in self._file_methods.get(imported_file, {}).items():
+                    merged.setdefault(key, sym_id)
+            self._merged_import_methods[file_path] = merged
+        return merged
 
     def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
         """Resolve all calls in a single file to symbol-level edges."""
@@ -504,13 +538,10 @@ class CallResolver:
             if target_name in source_syms:
                 return ResolvedCall(caller_id, source_syms[target_name], 0.90, call.line)
 
-        # 2b: Check all imported files for the symbol
-        for imported_file in self._import_targets.get(file_path, set()):
-            if imported_file.startswith("external:"):
-                continue
-            imported_syms = self._file_symbols.get(imported_file, {})
-            if target_name in imported_syms:
-                return ResolvedCall(caller_id, imported_syms[target_name], 0.85, call.line)
+        # 2b: Check all imported files for the symbol (pre-merged lookup)
+        merged_syms = self._merged_symbols_for(file_path)
+        if target_name in merged_syms:
+            return ResolvedCall(caller_id, merged_syms[target_name], 0.85, call.line)
 
         # Tier 3: global unique match — only within the same language
         candidates = self._global_symbols.get(target_name, [])
@@ -591,22 +622,20 @@ class CallResolver:
         if key in file_methods:
             return ResolvedCall(caller_id, file_methods[key], 0.93, call.line)
 
-        # Check imported files for (class, method) pairs
-        for imported_file in self._import_targets.get(file_path, set()):
-            if imported_file.startswith("external:"):
-                continue
-            imp_methods = self._file_methods.get(imported_file, {})
-            if key in imp_methods:
-                return ResolvedCall(caller_id, imp_methods[key], 0.88, call.line)
+        # Check imported files for (class, method) pairs (pre-merged lookup)
+        merged_methods = self._merged_methods_for(file_path)
+        if key in merged_methods:
+            return ResolvedCall(caller_id, merged_methods[key], 0.88, call.line)
 
         # Strategy 2b: trait method dispatch — receiver is a type that
         # implements a trait; the method may be defined on the trait's
-        # impl block in another file.
-        for _path, methods in self._file_methods.items():
+        # impl block in another file. The global index preserves the old
+        # file-insertion match order; entries from the caller's own file
+        # are skipped exactly as before.
+        for _path, sym_id in self._global_methods.get(key, ()):
             if _path == file_path:
                 continue
-            if key in methods:
-                return ResolvedCall(caller_id, methods[key], 0.75, call.line)
+            return ResolvedCall(caller_id, sym_id, 0.75, call.line)
 
         # Strategy 3: receiver is "self" or "this" — look in same class
         if receiver_name in ("self", "this"):

@@ -75,6 +75,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._subgraph_lock = threading.Lock()
         self._file_subgraph_cache: nx.DiGraph | None = None
         self._symbol_subgraph_cache: nx.DiGraph | None = None
+        # Shared import-name maps (built once per build(), injected into the
+        # call + heritage resolvers; reset whenever files change).
+        self._import_name_maps: Any | None = None
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -95,6 +98,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._execution_flow_cache = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
+        self._import_name_maps = None
 
     def _invalidate_subgraph_caches(self) -> None:
         """Clear only the filtered-subgraph caches.

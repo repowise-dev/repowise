@@ -16,6 +16,16 @@ log = structlog.get_logger(__name__)
 class ResolveMixin:
     """Symbol-level edge resolution passes run during ``build()``."""
 
+    def _shared_import_maps(self) -> Any:
+        """Build the import-name maps once per build; both resolvers share them."""
+        maps = getattr(self, "_import_name_maps", None)
+        if maps is None:
+            from ..import_index import build_import_name_maps
+
+            maps = build_import_name_maps(self._parsed_files)
+            self._import_name_maps = maps
+        return maps
+
     def _resolve_heritage(
         self,
         import_targets: dict[str, set[str]],
@@ -24,7 +34,9 @@ class ResolveMixin:
         """Resolve heritage relations and add EXTENDS/IMPLEMENTS edges."""
         from ..heritage_resolver import HeritageResolver
 
-        resolver = HeritageResolver(self._parsed_files, import_targets)
+        resolver = HeritageResolver(
+            self._parsed_files, import_targets, import_maps=self._shared_import_maps()
+        )
         total_resolved = 0
 
         files_with_heritage = [
@@ -135,7 +147,12 @@ class ResolveMixin:
         """Run three-tier call resolution and add CALLS edges to the graph."""
         from ..call_resolver import CallResolver
 
-        resolver = CallResolver(self._parsed_files, import_targets, repo_path=str(self._repo_path) if self._repo_path else None)
+        resolver = CallResolver(
+            self._parsed_files,
+            import_targets,
+            repo_path=str(self._repo_path) if self._repo_path else None,
+            import_maps=self._shared_import_maps(),
+        )
         total_resolved = 0
 
         files_with_calls = [
