@@ -28,7 +28,7 @@ ALLOW+='|graph-primitives/tone-styles\.ts'               # BRAND: categorical no
 ALLOW+='|wiki/git-history-panel\.tsx'                     # BRAND: per-author categorical bar colors
 # DEFERRED-VIZ — canvas subsystems with their own runtime light/dark palette
 # (driven by the global theme), pending an aesthetic warm-palette retune:
-ALLOW+='|c4/export/svg-exporter\.ts'                      # standalone SVG serializer — literal colors until B7 swaps in resolveToken (kg-ux plan)
+ALLOW+='|c4/export/svg-exporter\.ts'                      # SVG serializer resolves LIVE theme tokens; hex are headless-export fallbacks only (kg-ux B7)
 ALLOW+='|/graph/sigma/'                                   # Sigma canvas renderer (internal light/dark palette)
 
 violations=$(grep -rnE '#[0-9a-fA-F]{3,8}\b' "$ROOT" 2>/dev/null \
