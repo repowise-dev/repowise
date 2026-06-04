@@ -76,7 +76,7 @@ describe("computeRadialLayout", () => {
     for (const [cid, pos] of r.hubs) {
       const ring = r.rings.get(cid)!;
       const dist = Math.hypot(pos.x, pos.y);
-      expect(dist).toBeCloseTo(r.ringRadii[ring - 1], 5);
+      expect(dist).toBeCloseTo(r.ringRadii[ring - 1]!, 5);
     }
   });
 

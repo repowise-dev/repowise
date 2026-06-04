@@ -39,6 +39,10 @@ export interface GraphFlowProps {
    *  Page uses this to dismiss the doc panel so the right rail stays
    *  to a single surface. */
   onCommunityPanelOpen?: (communityId: number) => void;
+  /** Fired whenever the live scope (viewMode) changes. The page uses this to
+   *  track the current scope so it can conditionally fetch the capped full
+   *  graph (and gate the truncation banner) only for scopes that render it. */
+  onViewModeChange?: (mode: ViewMode) => void;
 }
 
 export function GraphFlow({
@@ -49,6 +53,7 @@ export function GraphFlow({
   onNodeClick,
   onNodeViewDocs,
   onCommunityPanelOpen,
+  onViewModeChange,
 }: GraphFlowProps) {
   // Constellation (Knowledge Graph) is the default scope.
   const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
@@ -107,7 +112,10 @@ export function GraphFlow({
       executionFlows={executionFlowsData as ExecutionFlows | undefined}
       initialViewMode={initialViewMode}
       initialSelectedNode={initialSelectedNode}
-      onViewModeChange={setViewMode}
+      onViewModeChange={(mode) => {
+        setViewMode(mode);
+        onViewModeChange?.(mode);
+      }}
       onModulePathChange={setModulePath}
       onExpandedModulesChange={(expanded) => setHasExpandedModules(expanded.size > 0)}
       onNodeClick={onNodeClick}

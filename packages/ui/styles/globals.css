@@ -151,23 +151,12 @@
   --color-edge-co-change: #7c5cc4;
 
   /* Community families — 12 warm/plum-anchored hues for graph clustering.
-     `hub` colors mid-size nodes (community centroids), `-soft` tints
-     satellites. One cool counterpoint (slate blue / deep teal) is deliberate
-     for 12-way distinguishability. Resolved at runtime by getCommunityFamily
-     in shared/use-theme-tokens.ts; verified against --color-bg-canvas in
-     docs/design/contrast_check.py. LIGHT values here; `.dark` overrides below. */
-  --color-community-1: #c0641a;  --color-community-1-soft: #f7a94d;  /* brand orange (deepened for 3:1 on warm canvas) */
-  --color-community-2: #58436c;  --color-community-2-soft: #826aa0;  /* plum */
-  --color-community-3: #b23a2e;  --color-community-3-soft: #cf6a55;  /* terracotta */
-  --color-community-4: #6b7a3d;  --color-community-4-soft: #90a05e;  /* olive/sage */
-  --color-community-5: #b06a86;  --color-community-5-soft: #cf93ab;  /* dusty rose */
-  --color-community-6: #4a5d7a;  --color-community-6-soft: #71849f;  /* slate blue */
-  --color-community-7: #a8821f;  --color-community-7-soft: #c9a544;  /* gold */
-  --color-community-8: #8a7a66;  --color-community-8-soft: #a89882;  /* taupe */
-  --color-community-9: #7a2f4a;  --color-community-9-soft: #9e5570;  /* wine */
-  --color-community-10: #b85a38; --color-community-10-soft: #eba585; /* peach (deepened for 3:1 on warm canvas) */
-  --color-community-11: #2f6b66; --color-community-11-soft: #558f89; /* deep teal */
-  --color-community-12: #5e5360; --color-community-12-soft: #84778a; /* charcoal mauve */
+     LIGHT values are declared in a plain `:root {}` block below (NOT here in
+     @theme) because they are referenced *only* dynamically — getCommunityFamily
+     in shared/use-theme-tokens.ts builds `--color-community-${n}` strings at
+     runtime, so Tailwind v4 (which tree-shakes @theme vars with no static
+     reference) would prune communities 2–12 from the emitted light CSS. The
+     `.dark` overrides live in plain CSS already, which is why dark never broke. */
 
   /* C4 / graph canvas surfaces — consumed via the `THEME` object in
      c4/graph-primitives, which can't see component classes. Previously these
@@ -350,6 +339,34 @@
 
   /* Dark soft wash — plum charcoal with a faint warm lift at the end */
   --gradient-warm-wash: linear-gradient(160deg, #1b1622 0%, #241d2e 55%, #2e2629 100%);
+}
+
+/* -------------------------------------------------------------------- */
+/* Community families (LIGHT) — plain CSS, NOT @theme                     */
+/* -------------------------------------------------------------------- */
+/* These 12 warm/plum-anchored hues are resolved *only* at runtime by
+   getCommunityFamily (shared/use-theme-tokens.ts builds the var names
+   dynamically), so they MUST NOT live in @theme — Tailwind v4 tree-shakes
+   @theme vars that have no static reference, which previously pruned
+   communities 2–12 from light mode. Declaring them in a plain `:root {}`
+   keeps them in the emitted CSS, mirroring how `.dark` declares them.
+   `hub` colors community centroids; `-soft` tints satellites. One cool
+   counterpoint (slate blue / deep teal) is deliberate for 12-way
+   distinguishability. Verified against --color-bg-canvas in
+   docs/design/contrast_check.py. `.dark` overrides above. */
+:root {
+  --color-community-1: #c0641a;  --color-community-1-soft: #f7a94d;  /* brand orange (deepened for 3:1 on warm canvas) */
+  --color-community-2: #58436c;  --color-community-2-soft: #826aa0;  /* plum */
+  --color-community-3: #b23a2e;  --color-community-3-soft: #cf6a55;  /* terracotta */
+  --color-community-4: #6b7a3d;  --color-community-4-soft: #90a05e;  /* olive/sage */
+  --color-community-5: #b06a86;  --color-community-5-soft: #cf93ab;  /* dusty rose */
+  --color-community-6: #4a5d7a;  --color-community-6-soft: #71849f;  /* slate blue */
+  --color-community-7: #a8821f;  --color-community-7-soft: #c9a544;  /* gold */
+  --color-community-8: #8a7a66;  --color-community-8-soft: #a89882;  /* taupe */
+  --color-community-9: #7a2f4a;  --color-community-9-soft: #9e5570;  /* wine */
+  --color-community-10: #b85a38; --color-community-10-soft: #eba585; /* peach (deepened for 3:1 on warm canvas) */
+  --color-community-11: #2f6b66; --color-community-11-soft: #558f89; /* deep teal */
+  --color-community-12: #5e5360; --color-community-12-soft: #84778a; /* charcoal mauve */
 }
 
 /* -------------------------------------------------------------------- */
