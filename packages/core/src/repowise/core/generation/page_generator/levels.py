@@ -194,6 +194,12 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     _topo_order_code_files(run)
     await _prefetch_dependency_summaries(run)
 
+    # One pass over the graph's symbol nodes feeds every file's call-graph /
+    # heritage extraction (instead of a full node scan per file).
+    from ..context.graph_intelligence import build_symbol_index
+
+    symbol_index = build_symbol_index(run.graph)
+
     items: list[tuple[Any, FilePageContext]] = []
     for p in run.code_files:
         kg_file_ctx = run.kg_ctx.get_file_context(p.file_info.path) if run.kg_ctx.available else None
@@ -209,6 +215,7 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             dead_code_findings=run.dead_code_by_file.get(p.file_info.path),
             decision_records=run.decisions_by_file.get(p.file_info.path),
             kg_context=kg_file_ctx,
+            symbol_index=symbol_index,
         )
         run.file_page_contexts[p.file_info.path] = ctx
         items.append((p, ctx))
