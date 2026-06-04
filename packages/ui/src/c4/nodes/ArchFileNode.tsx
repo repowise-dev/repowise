@@ -23,7 +23,12 @@ function ArchFileNodeImpl(props: NodeProps) {
   const { node, hasDocs, searchHighlight, tourHighlight, tourStepNumber, diffState, dimmed } = data;
   const effectiveDiffState = dimmed && !diffState ? "faded" : diffState;
 
-  const kindLabel = node.node_type;
+  // Re-export barrels are de-emphasized with their honest summary (plan C-3):
+  // faded card, no entry-point badge — they are shells, not destinations.
+  const isBarrel = node.tags.includes("barrel");
+  const barrelFaded = isBarrel && !selected && !searchHighlight && !tourHighlight;
+
+  const kindLabel = isBarrel ? "barrel" : node.node_type;
 
   const complexityColor = THEME.complexity[node.complexity] ?? "#94a3b8";
 
@@ -49,7 +54,7 @@ function ArchFileNodeImpl(props: NodeProps) {
           {tourStepNumber}
         </span>
       )}
-      {node.is_entry_point && (
+      {node.is_entry_point && !isBarrel && (
         <span title="Entry point" aria-label="Entry point" style={{ display: "inline-flex", color: "#4ade80" }}>
           <Play size={10} aria-hidden />
         </span>
@@ -84,21 +89,23 @@ function ArchFileNodeImpl(props: NodeProps) {
   );
 
   return (
-    <NodeShell
-      tone={node.node_type}
-      kindLabel={kindLabel}
-      title={node.name}
-      subtitle={node.summary}
-      footer={footer}
-      selected={selected}
-      searchHighlight={searchHighlight}
-      tourHighlight={tourHighlight}
-      diffState={effectiveDiffState}
-      hasDocs={hasDocs ?? node.has_doc}
-      badges={badges}
-      width={300}
-      height={140}
-    />
+    <div style={barrelFaded ? { opacity: 0.55 } : undefined}>
+      <NodeShell
+        tone={node.node_type}
+        kindLabel={kindLabel}
+        title={node.name}
+        subtitle={node.summary}
+        footer={footer}
+        selected={selected}
+        searchHighlight={searchHighlight}
+        tourHighlight={tourHighlight}
+        diffState={effectiveDiffState}
+        hasDocs={hasDocs ?? node.has_doc}
+        badges={badges}
+        width={300}
+        height={140}
+      />
+    </div>
   );
 }
 

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
+import type { NodeProps } from "@xyflow/react";
 import { NodeShell } from "../../src/graph-primitives/node-shell";
+import { ArchFileNode } from "../../src/c4/nodes/ArchFileNode";
 import type { ArchNode, ArchLayer } from "../../src/c4/types";
 
 vi.mock("@xyflow/react", () => ({
@@ -98,6 +100,42 @@ describe("ArchFileNode (via NodeShell)", () => {
     expect(getByText("FILE · python")).toBeDefined();
     expect(getByText("Main application entry point")).toBeDefined();
     expect(getByText("↓2 ↑3")).toBeDefined();
+  });
+});
+
+describe("ArchFileNode barrels + tour badge (plan C-2/C-3)", () => {
+  function renderArchFile(overrides: Partial<ArchNode>, dataExtra: object = {}) {
+    const node = { ...mockNode, ...overrides };
+    const props = {
+      data: { node, ...dataExtra },
+      selected: false,
+    } as unknown as NodeProps;
+    return render(<ArchFileNode {...props} />);
+  }
+
+  it("de-emphasizes barrel-tagged nodes and suppresses their entry badge", () => {
+    const { container, queryByLabelText, getByText } = renderArchFile({
+      tags: ["barrel", "typescript"],
+      is_entry_point: true,
+      summary: "Re-export barrel for ui/.",
+    });
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.style.opacity).toBe("0.55");
+    expect(queryByLabelText("Entry point")).toBeNull();
+    expect(getByText("barrel")).toBeDefined(); // honest kind label
+    expect(getByText("Re-export barrel for ui/.")).toBeDefined(); // honest summary
+  });
+
+  it("keeps the entry badge for genuine entry points", () => {
+    const { getByLabelText, container } = renderArchFile({ is_entry_point: true });
+    expect(getByLabelText("Entry point")).toBeDefined();
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.style.opacity).not.toBe("0.55");
+  });
+
+  it("shows the numbered tour-step badge when highlighted by the tour", () => {
+    const { getByLabelText } = renderArchFile({}, { tourStepNumber: 3, tourHighlight: true });
+    expect(getByLabelText("Tour step 3")).toBeDefined();
   });
 });
 

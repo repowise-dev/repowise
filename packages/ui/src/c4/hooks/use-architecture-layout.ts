@@ -17,6 +17,7 @@ import {
   computeStage1Layout,
   computeStage2Layout,
   estimateContainerSize,
+  hoistPrioritySlots,
   ARCH_NODE_SIZES,
   type ContainerAtom,
   type PortalSpec,
@@ -547,8 +548,14 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
             }));
 
           const stage2 = await computeStage2Layout(childLayoutNodes, internalEdges);
+          // Entry points anchor to the top of their group (plan C-3);
+          // demoted barrels never count as entries.
+          const hoisted = hoistPrioritySlots(stage2.positions, childLayoutNodes, (id) => {
+            const child = nodesById.get(id);
+            return Boolean(child?.is_entry_point) && !(child?.tags.includes("barrel") ?? false);
+          });
           const layoutResult = {
-            positions: stage2.positions,
+            positions: hoisted,
             size: stage2.actualSize,
           };
           store.setContainerLayout(container.id, layoutResult);
@@ -560,7 +567,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
             store.bumpStage1Tick();
           }
 
-          addChildNodes(allNodes, container, stage2.positions, pos, nodesById, searchHighlightIds, selectedConnectedNodes);
+          addChildNodes(allNodes, container, hoisted, pos, nodesById, searchHighlightIds, selectedConnectedNodes);
         }
       }
     }

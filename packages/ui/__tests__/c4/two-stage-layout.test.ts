@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   assignSlotsByRank,
   computeStage1Layout,
+  hoistPrioritySlots,
   computeStage2Layout,
   repairElkInput,
   estimateContainerSize,
@@ -190,6 +191,41 @@ describe("assignSlotsByRank (curated display_order, plan B-4)", () => {
       ["portal:x", { x: 500, y: 40, width: 180, height: 60 }],
     ]);
     const out = assignSlotsByRank(positions, new Map([["layer:a", 0]]));
+    expect(out).toEqual(positions);
+  });
+});
+
+describe("hoistPrioritySlots (entry-point anchoring, plan C-3)", () => {
+  const children = [
+    { id: "a.py", width: 300, height: 140 },
+    { id: "b.py", width: 300, height: 140 },
+    { id: "main.py", width: 300, height: 140 },
+    { id: "conf.yaml", width: 240, height: 100 },
+  ];
+
+  it("bubbles entry points to the top-left slot of their size group", () => {
+    const positions = new Map([
+      ["a.py", { x: 20, y: 20 }],
+      ["b.py", { x: 20, y: 180 }],
+      ["main.py", { x: 20, y: 340 }],
+      ["conf.yaml", { x: 360, y: 20 }],
+    ]);
+    const out = hoistPrioritySlots(positions, children, (id) => id === "main.py");
+
+    expect(out.get("main.py")).toEqual({ x: 20, y: 20 });
+    // Non-priority nodes keep their relative order in the remaining slots.
+    expect(out.get("a.py")).toEqual({ x: 20, y: 180 });
+    expect(out.get("b.py")).toEqual({ x: 20, y: 340 });
+    // Different-size nodes are never disturbed (overlap safety).
+    expect(out.get("conf.yaml")).toEqual({ x: 360, y: 20 });
+  });
+
+  it("is a no-op when no priority node is present", () => {
+    const positions = new Map([
+      ["a.py", { x: 20, y: 20 }],
+      ["b.py", { x: 20, y: 180 }],
+    ]);
+    const out = hoistPrioritySlots(positions, children, () => false);
     expect(out).toEqual(positions);
   });
 });
