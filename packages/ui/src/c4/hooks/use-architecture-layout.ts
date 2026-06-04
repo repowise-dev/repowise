@@ -5,7 +5,12 @@ import { MarkerType, type Node, type Edge } from "@xyflow/react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import type { ArchitectureView, ArchNode, ArchEdge, ArchLayer } from "../types";
 import { PERSONA_NODE_TYPES } from "../types";
-import { buildContainers, getStandaloneNodeIds } from "../layout/containers";
+import {
+  buildContainers,
+  enforceBoxBudget,
+  getStandaloneNodeIds,
+  MAX_VISIBLE_BOXES,
+} from "../layout/containers";
 import { aggregateEdges, capAggregatedEdges } from "../layout/edge-aggregation";
 import {
   assignSlotsByRank,
@@ -35,6 +40,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
   const detailLevel = useArchitectureStore((s) => s.detailLevel);
   const persona = useArchitectureStore((s) => s.persona);
   const filters = useArchitectureStore((s) => s.filters);
+  const showTests = useArchitectureStore((s) => s.showTests);
   const expandedContainers = useArchitectureStore((s) => s.expandedContainers);
   const expandedContainersVersion = useArchitectureStore((s) => s.expandedContainers.size);
   const stage1Tick = useArchitectureStore((s) => s.stage1Tick);
@@ -89,6 +95,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     detailLevel,
     persona,
     filters,
+    showTests,
     expandedContainers,
     expandedContainersVersion,
     stage1Tick,
@@ -184,6 +191,8 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         data: {
           layer,
           searchHighlight: hasSearchHit,
+          // Tests mirror the code — demoted unless restored (decision 2).
+          demoted: layer.id === "layer:test" && !showTests,
         },
         width: ARCH_NODE_SIZES.layerCluster.width,
         height: ARCH_NODE_SIZES.layerCluster.height,
@@ -212,15 +221,38 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
   }
 
   /** Cards for one curated layer: its sub-groups plus a synthetic card for any
-   * files the curation pass left ungrouped, so every file keeps a home. */
-  function subGroupCards(layer: ArchLayer): { id: string; name: string; node_ids: string[] }[] {
+   * files the curation pass left ungrouped, so every file keeps a home.
+   * Enforces the visible-box budget: the lowest-pagerank groups collapse into
+   * one "+N more groups" card before the tier ever exceeds the budget (P2).
+   * Deterministic, so the groups tier and detail tier always agree on
+   * membership. */
+  function subGroupCards(
+    layer: ArchLayer,
+    nodesById: Map<string, ArchNode>,
+  ): { id: string; name: string; node_ids: string[] }[] {
     const grouped = new Set(layer.sub_groups.flatMap((g) => g.node_ids));
     const leftovers = layer.node_ids.filter((id) => !grouped.has(id));
     const cards = layer.sub_groups.map((g) => ({ id: g.id, name: g.name, node_ids: g.node_ids }));
     if (leftovers.length > 0) {
       cards.push({ id: `${layer.id}:__ungrouped`, name: "Other files", node_ids: leftovers });
     }
-    return cards;
+    if (cards.length <= MAX_VISIBLE_BOXES) {
+      return cards;
+    }
+    const score = (card: { node_ids: string[] }) =>
+      Math.max(...card.node_ids.map((id) => nodesById.get(id)?.pagerank ?? 0));
+    const ranked = [...cards].sort((a, b) => score(b) - score(a));
+    const kept = ranked.slice(0, MAX_VISIBLE_BOXES - 1);
+    const merged = ranked.slice(MAX_VISIBLE_BOXES - 1);
+    const keptSet = new Set(kept.map((c) => c.id));
+    return [
+      ...cards.filter((c) => keptSet.has(c.id)),
+      {
+        id: `${layer.id}:__more`,
+        name: `+${merged.length} more groups`,
+        node_ids: merged.flatMap((c) => c.node_ids),
+      },
+    ];
   }
 
   /** Shape a sub-group card as an ArchLayer so LayerClusterNode renders it
@@ -260,7 +292,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     }
 
     const nodesById = new Map(currentView.nodes.map((n: ArchNode) => [n.id, n]));
-    const cards = subGroupCards(layer);
+    const cards = subGroupCards(layer, nodesById);
 
     const nodeToBox = new Map<string, string>();
     for (const card of cards) {
@@ -359,16 +391,18 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       return { nodes: [], edges: [], loading: false, issues: [`Layer ${activeLayerId} not found`], hiddenEdgeCount: 0 };
     }
 
+    const nodesById = new Map(currentView.nodes.map((n: ArchNode) => [n.id, n]));
+
     // When a curated sub-group is active, file cards are scoped to it and the
     // sibling groups stay collapsed cards (locked decision 1).
     let scopeNodeIds = layer.node_ids;
     let siblingCards: { id: string; name: string; node_ids: string[] }[] = [];
     const activeCard = activeSubGroupId
-      ? subGroupCards(layer).find((c) => c.id === activeSubGroupId)
+      ? subGroupCards(layer, nodesById).find((c) => c.id === activeSubGroupId)
       : undefined;
     if (activeSubGroupId && activeCard) {
       scopeNodeIds = activeCard.node_ids;
-      siblingCards = subGroupCards(layer).filter((c) => c.id !== activeSubGroupId);
+      siblingCards = subGroupCards(layer, nodesById).filter((c) => c.id !== activeSubGroupId);
     }
 
     const layerNodeIds = new Set(scopeNodeIds);
@@ -383,15 +417,23 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     }
 
     const visibleNodeIds = new Set(layerNodes.map((n: ArchNode) => n.id));
-    const nodesById = new Map(currentView.nodes.map((n: ArchNode) => [n.id, n]));
 
     // Curated sub-groups from the artifact drive grouping (P3); folder /
     // community heuristics remain the fallback for uncurated layers (P6).
     // Inside one sub-group the heuristics regroup its files.
-    const containers = activeCard
+    const rawContainers = activeCard
       ? buildContainers(layerNodes, currentView.edges, "auto")
       : buildContainers(layerNodes, currentView.edges, "curated", layer.sub_groups);
-    const standaloneIds = getStandaloneNodeIds(layerNodes, containers);
+    const rawStandaloneIds = getStandaloneNodeIds(layerNodes, rawContainers);
+
+    // Hard visible-box budget (P2): sibling cards occupy slots too, so the
+    // file tier degrades into a "+N more" container before exceeding it.
+    const { containers, standaloneIds } = enforceBoxBudget(
+      rawContainers,
+      rawStandaloneIds,
+      (id) => nodesById.get(id)?.pagerank ?? 0,
+      Math.max(4, MAX_VISIBLE_BOXES - siblingCards.length),
+    );
 
     const nodeIdToLayerId = useArchitectureStore.getState().nodeIdToLayerId;
     const portalSpecs = buildPortalSpecs(currentView.edges, visibleNodeIds, layer, currentView.layers, nodeIdToLayerId);

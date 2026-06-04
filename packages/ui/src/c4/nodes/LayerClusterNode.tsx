@@ -13,11 +13,13 @@ export interface LayerClusterNodeProps {
   /** "layer" (default) drills into the layer; "subGroup" renders the same
    * card as a curated sub-group and drills into it. Reuse, not a fork. */
   kind?: "layer" | "subGroup" | undefined;
+  /** Visually de-emphasized (Test layer by default — decision 2). */
+  demoted?: boolean | undefined;
 }
 
 function LayerClusterNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: LayerClusterNodeProps };
-  const { layer, searchHighlight } = data;
+  const { layer, searchHighlight, demoted } = data;
   const kind = data.kind ?? "layer";
   const [hovered, setHovered] = useState(false);
 
@@ -104,7 +106,8 @@ function LayerClusterNodeImpl(props: NodeProps) {
           ? "0 4px 16px rgba(0,0,0,0.4)"
           : "none",
         borderRadius: 8,
-        transition: "box-shadow 0.2s ease",
+        opacity: demoted && !hovered ? 0.45 : 1,
+        transition: "box-shadow 0.2s ease, opacity 0.2s ease",
       }}
     >
       <NodeShell

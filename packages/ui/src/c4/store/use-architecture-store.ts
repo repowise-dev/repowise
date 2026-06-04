@@ -43,6 +43,8 @@ interface ArchitectureStoreState {
   filters: ArchFilters;
   nodeTypeFilters: Record<string, boolean>;
   filterPanelOpen: boolean;
+  /** Test layer is demoted by default (locked decision 2); this restores it. */
+  showTests: boolean;
 
   tourActive: boolean;
   currentTourStep: number;
@@ -90,6 +92,7 @@ interface ArchitectureStoreActions {
   setEdgeCategoryFilter: (category: string, visible: boolean) => void;
   resetFilters: () => void;
   setFilterPanelOpen: (open: boolean) => void;
+  setShowTests: (show: boolean) => void;
 
   startTour: () => void;
   endTour: () => void;
@@ -232,6 +235,7 @@ const INITIAL_STATE: ArchitectureStoreState = {
   },
   nodeTypeFilters: { ...DEFAULT_NODE_TYPE_FILTERS },
   filterPanelOpen: false,
+  showTests: false,
 
   tourActive: false,
   currentTourStep: 0,
@@ -477,6 +481,10 @@ export const useArchitectureStore = create<ArchitectureStore>()(
 
       setFilterPanelOpen: (open: boolean) => {
         set({ filterPanelOpen: open });
+      },
+
+      setShowTests: (show: boolean) => {
+        set({ showTests: show });
       },
 
       startTour: () => {

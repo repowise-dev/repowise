@@ -47,6 +47,11 @@ export function FilterPanel() {
   const setEdgeCategoryFilter = useArchitectureStore((s) => s.setEdgeCategoryFilter);
   const resetFilters = useArchitectureStore((s) => s.resetFilters);
   const setFilterPanelOpen = useArchitectureStore((s) => s.setFilterPanelOpen);
+  const showTests = useArchitectureStore((s) => s.showTests);
+  const setShowTests = useArchitectureStore((s) => s.setShowTests);
+  const hasTestLayer = useArchitectureStore(
+    (s) => s.view?.layers.some((l) => l.id === "layer:test") ?? false,
+  );
 
   const nodeTypes = useMemo(() => {
     if (!view) return [];
@@ -132,6 +137,17 @@ export function FilterPanel() {
           />
         ))}
       </Section>
+
+      {hasTestLayer && (
+        <Section title="Display">
+          {/* Tests mirror the code — demoted by default (decision 2). */}
+          <CheckboxRow
+            label="Show tests"
+            checked={showTests}
+            onChange={setShowTests}
+          />
+        </Section>
+      )}
 
       <Section title="Layers">
         {view.layers.map((layer) => (

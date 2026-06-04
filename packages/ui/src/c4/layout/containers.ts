@@ -133,3 +133,67 @@ export function getStandaloneNodeIds(
   }
   return nodes.filter((n) => !contained.has(n.id)).map((n) => n.id);
 }
+
+/** Hard budget for visible group boxes per viewport (viewer plan P2). */
+export const MAX_VISIBLE_BOXES = 12;
+
+export interface BudgetedBoxes {
+  containers: ContainerAtom[];
+  standaloneIds: string[];
+  /** Boxes folded into the "+N more" overflow container. */
+  collapsedCount: number;
+}
+
+/** Enforce the visible-box budget: when containers + standalone cards exceed
+ * *max*, the lowest-pagerank boxes collapse into one "+N more" container
+ * instead of ever exceeding the budget (degradation, not truncation). */
+export function enforceBoxBudget(
+  containers: ContainerAtom[],
+  standaloneIds: string[],
+  pagerankOf: (id: string) => number,
+  max: number = MAX_VISIBLE_BOXES,
+): BudgetedBoxes {
+  const total = containers.length + standaloneIds.length;
+  if (total <= max) {
+    return { containers, standaloneIds, collapsedCount: 0 };
+  }
+
+  type Box =
+    | { kind: "container"; score: number; container: ContainerAtom }
+    | { kind: "standalone"; score: number; id: string };
+
+  const boxes: Box[] = [
+    ...containers.map((c) => ({
+      kind: "container" as const,
+      score: Math.max(...c.childNodeIds.map(pagerankOf)),
+      container: c,
+    })),
+    ...standaloneIds.map((id) => ({
+      kind: "standalone" as const,
+      score: pagerankOf(id),
+      id,
+    })),
+  ].sort((a, b) => b.score - a.score);
+
+  // Keep the strongest max-1 boxes; everything else folds into the overflow.
+  const kept = boxes.slice(0, max - 1);
+  const merged = boxes.slice(max - 1);
+
+  const overflowChildren = merged.flatMap((b) =>
+    b.kind === "container" ? b.container.childNodeIds : [b.id],
+  );
+  const overflow: ContainerAtom = {
+    id: "container:__overflow",
+    label: `+${merged.length} more`,
+    childNodeIds: overflowChildren,
+  };
+
+  return {
+    containers: [
+      ...kept.filter((b) => b.kind === "container").map((b) => b.container),
+      overflow,
+    ],
+    standaloneIds: kept.filter((b) => b.kind === "standalone").map((b) => b.id),
+    collapsedCount: merged.length,
+  };
+}

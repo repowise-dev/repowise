@@ -117,6 +117,89 @@ describe("store: layer-groups navigation", () => {
   });
 });
 
+describe("layout: visible-box budget + test-layer demotion (B-5)", () => {
+  it("caps the layer-groups tier at 12 cards with a '+N more groups' card", async () => {
+    const view = createCuratedView();
+    // 16 single-file sub-groups, each with a distinct pagerank.
+    const fileIds = Array.from({ length: 16 }, (_, i) => `src/big/f${i}.py`);
+    view.nodes = [
+      ...view.nodes,
+      ...fileIds.map((id, i) => ({
+        ...view.nodes[0]!,
+        id,
+        file_path: id,
+        pagerank: 1 - i * 0.05,
+      })),
+    ];
+    view.layers = [
+      {
+        ...view.layers[0]!,
+        id: "layer:big",
+        name: "Big",
+        node_ids: fileIds,
+        sub_groups: fileIds.map((id, i) => ({
+          id: `layer:big:g${i}`,
+          name: `g${i}`,
+          node_ids: [id],
+        })),
+      },
+    ];
+    act(() => {
+      store.getState().setView(view);
+      store.getState().drillIntoLayer("layer:big");
+    });
+    const { result } = renderHook(() => useArchitectureLayout());
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThan(0);
+    });
+
+    const cards = result.current.nodes.filter((n) => n.type === "subGroupCluster");
+    expect(cards.length).toBeLessThanOrEqual(12);
+    const more = cards.find((n) => n.id === "layer:big:__more");
+    expect(more).toBeDefined();
+    expect((more!.data as { layer: { name: string } }).layer.name).toBe("+5 more groups");
+    // The strongest groups stay visible; the weakest fold into "+N more".
+    expect(cards.some((n) => n.id === "layer:big:g0")).toBe(true);
+    expect(cards.some((n) => n.id === "layer:big:g15")).toBe(false);
+  });
+
+  it("demotes the Test layer card by default and restores it via showTests", async () => {
+    const view = createCuratedView();
+    view.layers = [
+      ...view.layers,
+      {
+        ...view.layers[1]!,
+        id: "layer:test",
+        name: "Test",
+        node_ids: [],
+        sub_groups: [],
+        display_order: 9,
+      },
+    ];
+    act(() => {
+      store.getState().setView(view);
+    });
+    const { result } = renderHook(() => useArchitectureLayout());
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThan(0);
+    });
+    const testCard = () => result.current.nodes.find((n) => n.id === "layer:test")!;
+    expect((testCard().data as { demoted?: boolean }).demoted).toBe(true);
+    // Other layers are not demoted.
+    const api = result.current.nodes.find((n) => n.id === "layer:api")!;
+    expect((api.data as { demoted?: boolean }).demoted).toBe(false);
+
+    act(() => {
+      store.getState().setShowTests(true);
+    });
+    await waitFor(() => {
+      expect((testCard().data as { demoted?: boolean }).demoted).toBe(false);
+    });
+  });
+});
+
 describe("layout: curated overview stacking", () => {
   it("stacks layer cards by display_order, not edge direction", async () => {
     const view = createCuratedView();
