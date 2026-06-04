@@ -70,9 +70,9 @@ export function C4DetailPanel(props: C4DetailPanelProps) {
         overflow: "auto",
         padding: 0,
         background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
-        border: "1px solid var(--color-border-default, #334155)",
+        border: "1px solid var(--color-border-default)",
         borderRadius: 8,
-        color: "var(--color-text-primary, #f1f5f9)",
+        color: "var(--color-text-primary)",
         fontSize: 12,
         zIndex: 5,
         display: "flex",
@@ -94,7 +94,7 @@ function Header({ data, onClose }: { data: C4NodeData; onClose: () => void }) {
         alignItems: "center",
         justifyContent: "space-between",
         padding: "10px 12px",
-        borderBottom: "1px solid var(--color-border-default, #334155)",
+        borderBottom: "1px solid var(--color-border-default)",
       }}
     >
       <span style={{ textTransform: "uppercase", fontSize: 10, letterSpacing: 0.6, opacity: 0.65, fontWeight: 600 }}>
@@ -229,7 +229,7 @@ function ContainerOrComponentBody(props: C4DetailPanelProps) {
         <Section title="Documentation">
           <Title style={{ fontSize: 12 }}>{doc.title}</Title>
           {docContent && renderDoc ? (
-            <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45, color: "var(--color-text-secondary, #cbd5e1)" }}>
+            <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45, color: "var(--color-text-secondary)" }}>
               {renderDoc(docContent)}
             </div>
           ) : (
@@ -330,9 +330,9 @@ function ActionButton({
         padding: "5px 10px",
         background: primary ? "var(--color-accent-muted, rgba(245,149,32,0.2))" : "transparent",
         color: primary
-          ? "var(--color-accent-primary, #f59520)"
-          : "var(--color-text-secondary, #cbd5e1)",
-        border: `1px solid ${primary ? "var(--color-accent-primary, #f59520)" : "var(--color-border-default, #334155)"}`,
+          ? "var(--color-accent-primary)"
+          : "var(--color-text-secondary)",
+        border: `1px solid ${primary ? "var(--color-accent-primary)" : "var(--color-border-default)"}`,
         borderRadius: 4,
         cursor: "pointer",
         fontSize: 11,

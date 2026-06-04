@@ -136,7 +136,7 @@ function TreeNodeRow({
             background: "none",
             border: "none",
             cursor: "pointer",
-            color: "var(--color-text-primary, #f1f5f9)",
+            color: "var(--color-text-primary)",
             fontSize: 11,
             textAlign: "left",
           }}
@@ -179,8 +179,8 @@ function TreeNodeRow({
         border: "none",
         cursor: "pointer",
         color: isSelected
-          ? "var(--color-accent-primary, #f59520)"
-          : "var(--color-text-primary, #f1f5f9)",
+          ? "var(--color-accent-primary)"
+          : "var(--color-text-primary)",
         fontSize: 11,
         textAlign: "left",
       }}

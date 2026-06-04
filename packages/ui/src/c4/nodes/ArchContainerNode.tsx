@@ -56,7 +56,7 @@ function ArchContainerNodeImpl(props: NodeProps) {
         <span style={{
           fontSize: 13,
           fontWeight: 600,
-          color: "var(--color-text-primary, #f1f5f9)",
+          color: "var(--color-text-primary)",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -64,10 +64,10 @@ function ArchContainerNodeImpl(props: NodeProps) {
           {label}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 11, color: "var(--color-text-secondary, #94a3b8)" }}>
+          <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
             {childCount}
           </span>
-          <ChevronIcon size={12} color="var(--color-text-secondary, #94a3b8)" aria-hidden />
+          <ChevronIcon size={12} color="var(--color-text-secondary)" aria-hidden />
         </div>
       </div>
       {searchHitCount != null && searchHitCount > 0 && (

@@ -85,7 +85,7 @@ function LayerClusterNodeImpl(props: NodeProps) {
         style={{
           fontSize: 10,
           opacity: hovered ? 0.9 : 0,
-          color: "var(--color-accent-primary, #f59520)",
+          color: "var(--color-accent-primary)",
           transition: "opacity 0.2s ease",
           textAlign: "right",
         }}

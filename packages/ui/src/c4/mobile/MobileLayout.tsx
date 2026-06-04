@@ -43,7 +43,7 @@ export function MobileLayout({
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        background: "var(--color-bg-canvas, #0f172a)",
+        background: "var(--color-bg-canvas)",
       }}
     >
       <div
@@ -86,7 +86,7 @@ export function MobileLayout({
             pointerEvents: activeTab === "info" ? "auto" : "none",
             overflowY: "auto",
             background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
-            color: "var(--color-text-primary, #f1f5f9)",
+            color: "var(--color-text-primary)",
           }}
         >
           {infoContent}
@@ -101,7 +101,7 @@ export function MobileLayout({
             pointerEvents: activeTab === "files" ? "auto" : "none",
             overflowY: "auto",
             background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
-            color: "var(--color-text-primary, #f1f5f9)",
+            color: "var(--color-text-primary)",
           }}
         >
           {filesContent}

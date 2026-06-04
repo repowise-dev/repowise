@@ -90,7 +90,7 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
 
       {props.docContent && props.renderDoc ? (
         <Section title="Wiki">
-          <div style={{ fontSize: 12, lineHeight: 1.45, color: "var(--color-text-secondary, #cbd5e1)" }}>
+          <div style={{ fontSize: 12, lineHeight: 1.45, color: "var(--color-text-secondary)" }}>
             {props.renderDoc(props.docContent)}
           </div>
           {props.onOpenDoc && (
@@ -103,7 +103,7 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
         </Section>
       ) : (
         <Section title="Wiki">
-          <div style={{ fontSize: 11, color: "var(--color-text-secondary, #94a3b8)", opacity: 0.7 }}>
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary)", opacity: 0.7 }}>
             Wiki not generated yet. Run docs generation to populate this section.
           </div>
         </Section>
@@ -187,7 +187,7 @@ function HeaderSection({
   tone: { band: string; text: string };
   onClose: () => void;
 }) {
-  const dotColor = THEME.complexity[node.complexity] ?? "#94a3b8";
+  const dotColor = THEME.complexity[node.complexity] ?? "var(--color-text-muted)";
 
   return (
     <header
@@ -196,7 +196,7 @@ function HeaderSection({
         alignItems: "center",
         justifyContent: "space-between",
         padding: "10px 12px",
-        borderBottom: "1px solid var(--color-border-default, #334155)",
+        borderBottom: "1px solid var(--color-border-default)",
         gap: 8,
       }}
     >
@@ -355,7 +355,7 @@ function ConnectionList({
               border: "none",
               borderRadius: 4,
               cursor: "pointer",
-              color: "var(--color-text-primary, #f1f5f9)",
+              color: "var(--color-text-primary)",
               fontSize: 11,
               textAlign: "left",
             }}

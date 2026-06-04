@@ -12,12 +12,13 @@ const CATEGORY_NODE_TYPES: Record<string, ArchNodeType[]> = {
   data: ["table", "endpoint", "schema"],
 };
 
+// Interim semantic mapping (warm palette); B2 replaces dots with kind icons.
 const CATEGORY_COLORS: Record<string, string> = {
-  code: "#3b82f6",
-  config: "#f59e0b",
-  docs: "#67e8f9",
-  infra: "#a78bfa",
-  data: "#2dd4bf",
+  code: "var(--color-accent-fill)",
+  config: "var(--color-warning)",
+  docs: "var(--color-info)",
+  infra: "var(--color-accent-secondary)",
+  data: "var(--color-success)",
 };
 
 export function NodeTypeCategoryFilters() {
@@ -49,7 +50,7 @@ export function NodeTypeCategoryFilters() {
     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
       {Object.keys(CATEGORY_NODE_TYPES).map((category) => {
         const active = nodeTypeFilters[category] !== false;
-        const color = CATEGORY_COLORS[category] ?? "#94a3b8";
+        const color = CATEGORY_COLORS[category] ?? "var(--color-text-muted)";
         return (
           <button
             key={category}

@@ -92,14 +92,14 @@ export function ProjectOverview() {
                     border: "none",
                     borderRadius: 4,
                     cursor: "pointer",
-                    color: "var(--color-text-primary, #f1f5f9)",
+                    color: "var(--color-text-primary)",
                     fontSize: 11,
                     textAlign: "left",
                   }}
                   onMouseEnter={(e) => { (e.currentTarget.style.background = "var(--color-bg-wash-hover)"); }}
                   onMouseLeave={(e) => { (e.currentTarget.style.background = "none"); }}
                 >
-                  <LogIn size={11} style={{ flexShrink: 0, color: "var(--color-accent-primary, #f59520)" }} />
+                  <LogIn size={11} style={{ flexShrink: 0, color: "var(--color-accent-primary)" }} />
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <span style={{ opacity: 0.5 }}>{dir}</span>
                     <span style={{ fontWeight: 600 }}>{name}</span>
@@ -129,7 +129,7 @@ export function ProjectOverview() {
                   border: "1px solid var(--color-border-subtle)",
                   borderRadius: 4,
                   cursor: "pointer",
-                  color: "var(--color-text-primary, #f1f5f9)",
+                  color: "var(--color-text-primary)",
                   fontSize: 11,
                   textAlign: "left",
                 }}
@@ -245,7 +245,7 @@ export function ProjectOverview() {
                   border: "none",
                   borderRadius: 4,
                   cursor: "pointer",
-                  color: "var(--color-text-primary, #f1f5f9)",
+                  color: "var(--color-text-primary)",
                   fontSize: 11,
                   textAlign: "left",
                 }}

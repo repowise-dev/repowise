@@ -70,7 +70,7 @@ export function SearchBar() {
           alignItems: "center",
           gap: 8,
           padding: "8px 12px",
-          borderBottom: "1px solid var(--color-border-default, #334155)",
+          borderBottom: "1px solid var(--color-border-default)",
         }}
       >
         <Search size={14} style={{ opacity: 0.5, flexShrink: 0 }} />
@@ -86,7 +86,7 @@ export function SearchBar() {
             background: "transparent",
             border: "none",
             outline: "none",
-            color: "var(--color-text-primary, #f1f5f9)",
+            color: "var(--color-text-primary)",
             fontSize: 12,
             fontFamily: "inherit",
           }}
@@ -100,7 +100,7 @@ export function SearchBar() {
             left: 0,
             right: 0,
             background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
-            border: "1px solid var(--color-border-default, #334155)",
+            border: "1px solid var(--color-border-default)",
             borderRadius: 6,
             maxHeight: 240,
             overflowY: "auto",
@@ -126,7 +126,7 @@ export function SearchBar() {
                   borderBottom: "1px solid var(--color-bg-wash)",
                   cursor: "pointer",
                   textAlign: "left",
-                  color: "var(--color-text-primary, #f1f5f9)",
+                  color: "var(--color-text-primary)",
                 }}
               >
                 <Badge label={result.node_type} color={tone.text} bg={tone.bg} />
@@ -144,7 +144,7 @@ export function SearchBar() {
                     style={{
                       width: `${result.score * 100}%`,
                       height: "100%",
-                      background: "var(--color-accent-primary, #f59520)",
+                      background: "var(--color-accent-primary)",
                       borderRadius: 2,
                     }}
                   />

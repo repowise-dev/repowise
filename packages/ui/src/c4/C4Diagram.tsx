@@ -151,7 +151,7 @@ function C4DiagramInner({
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        background: "var(--color-bg-canvas, #0b1220)",
+        background: "var(--color-bg-canvas)",
       }}
     >
       {/* Toolbar row */}
@@ -161,7 +161,7 @@ function C4DiagramInner({
           alignItems: "center",
           gap: 16,
           padding: "8px 12px",
-          borderBottom: "1px solid var(--color-border-default, #334155)",
+          borderBottom: "1px solid var(--color-border-default)",
           background: "var(--color-bg-surface, rgba(15,23,42,0.6))",
         }}
       >
@@ -170,7 +170,7 @@ function C4DiagramInner({
           onLevelChange={onLevelChange}
           l3Enabled={activeContainerId != null || level === 3}
         />
-        <div style={{ width: 1, height: 20, background: "var(--color-border-default, #334155)" }} />
+        <div style={{ width: 1, height: 20, background: "var(--color-border-default)" }} />
         <C4Breadcrumb
           level={level}
           systemName={systemName}
@@ -256,8 +256,8 @@ function CenteredMessage({ tone, text }: { tone: "info" | "empty" | "error"; tex
     tone === "error"
       ? "var(--color-error)"
       : tone === "empty"
-      ? "var(--color-text-tertiary, #64748b)"
-      : "var(--color-text-secondary, #94a3b8)";
+      ? "var(--color-text-tertiary)"
+      : "var(--color-text-secondary)";
   return (
     <div
       role="status"

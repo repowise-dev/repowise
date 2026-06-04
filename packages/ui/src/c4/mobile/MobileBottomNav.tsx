@@ -23,7 +23,7 @@ export function MobileBottomNav({ activeTab, onTabChange }: MobileBottomNavProps
       style={{
         display: "flex",
         height: 56,
-        borderTop: "1px solid var(--color-border-default, #334155)",
+        borderTop: "1px solid var(--color-border-default)",
         background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
         flexShrink: 0,
       }}
@@ -51,15 +51,15 @@ export function MobileBottomNav({ activeTab, onTabChange }: MobileBottomNavProps
               border: "none",
               cursor: "pointer",
               color: isActive
-                ? "var(--color-accent-primary, #f59520)"
-                : "var(--color-text-secondary, #94a3b8)",
+                ? "var(--color-accent-primary)"
+                : "var(--color-text-secondary)",
               fontSize: 10,
               fontWeight: 600,
               letterSpacing: 0.3,
               outline: "none",
             }}
             onFocus={(e) => {
-              e.currentTarget.style.outline = "2px solid var(--color-accent-primary, #f59520)";
+              e.currentTarget.style.outline = "2px solid var(--color-accent-primary)";
               e.currentTarget.style.outlineOffset = "-2px";
             }}
             onBlur={(e) => {

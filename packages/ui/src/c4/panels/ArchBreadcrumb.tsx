@@ -22,11 +22,11 @@ export function ArchBreadcrumb() {
     padding: 0,
     font: "inherit",
     cursor: "pointer",
-    color: "var(--color-text-secondary, #94a3b8)",
+    color: "var(--color-text-secondary)",
   };
   const sep = <span style={{ opacity: 0.5 }}>›</span>;
   const current: React.CSSProperties = {
-    color: "var(--color-text-primary, #e2e8f0)",
+    color: "var(--color-text-primary)",
     fontWeight: 600,
   };
 

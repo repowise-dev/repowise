@@ -40,9 +40,9 @@ export function NodeTooltip({ node, position }: NodeTooltipProps) {
         background: "var(--color-bg-glass, rgba(17,24,39,0.75))",
         backdropFilter: "blur(8px)",
         WebkitBackdropFilter: "blur(8px)",
-        border: "1px solid var(--color-border-default, #334155)",
+        border: "1px solid var(--color-border-default)",
         borderRadius: 8,
-        color: "var(--color-text-primary, #f1f5f9)",
+        color: "var(--color-text-primary)",
         fontSize: 11,
         fontFamily: "var(--font-sans, system-ui, sans-serif)",
         boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
@@ -105,7 +105,7 @@ export function NodeTooltip({ node, position }: NodeTooltipProps) {
                 fontSize: 10,
                 fontWeight: 500,
                 background: "var(--color-bg-wash-hover)",
-                color: "var(--color-text-secondary, #94a3b8)",
+                color: "var(--color-text-secondary)",
                 border: "1px solid var(--color-border-default)",
               }}
             >

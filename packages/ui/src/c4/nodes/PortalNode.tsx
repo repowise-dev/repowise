@@ -46,16 +46,16 @@ function PortalNodeImpl(props: NodeProps) {
         <span style={{
           fontSize: 13,
           fontWeight: 500,
-          color: "var(--color-text-primary, #f1f5f9)",
+          color: "var(--color-text-primary)",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
         }}>
           {targetLayerName}
         </span>
-        <ArrowRight size={12} color="var(--color-text-secondary, #94a3b8)" aria-hidden />
+        <ArrowRight size={12} color="var(--color-text-secondary)" aria-hidden />
       </div>
-      <span style={{ fontSize: 10, color: "var(--color-text-secondary, #94a3b8)" }}>
+      <span style={{ fontSize: 10, color: "var(--color-text-secondary)" }}>
         {edgeCount} connections
       </span>
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
