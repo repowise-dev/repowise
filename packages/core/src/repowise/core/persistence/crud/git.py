@@ -16,7 +16,7 @@ from ..models import (
     _new_uuid,
     _now_utc,
 )
-from ._shared import _BATCH_SIZE, _batch_upsert
+from ._shared import _BATCH_SIZE, _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
@@ -106,14 +106,13 @@ async def upsert_git_metadata_bulk(
     metadata_list: list[dict],
 ) -> None:
     """Bulk upsert git metadata rows in batches."""
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GitMetadata,
         metadata_list,
-        key_fn=lambda meta: (
-            GitMetadata.repository_id == repository_id,
-            GitMetadata.file_path == meta.get("file_path", ""),
-        ),
+        prefilter=(GitMetadata.repository_id == repository_id,),
+        item_key_fn=lambda meta: meta.get("file_path", ""),
+        row_key_fn=lambda row: row.file_path,
         update_fn=_update_git_metadata,
         insert_fn=lambda meta: GitMetadata(
             id=_new_uuid(),
@@ -219,14 +218,13 @@ async def upsert_git_commits_bulk(
     commit_rows: list[dict],
 ) -> None:
     """Bulk upsert per-commit rows (keyed on ``repository_id`` + ``sha``)."""
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GitCommit,
         commit_rows,
-        key_fn=lambda row: (
-            GitCommit.repository_id == repository_id,
-            GitCommit.sha == row.get("sha", ""),
-        ),
+        prefilter=(GitCommit.repository_id == repository_id,),
+        item_key_fn=lambda row: row.get("sha", ""),
+        row_key_fn=lambda row: row.sha,
         update_fn=_update_git_commit,
         insert_fn=lambda row: GitCommit(
             id=_new_uuid(),
@@ -338,14 +336,13 @@ async def upsert_git_function_blame_bulk(
     rows: list[dict],
 ) -> None:
     """Bulk upsert per-function blame rows (keyed ``repository_id`` + ``symbol_id``)."""
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GitFunctionBlame,
         rows,
-        key_fn=lambda row: (
-            GitFunctionBlame.repository_id == repository_id,
-            GitFunctionBlame.symbol_id == row.get("symbol_id", ""),
-        ),
+        prefilter=(GitFunctionBlame.repository_id == repository_id,),
+        item_key_fn=lambda row: row.get("symbol_id", ""),
+        row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_git_function_blame,
         insert_fn=lambda row: GitFunctionBlame(
             id=_new_uuid(),

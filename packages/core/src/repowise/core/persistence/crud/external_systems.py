@@ -18,7 +18,7 @@ from ..models import (
     _new_uuid,
     _now_utc,
 )
-from ._shared import _batch_upsert
+from ._shared import _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
 # ExternalSystem CRUD
@@ -153,14 +153,13 @@ async def batch_upsert_symbols(
 
     Accepts ingestion.models.Symbol dataclass instances (duck-typed).
     """
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         WikiSymbol,
         symbols,
-        key_fn=lambda sym: (
-            WikiSymbol.repository_id == repository_id,
-            WikiSymbol.symbol_id == _symbol_id(sym),
-        ),
+        prefilter=(WikiSymbol.repository_id == repository_id,),
+        item_key_fn=_symbol_id,
+        row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_wiki_symbol,
         insert_fn=lambda sym: WikiSymbol(
             id=_new_uuid(),
