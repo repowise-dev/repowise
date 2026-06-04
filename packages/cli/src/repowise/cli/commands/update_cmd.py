@@ -425,6 +425,16 @@ def _rebuild_graph_and_git(
     except Exception as exc:
         console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
 
+    # Pre-compute centrality/community metrics with the init path's fan-out
+    # parallelism. Without this, persist_graph_nodes computes the same
+    # metrics lazily one-by-one. Runs after the co-change edge refresh so
+    # the cached subgraphs reflect the final structure. Best-effort: every
+    # metric still falls back to lazy computation.
+    try:
+        run_async(graph_builder.compute_metrics_parallel())
+    except Exception as exc:
+        console.print(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
+
     return parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map
 
 
@@ -674,6 +684,13 @@ def _run_full_health_rescore(
     parsed_files, _source_map, graph_builder, _repo_structure, _file_count = _build_repo_graph(
         repo_path, exclude_patterns
     )
+
+    # Fan-out metric precompute (mirrors _rebuild_graph_and_git) — the
+    # rescore persists graph nodes too, which reads every metric.
+    try:
+        run_async(graph_builder.compute_metrics_parallel())
+    except Exception:
+        pass  # metrics fall back to lazy computation
 
     exclude_spec = (
         pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
