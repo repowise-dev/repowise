@@ -11,6 +11,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@lottiefiles/dotlottie-react": "^0.19.4",
     "@repowise-dev/types": "*",
     "@repowise-dev/ui": "*",
     "clsx": "^2.1.1",
