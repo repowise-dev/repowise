@@ -85,6 +85,34 @@ def _parse_one(path_and_fi_and_bytes: tuple) -> Any:
         return (fi.abs_path, str(exc))
 
 
+def _read_sources(
+    file_infos: list[Any],
+    progress: ProgressCallback | None,
+) -> list[tuple]:
+    """Read source bytes for *file_infos* with a thread pool (I/O-bound).
+
+    Returns ``(FileInfo, bytes)`` tuples in the same order as the input —
+    the parse aggregation loop indexes positionally. Files that fail to
+    read are dropped, ticking the parse bar once each (matching the old
+    sequential loop's behavior).
+    """
+
+    def _read_one(fi: Any) -> tuple | None:
+        try:
+            return (fi, Path(fi.abs_path).read_bytes())
+        except Exception:
+            if progress:
+                progress.on_item_done("parse")
+            return None
+
+    if not file_infos:
+        return []
+    workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(_read_one, file_infos))
+    return [r for r in results if r is not None]
+
+
 async def _run_ingestion(
     repo_path: Path,
     *,
@@ -156,16 +184,9 @@ async def _run_ingestion(
     if progress:
         progress.on_phase_start("parse", len(file_infos))
 
-    # Read source bytes up front (I/O, sequential — fast enough; keeps worker
+    # Read source bytes up front in a thread pool (I/O-bound; keeps worker
     # args small: FileInfo + bytes, both picklable plain dataclasses/bytes).
-    fi_and_bytes: list[tuple] = []
-    for fi in file_infos:
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            fi_and_bytes.append((fi, source))
-        except Exception:
-            if progress:
-                progress.on_item_done("parse")
+    fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
 
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
@@ -434,14 +455,7 @@ async def reparse_for_resume(
     if progress:
         progress.on_phase_start("parse", len(file_infos))
 
-    fi_and_bytes: list[tuple] = []
-    for fi in file_infos:
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            fi_and_bytes.append((fi, source))
-        except Exception:
-            if progress:
-                progress.on_item_done("parse")
+    fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
 
     parsed_files: list[Any] = []
     source_map: dict[str, bytes] = {}
