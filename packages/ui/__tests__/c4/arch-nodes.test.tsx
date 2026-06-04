@@ -110,6 +110,8 @@ describe("LayerClusterNode (via NodeShell)", () => {
     file_count: 42,
     complexity_distribution: { simple: 20, moderate: 15, complex: 7 },
     health_score: 85,
+    sub_groups: [],
+    display_order: 0,
   };
 
   it("renders layer cluster with name, file count, and health score", () => {

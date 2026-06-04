@@ -124,12 +124,14 @@ function makeArchView(overrides?: Partial<ArchitectureView>): ArchitectureView {
         node_ids: ["file1", "func1"], file_count: 2,
         complexity_distribution: { simple: 1, moderate: 1, complex: 0 },
         health_score: 90,
+        sub_groups: [], display_order: 0,
       },
       {
         id: "layer:core", name: "Core", description: "Core layer",
         node_ids: ["class1"], file_count: 1,
         complexity_distribution: { simple: 0, moderate: 0, complex: 1 },
         health_score: 70,
+        sub_groups: [], display_order: 1,
       },
     ],
     nodes,
@@ -141,6 +143,8 @@ function makeArchView(overrides?: Partial<ArchitectureView>): ArchitectureView {
     languages: ["typescript"],
     frameworks: [],
     external_systems: [],
+    entry_points: [],
+    entry_candidates: [],
     ...overrides,
   };
 }

@@ -114,6 +114,8 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           return acc;
         }, {}),
         health_score: null,
+        sub_groups: [],
+        display_order: Math.max(...merged.map((l) => l.display_order)),
       };
       displayLayers = [...kept, otherLayer];
     }
