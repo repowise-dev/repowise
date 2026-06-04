@@ -1,4 +1,5 @@
 export * from "./api-error";
+export { BrandMark, type BrandMarkProps } from "./brand-mark";
 export * from "./breadcrumb";
 export * from "./empty-state";
 export * from "./stat-card";

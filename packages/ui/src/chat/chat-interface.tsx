@@ -24,6 +24,7 @@ import { Send, StopCircle, PanelRight } from "lucide-react";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../lib/cn";
+import { BrandMark } from "../shared/brand-mark";
 import { ChatMessage } from "./chat-message";
 import { ArtifactPanel, type Artifact } from "./artifact-panel";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
@@ -182,12 +183,9 @@ export function ChatInterface({
           <div className="flex flex-col items-center justify-center h-full gap-10 px-4">
             <div className="text-center space-y-3">
               <div className="flex items-center justify-center mb-6">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={emptyStateLogoSrc}
-                  alt="repowise"
-                  width={48}
-                  height={48}
+                <BrandMark
+                  darkSrc={emptyStateLogoSrc}
+                  size={48}
                   className="drop-shadow-[0_0_12px_rgba(245,149,32,0.35)]"
                 />
               </div>
