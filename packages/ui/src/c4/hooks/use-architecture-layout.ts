@@ -6,7 +6,7 @@ import { useArchitectureStore } from "../store/use-architecture-store";
 import type { ArchitectureView, ArchNode, ArchEdge, ArchLayer } from "../types";
 import { PERSONA_NODE_TYPES } from "../types";
 import { buildContainers, getStandaloneNodeIds } from "../layout/containers";
-import { aggregateEdges } from "../layout/edge-aggregation";
+import { aggregateEdges, capAggregatedEdges } from "../layout/edge-aggregation";
 import {
   computeStage1Layout,
   computeStage2Layout,
@@ -22,6 +22,8 @@ export interface ArchitectureLayoutResult {
   edges: Edge[];
   loading: boolean;
   issues: string[];
+  /** Aggregated arrows dropped by the visible-tier budget ("+N weaker links"). */
+  hiddenEdgeCount: number;
 }
 
 export function useArchitectureLayout(): ArchitectureLayoutResult {
@@ -48,11 +50,12 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     edges: [],
     loading: false,
     issues: [],
+    hiddenEdgeCount: 0,
   });
 
   useEffect(() => {
     if (!view) {
-      setResult({ nodes: [], edges: [], loading: false, issues: [] });
+      setResult({ nodes: [], edges: [], loading: false, issues: [], hiddenEdgeCount: 0 });
       return;
     }
 
@@ -132,7 +135,9 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       }
     }
 
-    const aggregated = aggregateEdges(currentView.edges, nodeToLayer);
+    const { visible: aggregated, hiddenCount } = capAggregatedEdges(
+      aggregateEdges(currentView.edges, nodeToLayer),
+    );
     const layerNodes = displayLayers.map((layer: ArchLayer) => ({
       id: layer.id,
       width: ARCH_NODE_SIZES.layerCluster.width,
@@ -188,7 +193,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       },
     }));
 
-    return { nodes, edges, loading: false, issues };
+    return { nodes, edges, loading: false, issues, hiddenEdgeCount: hiddenCount };
   }
 
   /** Cards for one curated layer: its sub-groups plus a synthetic card for any
@@ -232,7 +237,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
   async function computeLayerGroupsLayout(currentView: ArchitectureView): Promise<ArchitectureLayoutResult> {
     const layer = currentView.layers.find((l: ArchLayer) => l.id === activeLayerId);
     if (!layer) {
-      return { nodes: [], edges: [], loading: false, issues: [`Layer ${activeLayerId} not found`] };
+      return { nodes: [], edges: [], loading: false, issues: [`Layer ${activeLayerId} not found`], hiddenEdgeCount: 0 };
     }
     if (layer.sub_groups.length === 0) {
       // Layer lost its groups (e.g. filters) — degrade to the detail tier.
@@ -248,7 +253,9 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         nodeToBox.set(id, card.id);
       }
     }
-    const aggregated = aggregateEdges(currentView.edges, nodeToBox);
+    const { visible: aggregated, hiddenCount } = capAggregatedEdges(
+      aggregateEdges(currentView.edges, nodeToBox),
+    );
 
     const nodeIdToLayerId = useArchitectureStore.getState().nodeIdToLayerId;
     const layerNodeIdSet = new Set(layer.node_ids);
@@ -326,7 +333,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       },
     }));
 
-    return { nodes, edges, loading: false, issues };
+    return { nodes, edges, loading: false, issues, hiddenEdgeCount: hiddenCount };
   }
 
   async function computeDetailLayout(currentView: ArchitectureView): Promise<ArchitectureLayoutResult> {
@@ -334,7 +341,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     const containerSizeMemory = useArchitectureStore.getState().containerSizeMemory;
     const layer = currentView.layers.find((l: ArchLayer) => l.id === activeLayerId);
     if (!layer) {
-      return { nodes: [], edges: [], loading: false, issues: [`Layer ${activeLayerId} not found`] };
+      return { nodes: [], edges: [], loading: false, issues: [`Layer ${activeLayerId} not found`], hiddenEdgeCount: 0 };
     }
 
     // When a curated sub-group is active, file cards are scoped to it and the
@@ -391,7 +398,9 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       }
     }
 
-    const aggregated = aggregateEdges(currentView.edges, nodeToBox);
+    const { visible: aggregated, hiddenCount } = capAggregatedEdges(
+      aggregateEdges(currentView.edges, nodeToBox),
+    );
 
     const standaloneLayoutNodes = standaloneIds.map((id) => {
       const node = nodesById.get(id);
@@ -567,7 +576,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       });
     }
 
-    return { nodes: allNodes, edges: allEdges, loading: false, issues };
+    return { nodes: allNodes, edges: allEdges, loading: false, issues, hiddenEdgeCount: hiddenCount };
   }
 
   function filterByPersona(nodes: ArchNode[]): ArchNode[] {

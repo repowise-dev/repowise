@@ -163,7 +163,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
 
   useArchitectureNavigation();
 
-  const { nodes, edges, loading: layoutLoading } = useArchitectureLayout();
+  const { nodes, edges, loading: layoutLoading, hiddenEdgeCount } = useArchitectureLayout();
 
   const pendingFitRef = useRef(false);
   const prevNavRef = useRef({ navigationLevel, activeLayerId });
@@ -291,6 +291,15 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable maskColor="rgba(11,18,32,0.85)" />
         </ReactFlow>
+
+        {hiddenEdgeCount > 0 && (
+          <div
+            className="absolute bottom-4 left-14 z-10 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]/90 px-3 py-1 text-xs text-[var(--color-text-secondary)]"
+            title="Weakest aggregated connections are hidden to keep the view legible. Drill in to see them."
+          >
+            +{hiddenEdgeCount} weaker link{hiddenEdgeCount === 1 ? "" : "s"} hidden
+          </div>
+        )}
 
         <ArchDetailPanelHost repoId={repoId} />
 
