@@ -183,9 +183,12 @@ function buildTree(pages: DocPage[]): TreeNode[] {
     if (!targetPath) continue;
 
     if (page.page_type === "module_page") {
-      // Module pages become directories with their page attached
+      // Module pages become directories with their page attached. Community
+      // modules have synthetic target_paths ("community-207") — show the
+      // derived module name instead of the raw graph id.
       const dirNode = ensureDir(targetPath);
       dirNode.page = page;
+      if (RAW_GRAPH_ID.test(dirNode.name)) dirNode.name = displayLabel(page);
     } else {
       // File pages go into their parent directory
       const parts = targetPath.split("/");
@@ -301,6 +304,64 @@ function dominantLayer(files: DocPage[]): string {
   return best;
 }
 
+// ---------------------------------------------------------------------------
+// Display labels — replace raw graph ids with derived names
+// ---------------------------------------------------------------------------
+//
+// Generation titles carry raw graph ids ("Module: community-207",
+// "Circular Dependency: scc-103"). The human-readable names live on the page
+// itself — module titles already carry the derived path, and SCC members are
+// listed in the cycle description — so the tree derives display labels
+// client-side instead of leaking ids. metadata.derived_label, when present,
+// always wins (future-proofing for generation-side labels).
+
+const RAW_GRAPH_ID = /^(?:community|scc)[-_\s]?\d+$/i;
+
+function sccDisplayLabel(page: DocPage): string {
+  // Cycle members appear back-ticked in the generated description; prefer
+  // the "Files Involved" section when present so prose mentions don't leak in.
+  const involved = page.content.split(/^##\s+Files Involved\s*$/im)[1];
+  const section = involved ? involved.split(/^##\s/m)[0] ?? involved : page.content;
+  const paths = [...section.matchAll(/`([^`\s]+\/[^`\s]+)`/g)].map((m) => m[1]!);
+  if (paths.length === 0) return page.title;
+
+  // Common directory of the members, shown as its last two segments —
+  // "Cycle: generation/page_generator" reads better than "scc-103".
+  let common = (paths[0] ?? "").split("/").slice(0, -1);
+  for (const p of paths.slice(1)) {
+    const parts = p.split("/").slice(0, -1);
+    let i = 0;
+    while (i < common.length && i < parts.length && common[i] === parts[i]) i++;
+    common = common.slice(0, i);
+  }
+  const dir = common.slice(-2).join("/");
+  return dir ? `Cycle: ${dir}` : page.title;
+}
+
+function displayLabel(page: DocPage): string {
+  const metaLabel = page.metadata?.["derived_label"];
+  if (typeof metaLabel === "string" && metaLabel) return metaLabel;
+
+  if (page.page_type === "module_page") {
+    const name = page.title.replace(/^Module:\s*/i, "");
+    if (name && !RAW_GRAPH_ID.test(name)) return name;
+    const fallback = page.target_path.split("/").pop() ?? page.target_path;
+    return RAW_GRAPH_ID.test(fallback) ? page.title : fallback;
+  }
+  if (page.page_type === "scc_page") return sccDisplayLabel(page);
+  if (page.page_type === "layer_page") return page.title.replace(/^Layer:\s*/i, "");
+  return page.title;
+}
+
+// Collapsible sub-groups inside the Architecture section. Namespaced with
+// "@group:" so they never collide with target_paths or "@section:" keys —
+// and, unlike sections, they are NOT auto-expanded (40 layers / 38 cycles
+// would otherwise drown the spine).
+const GROUP_KEYS = {
+  layers: "@group:layers",
+  sccs: "@group:sccs",
+} as const;
+
 function buildDomainTree(pages: DocPage[]): TreeNode[] {
   const sections: TreeNode[] = [];
   const rankOf = layerRankLookup(pages);
@@ -334,18 +395,54 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
     });
   }
 
-  // ---- Architecture (layers / knowledge graph / strongly-connected) ----
+  // ---- Architecture (diagrams up top; layers and cycles in collapsible
+  // sub-groups so 40 layers / 38 SCCs don't drown the spine) ----
   const archTypes = new Set(["layer_page", "architecture_diagram", "scc_page"]);
-  const archChildren: TreeNode[] = pages
-    .filter((p) => archTypes.has(p.page_type) && !tourIds.has(p.id))
-    // Order layer pages top→bottom by dependency direction; other arch pages
-    // (knowledge graph, SCCs) fall after, alphabetically.
+  const archPages = pages.filter((p) => archTypes.has(p.page_type) && !tourIds.has(p.id));
+
+  const toLeaf = (p: DocPage): TreeNode => ({
+    name: displayLabel(p),
+    path: p.id,
+    isDir: false,
+    page: p,
+    children: [],
+  });
+
+  const diagramLeaves = archPages
+    .filter((p) => p.page_type === "architecture_diagram")
+    .sort((a, b) => a.title.localeCompare(b.title))
+    .map(toLeaf);
+  // Order layer pages top→bottom by dependency direction.
+  const layerLeaves = archPages
+    .filter((p) => p.page_type === "layer_page")
     .sort((a, b) => {
-      const ra = a.page_type === "layer_page" ? rankOf(a.title.replace(/^Layer:\s*/, "")) : Number.MAX_SAFE_INTEGER;
-      const rb = b.page_type === "layer_page" ? rankOf(b.title.replace(/^Layer:\s*/, "")) : Number.MAX_SAFE_INTEGER;
+      const ra = rankOf(a.title.replace(/^Layer:\s*/, ""));
+      const rb = rankOf(b.title.replace(/^Layer:\s*/, ""));
       return ra - rb || a.title.localeCompare(b.title);
     })
-    .map((p) => ({ name: p.title, path: p.id, isDir: false, page: p, children: [] }));
+    .map(toLeaf);
+  const sccLeaves = archPages
+    .filter((p) => p.page_type === "scc_page")
+    .map(toLeaf)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const archChildren: TreeNode[] = [...diagramLeaves];
+  if (layerLeaves.length > 0) {
+    archChildren.push({
+      name: `Layers (${layerLeaves.length})`,
+      path: GROUP_KEYS.layers,
+      isDir: true,
+      children: layerLeaves,
+    });
+  }
+  if (sccLeaves.length > 0) {
+    archChildren.push({
+      name: `Circular dependencies (${sccLeaves.length})`,
+      path: GROUP_KEYS.sccs,
+      isDir: true,
+      children: sccLeaves,
+    });
+  }
   if (archChildren.length > 0) {
     sections.push({
       name: "Architecture",
@@ -373,7 +470,7 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
       .sort((a, b) => a.target_path.localeCompare(b.target_path));
     for (const f of files) claimedFileIds.add(f.id);
     return {
-      name: mod.title || mod.target_path.split("/").pop() || mod.target_path,
+      name: displayLabel(mod) || mod.target_path.split("/").pop() || mod.target_path,
       path: mod.id,
       isDir: true,
       page: mod,
@@ -473,6 +570,7 @@ function matchesFilters(
   search: string,
   typeFilter: TypeFilter,
   freshnessFilter: FreshnessFilter,
+  displayName?: string,
 ): boolean {
   if (!page) return true; // directories always pass (will be pruned if empty)
   if (typeFilter !== "all" && page.page_type !== typeFilter) return false;
@@ -481,7 +579,10 @@ function matchesFilters(
     const q = search.toLowerCase();
     return (
       page.title.toLowerCase().includes(q) ||
-      page.target_path.toLowerCase().includes(q)
+      page.target_path.toLowerCase().includes(q) ||
+      // Derived tree labels (e.g. "Cycle: generation/page_generator") are
+      // what the user sees — make them searchable too.
+      (displayName ?? "").toLowerCase().includes(q)
     );
   }
   return true;
@@ -498,13 +599,13 @@ function filterTree(
     if (node.isDir) {
       const filteredChildren = filterTree(node.children, search, typeFilter, freshnessFilter);
       const dirPageMatches = node.page
-        ? matchesFilters(node.page, search, typeFilter, freshnessFilter)
+        ? matchesFilters(node.page, search, typeFilter, freshnessFilter, node.name)
         : false;
       if (filteredChildren.length > 0 || dirPageMatches) {
         result.push({ ...node, children: filteredChildren });
       }
     } else {
-      if (matchesFilters(node.page, search, typeFilter, freshnessFilter)) {
+      if (matchesFilters(node.page, search, typeFilter, freshnessFilter, node.name)) {
         result.push(node);
       }
     }
@@ -523,6 +624,7 @@ function TreeItem({
   expandedDirs,
   toggleDir,
   onSelectPage,
+  forceExpand = false,
 }: {
   node: TreeNode;
   depth: number;
@@ -530,8 +632,10 @@ function TreeItem({
   expandedDirs: Set<string>;
   toggleDir: (path: string) => void;
   onSelectPage: (page: DocPage) => void;
+  /** Open every dir while a search is active so matches are never hidden. */
+  forceExpand?: boolean;
 }) {
-  const isExpanded = expandedDirs.has(node.path);
+  const isExpanded = forceExpand || expandedDirs.has(node.path);
   const isSelected = node.page && node.page.id === selectedPageId;
   const hasChildren = node.children.length > 0;
 
@@ -543,6 +647,7 @@ function TreeItem({
             toggleDir(node.path);
             if (node.page) onSelectPage(node.page);
           }}
+          {...(node.page && node.page.title !== node.name ? { title: node.page.title } : {})}
           className={cn(
             "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)]",
             isSelected
@@ -609,6 +714,7 @@ function TreeItem({
                 expandedDirs={expandedDirs}
                 toggleDir={toggleDir}
                 onSelectPage={onSelectPage}
+                forceExpand={forceExpand}
               />
             ))}
           </div>
@@ -621,6 +727,7 @@ function TreeItem({
   return (
     <button
       onClick={() => node.page && onSelectPage(node.page)}
+      {...(node.page && node.page.title !== node.name ? { title: node.page.title } : {})}
       className={cn(
         "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)]",
         isSelected
@@ -831,6 +938,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
                 expandedDirs={expandedDirs}
                 toggleDir={toggleDir}
                 onSelectPage={onSelectPage}
+                forceExpand={search.trim().length > 0}
               />
             ))}
           </div>
