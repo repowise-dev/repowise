@@ -54,7 +54,10 @@ import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
 const MODE_VALUES = ["c4", "architecture"] as const;
 const VIEW_VALUES = ["overview", "groups", "detail"] as const;
 const PERSONA_VALUES = ["overview", "learn", "deep-dive"] as const;
-const SYNTHETIC_NODE_TYPES = new Set(["layerCluster", "subGroupCluster", "archContainer", "portal"]);
+// Unified click grammar (kg-ux plan B5): single click = select + inspect on
+// every node kind. Only true non-entities stay unselectable — portals are
+// navigation stubs, the scope frame is a pointer-events-none underlay.
+const SYNTHETIC_NODE_TYPES = new Set(["portal", "scopeFrame"]);
 
 function clampLevel(n: number | null): C4Level {
   return n === 1 ? 1 : n === 3 ? 3 : 2;
@@ -190,6 +193,24 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     return () => cancelAnimationFrame(raf);
   }, [nodes, fitView]);
 
+  // Camera ease on select (kg-ux plan B5): frame the selected node without
+  // drilling. Eases once per selection — layout refreshes (dimming etc.)
+  // never re-center a camera the user has panned away.
+  const lastEasedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedNodeId) {
+      lastEasedRef.current = null;
+      return;
+    }
+    if (lastEasedRef.current === selectedNodeId) return;
+    if (!nodes.some((n) => n.id === selectedNodeId)) return;
+    lastEasedRef.current = selectedNodeId;
+    const raf = requestAnimationFrame(() => {
+      fitView({ nodes: [{ id: selectedNodeId }], duration: 250, padding: 0.4, maxZoom: 1.15 });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [selectedNodeId, nodes, fitView]);
+
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: { id: string; type?: string }) => {
       if (SYNTHETIC_NODE_TYPES.has(node.type ?? "")) return;
@@ -198,10 +219,14 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     [selectNode],
   );
 
+  // Double click = drill (grammar): layer → groups/detail, group → detail,
+  // folder → expand/collapse. (Drilling clears selection in the store.)
   const handleNodeDoubleClick = useCallback(
     (_: React.MouseEvent, node: { id: string; type?: string }) => {
       if (node.type === "layerCluster") {
         drillIntoLayer(node.id);
+      } else if (node.type === "subGroupCluster") {
+        useArchitectureStore.getState().drillIntoSubGroup(node.id);
       } else if (node.type === "archContainer") {
         useArchitectureStore.getState().toggleContainer(node.id);
       }

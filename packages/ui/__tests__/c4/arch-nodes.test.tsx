@@ -170,18 +170,21 @@ describe("a11y: tier cards are keyboard-operable (plan D)", () => {
     return render(<LayerClusterNode {...props} />);
   }
 
-  it("Enter on a layer card drills into the layer", () => {
+  // Unified click grammar (kg-ux plan B5): single activation = select +
+  // inspect, never drill. Drilling is double-click (page handler) or the
+  // inspect panel's "Open layer/group" button.
+  it("Enter on a layer card selects it without drilling", () => {
     const { getByRole } = renderCard("layer", "layer:api");
     fireEvent.keyDown(getByRole("button"), { key: "Enter" });
-    expect(useArchitectureStore.getState().activeLayerId).toBe("layer:api");
-    expect(useArchitectureStore.getState().navigationLevel).toBe("layer-groups");
+    expect(useArchitectureStore.getState().selectedNodeId).toBe("layer:api");
+    expect(useArchitectureStore.getState().navigationLevel).toBe("overview");
   });
 
-  it("Space on a sub-group card drills into the group", () => {
+  it("Space on a sub-group card selects it without drilling", () => {
     const { getByRole } = renderCard("subGroup", "layer:api:app");
     fireEvent.keyDown(getByRole("button"), { key: " " });
-    expect(useArchitectureStore.getState().activeSubGroupId).toBe("layer:api:app");
-    expect(useArchitectureStore.getState().navigationLevel).toBe("layer-detail");
+    expect(useArchitectureStore.getState().selectedNodeId).toBe("layer:api:app");
+    expect(useArchitectureStore.getState().activeSubGroupId).toBeNull();
   });
 });
 

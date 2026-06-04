@@ -13,17 +13,22 @@ export interface ArchContainerNodeProps {
   childCount: number;
   expanded: boolean;
   searchHitCount?: number | undefined;
+  /** Unrelated to the current selection — fade, never vanish (plan D). */
+  dimmed?: boolean | undefined;
 }
 
 function ArchContainerNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: ArchContainerNodeProps };
-  const { containerId, label, childCount, expanded, searchHitCount } = data;
+  const { containerId, label, childCount, expanded, searchHitCount, dimmed } = data;
   const [hovered, setHovered] = useState(false);
 
   const ChevronIcon = expanded ? ChevronDown : ChevronRight;
 
-  const handleClick = () => {
-    useArchitectureStore.getState().toggleContainer(containerId);
+  // Unified click grammar (kg-ux plan B5): single click selects (page-level
+  // handler); double-click expands/collapses (page-level too). Keyboard
+  // Enter/Space mirrors single-click selection.
+  const handleSelect = () => {
+    useArchitectureStore.getState().selectNode(containerId);
   };
 
   const borderColor = selected
@@ -32,7 +37,15 @@ function ArchContainerNodeImpl(props: NodeProps) {
 
   return (
     <div
-      onClick={handleClick}
+      role="button"
+      tabIndex={0}
+      aria-label={`Inspect folder ${label}`}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleSelect();
+        }
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -48,7 +61,8 @@ function ArchContainerNodeImpl(props: NodeProps) {
         flexDirection: "column",
         gap: 2,
         boxShadow: selected ? `0 0 0 2px ${THEME.selection.ringAlpha}` : "none",
-        transition: "background 0.15s ease",
+        opacity: dimmed && !hovered ? 0.45 : 1,
+        transition: "background 0.15s ease, opacity 0.2s ease",
       }}
     >
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />

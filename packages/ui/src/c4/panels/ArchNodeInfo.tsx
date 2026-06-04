@@ -1,6 +1,6 @@
 "use client";
 
-import { X, Code, MapPin, Layers, ExternalLink } from "lucide-react";
+import { X, Code, MapPin, Layers, ExternalLink, Folder, CornerDownRight } from "lucide-react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { getTone } from "../../graph-primitives/tone-styles";
 import { THEME } from "../theme/theme-variables";
@@ -33,11 +33,49 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
   const nodeIdToLayerId = useArchitectureStore((s) => s.nodeIdToLayerId);
   const selectNode = useArchitectureStore((s) => s.selectNode);
   const drillIntoLayer = useArchitectureStore((s) => s.drillIntoLayer);
+  const drillIntoSubGroup = useArchitectureStore((s) => s.drillIntoSubGroup);
   const openCodeViewer = useArchitectureStore((s) => s.openCodeViewer);
   const setFocusNode = useArchitectureStore((s) => s.setFocusNode);
   const view = useArchitectureStore((s) => s.view);
 
   const node = selectedNodeId ? nodesById.get(selectedNodeId) ?? null : null;
+
+  // Scope selection (kg-ux plan B5): single-clicking a layer/group card
+  // selects it — this panel is the "inspect" half of the grammar, with the
+  // explicit drill affordance ("Open on canvas") as the other half.
+  if (!node && selectedNodeId && view) {
+    const layerScope = view.layers.find((l) => l.id === selectedNodeId);
+    if (layerScope) {
+      return (
+        <ScopeInfo
+          kind="layer"
+          name={layerScope.name}
+          description={layerScope.description}
+          fileCount={layerScope.file_count}
+          groupCount={layerScope.sub_groups.length}
+          healthScore={layerScope.health_score}
+          onClose={() => selectNode(null)}
+          onOpen={() => drillIntoLayer(layerScope.id)}
+        />
+      );
+    }
+    for (const l of view.layers) {
+      const group = l.sub_groups.find((g) => g.id === selectedNodeId);
+      if (group) {
+        return (
+          <ScopeInfo
+            kind="group"
+            name={group.name}
+            description={`Sub-group of ${l.name}`}
+            fileCount={group.node_ids.length}
+            onClose={() => selectNode(null)}
+            onOpen={() => drillIntoSubGroup(group.id)}
+          />
+        );
+      }
+    }
+  }
+
   if (!node) return null;
 
   const tone = getTone(node.node_type);
@@ -373,5 +411,80 @@ function ConnectionList({
         <Sub style={{ paddingLeft: 6 }}>+{remaining} more</Sub>
       )}
     </div>
+  );
+}
+
+/** Inspect card for a selected layer / sub-group (kg-ux plan B5): summary +
+ * stats + the explicit drill button mirroring double-click on the canvas. */
+function ScopeInfo({
+  kind,
+  name,
+  description,
+  fileCount,
+  groupCount,
+  healthScore,
+  onClose,
+  onOpen,
+}: {
+  kind: "layer" | "group";
+  name: string;
+  description?: string | undefined;
+  fileCount: number;
+  groupCount?: number | undefined;
+  healthScore?: number | null | undefined;
+  onClose: () => void;
+  onOpen: () => void;
+}) {
+  const Icon = kind === "layer" ? Layers : Folder;
+  const rows: [string, string][] = [["Files", String(fileCount)]];
+  if (kind === "layer" && groupCount && groupCount > 0) {
+    rows.push(["Groups", String(groupCount)]);
+  }
+  if (healthScore !== null && healthScore !== undefined) {
+    rows.push(["Health", String(Math.round(healthScore))]);
+  }
+
+  return (
+    <>
+      <Section>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <Icon size={16} style={{ flexShrink: 0, marginTop: 2, color: "var(--color-accent-primary)" }} aria-hidden />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Title>{name}</Title>
+            <Sub style={{ marginTop: 2 }}>{kind === "layer" ? "Layer" : "Group"}</Sub>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close inspector"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--color-text-secondary)",
+              cursor: "pointer",
+              padding: 2,
+            }}
+          >
+            <X size={14} aria-hidden />
+          </button>
+        </div>
+        {description && <Sub style={{ marginTop: 6 }}>{description}</Sub>}
+      </Section>
+
+      <Section>
+        <KVList rows={rows} />
+      </Section>
+
+      <Section>
+        <ActionRow>
+          <ActionButton onClick={onOpen} icon={CornerDownRight} variant="primary">
+            {kind === "layer" ? "Open layer" : "Open group"}
+          </ActionButton>
+        </ActionRow>
+        <Sub style={{ marginTop: 6, fontSize: 10 }}>
+          Double-clicking the card does the same. Esc deselects.
+        </Sub>
+      </Section>
+    </>
   );
 }

@@ -19,11 +19,13 @@ export interface LayerClusterNodeProps {
   /** Collapsed sibling card in the detail tier — supporting cast, not the
    * active scope, so it recedes to secondary ink (kg-ux plan §2.2). */
   sibling?: boolean | undefined;
+  /** Unrelated to the current selection — fade, never vanish (plan D). */
+  dimmed?: boolean | undefined;
 }
 
 function LayerClusterNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: LayerClusterNodeProps };
-  const { layer, searchHighlight, demoted, sibling } = data;
+  const { layer, searchHighlight, demoted, sibling, dimmed } = data;
   const kind = data.kind ?? "layer";
   const [hovered, setHovered] = useState(false);
 
@@ -31,13 +33,11 @@ function LayerClusterNodeImpl(props: NodeProps) {
   // siblings recede to secondary ink.
   const role: InkRole = demoted || sibling ? "secondary" : "primary";
 
-  const handleClick = () => {
-    const store = useArchitectureStore.getState();
-    if (kind === "subGroup") {
-      store.drillIntoSubGroup(layer.id);
-    } else {
-      store.drillIntoLayer(layer.id);
-    }
+  // Unified click grammar (kg-ux plan B5): single click / Enter = select +
+  // inspect (the page-level onNodeClick handles mouse; keyboard mirrors it
+  // here). Drilling moved to double-click, owned by the page handler.
+  const handleSelect = () => {
+    useArchitectureStore.getState().selectNode(layer.id);
   };
 
   const dominantComplexity = (["complex", "moderate", "simple"] as const)
@@ -93,12 +93,12 @@ function LayerClusterNodeImpl(props: NodeProps) {
         style={{
           fontSize: 10,
           opacity: hovered ? 0.9 : 0,
-          color: "var(--color-accent-primary)",
+          color: "currentColor",
           transition: "opacity 0.2s ease",
           textAlign: "right",
         }}
       >
-        Click to explore →
+        Double-click to open →
       </div>
     </div>
   );
@@ -107,12 +107,11 @@ function LayerClusterNodeImpl(props: NodeProps) {
     <div
       role="button"
       tabIndex={0}
-      aria-label={`${kind === "subGroup" ? "Explore group" : "Explore layer"} ${layer.name}`}
-      onClick={handleClick}
+      aria-label={`${kind === "subGroup" ? "Inspect group" : "Inspect layer"} ${layer.name}`}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          handleClick();
+          handleSelect();
         }
       }}
       onMouseEnter={() => setHovered(true)}
@@ -120,10 +119,10 @@ function LayerClusterNodeImpl(props: NodeProps) {
       style={{
         cursor: "pointer",
         boxShadow: hovered
-          ? "0 4px 16px rgba(0,0,0,0.4)"
+          ? "0 4px 16px rgba(0,0,0,0.25)"
           : "none",
-        borderRadius: 8,
-        opacity: demoted && !hovered ? 0.45 : 1,
+        borderRadius: 12,
+        opacity: (demoted || dimmed) && !hovered ? 0.45 : 1,
         transition: "box-shadow 0.2s ease, opacity 0.2s ease",
       }}
     >

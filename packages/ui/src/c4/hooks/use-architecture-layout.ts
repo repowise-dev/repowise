@@ -186,6 +186,20 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       : rawPositions;
 
     const searchHighlightIds = new Set<string>(searchResults.map((r) => r.nodeId));
+    // Dim-on-select (kg-ux plan B5): selecting a layer card fades unrelated
+    // cards and arrows — fade, never vanish.
+    const selectedLayerId =
+      selectedNodeId && displayLayers.some((l: ArchLayer) => l.id === selectedNodeId)
+        ? selectedNodeId
+        : null;
+    const connectedLayers = new Set<string>();
+    if (selectedLayerId) {
+      connectedLayers.add(selectedLayerId);
+      for (const agg of aggregated) {
+        if (agg.source === selectedLayerId) connectedLayers.add(agg.target);
+        if (agg.target === selectedLayerId) connectedLayers.add(agg.source);
+      }
+    }
     const nodes: Node[] = displayLayers.map((layer: ArchLayer) => {
       const pos = positions.get(layer.id) ?? { x: 0, y: 0, width: 0, height: 0 };
       const hasSearchHit = layer.node_ids.some((nid: string) => searchHighlightIds.has(nid));
@@ -198,6 +212,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           searchHighlight: hasSearchHit,
           // Tests mirror the code — demoted unless restored (decision 2).
           demoted: layer.id === "layer:test" && !showTests,
+          dimmed: selectedLayerId ? !connectedLayers.has(layer.id) : false,
         },
         width: ARCH_NODE_SIZES.layerCluster.width,
         height: ARCH_NODE_SIZES.layerCluster.height,
@@ -219,6 +234,9 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         edge_type: agg.dominantType,
         count: agg.count,
         category: agg.dominantType,
+        dimmed: selectedLayerId
+          ? agg.source !== selectedLayerId && agg.target !== selectedLayerId
+          : false,
       },
     }));
 
@@ -335,6 +353,17 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
     );
 
     const searchHighlightIds = new Set<string>(searchResults.map((r) => r.nodeId));
+    // Dim-on-select (kg-ux plan B5) — card-level, same rule as overview.
+    const selectedCardId =
+      selectedNodeId && cards.some((c) => c.id === selectedNodeId) ? selectedNodeId : null;
+    const connectedCards = new Set<string>();
+    if (selectedCardId) {
+      connectedCards.add(selectedCardId);
+      for (const agg of aggregated) {
+        if (agg.source === selectedCardId) connectedCards.add(agg.target);
+        if (agg.target === selectedCardId) connectedCards.add(agg.source);
+      }
+    }
     const nodes: Node[] = cards.map((card) => {
       const pos = positions.get(card.id) ?? { x: 0, y: 0, width: 0, height: 0 };
       return {
@@ -345,6 +374,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           layer: synthesizeCardLayer(card, nodesById),
           kind: "subGroup",
           searchHighlight: card.node_ids.some((nid) => searchHighlightIds.has(nid)),
+          dimmed: selectedCardId ? !connectedCards.has(card.id) : false,
         },
         width: ARCH_NODE_SIZES.layerCluster.width,
         height: ARCH_NODE_SIZES.layerCluster.height,
@@ -398,6 +428,9 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         edge_type: agg.dominantType,
         count: agg.count,
         category: agg.dominantType,
+        dimmed: selectedCardId
+          ? agg.source !== selectedCardId && agg.target !== selectedCardId
+          : false,
       },
     }));
 
@@ -520,7 +553,18 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         if (e.source === selectedNodeId) selectedConnectedNodes.add(e.target);
         if (e.target === selectedNodeId) selectedConnectedNodes.add(e.source);
       }
+      // Selecting a folder/sibling card keeps its own members lit (B5).
+      const selectedContainer = containers.find((c) => c.id === selectedNodeId);
+      if (selectedContainer) {
+        for (const id of selectedContainer.childNodeIds) selectedConnectedNodes.add(id);
+      }
+      const selectedSibling = siblingCards.find((sb) => sb.id === selectedNodeId);
+      if (selectedSibling) {
+        for (const id of selectedSibling.node_ids) selectedConnectedNodes.add(id);
+      }
     }
+    // Box identity of the selection, for box-level dimming.
+    const selectedBox = selectedNodeId ? nodeToBox.get(selectedNodeId) ?? selectedNodeId : null;
 
     // Scope members (containers + standalone files) collect their rects so
     // the "you are here" frame can wrap them; siblings/portals stay outside.
@@ -542,6 +586,10 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           childCount: container.childNodeIds.length,
           expanded: isExpanded,
           searchHitCount,
+          dimmed: selectedBox
+            ? container.id !== selectedBox &&
+              !container.childNodeIds.some((id) => selectedConnectedNodes.has(id))
+            : false,
         },
         width: pos.width,
         height: pos.height,
@@ -628,6 +676,10 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           kind: "subGroup",
           sibling: true,
           searchHighlight: sibling.node_ids.some((nid) => searchHighlightIds.has(nid)),
+          dimmed: selectedBox
+            ? sibling.id !== selectedBox &&
+              !sibling.node_ids.some((id) => selectedConnectedNodes.has(id))
+            : false,
         },
         width: ARCH_NODE_SIZES.layerCluster.width,
         height: ARCH_NODE_SIZES.layerCluster.height,
@@ -644,6 +696,13 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           targetLayerId: portal.targetLayerId,
           targetLayerName: portal.targetLayerName,
           edgeCount: portal.edgeCount,
+          dimmed: selectedBox
+            ? !aggregated.some(
+                (a) =>
+                  (a.source === portal.id && a.target === selectedBox) ||
+                  (a.target === portal.id && a.source === selectedBox),
+              )
+            : false,
         },
         width: ARCH_NODE_SIZES.portal.width,
         height: ARCH_NODE_SIZES.portal.height,
@@ -652,7 +711,10 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
 
     for (const agg of aggregated) {
       const isDimmed = selectedNodeId
-        ? !selectedConnectedNodes.has(agg.source) && !selectedConnectedNodes.has(agg.target)
+        ? agg.source !== selectedBox &&
+          agg.target !== selectedBox &&
+          !selectedConnectedNodes.has(agg.source) &&
+          !selectedConnectedNodes.has(agg.target)
         : false;
       allEdges.push({
         id: agg.id,
