@@ -5,105 +5,79 @@ Jinja2-templated prompts and BaseProvider.generate().
 
 Import direction (strictly one-way):
     ingestion.models ← generation.models ← context_assembler ← page_generator
+
+Exports resolve lazily (PEP 562): importing a light leaf module such as
+``generation.report`` from the index-only update path no longer pays for
+``context_assembler``/``page_generator``/``editor_files`` — they load on first
+attribute access instead.
 """
 
-from .context_assembler import (
-    ApiContractContext,
-    ArchitectureDiagramContext,
-    ContextAssembler,
-    FilePageContext,
-    InfraPageContext,
-    ModulePageContext,
-    RepoOverviewContext,
-    SccPageContext,
-    SymbolSpotlightContext,
-)
-from .editor_files import (
-    ClaudeMdGenerator,
-    DecisionSummary,
-    EditorFileData,
-    EditorFileDataFetcher,
-    HotspotFile,
-    KeyModule,
-    TechStackItem,
-)
-from .job_system import Checkpoint, JobStatus, JobSystem
-from .models import (
-    GENERATION_LEVELS,
-    ConfidenceDecayResult,
-    DeadCodeConfig,
-    FreshnessStatus,
-    GeneratedPage,
-    GenerationConfig,
-    GitConfig,
-    PageType,
-    compute_confidence_decay_with_git,
-    compute_freshness,
-    compute_page_id,
-    compute_source_hash,
-    decay_confidence,
-)
-from .api_contract_detector import detect_code_api_contracts
-from .interlinking import (
-    LinkIndex,
-    WikiLink,
-    attach_wiki_links_and_backlinks,
-    resolve_wiki_links,
-)
-from .page_generator import SYSTEM_PROMPTS, PageGenerator
-from .selection import (
-    BucketAllocation,
-    ModuleGroup,
-    Selection,
-    SelectionInputs,
-    select_pages,
-    summarize_selection,
-)
+from importlib import import_module
+from typing import Any
 
-__all__ = [
-    "BucketAllocation",
-    "GENERATION_LEVELS",
-    "LinkIndex",
-    "ModuleGroup",
-    "SYSTEM_PROMPTS",
-    "Selection",
-    "SelectionInputs",
-    "WikiLink",
-    "attach_wiki_links_and_backlinks",
-    "resolve_wiki_links",
-    "select_pages",
-    "summarize_selection",
-    "ApiContractContext",
-    "ArchitectureDiagramContext",
-    "Checkpoint",
-    "ClaudeMdGenerator",
-    "ConfidenceDecayResult",
-    "ContextAssembler",
-    "DeadCodeConfig",
-    "DecisionSummary",
-    "EditorFileData",
-    "EditorFileDataFetcher",
-    "FilePageContext",
-    "FreshnessStatus",
-    "GeneratedPage",
-    "GenerationConfig",
-    "GitConfig",
-    "HotspotFile",
-    "InfraPageContext",
-    "JobStatus",
-    "JobSystem",
-    "KeyModule",
-    "ModulePageContext",
-    "PageGenerator",
-    "PageType",
-    "RepoOverviewContext",
-    "SccPageContext",
-    "SymbolSpotlightContext",
-    "TechStackItem",
-    "compute_confidence_decay_with_git",
-    "compute_freshness",
-    "compute_page_id",
-    "compute_source_hash",
-    "decay_confidence",
-    "detect_code_api_contracts",
-]
+# Public name → defining submodule. Names import lazily on first access so
+# light consumers (e.g. the index-only update path importing ``.report``)
+# don't pull the heavy assembler/generator stack via this ``__init__``.
+_EXPORTS = {
+    "ApiContractContext": ".context_assembler",
+    "ArchitectureDiagramContext": ".context_assembler",
+    "ContextAssembler": ".context_assembler",
+    "FilePageContext": ".context_assembler",
+    "InfraPageContext": ".context_assembler",
+    "ModulePageContext": ".context_assembler",
+    "RepoOverviewContext": ".context_assembler",
+    "SccPageContext": ".context_assembler",
+    "SymbolSpotlightContext": ".context_assembler",
+    "ClaudeMdGenerator": ".editor_files",
+    "DecisionSummary": ".editor_files",
+    "EditorFileData": ".editor_files",
+    "EditorFileDataFetcher": ".editor_files",
+    "HotspotFile": ".editor_files",
+    "KeyModule": ".editor_files",
+    "TechStackItem": ".editor_files",
+    "Checkpoint": ".job_system",
+    "JobStatus": ".job_system",
+    "JobSystem": ".job_system",
+    "GENERATION_LEVELS": ".models",
+    "ConfidenceDecayResult": ".models",
+    "DeadCodeConfig": ".models",
+    "FreshnessStatus": ".models",
+    "GeneratedPage": ".models",
+    "GenerationConfig": ".models",
+    "GitConfig": ".models",
+    "PageType": ".models",
+    "compute_confidence_decay_with_git": ".models",
+    "compute_freshness": ".models",
+    "compute_page_id": ".models",
+    "compute_source_hash": ".models",
+    "decay_confidence": ".models",
+    "detect_code_api_contracts": ".api_contract_detector",
+    "LinkIndex": ".interlinking",
+    "WikiLink": ".interlinking",
+    "attach_wiki_links_and_backlinks": ".interlinking",
+    "resolve_wiki_links": ".interlinking",
+    "SYSTEM_PROMPTS": ".page_generator",
+    "PageGenerator": ".page_generator",
+    "BucketAllocation": ".selection",
+    "ModuleGroup": ".selection",
+    "Selection": ".selection",
+    "SelectionInputs": ".selection",
+    "select_pages": ".selection",
+    "summarize_selection": ".selection",
+}
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module = _EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(import_module(module, __name__), name)
+    globals()[name] = value  # cache: subsequent access skips __getattr__
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))

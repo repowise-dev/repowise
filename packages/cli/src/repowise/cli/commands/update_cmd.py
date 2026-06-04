@@ -1101,20 +1101,7 @@ def update_command(
         console.print(f"  [{color}]{fd.status:>10}[/{color}]  {fd.path}")
 
     # Re-parse changed files and rebuild graph for affected pages
-    from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
-
     cfg = load_config(repo_path)
-    language = cfg.get("language", "en")
-    # Config-driven (saved by `repowise init`); CLI override not surfaced
-    # on update yet — defaults to on to keep the onboarding collection
-    # fresh as the codebase evolves.
-    enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
-    config = GenerationConfig(
-        max_concurrency=concurrency,
-        language=language,
-        reasoning=resolve_reasoning(reasoning, cfg),
-        enable_onboarding=enable_onboarding_cfg,
-    )
 
     # Read exclude patterns from config (set during init or via web UI)
     exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
@@ -1163,6 +1150,23 @@ def update_command(
             [fd.path for fd in file_diffs],
         )
         return
+
+    # The generation/LLM layer is only needed past this point — importing it
+    # above the index-only branch would make every index-only update (the
+    # post-commit hook's hot path) pay the import for code it never runs.
+    from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
+
+    language = cfg.get("language", "en")
+    # Config-driven (saved by `repowise init`); CLI override not surfaced
+    # on update yet — defaults to on to keep the onboarding collection
+    # fresh as the codebase evolves.
+    enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
+    config = GenerationConfig(
+        max_concurrency=concurrency,
+        language=language,
+        reasoning=resolve_reasoning(reasoning, cfg),
+        enable_onboarding=enable_onboarding_cfg,
+    )
 
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
 
