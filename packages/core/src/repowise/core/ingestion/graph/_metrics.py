@@ -76,17 +76,35 @@ class MetricsMixin:
     # ------------------------------------------------------------------
 
     def file_subgraph(self) -> nx.DiGraph:
-        """Return a subgraph containing only file-level nodes and import edges."""
-        g = self.graph()
-        file_nodes = [
-            n for n, d in g.nodes(data=True) if d.get("node_type", "file") in ("file", "external")
-        ]
-        sub = g.subgraph(file_nodes).copy()
-        edges_to_remove = [
-            (u, v) for u, v, d in sub.edges(data=True) if d.get("edge_type") in ("co_changes",)
-        ]
-        sub.remove_edges_from(edges_to_remove)
-        return sub
+        """Return a subgraph containing only file-level nodes and import edges.
+
+        Cached per build — five metric kernels (SCC, PageRank, betweenness,
+        in/out degree) read it, and rebuilding the filtered copy per call is
+        O(V+E) each time. The cache is guarded by ``_subgraph_lock`` because
+        the init pipeline computes metrics concurrently via
+        ``asyncio.to_thread``. Callers must treat the result as read-only.
+        """
+        cached = self._file_subgraph_cache
+        if cached is not None:
+            return cached
+        with self._subgraph_lock:
+            if self._file_subgraph_cache is not None:
+                return self._file_subgraph_cache
+            g = self.graph()
+            file_nodes = [
+                n
+                for n, d in g.nodes(data=True)
+                if d.get("node_type", "file") in ("file", "external")
+            ]
+            sub = g.subgraph(file_nodes).copy()
+            edges_to_remove = [
+                (u, v)
+                for u, v, d in sub.edges(data=True)
+                if d.get("edge_type") in ("co_changes",)
+            ]
+            sub.remove_edges_from(edges_to_remove)
+            self._file_subgraph_cache = sub
+            return sub
 
     def symbol_subgraph(self) -> nx.DiGraph:
         """Return a subgraph of symbol nodes connected by call + heritage edges.
@@ -94,17 +112,27 @@ class MetricsMixin:
         File-to-symbol ``defines`` edges and class-to-method ``has_method``
         ownership edges are dropped so that the resulting centrality
         scores reflect call/heritage flow rather than containment.
+
+        Cached per build (see :meth:`file_subgraph` for the locking
+        rationale). Callers must treat the result as read-only.
         """
-        g = self.graph()
-        symbol_nodes = [n for n, d in g.nodes(data=True) if d.get("node_type") == "symbol"]
-        sub = g.subgraph(symbol_nodes).copy()
-        edges_to_remove = [
-            (u, v)
-            for u, v, d in sub.edges(data=True)
-            if d.get("edge_type") not in ("calls", "extends", "implements")
-        ]
-        sub.remove_edges_from(edges_to_remove)
-        return sub
+        cached = self._symbol_subgraph_cache
+        if cached is not None:
+            return cached
+        with self._subgraph_lock:
+            if self._symbol_subgraph_cache is not None:
+                return self._symbol_subgraph_cache
+            g = self.graph()
+            symbol_nodes = [n for n, d in g.nodes(data=True) if d.get("node_type") == "symbol"]
+            sub = g.subgraph(symbol_nodes).copy()
+            edges_to_remove = [
+                (u, v)
+                for u, v, d in sub.edges(data=True)
+                if d.get("edge_type") not in ("calls", "extends", "implements")
+            ]
+            sub.remove_edges_from(edges_to_remove)
+            self._symbol_subgraph_cache = sub
+            return sub
 
     # ------------------------------------------------------------------
     # File-level metrics

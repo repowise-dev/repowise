@@ -208,15 +208,18 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
 
     total = len(metadata_list)
     for rank, idx in enumerate(sorted_by_churn):
-        metadata_list[idx]["churn_percentile"] = rank / total if total > 0 else 0.0
-
-    # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
-    # activity floors — without the floors, a quiet repo's top quartile is
-    # just "every file touched in 90 days" (issue #361).
-    for meta in metadata_list:
-        churn_pct = meta.get("churn_percentile", 0.0)
+        meta = metadata_list[idx]
+        churn_pct = rank / total if total > 0 else 0.0
+        meta["churn_percentile"] = churn_pct
+        # Hotspot: top 25% churn (churn_percentile >= 0.75) AND the absolute
+        # activity floors — without the floors, a quiet repo's top quartile is
+        # just "every file touched in 90 days" (issue #361). Folded into the
+        # rank loop so the list is scanned once.
         if churn_pct >= 0.75 and meets_hotspot_floors(meta):
             meta["is_hotspot"] = True
+        # change_entropy percentile default — overwritten below for files
+        # carrying a positive entropy signal.
+        meta.setdefault("change_entropy_pct", 0.0)
 
     # change_entropy percentile (mirrors churn_percentile). Rank ONLY files
     # that carry a positive entropy signal; files with zero entropy — every
@@ -224,8 +227,6 @@ def compute_percentiles(metadata_list: list[dict]) -> None:
     # alone — keep pct 0.0 so the change_entropy biomarker stays silent. (A
     # naive rank-everything would hand the topmost zero-entropy file a high
     # percentile when most files are zero.)
-    for meta in metadata_list:
-        meta.setdefault("change_entropy_pct", 0.0)
     entropy_idxs = [
         i for i in range(total) if (metadata_list[i].get("change_entropy") or 0.0) > 0.0
     ]

@@ -62,6 +62,8 @@ class EdgesMixin:
                     count += 1
 
         log.info("Co-change edges added", count=count)
+        if count:
+            self._invalidate_subgraph_caches()
         return count
 
     def update_co_change_edges(self, updated_meta: dict, min_count: int = 3) -> None:
@@ -72,6 +74,7 @@ class EdgesMixin:
                 edges_to_remove.append((u, v))
         self._graph.remove_edges_from(edges_to_remove)
         self.add_co_change_edges(updated_meta, min_count)
+        self._invalidate_subgraph_caches()
 
     def add_dynamic_edges(self, edges: list) -> None:
         """Add dynamic-hint edges to the graph. Each edge is a DynamicEdge."""
@@ -97,6 +100,8 @@ class EdgesMixin:
             # source file node as is_test so downstream consumers can filter it.
             if e.hint_source and e.hint_source.endswith(":test"):
                 self._graph.nodes[e.source]["is_test"] = True
+        if edges:
+            self._invalidate_subgraph_caches()
 
     def add_framework_edges(self, tech_stack: list[str] | None = None) -> int:
         """Add synthetic edges for framework-mediated relationships.
@@ -124,4 +129,5 @@ class EdgesMixin:
         count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)
         if count:
             log.info("Framework edges added", count=count)
+            self._invalidate_subgraph_caches()
         return count
