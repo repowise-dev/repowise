@@ -393,9 +393,15 @@ def _rebuild_graph_and_git(
     file_diffs: list,
     cfg: dict,
     exclude_patterns: list[str],
+    git_tier: str | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
+
+    ``git_tier`` is the persisted ``state.json:git_tier`` value: a fast-mode
+    (ESSENTIAL) repo must not pay per-file blame on every update for signals
+    its index never had. Unknown/missing values fall back to FULL, matching
+    the historical behavior for legacy state files.
 
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count, git_meta_map)``.
@@ -409,7 +415,12 @@ def _rebuild_graph_and_git(
     git_meta_map: dict[str, dict] = {}
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
+        from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
 
+        try:
+            tier = GitIndexTier(git_tier) if git_tier else GitIndexTier.FULL
+        except ValueError:
+            tier = GitIndexTier.FULL
         _commit_limit = cfg.get("commit_limit")
         _follow_renames = cfg.get("follow_renames", False)
         git_indexer = GitIndexer(
@@ -417,6 +428,7 @@ def _rebuild_graph_and_git(
             commit_limit=_commit_limit,
             follow_renames=_follow_renames,
             exclude_patterns=exclude_patterns or None,
+            tier=tier,
         )
         changed_paths = _build_filtered_changed_paths(file_diffs, exclude_patterns)
         updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
@@ -1107,7 +1119,9 @@ def update_command(
     exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
 
     parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map = (
-        _rebuild_graph_and_git(repo_path, file_diffs, cfg, exclude_patterns)
+        _rebuild_graph_and_git(
+            repo_path, file_diffs, cfg, exclude_patterns, git_tier=state.get("git_tier")
+        )
     )
 
     # Determine affected pages (auto-scale budget if not explicitly set)
