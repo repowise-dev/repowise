@@ -165,6 +165,10 @@
   --color-bg-canvas: var(--color-bg-inset);
   --color-canvas-dot: rgba(36, 27, 44, 0.08);
   --color-bg-glass: rgba(255, 255, 255, 0.72);
+  /* Neutral hover washes for canvas-adjacent chrome (rows, chips, stubs) —
+     plum-alpha on paper, lavender-alpha on dark (same idiom as canvas-dot). */
+  --color-bg-wash: rgba(36, 27, 44, 0.05);
+  --color-bg-wash-hover: rgba(36, 27, 44, 0.1);
   --color-border-subtle: var(--color-border-default);
   --color-text-muted: var(--color-text-tertiary);
 
@@ -311,6 +315,8 @@
      flip on their own; only the explicit rgbas need a dark override). */
   --color-canvas-dot: rgba(222, 210, 235, 0.06);
   --color-bg-glass: rgba(33, 27, 41, 0.72);
+  --color-bg-wash: rgba(222, 210, 235, 0.05);
+  --color-bg-wash-hover: rgba(222, 210, 235, 0.1);
 
   /* Edge hue that isn't a pure var() derivation gets a dark-legible tweak */
   --color-edge-inherits: #a98fc4; /* plum-300 reads better on dark */

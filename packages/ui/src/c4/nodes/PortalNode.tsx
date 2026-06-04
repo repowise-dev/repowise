@@ -5,6 +5,7 @@ import { ArrowRight } from "lucide-react";
 import type { NodeProps } from "@xyflow/react";
 import { Handle, Position } from "@xyflow/react";
 import { useArchitectureStore } from "../store/use-architecture-store";
+import { THEME } from "../theme/theme-variables";
 
 export interface PortalNodeProps {
   targetLayerId: string;
@@ -21,8 +22,8 @@ function PortalNodeImpl(props: NodeProps) {
   };
 
   const borderColor = selected
-    ? "#fbbf24"
-    : "rgba(148, 163, 184, 0.35)";
+    ? THEME.selection.ring
+    : THEME.border.default;
 
   return (
     <div
@@ -30,14 +31,14 @@ function PortalNodeImpl(props: NodeProps) {
       style={{
         cursor: "pointer",
         width: 220,
-        background: "rgba(17, 24, 39, 0.6)",
+        background: THEME.surface.glass,
         border: `2px dashed ${borderColor}`,
         borderRadius: 8,
         padding: "8px 12px",
         display: "flex",
         flexDirection: "column",
         gap: 2,
-        boxShadow: selected ? "0 0 0 2px rgba(251,191,36,0.3)" : "0 2px 8px rgba(0,0,0,0.2)",
+        boxShadow: selected ? `0 0 0 2px ${THEME.selection.ringAlpha}` : "0 2px 8px rgba(0,0,0,0.2)",
       }}
     >
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />

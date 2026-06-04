@@ -9,6 +9,8 @@ export const THEME = {
     overlay: "var(--color-bg-overlay, rgba(15,23,42,0.92))",
     glass: "var(--color-bg-glass, rgba(17,24,39,0.75))",
     glassBlur: "blur(8px)",
+    wash: "var(--color-bg-wash)",
+    washHover: "var(--color-bg-wash-hover)",
   },
 
   border: {

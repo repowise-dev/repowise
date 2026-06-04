@@ -249,7 +249,7 @@ function HealthSection({
         />
       </div>
       {health.is_silo && (
-        <div style={{ marginTop: 6, fontSize: 10, color: "#fbbf24", fontWeight: 600 }}>
+        <div style={{ marginTop: 6, fontSize: 10, color: "var(--color-warning)", fontWeight: 600 }}>
           ⚠ Knowledge silo detected
         </div>
       )}

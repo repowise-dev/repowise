@@ -193,7 +193,7 @@ function ContainerOrComponentBody(props: C4DetailPanelProps) {
               Primary owner: <strong>{health.primary_owner}</strong>{" "}
               ({Math.round(health.primary_owner_pct * 100)}%)
               {health.is_silo && (
-                <span style={{ marginLeft: 6, color: "#fbbf24" }}>· silo</span>
+                <span style={{ marginLeft: 6, color: "var(--color-warning)" }}>· silo</span>
               )}
             </Sub>
           )}

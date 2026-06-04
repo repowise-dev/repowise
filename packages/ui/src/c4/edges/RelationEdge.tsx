@@ -12,6 +12,7 @@ import {
   getBezierPath,
   type EdgeProps,
 } from "@xyflow/react";
+import { THEME } from "../theme/theme-variables";
 import type { C4EdgeData } from "../types";
 
 function RelationEdgeImpl(props: EdgeProps) {
@@ -38,7 +39,7 @@ function RelationEdgeImpl(props: EdgeProps) {
     targetPosition,
   });
 
-  const stroke = selected ? "#fbbf24" : "#94a3b8";
+  const stroke = selected ? THEME.selection.ring : THEME.edge.default ?? "var(--color-text-tertiary)";
   const strokeWidth = relation && relation.edge_count > 5 ? 2 : 1.25;
 
   const label = relation
@@ -57,14 +58,14 @@ function RelationEdgeImpl(props: EdgeProps) {
             style={{
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              background: "rgba(15, 23, 42, 0.92)",
-              color: "#e2e8f0",
+              background: THEME.surface.overlay,
+              color: THEME.text.primary,
               padding: "2px 6px",
               borderRadius: 4,
               fontSize: 10,
               fontWeight: 500,
               pointerEvents: "none",
-              border: "1px solid rgba(148, 163, 184, 0.25)",
+              border: `1px solid ${THEME.border.default}`,
               whiteSpace: "nowrap",
             }}
             className="nodrag nopan"

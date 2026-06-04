@@ -5,6 +5,7 @@ import { ChevronRight, ChevronDown } from "lucide-react";
 import type { NodeProps } from "@xyflow/react";
 import { Handle, Position } from "@xyflow/react";
 import { useArchitectureStore } from "../store/use-architecture-store";
+import { THEME } from "../theme/theme-variables";
 
 export interface ArchContainerNodeProps {
   containerId: string;
@@ -26,8 +27,8 @@ function ArchContainerNodeImpl(props: NodeProps) {
   };
 
   const borderColor = selected
-    ? "#fbbf24"
-    : "rgba(96, 165, 250, 0.2)";
+    ? THEME.selection.ring
+    : THEME.border.subtle;
 
   return (
     <div
@@ -38,15 +39,15 @@ function ArchContainerNodeImpl(props: NodeProps) {
         cursor: "pointer",
         width: expanded ? 320 : 260,
         minHeight: expanded ? undefined : 56,
-        background: hovered ? "rgba(96, 165, 250, 0.07)" : "rgba(96, 165, 250, 0.04)",
+        background: hovered ? THEME.surface.washHover : THEME.surface.wash,
         border: `1.5px solid ${borderColor}`,
-        borderLeft: `3px solid ${selected ? "#fbbf24" : "rgba(96, 165, 250, 0.3)"}`,
+        borderLeft: `3px solid ${selected ? THEME.selection.ring : THEME.border.default}`,
         borderRadius: 12,
         padding: "10px 14px",
         display: "flex",
         flexDirection: "column",
         gap: 2,
-        boxShadow: selected ? "0 0 0 2px rgba(251,191,36,0.3)" : "none",
+        boxShadow: selected ? `0 0 0 2px ${THEME.selection.ringAlpha}` : "none",
         transition: "background 0.15s ease",
       }}
     >
@@ -73,8 +74,8 @@ function ArchContainerNodeImpl(props: NodeProps) {
         <span style={{
           fontSize: 10,
           fontFamily: "var(--font-mono, ui-monospace, monospace)",
-          color: "#f59520",
-          background: "rgba(245, 149, 32, 0.12)",
+          color: THEME.accent.primary,
+          background: THEME.accent.muted,
           padding: "1px 6px",
           borderRadius: 4,
           alignSelf: "flex-start",
