@@ -25,12 +25,88 @@ flattened to the first plausible source target. Packages without an
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .context import ResolverContext
+
+
+# ---------------------------------------------------------------------------
+# Single pruned filesystem scan
+# ---------------------------------------------------------------------------
+# The mdx / vitest-config / package.json finders below all need to locate
+# files by name across the repo. Doing that with per-finder ``rglob`` calls
+# walked the ENTIRE tree (including node_modules, virtualenvs, .git) once
+# per pattern — 12+ full walks, measured at ~6 min on a medium repo with a
+# checked-in .venv. One ``os.walk`` with directory pruning, memoized on the
+# resolver context, replaces all of them.
+#
+# The prune list is deliberately narrow: vendored/derived trees that can
+# never contain *our* manifests or docs. ``.github`` and other dot-dirs that
+# may hold real package.json files (custom actions) are NOT pruned wholesale.
+_SCAN_PRUNE_DIRS: frozenset[str] = frozenset({
+    "node_modules",
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    ".tox",
+    "__pycache__",
+    ".repowise",
+    ".repowise.prebench-bak",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".cache",
+    ".parcel-cache",
+    ".yarn",
+    ".pnpm-store",
+})
+
+_VITEST_CONFIG_NAMES: frozenset[str] = frozenset({
+    "vitest.config.ts", "vitest.config.js", "vitest.config.mts",
+    "vitest.config.mjs", "vitest.config.cjs", "vitest.config.cts",
+    "vite.config.ts", "vite.config.js", "vite.config.mts",
+    "vite.config.mjs",
+})
+
+
+@dataclass
+class _RepoFileScan:
+    """File locations gathered by the single pruned walk."""
+
+    mdx_files: list[Path] = field(default_factory=list)
+    vitest_configs: list[Path] = field(default_factory=list)
+    package_jsons: list[Path] = field(default_factory=list)
+
+
+def _scan_repo_files(repo_path: Path) -> _RepoFileScan:
+    """One pruned ``os.walk`` collecting every finder's target files."""
+    scan = _RepoFileScan()
+    for dirpath, dirnames, filenames in os.walk(repo_path):
+        dirnames[:] = [d for d in dirnames if d not in _SCAN_PRUNE_DIRS]
+        for fname in filenames:
+            if fname.endswith(".mdx"):
+                scan.mdx_files.append(Path(dirpath) / fname)
+            elif fname in _VITEST_CONFIG_NAMES:
+                scan.vitest_configs.append(Path(dirpath) / fname)
+            elif fname == "package.json":
+                scan.package_jsons.append(Path(dirpath) / fname)
+    return scan
+
+
+def _get_repo_scan(ctx: "ResolverContext") -> _RepoFileScan:
+    """Memoized accessor — one walk per resolver context."""
+    cached = getattr(ctx, "_ts_repo_file_scan", None)
+    if cached is not None:
+        return cached
+    scan = _scan_repo_files(ctx.repo_path) if ctx.repo_path is not None else _RepoFileScan()
+    ctx._ts_repo_file_scan = scan  # type: ignore[attr-defined]
+    return scan
 
 
 # Order in which we collapse Node "conditional exports" objects down to
@@ -453,7 +529,7 @@ def find_mdx_import_targets(ctx: "ResolverContext") -> set[str]:
     from .typescript import resolve_ts_js_import
 
     targets: set[str] = set()
-    for mdx in ctx.repo_path.rglob("*.mdx"):
+    for mdx in _get_repo_scan(ctx).mdx_files:
         try:
             text = mdx.read_text(encoding="utf-8", errors="ignore")
         except Exception:
@@ -537,34 +613,25 @@ def find_vitest_include_targets(ctx: "ResolverContext") -> set[str]:
         return set()
 
     targets: set[str] = set()
-    config_globs = ("vitest.config.ts", "vitest.config.js", "vitest.config.mts",
-                    "vitest.config.mjs", "vitest.config.cjs", "vitest.config.cts",
-                    "vite.config.ts", "vite.config.js", "vite.config.mts",
-                    "vite.config.mjs")
-    seen: set[Path] = set()
-    for pattern in config_globs:
-        for cfg in ctx.repo_path.rglob(pattern):
-            if cfg in seen:
-                continue
-            seen.add(cfg)
-            try:
-                text = cfg.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-            cfg_dir = cfg.parent
-            for inc_match in _VITEST_INCLUDE_RE.finditer(text):
-                for str_match in _VITEST_STRING_RE.finditer(inc_match.group(1)):
-                    glob_pat = str_match.group(1)
-                    # Resolve glob relative to the config file's directory.
-                    base = (cfg_dir / glob_pat).as_posix()
-                    try:
-                        rel_glob = Path(base).relative_to(ctx.repo_path).as_posix()
-                    except ValueError:
-                        continue
-                    regex = _vitest_glob_to_regex(rel_glob)
-                    for candidate in ctx.path_set:
-                        if regex.match(candidate):
-                            targets.add(candidate)
+    for cfg in _get_repo_scan(ctx).vitest_configs:
+        try:
+            text = cfg.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        cfg_dir = cfg.parent
+        for inc_match in _VITEST_INCLUDE_RE.finditer(text):
+            for str_match in _VITEST_STRING_RE.finditer(inc_match.group(1)):
+                glob_pat = str_match.group(1)
+                # Resolve glob relative to the config file's directory.
+                base = (cfg_dir / glob_pat).as_posix()
+                try:
+                    rel_glob = Path(base).relative_to(ctx.repo_path).as_posix()
+                except ValueError:
+                    continue
+                regex = _vitest_glob_to_regex(rel_glob)
+                for candidate in ctx.path_set:
+                    if regex.match(candidate):
+                        targets.add(candidate)
     return targets
 
 
@@ -640,7 +707,10 @@ def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
     if ctx.repo_path is None:
         return set()
 
-    repo_root = ctx.repo_path.resolve()
+    # NOTE: not .resolve()d — the shared scan walks ctx.repo_path as given,
+    # so relative_to() below must use the same base or it silently drops
+    # every manifest.
+    repo_root = ctx.repo_path
     path_set = ctx.path_set
     targets: set[str] = set()
 
@@ -656,10 +726,8 @@ def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
             dirs_in_repo.setdefault(p[:slash], []).append(p)
             idx = slash + 1
 
-    for pkg_file in repo_root.rglob("package.json"):
-        # Skip node_modules — those are dependency manifests, not ours.
-        if "node_modules" in pkg_file.parts:
-            continue
+    for pkg_file in _get_repo_scan(ctx).package_jsons:
+        # node_modules manifests are already pruned by the shared scan.
         try:
             data = json.loads(pkg_file.read_text(encoding="utf-8", errors="ignore"))
         except Exception:
