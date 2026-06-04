@@ -324,3 +324,55 @@ describe("layout: layer-groups tier", () => {
     expect(types).not.toContain("subGroupCluster");
   });
 });
+
+describe("scope frame — dashed 'you are here' boundary (kg-ux plan B4)", () => {
+  it("wraps the groups tier in a frame labeled with the layer name", async () => {
+    act(() => {
+      store.getState().setView(createCuratedView());
+      store.getState().drillIntoLayer("layer:api");
+    });
+    const { result } = renderHook(() => useArchitectureLayout());
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThan(0);
+    });
+
+    const frame = result.current.nodes.find((n) => n.type === "scopeFrame");
+    expect(frame).toBeDefined();
+    expect((frame!.data as { label: string }).label).toBe("API");
+    // Pure underlay: behind cards, never interactive.
+    expect(frame!.zIndex).toBe(-1);
+    expect(frame!.selectable).toBe(false);
+    expect(frame!.draggable).toBe(false);
+  });
+
+  it("labels the detail-tier frame 'Layer › Group' when a sub-group is active", async () => {
+    act(() => {
+      store.getState().setView(createCuratedView());
+      store.getState().drillIntoLayer("layer:api");
+      store.getState().drillIntoSubGroup("layer:api:app");
+    });
+    const { result } = renderHook(() => useArchitectureLayout());
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThan(0);
+    });
+
+    const frame = result.current.nodes.find((n) => n.type === "scopeFrame");
+    expect(frame).toBeDefined();
+    expect((frame!.data as { label: string }).label).toBe("API › app");
+  });
+
+  it("draws no frame on the overview tier", async () => {
+    act(() => {
+      store.getState().setView(createCuratedView());
+    });
+    const { result } = renderHook(() => useArchitectureLayout());
+
+    await waitFor(() => {
+      expect(result.current.nodes.length).toBeGreaterThan(0);
+    });
+
+    expect(result.current.nodes.find((n) => n.type === "scopeFrame")).toBeUndefined();
+  });
+});

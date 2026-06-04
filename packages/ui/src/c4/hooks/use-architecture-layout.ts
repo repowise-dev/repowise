@@ -351,6 +351,22 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       };
     });
 
+    // "You are here": dashed boundary around the drilled layer's cards.
+    const groupsFrame = buildScopeFrameNode(
+      `frame:${layer.id}`,
+      layer.name,
+      cards.map((card) => {
+        const pos = positions.get(card.id) ?? { x: 0, y: 0, width: 0, height: 0 };
+        return {
+          x: pos.x,
+          y: pos.y,
+          width: ARCH_NODE_SIZES.layerCluster.width,
+          height: ARCH_NODE_SIZES.layerCluster.height,
+        };
+      }),
+    );
+    if (groupsFrame) nodes.unshift(groupsFrame);
+
     for (const portal of portalSpecs) {
       const pos = positions.get(portal.id) ?? { x: 0, y: 0, width: 0, height: 0 };
       nodes.push({
@@ -506,10 +522,15 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       }
     }
 
+    // Scope members (containers + standalone files) collect their rects so
+    // the "you are here" frame can wrap them; siblings/portals stay outside.
+    const frameRects: { x: number; y: number; width: number; height: number }[] = [];
+
     for (const container of containers) {
       const pos = stage1Positions.get(container.id) ?? { x: 0, y: 0, width: 0, height: 0 };
       const isExpanded = expandedContainers.has(container.id);
       const searchHitCount = container.childNodeIds.filter((id) => searchHighlightIds.has(id)).length;
+      frameRects.push({ x: pos.x, y: pos.y, width: pos.width, height: pos.height });
 
       allNodes.push({
         id: container.id,
@@ -577,6 +598,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       if (!node) continue;
       const pos = stage1Positions.get(id) ?? { x: 0, y: 0, width: 0, height: 0 };
       const sizes = ARCH_NODE_SIZES[node.node_type as keyof typeof ARCH_NODE_SIZES] ?? ARCH_NODE_SIZES.file;
+      frameRects.push({ x: pos.x, y: pos.y, width: sizes.width, height: sizes.height });
       allNodes.push({
         id: node.id,
         type: "archFile",
@@ -586,6 +608,14 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
         height: sizes.height,
       });
     }
+
+    // "You are here": dashed boundary around the active scope's content.
+    const detailFrame = buildScopeFrameNode(
+      `frame:${activeSubGroupId ?? layer.id}`,
+      activeCard ? `${layer.name} › ${activeCard.name}` : layer.name,
+      frameRects,
+    );
+    if (detailFrame) allNodes.unshift(detailFrame);
 
     for (const sibling of siblingCards) {
       const pos = stage1Positions.get(sibling.id) ?? { x: 0, y: 0, width: 0, height: 0 };
@@ -716,6 +746,41 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       tourStepNumber: isTourTarget ? currentTourStep + 1 : undefined,
       diffState,
       dimmed,
+    };
+  }
+
+  /** Dashed "you are here" boundary behind the drilled scope (kg-ux §2.4).
+   * Pure underlay: zIndex -1, non-interactive, sized to the members' bbox. */
+  function buildScopeFrameNode(
+    frameId: string,
+    label: string,
+    rects: { x: number; y: number; width: number; height: number }[],
+  ): Node | null {
+    if (rects.length === 0) return null;
+    const PAD = { top: 56, right: 40, bottom: 40, left: 40 };
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const r of rects) {
+      minX = Math.min(minX, r.x);
+      minY = Math.min(minY, r.y);
+      maxX = Math.max(maxX, r.x + r.width);
+      maxY = Math.max(maxY, r.y + r.height);
+    }
+    const width = maxX - minX + PAD.left + PAD.right;
+    const height = maxY - minY + PAD.top + PAD.bottom;
+    return {
+      id: frameId,
+      type: "scopeFrame",
+      position: { x: minX - PAD.left, y: minY - PAD.top },
+      data: { label, width, height },
+      width,
+      height,
+      zIndex: -1,
+      selectable: false,
+      draggable: false,
+      focusable: false,
     };
   }
 

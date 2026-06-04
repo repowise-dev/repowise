@@ -8,6 +8,7 @@ import { ArchFileNode } from "./ArchFileNode";
 import { ArchContainerNode } from "./ArchContainerNode";
 import { LayerClusterNode } from "./LayerClusterNode";
 import { PortalNode } from "./PortalNode";
+import { ScopeFrameNode } from "./ScopeFrameNode";
 
 export const c4NodeTypes: NodeTypes = {
   system: SystemNode,
@@ -25,7 +26,9 @@ export const archNodeTypes: NodeTypes = {
   // Curated sub-group card — same component, "subGroup" kind via data.
   subGroupCluster: LayerClusterNode,
   portal: PortalNode,
+  // Dashed "you are here" boundary behind the drilled tier (kg-ux §2.4).
+  scopeFrame: ScopeFrameNode,
 };
 
 export { SystemNode, PersonNode, ExternalSystemNode, ContainerNode, ComponentNode };
-export { ArchFileNode, ArchContainerNode, LayerClusterNode, PortalNode };
+export { ArchFileNode, ArchContainerNode, LayerClusterNode, PortalNode, ScopeFrameNode };
