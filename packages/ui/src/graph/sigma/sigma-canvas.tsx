@@ -23,10 +23,12 @@ import { useFA2Layout } from "./use-fa2-layout";
 import { useElkSigmaLayout } from "./use-elk-sigma-layout";
 import { SigmaControls } from "./sigma-controls";
 import { SigmaMinimap } from "./sigma-minimap";
+import { DepthRings } from "./depth-rings";
 
 export interface SigmaCanvasProps {
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
-  layoutMode: "force" | "hierarchical";
+  // "radial" = constellation: positions are pre-computed, no FA2/ELK runs.
+  layoutMode: "force" | "hierarchical" | "radial";
   viewMode: ViewMode;
   selectedNodeId: string | null;
   hoveredNodeId: string | null;
@@ -50,6 +52,8 @@ export interface SigmaCanvasProps {
   onStageClick?: (() => void) | undefined;
   hiddenNodes?: Set<string> | undefined;
   visibleEdgeTypes?: Set<string> | undefined;
+  /** Concentric depth-ring radii (graph coords) for the constellation underlay. */
+  depthRingRadii?: readonly [number, number, number] | null | undefined;
 }
 
 export interface SigmaCanvasHandle {
@@ -183,14 +187,29 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       zoomOut,
     }));
 
+    const hasDepthRings = !!props.depthRingRadii;
     return (
-      <div className="relative w-full h-full">
+      <div
+        className="relative w-full h-full"
+        style={
+          // For the constellation, paint the dark canvas on the wrapper and keep
+          // the sigma container transparent so the depth-ring underlay shows.
+          hasDepthRings && props.graphTheme === "dark"
+            ? { background: "var(--color-bg-canvas)" }
+            : undefined
+        }
+      >
+        {hasDepthRings && props.depthRingRadii && (
+          <DepthRings sigma={sigma} ringRadii={props.depthRingRadii} />
+        )}
         <div
           ref={containerCallback}
-          className="w-full h-full"
+          className="w-full h-full relative z-[1]"
           style={{
             background:
-              props.graphTheme === "dark" ? "var(--color-bg-canvas)" : "transparent",
+              !hasDepthRings && props.graphTheme === "dark"
+                ? "var(--color-bg-canvas)"
+                : "transparent",
             cursor: "grab",
           }}
         />

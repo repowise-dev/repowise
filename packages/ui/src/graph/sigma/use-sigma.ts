@@ -207,9 +207,25 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     if (!graph || graph.order === 0) return;
     const viz = (vizRef.current = resolveVizPalette(options.graphTheme));
     const cm = options.colorMode;
+    const coreColor = resolveToken("--color-bg-inset", "#110d17");
     graph.updateEachNodeAttributes(
       (_node, attrs) => {
         let color: string;
+        // Constellation kinds are always family-colored (hub hue) regardless of
+        // the active colorMode — the radial view *is* the community view. The
+        // repo-core is a dark plum disc; its halo borrows the soft canvas dot.
+        if (attrs.nodeType === "hub") {
+          const family = getCommunityFamily(attrs.communityId);
+          color = family.hub;
+          const next = { ...attrs, color, haloColor: family.satellite || family.hub };
+          if (attrs.color === color && attrs.haloColor === next.haloColor) return attrs;
+          return next;
+        }
+        if (attrs.nodeType === "core") {
+          color = coreColor;
+          if (attrs.color === color) return attrs;
+          return { ...attrs, color };
+        }
         if (cm === "language") {
           color = languageColor(attrs.language || "other");
         } else if (cm === "community") {
@@ -275,6 +291,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           import("graphology"),
         ]);
       const EdgeLineProgram = sigmaRendering.EdgeLineProgram;
+      const drawDiscNodeLabel = sigmaRendering.drawDiscNodeLabel;
 
       if (cancelled) return;
 
@@ -302,6 +319,50 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         hideEdgesOnMove: true,
         zIndex: true,
 
+        // Hub/core labels render centered *inside* the disc (ROBOTICS-style),
+        // with a soft halo ring in the family hue. Everything else uses the
+        // stock side-label drawer. Sigma's grid honors forceLabel on these.
+        defaultDrawNodeLabel: (context, data, settings) => {
+          const extra = data as unknown as Record<string, unknown>;
+          const kind = extra.nodeType as string | undefined;
+          if (kind !== "hub" && kind !== "core") {
+            drawDiscNodeLabel(context, data, settings);
+            return;
+          }
+
+          const theme = THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark;
+          const size = data.size || 20;
+
+          // Soft 2px halo ring in the family hue (emulated — NodeCircleProgram
+          // has no border and @sigma/node-border isn't a dependency).
+          const halo = (extra.haloColor as string) || data.color;
+          context.beginPath();
+          context.arc(data.x, data.y, size + 2.5, 0, Math.PI * 2);
+          context.lineWidth = 2;
+          context.strokeStyle = halo;
+          context.globalAlpha = 0.55;
+          context.stroke();
+          context.globalAlpha = 1;
+
+          const label = data.label;
+          if (!label) return;
+
+          // Fit the uppercase label inside the disc; shrink for long names.
+          const font = settings.labelFont || "JetBrains Mono, monospace";
+          let fontSize = Math.max(9, Math.min(13, size * 0.55));
+          context.font = `600 ${fontSize}px ${font}`;
+          const maxWidth = size * 1.9;
+          while (context.measureText(label).width > maxWidth && fontSize > 7) {
+            fontSize -= 1;
+            context.font = `600 ${fontSize}px ${font}`;
+          }
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          // Core is dark → light text; hubs are warm → dark text for contrast.
+          context.fillStyle = kind === "core" ? theme.text : "#1a1320";
+          context.fillText(label, data.x, data.y);
+        },
+
         defaultDrawNodeHover: (context, data, settings) => {
           const label = data.label;
           if (!label) return;
@@ -309,6 +370,66 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           const theme = THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark;
           const extra = data as Record<string, unknown>;
           const fullPath = (extra.fullPath as string) ?? undefined;
+
+          // Hub tooltip: a small surface card with member count, doc %, langs.
+          if (extra.nodeType === "hub") {
+            const font = settings.labelFont || "JetBrains Mono, monospace";
+            const members = (extra.memberCount as number) ?? 0;
+            const docPct = Math.round(((extra.docCoveragePct as number) ?? 0) * 100);
+            const langs = ((extra.languages as string[]) ?? []).slice(0, 3).join(", ");
+            const lines: string[] = [
+              `${members} file${members === 1 ? "" : "s"} · ${docPct}% documented`,
+            ];
+            if (langs) lines.push(langs);
+
+            const titleSize = (settings.labelSize || 11) + 1;
+            const lineSize = 9;
+            context.font = `600 ${titleSize}px ${font}`;
+            let maxW = context.measureText(label).width;
+            context.font = `400 ${lineSize}px ${font}`;
+            for (const l of lines) maxW = Math.max(maxW, context.measureText(l).width);
+
+            const padX = 12;
+            const padY = 8;
+            const gap = 4;
+            const w = maxW + padX * 2;
+            const h = titleSize + lines.length * (lineSize + gap) + padY * 2;
+            const nodeSize = data.size || 20;
+            const cx = data.x;
+            const cy = data.y - nodeSize - 14 - h / 2;
+
+            context.fillStyle = theme.tooltip;
+            context.beginPath();
+            context.roundRect(cx - w / 2, cy - h / 2, w, h, 6);
+            context.fill();
+            context.lineWidth = 1.5;
+            context.strokeStyle = data.color || "#6366f1";
+            context.stroke();
+
+            context.textAlign = "center";
+            context.textBaseline = "top";
+            let ty = cy - h / 2 + padY;
+            context.fillStyle = theme.text;
+            context.font = `600 ${titleSize}px ${font}`;
+            context.fillText(label, cx, ty);
+            ty += titleSize + gap;
+            context.fillStyle = theme.subtitle;
+            context.font = `400 ${lineSize}px ${font}`;
+            for (const l of lines) {
+              context.fillText(l, cx, ty);
+              ty += lineSize + gap;
+            }
+
+            // Halo emphasis on hover.
+            context.beginPath();
+            context.arc(data.x, data.y, nodeSize + 4, 0, Math.PI * 2);
+            context.strokeStyle = (extra.haloColor as string) || data.color || "#6366f1";
+            context.lineWidth = 2.5;
+            context.globalAlpha = 0.6;
+            context.stroke();
+            context.globalAlpha = 1;
+            return;
+          }
 
           const primarySize = settings.labelSize || 11;
           const secondarySize = 9;

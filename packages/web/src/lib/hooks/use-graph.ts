@@ -2,6 +2,7 @@
 
 import useSWR from "swr";
 import {
+  getArchitecture,
   getArchitectureGraph,
   getCallersCallees,
   getCommunities,
@@ -15,6 +16,7 @@ import {
   getModuleGraph,
 } from "@/lib/api/graph";
 import type {
+  ArchitectureGraphResponse,
   CallersCalleesResponse,
   CommunityDetailResponse,
   CommunitySummaryItem,
@@ -51,6 +53,20 @@ export function useEgoGraph(repoId: string | null, nodeId: string | null, hops =
   const { data, error, isLoading } = useSWR<EgoGraphResponse>(
     repoId && nodeId ? `ego-graph:${repoId}:${nodeId}:${hops}` : null,
     () => getEgoGraph(repoId!, nodeId!, hops),
+    SWR_OPTS,
+  );
+  return { graph: data, error, isLoading };
+}
+
+/**
+ * Community super-graph for the constellation (radial Knowledge Graph) scope.
+ * Conditional SWR: only fetched when a repoId is given (the wrapper gates it
+ * to the constellation scope).
+ */
+export function useArchitectureCommunityGraph(repoId: string | null) {
+  const { data, error, isLoading } = useSWR<ArchitectureGraphResponse>(
+    repoId ? `arch-community:${repoId}` : null,
+    () => getArchitecture(repoId!),
     SWR_OPTS,
   );
   return { graph: data, error, isLoading };

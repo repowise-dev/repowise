@@ -34,6 +34,7 @@ import type {
   ModuleGraph,
   ExecutionFlows,
   CommunitySummaryItem,
+  ArchitectureGraph,
 } from "@repowise-dev/types/graph";
 import { SigmaCanvas, type SigmaCanvasHandle } from "./sigma/sigma-canvas";
 import {
@@ -42,6 +43,8 @@ import {
   moduleGraphToGraphology,
   groupFilesAsModules,
 } from "./sigma/graphology-adapter";
+import { architectureToGraphology, hubNodeId } from "./sigma/constellation-adapter";
+import { computeRadialLayout } from "./sigma/radial-layout";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./sigma/types";
 import type GraphologyGraph from "graphology";
 import { useEgoFilter } from "./sigma/use-ego-filter";
@@ -60,6 +63,11 @@ export interface GraphFlowProps {
   isLoadingFullGraph: boolean;
   architectureGraph: GraphExport | undefined;
   isLoadingArchitectureGraph: boolean;
+  /** Community super-graph for the constellation (radial Knowledge Graph) scope. */
+  constellationGraph?: ArchitectureGraph | undefined;
+  isLoadingConstellationGraph?: boolean;
+  /** Repo name for the constellation core label. */
+  repoName?: string;
   deadCodeGraph: GraphExport | undefined;
   isLoadingDeadCodeGraph: boolean;
   hotFilesGraph: GraphExport | undefined;
@@ -96,8 +104,9 @@ export function GraphFlow(props: GraphFlowProps) {
     isLoadingModuleGraph,
     fullGraph,
     isLoadingFullGraph,
-    architectureGraph,
-    isLoadingArchitectureGraph,
+    constellationGraph,
+    isLoadingConstellationGraph,
+    repoName,
     deadCodeGraph,
     isLoadingDeadCodeGraph,
     hotFilesGraph,
@@ -120,7 +129,8 @@ export function GraphFlow(props: GraphFlowProps) {
   const focusTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // ---- Core state ----
-  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "module");
+  // Default scope is the constellation (radial Knowledge Graph).
+  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
   const [colorMode, setColorMode] = useState<ColorMode>(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
@@ -132,7 +142,10 @@ export function GraphFlow(props: GraphFlowProps) {
   const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set());
   const [highlightedEdges, setHighlightedEdges] = useState<Set<string>>(new Set());
   const [showPathFinder, setShowPathFinder] = useState(false);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
+  // Constellation is the default scope → its fixed radial layout.
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>(
+    (initialViewMode ?? "architecture") === "architecture" ? "radial" : "force",
+  );
 
   // The dependency graph follows the global app theme rather than a separate
   // local toggle. Sigma needs a concrete "light"/"dark" (never "system"), so
@@ -205,9 +218,41 @@ export function GraphFlow(props: GraphFlowProps) {
     [onCommunityPanelOpen],
   );
 
+  // Legend / hub click in the constellation: ease the camera onto the hub,
+  // select it, and surface the community in the existing detail panel.
+  const handleConstellationHubClick = useCallback(
+    (cid: number) => {
+      const nodeId = hubNodeId(cid);
+      setSelectedNodeId(nodeId);
+      sigmaRef.current?.focusNode(nodeId);
+      openCommunityPanel(cid);
+    },
+    [openCommunityPanel],
+  );
+
   // ---- Derived state ----
   const isModuleView = viewMode === "module";
   const isUnified = viewMode === "unified";
+  // The "architecture" scope renders the radial community constellation.
+  const isConstellation = viewMode === "architecture";
+
+  // Constellation graph: one hub per community + repo-core, radial positions.
+  const constellationSigmaGraph = useMemo(() => {
+    if (!isConstellation || !constellationGraph) return null;
+    return architectureToGraphology(constellationGraph, repoName ? { repoName } : {});
+  }, [isConstellation, constellationGraph, repoName]);
+
+  // Ring radii for the depth-ring underlay (graph coordinates).
+  const constellationRingRadii = useMemo(() => {
+    if (!isConstellation || !constellationGraph) return null;
+    return computeRadialLayout(
+      constellationGraph.nodes.map((n) => ({
+        community_id: n.community_id,
+        member_count: n.member_count,
+        avg_pagerank: n.avg_pagerank,
+      })),
+    ).ringRadii;
+  }, [isConstellation, constellationGraph]);
 
   const communityLabels = useMemo(() => {
     if (!communities) return undefined;
@@ -215,6 +260,19 @@ export function GraphFlow(props: GraphFlowProps) {
     for (const c of communities) m.set(c.community_id, c.label);
     return m;
   }, [communities]);
+
+  // Constellation legend data: label + member count per community, ranked by
+  // size, sourced from the architecture payload (independent of /communities).
+  const constellationLegend = useMemo(() => {
+    if (!constellationGraph) return undefined;
+    return [...constellationGraph.nodes]
+      .sort((a, b) => b.member_count - a.member_count)
+      .map((n) => ({
+        communityId: n.community_id,
+        label: (n.label || `Community ${n.community_id}`),
+        memberCount: n.member_count,
+      }));
+  }, [constellationGraph]);
 
   // Drill-down data
   const drillDownData = useMemo(() => {
@@ -228,10 +286,7 @@ export function GraphFlow(props: GraphFlowProps) {
       case "full":
       case "unified":
         return fullGraph ? { nodes: fullGraph.nodes, links: fullGraph.links } : undefined;
-      case "architecture":
-        return architectureGraph
-          ? { nodes: architectureGraph.nodes, links: architectureGraph.links }
-          : undefined;
+      // "architecture" now renders the radial constellation, not a file graph.
       case "dead":
         return deadCodeGraph
           ? { nodes: deadCodeGraph.nodes, links: deadCodeGraph.links }
@@ -243,14 +298,14 @@ export function GraphFlow(props: GraphFlowProps) {
       default:
         return undefined;
     }
-  }, [viewMode, fullGraph, architectureGraph, deadCodeGraph, hotFilesGraph]);
+  }, [viewMode, fullGraph, deadCodeGraph, hotFilesGraph]);
 
   // Loading state
   const isLoading =
     (isModuleView && !isDrilledDown) ? isLoadingModuleGraph :
     isDrilledDown ? isLoadingFullGraph :
     viewMode === "full" || viewMode === "unified" ? isLoadingFullGraph :
-    viewMode === "architecture" ? isLoadingArchitectureGraph :
+    viewMode === "architecture" ? !!isLoadingConstellationGraph :
     viewMode === "dead" ? isLoadingDeadCodeGraph :
     viewMode === "hotfiles" ? isLoadingHotFilesGraph : false;
 
@@ -471,7 +526,9 @@ export function GraphFlow(props: GraphFlowProps) {
     };
   }, [needsAsyncBuild, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds]);
 
-  const sigmaGraph = syncSigmaGraph ?? asyncSigmaGraph;
+  const sigmaGraph = isConstellation
+    ? constellationSigmaGraph
+    : (syncSigmaGraph ?? asyncSigmaGraph);
 
   const { hiddenNodes, isActive: isEgoActive, visibleCount: egoVisibleCount } = useEgoFilter({
     graph: sigmaGraph,
@@ -611,7 +668,16 @@ export function GraphFlow(props: GraphFlowProps) {
   );
 
   const handleSigmaNodeClick = useCallback(
-    (nodeId: string, _nodeType: string) => {
+    (nodeId: string, nodeType: string) => {
+      // Constellation hub click → focus + open community panel (G4 adds expand).
+      if (nodeType === "hub" && sigmaGraph?.hasNode(nodeId)) {
+        const cid = sigmaGraph.getNodeAttribute(nodeId, "communityId");
+        if (typeof cid === "number" && cid >= 0) {
+          handleConstellationHubClick(cid);
+          return;
+        }
+      }
+      if (nodeType === "core") return;
       if (selectedNodeId === nodeId) {
         setSelectedNodeId(null);
         setEgoDepth(0);
@@ -619,7 +685,7 @@ export function GraphFlow(props: GraphFlowProps) {
         setSelectedNodeId(nodeId);
       }
     },
-    [selectedNodeId],
+    [selectedNodeId, sigmaGraph, handleConstellationHubClick],
   );
 
   const handleSigmaNodeContextMenu = useCallback(
@@ -671,7 +737,8 @@ export function GraphFlow(props: GraphFlowProps) {
 
   const handleViewChange = useCallback((v: ViewMode) => {
     setViewMode(v);
-    setLayoutMode("force");
+    // Constellation is fixed-radial; other scopes default back to FA2.
+    setLayoutMode(v === "architecture" ? "radial" : "force");
     setModulePath([]);
     setHighlightedPath(new Set());
     setHighlightedEdges(new Set());
@@ -808,6 +875,7 @@ export function GraphFlow(props: GraphFlowProps) {
             onStageClick={() => setSelectedNodeId(null)}
             hiddenNodes={isEgoActive ? hiddenNodes : undefined}
             visibleEdgeTypes={visibleEdgeTypes}
+            depthRingRadii={isConstellation ? constellationRingRadii : null}
           />
         ) : !isLoading ? (
           <div className="flex items-center justify-center h-full">
@@ -963,9 +1031,11 @@ export function GraphFlow(props: GraphFlowProps) {
             activeCommunities={activeCommunities ?? undefined}
             onCommunityToggle={handleCommunityToggle}
             onToggleAllCommunities={handleToggleAllCommunities}
-            visibleEdgeTypes={visibleEdgeTypes}
-            onEdgeTypeToggle={handleEdgeTypeToggle}
+            visibleEdgeTypes={isConstellation ? undefined : visibleEdgeTypes}
+            onEdgeTypeToggle={isConstellation ? undefined : handleEdgeTypeToggle}
             graphTheme={graphTheme}
+            constellationEntries={isConstellation ? constellationLegend : undefined}
+            onConstellationHubClick={handleConstellationHubClick}
           />
         </div>
 

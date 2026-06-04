@@ -72,6 +72,18 @@ export async function getArchitectureCommunityGraph(
   });
 }
 
+/**
+ * Constellation (radial Knowledge Graph) data source — the community
+ * super-graph. Thin alias over {@link getArchitectureCommunityGraph} so the
+ * G3 wiring reads cleanly.
+ */
+export async function getArchitecture(
+  repoId: string,
+  minMembers = 2,
+): Promise<ArchitectureGraphResponse> {
+  return getArchitectureCommunityGraph(repoId, minMembers);
+}
+
 export async function getDeadCodeGraph(repoId: string): Promise<DeadCodeGraphResponse> {
   return apiGet<DeadCodeGraphResponse>(`/api/graph/${repoId}/dead-nodes`);
 }

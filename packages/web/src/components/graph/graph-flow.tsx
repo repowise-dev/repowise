@@ -9,11 +9,13 @@ import {
   useModuleGraph,
   useGraph,
   useArchitectureGraph,
+  useArchitectureCommunityGraph,
   useDeadCodeGraph,
   useHotFilesGraph,
   useCommunities,
   useExecutionFlows,
 } from "@/lib/hooks/use-graph";
+import { useRepo } from "@/lib/hooks/use-repo";
 import { PathFinderPanel } from "./path-finder-panel";
 import { GraphCommunityPanel } from "./graph-community-panel";
 import type {
@@ -21,12 +23,14 @@ import type {
   ModuleGraph,
   ExecutionFlows,
   CommunitySummaryItem,
+  ArchitectureGraph,
 } from "@repowise-dev/types/graph";
 
 type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
 
 export interface GraphFlowProps {
   repoId: string;
+  repoName?: string;
   initialViewMode?: ViewMode;
   initialSelectedNode?: string | null;
   onNodeClick?: GraphFlowShellProps["onNodeClick"];
@@ -39,13 +43,15 @@ export interface GraphFlowProps {
 
 export function GraphFlow({
   repoId,
+  repoName,
   initialViewMode,
   initialSelectedNode,
   onNodeClick,
   onNodeViewDocs,
   onCommunityPanelOpen,
 }: GraphFlowProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "module");
+  // Constellation (Knowledge Graph) is the default scope.
+  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
   const [modulePath, setModulePath] = useState<string[]>([]);
   const [hasExpandedModules, setHasExpandedModules] = useState(false);
   const isDrilledDown = modulePath.length > 0;
@@ -58,15 +64,18 @@ export function GraphFlow({
   const { graph: fullGraph, isLoading: fullLoading } = useGraph(
     needsFullGraph ? repoId : null,
   );
-  const { graph: archGraph, isLoading: archLoading } = useArchitectureGraph(
-    viewMode === "architecture" ? repoId : null,
-  );
+  const { graph: archGraph, isLoading: archLoading } = useArchitectureGraph(null);
+  // Constellation community super-graph — only fetched for the radial scope.
+  const { graph: constellationGraph, isLoading: constellationLoading } =
+    useArchitectureCommunityGraph(viewMode === "architecture" ? repoId : null);
   const { graph: deadGraph, isLoading: deadLoading } = useDeadCodeGraph(
     viewMode === "dead" ? repoId : null,
   );
   const { graph: hotGraph, isLoading: hotLoading } = useHotFilesGraph(
     viewMode === "hotfiles" ? repoId : null,
   );
+  const { repo } = useRepo(repoId);
+  const resolvedRepoName = repoName ?? repo?.name;
   const { communities } = useCommunities(repoId);
   // Execution flows only highlight a file-level trace, so defer the fetch until
   // a full/file graph is actually needed (keeps the modules mount to
@@ -87,6 +96,9 @@ export function GraphFlow({
       isLoadingFullGraph={fullLoading}
       architectureGraph={archGraph as GraphExport | undefined}
       isLoadingArchitectureGraph={archLoading}
+      constellationGraph={constellationGraph as ArchitectureGraph | undefined}
+      isLoadingConstellationGraph={constellationLoading}
+      {...(resolvedRepoName ? { repoName: resolvedRepoName } : {})}
       deadCodeGraph={deadGraph as GraphExport | undefined}
       isLoadingDeadCodeGraph={deadLoading}
       hotFilesGraph={hotGraph as GraphExport | undefined}

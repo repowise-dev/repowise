@@ -30,6 +30,12 @@ interface GraphLegendProps {
   visibleEdgeTypes?: Set<string> | undefined;
   onEdgeTypeToggle?: ((edgeType: string) => void) | undefined;
   graphTheme?: "light" | "dark" | undefined;
+  /** Constellation (Knowledge Graph) rows: family swatch + label + member count. */
+  constellationEntries?:
+    | { communityId: number; label: string; memberCount: number }[]
+    | undefined;
+  /** Click a constellation row → focus that hub's camera. */
+  onConstellationHubClick?: ((communityId: number) => void) | undefined;
 }
 
 export const GraphLegend = memo(function GraphLegend({
@@ -45,10 +51,67 @@ export const GraphLegend = memo(function GraphLegend({
   visibleEdgeTypes,
   onEdgeTypeToggle,
   graphTheme = "dark",
+  constellationEntries,
+  onConstellationHubClick,
 }: GraphLegendProps) {
   const [expanded, setExpanded] = useState(false);
   const communityFamily = useCommunityFamilies();
   const edgeColors = edgeColorsForTheme(graphTheme);
+  const isConstellation = viewMode === "architecture";
+
+  // Constellation legend: families + member counts, click focuses the hub.
+  if (isConstellation) {
+    const entries = (constellationEntries ?? []).slice(0, 12);
+    return (
+      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-lg shadow-black/20 min-w-[160px] max-w-[220px]">
+        <button
+          onClick={() => setExpanded((s) => !s)}
+          className="flex items-center justify-between w-full px-2.5 py-2 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+        >
+          <span className="font-medium tabular-nums">
+            {entries.length} communit{entries.length === 1 ? "y" : "ies"}
+          </span>
+          {expanded ? (
+            <ChevronDown className="w-3 h-3 shrink-0 ml-1.5" />
+          ) : (
+            <ChevronUp className="w-3 h-3 shrink-0 ml-1.5" />
+          )}
+        </button>
+        {expanded && (
+          <div className="px-2.5 pb-2.5 space-y-1 border-t border-[var(--color-border-default)] pt-2">
+            <p className="text-[9px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
+              Knowledge Graph
+            </p>
+            {entries.length === 0 && (
+              <p className="text-[10px] text-[var(--color-text-tertiary)]">
+                No communities detected
+              </p>
+            )}
+            {entries.map((e) => {
+              const color = communityFamily(e.communityId).hub;
+              return (
+                <button
+                  key={e.communityId}
+                  onClick={() => onConstellationHubClick?.(e.communityId)}
+                  className="flex items-center gap-2 w-full text-left text-[var(--color-text-tertiary)] rounded px-1 -mx-1 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] transition-colors"
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ background: color }}
+                  />
+                  <span className="truncate flex-1">{e.label}</span>
+                  <span className="tabular-nums text-[9px] shrink-0">{e.memberCount}</span>
+                </button>
+              );
+            })}
+            <p className="text-[9px] text-[var(--color-text-tertiary)] pt-1.5 border-t border-[var(--color-border-default)]">
+              Inner ring = entry surface
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)]/80 backdrop-blur-sm text-xs shadow-lg shadow-black/20 min-w-[120px] max-w-[150px]">
@@ -206,7 +269,6 @@ export const GraphLegend = memo(function GraphLegend({
             <p className="text-[9px] text-[var(--color-text-tertiary)] pt-1 border-t border-[var(--color-border-default)]">
               {viewMode === "dead" && "Showing unreachable files"}
               {viewMode === "hotfiles" && "Most-committed files (30d)"}
-              {viewMode === "architecture" && "Entry-point reachable (3 hops)"}
               {viewMode === "unified" && "Unified: community + risk signals"}
             </p>
           )}
