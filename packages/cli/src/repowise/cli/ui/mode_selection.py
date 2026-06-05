@@ -70,26 +70,26 @@ def interactive_mode_select(console: Console) -> str:
     """
     body = Text()
     body.append("  [1]", style=BRAND_STYLE)
-    body.append("  Full documentation  ", style="bold")
+    body.append("  Everything  ", style="bold")
     body.append("(recommended)\n", style="dim")
-    body.append("       Generate wiki pages, architecture diagrams, and API\n")
-    body.append("       docs using an AI provider.\n\n")
+    body.append("       All five layers: dependency graph, git history, code\n")
+    body.append("       health, decisions + AI-generated wiki, diagrams & API docs.\n\n")
 
     body.append("  [2]", style=BRAND_STYLE)
     body.append("  Index only  ", style="bold")
     body.append("(no LLM, no cost)\n", style="dim")
-    body.append("       Dependency graph, git history, dead code analysis.\n")
-    body.append("       Perfect for MCP-powered AI coding assistants.\n\n")
+    body.append("       Same minus the AI docs: graph, git history, code health,\n")
+    body.append("       dead code. Great for MCP agents; add docs anytime later.\n\n")
 
     body.append("  [3]", style=BRAND_STYLE)
     body.append("  Advanced\n", style="bold")
-    body.append("       Full documentation with extra configuration\n")
+    body.append("       Everything, with extra configuration\n")
     body.append("       (commit limit, exclude patterns, concurrency …)")
 
     console.print(
         Panel(
             body,
-            title="[bold]How would you like to document this repo?[/bold]",
+            title="[bold]How would you like to index this repo?[/bold]",
             border_style=BRAND,
             padding=(1, 2),
         )
