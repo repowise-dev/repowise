@@ -157,3 +157,51 @@ class TestJvmWorkspaceIndex:
         fqns = index.autoconfig_imports[key]
         assert "com.example.MyAutoConfig" in fqns
         assert "com.example.OtherConfig" in fqns
+
+
+class TestMemberFqnResolution:
+    def test_kotlin_companion_member_import_resolves_to_declaring_type(
+        self, tmp_path: Path
+    ) -> None:
+        # okio regression: ``import okio.ByteString.Companion.encodeUtf8``
+        # names a companion member — strip trailing segments until the
+        # prefix is a local type.
+        b = _make_kotlin(tmp_path, "src/main/java/okio/ByteString.kt", "okio", "ByteString")
+        ctx = _ctx(tmp_path, [b])
+        index = build_jvm_workspace_index(ctx)
+        assert index.files_for_member_fqn("okio.ByteString.Companion.encodeUtf8") == (b,)
+        assert index.files_for_member_fqn("okio.ByteString.Companion") == (b,)
+
+    def test_java_static_member_import_resolves(self, tmp_path: Path) -> None:
+        a = _make_java(tmp_path, "src/main/java/com/foo/Bar.java", "com.foo", "Bar")
+        ctx = _ctx(tmp_path, [a])
+        index = build_jvm_workspace_index(ctx)
+        assert index.files_for_member_fqn("com.foo.Bar.CONSTANT") == (a,)
+
+    def test_unknown_prefix_returns_empty(self, tmp_path: Path) -> None:
+        a = _make_java(tmp_path, "src/main/java/com/foo/Bar.java", "com.foo", "Bar")
+        ctx = _ctx(tmp_path, [a])
+        index = build_jvm_workspace_index(ctx)
+        assert index.files_for_member_fqn("org.junit.Assert.assertEquals") == ()
+
+    def test_kotlin_resolver_emits_member_import_edge(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.resolvers.kotlin import resolve_kotlin_import_all
+
+        b = _make_kotlin(tmp_path, "src/main/java/okio/ByteString.kt", "okio", "ByteString")
+        u = _make_kotlin(tmp_path, "src/main/java/okio/User.kt", "okio", "User")
+        ctx = _ctx(tmp_path, [b, u])
+        targets = resolve_kotlin_import_all(
+            "okio.ByteString.Companion.encodeUtf8", u, ctx
+        )
+        assert targets == (b,)
+
+    def test_kotlin_member_wildcard_import_resolves(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.resolvers.kotlin import resolve_kotlin_import_all
+
+        b = _make_kotlin(tmp_path, "src/main/java/okio/ByteString.kt", "okio", "ByteString")
+        u = _make_kotlin(tmp_path, "src/main/java/okio/User.kt", "okio", "User")
+        ctx = _ctx(tmp_path, [b, u])
+        # ``import okio.ByteString.Companion.*`` — the prefix is a type, not
+        # a package.
+        targets = resolve_kotlin_import_all("okio.ByteString.Companion.*", u, ctx)
+        assert targets == (b,)

@@ -261,9 +261,29 @@ def _warmup_dotnet(ctx: "ResolverContext") -> None:
 
 
 def _warmup_go(ctx: "ResolverContext") -> None:
+    """Build the Go package index and stamp ``is_entry_point`` on every
+    ``package main`` file declaring ``func main()``. Go's entry convention
+    is semantic, not filename-based — ``cmd/task/task.go`` is as much a
+    binary entry as ``cmd/release/main.go``, so the traverser's stem
+    heuristic alone misses real binaries.
+    """
     from .resolvers.go_workspace import get_or_build_go_index
 
-    get_or_build_go_index(ctx)
+    index = get_or_build_go_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for pkg in index.packages.values():
+        for path in pkg.main_files:
+            # The graph attribute feeds dead-code reachability; the parsed
+            # FileInfo flag feeds the exported KG's entry tags and the tour
+            # seeds — both surfaces must agree.
+            if graph is not None:
+                node = graph.nodes.get(path)
+                if node is not None:
+                    node["is_entry_point"] = True
+            pf = parsed.get(path)
+            if pf is not None and getattr(pf, "file_info", None) is not None:
+                pf.file_info.is_entry_point = True
 
 
 def _warmup_typescript(ctx: "ResolverContext") -> None:

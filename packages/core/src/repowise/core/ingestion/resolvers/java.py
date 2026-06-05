@@ -64,16 +64,22 @@ def resolve_java_import_all(
         files = jvm_index.wildcard_expand(pkg_fqn)
         if files:
             return files
+        # ``import static com.foo.Bar.*`` — the prefix is a type, not a
+        # package: resolve the declaring file(s) of Bar.
+        files = jvm_index.files_for_fqn(pkg_fqn) or jvm_index.files_for_member_fqn(pkg_fqn)
+        if files:
+            return files
         # External package
         return (ctx.add_external_node(module_path),)
 
-    # Handle static wildcard: import static com.foo.Bar.*
-    # (parsed as "com.foo.Bar.*" by the import extractor, or
-    # the static keyword is stripped leaving "com.foo.Bar")
-    # Also handles: import static com.foo.Bar.CONSTANT → resolve Bar
-
     # Try direct FQN resolution first
     files = jvm_index.files_for_fqn(module_path)
+    if files:
+        return files
+
+    # Static member imports: ``import static com.foo.Bar.CONSTANT`` names
+    # a member inside a type — resolve the declaring type instead.
+    files = jvm_index.files_for_member_fqn(module_path)
     if files:
         return files
 

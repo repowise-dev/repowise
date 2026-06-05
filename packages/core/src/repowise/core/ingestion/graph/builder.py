@@ -400,6 +400,12 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # packages don't read as disconnected files.
         self._resolve_jvm_same_package(ctx, progress=progress)
 
+        # --- C# same-namespace + global-using implicit references ---
+        # C# references same-namespace types with no using directive, and
+        # global usings make namespaces visible project-wide; emit
+        # conservative sibling edges so neither reads as orphaned.
+        self._resolve_csharp_same_namespace(ctx, progress=progress)
+
         # --- Swift intra-module type references ---
         # Swift files see same-target siblings with no import statement;
         # emit conservative type-reference edges per SPM target.

@@ -143,6 +143,46 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
+    def _resolve_csharp_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
+        """Emit same-namespace / global-using ``imports`` edges for C# files.
+
+        C# references same-namespace types with no using directive, and
+        ``global using`` / csproj ``<Using>`` items make namespaces visible
+        project-wide — both leave cohesive code (and whole test suites)
+        looking like zero-edge orphans. Conservative text-level scan, same
+        shape as the JVM same-package pass.
+        """
+        from ..languages.csharp_member_reads import collect_csharp_source_texts
+        from ..languages.csharp_same_namespace import (
+            resolve_csharp_same_namespace_refs,
+        )
+        from ..resolvers.dotnet import get_or_build_index
+
+        has_csharp = any(
+            pf.file_info.language == "csharp" for pf in self._parsed_files.values()
+        )
+        if not has_csharp:
+            return
+
+        phase = "graph.same_namespace"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            index = get_or_build_index(ctx)
+            cs_texts = collect_csharp_source_texts(self._parsed_files)
+            repo = getattr(index, "repo_path", None) if index is not None else None
+            added = resolve_csharp_same_namespace_refs(
+                self._graph, index, cs_texts, repo
+            )
+            log.info("same_namespace_edges", language="csharp", added=added)
+        except Exception as exc:
+            log.warning("csharp_same_namespace_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
     def _resolve_ruby_spec_mirrors(self, progress: Any | None = None) -> None:
         """Link rspec files to their subjects by the directory-mirror convention.
 

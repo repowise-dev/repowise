@@ -55,10 +55,21 @@ def resolve_kotlin_import_all(
             files = jvm_index.wildcard_expand(pkg_fqn)
             if files:
                 return files
+            # ``import okio.ByteString.Companion.*`` — the prefix is a
+            # type (or nested object), not a package.
+            files = jvm_index.files_for_fqn(pkg_fqn) or jvm_index.files_for_member_fqn(pkg_fqn)
+            if files:
+                return files
         return (ctx.add_external_node(module_path),) if module_path else ()
 
     # Try JVM workspace index first (handles cross-language Java ↔ Kotlin)
     files = jvm_index.files_for_fqn(module_path)
+    if files:
+        return files
+
+    # Member imports: ``import okio.ByteString.Companion.encodeUtf8``
+    # names a function/constant inside a type — resolve the declaring type.
+    files = jvm_index.files_for_member_fqn(module_path)
     if files:
         return files
 

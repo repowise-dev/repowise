@@ -151,6 +151,24 @@ class JvmWorkspaceIndex:
         files = pkg.exported_top_level.get(type_name)
         return files if files else ()
 
+    def files_for_member_fqn(self, fqn: str) -> tuple[str, ...]:
+        """Resolve an import whose tail is a *member*, not a type.
+
+        Kotlin member imports (``import okio.ByteString.Companion.encodeUtf8``)
+        and Java static-member imports (``import static com.foo.Bar.CONSTANT``)
+        name a function/constant inside a type. Strip trailing segments until
+        the prefix resolves as a type FQN — ``…ByteString.Companion.encodeUtf8``
+        → ``…ByteString.Companion`` → ``…ByteString`` (hit). At least
+        ``package.Type`` (two segments) must remain.
+        """
+        parts = fqn.split(".")
+        while len(parts) > 2:
+            parts = parts[:-1]
+            files = self.files_for_fqn(".".join(parts))
+            if files:
+                return files
+        return ()
+
     def wildcard_expand(self, pkg_fqn: str) -> tuple[str, ...]:
         """Expand ``import pkg.*`` → all files in the package."""
         return self.files_for_package(pkg_fqn)

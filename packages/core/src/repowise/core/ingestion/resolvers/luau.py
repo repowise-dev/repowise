@@ -193,6 +193,14 @@ def _resolve_script_relative(
 
     remainder = parts[i:]
     if not remainder:
+        # Bare ``require(script.Parent)`` — the container itself is the
+        # module. Rojo: a directory holding ``init.luau``/``init.lua`` IS
+        # that module instance, and its children (e.g. ``init.spec.lua``)
+        # require it this way.
+        for suffix in _LUAU_SUFFIXES:
+            candidate = (here / f"init{suffix}").as_posix()
+            if candidate in ctx.path_set and candidate != importer_path:
+                return candidate
         return None
 
     base = here

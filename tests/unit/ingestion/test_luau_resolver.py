@@ -292,3 +292,24 @@ class TestLuaurcAlias:
         )
         got = resolve_luau_import("@nope", "src/main.luau", ctx)
         assert got == "external:@nope"
+
+
+class TestBareScriptParent:
+    def test_spec_requires_sibling_init_module(self, tmp_path) -> None:
+        # Roblox idiom: lib/init.spec.lua tests its own module with
+        # ``require(script.Parent)`` — the container directory IS the
+        # module (backed by its init.lua).
+        ctx = _ctx({"lib/init.lua", "lib/init.spec.lua"})
+        resolved = resolve_luau_import("script.Parent", "lib/init.spec.lua", ctx)
+        assert resolved == "lib/init.lua"
+
+    def test_bare_parent_without_init_goes_external(self, tmp_path) -> None:
+        ctx = _ctx({"lib/foo.lua", "lib/foo.spec.lua"})
+        resolved = resolve_luau_import("script.Parent", "lib/foo.spec.lua", ctx)
+        assert resolved is None or resolved.startswith("external:")
+
+    def test_bare_parent_never_resolves_to_importer(self, tmp_path) -> None:
+        # init.lua itself saying require(script.Parent) must not self-link.
+        ctx = _ctx({"lib/init.lua"})
+        resolved = resolve_luau_import("script.Parent", "lib/init.lua", ctx)
+        assert resolved != "lib/init.lua"
