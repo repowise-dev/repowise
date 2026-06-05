@@ -125,8 +125,11 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
     try:
         from graspologic.partition import leiden
 
+        leiden_kwargs: dict = {}
+        if "random_seed" in inspect.signature(leiden).parameters:
+            leiden_kwargs["random_seed"] = 42  # determinism (matches louvain's seed)
         with _suppress_graspologic_output():
-            result = leiden(G)
+            result = leiden(G, **leiden_kwargs)
         return result, "leiden"
     except ImportError:
         pass
@@ -430,10 +433,12 @@ def detect_file_communities(
         - algorithm_used: "leiden" or "louvain"
     """
     # Extract file nodes (exclude external nodes — they're structural noise)
-    file_nodes = [
+    # Sorted: node order seeds the undirected graph's insertion order, and
+    # Louvain/Leiden partitions depend on iteration order even when seeded.
+    file_nodes = sorted(
         n for n, d in graph.nodes(data=True)
         if d.get("node_type", "file") == "file"
-    ]
+    )
 
     if not file_nodes:
         return {}, {}, "none"
@@ -449,11 +454,16 @@ def detect_file_communities(
     undirected = nx.Graph()
     undirected.add_nodes_from(prod_nodes)
 
-    for u, v, d in graph.edges(data=True):
-        edge_type = d.get("edge_type", "imports")
-        if edge_type in _FILE_COMMUNITY_EDGE_TYPES and u in undirected and v in undirected:
-            if not undirected.has_edge(u, v):
-                undirected.add_edge(u, v)
+    # Sorted for the same reason: edge insertion order shifts the partition
+    # (co-change edges arrive in git-indexer thread-completion order).
+    community_edges = sorted(
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type", "imports") in _FILE_COMMUNITY_EDGE_TYPES
+        and u in undirected
+        and v in undirected
+    )
+    undirected.add_edges_from(community_edges)
 
     # Separate isolates
     isolates = [n for n in undirected.nodes() if undirected.degree(n) == 0]

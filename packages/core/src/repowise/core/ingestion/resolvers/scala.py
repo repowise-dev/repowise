@@ -29,7 +29,7 @@ def resolve_scala_import(module_path: str, importer_path: str, ctx: ResolverCont
     # Try matching package path as directory structure
     if len(parts) > 1:
         dir_suffix = "/".join(parts[:-1])
-        for p in ctx.path_set:
+        for p in ctx.sorted_paths:
             if p.endswith(".scala") and dir_suffix.lower() in p.lower():
                 stem = p.rsplit("/", 1)[-1].rsplit(".", 1)[0]
                 if stem.lower() == local.lower():

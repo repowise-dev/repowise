@@ -61,7 +61,7 @@ def _legacy_stem_resolve(
         return result
     if len(parts) > 1:
         dir_suffix = "/".join(parts)
-        for p in ctx.path_set:
+        for p in ctx.sorted_paths:
             if p.endswith(".cs") and dir_suffix.lower() in p.lower():
                 return p
     return None

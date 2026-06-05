@@ -157,7 +157,7 @@ def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
         go_modules = (("", ctx.go_module_path),)
 
     files_by_dir: dict[str, list[str]] = {}
-    for path in ctx.path_set:
+    for path in ctx.sorted_paths:
         if not path.endswith(".go"):
             continue
         parent = PurePosixPath(path).parent.as_posix()

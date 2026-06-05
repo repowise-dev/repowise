@@ -406,7 +406,8 @@ def build_cpp_workspace_index(ctx: "ResolverContext") -> CppWorkspaceIndex:
             if _EXPORT_LIKE_NAME_RE.match(base):
                 macros.add(base)
     if not header_candidates:
-        for p in path_set:
+        # Sorted: the 200-candidate cap below must cut deterministically.
+        for p in sorted(path_set):
             if p.startswith(("include/", "include\\")) and p.lower().endswith((".h", ".hpp", ".hxx")):
                 header_candidates.append(p)
                 if len(header_candidates) > 200:

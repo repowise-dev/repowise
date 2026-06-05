@@ -562,7 +562,7 @@ def find_vitest_include_targets(ctx: "ResolverContext") -> set[str]:
                     except ValueError:
                         continue
                     regex = _vitest_glob_to_regex(rel_glob)
-                    for candidate in ctx.path_set:
+                    for candidate in ctx.sorted_paths:
                         if regex.match(candidate):
                             targets.add(candidate)
     return targets

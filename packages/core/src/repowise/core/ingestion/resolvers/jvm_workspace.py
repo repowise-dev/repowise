@@ -301,7 +301,7 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
     pkg_files: dict[str, list[str]] = {}
     pkg_types: dict[str, dict[str, list[str]]] = {}
 
-    for path in ctx.path_set:
+    for path in ctx.sorted_paths:
         if not (path.endswith(".java") or path.endswith(".kt")):
             continue
 

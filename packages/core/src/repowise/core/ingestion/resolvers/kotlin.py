@@ -73,7 +73,7 @@ def resolve_kotlin_import_all(
     # Try matching the package path as a directory structure
     if len(parts) > 1:
         dir_suffix = "/".join(parts[:-1])
-        for p in ctx.path_set:
+        for p in ctx.sorted_paths:
             if (p.endswith(".kt") or p.endswith(".java")) and dir_suffix in p:
                 stem = PurePosixPath(p).stem
                 if stem.lower() == local.lower():

@@ -27,7 +27,7 @@ def resolve_ruby_import(module_path: str, importer_path: str, ctx: ResolverConte
 
     # Try matching the path directly
     rb_name = f"{module_path}.rb"
-    for p in ctx.path_set:
+    for p in ctx.sorted_paths:
         if p.endswith(rb_name) or PurePosixPath(p).name == PurePosixPath(rb_name).name:
             return p
 

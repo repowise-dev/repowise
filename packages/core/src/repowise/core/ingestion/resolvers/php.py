@@ -27,7 +27,7 @@ def resolve_php_import(module_path: str, importer_path: str, ctx: ResolverContex
 
     # Try PSR-4 style: namespace path maps to directory
     php_name = f"{local}.php"
-    for p in ctx.path_set:
+    for p in ctx.sorted_paths:
         if p.endswith(php_name):
             return p
 

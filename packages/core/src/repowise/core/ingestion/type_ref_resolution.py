@@ -181,7 +181,8 @@ def _find_rust_type_file(
     graph: "nx.DiGraph",
 ) -> str | None:
     """Find the file defining *type_name*, preferring imported files."""
-    for imp_file in import_targets:
+    # Sorted: import_targets is a set; first-match must be deterministic.
+    for imp_file in sorted(import_targets):
         if not graph.has_node(imp_file):
             continue
         for succ in graph.successors(imp_file):
@@ -266,7 +267,8 @@ def _find_go_type_file(
     graph: "nx.DiGraph",
 ) -> str | None:
     """Return a candidate file that defines a type named *type_name*."""
-    for cand in candidate_files:
+    # Sorted: set iteration; first-match must be deterministic.
+    for cand in sorted(candidate_files):
         if not graph.has_node(cand):
             continue
         for succ in graph.successors(cand):
@@ -394,7 +396,8 @@ def _find_c_type_file(
     sibling ``.cc`` declaring an internal class that another ``.cc`` in
     the same target uses by value), then the global stem map.
     """
-    for imp_file in import_targets:
+    # Sorted: import_targets is a set; first-match must be deterministic.
+    for imp_file in sorted(import_targets):
         if not graph.has_node(imp_file):
             continue
         for succ in graph.successors(imp_file):
@@ -402,7 +405,8 @@ def _find_c_type_file(
             if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
                 return imp_file
 
-    for sib in sibling_files:
+    # Sorted: set iteration; first-match must be deterministic.
+    for sib in sorted(sibling_files):
         if sib == from_path or not graph.has_node(sib):
             continue
         for succ in graph.successors(sib):
@@ -620,7 +624,8 @@ def _find_jvm_type_file(
     graph: "nx.DiGraph",
 ) -> str | None:
     """Return a candidate file that defines a top-level type named *type_name*."""
-    for cand in candidate_files:
+    # Sorted: set iteration; first-match must be deterministic.
+    for cand in sorted(candidate_files):
         if not graph.has_node(cand):
             continue
         for succ in graph.successors(cand):

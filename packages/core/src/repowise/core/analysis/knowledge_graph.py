@@ -28,12 +28,37 @@ class KnowledgeGraphResult:
     fingerprint: str = ""
 
     def to_dict(self) -> dict:
+        # Canonical ordering: node/edge/layer-member lists carry no semantic
+        # order, but file-traversal and graph-insertion order vary run to
+        # run. Sorting here makes the exported artifact byte-stable across
+        # identical runs (baseline diffs, fingerprint reuse, clean diffs).
+        nodes = sorted(self.nodes, key=lambda n: str(n.get("id", "")))
+        edges = sorted(
+            self.edges,
+            key=lambda e: (
+                str(e.get("source", "")),
+                str(e.get("target", "")),
+                str(e.get("type", "")),
+            ),
+        )
+        def _canonical_layer(layer: dict) -> dict:
+            out = {**layer, "nodeIds": sorted(layer.get("nodeIds", []))}
+            if isinstance(layer.get("subGroups"), list):
+                out["subGroups"] = [
+                    {**sg, "nodeIds": sorted(sg.get("nodeIds", []))}
+                    if isinstance(sg, dict)
+                    else sg
+                    for sg in layer["subGroups"]
+                ]
+            return out
+
+        layers = [_canonical_layer(layer) for layer in self.layers]
         return {
             "version": "1.0.0",
             "project": self.project,
-            "nodes": self.nodes,
-            "edges": self.edges,
-            "layers": self.layers,
+            "nodes": nodes,
+            "edges": edges,
+            "layers": layers,
             "tour": self.tour,
         }
 
