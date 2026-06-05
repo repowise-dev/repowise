@@ -341,3 +341,93 @@ async def _resolve_health(
             "branch_coverage_pct": metric.branch_coverage_pct,
         }
     result_data["health"] = health
+
+
+async def _resolve_skeleton(
+    session: AsyncSession,
+    repository: Repository,
+    target: str,
+    target_type: str | None,
+    result_data: dict[str, Any],
+    *,
+    repo_root: Any = None,
+) -> None:
+    """Resolve ``include=["skeleton"]`` — a body-elided rendering of one file.
+
+    Slices the on-disk source on the line bounds persisted at index time
+    (zero parsing), keeping every signature and the bodies of the
+    highest-PageRank symbols under a token budget. File targets only —
+    a symbol's "skeleton" is just its signature, which the triage card
+    already carries.
+    """
+    if target_type != "file":
+        result_data["skeleton"] = {"error": "skeleton requires a file target; pass the file path."}
+        return
+    if not repo_root:
+        result_data["skeleton"] = {"error": "MCP server has no repo path configured."}
+        return
+
+    from pathlib import Path
+
+    from repowise.core.distill.skeleton import SkeletonSymbol, build_skeleton
+    from repowise.core.persistence.models import WikiSymbol
+
+    repo_id = repository.id
+    res = await session.execute(
+        select(WikiSymbol).where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.file_path == target,
+        )
+    )
+    rows = list(res.scalars().all())
+
+    # Symbol-node PageRank is the importance signal for smart body retention.
+    pr_res = await session.execute(
+        select(GraphNode.name, GraphNode.pagerank).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "symbol",
+            GraphNode.file_path == target,
+        )
+    )
+    pagerank = {name: pr or 0.0 for name, pr in pr_res.all() if name}
+
+    repo_path = Path(str(repo_root))
+    abs_path = (repo_path / target).resolve()
+    try:
+        abs_path.relative_to(repo_path.resolve())
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        result_data["skeleton"] = {
+            "error": "Source file could not be read; it may have moved since indexing."
+        }
+        return
+
+    symbols = [
+        SkeletonSymbol(
+            name=r.name,
+            kind=r.kind,
+            start_line=r.start_line,
+            end_line=r.end_line,
+            signature=r.signature,
+            importance=pagerank.get(r.name, 0.0),
+        )
+        for r in rows
+    ]
+    result = build_skeleton(
+        source,
+        symbols,
+        mode="smart",
+        hotspot=bool(result_data.get("hotspot")),
+    )
+    result_data["skeleton"] = {
+        "mode": result.mode,
+        "tokens": result.skeleton_tokens,
+        "full_tokens": result.full_tokens,
+        "pct_of_full": round(result.pct_of_full, 1),
+        "bodies_kept": list(result.bodies_kept),
+        "text": result.text,
+    }
+    if result.mode == "raw":
+        result_data["skeleton"]["note"] = (
+            "No usable symbol bounds for this file — returned source as-is."
+        )
