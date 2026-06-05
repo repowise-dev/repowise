@@ -12,9 +12,10 @@ Two layers, both side-effect free so they unit-test on synthetic dicts:
   sanity). Each smell carries a severity: FAIL smells gate, WARN smells
   report.
 
-Phase 0 contract: thresholds are deliberately permissive (observe first,
-enforce in Phase 5); the degradation-honesty vocabulary check ships disabled
-until the structural tour mode exists (Phase 1).
+Thresholds are deliberately permissive (observe first; lock them once the
+full validation matrix provides evidence). The degradation-honesty check:
+a dominant language with no import support must yield a structural tour —
+no execution-flow vocabulary, layers labeled canonical.
 """
 
 from __future__ import annotations
@@ -22,13 +23,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-# Density floors per import-support tier. Phase 0: only "broken graph"
-# obviousness; Phase 5 locks real per-language floors from matrix data.
+# Density floors per import-support tier. Deliberately permissive — only
+# "broken graph" obviousness; real per-language floors need matrix data.
 EDGELESS_FLOOR = 0.05  # imports/file below this with full/partial support = broken
 DENSITY_REGRESSION_TOLERANCE = 0.15  # >15% drop vs baseline fails
 CATCHALL_WARN_FRACTION = 0.50  # one layer holding >50% of code files
 LAYER_COUNT_MIN, LAYER_COUNT_MAX = 2, 12  # sanity for repos > LAYER_COUNT_MIN_FILES
 LAYER_COUNT_MIN_FILES = 30
+
+# Execution-flow vocabulary a structural tour must never use ("named like an
+# entry file" is the one sanctioned entry phrasing; "import analysis isn't
+# supported" / "import resolution is incomplete" are the honesty disclaimers
+# and deliberately absent from this list).
+FLOW_CLAIM_TERMS = (
+    "entry point",
+    "imports fan out",
+    "imports deep",
+    "import path",
+    "directly used by the entry",
+    "widely-imported",
+)
 
 _EXAMPLE_DIRS = {"examples", "_examples", "example", "samples", "sample", "demo", "demos"}
 _TEST_DIRS = {"tests", "test", "__tests__", "e2e"}
@@ -167,6 +181,8 @@ def run_smells(
 
     for s in tour[:4]:
         tp = s.get("target_path") or ""
+        if "test suite" in (s.get("reason") or "").lower():
+            continue  # the designated closing stop — short tours put it early
         if s.get("kind") != "overview" and looks_like_test(tp):
             smells.append(
                 Smell("FAIL", "test_file_early_in_tour", f"step {s.get('order')} = {tp}")
@@ -209,6 +225,39 @@ def run_smells(
                     f"edges_per_file={dom.get('edges_per_file')}",
                 )
             )
+
+    # -- degradation honesty -----------------------------------------------
+    if dom and dom.get("import_support") == "none":
+        mode = project.get("graph_mode")
+        if mode != "structural":
+            smells.append(
+                Smell(
+                    "FAIL",
+                    "degradation_honesty",
+                    f"{dominant} has import_support=none but graph_mode={mode!r}",
+                )
+            )
+        for s in tour:
+            reason = (s.get("reason") or "").lower()
+            hit = next((t for t in FLOW_CLAIM_TERMS if t in reason), None)
+            if hit:
+                smells.append(
+                    Smell(
+                        "FAIL",
+                        "degradation_honesty",
+                        f"step {s.get('order')} claims flow ({hit!r}): {s.get('reason')!r}",
+                    )
+                )
+        for layer in layers:
+            if layer.get("order_basis") != "canonical":
+                smells.append(
+                    Smell(
+                        "FAIL",
+                        "degradation_honesty",
+                        f"layer {layer.get('name')} order_basis="
+                        f"{layer.get('order_basis')!r} on an edgeless graph",
+                    )
+                )
 
     if baseline:
         base_langs = (baseline.get("stats") or {}).get("by_language", {})

@@ -73,8 +73,9 @@ _TEST_FIXTURE_STEMS = _LANG_REGISTRY.test_fixture_stems()
 
 # Case-sensitive camel-boundary suffix patterns (FooTest.java, BarSpec.scala),
 # keyed by extension so each language's convention applies only to its own
-# files (rule 12: polyglot fairness). The lowercase-boundary lookbehind keeps
-# `latest.java`, `contest.cs`, and bare `Test.java` out (rule 11).
+# files (polyglot fairness). The lowercase-boundary lookbehind keeps
+# `latest.java`, `contest.cs`, and bare `Test.java` out — conventions match
+# with their own case sensitivity.
 _TEST_CAMEL_RES = _LANG_REGISTRY.camel_test_res_by_extension()
 
 # Multi-segment test roots (src/it/java) and case-sensitive test-project dir
@@ -117,8 +118,8 @@ def _is_test_dir_path(segments: list[str], original_segments: list[str]) -> bool
     return any(seg.endswith(_TEST_DIR_SUFFIXES) for seg in original_segments)
 
 
-# Per-language layer hints (rule 12: they fire only for files of the
-# declaring language). Partitioned by hint shape at import time — exact
+# Per-language layer hints (they fire only for files of the
+# declaring language, never others'). Partitioned by hint shape at import time — exact
 # lowercase tokens, multi-segment paths ("src/bin"), and case-sensitive
 # dir-name suffixes (".Api", "-cli"). The generic table above wins at any
 # given depth; a deeper segment beats a shallower one across both tables.
@@ -144,12 +145,16 @@ for _tag, _hints in _LANG_REGISTRY.layer_dir_hints_by_language().items():
         _LANG_SUFFIX_HINTS[_tag] = tuple(_suffixes)
 
 
-# Example/demo directories: documentation-by-code, not the system itself.
-# Their files carry entry-style names (main.go, index.js) by convention, so
-# without demotion they flood entry points and the tour on any repo that
-# ships samples (express, chi, …).
+# Example/demo/benchmark directories: documentation-by-code and support
+# harnesses, not the system itself. Their files carry entry-style names
+# (main.go, index.js, decode.exs) by convention, so without demotion they
+# flood entry points and the tour on any repo that ships samples (express,
+# chi, …) or benchmarks (cargo's benches/, jason's bench/).
 _EXAMPLE_DIR_TOKENS = frozenset(
-    {"examples", "_examples", "example", "samples", "sample", "demo", "demos"}
+    {
+        "examples", "_examples", "example", "samples", "sample", "demo", "demos",
+        "bench", "benches", "benchmarks",
+    }
 )
 
 
@@ -201,7 +206,7 @@ def infer_layer(path: str, language: str | None = None) -> str:
     original_parts = list(PurePosixPath(path).parts)
     parts = [s.lower() for s in original_parts]
     # Original case is preserved for the case-sensitive rules (camel-suffix
-    # filenames, .NET ``Foo.Tests/`` project dirs) — rule 11: case matters.
+    # filenames, .NET ``Foo.Tests/`` project dirs).
     filename = original_parts[-1] if original_parts else ""
     segments = parts[:-1]  # drop filename
 
@@ -253,6 +258,31 @@ def infer_layer(path: str, language: str | None = None) -> str:
                 if orig.endswith(sfx) and len(orig) > len(sfx):
                     return layer_name
     return DEFAULT_LAYER
+
+
+def layer_order_basis(
+    file_layers: Mapping[str, str],
+    import_edges: Iterable[tuple[str, str]],
+) -> str:
+    """Whether :func:`compute_layer_order`'s result is evidence or convention.
+
+    Returns ``"imports"`` when at least one inter-layer runtime edge
+    participated in the ordering race, ``"canonical"`` when the order is
+    purely the conventional rank (edgeless/sparse graphs, single-layer
+    repos). Consumers must not claim "X sits above Y" for a canonical
+    order — no edge supports it.
+    """
+    for src, dst in import_edges:
+        if src.startswith("external:") or dst.startswith("external:"):
+            continue
+        ls = file_layers.get(src)
+        ld = file_layers.get(dst)
+        if not ls or not ld or ls == ld:
+            continue
+        if ls in ADJACENT_LAYERS or ld in ADJACENT_LAYERS:
+            continue
+        return "imports"
+    return "canonical"
 
 
 def compute_layer_order(

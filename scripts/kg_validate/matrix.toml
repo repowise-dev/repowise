@@ -82,3 +82,9 @@ source = "test-repos/typst"
 sha = "07f5f1afca0a037e03911c8b56e8a14742ac2e8d"
 language = "rust"
 tier = 1
+
+[jason]
+source = "https://github.com/michalmuskala/jason"
+sha = "4ede42858eb19f80ec9e863aab52df466eab8608"
+language = "elixir"
+tier = 3

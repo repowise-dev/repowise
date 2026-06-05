@@ -199,6 +199,7 @@ def build_tour(
     infra_paths: Iterable[str] = (),
     repo_name: str = "",
     max_stops: int = DEFAULT_MAX_STOPS,
+    graph_mode: str = "flow",
 ) -> list[TourStop]:
     """Build the ordered tour over pages that already exist.
 
@@ -206,6 +207,14 @@ def build_tour(
     tour never references undocumented files, so it is budget-safe by
     construction. ``repo_overview`` (when *repo_name* is given) always opens
     the tour; infrastructure pages close it.
+
+    ``graph_mode="sparse"`` keeps the BFS walk but softens the reasons that
+    interpret *absence* of edges: on a sparse graph (broken/partial import
+    resolution), "off the import path" would blame the file for the
+    resolver's gaps. Reasons grounded in edges that DO exist are unchanged.
+    Truly edgeless repos should not walk at all — the caller is expected to
+    build a structural tour instead (``graph_mode="structural"`` is handled
+    by the curation layer, not here).
     """
     documented = set(file_page_paths)
     infra = set(infra_paths)
@@ -300,11 +309,19 @@ def build_tour(
                 else "The walk's anchor — the best-connected file in a repo with no single entry point."
             )
         elif path not in reached:
-            reason = (
-                "Off the import path from the entry points — a standalone or supporting file."
-                if genuine_entries
-                else "A widely-imported module — much of the repo depends on it."
-            )
+            if graph_mode == "sparse":
+                # The graph, not the file, is the likely cause here.
+                reason = (
+                    "Not on the resolved import paths — import resolution is "
+                    "incomplete for this repo, so links may be missing."
+                )
+            elif genuine_entries:
+                reason = (
+                    "Off the import path from the entry points — a standalone "
+                    "or supporting file."
+                )
+            else:
+                reason = "A widely-imported module — much of the repo depends on it."
         elif d == 1:
             reason = "Directly used by the entry points above; a core collaborator."
         else:

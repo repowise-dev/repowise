@@ -225,7 +225,15 @@ def large_repo():
     paths += [f"config/conf{i}.yaml" for i in range(6)]
     tests = {f"tests/unit/test_{i}.py" for i in range(30)}
     paths += sorted(tests)
-    return build_repo(paths, tests=tests)
+    # A realistic monorepo HAS imports: wire a dense chain so the honest-
+    # degradation detector classifies it as flow, not structural.
+    code = [p for p in paths if not p.endswith(".yaml") and p not in tests]
+    edges = [
+        (code[i], code[i + step])
+        for step in (1, 2, 3)
+        for i in range(len(code) - step)
+    ]
+    return build_repo(paths, tests=tests, edges=edges)
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +751,7 @@ class TestSummaryFloorDeferral:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1.4 — closing-stop parity (suite anchors, descriptors, polyglot)
+# Closing-stop selection (suite anchors, descriptors, polyglot)
 # ---------------------------------------------------------------------------
 
 
@@ -836,8 +844,8 @@ class TestClosingStopParity:
 
 class TestNonInfraCodeTyping:
     def test_tier3_code_never_typed_infra_by_name(self):
-        # Phase 1.5 equivalents of the dockerfile.py guard for the once-
-        # unprotected extensions: code that *handles* infra formats is code.
+        # Equivalents of the dockerfile.py guard for every code language:
+        # code that *handles* infra formats is code, not infra.
         from repowise.core.analysis.kg_curation import _enrich_type
 
         assert _enrich_type("k8s/dockerfile.nim", "file") == ("file", None)
@@ -851,3 +859,109 @@ class TestNonInfraCodeTyping:
         assert _enrich_type("deploy/k8s/deploy.sh", "file") == ("service", "infra")
         assert _enrich_type("infra/main.tf", "file") == ("service", "infra")
         assert _enrich_type(".github/workflows/ci.yml", "config") == ("pipeline", "ci")
+
+
+# ---------------------------------------------------------------------------
+# Honest degradation (flow / sparse / structural)
+# ---------------------------------------------------------------------------
+
+# Vocabulary that claims an execution flow. Structural tours must never use
+# it — "named like an entry file" is the one sanctioned entry phrasing.
+_FLOW_CLAIMS = (
+    "entry point",
+    "imports fan out",
+    "imports deep",
+    "import path",
+    "directly used by the entry",
+    "widely-imported",
+)
+
+
+def _edgeless_elixir_repo():
+    """A Tier-3 repo: real code files, import_support='none', zero edges."""
+    paths = [
+        "lib/shop.ex",
+        "lib/shop/application.ex",
+        "lib/shop/checkout.ex",
+        "lib/shop/cart.ex",
+        "lib/shop/billing/invoice.ex",
+        "priv/repo/seeds.exs",
+        "test/shop_test.exs",
+        "test/test_helper.exs",
+        "README.md",
+    ]
+    return build_repo(paths, tests={"test/shop_test.exs", "test/test_helper.exs"})
+
+
+class TestHonestDegradation:
+    def test_structural_mode_for_unsupported_language(self):
+        repo = _edgeless_elixir_repo()
+        kg = _curate(repo, enabled=True)
+        assert kg.project["graph_mode"] == "structural"
+
+    def test_structural_tour_makes_no_flow_claims(self):
+        repo = _edgeless_elixir_repo()
+        kg = _curate(repo, enabled=True)
+        assert kg.tour, "structural repos still get a tour"
+        for step in kg.tour:
+            low = step["reason"].lower()
+            for claim in _FLOW_CLAIMS:
+                assert claim not in low, (step["target_path"], step["reason"])
+
+    def test_structural_anchor_states_the_evidence_and_the_gap(self):
+        repo = _edgeless_elixir_repo()
+        kg = _curate(repo, enabled=True)
+        code_steps = [s for s in kg.tour if s["kind"] == "code" and "test" not in s["reason"].lower()]
+        assert code_steps, kg.tour
+        anchor = code_steps[0]
+        assert "isn't supported for Elixir yet" in anchor["reason"]
+        assert anchor["depth"] == 0
+
+    def test_structural_layers_labeled_canonical(self):
+        repo = _edgeless_elixir_repo()
+        kg = _curate(repo, enabled=True)
+        assert kg.layers
+        assert all(layer.get("order_basis") == "canonical" for layer in kg.layers)
+
+    def test_flow_layers_labeled_imports(self, flow_repo):
+        kg = _curate(flow_repo, enabled=True)
+        assert any(layer.get("order_basis") == "imports" for layer in kg.layers)
+
+    def test_flow_repo_stays_flow(self, flow_repo):
+        kg = _curate(flow_repo, enabled=True)
+        assert kg.project["graph_mode"] == "flow"
+
+    def test_sparse_mode_for_low_density_full_support(self):
+        # 30 python files (over the small-repo floor), one edge: density
+        # ~0.03 would be structural; give it ~1/file -> sparse.
+        paths = [f"src/m{i}.py" for i in range(30)]
+        edges = [(paths[i], paths[i + 1]) for i in range(29)]
+        repo = build_repo(paths, entries={"src/m0.py"}, edges=edges)
+        kg = _curate(repo, enabled=True)
+        assert kg.project["graph_mode"] == "sparse"
+
+    def test_sparse_unreached_reason_blames_the_graph(self):
+        # Files off the walk in sparse mode cite incomplete resolution, not
+        # the file ("standalone or supporting" would blame the file).
+        paths = [f"src/m{i}.py" for i in range(30)]
+        # Density ~0.4 (sparse band), concentrated in m0..m5: the walk's
+        # later slots fill with unreached files, whose reasons are under test.
+        edges = [
+            (paths[i], paths[j]) for i in range(6) for j in range(i + 1, 6)
+        ][:12]
+        repo = build_repo(paths, entries={"src/m0.py"}, edges=edges)
+        kg = _curate(repo, enabled=True)
+        unreached_reasons = [
+            s["reason"] for s in kg.tour if "import resolution is incomplete" in s["reason"]
+        ]
+        assert unreached_reasons, [s["reason"] for s in kg.tour]
+        assert not any("standalone or supporting" in s["reason"] for s in kg.tour)
+
+    def test_small_repo_density_is_not_evidence(self):
+        # 7 healthy python files (mini-taskq shape): low density on a tiny
+        # repo must not demote a full-support language out of flow mode.
+        paths = [f"src/m{i}.py" for i in range(6)] + ["tests/test_m.py"]
+        edges = [("src/m0.py", "src/m1.py")]
+        repo = build_repo(paths, entries={"src/m0.py"}, edges=edges, tests={"tests/test_m.py"})
+        kg = _curate(repo, enabled=True)
+        assert kg.project["graph_mode"] == "flow"

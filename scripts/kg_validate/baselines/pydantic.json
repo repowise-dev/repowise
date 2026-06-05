@@ -44,7 +44,6 @@
   "entry_points": [
    "pydantic/main.py",
    "pydantic/v1/main.py",
-   "pydantic-core/benches/main.rs",
    "docs/plugins/main.py",
    "pydantic-core/src/lib.rs"
   ],
@@ -52,7 +51,6 @@
    "README.md",
    "pydantic/main.py",
    "pydantic/v1/main.py",
-   "pydantic-core/benches/main.rs",
    "docs/plugins/main.py",
    "pydantic-core/src/errors/mod.rs",
    "pydantic-core/src/input/mod.rs",
@@ -60,6 +58,7 @@
    "pydantic-core/src/validators/mod.rs",
    "pydantic-core/src/serializers/type_serializers/mod.rs",
    "pydantic-core/src/common/mod.rs",
+   "pydantic-core/src/validators/shared/mod.rs",
    "tests/conftest.py"
   ]
  }

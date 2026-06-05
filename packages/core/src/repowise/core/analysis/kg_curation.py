@@ -35,6 +35,7 @@ from repowise.core.generation.layers import (
     compute_layer_order,
     infer_layer,
     is_example_path,
+    layer_order_basis,
 )
 from repowise.core.generation.tour import (
     DEFAULT_MAX_STOPS,
@@ -47,6 +48,50 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 # declaration descriptors (module-info.java) — both registry-declared.
 _SUITE_ANCHOR_STEMS: frozenset[str] = _LANG_REGISTRY.suite_anchor_stems()
 _DESCRIPTOR_FILENAMES: frozenset[str] = _LANG_REGISTRY.descriptor_filenames()
+
+# Honest-degradation thresholds. Density = (imports + tested_by)
+# edges per dominant-language file — the same definition the validation
+# harness uses, calibrated on the 13-repo matrix: express (1.89, broken CJS
+# resolution) and sinatra (1.48, broken require resolution) land in
+# "sparse"; every healthy repo sits at ≥ 2.2. Repos below the file floor
+# skip the density check — density on a 7-file repo is noise, not evidence.
+_FLOW_DENSITY_FLOOR = 2.0
+_STRUCTURAL_DENSITY_FLOOR = 0.3
+_MODE_MIN_FILES = 25
+
+
+def _graph_mode(dominant_lang: str, lang_by_path: dict[str, str], graph_builder: Any) -> str:
+    """Classify how much the import graph can honestly claim.
+
+    ``flow``       — full resolver support and healthy density: the tour may
+                     narrate execution flow.
+    ``sparse``     — partial support, or full support with suspiciously low
+                     density: BFS still walks, but reasons must not blame
+                     files for the resolver's gaps.
+    ``structural`` — no resolver (or a near-edgeless graph): no execution
+                     claims at all; the tour walks the repo's structure.
+    """
+    support = _LANG_REGISTRY.import_support_for(dominant_lang)
+    if support == "none":
+        return "structural"
+    dom_files = {p for p, lang in lang_by_path.items() if lang == dominant_lang}
+    if not dom_files:
+        return "structural"
+    edge_count = 0
+    try:
+        for src, _dst, data in graph_builder.graph().edges(data=True):
+            if (data or {}).get("edge_type") in ("imports", "tested_by") and src in dom_files:
+                edge_count += 1
+    except Exception:  # pragma: no cover - defensive
+        return "flow" if support == "full" else "sparse"
+    if len(dom_files) < _MODE_MIN_FILES:
+        return "flow" if support == "full" else "sparse"
+    density = edge_count / len(dom_files)
+    if density < _STRUCTURAL_DENSITY_FLOOR:
+        return "structural"
+    if support == "partial" or density < _FLOW_DENSITY_FLOOR:
+        return "sparse"
+    return "flow"
 
 __all__ = [
     "KGValidation",
@@ -258,7 +303,12 @@ def _curate_layers(kg: KnowledgeGraphResult, graph_builder: Any) -> list[dict] |
         n["filePath"]: infer_layer(n["filePath"], (n.get("language") or "").lower())
         for n in file_nodes
     }
-    order = compute_layer_order(file_layers, _file_import_edges(graph_builder))
+    import_edges = _file_import_edges(graph_builder)
+    order = compute_layer_order(file_layers, import_edges)
+    # Honesty label (additive export field): "imports" when inter-layer edges
+    # informed the order, "canonical" when it is pure convention — consumers
+    # must not claim "X sits above Y" for a canonical order.
+    order_basis = layer_order_basis(file_layers, import_edges)
 
     by_layer: dict[str, list[str]] = defaultdict(list)
     for n in file_nodes:
@@ -274,6 +324,7 @@ def _curate_layers(kg: KnowledgeGraphResult, graph_builder: Any) -> list[dict] |
             "description": "",
             "nodeIds": node_ids,
             "display_order": display_order,
+            "order_basis": order_basis,
         }
         sub_groups = _sub_split(layer_id, node_ids, id_to_path)
         if sub_groups:
@@ -415,6 +466,104 @@ def _best_in_layer(paths: list[str], rank: dict[str, float], pagerank: dict[str,
     return sorted(paths, key=lambda p: (-rank.get(p, 0.0), -pagerank.get(p, 0.0), p))[0]
 
 
+def _structural_walk(
+    universe: list[str],
+    type_by_path: dict[str, str],
+    dominant_lang: str,
+    pagerank: dict[str, float],
+    graph_builder: Any,
+    project_name: str = "",
+) -> tuple[list[str], dict[str, str]]:
+    """Anchor + directory faces for repos with no usable import graph.
+
+    No execution-flow claims: the anchor is ranked by whatever evidence
+    exists (PageRank over the full graph — co-change/dynamic edges included
+    — then fan-in, shallowness, path), never alphabetically-first-by-luck;
+    the walk visits the largest top-level code areas, one face each. Every
+    reason says what the evidence is and what is missing.
+    """
+    # Manifests (mix.exs, setup.py) are code-shaped but describe the
+    # project rather than implement it — never the place to start reading.
+    manifests = _LANG_REGISTRY.manifest_filenames()
+    code = [
+        p
+        for p in universe
+        if type_by_path.get(p) not in {"config", "document"}
+        and PurePosixPath(p).name not in manifests
+    ]
+    if not code:
+        return [], {}
+
+    fan_in: Counter[str] = Counter()
+    for _src, dst in _file_import_edges(graph_builder):
+        fan_in[dst] += 1
+
+    spec = _LANG_REGISTRY.get(dominant_lang)
+    display = spec.display_name if spec else (dominant_lang or "this language")
+
+    # Conventional names trump raw connectivity: an entry-named file
+    # (application.ex, Main.hs) or the project-named module (lib/jason.ex in
+    # jason — the library-main convention) is where a reader starts.
+    entry_names = _LANG_REGISTRY.entry_point_names()
+    project_stem = (project_name or "").lower()
+
+    def conventional(p: str) -> bool:
+        pp = PurePosixPath(p)
+        return pp.name in entry_names or (
+            bool(project_stem) and pp.stem.lower() == project_stem
+        )
+
+    anchor = min(
+        code,
+        key=lambda p: (
+            not conventional(p),
+            -pagerank.get(p, 0.0),
+            -fan_in.get(p, 0),
+            len(PurePosixPath(p).parts),
+            p,
+        ),
+    )
+    if PurePosixPath(anchor).name in entry_names:
+        anchor_reason = (
+            f"Named like an entry file — the conventional place {display} "
+            "execution starts. Import analysis isn't supported for "
+            f"{display} yet, so the walk follows the repo's structure."
+        )
+    elif conventional(anchor):
+        anchor_reason = (
+            "Named after the project — by convention the library's main "
+            f"module. Import analysis isn't supported for {display} yet, "
+            "so the walk follows the repo's structure."
+        )
+    else:
+        anchor_reason = (
+            "The best-connected file by the evidence available (change "
+            f"history and references). Import analysis isn't supported for "
+            f"{display} yet, so the walk follows the repo's structure."
+        )
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    for p in code:
+        if p == anchor:
+            continue
+        parts = PurePosixPath(p).parts
+        groups[parts[0] if len(parts) > 1 else "."].append(p)
+
+    walk = [anchor]
+    reasons = {anchor: anchor_reason}
+    for d in sorted(groups, key=lambda d: (-len(groups[d]), d)):
+        face = min(
+            groups[d],
+            key=lambda p: (-pagerank.get(p, 0.0), len(PurePosixPath(p).parts), p),
+        )
+        n = len(groups[d])
+        label = "the repository root" if d == "." else f"{d}/"
+        count = f"{n} code files live here" if n != 1 else "1 code file lives here"
+        reasons[face] = f"The face of {label} — {count}."
+        walk.append(face)
+    return walk, reasons
+
+
 def _curate_tour(
     kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any
 ) -> list[dict] | None:
@@ -444,6 +593,10 @@ def _curate_tour(
         if lang and type_by_path.get(p) not in {"config", "document"}
     ]
     dominant_lang = Counter(code_langs).most_common(1)[0][0] if code_langs else ""
+    # How much may the tour honestly claim? Exported additively so
+    # consumers (UI, harness) can see the degradation level.
+    graph_mode = _graph_mode(dominant_lang, lang_by_path, graph_builder)
+    kg.project["graph_mode"] = graph_mode
     file_layers = {p: infer_layer(p, lang_by_path.get(p)) for p in paths}
     order = compute_layer_order(file_layers, _file_import_edges(graph_builder))
 
@@ -475,14 +628,18 @@ def _curate_tour(
     ]
 
     project_name = kg.project.get("name") or "repository"
+    # In structural mode the BFS walk is withheld entirely (a fake flow over
+    # a near-edgeless graph is a lie); build_tour still selects the overview
+    # and infra stops.
     base = build_tour(
         parsed_files,
         pagerank,
         _file_import_edges(graph_builder),
-        file_page_paths=walk_universe,
+        file_page_paths=[] if graph_mode == "structural" else walk_universe,
         infra_paths=infra_paths,
         repo_name=project_name,
         max_stops=DEFAULT_MAX_STOPS,
+        graph_mode=graph_mode,
     )
 
     overview = [s for s in base if s.kind == "overview"]
@@ -538,61 +695,78 @@ def _curate_tour(
         else:
             closing_paths.append(_best_in_layer(cands, rank, pagerank))
 
-    # The walk = build_tour's execution order minus adjacent-layer stops and
-    # example programs (documentation-by-code, not the system), truncated up
-    # front so later swaps land inside the kept window.
-    walk = [
-        s.target_path
-        for s in base
-        if s.kind == "code"
-        and s.target_path != overview_target
-        and file_layers.get(s.target_path) not in ADJACENT_LAYERS
-        and not is_example_path(s.target_path)
-    ]
     budget = max(0, DEFAULT_MAX_STOPS - len(overview) - len(closing_paths) - len(infra))
-    walk = walk[:budget]
-
-    # --- Diversify for layer coverage (swap slots, never re-sort) ---------
-    seen_layers: set[str] = set()
-    redundant_positions: list[int] = []
-    for i, p in enumerate(walk):
-        layer = file_layers.get(p)
-        if layer in seen_layers:
-            redundant_positions.append(i)
-        else:
-            seen_layers.add(layer)
-
     swapped_depth: dict[str, int] = {}  # rep path -> depth of the slot it fills
-    uncovered = [
-        name for name in order if name not in seen_layers and name not in ADJACENT_LAYERS
-    ]
-    for layer in uncovered:
-        if not redundant_positions:
-            break
-        candidates = [
-            p
-            for p in by_layer.get(layer, [])
-            if p not in walk
-            and p != overview_target
-            and not is_example_path(p)
-            and not PurePosixPath(p).parts[0].startswith(".")  # never a layer face
+    structural_reasons: dict[str, str] = {}
+
+    if graph_mode == "structural":
+        # Structure, not flow: evidence-ranked anchor + one face per
+        # top-level code area. No layer-coverage swaps — the directory walk
+        # IS the diversity, and "most depended-on" claims need edges.
+        walk, structural_reasons = _structural_walk(
+            walk_universe,
+            type_by_path,
+            dominant_lang,
+            pagerank,
+            graph_builder,
+            project_name=project_name,
+        )
+        walk = walk[:budget]
+    else:
+        # The walk = build_tour's execution order minus adjacent-layer stops
+        # and example programs (documentation-by-code, not the system),
+        # truncated up front so later swaps land inside the kept window.
+        walk = [
+            s.target_path
+            for s in base
+            if s.kind == "code"
+            and s.target_path != overview_target
+            and file_layers.get(s.target_path) not in ADJACENT_LAYERS
+            and not is_example_path(s.target_path)
         ]
-        if not candidates:
-            continue
-        # A layer's face must be code. A layer holding only configs/docs (a
-        # plugins/ dir of JSON manifests) gets no manufactured stop — except
-        # Config itself, where "this is where configuration lives" is the point.
-        code_candidates = [
-            p for p in candidates if type_by_path.get(p) not in {"config", "document"}
+        walk = walk[:budget]
+
+        # --- Diversify for layer coverage (swap slots, never re-sort) -----
+        seen_layers: set[str] = set()
+        redundant_positions: list[int] = []
+        for i, p in enumerate(walk):
+            layer = file_layers.get(p)
+            if layer in seen_layers:
+                redundant_positions.append(i)
+            else:
+                seen_layers.add(layer)
+
+        uncovered = [
+            name for name in order if name not in seen_layers and name not in ADJACENT_LAYERS
         ]
-        if not code_candidates and layer != "Config":
-            continue
-        rep = _best_in_layer(code_candidates or candidates, rank, pagerank)
-        pos = redundant_positions.pop()
-        replaced = base_code.get(walk[pos])
-        swapped_depth[rep] = replaced.depth if replaced is not None else 0
-        walk[pos] = rep
-        seen_layers.add(layer)
+        for layer in uncovered:
+            if not redundant_positions:
+                break
+            candidates = [
+                p
+                for p in by_layer.get(layer, [])
+                if p not in walk
+                and p != overview_target
+                and not is_example_path(p)
+                and not PurePosixPath(p).parts[0].startswith(".")  # never a layer face
+            ]
+            if not candidates:
+                continue
+            # A layer's face must be code. A layer holding only configs/docs
+            # (a plugins/ dir of JSON manifests) gets no manufactured stop —
+            # except Config itself, where "this is where configuration
+            # lives" is the point.
+            code_candidates = [
+                p for p in candidates if type_by_path.get(p) not in {"config", "document"}
+            ]
+            if not code_candidates and layer != "Config":
+                continue
+            rep = _best_in_layer(code_candidates or candidates, rank, pagerank)
+            pos = redundant_positions.pop()
+            replaced = base_code.get(walk[pos])
+            swapped_depth[rep] = replaced.depth if replaced is not None else 0
+            walk[pos] = rep
+            seen_layers.add(layer)
 
     # --- Assemble the exported tour --------------------------------------
     tour: list[dict] = []
@@ -615,7 +789,10 @@ def _curate_tour(
         order_n += 1
         layer = file_layers.get(p, "")
         step = base_code.get(p)
-        if p in swapped_depth:
+        if p in structural_reasons:
+            depth = 0  # import depth is meaningless without an import graph
+            reason = structural_reasons[p]
+        elif p in swapped_depth:
             depth = swapped_depth[p]
             reason = f"The {layer} layer's anchor — its most depended-on file."
         elif step is not None:
@@ -642,7 +819,7 @@ def _curate_tour(
             }
         )
 
-    # Polyglot fairness (rule 12): languages holding ≥20% of the code with
+    # Polyglot fairness: languages holding ≥20% of the code with
     # their own test files get named in the closing-stop reason — the stop
     # faces the dominant suite, but the others must not vanish.
     lang_counts = Counter(code_langs)
@@ -719,7 +896,7 @@ _DATA_SUFFIXES = (".sql", ".prisma")
 
 # Source-code extensions. A code file is never CI/infra config however its
 # name or directory reads — ``languages/specs/dockerfile.py`` *parses*
-# Dockerfiles, it isn't one. Registry-derived (Phase 1.5): every is_code,
+# Dockerfiles, it isn't one. Registry-derived: every is_code,
 # non-infra language's extensions are protected — .dart/.hs/.clj included;
 # shell/terraform stay promotable (they ARE infra); the historical orphan
 # ``.pl`` (no perl spec) is gone.
