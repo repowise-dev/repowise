@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
+from repowise.core.generation.layers import ADJACENT_LAYERS, infer_layer
+
 # Filenames that conventionally mark an executable / wiring entry point.
 _ENTRY_FILENAME_STEMS: frozenset[str] = frozenset(
     {
@@ -127,7 +129,8 @@ def score_entry_points(
 
     Both entry bonuses are withheld from doc/data languages — ``docs/index.md``
     must never outrank a real ``main.py``, even when ingestion's stem rule
-    flagged it.
+    flagged it — and from test files (``tests/testserver/server.py`` is a
+    fixture, not where a reader enters the system).
 
     Returns ``[(score, path), ...]`` sorted by score then path for stability.
     Only files with a positive score are returned.
@@ -144,10 +147,12 @@ def score_entry_points(
         path = fi.path
         score = 0.0
         language = (getattr(fi, "language", "") or "").lower()
-        is_code = language not in _NON_CODE_LANGUAGES
-        if is_code and getattr(fi, "is_entry_point", False):
+        entry_eligible = (
+            language not in _NON_CODE_LANGUAGES and infer_layer(path) not in ADJACENT_LAYERS
+        )
+        if entry_eligible and getattr(fi, "is_entry_point", False):
             score += 3.0
-        if is_code and PurePosixPath(path).stem.lower() in _ENTRY_FILENAME_STEMS:
+        if entry_eligible and PurePosixPath(path).stem.lower() in _ENTRY_FILENAME_STEMS:
             score += 3.0
         if _path_depth(path) <= 1:
             score += 1.0

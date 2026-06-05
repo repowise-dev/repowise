@@ -132,6 +132,18 @@ def test_build_tour_unreached_files_get_honest_reasons():
     assert "Directly used" in by_path["a.py"].reason  # reached ones unchanged
 
 
+def test_score_entry_points_withholds_entry_bonuses_from_test_files():
+    # tests/testserver/server.py has an entry-style stem, but a test fixture
+    # must never seed the onboarding walk.
+    files = [
+        _PF(_FI(path="tests/testserver/server.py", is_entry_point=True)),
+        _PF(_FI(path="src/pkg/models.py")),
+    ]
+    pr = {"tests/testserver/server.py": 0.9, "src/pkg/models.py": 0.5}
+    scored = {p: s for s, p in score_entry_points(files, pr)}
+    assert scored.get("tests/testserver/server.py", 0.0) < 3.0
+
+
 def test_build_tour_seedless_repo_reasons_do_not_overclaim():
     # A flat library with no entry-style file: steps must not reference
     # entry points that don't exist.
