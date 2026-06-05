@@ -272,3 +272,49 @@ class TestRubySpecDirToken:
         # Polyglot fairness: ruby's rule never leaks to other languages.
         assert infer_layer("specs/openapi.yaml", language="yaml") != "Test"
         assert infer_layer("spec/helper.py", language="python") != "Test"
+
+
+def test_infer_layer_gradle_test_sourcesets():
+    # okio regression: multiplatform test sourcesets (src/jvmTest,
+    # src/commonTest) are test roots for any file beneath them.
+    assert infer_layer("okio/src/jvmTest/kotlin/okio/AsyncSocket.kt", "kotlin") == "Test"
+    assert infer_layer("okio/src/commonTest/kotlin/okio/util/Helpers.kt", "kotlin") == "Test"
+    assert infer_layer("m/src/integrationTest/kotlin/F.kt", "kotlin") == "Test"
+    # Main sourcesets and non-src camel dirs stay untouched.
+    assert infer_layer("okio/src/commonMain/kotlin/okio/Buffer.kt", "kotlin") != "Test"
+    assert infer_layer("okio/src/hashFunctions/kotlin/H.kt", "kotlin") != "Test"
+    # The wildcard requires the camel "Test" suffix — lowercase doesn't fire
+    # (src/test is its own exact rule via the generic token).
+    assert infer_layer("a/src/latest/kotlin/F.kt", "kotlin") != "Test"
+
+
+def test_infer_layer_dotnet_specs_project_dirs():
+    # Polly evidence: BDD-style sibling test projects named Foo.Specs/.
+    assert infer_layer("test/Polly.Specs/Retry/RetrySpecs.cs", "csharp") == "Test"
+
+
+def test_infer_layer_c_cpp_include_is_api():
+    # A C/C++ library's installed public headers are its API surface.
+    assert infer_layer("include/uv.h", "c") == "API"
+    assert infer_layer("include/uv/unix.h", "c") == "API"
+    assert infer_layer("include/fmt/format.h", "cpp") == "API"
+    # Polyglot fairness: the hint rides on the file's own language.
+    assert infer_layer("include/util.py", "python") != "API"
+    # Root-anchored: okio's vendored linux uapi headers must not mint an
+    # API layer from deep inside a Kotlin repo.
+    assert infer_layer("okio/src/linuxMain/headers/include/uapi/linux/stat.h", "cpp") != "API"
+
+
+def test_is_support_path_covers_doc_dirs():
+    from repowise.core.generation.layers import is_support_path
+
+    # Doc sites and runnable doc snippets are support material (libuv's
+    # docs/code/*/main.c, docfx templates, vitepress sites).
+    assert is_support_path("docs/code/spawn/main.c")
+    assert is_support_path("docs/template/public/main.js")
+    assert is_support_path("website/.vitepress/theme/index.ts")
+    assert is_support_path("doc/build.py")
+    assert is_support_path("examples/hello/main.go")
+    # Real code is not support — names containing "docs" don't fire.
+    assert not is_support_path("src/docs_generator.py")
+    assert not is_support_path("lib/init.lua")

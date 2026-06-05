@@ -211,3 +211,58 @@ def test_score_entry_points_withholds_bonuses_from_api_contracts_and_infra():
     assert scored["src/main.py"] >= 3.0
     for path in ("index.graphql", "main.sql", "run.sh", "main.tf"):
         assert scored.get(path, 0.0) < 3.0, path
+
+
+def test_build_tour_anchor_reasons_never_claim_entry_points():
+    # Anchor-seeded walks (no genuine entries) must not say "the entry
+    # points above" — there are none.
+    files = [
+        _PF(_FI(path="src/core.py")),
+        _PF(_FI(path="src/helper.py")),
+        _PF(_FI(path="src/deep.py")),
+    ]
+    pr = {"src/core.py": 0.5, "src/helper.py": 0.3, "src/deep.py": 0.2}
+    edges = [("src/core.py", "src/helper.py"), ("src/helper.py", "src/deep.py")]
+    documented = {"src/core.py", "src/helper.py", "src/deep.py"}
+    stops = build_tour(files, pr, edges, file_page_paths=documented)
+    for s in stops:
+        assert "entry point" not in s.reason or s.depth == 0, s.reason
+    anchor = next(s for s in stops if s.depth == 0)
+    assert "anchor" in anchor.reason
+    d1 = next(s for s in stops if s.depth == 1)
+    assert "anchor" in d1.reason and "entry points" not in d1.reason
+
+
+def test_build_tour_unreached_non_code_files_take_no_slot():
+    # D-037 watch item: sparse-mode walks filled their budget with
+    # CHANGELOG.md / *.toml "not on the resolved import paths" slots.
+    # Unreached documents and config can never be on an import path —
+    # they are not worth a step that displaces code.
+    files = [
+        _PF(_FI(path="lib/init.lua", language="luau", is_entry_point=True)),
+        _PF(_FI(path="lib/util.lua", language="luau")),
+        _PF(_FI(path="CHANGELOG.md", language="markdown")),
+        _PF(_FI(path="wally.toml", language="toml")),
+    ]
+    pr = {p: 0.25 for p in ("lib/init.lua", "lib/util.lua", "CHANGELOG.md", "wally.toml")}
+    edges = [("lib/init.lua", "lib/util.lua")]
+    documented = {"lib/init.lua", "lib/util.lua", "CHANGELOG.md", "wally.toml"}
+    stops = build_tour(files, pr, edges, file_page_paths=documented, graph_mode="sparse")
+    paths = {s.target_path for s in stops}
+    assert "CHANGELOG.md" not in paths
+    assert "wally.toml" not in paths
+    assert {"lib/init.lua", "lib/util.lua"} <= paths
+
+
+def test_build_tour_reached_config_keeps_its_slot():
+    # A config file genuinely on an import path (TS importing data.json)
+    # keeps its step — only *unreached* non-code is exempt from parking.
+    files = [
+        _PF(_FI(path="src/index.ts", language="typescript", is_entry_point=True)),
+        _PF(_FI(path="src/config.json", language="json")),
+    ]
+    pr = {"src/index.ts": 0.6, "src/config.json": 0.4}
+    edges = [("src/index.ts", "src/config.json")]
+    documented = {"src/index.ts", "src/config.json"}
+    stops = build_tour(files, pr, edges, file_page_paths=documented)
+    assert "src/config.json" in {s.target_path for s in stops}

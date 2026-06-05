@@ -81,8 +81,17 @@ _TEST_CAMEL_RES = _LANG_REGISTRY.camel_test_res_by_extension()
 # Multi-segment test roots (src/it/java) and case-sensitive test-project dir
 # suffixes (.NET sibling Foo.Tests/ projects). Both are unambiguous — like
 # tests/ and __tests__/, they mark any file beneath them.
+# A ``*``-segment form ("src/*Test") matches a Gradle source-set directory:
+# the literal segment(s) match lowercased, the ``*<Suffix>`` segment matches
+# the original-case dir name by proper suffix (src/jvmTest, src/commonTest,
+# src/integrationTest, …).
 _TEST_DIR_PATHS: tuple[tuple[str, ...], ...] = tuple(
-    tuple(p.split("/")) for p in _LANG_REGISTRY.test_dir_paths()
+    tuple(p.split("/")) for p in _LANG_REGISTRY.test_dir_paths() if "*" not in p
+)
+_TEST_DIR_WILDCARDS: tuple[tuple[str, str], ...] = tuple(
+    (p.split("/")[0], p.split("/")[1].lstrip("*"))
+    for p in _LANG_REGISTRY.test_dir_paths()
+    if "*" in p
 )
 _TEST_DIR_SUFFIXES = _LANG_REGISTRY.test_dir_suffixes()
 # Per-language unambiguous test-dir tokens: ruby's spec/ needs no filename
@@ -119,6 +128,15 @@ def _is_test_dir_path(segments: list[str], original_segments: list[str]) -> bool
             for i in range(len(segments) - span + 1)
         ):
             return True
+    for prefix_seg, camel_sfx in _TEST_DIR_WILDCARDS:
+        for i in range(len(segments) - 1):
+            nxt = original_segments[i + 1]
+            if (
+                segments[i] == prefix_seg
+                and nxt.endswith(camel_sfx)
+                and len(nxt) > len(camel_sfx)
+            ):
+                return True
     return any(seg.endswith(_TEST_DIR_SUFFIXES) for seg in original_segments)
 
 
@@ -130,12 +148,19 @@ def _is_test_dir_path(segments: list[str], original_segments: list[str]) -> bool
 _LANG_TOKEN_HINTS: dict[str, dict[str, str]] = {}
 _LANG_PATH_HINTS: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {}
 _LANG_SUFFIX_HINTS: dict[str, tuple[tuple[str, str], ...]] = {}
+_LANG_ROOT_HINTS: dict[str, dict[str, str]] = {}
 for _tag, _hints in _LANG_REGISTRY.layer_dir_hints_by_language().items():
     _tokens: dict[str, str] = {}
     _paths: list[tuple[tuple[str, ...], str]] = []
     _suffixes: list[tuple[str, str]] = []
+    _roots: dict[str, str] = {}
     for _key, _layer in _hints:
-        if "/" in _key:
+        if _key.startswith("/"):
+            # Root-anchored token ("/include"): the convention is a
+            # top-level dir — a vendored include/ buried deep in another
+            # language's tree must not mint the layer.
+            _roots[_key[1:]] = _layer
+        elif "/" in _key:
             _paths.append((tuple(_key.split("/")), _layer))
         elif _key.startswith((".", "-")):
             _suffixes.append((_key, _layer))
@@ -147,6 +172,8 @@ for _tag, _hints in _LANG_REGISTRY.layer_dir_hints_by_language().items():
         _LANG_PATH_HINTS[_tag] = tuple(_paths)
     if _suffixes:
         _LANG_SUFFIX_HINTS[_tag] = tuple(_suffixes)
+    if _roots:
+        _LANG_ROOT_HINTS[_tag] = _roots
 
 
 # Example/demo/benchmark directories: documentation-by-code and support
@@ -165,6 +192,26 @@ _EXAMPLE_DIR_TOKENS = frozenset(
 def is_example_path(path: str) -> bool:
     """Whether *path* sits under an examples/samples/demo directory."""
     return any(s.lower() in _EXAMPLE_DIR_TOKENS for s in PurePosixPath(path).parts[:-1])
+
+
+# Documentation directories: sphinx/docusaurus/vitepress sites and runnable
+# doc snippets (libuv's docs/code/*/main.c, docfx template assets). Like the
+# example dirs above, their files carry entry-style names by convention but
+# document the system rather than being it.
+_DOC_DIR_TOKENS = frozenset({"docs", "doc", "website"})
+
+
+def is_support_path(path: str) -> bool:
+    """Whether *path* is support material (examples/benchmarks/docs sites).
+
+    Support files never seed or anchor a tour and never surface as entry
+    points — a reader orienting in the repo must land in the system itself,
+    not in its documentation or sample harnesses.
+    """
+    return any(
+        s.lower() in _EXAMPLE_DIR_TOKENS or s.lower() in _DOC_DIR_TOKENS
+        for s in PurePosixPath(path).parts[:-1]
+    )
 
 # Fallback layer for files whose path matches no hint (root scripts, etc.).
 DEFAULT_LAYER = "Application"
@@ -242,6 +289,7 @@ def infer_layer(path: str, language: str | None = None) -> str:
     token_hints = _LANG_TOKEN_HINTS.get(lang)
     path_hints = _LANG_PATH_HINTS.get(lang)
     suffix_hints = _LANG_SUFFIX_HINTS.get(lang)
+    root_hints = _LANG_ROOT_HINTS.get(lang)
     original_segments = original_parts[:-1]
 
     # Deepest directory first — the closest folder describes the file best.
@@ -266,6 +314,8 @@ def infer_layer(path: str, language: str | None = None) -> str:
                 # the convention.
                 if orig.endswith(sfx) and len(orig) > len(sfx):
                     return layer_name
+        if i == 0 and root_hints and seg in root_hints:
+            return root_hints[seg]
     return DEFAULT_LAYER
 
 

@@ -296,7 +296,11 @@ class MetricsMixin:
         n = g.number_of_nodes()
         if n > _LARGE_REPO_THRESHOLD:
             k = min(500, n)
-            values = nx.betweenness_centrality(g, k=k, normalized=True)
+            # Seeded: k-sampling is the one randomized kernel left in the
+            # pipeline — unseeded it made every large-repo index emit a
+            # different betweenness ranking (typst's entry-point order
+            # flapped between runs).
+            values = nx.betweenness_centrality(g, k=k, normalized=True, seed=42)
         else:
             from ._betweenness import betweenness_centrality_fast
 

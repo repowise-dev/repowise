@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from repowise.core.generation.layers import ADJACENT_LAYERS, infer_layer, is_example_path
+from repowise.core.generation.layers import ADJACENT_LAYERS, infer_layer, is_support_path
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
@@ -136,7 +136,7 @@ def score_entry_points(
         entry_eligible = (
             language not in _NON_CODE_LANGUAGES
             and infer_layer(path) not in ADJACENT_LAYERS
-            and not is_example_path(path)
+            and not is_support_path(path)
         )
         if entry_eligible and getattr(fi, "is_entry_point", False):
             score += 3.0
@@ -200,6 +200,7 @@ def build_tour(
     repo_name: str = "",
     max_stops: int = DEFAULT_MAX_STOPS,
     graph_mode: str = "flow",
+    anchor_rank: Mapping[str, int] | None = None,
 ) -> list[TourStop]:
     """Build the ordered tour over pages that already exist.
 
@@ -245,12 +246,20 @@ def build_tour(
             and (
                 (getattr(p.file_info, "language", "") or "").lower() in _NON_CODE_LANGUAGES
                 or infer_layer(p.file_info.path) in ADJACENT_LAYERS
-                or is_example_path(p.file_info.path)
+                or is_support_path(p.file_info.path)
             )
         }
+        # Rank by import *relationships* when the caller supplies the
+        # fan-out-collapsed counts (one package import = one relationship),
+        # else raw out-degree.
+        def _fanout(p: str) -> int:
+            if anchor_rank is not None:
+                return anchor_rank.get(p, 0)
+            return len(adjacency.get(p, []))
+
         eligible = sorted(
             (p for p in documented if p not in ineligible),
-            key=lambda p: (-len(adjacency.get(p, [])), -pagerank.get(p, 0.0), p),
+            key=lambda p: (-_fanout(p), -pagerank.get(p, 0.0), p),
         )
         seeds = eligible[:1] or [path for _, path in scored if path in documented][:1]
     depths = _bfs_depths(seeds, adjacency, documented)
@@ -258,11 +267,23 @@ def build_tour(
     # Documented files never reached from a seed still belong in the tour;
     # park them after the deepest reached file, ranked by PageRank. Remember
     # which files were genuinely reached so their reasons stay truthful.
+    # Documents and config/data files are exempt from parking: they can
+    # never be on an import path, so an unreached CHANGELOG.md or
+    # wally.toml is expected — not worth a tour slot that displaces code.
+    non_code_paths = {
+        p.file_info.path
+        for p in parsed_files
+        if getattr(p, "file_info", None)
+        and (getattr(p.file_info, "language", "") or "").lower() in _NON_CODE_LANGUAGES
+    }
     reached = set(depths)
     max_reached = max(depths.values(), default=-1)
     for path in documented:
         if path not in depths:
+            if path in non_code_paths:
+                continue
             depths[path] = max_reached + 1
+    documented = {p for p in documented if p in depths}
 
     pr_score = score_entry_points(parsed_files, pagerank)
     ep_score = {path: s for s, path in pr_score}
@@ -306,7 +327,9 @@ def build_tour(
             reason = (
                 "An entry point — execution and imports fan out from here."
                 if genuine_entries
-                else "The walk's anchor — the best-connected file in a repo with no single entry point."
+                # State the anchor's actual selection evidence (widest import
+                # fan-out), not a vague "best-connected" that implies fan-in.
+                else "The walk's anchor — its imports fan out the widest in a repo with no single entry point."
             )
         elif path not in reached:
             if graph_mode == "sparse":
@@ -323,7 +346,13 @@ def build_tour(
             else:
                 reason = "A widely-imported module — much of the repo depends on it."
         elif d == 1:
-            reason = "Directly used by the entry points above; a core collaborator."
+            # Anchor-seeded walks have no entry points — the reason must not
+            # invent them.
+            reason = (
+                "Directly used by the entry points above; a core collaborator."
+                if genuine_entries
+                else "Directly imported by the anchor above; a core collaborator."
+            )
         else:
             reason = f"Reached {d} imports deep — a supporting building block."
         stops.append(

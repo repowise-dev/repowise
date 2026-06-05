@@ -1023,3 +1023,135 @@ class TestHonestDegradation:
         repo = build_repo(paths, entries={"src/m0.py"}, edges=edges, tests={"tests/test_m.py"})
         kg = _curate(repo, enabled=True)
         assert kg.project["graph_mode"] == "flow"
+
+
+class TestClosingStopHarnessExclusion:
+    def test_shared_harness_never_faces_the_suite(self):
+        # okio/Alamofire/scopt regression: the base class or helper every
+        # test imports (AbstractFileSystemTest, BaseTestCase, SpecUtil)
+        # carries the suite's highest pagerank — but it is what the suite
+        # runs ON, not where tests start.
+        repo = build_repo(
+            [
+                "src/app.py",
+                "src/core.py",
+                "tests/harness.py",
+                "tests/test_one.py",
+                "tests/test_two.py",
+            ],
+            entries={"src/app.py"},
+            edges=[
+                ("src/app.py", "src/core.py"),
+                ("tests/test_one.py", "tests/harness.py"),
+                ("tests/test_two.py", "tests/harness.py"),
+            ],
+            pagerank={"tests/harness.py": 0.9},
+        )
+        kg = _curate(repo, enabled=True)
+        closing = _closing_stops(kg)
+        assert len(closing) == 1
+        assert closing[0]["target_path"] in ("tests/test_one.py", "tests/test_two.py")
+
+    def test_single_importer_helper_excluded(self):
+        # okio's CipherFactory.kt: even ONE test-file importer marks a
+        # helper — leaf tests import helpers, nothing imports leaf tests.
+        repo = build_repo(
+            [
+                "src/app.py",
+                "tests/util.py",
+                "tests/test_one.py",
+            ],
+            entries={"src/app.py"},
+            edges=[("tests/test_one.py", "tests/util.py")],
+            pagerank={"tests/util.py": 0.9},
+        )
+        kg = _curate(repo, enabled=True)
+        closing = _closing_stops(kg)
+        assert len(closing) == 1
+        assert closing[0]["target_path"] == "tests/test_one.py"
+
+    def test_test_project_dir_wins_over_shared_helpers(self):
+        # Polly regression: test/Shared/TestCancellation.cs is shallower
+        # than the .Specs project files, but the declared test-project
+        # convention (.Tests/.Specs) is where the suite lives.
+        repo = build_repo(
+            [
+                "src/Core/App.cs",
+                "src/Core/Core.cs",
+                "test/Shared/TestCancellation.cs",
+                "test/Acme.Specs/RetrySpecs.cs",
+            ],
+            entries={"src/Core/App.cs"},
+            edges=[("src/Core/App.cs", "src/Core/Core.cs")],
+            pagerank={"test/Shared/TestCancellation.cs": 0.9},
+        )
+        kg = _curate(repo, enabled=True)
+        closing = _closing_stops(kg)
+        assert len(closing) == 1
+        assert closing[0]["target_path"] == "test/Acme.Specs/RetrySpecs.cs"
+
+
+class TestSupportDirExclusion:
+    def test_doc_site_entries_never_surface(self):
+        # libuv/Polly regression: docs/code/*/main.c snippets and docfx
+        # template main.js flooded the entry surface and the whole tour.
+        repo = build_repo(
+            [
+                "docs/code/spawn/main.c",
+                "docs/template/public/main.js",
+                "website/theme/index.ts",
+                "src/core.c",
+                "src/run.c",
+            ],
+            entries={
+                "docs/code/spawn/main.c",
+                "docs/template/public/main.js",
+                "website/theme/index.ts",
+            },
+            edges=[("src/run.c", "src/core.c")],
+        )
+        kg = _curate(repo, enabled=True)
+        entries = kg.project.get("entry_points", [])
+        assert all(not e.startswith(("docs/", "website/")) for e in entries)
+        tour_paths = {s["target_path"] for s in (kg.tour or [])}
+        assert not any(p.startswith(("docs/", "website/")) for p in tour_paths)
+
+
+class TestFanoutCollapse:
+    def _gb(self):
+        import networkx as nx
+        from types import SimpleNamespace
+
+        g = nx.DiGraph()
+        # One Go-style package import fanned out to 3 sibling targets…
+        for t in ("pkg/a.py", "pkg/b.py", "pkg/c.py"):
+            g.add_edge("tests/test_x.py", t, edge_type="imports", imported_names=["pkg"])
+        # …and one explicit single-target import.
+        g.add_edge(
+            "tests/test_x.py", "tests/harness.py",
+            edge_type="imports", imported_names=["Harness"],
+        )
+        g.add_edge(
+            "tests/test_y.py", "tests/harness.py",
+            edge_type="imports", imported_names=["Harness"],
+        )
+        return SimpleNamespace(graph=lambda: g)
+
+    def test_fanout_groups_excluded_from_pairs(self):
+        from repowise.core.analysis.kg_curation import _import_pairs_excluding_fanout
+
+        pairs = set(_import_pairs_excluding_fanout(self._gb()))
+        # chi regression: a package fan-out is not evidence that each
+        # sibling file is individually referenced.
+        assert ("tests/test_x.py", "pkg/a.py") not in pairs
+        assert ("tests/test_x.py", "tests/harness.py") in pairs
+        assert ("tests/test_y.py", "tests/harness.py") in pairs
+
+    def test_anchor_rank_counts_relationships_not_edges(self):
+        from repowise.core.analysis.kg_curation import _anchor_fanout_rank
+
+        rank = _anchor_fanout_rank(self._gb())
+        # 4 raw out-edges from test_x, but only 2 import relationships
+        # (the fan-out collapses to one).
+        assert rank["tests/test_x.py"] == 2
+        assert rank["tests/test_y.py"] == 1

@@ -34,7 +34,7 @@ from repowise.core.generation.layers import (
     ADJACENT_LAYERS,
     compute_layer_order,
     infer_layer,
-    is_example_path,
+    is_support_path,
     layer_order_basis,
 )
 from repowise.core.generation.tour import (
@@ -51,6 +51,9 @@ _DESCRIPTOR_FILENAMES: frozenset[str] = _LANG_REGISTRY.descriptor_filenames()
 # Test-fixture filename shapes (FooFixtures.java) — case-sensitive,
 # per-extension; fixture files hold test data, they never face the suite.
 _FIXTURE_CAMEL_RES = _LANG_REGISTRY.camel_fixture_res_by_extension()
+# Test-project dir suffixes (.Tests/.Specs) — when present, the suite's
+# face must come from inside one.
+_TEST_PROJECT_DIR_SUFFIXES: tuple[str, ...] = _LANG_REGISTRY.test_dir_suffixes()
 
 # Honest-degradation thresholds. Density = (imports + tested_by)
 # edges per dominant-language file — the same definition the validation
@@ -253,15 +256,24 @@ def _file_nodes(kg: KnowledgeGraphResult) -> list[dict]:
 def _file_import_edges(graph_builder: Any) -> list[tuple[str, str]]:
     """``(src, dst)`` string edges from the AST graph (src imports dst).
 
-    Mirrors the wiki spine's edge extraction. Symbol-node ids and externals are
-    naturally ignored downstream by :func:`compute_layer_order`, which only
-    counts edges whose endpoints are both in ``file_layers``.
+    ``imports`` edges only (hint-sourced ones included — they are import
+    semantics). The raw graph also carries ``contains`` (file → symbol),
+    ``co_change``, ``calls``, and heritage edges; letting those through made
+    "execution flow" claims ride on symbol counts and change-history
+    coupling — a giant declarations header would out-rank every real entry
+    as the walk's widest-fan-out anchor. Externals are naturally ignored
+    downstream by :func:`compute_layer_order`, which only counts edges whose
+    endpoints are both in ``file_layers``.
     """
     edges: list[tuple[str, str]] = []
     try:
-        for src, dst in graph_builder.graph().edges():
-            if isinstance(src, str) and isinstance(dst, str):
-                edges.append((src, dst))
+        g = graph_builder.graph()
+        for src, dst, data in g.edges(data=True):
+            if not (isinstance(src, str) and isinstance(dst, str)):
+                continue
+            if data.get("edge_type", "imports") != "imports":
+                continue
+            edges.append((src, dst))
     except Exception:  # pragma: no cover - defensive
         pass
     return edges
@@ -432,7 +444,7 @@ def _curate_entry_points(
         if "entry_point" not in tags:
             continue
         path = node.get("filePath", "")
-        if infer_layer(path) in ADJACENT_LAYERS or is_example_path(path):
+        if infer_layer(path) in ADJACENT_LAYERS or is_support_path(path):
             # Test fixtures (a wsgi.py inside tests/) and sample programs
             # (examples/*/main.go) may carry the ingestion flag, but they are
             # not where a reader enters the system.
@@ -454,7 +466,7 @@ def _curate_entry_points(
         for s, path in score_entry_points(parsed_files, pagerank):
             if s < 3.0:
                 continue
-            if infer_layer(path) in ADJACENT_LAYERS or is_example_path(path):
+            if infer_layer(path) in ADJACENT_LAYERS or is_support_path(path):
                 continue
             pf = pf_by_path.get(path)
             if pf is not None and _is_barrel(pf):
@@ -592,6 +604,74 @@ def _structural_walk(
     return walk, reasons
 
 
+_FANOUT_GROUP_MIN = 3
+
+
+def _import_groups(
+    graph_builder: Any, edge_types: frozenset[str] = frozenset({"imports"})
+) -> dict[str, list[list[str]]]:
+    """Imports edges grouped per source by originating import statement.
+
+    A resolver fan-out (Go/JVM package import → every file in the package)
+    emits many edges that share one source and identical ``imported_names``
+    — semantically ONE import relationship. Groups of
+    ``>= _FANOUT_GROUP_MIN`` targets are treated as fan-outs; smaller
+    groups stay one-edge-one-relationship (multi-ext probes, pairs).
+    """
+    keyed: dict[tuple[str, tuple[str, ...]], list[str]] = defaultdict(list)
+    try:
+        for src, dst, data in graph_builder.graph().edges(data=True):
+            if not (isinstance(src, str) and isinstance(dst, str)):
+                continue
+            if data.get("edge_type", "imports") not in edge_types:
+                continue
+            # Stdlib/external imports say nothing about where a walk can
+            # go — only repo-internal relationships count.
+            if src.startswith("external:") or dst.startswith("external:"):
+                continue
+            names = tuple(sorted(data.get("imported_names") or ())) or (dst,)
+            keyed[(src, names)].append(dst)
+    except Exception:  # pragma: no cover - defensive
+        return {}
+    groups: dict[str, list[list[str]]] = defaultdict(list)
+    for (src, _names), targets in keyed.items():
+        groups[src].append(targets)
+    return groups
+
+
+# The harness signal is "this test file *depends on* that one" — type
+# references and inheritance (a base test class) are exactly that evidence;
+# raw-graph type_use/heritage edges surface as plain imports in the export.
+_DEPENDENCY_EDGE_TYPES = frozenset({"imports", "type_use", "heritage"})
+
+
+def _import_pairs_excluding_fanout(graph_builder: Any) -> list[tuple[str, str]]:
+    """``(src, dst)`` dependency pairs with fan-out groups dropped."""
+    pairs: list[tuple[str, str]] = []
+    for src, target_groups in _import_groups(
+        graph_builder, edge_types=_DEPENDENCY_EDGE_TYPES
+    ).items():
+        for targets in target_groups:
+            if len(targets) >= _FANOUT_GROUP_MIN:
+                continue
+            pairs.extend((src, dst) for dst in targets)
+    return pairs
+
+
+def _anchor_fanout_rank(graph_builder: Any) -> dict[str, int]:
+    """Per-file count of distinct import *relationships* (fan-outs = 1).
+
+    The walk's anchor claims "its imports fan out the widest" — that must
+    mean import statements, not resolver edge multiplicity, or one Go
+    package import (15 sibling edges) out-ranks a file with a dozen real
+    dependencies and the anchor lands alphabetically-by-luck.
+    """
+    return {
+        src: len(target_groups)
+        for src, target_groups in _import_groups(graph_builder).items()
+    }
+
+
 def _curate_tour(
     kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any
 ) -> list[dict] | None:
@@ -651,7 +731,7 @@ def _curate_tour(
         for p in paths
         if p != overview_target
         and file_layers.get(p) not in ADJACENT_LAYERS
-        and not is_example_path(p)
+        and not is_support_path(p)
         and not PurePosixPath(p).parts[0].startswith(".")  # dot-dir tooling
     ]
 
@@ -668,6 +748,7 @@ def _curate_tour(
         repo_name=project_name,
         max_stops=DEFAULT_MAX_STOPS,
         graph_mode=graph_mode,
+        anchor_rank=_anchor_fanout_rank(graph_builder),
     )
 
     overview = [s for s in base if s.kind == "overview"]
@@ -685,6 +766,23 @@ def _curate_tour(
     # Face = the shallowest suite anchor when present (conftest /
     # spec_helper / test_helper — registry-declared suite roots), else the
     # best code file, else anything (never a stray Cargo.toml if avoidable).
+    #
+    # Shared test harness files — base classes and helpers imported by two
+    # or more other test files (AbstractFileSystemTest, BaseTestCase,
+    # SpecUtil) — are what the suite runs ON, not where tests start. Their
+    # heavy in-degree otherwise wins the pagerank tie-break on every repo
+    # with shared fixtures.
+    adjacent_paths = {
+        p for layer in ADJACENT_LAYERS for p in by_layer.get(layer, [])
+    }
+    # Fan-out groups (one import statement expanded to many sibling targets
+    # — Go/JVM package imports) are *not* evidence that a specific file is
+    # referenced: a chi root test "imports" every sibling test through the
+    # package fan-out. Only single-target import evidence counts here.
+    harness_in: Counter[str] = Counter()
+    for src, dst in _import_pairs_excluding_fanout(graph_builder):
+        if src != dst and src in adjacent_paths and dst in adjacent_paths:
+            harness_in[dst] += 1
     closing_paths: list[str] = []
     for layer in order:
         cands = by_layer.get(layer)
@@ -709,6 +807,27 @@ def _curate_tour(
             # suite's face must be something that verifies behavior.
             and not _is_fixture_shaped(p)
         ]
+        # Drop harness files unless that would leave nothing. One
+        # single-target import from another test file is already harness
+        # evidence — leaf tests have zero (okio's CipherFactory.kt had
+        # exactly one cipher-test importer and still faced the suite).
+        non_harness = [p for p in code_cands if harness_in.get(p, 0) < 1]
+        if non_harness:
+            code_cands = non_harness
+        # When the repo declares test *projects* (.NET's Foo.Tests/ or
+        # Foo.Specs/ sibling-project convention), the suite lives there —
+        # a test/Shared/ helper dir next to them is auxiliary compile-time
+        # plumbing, not where a maintainer says tests start.
+        in_test_project = [
+            p
+            for p in code_cands
+            if any(
+                seg.endswith(_TEST_PROJECT_DIR_SUFFIXES) and len(seg) > 1
+                for seg in PurePosixPath(p).parts[:-1]
+            )
+        ]
+        if in_test_project:
+            code_cands = in_test_project
         if code_cands:
             # No suite anchor (non-pytest/rspec suites): prefer the repo's
             # dominant language (gson's suite face is a .java, not a stray
@@ -753,7 +872,7 @@ def _curate_tour(
             if s.kind == "code"
             and s.target_path != overview_target
             and file_layers.get(s.target_path) not in ADJACENT_LAYERS
-            and not is_example_path(s.target_path)
+            and not is_support_path(s.target_path)
         ]
         walk = walk[:budget]
 
@@ -778,7 +897,7 @@ def _curate_tour(
                 for p in by_layer.get(layer, [])
                 if p not in walk
                 and p != overview_target
-                and not is_example_path(p)
+                and not is_support_path(p)
                 and not PurePosixPath(p).parts[0].startswith(".")  # never a layer face
             ]
             if not candidates:
