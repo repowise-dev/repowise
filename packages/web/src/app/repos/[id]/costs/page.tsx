@@ -19,11 +19,12 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@repowise-dev/ui/ui/ta
 import {
   CacheHitRatioCard,
   CostHeatmap,
+  DistillSavingsCard,
   ProviderComparison,
   OperationBreakdown,
 } from "@repowise-dev/ui/costs";
-import { listCosts, getCostSummary } from "@/lib/api/costs";
-import type { CostGroup, CostSummary } from "@/lib/api/costs";
+import { listCosts, getCostSummary, getDistillSavings } from "@/lib/api/costs";
+import type { CostGroup, CostSummary, DistillSavings } from "@/lib/api/costs";
 import { formatCost, formatNumber, formatTokens } from "@repowise-dev/ui/lib/format";
 
 export default function CostsPage() {
@@ -52,6 +53,12 @@ export default function CostsPage() {
   const { data: opGroups } = useSWR<CostGroup[]>(
     `costs-groups:${id}:operation`,
     () => listCosts(id, { by: "operation" }),
+    { revalidateOnFocus: false },
+  );
+
+  const { data: distillSavings } = useSWR<DistillSavings>(
+    `distill-savings:${id}`,
+    () => getDistillSavings(id),
     { revalidateOnFocus: false },
   );
 
@@ -166,6 +173,7 @@ export default function CostsPage() {
 
         <TabsContent value="cache" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <DistillSavingsCard data={distillSavings} />
             <CacheHitRatioCard />
             <Card>
               <CardHeader className="pb-2">

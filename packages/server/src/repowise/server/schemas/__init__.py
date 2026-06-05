@@ -136,6 +136,8 @@ from .symbols import (
 from .ui_helpers import (
     CostGroupResponse,
     CostSummaryResponse,
+    DistillSavingsGroup,
+    DistillSavingsResponse,
     SetActiveProviderRequest,
     SetApiKeyRequest,
     WebhookResponse,
@@ -206,6 +208,8 @@ __all__ = [
     "DecisionRecordResponse",
     "DecisionStatusUpdate",
     "DirectRiskEntry",
+    "DistillSavingsGroup",
+    "DistillSavingsResponse",
     "EgoGraphResponse",
     "ExecutionFlowEntry",
     "ExecutionFlowsResponse",
