@@ -211,6 +211,42 @@ class TestSubmodulePlumbing:
 
 
 # ---------------------------------------------------------------------------
+# Traverser monorepo detection — must share _walk's boundary semantics
+# ---------------------------------------------------------------------------
+
+
+class TestMonorepoDetectionBoundaries:
+    def test_nested_repo_not_reported_as_package(self, tmp_path: Path) -> None:
+        """A sibling/vendored repo inside the tree is not a package of THIS
+        repo — and must not be rglob-scanned for language/entry points
+        (that scan ran for minutes per sibling on multi-repo directories)."""
+        from repowise.core.ingestion.traverser import FileTraverser
+
+        _write(tmp_path, "packages/app/package.json", "{}")
+        _write(tmp_path, "packages/app/index.ts", "export {}")
+        (tmp_path / "sibling" / ".git").mkdir(parents=True)
+        _write(tmp_path, "sibling/package.json", "{}")
+        _write(tmp_path, "node_modules/dep/package.json", "{}")
+
+        traverser = FileTraverser(tmp_path)
+        packages, _ = traverser._detect_monorepo()
+        paths = {p.path for p in packages}
+        assert "packages/app" in paths
+        assert "sibling" not in paths
+        assert all(not p.startswith("node_modules") for p in paths)
+
+    def test_nested_repo_reported_when_opted_in(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.traverser import FileTraverser
+
+        (tmp_path / "sibling" / ".git").mkdir(parents=True)
+        _write(tmp_path, "sibling/package.json", "{}")
+
+        traverser = FileTraverser(tmp_path, include_nested_repos=True)
+        packages, _ = traverser._detect_monorepo()
+        assert "sibling" in {p.path for p in packages}
+
+
+# ---------------------------------------------------------------------------
 # external_systems._discover — depth bound must match the historical rglob
 # ---------------------------------------------------------------------------
 
@@ -243,9 +279,6 @@ class TestExternalSystemsDiscoverDepth:
 _RGLOB_ALLOWLIST = {
     # The shared implementation (docstring references rglob semantics).
     "fs_walk.py",
-    # FileTraverser monorepo-package probes: bounded to detected package
-    # dirs and guarded by the traverser's own exclusion config.
-    "ingestion/traverser.py",
     # Decision mining: bounded to an explicit docs/ directory.
     "analysis/decisions/extractor.py",
 }
