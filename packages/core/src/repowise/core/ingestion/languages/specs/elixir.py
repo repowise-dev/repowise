@@ -8,6 +8,9 @@ SPEC = LanguageSpec(
     # ExUnit conventions: test/foo_test.exs + test/test_helper.exs.
     test_stem_suffixes=("_test",),
     test_fixture_stems=("test_helper",),
+    # OTP Application callback (lib/<app>/application.ex); mix.exs is a
+    # manifest, not an entry.
+    entry_point_patterns=("application.ex",),
     extensions=frozenset({".ex", ".exs"}),
     is_passthrough=True,
 )

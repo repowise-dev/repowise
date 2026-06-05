@@ -7,6 +7,7 @@ SPEC = LanguageSpec(
     display_name="Dart",
     # package:test convention: test/foo_test.dart.
     test_stem_suffixes=("_test",),
+    entry_point_patterns=("main.dart",),
     extensions=frozenset({".dart"}),
     is_passthrough=True,
 )

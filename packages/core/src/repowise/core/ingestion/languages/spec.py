@@ -56,6 +56,12 @@ class LanguageSpec:
     # registry's generic set). Union feeds the tour's entry-stem bonus.
     entry_stems: tuple[str, ...] = ()
 
+    # Stems this language contributes to the traverser's is_entry_point
+    # *flag* (strong evidence — python's wsgi/asgi). Distinct from
+    # entry_stems: the flag set is deliberately tighter than the tour's
+    # weak-bonus stem set.
+    entry_flag_stems: tuple[str, ...] = ()
+
     # Test-shaped filename rules this language contributes to layer
     # inference (unions are consumed in generation/layers.py):
     test_stem_prefixes: tuple[str, ...] = ()  # ("test_",)

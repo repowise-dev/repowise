@@ -30,6 +30,15 @@ _GENERIC_ENTRY_STEMS: frozenset[str] = frozenset(
     {"main", "index", "app", "server", "cli", "bootstrap", "entry"}
 )
 
+# Stems the traverser's is_entry_point *flag* accepts for any language —
+# deliberately a different (tighter on cli/bootstrap/entry, looser on
+# run/start) set than the tour-bonus stems above: the flag is strong
+# evidence, the tour stem a weak bonus. Per-language flag stems
+# (wsgi/asgi → python) live on the specs.
+_GENERIC_ENTRY_FLAG_STEMS: frozenset[str] = frozenset(
+    {"main", "index", "app", "run", "server", "start"}
+)
+
 # =========================================================================
 # LanguageRegistry
 # =========================================================================
@@ -145,6 +154,12 @@ class LanguageRegistry:
         """Generic + per-language entry-point filename stems (tour bonus set)."""
         return _GENERIC_ENTRY_STEMS | frozenset(
             stem for s in self._specs.values() for stem in s.entry_stems
+        )
+
+    def entry_flag_stems(self) -> frozenset[str]:
+        """Generic + per-language stems for the traverser's is_entry_point flag."""
+        return _GENERIC_ENTRY_FLAG_STEMS | frozenset(
+            stem for s in self._specs.values() for stem in s.entry_flag_stems
         )
 
     def test_stem_prefixes(self) -> tuple[str, ...]:

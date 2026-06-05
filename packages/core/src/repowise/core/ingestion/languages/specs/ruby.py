@@ -10,7 +10,11 @@ SPEC = LanguageSpec(
     test_fixture_stems=("spec_helper", "test_helper"),
     # Rails app/jobs/ (models/controllers/services are generic tokens already).
     layer_dir_hints=(("jobs", "Service"),),
+    entry_point_patterns=("main.rb", "app.rb", "config.ru"),
     extensions=frozenset({".rb"}),
+    # Rack's config.ru is Ruby with a .ru extension — without this mapping
+    # the traverser would skip it as unknown and the entry pattern is dead.
+    special_filenames=frozenset({"config.ru"}),
     grammar_package="tree_sitter_ruby",
     scm_file="ruby.scm",
     heritage_node_types=frozenset({"class"}),

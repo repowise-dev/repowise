@@ -177,15 +177,28 @@ _NON_CODE_ALIASES = {
 # a schema.graphql named entry-like could still earn entry bonuses today.
 _NON_CODE_TAGS_MISSING = {"graphql", "openapi", "proto", "sql", "unknown", "xaml"}
 
-# Entry-point patterns that lived ONLY in the (deleted) dead
-# LanguageConfig.entry_point_patterns table — these languages' entry
-# flagging is OFF today; merging them into the specs is Phase 1 work.
-_PHASE1_ENTRY_PATTERN_BACKLOG = {
+# Entry patterns merged from the dead LanguageConfig table in Phase 1.3
+# (the backlog recorded by Phase 0). "public/index.php" was intentionally
+# dropped: patterns match bare filenames, and "index.php" subsumes it.
+_PHASE13_MERGED_ENTRY_PATTERNS = {
     "kotlin": ("Main.kt", "Application.kt"),
     "ruby": ("main.rb", "app.rb", "config.ru"),
     "swift": ("main.swift", "App.swift"),
     "scala": ("Main.scala", "App.scala"),
-    "php": ("index.php", "public/index.php"),
+    "php": ("index.php", "artisan"),
+    "elixir": ("application.ex",),
+    "clojure": ("core.clj", "main.clj"),
+    "dart": ("main.dart",),
+    "haskell": ("Main.hs",),
+    "ocaml": ("main.ml",),
+    "erlang": ("*_app.erl",),
+    "fsharp": ("Program.fs",),
+    "crystal": ("main.cr",),
+    "nim": ("main.nim",),
+    "dlang": ("app.d",),
+    "elm": ("Main.elm",),
+    "zig": ("main.zig",),
+    "objectivec": ("main.m",),
 }
 
 
@@ -201,11 +214,19 @@ class TestDriftManifests:
         non_code_tags = {s.tag for s in REGISTRY.all_specs() if not s.is_code}
         assert non_code_tags - _NON_CODE_LANGUAGES == _NON_CODE_TAGS_MISSING
 
-    def test_backlogged_entry_patterns_still_absent_from_specs(self) -> None:
-        # When Phase 1 merges these into the specs, delete the backlog entry
-        # here and extend the spec's own tests instead.
-        for tag, patterns in _PHASE1_ENTRY_PATTERN_BACKLOG.items():
+    def test_merged_entry_patterns_present_on_specs(self) -> None:
+        # Phase 1.3 closed the entry-pattern backlog: every language with a
+        # citable convention now declares it (skips — julia, r, lua,
+        # PHP bin/console — are recorded in DECISIONS D-022/D-023).
+        for tag, patterns in _PHASE13_MERGED_ENTRY_PATTERNS.items():
             spec = REGISTRY.get(tag)
-            assert spec is not None
-            for pattern in patterns:
-                assert pattern not in spec.entry_point_patterns, (tag, pattern)
+            assert spec is not None, tag
+            assert spec.entry_point_patterns == patterns, tag
+
+    def test_entry_flag_stems_match_historical_traverser_set(self) -> None:
+        # The traverser's is_entry_point stem set, now registry-derived —
+        # parity with the historical hard-coded frozenset (run.py/server.py
+        # extras were redundant with the run/server stems).
+        assert REGISTRY.entry_flag_stems() == frozenset(
+            {"main", "index", "app", "run", "server", "start", "wsgi", "asgi"}
+        )

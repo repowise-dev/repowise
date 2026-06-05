@@ -8,7 +8,12 @@ SPEC = LanguageSpec(
     import_support="partial",
     # PHPUnit convention: FooTest.php under tests/.
     test_camel_suffixes=("Test",),
+    # Front-controller + Laravel CLI ("artisan" carries no extension —
+    # the special-filename mapping keeps the pattern alive in the traverser).
+    entry_point_patterns=("index.php", "artisan"),
     extensions=frozenset({".php"}),
+    special_filenames=frozenset({"artisan"}),
+    shebang_tokens=("php",),
     grammar_package="tree_sitter_php",
     grammar_loader="language_php",
     scm_file="php.scm",
