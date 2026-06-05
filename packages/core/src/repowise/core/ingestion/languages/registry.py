@@ -16,6 +16,7 @@ the TypeScript file from this registry.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from .spec import LanguageSpec
@@ -165,6 +166,35 @@ class LanguageRegistry:
     def suite_anchor_stems(self) -> frozenset[str]:
         """Union of test-suite anchor stems for the tour's closing stop."""
         return frozenset(p for s in self._specs.values() for p in s.suite_anchor_stems)
+
+    def camel_test_res_by_extension(self) -> dict[str, re.Pattern[str]]:
+        """Per-extension case-sensitive camel-boundary test-suffix regexes.
+
+        Each language's ``test_camel_suffixes`` compile to one anchored
+        pattern (``(?<=[a-z0-9])(?:Tests|Test|IT)$``) keyed by that
+        language's own extensions — the lowercase-boundary lookbehind is what
+        keeps ``latest.java``/``contest.cs`` and bare ``Test.java`` out.
+        """
+        result: dict[str, re.Pattern[str]] = {}
+        for spec in self._specs.values():
+            if not spec.test_camel_suffixes:
+                continue
+            # Longest-first so "Tests" wins over "Test" inside the alternation.
+            alternation = "|".join(
+                sorted(spec.test_camel_suffixes, key=lambda sfx: (-len(sfx), sfx))
+            )
+            pattern = re.compile(rf"(?<=[a-z0-9])(?:{alternation})$")
+            for ext in spec.extensions:
+                result.setdefault(ext, pattern)
+        return result
+
+    def test_dir_paths(self) -> tuple[str, ...]:
+        """Union of multi-segment test-root dir paths, sorted for determinism."""
+        return tuple(sorted({p for s in self._specs.values() for p in s.test_dir_paths}))
+
+    def test_dir_suffixes(self) -> tuple[str, ...]:
+        """Union of case-sensitive test-project dir suffixes, sorted."""
+        return tuple(sorted({p for s in self._specs.values() for p in s.test_dir_suffixes}))
 
     def layer_dir_hints(self) -> tuple[tuple[str, str], ...]:
         """Union of per-language (dir_token, layer_name) hints, sorted."""

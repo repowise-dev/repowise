@@ -6,6 +6,8 @@ SPEC = LanguageSpec(
     tag="swift",
     display_name="Swift",
     import_support="partial",
+    # XCTest/SPM conventions: FooTest(s).swift; Tests/ root is a generic token.
+    test_camel_suffixes=("Test", "Tests"),
     extensions=frozenset({".swift"}),
     grammar_package="tree_sitter_swift",
     scm_file="swift.scm",

@@ -6,6 +6,9 @@ SPEC = LanguageSpec(
     tag="kotlin",
     display_name="Kotlin",
     import_support="full",
+    # JUnit/Kotest conventions: FooTest/FooTests/FooSpec; Gradle sourceset root.
+    test_camel_suffixes=("Test", "Tests", "Spec"),
+    test_dir_paths=("src/test/kotlin",),
     extensions=frozenset({".kt", ".kts"}),
     grammar_package="tree_sitter_kotlin",
     scm_file="kotlin.scm",

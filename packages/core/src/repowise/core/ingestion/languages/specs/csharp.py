@@ -6,6 +6,9 @@ SPEC = LanguageSpec(
     tag="csharp",
     display_name="C#",
     import_support="full",
+    # xUnit/NUnit conventions: FooTest(s)/FooSpec(s); sibling Foo.Tests/ projects.
+    test_camel_suffixes=("Test", "Tests", "Spec", "Specs"),
+    test_dir_suffixes=(".Tests",),
     extensions=frozenset({".cs"}),
     grammar_package="tree_sitter_c_sharp",
     scm_file="csharp.scm",

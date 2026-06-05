@@ -6,6 +6,9 @@ SPEC = LanguageSpec(
     tag="java",
     display_name="Java",
     import_support="full",
+    # JUnit/Maven conventions: FooTest/FooTests/FooIT; Surefire/Failsafe roots.
+    test_camel_suffixes=("Test", "Tests", "IT"),
+    test_dir_paths=("src/test/java", "src/it/java", "src/integrationtest/java"),
     extensions=frozenset({".java"}),
     grammar_package="tree_sitter_java",
     scm_file="java.scm",

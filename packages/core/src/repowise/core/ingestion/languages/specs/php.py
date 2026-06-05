@@ -6,6 +6,8 @@ SPEC = LanguageSpec(
     tag="php",
     display_name="PHP",
     import_support="partial",
+    # PHPUnit convention: FooTest.php under tests/.
+    test_camel_suffixes=("Test",),
     extensions=frozenset({".php"}),
     grammar_package="tree_sitter_php",
     grammar_loader="language_php",

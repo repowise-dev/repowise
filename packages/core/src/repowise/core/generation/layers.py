@@ -71,17 +71,50 @@ _TEST_FILE_STEM_SUFFIXES = _LANG_REGISTRY.test_stem_suffixes()
 _TEST_FILE_INFIXES = _LANG_REGISTRY.test_infixes()
 _TEST_FIXTURE_STEMS = _LANG_REGISTRY.test_fixture_stems()
 
+# Case-sensitive camel-boundary suffix patterns (FooTest.java, BarSpec.scala),
+# keyed by extension so each language's convention applies only to its own
+# files (rule 12: polyglot fairness). The lowercase-boundary lookbehind keeps
+# `latest.java`, `contest.cs`, and bare `Test.java` out (rule 11).
+_TEST_CAMEL_RES = _LANG_REGISTRY.camel_test_res_by_extension()
+
+# Multi-segment test roots (src/it/java) and case-sensitive test-project dir
+# suffixes (.NET sibling Foo.Tests/ projects). Both are unambiguous — like
+# tests/ and __tests__/, they mark any file beneath them.
+_TEST_DIR_PATHS: tuple[tuple[str, ...], ...] = tuple(
+    tuple(p.split("/")) for p in _LANG_REGISTRY.test_dir_paths()
+)
+_TEST_DIR_SUFFIXES = _LANG_REGISTRY.test_dir_suffixes()
+
 
 def _is_test_file_name(filename: str) -> bool:
     """Whether *filename* alone marks a test (test_x.py, x_test.go, x.spec.ts, …)."""
     name = filename.lower()
     stem = PurePosixPath(name).stem
-    return (
+    if (
         stem in _TEST_FIXTURE_STEMS
         or stem.startswith(_TEST_FILE_STEM_PREFIXES)
         or stem.endswith(_TEST_FILE_STEM_SUFFIXES)
         or any(m in name for m in _TEST_FILE_INFIXES)
-    )
+    ):
+        return True
+    camel_re = _TEST_CAMEL_RES.get(PurePosixPath(filename).suffix.lower())
+    return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
+
+
+def _is_test_dir_path(segments: list[str], original_segments: list[str]) -> bool:
+    """Whether the directory path itself is an unambiguous test root.
+
+    *segments* are lowercased dir names, *original_segments* preserve case
+    for the case-sensitive project-dir suffix rule (``Foo.Tests/``).
+    """
+    for needle in _TEST_DIR_PATHS:
+        span = len(needle)
+        if span <= len(segments) and any(
+            tuple(segments[i : i + span]) == needle
+            for i in range(len(segments) - span + 1)
+        ):
+            return True
+    return any(seg.endswith(_TEST_DIR_SUFFIXES) for seg in original_segments)
 
 
 # Example/demo directories: documentation-by-code, not the system itself.
@@ -134,8 +167,11 @@ def infer_layer(path: str) -> str:
     returns the first layer whose hint set contains a segment. Falls back to
     :data:`DEFAULT_LAYER` when nothing matches.
     """
-    parts = [s.lower() for s in PurePosixPath(path).parts]
-    filename = parts[-1] if parts else ""
+    original_parts = list(PurePosixPath(path).parts)
+    parts = [s.lower() for s in original_parts]
+    # Original case is preserved for the case-sensitive rules (camel-suffix
+    # filenames, .NET ``Foo.Tests/`` project dirs) — rule 11: case matters.
+    filename = original_parts[-1] if original_parts else ""
     segments = parts[:-1]  # drop filename
 
     if _is_test_file_name(filename):
@@ -146,6 +182,9 @@ def infer_layer(path: str) -> str:
             continue
         if seg in _AMBIGUOUS_TEST_DIR_TOKENS and not _is_test_file_name(filename):
             continue  # "spec(s)/" without a test-shaped file: not a test root
+        return "Test"
+
+    if _is_test_dir_path(segments, original_parts[:-1]):
         return "Test"
 
     # Repo-root dot-directories (.github, .agents, .claude, .vscode, …) hold

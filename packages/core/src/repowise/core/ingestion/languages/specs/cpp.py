@@ -6,6 +6,9 @@ SPEC = LanguageSpec(
     tag="cpp",
     display_name="C++",
     import_support="full",
+    # GoogleTest conventions: foo_test.cc / foo_unittest.cc / test_foo.cpp.
+    test_stem_prefixes=("test_",),
+    test_stem_suffixes=("_test", "_unittest"),
     extensions=frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"}),
     grammar_package="tree_sitter_cpp",
     scm_file="cpp.scm",

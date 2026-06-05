@@ -91,6 +91,67 @@ def test_infer_layer_test_root_beats_deeper_hints():
 
 
 # ---------------------------------------------------------------------------
+# Phase 1.1 — case-sensitive camel-suffix test conventions (per language)
+# ---------------------------------------------------------------------------
+
+
+def test_infer_layer_camel_suffix_tests_per_language():
+    # The convention's own case applies: FooTest.java is a test wherever it sits.
+    assert infer_layer("gson/src/main/java/com/google/gson/JsonParserTest.java") == "Test"
+    assert infer_layer("src/GsonTests.java") == "Test"
+    assert infer_layer("src/SplitFunctionalIT.java") == "Test"
+    assert infer_layer("app/PaymentServiceTest.kt") == "Test"
+    assert infer_layer("app/CheckoutSpec.kt") == "Test"
+    assert infer_layer("core/ParserSpec.scala") == "Test"
+    assert infer_layer("core/RouterSuite.scala") == "Test"
+    assert infer_layer("Billing/InvoiceTests.cs") == "Test"
+    assert infer_layer("Billing/InvoiceSpecs.cs") == "Test"
+    assert infer_layer("Sources/AppCore/RouterTests.swift") == "Test"
+    assert infer_layer("src/Service/MailerTest.php") == "Test"
+    assert infer_layer("src/ParserSpec.hs") == "Test"
+
+
+def test_infer_layer_camel_suffix_false_positive_guards():
+    # Lowercase boundaries and bare names never match (D-005): `latest`,
+    # `contest`, `Test.java` (no prefix), `MyTestimony` are not tests.
+    assert infer_layer("src/latest.java") != "Test"
+    assert infer_layer("src/contest.cs") != "Test"
+    assert infer_layer("src/Test.java") != "Test"
+    assert infer_layer("app/MyTestimony.kt") != "Test"
+    assert infer_layer("src/UNIT.java") != "Test"  # uppercase boundary before IT
+    # Conventions don't leak across languages: Java's IT rule means nothing
+    # for Python; Haskell's Spec rule means nothing for Go (rule 12).
+    assert infer_layer("src/SplitIT.py") != "Test"
+    assert infer_layer("pkg/HandlerSpec.go") != "Test"
+
+
+def test_infer_layer_camel_suffix_works_without_lowercase_filename_callers():
+    # sinatra's vendored spec/okjson.rb regression: an ambiguous spec/ dir
+    # with a non-test-shaped file stays non-test even with camel rules live.
+    assert infer_layer("rack-protection/spec/okjson.rb") != "Test"
+
+
+def test_infer_layer_multi_segment_test_roots():
+    # Maven/Gradle/sbt sourceset roots mark any file beneath them.
+    assert infer_layer("module/src/it/java/com/x/FlowVerifier.java") == "Test"
+    assert infer_layer("module/src/integrationTest/java/com/x/Flow.java") == "Test"
+    assert infer_layer("core/src/it/scala/com/x/Pipeline.scala") == "Test"
+    # src/test/java was already covered by the generic "test" token.
+    assert infer_layer("gson/src/test/java/com/google/gson/Helper.java") == "Test"
+    # "it" alone is NOT a test token — only the full sourceset shape matches.
+    assert infer_layer("docs/it/translation.md") != "Test"
+    assert infer_layer("src/it/locale.py") != "Test"
+
+
+def test_infer_layer_dotnet_test_project_dirs():
+    # Sibling Foo.Tests/ projects are test roots for everything inside.
+    assert infer_layer("Billing.Tests/InvoiceFixture.cs") == "Test"
+    assert infer_layer("src/Billing.Tests/data/sample.json") == "Test"
+    # Case matters: a lowercase "billing.tests" dir is not the convention.
+    assert infer_layer("billing.tests/notes.md") != "Test"
+
+
+# ---------------------------------------------------------------------------
 # compute_layer_order — top→bottom by dependency direction
 # ---------------------------------------------------------------------------
 

@@ -54,7 +54,9 @@ class TestParityGoldens:
         assert set(layers._TEST_FILE_STEM_PREFIXES) == {"test_"}
 
     def test_test_stem_suffixes_match_historical_set(self) -> None:
-        assert set(layers._TEST_FILE_STEM_SUFFIXES) == {"_test", "_spec"}
+        # Phase 1.1 added "_unittest" (C/C++ GoogleTest convention) to the
+        # historical {"_test", "_spec"} — a conscious Phase 1 change.
+        assert set(layers._TEST_FILE_STEM_SUFFIXES) == {"_test", "_spec", "_unittest"}
 
     def test_test_infixes_match_historical_set(self) -> None:
         assert set(layers._TEST_FILE_INFIXES) == {".test.", ".spec."}
@@ -72,6 +74,29 @@ class TestParityGoldens:
     def test_layer_dir_hints_empty_in_phase0(self) -> None:
         # Per-language layer hints land in Phase 1 with per-repo review.
         assert REGISTRY.layer_dir_hints() == ()
+
+    def test_camel_suffix_extension_map(self) -> None:
+        # Phase 1.1: case-sensitive camel-boundary test suffixes per language.
+        camel = REGISTRY.camel_test_res_by_extension()
+        assert set(camel) == {
+            ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
+            ".hs", ".lhs",
+        }
+        assert camel[".java"].pattern == r"(?<=[a-z0-9])(?:Tests|Test|IT)$"
+        assert camel[".scala"].pattern == r"(?<=[a-z0-9])(?:Suite|Spec|Test)$"
+
+    def test_test_dir_paths_union(self) -> None:
+        assert REGISTRY.test_dir_paths() == (
+            "src/integrationtest/java",
+            "src/it/java",
+            "src/it/scala",
+            "src/test/java",
+            "src/test/kotlin",
+            "src/test/scala",
+        )
+
+    def test_test_dir_suffixes_union(self) -> None:
+        assert REGISTRY.test_dir_suffixes() == (".Tests",)
 
 
 # ---------------------------------------------------------------------------

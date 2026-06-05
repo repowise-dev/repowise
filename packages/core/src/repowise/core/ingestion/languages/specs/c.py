@@ -6,6 +6,9 @@ SPEC = LanguageSpec(
     tag="c",
     display_name="C",
     import_support="full",
+    # Same test conventions as C++ (GoogleTest/Unity): foo_test.c / test_foo.c.
+    test_stem_prefixes=("test_",),
+    test_stem_suffixes=("_test", "_unittest"),
     extensions=frozenset({".c"}),
     shares_grammar_with="cpp",
     scm_file="c.scm",

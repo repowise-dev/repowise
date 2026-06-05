@@ -63,6 +63,21 @@ class LanguageSpec:
     test_infixes: tuple[str, ...] = ()  # (".test.", ".spec.")
     test_fixture_stems: tuple[str, ...] = ()  # ("conftest",)
 
+    # Case-sensitive camel-boundary test suffixes, applied ONLY to this
+    # language's own extensions (rule 12: per-file-language). ``FooTest.java``
+    # matches; ``latest.java`` and bare ``Test.java`` never do (rule 11:
+    # conventions match with their own case sensitivity).
+    test_camel_suffixes: tuple[str, ...] = ()  # ("Test", "Tests", "IT")
+
+    # Multi-segment test-root directory paths, lowercase, matched as
+    # consecutive path segments at any depth ("src/it/java"). Single-token
+    # roots (tests/, __tests__/) stay in the generic layer table.
+    test_dir_paths: tuple[str, ...] = ()
+
+    # Case-sensitive directory-segment suffixes that mark a test project
+    # directory (.NET sibling test projects: "Foo.Tests/").
+    test_dir_suffixes: tuple[str, ...] = ()
+
     # Stems that anchor the tour's closing test-suite stop (conftest-likes).
     suite_anchor_stems: tuple[str, ...] = ()
 
