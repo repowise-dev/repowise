@@ -379,6 +379,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # unused_export false positives (audit #23).
         self._resolve_member_reads(progress=progress)
 
+        # --- C/C++ header ↔ implementation pairing ---
+        # foo.h -> foo.c (same stem, same dir): consumers including the
+        # header must be able to reach the implementation.
+        self._resolve_cpp_header_pairs(progress=progress)
+
         # --- C# partial-class co-fragments ---
         # Fragments of one partial type across files are literally one
         # class; link them bidirectionally so neither reads as orphaned.

@@ -143,6 +143,73 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
+    def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
+        """Pair C/C++ headers with their same-stem same-dir implementations.
+
+        ``foo.c`` → ``foo.h`` exists via the #include, but nothing ever
+        points ``foo.h`` → ``foo.c`` — so a consumer that includes the
+        header can never reach the implementation and every ``.c`` whose
+        only relationship is "implements its header" reads as orphaned.
+        The pairing edge makes BFS transit headers into implementations.
+        """
+        header_exts = (".h", ".hpp", ".hxx", ".hh", ".h++")
+        source_exts = (".c", ".cc", ".cpp", ".cxx", ".c++")
+
+        cpp_files = [
+            p
+            for p, pf in self._parsed_files.items()
+            if pf.file_info.language in ("c", "cpp")
+        ]
+        if not cpp_files:
+            return
+
+        phase = "graph.header_pairs"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            from pathlib import PurePosixPath
+
+            by_dir_stem: dict[tuple[str, str], dict[str, list[str]]] = {}
+            for p in cpp_files:
+                pp = PurePosixPath(p)
+                suffix = pp.suffix.lower()
+                if suffix in header_exts:
+                    kind = "header"
+                elif suffix in source_exts:
+                    kind = "source"
+                else:
+                    continue
+                key = (pp.parent.as_posix(), pp.stem.lower())
+                by_dir_stem.setdefault(key, {}).setdefault(kind, []).append(p)
+
+            added = 0
+            for _key, kinds in sorted(by_dir_stem.items()):
+                headers = sorted(kinds.get("header", []))
+                sources = sorted(kinds.get("source", []))
+                for h in headers:
+                    for s in sources:
+                        for a, b in ((h, s), (s, h)):
+                            if not self._graph.has_node(a) or not self._graph.has_node(b):
+                                continue
+                            if self._graph.has_edge(a, b):
+                                continue
+                            self._graph.add_edge(
+                                a,
+                                b,
+                                edge_type="imports",
+                                imported_names=[],
+                                hint_source="header_source_pair",
+                            )
+                            added += 1
+            log.info("header_pair_edges", added=added)
+        except Exception as exc:
+            log.warning("cpp_header_pairs_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
     def _resolve_csharp_partials(self, ctx: Any, progress: Any | None = None) -> None:
         """Link C# ``partial`` co-fragments of one type bidirectionally.
 

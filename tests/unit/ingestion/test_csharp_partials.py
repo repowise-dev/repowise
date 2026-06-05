@@ -127,3 +127,4 @@ class TestNestedTypeResolution:
         edge = graph.get_edge_data("Report.cs", "Outer.cs")
         assert edge is not None
         assert edge["edge_type"] in ("imports", "type_use")
+
