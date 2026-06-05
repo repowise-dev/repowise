@@ -30,6 +30,7 @@ from typing import Any
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector, truncate_to_budget
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -39,7 +40,6 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
-from repowise.server.mcp_server.tool_context.truncation import _truncate_to_budget
 
 
 @mcp.tool()
@@ -170,5 +170,8 @@ async def get_context(
             if cross_repo:
                 target_data["cross_repo"] = cross_repo
 
-    # Enforce the global token cap. See ``_truncate_to_budget`` for strategy.
-    return _truncate_to_budget(response)
+    # Enforce the global token cap. Anything dropped is persisted via the
+    # collector so a truncated response always carries expandable
+    # ``[repowise#<ref>]`` markers instead of silently losing content.
+    collector = OmissionCollector("get_context", repo_root=ctx.path)
+    return truncate_to_budget(response, collector=collector)

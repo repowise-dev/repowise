@@ -141,9 +141,23 @@ class OmissionStore:
         With *query*, returns only the lines matching it (regex when it
         compiles, plain substring otherwise) — cheap search-within-original.
         """
+        record = self.get_record(ref, query=query)
+        return record["content"] if record is not None else None
+
+    def get_record(self, ref: str, *, query: str | None = None) -> dict | None:
+        """Like :meth:`get` but with the row's provenance metadata.
+
+        Returns ``{content, source, created_at, original_tokens, kept_tokens}``
+        or ``None`` when the ref is unknown/expired. *query* filters the
+        content lines exactly as in :meth:`get`.
+        """
         if not is_valid_ref(ref):
             return None
-        row = self._conn.execute("SELECT content FROM omissions WHERE ref = ?", (ref,)).fetchone()
+        row = self._conn.execute(
+            "SELECT content, source, created_at, original_tokens, kept_tokens "
+            "FROM omissions WHERE ref = ?",
+            (ref,),
+        ).fetchone()
         if row is None:
             return None
         self._conn.execute(
@@ -151,9 +165,15 @@ class OmissionStore:
         )
         self._conn.commit()
         content = zlib.decompress(row[0]).decode("utf-8")
-        if query is None:
-            return content
-        return _filter_lines(content, query)
+        if query is not None:
+            content = _filter_lines(content, query)
+        return {
+            "content": content,
+            "source": row[1],
+            "created_at": row[2],
+            "original_tokens": row[3],
+            "kept_tokens": row[4],
+        }
 
     def prune(self) -> None:
         """Drop rows past TTL, then oldest-first until under the size cap."""

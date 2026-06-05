@@ -26,6 +26,22 @@ def test_get_unknown_ref_returns_none(store: OmissionStore) -> None:
     assert store.get("not-a-ref") is None
 
 
+def test_get_record_returns_provenance(store: OmissionStore) -> None:
+    before = time.time()
+    ref = store.put(
+        "payload\nERROR boom", source="mcp:get_context", original_tokens=50, kept_tokens=5
+    )
+    record = store.get_record(ref)
+    assert record["content"] == "payload\nERROR boom"
+    assert record["source"] == "mcp:get_context"
+    assert record["original_tokens"] == 50
+    assert record["kept_tokens"] == 5
+    assert record["created_at"] >= before
+    # Query filtering applies to the record's content too.
+    assert store.get_record(ref, query="^ERROR")["content"] == "ERROR boom"
+    assert store.get_record("0" * 12) is None
+
+
 def test_get_with_query_filters_lines(store: OmissionStore) -> None:
     content = "FAILED test_a\npassed test_b\nFAILED test_c"
     ref = store.put(content, source="cli:test_output", original_tokens=10, kept_tokens=2)

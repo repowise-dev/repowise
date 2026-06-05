@@ -19,7 +19,9 @@ from repowise.core.persistence.models import (
     GraphNode,
     Repository,
 )
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -32,7 +34,6 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.core.registry import mcp_tool_registry as mcp
 
 _FIX_PATTERN = re.compile(
     r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",
@@ -392,6 +393,59 @@ async def _assess_one_target(
     return result_data
 
 
+def _as_path(entry: Any) -> str | None:
+    """Best-effort file path from a blast-radius list entry (str or dict)."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return (
+            entry.get("file_path")
+            or entry.get("path")
+            or entry.get("file")
+            or entry.get("missing_partner")
+            or entry.get("partner")
+        )
+    return None
+
+
+def _trim_blast_lists(
+    pr_blast_radius: dict[str, Any],
+    exclude_spec: Any,
+    collector: OmissionCollector | None = None,
+) -> dict[str, Any]:
+    """Cap the noisy ``pr_blast_radius`` lists, capturing what gets dropped.
+
+    ``pr_blast_radius`` is the analyzer's own payload — preserve it for
+    callers that want the full picture, but drop excluded paths and truncate
+    the noisy lists so we stay well under the 25k-token transport ceiling on
+    PRs that touch many files. With a *collector*, every entry trimmed for
+    size is persisted to the omission store (excluded paths are not — they
+    are filtered by policy, not budget).
+    """
+    trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
+    for key, cap in (
+        ("transitive_affected", 15),
+        ("cochange_warnings", 10),
+        ("test_gaps", 10),
+        ("recommended_reviewers", 5),
+    ):
+        value = trimmed_blast.get(key)
+        if not isinstance(value, list):
+            continue
+        if exclude_spec:
+            value = [e for e in value if not is_excluded(_as_path(e), exclude_spec)]
+            trimmed_blast[key] = value
+        if len(value) > cap:
+            trimmed_blast[key] = value[:cap]
+            trimmed_blast[f"{key}_truncated_total"] = len(value)
+            if collector is not None:
+                collector.add(
+                    f"pr_blast_radius.{key} beyond cap={cap} ({len(value) - cap} dropped)",
+                    value[cap:],
+                )
+    return trimmed_blast
+
+
 @mcp.tool()
 async def get_risk(
     targets: list[str],
@@ -631,48 +685,23 @@ async def get_risk(
         "targets": {r["target"]: r for r in results},
     }
 
+    collector = OmissionCollector("get_risk", repo_root=ctx.path)
     if pr_blast_radius is not None:
         # PR mode — drop global_hotspots (irrelevant to a specific diff), trim
         # per-target co-change lists, and synthesize a tight directive the
         # agent can act on without parsing the whole blast-radius dossier.
+        # Everything trimmed below is persisted via the collector so the
+        # response carries an expandable [repowise#<ref>] marker for it.
         for r in response["targets"].values():
             partners = r.get("co_change_partners") or []
             if len(partners) > 3:
                 r["co_change_partners"] = partners[:3]
-
-        def _as_path(entry: Any) -> str | None:
-            if isinstance(entry, str):
-                return entry
-            if isinstance(entry, dict):
-                return (
-                    entry.get("file_path")
-                    or entry.get("path")
-                    or entry.get("file")
-                    or entry.get("missing_partner")
-                    or entry.get("partner")
+                collector.add(
+                    f"{r.get('target')} :: co_change_partners beyond 3",
+                    partners[3:],
                 )
-            return None
 
-        # ``pr_blast_radius`` is the analyzer's own payload — preserve it for
-        # callers that want the full picture, but drop excluded paths and
-        # truncate the noisy lists so we stay well under the 25k-token transport
-        # ceiling on PRs that touch many files.
-        trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
-        for key, cap in (
-            ("transitive_affected", 15),
-            ("cochange_warnings", 10),
-            ("test_gaps", 10),
-            ("recommended_reviewers", 5),
-        ):
-            value = trimmed_blast.get(key)
-            if not isinstance(value, list):
-                continue
-            if exclude_spec:
-                value = [e for e in value if not is_excluded(_as_path(e), exclude_spec)]
-                trimmed_blast[key] = value
-            if len(value) > cap:
-                trimmed_blast[key] = value[:cap]
-                trimmed_blast[f"{key}_truncated_total"] = len(value)
+        trimmed_blast = _trim_blast_lists(pr_blast_radius, exclude_spec, collector)
         response["pr_blast_radius"] = trimmed_blast
 
         # Directive: 3 short lists the agent can read in one glance. Each
@@ -759,4 +788,5 @@ async def get_risk(
         response["global_hotspots"] = global_hotspots
 
     response["_meta"] = _build_meta(repository=repository)
+    collector.attach(response)
     return response
