@@ -63,7 +63,15 @@ def ensure_clone(name: str, spec: dict) -> Path:
     source = spec["source"]
     if not (dest / ".git").exists():
         WORK_DIR.mkdir(parents=True, exist_ok=True)
-        src = source if source.startswith(("http://", "https://", "git@")) else str(REPO_ROOT / source)
+        if source.startswith(("http://", "https://", "git@")):
+            src = source
+        else:
+            # Relative sources resolve against this script's dir first when
+            # they name a committed bundle file (fixtures/*.bundle), else
+            # against the repo root ("." = repowise itself). git clones
+            # bundles like any other repo.
+            local = HERE / source
+            src = str(local if local.is_file() else REPO_ROOT / source)
         print(f"  cloning {name} from {src} …")
         subprocess.run(["git", "clone", "--quiet", src, str(dest)], check=True)
     head = subprocess.run(

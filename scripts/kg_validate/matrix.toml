@@ -12,7 +12,7 @@ language = "go"
 tier = 1
 
 [django]
-source = "test-repos/django"
+source = "https://github.com/django/django"
 sha = "a53e02af6d7a07d0367b534f7107a0e2a37e3d34"
 language = "python"
 tier = 1
@@ -30,7 +30,7 @@ language = "rust"
 tier = 1
 
 [flask]
-source = "test-repos/flask"
+source = "https://github.com/pallets/flask"
 sha = "954f5684e4841aad84a8eec7ace7b81a0d3f6831"
 language = "python"
 tier = 1
@@ -42,19 +42,19 @@ language = "java"
 tier = 1
 
 [httpx]
-source = "test-repos/httpx"
+source = "https://github.com/encode/httpx"
 sha = "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
 language = "python"
 tier = 1
 
 [mini-taskq]
-source = "test-repos/mini-taskq"
+source = "fixtures/mini-taskq.bundle"
 sha = "245eb8213b4ac28571d83cb5080a3146548e4324"
 language = "python"
 tier = 1
 
 [pydantic]
-source = "test-repos/pydantic"
+source = "https://github.com/pydantic/pydantic"
 sha = "86f6bbfc3597088df757e8a2c40eb04a38699492"
 language = "python"
 tier = 1
@@ -66,7 +66,7 @@ language = "python"
 tier = 1
 
 [requests]
-source = "test-repos/requests"
+source = "https://github.com/psf/requests"
 sha = "cd90742ed94d901759e26766197d0ce7c7bd9c8e"
 language = "python"
 tier = 1
@@ -78,7 +78,7 @@ language = "ruby"
 tier = 1
 
 [typst]
-source = "test-repos/typst"
+source = "https://github.com/typst/typst"
 sha = "07f5f1afca0a037e03911c8b56e8a14742ac2e8d"
 language = "rust"
 tier = 1
