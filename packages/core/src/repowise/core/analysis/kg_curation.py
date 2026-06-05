@@ -462,10 +462,23 @@ def _curate_tour(
 
     # One closing stop per adjacent layer present (the test suite) — tests
     # verify the system, they don't start it, so they never lead the walk.
+    # Face = the shallowest conftest when present (pytest's suite root),
+    # else the best code file, else anything (never a stray Cargo.toml
+    # if avoidable).
     closing_paths: list[str] = []
     for layer in order:
-        if layer in ADJACENT_LAYERS and by_layer.get(layer):
-            closing_paths.append(_best_in_layer(by_layer[layer], rank, pagerank))
+        cands = by_layer.get(layer)
+        if layer not in ADJACENT_LAYERS or not cands:
+            continue
+        conftests = sorted(
+            (p for p in cands if PurePosixPath(p).stem.lower() == "conftest"),
+            key=lambda p: (len(PurePosixPath(p).parts), p),
+        )
+        if conftests:
+            closing_paths.append(conftests[0])
+            continue
+        code_cands = [p for p in cands if type_by_path.get(p) not in {"config", "document"}]
+        closing_paths.append(_best_in_layer(code_cands or cands, rank, pagerank))
 
     # The walk = build_tour's execution order minus adjacent-layer stops,
     # truncated up front so later swaps land inside the kept window.
