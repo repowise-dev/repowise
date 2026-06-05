@@ -65,7 +65,7 @@ from repowise.cli.ui import (
 )
 from repowise.core.reasoning import REASONING_MODES
 
-from ._interactive import offer_hook_install
+from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import cost_gate_declined, format_cost, run_repo_generation, select_coverage
 from .persistence import (
     build_resume_controller,
@@ -300,6 +300,16 @@ def _run_generation_phase(
     help="Generate or skip project-local Codex MCP config and hooks.",
 )
 @click.option(
+    "--distill-hook/--no-distill-hook",
+    "distill_hook",
+    default=None,
+    help=(
+        "Install the Claude Code command-rewrite hook that routes noisy "
+        "commands (tests, builds, git, searches) through `repowise distill` "
+        "for compact output. Default: ask when interactive; skip otherwise."
+    ),
+)
+@click.option(
     "--include-submodules",
     is_flag=True,
     default=False,
@@ -368,6 +378,7 @@ def init_command(
     no_claude_md: bool,
     agents_md: bool | None,
     codex_setup: bool | None,
+    distill_hook: bool | None,
     include_submodules: bool,
     init_all: bool,
     onboarding: bool,
@@ -838,3 +849,7 @@ def init_command(
 
     # Offer to install post-commit hook (both index-only and full modes)
     offer_hook_install(console, [repo_path])
+
+    # Opt-in distill command-rewrite hook for Claude Code (single-repo only;
+    # workspace repos can enable it later via `repowise hook rewrite install`).
+    offer_distill_rewrite_hook(console, repo_path, distill_hook)

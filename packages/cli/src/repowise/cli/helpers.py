@@ -550,6 +550,21 @@ def save_config_partial(
     )
 
 
+def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
+    """Deep-merge ``distill.commands.enabled`` into ``.repowise/config.yaml``.
+
+    :func:`save_config_partial` merges shallowly at the top level, so the
+    ``distill`` block is merged here first to avoid clobbering sibling keys
+    like ``disabled_filters``.
+    """
+    cfg = load_config(repo_path)
+    distill = dict(cfg.get("distill") or {})
+    commands = dict(distill.get("commands") or {})
+    commands["enabled"] = enabled
+    distill["commands"] = commands
+    save_config_partial(repo_path, distill=distill)
+
+
 def config_fingerprint(repo_path: Path) -> str:
     """SHA-256 hex of ``.repowise/config.yaml`` + ``health-rules.json`` content.
 

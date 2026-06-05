@@ -9,6 +9,63 @@ from typing import Any
 import click
 
 
+def offer_distill_rewrite_hook(
+    console_obj: Any,
+    repo_path: Path,
+    flag: bool | None,
+) -> None:
+    """Opt-in install of the distill command-rewrite hook (Claude Code).
+
+    ``flag`` is the resolved ``--distill-hook/--no-distill-hook`` value:
+    True installs without prompting, False skips AND gates this repo off in
+    config (so a hook installed globally from another repo stays inert
+    here), None prompts when interactive and does nothing otherwise —
+    strictly opt-in.
+    """
+    import os
+
+    if os.environ.get("REPOWISE_SKIP_EDITOR_SETUP", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+    ):
+        return
+    if flag is None and not sys.stdin.isatty():
+        return
+
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+    from repowise.cli.helpers import save_distill_commands_enabled as _save_distill_enabled
+
+    adapter = ClaudeCodeAdapter()
+    if flag is None:
+        if not adapter.detect():
+            return
+        console_obj.print()
+        console_obj.print(
+            "[bold]Distill:[/bold] rewrite noisy agent commands (tests, builds, "
+            "git, searches) to `repowise distill ...` for compact output?"
+        )
+        console_obj.print(
+            "  [dim]Each rewrite is shown for approval; raw output stays "
+            "recoverable via `repowise expand`.[/dim]"
+        )
+        flag = click.confirm("  Install the Claude Code rewrite hook?", default=False)
+
+    if flag:
+        path = adapter.install_rewrite_hook()
+        if path:
+            console_obj.print(f"  [green]✓[/green] Rewrite hook installed ({path})")
+        else:
+            console_obj.print("  [yellow]Rewrite hook install failed.[/yellow]")
+        _save_distill_enabled(repo_path, enabled=True)
+    else:
+        console_obj.print(
+            "  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
+        )
+        _save_distill_enabled(repo_path, enabled=False)
+
+
 def offer_hook_install(
     console_obj: Any,
     repo_paths: list[Path],
