@@ -66,11 +66,26 @@
   )
 ) @import.statement
 
-; require/include file imports
+; require/include file imports — double-quoted strings are
+; encapsed_string nodes, single-quoted (the common form) are plain
+; string nodes, and the __DIR__ . '<path>' idiom nests either inside a
+; binary_expression. All shapes capture the literal path.
 (require_expression (encapsed_string (string_content) @import.module)) @import.statement
 (require_once_expression (encapsed_string (string_content) @import.module)) @import.statement
 (include_expression (encapsed_string (string_content) @import.module)) @import.statement
 (include_once_expression (encapsed_string (string_content) @import.module)) @import.statement
+(require_expression (string (string_content) @import.module)) @import.statement
+(require_once_expression (string (string_content) @import.module)) @import.statement
+(include_expression (string (string_content) @import.module)) @import.statement
+(include_once_expression (string (string_content) @import.module)) @import.statement
+(require_expression (binary_expression (string (string_content) @import.module))) @import.statement
+(require_once_expression (binary_expression (string (string_content) @import.module))) @import.statement
+(include_expression (binary_expression (string (string_content) @import.module))) @import.statement
+(include_once_expression (binary_expression (string (string_content) @import.module))) @import.statement
+(require_expression (binary_expression (encapsed_string (string_content) @import.module))) @import.statement
+(require_once_expression (binary_expression (encapsed_string (string_content) @import.module))) @import.statement
+(include_expression (binary_expression (encapsed_string (string_content) @import.module))) @import.statement
+(include_once_expression (binary_expression (encapsed_string (string_content) @import.module))) @import.statement
 
 ; ---------------------------------------------------------------------------
 ; Calls
