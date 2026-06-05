@@ -551,6 +551,20 @@ class TestCuratedTour:
         for step in kg.tour:
             assert not step["target_path"].endswith("plugin.json")
 
+    def test_example_programs_never_take_tour_slots(self):
+        # examples/ are documentation-by-code: no walk slots, no layer faces.
+        code = ["src/cli/main.py"] + [f"src/services/svc{i}.py" for i in range(3)]
+        paths = code + [f"examples/demo{i}/main.py" for i in range(5)]
+        paths += ["examples/versions/data/errors.py"]  # would front Data otherwise
+        repo = build_repo(
+            paths,
+            entries={"src/cli/main.py"},
+            edges=[("src/cli/main.py", p) for p in code[1:]],
+        )
+        kg = _curate(repo, enabled=True)
+        for step in kg.tour:
+            assert not step["target_path"].startswith("examples/")
+
     def test_barrel_steps_never_claim_entry_point(self):
         # An index.ts barrel may legitimately seed the walk, but its reason
         # must say re-export hub, not execution entry point.

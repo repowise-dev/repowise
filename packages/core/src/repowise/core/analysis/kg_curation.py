@@ -508,14 +508,16 @@ def _curate_tour(
         else:
             closing_paths.append(_best_in_layer(cands, rank, pagerank))
 
-    # The walk = build_tour's execution order minus adjacent-layer stops,
-    # truncated up front so later swaps land inside the kept window.
+    # The walk = build_tour's execution order minus adjacent-layer stops and
+    # example programs (documentation-by-code, not the system), truncated up
+    # front so later swaps land inside the kept window.
     walk = [
         s.target_path
         for s in base
         if s.kind == "code"
         and s.target_path != overview_target
         and file_layers.get(s.target_path) not in ADJACENT_LAYERS
+        and not is_example_path(s.target_path)
     ]
     budget = max(0, DEFAULT_MAX_STOPS - len(overview) - len(closing_paths) - len(infra))
     walk = walk[:budget]
@@ -537,7 +539,11 @@ def _curate_tour(
     for layer in uncovered:
         if not redundant_positions:
             break
-        candidates = [p for p in by_layer.get(layer, []) if p not in walk and p != overview_target]
+        candidates = [
+            p
+            for p in by_layer.get(layer, [])
+            if p not in walk and p != overview_target and not is_example_path(p)
+        ]
         if not candidates:
             continue
         # A layer's face must be code. A layer holding only configs/docs (a
