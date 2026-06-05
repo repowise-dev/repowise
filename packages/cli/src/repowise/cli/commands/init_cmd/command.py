@@ -306,7 +306,8 @@ def _run_generation_phase(
     help=(
         "Install the Claude Code command-rewrite hook that routes noisy "
         "commands (tests, builds, git, searches) through `repowise distill` "
-        "for compact output. Default: ask when interactive; skip otherwise."
+        "for compact output. Default: ask when interactive; skip otherwise. "
+        "In workspace mode the verdict applies to every selected repo."
     ),
 )
 @click.option(
@@ -418,6 +419,7 @@ def init_command(
             no_claude_md=no_claude_md,
             agents_md=agents_md,
             codex_setup=codex_setup,
+            distill_hook=distill_hook,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -850,6 +852,6 @@ def init_command(
     # Offer to install post-commit hook (both index-only and full modes)
     offer_hook_install(console, [repo_path])
 
-    # Opt-in distill command-rewrite hook for Claude Code (single-repo only;
-    # workspace repos can enable it later via `repowise hook rewrite install`).
-    offer_distill_rewrite_hook(console, repo_path, distill_hook)
+    # Opt-in distill command-rewrite hook for Claude Code. The workspace flow
+    # runs its own offer across all selected repos inside _workspace_init.
+    offer_distill_rewrite_hook(console, [repo_path], distill_hook)

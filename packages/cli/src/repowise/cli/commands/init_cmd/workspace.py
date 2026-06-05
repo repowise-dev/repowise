@@ -58,7 +58,7 @@ from repowise.cli.ui import (
     print_banner,
 )
 
-from ._interactive import offer_hook_install
+from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import (
     CostGateDeclined,
     cost_gate_declined,
@@ -391,6 +391,7 @@ def _workspace_init(
     no_claude_md: bool,
     agents_md: bool | None,
     codex_setup: bool | None,
+    distill_hook: bool | None,
     include_submodules: bool,
     # Generation params (passed through from init_command)
     provider_name: str | None = None,
@@ -616,4 +617,11 @@ def _workspace_init(
             [r.path for r in indexed_repos],
             aliases=[r.alias for r in indexed_repos],
         )
+    # Opt-in distill command-rewrite hook for Claude Code: one user-level
+    # install, with the verdict recorded per repo. Applied to *all* selected
+    # repos (not just successfully indexed ones, and even when every repo
+    # failed) because ensure_repowise_dir already created `.repowise/` in
+    # each, and the hook treats any repo with `.repowise/` and no recorded
+    # verdict as enabled — a decline must gate every one of them off.
+    offer_distill_rewrite_hook(console, [r.path for r in selected], distill_hook)
     console.print()

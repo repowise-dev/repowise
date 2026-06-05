@@ -11,19 +11,28 @@ import click
 
 def offer_distill_rewrite_hook(
     console_obj: Any,
-    repo_path: Path,
+    repo_paths: list[Path],
     flag: bool | None,
 ) -> None:
     """Opt-in install of the distill command-rewrite hook (Claude Code).
 
     ``flag`` is the resolved ``--distill-hook/--no-distill-hook`` value:
-    True installs without prompting, False skips AND gates this repo off in
+    True installs without prompting, False skips AND gates the repos off in
     config (so a hook installed globally from another repo stays inert
-    here), None prompts when interactive and does nothing otherwise —
+    there), None prompts when interactive and does nothing otherwise —
     strictly opt-in.
+
+    The hook itself is user-level (one install covers every repo), but the
+    verdict is recorded per repo as ``distill.commands.enabled`` in each
+    entry of ``repo_paths`` — one repo for the single-repo init flow, every
+    selected repo for the workspace flow. Recording the verdict everywhere
+    matters because the hook treats any repo with ``.repowise/`` and no
+    config as enabled (with the ``ask`` posture).
     """
     import os
 
+    if not repo_paths:
+        return
     if os.environ.get("REPOWISE_SKIP_EDITOR_SETUP", "").strip().lower() not in (
         "",
         "0",
@@ -46,8 +55,9 @@ def offer_distill_rewrite_hook(
             "[bold]Distill:[/bold] rewrite noisy agent commands (tests, builds, "
             "git, searches) to `repowise distill ...` for compact output?"
         )
+        scope = f"Applies to all {len(repo_paths)} selected repos. " if len(repo_paths) > 1 else ""
         console_obj.print(
-            "  [dim]Each rewrite is shown for approval; raw output stays "
+            f"  [dim]{scope}Each rewrite is shown for approval; raw output stays "
             "recoverable via `repowise expand`.[/dim]"
         )
         flag = click.confirm("  Install the Claude Code rewrite hook?", default=False)
@@ -58,12 +68,18 @@ def offer_distill_rewrite_hook(
             console_obj.print(f"  [green]✓[/green] Rewrite hook installed ({path})")
         else:
             console_obj.print("  [yellow]Rewrite hook install failed.[/yellow]")
-        _save_distill_enabled(repo_path, enabled=True)
     else:
         console_obj.print(
             "  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
         )
-        _save_distill_enabled(repo_path, enabled=False)
+
+    for repo_path in repo_paths:
+        try:
+            _save_distill_enabled(repo_path, enabled=bool(flag))
+        except Exception as exc:  # init must not crash on a config write
+            console_obj.print(
+                f"  [yellow]Could not record distill verdict for {repo_path.name}: {exc}[/yellow]"
+            )
 
 
 def offer_hook_install(

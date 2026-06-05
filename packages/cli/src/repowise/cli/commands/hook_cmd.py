@@ -109,28 +109,55 @@ def rewrite_group() -> None:
 
 
 @rewrite_group.command("install")
-def rewrite_install() -> None:
-    """Install the rewrite hook into ~/.claude/settings.json."""
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--workspace",
+    "-w",
+    is_flag=True,
+    default=False,
+    help="Force workspace mode (re-enable distill rewrites for every repo in the workspace).",
+)
+@click.option(
+    "--no-workspace",
+    is_flag=True,
+    default=False,
+    help="Force single-repo mode even when invoked from a workspace.",
+)
+def rewrite_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Install the rewrite hook into ~/.claude/settings.json.
+
+    The hook itself is user-level (one install covers every repo); this
+    command additionally re-enables ``distill.commands.enabled`` for the
+    target — every workspace repo in workspace mode, the target repo
+    otherwise — since a prior ``repowise init`` opt-out may have gated
+    repos off.
+    """
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+    from repowise.cli.helpers import save_distill_commands_enabled
 
-    path = ClaudeCodeAdapter().install_rewrite_hook()
-    if path:
-        console.print(f"Rewrite hook: [green]installed[/green] ({path})")
-        console.print(
-            "  [dim]Per-repo behavior is configured under `distill.commands` "
-            "in .repowise/config.yaml (permission: ask | allow).[/dim]"
-        )
-        # A prior init opt-out may have gated this repo off; installing
-        # explicitly re-enables it here.
-        from pathlib import Path
+    target = _hook_target(path, workspace, no_workspace)
 
-        from repowise.cli.helpers import save_distill_commands_enabled
-
-        cwd = Path.cwd()
-        if (cwd / ".repowise").is_dir():
-            save_distill_commands_enabled(cwd, enabled=True)
-    else:
+    hook_path = ClaudeCodeAdapter().install_rewrite_hook()
+    if not hook_path:
         console.print("Rewrite hook: [red]install failed[/red]")
+        return
+    console.print(f"Rewrite hook: [green]installed[/green] ({hook_path})")
+    console.print(
+        "  [dim]Per-repo behavior is configured under `distill.commands` "
+        "in .repowise/config.yaml (permission: ask | allow).[/dim]"
+    )
+
+    if target.is_workspace:
+        assert target.ws_root is not None and target.ws_config is not None
+        for entry in target.ws_config.repos:
+            abs_path = (target.ws_root / entry.path).resolve()
+            if (abs_path / ".repowise").is_dir():
+                save_distill_commands_enabled(abs_path, enabled=True)
+                console.print(f"  {entry.alias}: [green]enabled[/green]")
+    else:
+        assert target.repo_path is not None
+        if (target.repo_path / ".repowise").is_dir():
+            save_distill_commands_enabled(target.repo_path, enabled=True)
 
 
 @rewrite_group.command("uninstall")

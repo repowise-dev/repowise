@@ -68,7 +68,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--commit-limit` | Max commits to analyze per file (default: 500). |
 | `--follow-renames` | Track file renames in git history. |
 | `--no-claude-md` | Don't generate `CLAUDE.md`. |
-| `--distill-hook / --no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates this repo off in config so a globally installed hook stays inert here. See [DISTILL.md](DISTILL.md). |
+| `--distill-hook / --no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates the repo off in config so a globally installed hook stays inert here. In workspace mode the verdict (prompt or flag) applies to every selected repo. See [DISTILL.md](DISTILL.md). |
 | `--agents / --no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
 | `--codex / --no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
 | `--yes / -y` | Skip confirmation prompts. |
@@ -516,12 +516,15 @@ approval by default — so the agent sees a compact, errors-first rendering.
 
 ```bash
 repowise hook rewrite install        # writes ~/.claude/settings.json (idempotent)
+repowise hook rewrite install -w     # also re-enable every workspace repo
 repowise hook rewrite status
 repowise hook rewrite uninstall      # removes only the repowise entry
 ```
 
-`install` also re-enables the current repo's `distill.commands` config if a
-prior `repowise init` opt-out had gated it off. `uninstall` is global
+`install` also re-enables the target's `distill.commands` config if a prior
+`repowise init` opt-out had gated it off — the target repo by default, or
+every workspace repo with `--workspace`/`-w` (accepts an optional `PATH` and
+`--no-workspace`, like `repowise hook install`). `uninstall` is global
 (settings.json) and leaves per-repo config untouched. Per-repo posture
 (`permission: ask | allow`, per-family overrides) lives under
 `distill.commands` in `.repowise/config.yaml` — see

@@ -230,6 +230,33 @@ def test_install_after_init_opt_out_re_enables_repo(
     assert cfg["distill"]["commands"]["enabled"] is True
 
 
+def test_install_workspace_mode_re_enables_every_repo(
+    tmp_path: Path, settings_path: Path, monkeypatch
+) -> None:
+    from repowise.core.repo_config import load_repo_config
+    from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
+
+    root = tmp_path / "ws"
+    aliases = ("alpha", "beta")
+    for alias in aliases:
+        (root / alias / ".repowise").mkdir(parents=True)
+        # Simulate a workspace-wide `repowise init` opt-out.
+        (root / alias / ".repowise" / "config.yaml").write_text(
+            "distill:\n  commands:\n    enabled: false\n", encoding="utf-8"
+        )
+    WorkspaceConfig(repos=[RepoEntry(path=a, alias=a) for a in aliases], default_repo="alpha").save(
+        root
+    )
+    monkeypatch.chdir(root)
+
+    result = CliRunner().invoke(rewrite_install, ["--workspace"])
+    assert result.exit_code == 0
+    assert "installed" in result.output
+    for alias in aliases:
+        cfg = load_repo_config(root / alias)
+        assert cfg["distill"]["commands"]["enabled"] is True
+
+
 def test_uninstall_removes_hook_but_leaves_repo_config(
     tmp_path: Path, settings_path: Path, monkeypatch
 ) -> None:

@@ -260,6 +260,16 @@ def _workspace_update(
         )
     )
 
+    # Backfill the distill rewrite-hook verdict for members that were just
+    # indexed for the first time (e.g. added with --no-index) — they would
+    # otherwise default to enabled despite a workspace-wide decline at init.
+    from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
+
+    for entry in ws_config.repos:
+        if repo_alias and entry.alias != repo_alias:
+            continue
+        inherit_workspace_distill_verdict((ws_root / entry.path).resolve())
+
     # Summary
     updated = sum(1 for r in results if r.updated)
     errors = sum(1 for r in results if r.error)
@@ -976,6 +986,13 @@ def update_command(
     repo_path = target.repo_path
     assert repo_path is not None  # single mode always sets repo_path
     ensure_repowise_dir(repo_path)
+
+    # If this repo is a workspace member updated here for the first time,
+    # inherit the workspace's distill rewrite-hook verdict (best-effort,
+    # no-op outside a workspace or once a verdict exists).
+    from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
+
+    inherit_workspace_distill_verdict(repo_path)
 
     # --- Fast -> full upgrade (--full): a distinct path that reuses the
     # persisted graph rather than diffing changed files. Dispatched before any

@@ -91,8 +91,10 @@ The hook is deliberately conservative. It never rewrites:
 Per-repo behavior is configured under `distill.commands` in
 `.repowise/config.yaml` — see [Configuration](#configuration). Declining the
 `repowise init` prompt writes `distill.commands.enabled: false`, so a hook
-installed globally from another repo stays inert in this one. The hook answers
-in well under 100 ms (stdlib-only hot path, no database).
+installed globally from another repo stays inert in this one. A multi-repo
+workspace `init` asks once and records the verdict in **every selected
+repo**; `repowise hook rewrite install -w` re-enables them all later. The
+hook answers in well under 100 ms (stdlib-only hot path, no database).
 
 `repowise init` also adds a short "Output Distillation" section to the managed
 `CLAUDE.md`, teaching the agent to prefer `repowise distill <cmd>` voluntarily
