@@ -76,37 +76,50 @@ def _distill_or_raw(output: str, command_str: str, exit_code: int) -> str:
     """Distill *output*, honoring the repo's ``distill:`` config block."""
     try:
         repo_root = find_repowise_repo_root()
-        enabled, disabled = _load_distill_config(repo_root)
+        enabled, disabled, (ttl_days, max_mb) = _load_distill_config(repo_root)
         if not enabled:
             return output
         from repowise.core.distill import distill_output
+        from repowise.core.distill.store import OmissionStore, default_store_path
 
-        return distill_output(
-            output,
-            command=command_str,
-            exit_code=exit_code,
-            source="cli",
-            store_start=repo_root or Path.cwd(),
-            disabled_filters=disabled,
-        ).text
+        # Open the store here (rather than letting the engine) so the
+        # configured TTL / size cap apply to this write's opportunistic prune.
+        store = OmissionStore(
+            default_store_path(repo_root or Path.cwd()), ttl_days=ttl_days, max_mb=max_mb
+        )
+        try:
+            return distill_output(
+                output,
+                command=command_str,
+                exit_code=exit_code,
+                source="cli",
+                store=store,
+                disabled_filters=disabled,
+            ).text
+        finally:
+            store.close()
     except Exception:
         # The wrapped command already ran; never let distillation lose it.
         return output
 
 
-def _load_distill_config(repo_root: Path | None) -> tuple[bool, tuple[str, ...]]:
+def _load_distill_config(
+    repo_root: Path | None,
+) -> tuple[bool, tuple[str, ...], tuple[float, float]]:
+    from repowise.core.distill.config import omission_store_settings
+
     if repo_root is None:
-        return True, ()
+        return True, (), omission_store_settings(None)
     from repowise.core.repo_config import load_repo_config
 
     cfg = load_repo_config(repo_root).get("distill") or {}
     if not isinstance(cfg, dict):
-        return True, ()
+        return True, (), omission_store_settings(None)
     enabled = bool(cfg.get("enabled", True))
     commands_cfg = cfg.get("commands") or {}
     raw_disabled = commands_cfg.get("disabled_filters") if isinstance(commands_cfg, dict) else None
     disabled = tuple(str(name) for name in raw_disabled) if isinstance(raw_disabled, list) else ()
-    return enabled, disabled
+    return enabled, disabled, omission_store_settings(cfg)
 
 
 def _echo_safely(text: str) -> None:
