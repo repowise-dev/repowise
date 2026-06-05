@@ -427,6 +427,11 @@ def _curate_tour(
 
     pagerank = graph_builder.pagerank() or {}
     rank = {path: s for s, path in score_entry_points(parsed_files, pagerank)}
+    barrels = {
+        pf.file_info.path
+        for pf in parsed_files
+        if getattr(pf, "file_info", None) and _is_barrel(pf)
+    }
 
     # Infra files (Docker/CI/etc.) close the tour; everything else is code.
     infra_paths = [p for p in paths if type_by_path.get(p) in {"service", "pipeline"}]
@@ -531,6 +536,10 @@ def _curate_tour(
         else:  # pragma: no cover - walk paths come from base or swaps
             depth = 0
             reason = f"A key {layer} file on the walk from the entry points."
+        if p in barrels:
+            # A re-export shell may seed the walk (imports genuinely fan out
+            # from it), but it must not claim to be an execution entry point.
+            reason = "A re-export hub — the package's public surface fans out from here."
         max_depth = max(max_depth, depth)
         tour.append(
             {
@@ -593,24 +602,40 @@ _INFRA_SUFFIXES = (".tf", ".hcl")
 _DATA_PATH_MARKERS = ("/migrations/", "/migration/")
 _DATA_SUFFIXES = (".sql", ".prisma")
 
+# Source-code extensions. A code file is never CI/infra config however its
+# name or directory reads — ``languages/specs/dockerfile.py`` *parses*
+# Dockerfiles, it isn't one.
+_CODE_SUFFIXES = frozenset(
+    {
+        ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".rs", ".go",
+        ".java", ".kt", ".rb", ".php", ".cs", ".cpp", ".cc", ".c", ".h",
+        ".hpp", ".swift", ".scala", ".ex", ".exs", ".lua", ".pl", ".r", ".zig",
+    }
+)  # fmt: skip
+
 
 def _enrich_type(path: str, current_type: str) -> tuple[str, str | None]:
     """Return a richer ``(type, extra_tag)`` for a file node, or keep current.
 
     The tag (``ci``/``infra``/``data``) is additive; ``None`` means no new tag.
+    Name/path markers never fire for source-code files (``_CODE_SUFFIXES``);
+    only genuine config artifacts get promoted.
     """
     p = path.lower()
     name = PurePosixPath(p).name
     suffix = PurePosixPath(p).suffix
+    is_code = suffix in _CODE_SUFFIXES
 
-    if any(m in p for m in _CI_PATH_MARKERS) or name == "jenkinsfile":
+    if not is_code and (any(m in p for m in _CI_PATH_MARKERS) or name == "jenkinsfile"):
         return "pipeline", "ci"
     if (
-        name.startswith("dockerfile")
-        or any(m in name for m in _INFRA_NAME_MARKERS)
-        or any(m in p for m in _INFRA_PATH_MARKERS)
-        or suffix in _INFRA_SUFFIXES
-    ):
+        not is_code
+        and (
+            name.startswith("dockerfile")
+            or any(m in name for m in _INFRA_NAME_MARKERS)
+            or any(m in p for m in _INFRA_PATH_MARKERS)
+        )
+    ) or suffix in _INFRA_SUFFIXES:
         return "service", "infra"
     if any(m in p for m in _DATA_PATH_MARKERS) or suffix in _DATA_SUFFIXES:
         return "schema", "data"

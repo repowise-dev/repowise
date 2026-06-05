@@ -71,6 +71,8 @@ _INFRA_NAMES = frozenset({
     "vagrantfile", "procfile",
 })
 
+_INFRA_LANGUAGES = frozenset({"dockerfile", "makefile"})
+
 _DOC_EXTENSIONS = frozenset({
     ".md", ".rst", ".txt", ".adoc",
 })
@@ -82,7 +84,14 @@ def _classify_file_type(path: str, language: str, is_config: bool) -> str:
 
     if is_config or ext in _CONFIG_EXTENSIONS:
         return "config"
-    if ext in _INFRA_EXTENSIONS or stem in _INFRA_NAMES:
+    # Infra names only count for extension-less files (Dockerfile, Makefile)
+    # or when ingestion parsed the file as an infra language — a Python module
+    # *named* dockerfile.py is code, not infrastructure.
+    if (
+        ext in _INFRA_EXTENSIONS
+        or language in _INFRA_LANGUAGES
+        or (not ext and stem in _INFRA_NAMES)
+    ):
         return "service"
     if ext in _DOC_EXTENSIONS:
         return "document"

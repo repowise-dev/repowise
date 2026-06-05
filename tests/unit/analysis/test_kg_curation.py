@@ -535,6 +535,23 @@ class TestCuratedTour:
         assert len(readme_steps) == 1
         assert readme_steps[0]["kind"] == "overview"
 
+    def test_barrel_steps_never_claim_entry_point(self):
+        # An index.ts barrel may legitimately seed the walk, but its reason
+        # must say re-export hub, not execution entry point.
+        barrel = "packages/types/src/index.ts"
+        repo = build_repo(
+            [barrel, "src/services/svc.py"],
+            entries={barrel},
+            barrels={barrel},
+            edges=[(barrel, "src/services/svc.py")],
+        )
+        kg = _curate(repo, enabled=True)
+        barrel_steps = [s for s in kg.tour if s["target_path"] == barrel]
+        assert barrel_steps, "barrel should still appear on the walk"
+        for s in barrel_steps:
+            assert "An entry point" not in s["reason"]
+            assert "re-export hub" in s["reason"]
+
 
 class TestEntryPointFallback:
     def test_filename_scorers_fill_in_when_nothing_is_flagged(self):
@@ -552,6 +569,22 @@ class TestEntryPointFallback:
         repo = build_repo(["tests/main.py", "src/services/svc.py"])
         kg = _curate(repo, enabled=True)
         assert kg.project["entry_points"] == []
+
+    def test_code_files_never_typed_infra_by_name(self):
+        # A Python module that *parses* Dockerfiles is code, not infra.
+        repo = build_repo(
+            ["core/ingestion/languages/specs/dockerfile.py", "Dockerfile"]
+        )
+        kg = _curate(repo, enabled=True)
+        by_path = {
+            n["filePath"]: n
+            for n in kg.nodes
+            if n.get("filePath") and str(n.get("id", "")).startswith("file:")
+        }
+        spec = by_path["core/ingestion/languages/specs/dockerfile.py"]
+        assert spec.get("type") != "service"
+        assert "infra" not in (spec.get("tags") or [])
+        assert by_path["Dockerfile"].get("type") == "service"  # real one still promoted
 
     def test_flagged_test_fixtures_not_surfaced(self):
         # Ingestion may flag a wsgi.py inside tests/ as an entry point; the

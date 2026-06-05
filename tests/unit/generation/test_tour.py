@@ -49,9 +49,9 @@ def test_score_entry_points_excludes_zero_score():
 
 def test_score_entry_points_withholds_stem_bonus_from_docs():
     # docs/index.md has an entry-style stem but is markdown — it must never
-    # outrank a real main.py.
+    # outrank a real main.py, even when ingestion's stem rule flagged it.
     files = [
-        _PF(_FI(path="docs/index.md", language="markdown")),
+        _PF(_FI(path="docs/index.md", language="markdown", is_entry_point=True)),
         _PF(_FI(path="src/main.py")),
     ]
     pr = {"docs/index.md": 0.9, "src/main.py": 0.5}
@@ -130,6 +130,19 @@ def test_build_tour_unreached_files_get_honest_reasons():
     assert "Off the import path" in by_path["disconnected.py"].reason
     assert "Reached" not in by_path["disconnected.py"].reason
     assert "Directly used" in by_path["a.py"].reason  # reached ones unchanged
+
+
+def test_build_tour_seedless_repo_reasons_do_not_overclaim():
+    # A flat library with no entry-style file: steps must not reference
+    # entry points that don't exist.
+    files = _repo({"src/pkg/models.py": False, "src/pkg/cookies.py": False})
+    pr = {"src/pkg/models.py": 0.8, "src/pkg/cookies.py": 0.6}
+    stops = build_tour(
+        files, pr, [], file_page_paths={"src/pkg/models.py", "src/pkg/cookies.py"}
+    )
+    for s in stops:
+        assert "An entry point" not in s.reason
+        assert "Off the import path" not in s.reason
 
 
 def test_build_tour_respects_max_stops():

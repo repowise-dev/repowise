@@ -120,13 +120,14 @@ def score_entry_points(
     """Score code files as candidate tour entry points, descending.
 
     Scoring (additive):
-      * ``is_entry_point`` ingestion flag .............. +3
+      * ``is_entry_point`` ingestion flag .............. +3 (code files only)
       * filename stem in the entry-name set ............ +3 (code files only)
       * file at repo root or one level deep ............ +1
       * PageRank in the top 10% of all files ........... +1
 
-    The stem bonus is withheld from doc/data languages — ``docs/index.md``
-    must never outrank a real ``main.py``.
+    Both entry bonuses are withheld from doc/data languages — ``docs/index.md``
+    must never outrank a real ``main.py``, even when ingestion's stem rule
+    flagged it.
 
     Returns ``[(score, path), ...]`` sorted by score then path for stability.
     Only files with a positive score are returned.
@@ -142,13 +143,11 @@ def score_entry_points(
         fi = p.file_info
         path = fi.path
         score = 0.0
-        if getattr(fi, "is_entry_point", False):
-            score += 3.0
         language = (getattr(fi, "language", "") or "").lower()
-        if (
-            PurePosixPath(path).stem.lower() in _ENTRY_FILENAME_STEMS
-            and language not in _NON_CODE_LANGUAGES
-        ):
+        is_code = language not in _NON_CODE_LANGUAGES
+        if is_code and getattr(fi, "is_entry_point", False):
+            score += 3.0
+        if is_code and PurePosixPath(path).stem.lower() in _ENTRY_FILENAME_STEMS:
             score += 3.0
         if _path_depth(path) <= 1:
             score += 1.0
@@ -229,6 +228,9 @@ def build_tour(
     # otherwise every root file would seed the walk and flatten all depths.
     scored = score_entry_points(parsed_files, pagerank)
     seeds = [path for s, path in scored if s >= 3.0 and path in documented]
+    # Whether the seeds are genuine entry points (flag/filename evidence) or
+    # just the best-available anchor — the step reasons must not overclaim.
+    genuine_entries = bool(seeds)
     if not seeds:
         # Fall back to the single highest-scored documented file so the walk
         # still has an anchor on repos with no obvious entry point.
@@ -283,9 +285,17 @@ def build_tour(
         order += 1
         d = depths[path]
         if d <= 0:
-            reason = "An entry point — execution and imports fan out from here."
+            reason = (
+                "An entry point — execution and imports fan out from here."
+                if genuine_entries
+                else "The walk's anchor — the best-connected file in a repo with no single entry point."
+            )
         elif path not in reached:
-            reason = "Off the import path from the entry points — a standalone or supporting file."
+            reason = (
+                "Off the import path from the entry points — a standalone or supporting file."
+                if genuine_entries
+                else "A widely-imported module — much of the repo depends on it."
+            )
         elif d == 1:
             reason = "Directly used by the entry points above; a core collaborator."
         else:
