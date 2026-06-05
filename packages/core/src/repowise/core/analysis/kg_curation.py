@@ -462,6 +462,7 @@ def _curate_tour(
         if p != overview_target
         and file_layers.get(p) not in ADJACENT_LAYERS
         and not is_example_path(p)
+        and not PurePosixPath(p).parts[0].startswith(".")  # dot-dir tooling
     ]
 
     project_name = kg.project.get("name") or "repository"
