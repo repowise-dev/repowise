@@ -103,6 +103,19 @@ repowise mcp --transport stdio
 
 > **Automatic for Codex:** run `repowise init --codex` to write project-local `.codex/config.toml`, `.codex/hooks.json`, and managed `AGENTS.md`. See [Codex Integration](CODEX.md).
 
+**Cut your agent's context spend (optional):**
+
+```bash
+repowise distill pytest -x      # compact errors-first output; raw recoverable via `repowise expand`
+repowise saved                  # tokens & dollars saved so far
+```
+
+Distill compresses noisy command output (tests, builds, git, searches) before
+the agent reads it — **60–90% fewer tokens on noisy commands, with zero
+error-line loss** (measured on a public OSS repo). Opt into the Claude Code
+rewrite hook at `init` (or `repowise hook rewrite install`) to apply it
+automatically, with each rewrite shown for approval. See [Distill](DISTILL.md).
+
 ## 5. Keep It in Sync
 
 After pulling changes or editing code:

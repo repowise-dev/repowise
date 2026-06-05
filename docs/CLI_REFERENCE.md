@@ -68,6 +68,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 | `--commit-limit` | Max commits to analyze per file (default: 500). |
 | `--follow-renames` | Track file renames in git history. |
 | `--no-claude-md` | Don't generate `CLAUDE.md`. |
+| `--distill-hook / --no-distill-hook` | Install or skip the Distill command-rewrite hook (Claude Code PreToolUse). Strictly opt-in: interactive runs prompt (default No); `--no-distill-hook` also gates this repo off in config so a globally installed hook stays inert here. See [DISTILL.md](DISTILL.md). |
 | `--agents / --no-agents` | Generate or skip managed `AGENTS.md` for Codex. Persists the preference. |
 | `--codex / --no-codex` | Generate or skip project-local Codex MCP/hooks setup. Interactive runs prompt when Codex CLI is installed and logged in; non-interactive runs require `--codex`. |
 | `--yes / -y` | Skip confirmation prompts. |
@@ -354,6 +355,63 @@ repowise decision health [PATH]         # health dashboard
 
 ---
 
+### `repowise distill <command>`
+
+Run a command and print a compact, reversible rendering of its output. Noise
+(pass parades, progress spam, boilerplate) is dropped; errors, failures, and
+summaries always survive; the command's exit code is preserved. Dropped
+content is stored in `.repowise/omissions/` and referenced by an inline
+`[repowise#<ref>: ...]` marker. On any filter problem the raw output is
+printed unchanged. See [DISTILL.md](DISTILL.md) for the full feature guide.
+
+```bash
+repowise distill pytest -x
+repowise distill git status
+repowise distill npm run build
+```
+
+Honors the `distill:` block in `.repowise/config.yaml` (master switch,
+disabled filters, omission-store sizing).
+
+---
+
+### `repowise expand REF`
+
+Restore the original output behind a `[repowise#<ref>: ...]` omission marker.
+Accepts a bare 12-hex ref or a pasted whole marker. Looks in the current
+repo's store first, then the user-level fallback store.
+
+| Flag | Description |
+|------|-------------|
+| `--query / -q` | Return only the lines matching this regex (or substring) |
+
+```bash
+repowise expand a1b2c3d4e5f6
+repowise expand a1b2c3d4e5f6 -q "FAILED"
+```
+
+---
+
+### `repowise saved [PATH]`
+
+Report tokens (and estimated dollars) saved by `repowise distill` — direct
+invocations and hook rewrites. Covers the distill command/hook path only; MCP
+response truncation is not part of this ledger.
+
+| Flag | Description |
+|------|-------------|
+| `--by` | Grouping: `filter` (default), `day`, `source` |
+| `--since` | Only count savings since this ISO date |
+| `--model` | Pricing model for the dollar estimate (input-token rate; default `claude-sonnet-4-6`) |
+
+```bash
+repowise saved                       # per-filter rollup + totals
+repowise saved --by day              # daily rollup
+repowise saved --since 2026-06-01
+```
+
+---
+
 ### `repowise costs`
 
 Show LLM spend tracking.
@@ -448,6 +506,26 @@ repowise hook uninstall --workspace
 ```
 
 See [Auto-Sync](AUTO_SYNC.md) for all sync methods (hooks, file watcher, webhooks, polling).
+
+### `repowise hook rewrite install|uninstall|status`
+
+Manage the Distill command-rewrite hook (Claude Code PreToolUse). When
+installed, noisy agent commands (tests, builds, git status/log/diff, searches,
+listings) are rewritten to `repowise distill <command>` — pending your
+approval by default — so the agent sees a compact, errors-first rendering.
+
+```bash
+repowise hook rewrite install        # writes ~/.claude/settings.json (idempotent)
+repowise hook rewrite status
+repowise hook rewrite uninstall      # removes only the repowise entry
+```
+
+`install` also re-enables the current repo's `distill.commands` config if a
+prior `repowise init` opt-out had gated it off. `uninstall` is global
+(settings.json) and leaves per-repo config untouched. Per-repo posture
+(`permission: ask | allow`, per-family overrides) lives under
+`distill.commands` in `.repowise/config.yaml` — see
+[DISTILL.md](DISTILL.md#configuration).
 
 ---
 
@@ -550,6 +628,12 @@ updates anything automatically and does not fail `doctor` when PyPI is
 unreachable. After upgrading, **restart Claude/Codex/Cursor or any MCP client**
 so it picks up the new executable. (A standalone `repowise version --check` may
 be added later.)
+
+**Distill checks.** `doctor` also validates the `distill:` config block
+(unknown keys, bad permission values, unknown filter names, non-positive store
+sizing), reports the omission store's size against its configured cap, and
+shows whether the command-rewrite hook is installed. The hook is opt-in, so
+its absence never fails doctor.
 
 ---
 

@@ -13,6 +13,7 @@ repo root on first `init`.
 .repowise/
 ├── wiki.db          # SQLite database — all pages, symbols, graph, git metadata, decisions
 ├── lancedb/         # Vector search index (LanceDB)
+├── omissions/       # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml      # Provider, model, embedder, exclude patterns
 ├── state.json       # Last sync commit, page counts, token usage
 ├── mcp.json         # MCP server configuration
@@ -57,6 +58,35 @@ or models that cannot translate an explicit mode fail before making an API call.
 > **Code-health rules** are configured separately in
 > `.repowise/health-rules.json` (per-file biomarker overrides) — see
 > [CODE_HEALTH.md](CODE_HEALTH.md#configuration).
+
+### The `distill:` block
+
+Controls [output distillation](DISTILL.md) for this repo. Everything defaults
+sensibly when the block is absent; `repowise doctor` validates it.
+
+```yaml
+distill:
+  enabled: true                  # master switch for this repo
+  commands:
+    enabled: true                # the command path (CLI + hook rewrites)
+    permission: ask              # ask | allow | off — rewrite-hook posture
+    families:                    # per-filter overrides
+      test_output: allow         #   auto-allow rewrites for test runs
+      git_diff: deny             #   never rewrite git diff here
+    disabled_filters: []         # filters to skip entirely, e.g. [logs]
+  omission_store:
+    ttl_days: 7                  # prune stored omissions after this many days
+    max_mb: 50                   # size cap; oldest entries pruned first
+```
+
+- `permission: ask` (the default) means the agent's rewritten command is shown
+  for approval; `allow` auto-approves rewrites; `off` disables rewrites here.
+- `families` keys are filter names (`test_output`, `build_output`,
+  `git_status`, `git_log`, `git_diff`, `search_results`, `file_listing`,
+  `logs`) and accept `ask | allow | off | deny`.
+- Declining the `repowise init` opt-in prompt writes
+  `commands.enabled: false`, so a rewrite hook installed globally from another
+  repo stays inert in this one.
 
 ---
 

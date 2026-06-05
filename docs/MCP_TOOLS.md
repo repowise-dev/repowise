@@ -29,6 +29,31 @@ repowise mcp --transport sse --port 7338 # for web clients
 
 ---
 
+## Reversible truncation — `_meta.omitted`
+
+Tool responses are token-budgeted. When a response is truncated, the dropped
+content is no longer silently lost: it is stored in the repo's
+[omission store](DISTILL.md#the-omission-store) and the response's `_meta`
+envelope lists how to get it back:
+
+```jsonc
+"_meta": {
+  "omitted": {
+    "refs": ["a1b2c3d4e5f6"],
+    "tokens": 5840,
+    "restore": "repowise expand <ref> (CLI) or get_symbol(\"repowise#<ref>\", query?) (MCP)"
+  }
+}
+```
+
+Truncated skeleton blocks are replaced in place by a `[repowise#<ref>: ...]`
+marker; everything else is captured into one combined document per response.
+Resolve refs with `repowise expand <ref>` from a shell, or
+`get_symbol("repowise#<ref>")` from any MCP client — the tool count stays at
+nine. See [DISTILL.md](DISTILL.md) for the full reversibility model.
+
+---
+
 ## `get_overview`
 
 Architecture summary, module map, entry points, git health, and community summary.
@@ -83,7 +108,7 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. |
-| `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this — symbol targets), `"callees"` (what this calls — symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only) |
+| `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this — symbol targets), `"callees"` (what this calls — symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only), `"skeleton"` (file targets only — the file with bodies elided: every signature, imports, and the bodies of the most central symbols, token-budgeted; typically ~15% of the full file's tokens) |
 | `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
 
@@ -97,7 +122,16 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 get_context(targets=["src/auth/middleware.ts"])
 get_context(targets=["middleware", "api/routes", "payments"], include=["callers", "metrics"])
 get_context(targets=["src/auth"], compact=false, include=["community"])
+get_context(targets=["src/big_module.py"], include=["skeleton"])
 ```
+
+**Skeletons:** with `include=["skeleton"]`, file targets gain a structure-level
+rendering sliced from the index's persisted symbol bounds (no parsing at query
+time): every signature, the import preamble, and the bodies of the top symbols
+ranked by graph centrality / hotspot / query match. Elision markers carry
+1-indexed line ranges so you can range-`Read` anything back. For
+structure-level questions ("what's in this file", "which function handles X")
+this replaces a full file read at a fraction of the cost.
 
 ---
 
@@ -105,28 +139,34 @@ get_context(targets=["src/auth"], compact=false, include=["community"])
 
 Raw source bytes for one indexed symbol with exact line bounds — cheaper and
 safer than `Read` + offset math. The only tool that returns actual source code.
+Also resolves **omission refs** (`repowise#<12-hex>`) from truncated responses.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `symbol_id` | string | Yes | Canonical `"path/to/file.py::SymbolName"` from `get_context`'s symbol list. Normalises `::` / `.` / `/` separators across languages. |
+| `symbol_id` | string | Yes | Canonical `"path/to/file.py::SymbolName"` from `get_context`'s symbol list (normalises `::` / `.` / `/` separators across languages), **or** an omission ref `"repowise#<12-hex>"` / a pasted whole `[repowise#…]` marker. |
+| `query` | string | No | Omission refs only — return just the stored lines matching this regex (or substring). Ignored for symbol ids. |
 | `context_lines` | int | No | Extra source lines before/after the symbol (0–50, default 0) |
 | `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
 
-**Returns:** The symbol's source bytes (bounded at ~400 lines), its exact start/end
-line numbers, kind, and a `truncated` flag. On a miss, returns an `error` with
-the closest matches.
+**Returns:** For a symbol id: the symbol's source bytes (bounded at ~400 lines),
+its exact start/end line numbers, kind, and a `truncated` flag; on a miss, an
+`error` with the closest matches. For an omission ref: the stored content plus
+provenance (`source`, `created_at`, `original_tokens`).
 
-**When to use:** When you need the body of one function or class. Pipe the
-`symbol_id` straight from `get_context`'s symbol list. Deterministic resolution
-on overloads.
+**When to use:** When you need the body of one function or class — pipe the
+`symbol_id` straight from `get_context`'s symbol list. Or when a response's
+`_meta.omitted` lists refs you want back and you have no shell for
+`repowise expand` (e.g. Claude Desktop).
 
-**Example call:**
+**Example calls:**
 
 ```
 get_symbol(symbol_id="src/auth/service.py::AuthService")
 get_symbol(symbol_id="src/auth/service.py::login", context_lines=10)
+get_symbol(symbol_id="repowise#a1b2c3d4e5f6")
+get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 ```
 
 ---

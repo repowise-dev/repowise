@@ -230,6 +230,11 @@ and notifies the agent:
 Run `repowise update` to refresh documentation and graph context.
 ```
 
+> **Related capability:** [Distill](DISTILL.md) reuses these layers' index
+> (symbol bounds, centrality, hotspots) to compress noisy command output and
+> large file reads before the agent sees them — a capability built *on* the
+> five layers, not a sixth layer.
+
 ---
 
 ## Auto-sync — five ways to stay current

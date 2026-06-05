@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Distill — index-aware output distillation.** A new capability that
+  compresses noisy command output before the agent reads it, errors-first and
+  fully reversible. `repowise distill <cmd>` runs a command and prints a
+  compact rendering (exit code preserved, every error line kept, raw output
+  stashed behind an inline `[repowise#<ref>]` marker); `repowise expand <ref>`
+  restores it, optionally filtered with `-q`. Eight content filters ship
+  (test/build output, git status/log/diff, search floods, file listings,
+  generic logs), measured at 60–90% token reduction on noisy commands with
+  zero error-line loss. An opt-in Claude Code PreToolUse hook
+  (`repowise hook rewrite install`, or the `repowise init` prompt) rewrites
+  noisy agent commands to `repowise distill <cmd>` pending approval —
+  ask-by-default, with per-repo / per-family `allow`/`deny` config; pipes,
+  redirects, and compound commands are never rewritten. `repowise saved`
+  reports tokens and estimated dollars saved (per-filter / per-day / per-source
+  rollups), mirrored by a Distill savings card on the dashboard's Costs page.
+- **Read intelligence: skeletons, stale-read notices, search digests.**
+  `get_context(..., include=["skeleton"])` returns an indexed file with bodies
+  elided — every signature plus the bodies of the most central symbols, sliced
+  from persisted symbol bounds with zero query-time parsing (~15% of full-file
+  tokens). The PostToolUse hook nudges once per file per session when a large
+  `Read` could have been a skeleton, warns when a re-read follows an
+  `Edit`/`Write` (excerpts predate the edit), and renders grep floods as a
+  compact grouped-by-file digest ordered by graph centrality.
+- **Reversible MCP truncation.** Tool responses were always token-budgeted;
+  truncation is no longer silent. Dropped content is stored in the omission
+  store and surfaced via a `_meta.omitted` envelope (`refs`, `tokens`,
+  `restore`); `get_symbol` resolves `repowise#<ref>` omission refs (with an
+  optional `query` parameter) alongside symbol ids — the tool count stays at
+  nine. One durable store (`.repowise/omissions/`, TTL + size-cap pruned)
+  serves the CLI, the hook, and MCP.
+- **Distill config & doctor checks.** A `distill:` block in
+  `.repowise/config.yaml` (master switch, hook permission posture, per-family
+  overrides, disabled filters, omission-store TTL/size). `repowise doctor`
+  validates the block, reports omission-store size against its cap, and shows
+  rewrite-hook install state.
+
+---
+
 ## [0.16.0] — 2026-06-03
 
 ### Added

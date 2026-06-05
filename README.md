@@ -141,7 +141,28 @@ Best case shown; across the two benchmarks the range is −49% to −70% tool ca
 via `get_context` costs **2,391 tokens vs 64,039** for the raw changed files —
 **~27× fewer**. Reports: [flask48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK48.md) · [sklearn48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_SKLEARN48.md)
 
-### 2 · Code health predicts real defects
+### 2 · Distill — index-aware output distillation
+
+Most of what an agent reads from a shell command is noise: 300 lines of
+passing tests around 4 failures, full commit bodies for "what changed
+recently". `repowise distill <cmd>` compresses command output **before the
+agent reads it** — errors-first, exit code preserved, and every omission
+reversible via an inline `[repowise#<ref>]` marker (`repowise expand <ref>`).
+Paired runs on a public OSS repo, per command:
+
+| Command | Raw → distilled tokens | Saved |
+|---|---|---:|
+| `pytest -q` (11 failures) | 3,374 → 1,317 | **61%** — all 11 failure lines preserved |
+| `git log -50` | 3,064 → 331 | **89%** |
+| `git diff` (30 commits) | 62,833 → 8,635 | **86%** |
+
+Small outputs pass through untouched (net-positive guard), and in an
+end-to-end spot-check the agent reached the identical root-cause diagnosis
+from distilled output as from raw. Opt-in Claude Code hook rewrites noisy
+commands automatically (shown for approval); `repowise saved` tracks tokens
+and dollars saved. Full guide: **[docs/DISTILL.md →](docs/DISTILL.md)**
+
+### 3 · Code health predicts real defects
 
 Health scores are collected at a historical commit (T0); bug-fixing commits are
 counted over the following 6 months; the two are correlated — strictly no
@@ -286,7 +307,7 @@ To add the MCP server to another editor manually:
 > commit-triggered update takes **under 30 seconds** and only regenerates the
 > pages your change touched.
 
-**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Config](docs/CONFIG.md)
+**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Distill](docs/DISTILL.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Config](docs/CONFIG.md)
 
 ---
 
@@ -385,6 +406,8 @@ repowise query "<q>"      # ask anything from the terminal
 repowise health           # code-health KPIs + lowest-scoring files
 repowise risk main..HEAD  # score a branch / PR range for defect risk
 repowise dead-code        # unreachable-code report
+repowise distill pytest   # compact errors-first output (reversible) — saves 60–90% tokens
+repowise saved            # tokens & dollars saved by distillation
 repowise doctor           # check setup, API keys, store drift
 ```
 

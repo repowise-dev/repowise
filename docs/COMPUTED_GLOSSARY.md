@@ -352,6 +352,7 @@ workspace overlays, MCP responses, and CLI output.
 | `repowise workspace` | Workspace repo discovery, config entries, update status, cross-repo hook output. | `Found 2 new repo(s)` |
 | `repowise generate-claude-md` | Editor-file data and rendered `.claude/CLAUDE.md`. | `hotspots`, `key_modules`, `decisions` in markdown |
 | `repowise augment` | Hook-time graph/search enrichment for AI tool calls. | Related files, symbols, importers, dependencies |
+| `repowise distill` / `expand` / `saved` | Compact errors-first command output with reversible omission markers, marker restoration, and the savings ledger rollup ([DISTILL.md](DISTILL.md)). | `[repowise#a1b2c3d4e5f6: 230 lines omitted (~6.1k tokens); ...]` |
 | `repowise mcp` | FastMCP server exposing the computed graph/wiki/risk tools below. | stdio or SSE transport |
 
 ## MCP And API-Visible Computed Payloads
