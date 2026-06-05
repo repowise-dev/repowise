@@ -631,7 +631,9 @@ def discover_cmake_reactor(
     skip_dirs = {".git", "build", "_build", "out", "_deps", "cmake-build-debug",
                  "cmake-build-release", "node_modules", ".venv", "venv"}
     if len(out) < max_files:
-        for cml in repo_root.rglob("CMakeLists.txt"):
+        from repowise.core.fs_walk import iter_glob
+
+        for cml in iter_glob(repo_root, "CMakeLists.txt"):
             try:
                 rel = cml.resolve().relative_to(repo_root).as_posix()
             except ValueError:

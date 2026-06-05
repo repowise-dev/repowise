@@ -25,7 +25,6 @@ flattened to the first plausible source target. Packages without an
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -84,11 +83,18 @@ class _RepoFileScan:
     package_jsons: list[Path] = field(default_factory=list)
 
 
-def _scan_repo_files(repo_path: Path) -> _RepoFileScan:
-    """One pruned ``os.walk`` collecting every finder's target files."""
+def _scan_repo_files(repo_path: Path, *, prune_nested_git: bool = True) -> _RepoFileScan:
+    """One pruned walk collecting every finder's target files.
+
+    Uses the shared :func:`repowise.core.fs_walk.walk_repo` (nested-git
+    pruning, cycle guard) with this module's deliberately-narrow prune set.
+    """
+    from repowise.core.fs_walk import walk_repo
+
     scan = _RepoFileScan()
-    for dirpath, dirnames, filenames in os.walk(repo_path):
-        dirnames[:] = [d for d in dirnames if d not in _SCAN_PRUNE_DIRS]
+    for dirpath, _dirnames, filenames in walk_repo(
+        repo_path, prune_dirs=_SCAN_PRUNE_DIRS, prune_nested_git=prune_nested_git
+    ):
         for fname in filenames:
             if fname.endswith(".mdx"):
                 scan.mdx_files.append(Path(dirpath) / fname)
@@ -104,7 +110,11 @@ def _get_repo_scan(ctx: "ResolverContext") -> _RepoFileScan:
     cached = getattr(ctx, "_ts_repo_file_scan", None)
     if cached is not None:
         return cached
-    scan = _scan_repo_files(ctx.repo_path) if ctx.repo_path is not None else _RepoFileScan()
+    scan = (
+        _scan_repo_files(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
+        if ctx.repo_path is not None
+        else _RepoFileScan()
+    )
     ctx._ts_repo_file_scan = scan  # type: ignore[attr-defined]
     return scan
 

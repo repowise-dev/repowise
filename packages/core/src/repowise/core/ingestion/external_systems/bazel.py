@@ -280,8 +280,10 @@ def discover_bazel_packages(repo_root: Path, *, max_files: int = 5000) -> list[B
     out: list[BazelFile] = []
     skip_dirs = {".git", "node_modules", "bazel-bin", "bazel-out", "bazel-testlogs",
                  "bazel-" + repo_root.name, ".venv", "venv", "build"}
+    from repowise.core.fs_walk import iter_glob
+
     for candidate in ("BUILD", "BUILD.bazel"):
-        for p in repo_root.rglob(candidate):
+        for p in iter_glob(repo_root, candidate):
             try:
                 rel = p.resolve().relative_to(repo_root).as_posix()
             except ValueError:

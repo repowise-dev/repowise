@@ -27,6 +27,13 @@ class ResolverContext:
     graph: nx.DiGraph
     repo_path: Path | None = None
 
+    # Whether repo-wide filesystem scans (fs_walk) skip nested git repos.
+    # True by default — sibling/vendored checkouts must not leak manifests.
+    # Set False when the pipeline indexes ``.git``-bearing subdirs (either
+    # ``include_submodules`` or ``include_nested_repos``) so resolver scans
+    # see the same files the traverser indexed.
+    prune_nested_git: bool = True
+
     # Language-specific state
     tsconfig_resolver: Any | None = None
     go_module_path: str | None = None

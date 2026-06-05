@@ -46,11 +46,17 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         *,
         exclude_patterns: list[str] | None = None,
         centrality_cache_dir: Path | str | None = None,
+        include_submodules: bool = False,
+        include_nested_repos: bool = False,
     ) -> None:
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
         self._built = False
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
+        # Mirrors the traverser flags: when submodules or nested repos are
+        # indexed, resolver filesystem scans must not prune them (both are
+        # ``.git``-bearing subdirs to fs_walk's prune_nested_git).
+        self._prune_nested_git: bool = not (include_submodules or include_nested_repos)
         self._tsconfig_resolver: Any | None = None  # TsconfigResolver (lazy import)
         # Optional structure-keyed disk cache for betweenness (the most
         # expensive metric kernel). Opt-in via *centrality_cache_dir* — the
@@ -239,14 +245,17 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         stem_map = build_stem_map(path_set)
 
         # Construct resolver context
-        go_modules = read_go_modules(self._repo_path)
+        go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
         ctx = ResolverContext(
             path_set=path_set,
             stem_map=stem_map,
             graph=self._graph,
             repo_path=self._repo_path,
+            prune_nested_git=self._prune_nested_git,
             tsconfig_resolver=self._tsconfig_resolver,
-            go_module_path=(go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)),
+            go_module_path=(
+                go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
+            ),
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
             parsed_files=self._parsed_files,

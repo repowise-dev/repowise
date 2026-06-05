@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from repowise.core.fs_walk import iter_glob
+
 # Default ImplicitUsings set for SDK ``Microsoft.NET.Sdk`` projects.
 # Source: dotnet/sdk repo, Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.ImplicitNamespaceImports.props
 _DEFAULT_IMPLICIT_USINGS: frozenset[str] = frozenset(
@@ -58,6 +60,7 @@ def collect_project_global_usings(
     sdk_is_web: bool = False,
     *,
     project_texts: dict[Path, str] | None = None,
+    prune_nested_git: bool = True,
 ) -> set[str]:
     """Walk *project_dir* for global using sources and return the merged set.
 
@@ -86,7 +89,7 @@ def collect_project_global_usings(
         return result
 
     skip = {"bin", "obj", ".vs", "node_modules"}
-    for cs_path in project_dir.rglob("*.cs"):
+    for cs_path in iter_glob(project_dir, "*.cs", prune_nested_git=prune_nested_git):
         if any(part in skip for part in cs_path.parts):
             continue
         try:

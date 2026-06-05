@@ -14,6 +14,8 @@ from xml.etree import ElementTree as ET
 
 import structlog
 
+from repowise.core.fs_walk import iter_glob
+
 log = structlog.get_logger(__name__)
 
 
@@ -87,11 +89,11 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
     return project
 
 
-def find_csproj_files(repo_path: Path) -> list[Path]:
+def find_csproj_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
     """Return all .csproj files under *repo_path*, skipping bin/obj output."""
     skip = {"bin", "obj", ".vs", "node_modules", ".git", "packages", "TestResults"}
     out: list[Path] = []
-    for csproj in repo_path.rglob("*.csproj"):
+    for csproj in iter_glob(repo_path, "*.csproj", prune_nested_git=prune_nested_git):
         if any(part in skip for part in csproj.parts):
             continue
         out.append(csproj)

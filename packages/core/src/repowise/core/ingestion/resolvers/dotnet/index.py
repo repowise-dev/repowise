@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from repowise.core.fs_walk import iter_glob
+
 from .global_usings import collect_project_global_usings
 from .msbuild import MSBuildProject, find_csproj_files, find_directory_build_props, parse_csproj
 from .namespace_map import build_namespace_map
@@ -147,7 +149,7 @@ class DotNetProjectIndex:
 _CS_WALK_SKIP_DIRS = frozenset({"bin", "obj", ".vs", "node_modules", ".git", "packages"})
 
 
-def _walk_repo_cs_files(repo_path: Path) -> list[Path]:
+def _walk_repo_cs_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
     """Single repo-wide rglob for ``*.cs`` files, dedup by resolved path.
 
     Lives at module scope (not nested inside ``build_index``) so it's
@@ -156,7 +158,7 @@ def _walk_repo_cs_files(repo_path: Path) -> list[Path]:
     """
     seen: set[Path] = set()
     out: list[Path] = []
-    for cs in repo_path.rglob("*.cs"):
+    for cs in iter_glob(repo_path, "*.cs", prune_nested_git=prune_nested_git):
         if any(part in _CS_WALK_SKIP_DIRS for part in cs.parts):
             continue
         try:
@@ -205,7 +207,7 @@ def _bucket_files_by_project(
     return out
 
 
-def build_index(repo_path: Path) -> DotNetProjectIndex:
+def build_index(repo_path: Path, *, prune_nested_git: bool = True) -> DotNetProjectIndex:
     """Walk *repo_path* and construct a fully-populated DotNetProjectIndex.
 
     Performance note: a previous version of this function walked the
@@ -223,7 +225,7 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
     index = DotNetProjectIndex(repo_path=repo_path)
 
     # ---- 1. Parse every .csproj ----
-    for csproj_path in find_csproj_files(repo_path):
+    for csproj_path in find_csproj_files(repo_path, prune_nested_git=prune_nested_git):
         proj = parse_csproj(csproj_path)
         if proj is None:
             continue
@@ -232,7 +234,7 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
         index.package_refs[proj.path] = set(proj.package_references)
 
     # ---- 2. Walk .sln files (informational; surfaces orphaned .csprojs) ----
-    index.sln_paths = find_sln_files(repo_path)
+    index.sln_paths = find_sln_files(repo_path, prune_nested_git=prune_nested_git)
     for sln in index.sln_paths:
         for entry in parse_sln(sln):
             if entry.csproj not in index.projects:
@@ -246,7 +248,7 @@ def build_index(repo_path: Path) -> DotNetProjectIndex:
                     index.package_refs.setdefault(proj.path, set()).update(proj.package_references)
 
     # ---- 3. Single master walk: enumerate .cs files & read each once ----
-    all_cs_files = _walk_repo_cs_files(repo_path)
+    all_cs_files = _walk_repo_cs_files(repo_path, prune_nested_git=prune_nested_git)
     cs_texts: dict[Path, str] = {}
     for f in all_cs_files:
         try:
@@ -317,6 +319,6 @@ def get_or_build_index(ctx: "ResolverContext") -> DotNetProjectIndex | None:
     cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:
         return cached
-    index = build_index(ctx.repo_path)
+    index = build_index(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
     setattr(ctx, _INDEX_KEY, index)
     return index

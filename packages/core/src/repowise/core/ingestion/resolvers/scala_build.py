@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from repowise.core.fs_walk import iter_glob
+
 if TYPE_CHECKING:
     from .context import ResolverContext
 
@@ -82,7 +84,9 @@ def _parse_build_sc(repo_path: Path) -> dict[str, str]:
     return result
 
 
-def _scan_packages(repo_path: Path, project_dir: str, build_tool: str) -> dict[str, list[str]]:
+def _scan_packages(
+    repo_path: Path, project_dir: str, build_tool: str, *, prune_nested_git: bool = True
+) -> dict[str, list[str]]:
     """Walk a project's source tree, recording package declarations."""
     found: dict[str, list[str]] = {}
     proj_path = (repo_path / project_dir).resolve() if project_dir else repo_path.resolve()
@@ -107,7 +111,7 @@ def _scan_packages(repo_path: Path, project_dir: str, build_tool: str) -> dict[s
         if not root.is_dir() or root in seen:
             continue
         seen.add(root)
-        for src in root.rglob("*.scala"):
+        for src in iter_glob(root, "*.scala", prune_nested_git=prune_nested_git):
             try:
                 rel = src.relative_to(repo_path.resolve()).as_posix()
             except ValueError:
@@ -123,7 +127,9 @@ def _scan_packages(repo_path: Path, project_dir: str, build_tool: str) -> dict[s
     return found
 
 
-def build_scala_index(repo_path: Path | None) -> ScalaProjectIndex:
+def build_scala_index(
+    repo_path: Path | None, *, prune_nested_git: bool = True
+) -> ScalaProjectIndex:
     if repo_path is None or not repo_path.is_dir():
         return ScalaProjectIndex()
     sbt_projects = _parse_build_sbt(repo_path)
@@ -143,7 +149,10 @@ def build_scala_index(repo_path: Path | None) -> ScalaProjectIndex:
             return ScalaProjectIndex()
 
     for _name, project_dir in index.projects.items():
-        for pkg, files in _scan_packages(repo_path, project_dir, index.build_tool).items():
+        scanned = _scan_packages(
+            repo_path, project_dir, index.build_tool, prune_nested_git=prune_nested_git
+        )
+        for pkg, files in scanned.items():
             index.package_to_files.setdefault(pkg, []).extend(files)
     return index
 
@@ -152,7 +161,7 @@ def get_or_build_scala_index(ctx: "ResolverContext") -> ScalaProjectIndex:
     cached = getattr(ctx, "_scala_index", None)
     if cached is not None:
         return cached
-    index = build_scala_index(ctx.repo_path)
+    index = build_scala_index(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
     ctx._scala_index = index  # type: ignore[attr-defined]
     return index
 

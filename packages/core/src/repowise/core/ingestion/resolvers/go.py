@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.fs_walk import iter_glob
+
 from .context import ResolverContext
 
 _GO_MOD_SKIP_DIRS = frozenset({"vendor", "node_modules", ".git"})
@@ -30,7 +32,9 @@ def read_go_module_path(repo_path: Path | None) -> str | None:
     return _read_module_directive(go_mod)
 
 
-def read_go_modules(repo_path: Path | None) -> tuple[tuple[str, str], ...]:
+def read_go_modules(
+    repo_path: Path | None, *, prune_nested_git: bool = True
+) -> tuple[tuple[str, str], ...]:
     """Discover every ``go.mod`` under *repo_path* and return
     ``((module_dir_posix, module_path), ...)`` sorted longest-module-path-first.
 
@@ -40,7 +44,7 @@ def read_go_modules(repo_path: Path | None) -> tuple[tuple[str, str], ...]:
     if repo_path is None or not repo_path.is_dir():
         return ()
     found: list[tuple[str, str]] = []
-    for go_mod in repo_path.rglob("go.mod"):
+    for go_mod in iter_glob(repo_path, "go.mod", prune_nested_git=prune_nested_git):
         # Skip vendored / nested-package directories
         rel_parts = go_mod.relative_to(repo_path).parts
         if any(part in _GO_MOD_SKIP_DIRS for part in rel_parts):

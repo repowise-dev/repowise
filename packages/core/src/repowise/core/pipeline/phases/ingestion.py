@@ -246,6 +246,8 @@ async def _run_ingestion(
         repo_path=repo_path,
         exclude_patterns=exclude_patterns,
         centrality_cache_dir=repo_path / ".repowise",
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
     )
 
     loop = asyncio.get_running_loop()
@@ -335,7 +337,11 @@ async def _run_ingestion(
             if progress:
                 progress.on_phase_start("tsconfig", None)
             _path_set = set(graph_builder._parsed_files.keys())
-            _resolver = TsconfigResolver(repo_path=repo_path, path_set=_path_set)
+            _resolver = TsconfigResolver(
+                repo_path=repo_path,
+                path_set=_path_set,
+                prune_nested_git=not (include_submodules or include_nested_repos),
+            )
             graph_builder.set_tsconfig_resolver(_resolver)
             _phase_done(progress, "tsconfig")
     except Exception as _resolver_exc:
