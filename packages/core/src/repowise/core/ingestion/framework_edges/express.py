@@ -27,6 +27,44 @@ _NEST_MODULE_RE = re.compile(r"@Module\s*\(\s*\{([^}]*)\}\s*\)", re.DOTALL)
 _NEST_ARRAY_FIELD_RE = re.compile(r"\b(?:controllers|providers|imports|exports)\s*:\s*\[([^\]]*)\]")
 _IDENT_RE = re.compile(r"\b([A-Z]\w*)\b")
 
+_EXPRESS_RECEIVER_RE = re.compile(
+    r"\b(\w+)\s*(?::[^=;\n]+)?=\s*(?:express\s*\(\s*\)|(?:express\s*\.\s*)?Router\s*\()"
+)
+_ROUTE_CALL_START_RE = re.compile(
+    r"\b(\w+)\s*\.\s*(?:get|post|put|delete|patch|options|head|all|use)\s*\("
+)
+_STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
+_ARG_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _match_paren(text: str, open_idx: int) -> int:
+    depth = 0
+    i = open_idx
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":
+            i += 1
+            while i < n and text[i] != c:
+                i += 2 if text[i] == "\\" else 1
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _add_reads_edge(graph: nx.DiGraph, source: str, target: str) -> bool:
+    if source == target or not graph.has_node(source) or not graph.has_node(target):
+        return False
+    if graph.has_edge(source, target):
+        return False
+    graph.add_edge(source, target, edge_type="reads", imported_names=[])
+    return True
+
 
 def _has_express_imports(parsed_files: dict[str, Any]) -> bool:
     for parsed in parsed_files.values():
@@ -64,6 +102,26 @@ def _add_express_edges(
                 target = var_to_file.get(var_name)
                 if target and target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
+
+            local_funcs = {
+                sym.name: sym.id
+                for sym in parsed.symbols
+                if sym.kind in ("function", "method")
+            }
+            receivers = {m.group(1) for m in _EXPRESS_RECEIVER_RE.finditer(text)}
+            if local_funcs and receivers:
+                module_sym = f"{path}::__module__"
+                for m in _ROUTE_CALL_START_RE.finditer(text):
+                    if m.group(1) not in receivers:
+                        continue
+                    close = _match_paren(text, m.end() - 1)
+                    if close == -1:
+                        continue
+                    arg_blob = _STRING_LITERAL_RE.sub("", text[m.end() : close])
+                    for ident in _ARG_IDENT_RE.finditer(arg_blob):
+                        sym_id = local_funcs.get(ident.group(0))
+                        if sym_id and _add_reads_edge(graph, module_sym, sym_id):
+                            count += 1
 
         # ---- NestJS: @Module({ controllers: [...], providers: [...], imports: [...] }) ----
         for mod_match in _NEST_MODULE_RE.finditer(text):
