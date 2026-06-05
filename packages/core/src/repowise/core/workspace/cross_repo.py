@@ -523,14 +523,18 @@ def _scan_csproj(
     """
     from xml.etree import ElementTree as ET
 
+    from repowise.core.fs_walk import iter_glob
+
     results: list[CrossRepoPackageDep] = []
     skip = {"bin", "obj", ".vs", "packages", "node_modules", ".git", "TestResults"}
 
     # Pre-compute the assembly-name → repo-alias map so we can resolve
-    # internal-NuGet references in a second pass.
+    # internal-NuGet references in a second pass. Each *selected* workspace
+    # repo is walked from its own root; iter_glob's nested-git pruning keeps
+    # any physically-nested unselected repo out of the scan.
     assembly_to_repo: dict[str, str] = {}
     for sib_alias, sib_path in repo_paths.items():
-        for csproj in sib_path.rglob("*.csproj"):
+        for csproj in iter_glob(sib_path, "*.csproj"):
             if any(part in skip for part in csproj.parts):
                 continue
             try:
@@ -545,7 +549,7 @@ def _scan_csproj(
                     break
             assembly_to_repo[assembly_name] = sib_alias
 
-    for csproj in repo_path.rglob("*.csproj"):
+    for csproj in iter_glob(repo_path, "*.csproj"):
         if any(part in skip for part in csproj.parts):
             continue
         try:

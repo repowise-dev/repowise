@@ -16,7 +16,7 @@ from ..models import (
     _new_uuid,
     _now_utc,
 )
-from ._shared import _BATCH_SIZE, _batch_upsert
+from ._shared import _BATCH_SIZE, _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
 # GitMetadata CRUD
@@ -106,14 +106,13 @@ async def upsert_git_metadata_bulk(
     metadata_list: list[dict],
 ) -> None:
     """Bulk upsert git metadata rows in batches."""
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GitMetadata,
         metadata_list,
-        key_fn=lambda meta: (
-            GitMetadata.repository_id == repository_id,
-            GitMetadata.file_path == meta.get("file_path", ""),
-        ),
+        prefilter=(GitMetadata.repository_id == repository_id,),
+        item_key_fn=lambda meta: meta.get("file_path", ""),
+        row_key_fn=lambda row: row.file_path,
         update_fn=_update_git_metadata,
         insert_fn=lambda meta: GitMetadata(
             id=_new_uuid(),
@@ -143,7 +142,17 @@ async def recompute_git_percentiles(
     change_entropy ascending — zero-entropy files tie at the minimum (0.0), so
     they stay below the biomarker's ≥0.80 gate. Works on both SQLite (3.25+) and
     PostgreSQL.
+
+    Hotspot classification mirrors ``enrich.meets_hotspot_floors`` (issue #361):
+    the repo-relative top-quartile gate AND the absolute activity floors —
+    keep the two paths in sync.
     """
+    from repowise.core.ingestion.git_indexer._constants import (
+        HOTSPOT_HIGH_COMMITS_90D,
+        HOTSPOT_MIN_COMMITS_90D,
+        HOTSPOT_MIN_TEMPORAL_SCORE,
+    )
+
     # First check how many rows exist so we can return the count without an
     # extra query after the UPDATE.
     count_result = await session.execute(
@@ -170,11 +179,22 @@ WITH ranked AS (
 UPDATE git_metadata
 SET churn_percentile = (SELECT prank FROM ranked WHERE ranked.id = git_metadata.id),
     is_hotspot = ((SELECT prank FROM ranked WHERE ranked.id = git_metadata.id) >= 0.75
-                  AND git_metadata.commit_count_90d > 0),
+                  AND git_metadata.commit_count_90d >= :min_commits_90d
+                  AND (git_metadata.commit_count_90d >= :high_commits_90d
+                       OR COALESCE(git_metadata.temporal_hotspot_score, 0.0)
+                          >= :min_temporal_score)),
     change_entropy_pct = (SELECT erank FROM ranked WHERE ranked.id = git_metadata.id)
 WHERE repository_id = :repo_id;
 """
-    await session.execute(text(sql), {"repo_id": repository_id})
+    await session.execute(
+        text(sql),
+        {
+            "repo_id": repository_id,
+            "min_commits_90d": HOTSPOT_MIN_COMMITS_90D,
+            "high_commits_90d": HOTSPOT_HIGH_COMMITS_90D,
+            "min_temporal_score": HOTSPOT_MIN_TEMPORAL_SCORE,
+        },
+    )
     await session.flush()
     return len(rows)
 
@@ -198,14 +218,13 @@ async def upsert_git_commits_bulk(
     commit_rows: list[dict],
 ) -> None:
     """Bulk upsert per-commit rows (keyed on ``repository_id`` + ``sha``)."""
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GitCommit,
         commit_rows,
-        key_fn=lambda row: (
-            GitCommit.repository_id == repository_id,
-            GitCommit.sha == row.get("sha", ""),
-        ),
+        prefilter=(GitCommit.repository_id == repository_id,),
+        item_key_fn=lambda row: row.get("sha", ""),
+        row_key_fn=lambda row: row.sha,
         update_fn=_update_git_commit,
         insert_fn=lambda row: GitCommit(
             id=_new_uuid(),
@@ -241,9 +260,7 @@ async def get_latest_commit_committed_at(session: AsyncSession, repository_id: s
     capturing on a ``repowise update``.
     """
     result = await session.execute(
-        select(func.max(GitCommit.committed_at)).where(
-            GitCommit.repository_id == repository_id
-        )
+        select(func.max(GitCommit.committed_at)).where(GitCommit.repository_id == repository_id)
     )
     return result.scalar_one_or_none()
 
@@ -319,14 +336,13 @@ async def upsert_git_function_blame_bulk(
     rows: list[dict],
 ) -> None:
     """Bulk upsert per-function blame rows (keyed ``repository_id`` + ``symbol_id``)."""
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GitFunctionBlame,
         rows,
-        key_fn=lambda row: (
-            GitFunctionBlame.repository_id == repository_id,
-            GitFunctionBlame.symbol_id == row.get("symbol_id", ""),
-        ),
+        prefilter=(GitFunctionBlame.repository_id == repository_id,),
+        item_key_fn=lambda row: row.get("symbol_id", ""),
+        row_key_fn=lambda row: row.symbol_id,
         update_fn=_update_git_function_blame,
         insert_fn=lambda row: GitFunctionBlame(
             id=_new_uuid(),

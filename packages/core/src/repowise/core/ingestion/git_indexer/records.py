@@ -34,7 +34,14 @@ _FIELD_SEP = "\x1f"
 # output, which is what :func:`_parse_commit_record` then splits on. The body
 # (``%b``) is captured last because it is the only multi-line field; everything
 # after the 6th field separator is "body + numstat" and is disentangled there.
-_LOG_FORMAT = "%x00%H%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%s%x1f%b"
+# Author name/email use the mailmap-canonical ``%aN``/``%aE`` (not raw
+# ``%an``/``%ae``) so a repo's ``.mailmap`` folds a contributor's multiple
+# names/emails — personal vs. GitHub ``noreply``, a second machine's git config —
+# into one identity. Without this, ownership and "last touched" split one human
+# across several contributor buckets. Committer name/email (``%cN``/``%cE``)
+# ride the same record for agent-provenance classification: a service identity
+# as committer over a human author means an agent pushed/amended the change.
+_LOG_FORMAT = "%x00%H%x1f%aN%x1f%aE%x1f%cN%x1f%cE%x1f%ct%x1f%P%x1f%s%x1f%b"
 
 # A git ``--numstat`` line: ``<added>\t<deleted>\t<path>`` where added/deleted
 # are decimal counts or ``-`` for binary files. Used to split the trailing
@@ -55,6 +62,10 @@ class _CommitRec:
     body: str = ""
     added: int = 0
     deleted: int = 0
+    # Agent provenance (classified once per commit during the walk; carried on
+    # the record so per-file rollups don't re-run the regex per touched file).
+    agent: str | None = None
+    agent_tier: int | None = None
 
 
 def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
@@ -62,7 +73,7 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
 
     A record (after the leading record separator is stripped) looks like::
 
-        <sha>\\x1f<an>\\x1f<ae>\\x1f<ct>\\x1f<parents>\\x1f<subject>\\x1f<body>\\n<numstat...>
+        <sha>\\x1f<an>\\x1f<ae>\\x1f<cn>\\x1f<ce>\\x1f<ct>\\x1f<parents>\\x1f<subject>\\x1f<body>\\n<numstat...>
 
     The body is multi-line, so the trailing ``--numstat`` block is identified
     by the first line matching :data:`_NUMSTAT_RE`; everything before it is
@@ -71,12 +82,12 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
     fields except ``added``/``deleted`` (the caller attributes churn).
     """
     parts = record.split(_FIELD_SEP)
-    if len(parts) < 7:
+    if len(parts) < 9:
         return None
-    sha, an, ae, ct, parents, subject = parts[:6]
+    sha, an, ae, cn, ce, ct, parents, subject = parts[:8]
     # %b cannot contain the field separator, so the body + numstat tail is the
-    # 7th field exactly (join is defensive against an unexpected stray sep).
-    body_and_numstat = _FIELD_SEP.join(parts[6:])
+    # 9th field exactly (join is defensive against an unexpected stray sep).
+    body_and_numstat = _FIELD_SEP.join(parts[8:])
 
     body_lines: list[str] = []
     numstat_lines: list[str] = []
@@ -98,6 +109,8 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
         "sha": sha,
         "author_name": an or "unknown",
         "author_email": ae,
+        "committer_name": cn or "",
+        "committer_email": ce or "",
         "ts": ts,
         "is_merge": len(parents.split()) > 1,
         "subject": subject,

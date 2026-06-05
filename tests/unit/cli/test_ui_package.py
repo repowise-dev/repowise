@@ -39,6 +39,11 @@ def test_facade_reexports_public_surface() -> None:
         "build_contextual_next_steps",
         "format_elapsed",
         "LARGE_REPO_FILE_THRESHOLD",
+        # owl mascot additions (additive — everything above is the original surface)
+        "banner_text",
+        "mini",
+        "OWL_SPINNER",
+        "THINKING_FRAMES",
     }
     missing = {name for name in expected if not hasattr(ui, name)}
     assert not missing

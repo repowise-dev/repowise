@@ -177,6 +177,7 @@ def save_full_state_and_config(
     commit_limit: int | None,
     resolved_commit_limit: int,
     resolved_reasoning: str,
+    include_submodules: bool = False,
 ) -> None:
     """Persist state.json + config for a completed full-mode (docs) init run."""
 
@@ -216,6 +217,9 @@ def save_full_state_and_config(
     # Full-mode docs runs always index the FULL git tier.
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
+    # Same pattern as git_tier: `repowise update` reads this back so its
+    # graph rebuild keeps the init run's submodule boundary semantics.
+    state["include_submodules"] = include_submodules
     total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
     state["total_tokens"] = total_tokens
     if phase_timings:

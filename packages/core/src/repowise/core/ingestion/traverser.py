@@ -227,9 +227,11 @@ class FileTraverser:
         self._dir_ignore_cache: dict[str, pathspec.PathSpec] = {
             str(self.repo_root): self._extra_ignore,
         }
-        self._submodule_paths: frozenset[str] = frozenset()
-        if not include_submodules:
-            self._submodule_paths = _parse_gitmodules(self.repo_root)
+        # Parse .gitmodules unconditionally: when submodules are *included*
+        # the set is what exempts initialized submodules (whose `.git` file
+        # makes them look like nested repos) from the nested-git skip below.
+        self._submodule_paths: frozenset[str] = _parse_gitmodules(self.repo_root)
+        self._include_submodules = include_submodules
         self._include_nested_repos = include_nested_repos
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
@@ -238,7 +240,7 @@ class FileTraverser:
             repo_root=str(self.repo_root),
             max_file_size_kb=max_file_size_kb,
             extra_exclude_patterns=len(patterns),
-            submodules_skipped=len(self._submodule_paths),
+            submodules_skipped=0 if include_submodules else len(self._submodule_paths),
             include_nested_repos=include_nested_repos,
         )
 
@@ -352,15 +354,19 @@ class FileTraverser:
         if dirname in _BLOCKED_DIRS:
             return True
         rel_str = rel_path.as_posix()
-        if rel_str in self._submodule_paths:
+        is_submodule = rel_str in self._submodule_paths
+        if is_submodule and not self._include_submodules:
             self.stats.skipped_submodule += 1
             return True
         # Nested git repos are independent units — stop at the boundary
         # unless the caller explicitly opted in. Mirrors the workspace
         # scanner, which already refuses to descend into nested `.git`
         # markers. Without this, a parent repo that physically contains
-        # sibling repos gets walked end-to-end.
-        if not self._include_nested_repos and _is_nested_git_repo(abs_path):
+        # sibling repos gets walked end-to-end. An *initialized* submodule
+        # carries a `.git` file and would match here too — submodules that
+        # were explicitly opted in above are exempt (they still fall through
+        # to the gitignore/exclude checks below).
+        if not self._include_nested_repos and not is_submodule and _is_nested_git_repo(abs_path):
             self.stats.skipped_nested_repo += 1
             log.debug("Skipping nested git repo", path=rel_str)
             return True
@@ -468,9 +474,21 @@ class FileTraverser:
     # ------------------------------------------------------------------
 
     def _detect_monorepo(self) -> tuple[list[PackageInfo], bool]:
-        """Detect package sub-directories by looking for manifest files."""
+        """Detect package sub-directories by looking for manifest files.
+
+        Candidate dirs the main traversal would never enter (nested git
+        repos, submodules, gitignored/blocked dirs) are rejected up front:
+        a "package" the walk skips must not be reported — and, before this
+        guard, each such candidate was expensively ``rglob``-scanned for
+        language/entry-point detection (minutes per sibling repo on a
+        directory that physically contains other checkouts).
+        """
         packages: list[PackageInfo] = []
         seen_paths: set[str] = set()
+        # Mirrors GraphBuilder._prune_nested_git: when submodules or nested
+        # repos are indexed, package-language/entry-point scans must not
+        # prune them (both are `.git`-bearing subdirs to fs_walk).
+        prune_nested = not (self._include_submodules or self._include_nested_repos)
 
         for depth in (1, 2):
             pattern = "/".join(["*"] * depth) + "/*"
@@ -478,12 +496,17 @@ class FileTraverser:
                 if candidate.name not in _MANIFEST_FILES:
                     continue
                 pkg_dir = candidate.parent
-                rel_pkg = pkg_dir.relative_to(self.repo_root).as_posix()
+                rel_pkg_path = pkg_dir.relative_to(self.repo_root)
+                rel_pkg = rel_pkg_path.as_posix()
                 if rel_pkg in seen_paths:
                     continue
+                if self._dir_chain_skipped(rel_pkg_path):
+                    continue
                 seen_paths.add(rel_pkg)
-                lang = _primary_language_in(pkg_dir)
-                entry_pts = _find_entry_points_in(pkg_dir, self.repo_root)
+                lang = _primary_language_in(pkg_dir, prune_nested_git=prune_nested)
+                entry_pts = _find_entry_points_in(
+                    pkg_dir, self.repo_root, prune_nested_git=prune_nested
+                )
                 packages.append(
                     PackageInfo(
                         name=pkg_dir.name,
@@ -496,6 +519,20 @@ class FileTraverser:
 
         packages.sort(key=lambda p: p.path)
         return packages, len(packages) > 1
+
+    def _dir_chain_skipped(self, rel_dir: Path) -> bool:
+        """True if *rel_dir* (or any ancestor) would be pruned by ``_walk``.
+
+        Reuses :meth:`_should_skip_dir` level by level so monorepo package
+        detection has exactly the same boundary semantics as file traversal
+        (blocked dirs, submodules, nested git repos, gitignore/excludes).
+        """
+        cur = Path()
+        for part in rel_dir.parts:
+            cur = cur / part
+            if self._should_skip_dir(part, cur, self.repo_root / cur):
+                return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -590,12 +627,16 @@ def _stem_is_entry_point(abs_path: Path) -> bool:
     return stem in _ENTRY_POINT_STEMS
 
 
-def _primary_language_in(directory: Path) -> LanguageTag:
+def _primary_language_in(directory: Path, *, prune_nested_git: bool = True) -> LanguageTag:
+    from repowise.core.fs_walk import walk_repo
+
     counts: dict[str, int] = {}
     try:
-        for item in directory.rglob("*"):
-            if item.is_file():
-                lang = _detect_language(item)
+        for dirpath, _dirnames, filenames in walk_repo(
+            directory, prune_nested_git=prune_nested_git
+        ):
+            for fname in filenames:
+                lang = _detect_language(dirpath / fname)
                 if lang not in ("unknown", "yaml", "json", "markdown", "toml"):
                     counts[lang] = counts.get(lang, 0) + 1
     except OSError:
@@ -605,12 +646,19 @@ def _primary_language_in(directory: Path) -> LanguageTag:
     return max(counts, key=lambda k: counts[k])  # type: ignore[return-value]
 
 
-def _find_entry_points_in(directory: Path, repo_root: Path) -> list[str]:
+def _find_entry_points_in(
+    directory: Path, repo_root: Path, *, prune_nested_git: bool = True
+) -> list[str]:
+    from repowise.core.fs_walk import walk_repo
+
     result: list[str] = []
     try:
-        for item in directory.rglob("*"):
-            if item.is_file() and item.name in _ENTRY_POINT_NAMES:
-                result.append(item.relative_to(repo_root).as_posix())
+        for dirpath, _dirnames, filenames in walk_repo(
+            directory, prune_nested_git=prune_nested_git
+        ):
+            for fname in filenames:
+                if fname in _ENTRY_POINT_NAMES:
+                    result.append((dirpath / fname).relative_to(repo_root).as_posix())
     except OSError:
         pass
     return sorted(result)

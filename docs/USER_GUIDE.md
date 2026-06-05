@@ -27,10 +27,11 @@ Everything you need to know to install, use, and get the most out of repowise.
 4. [Web UI](#web-ui)
 5. [MCP Integration with AI Editors](#mcp-integration-with-ai-editors)
 6. [Proactive Context Enrichment (Hooks)](#proactive-context-enrichment-hooks)
-7. [Auto-Sync](#auto-sync)
-8. [Environment Variables](#environment-variables)
-9. [Common Workflows](#common-workflows)
-10. [Troubleshooting](#troubleshooting)
+7. [Output Distillation (Distill)](#output-distillation-distill)
+8. [Auto-Sync](#auto-sync)
+9. [Environment Variables](#environment-variables)
+10. [Common Workflows](#common-workflows)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -946,6 +947,66 @@ Hooks and MCP tools are complementary:
 - **MCP tools** — active, on-demand, richer output. Used when the agent needs full documentation, risk assessment, architectural decisions, or dependency tracing.
 
 For most day-to-day coding tasks, hooks provide sufficient context automatically. MCP tools remain the right choice for deeper investigation.
+
+---
+
+## Output Distillation (Distill)
+
+Most of an agent's context is spent on command output it never needed — 300
+lines of passing tests to find 4 failures, a full `git log` for "what changed
+recently". Distill compresses noisy output **before the agent reads it**,
+errors-first and fully reversible. Full guide: [DISTILL.md](DISTILL.md).
+
+**Try it from the terminal:**
+
+```bash
+repowise distill pytest -x       # compact errors-first rendering, exit code preserved
+repowise distill git log -50    # recent subjects + counts instead of full bodies
+```
+
+Dropped content is referenced by an inline marker and always recoverable:
+
+```
+[repowise#a1b2c3d4e5f6: 230 lines omitted (~6.1k tokens); restore: repowise expand a1b2c3d4e5f6]
+```
+
+```bash
+repowise expand a1b2c3d4e5f6              # full original output
+repowise expand a1b2c3d4e5f6 -q "FAILED"  # just the matching lines
+```
+
+**Make your agent use it.** Two complementary ways:
+
+1. `repowise init` adds an "Output Distillation" section to the managed
+   `CLAUDE.md`, so the agent prefers `repowise distill <cmd>` voluntarily —
+   works in any agent that runs shell commands.
+2. Opt into the **command-rewrite hook** (Claude Code): noisy commands are
+   rewritten to `repowise distill <cmd>` automatically, pending your approval.
+
+```bash
+repowise hook rewrite install     # or answer Yes at the `repowise init` prompt
+```
+
+The hook never rewrites pipes/compound commands or watch modes, and defaults
+to `ask` so you see every rewritten command. Per-repo behavior lives under
+`distill.commands` in `.repowise/config.yaml` (see [CONFIG.md](CONFIG.md)).
+
+**Skeletons for large files.** For structure-level questions about an indexed
+file, `get_context(["path"], include=["skeleton"])` returns every signature
+plus the bodies of only the most central symbols — typically ~15% of the full
+file's tokens. After a large `Read`, the PostToolUse hook nudges the agent
+with the skeleton's cost once per file per session.
+
+**Track what you save:**
+
+```bash
+repowise saved              # per-filter rollup, totals, est. dollars
+repowise saved --by day
+```
+
+The Costs page in the web UI shows the same numbers on its *Cache & savings*
+tab. The ledger covers the distill command/hook path only — MCP response
+truncation is not counted.
 
 ---
 

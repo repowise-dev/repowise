@@ -8,7 +8,7 @@ the WikiSymbol row at index time.
 
 Why a separate tool instead of "include source" on get_context?
   * Granularity: a single function is ~30 lines vs a 300-line file. Cuts the
-    cached prompt prefix by ~10× when the agent only needs one symbol.
+    cached prompt prefix by ~10x when the agent only needs one symbol.
   * Predictability: response size is bounded by the symbol size, never the
     file size — no surprise 50 KB payloads.
   * No reparsing: the bytes come straight from disk via the persisted line
@@ -23,13 +23,22 @@ Resolution strategy (in order):
   2. Exact match on (file_path, qualified_name) — supports class.method form
   3. Exact match on (file_path, name) — supports unqualified names
 
+The tool also resolves **omission refs**: a ``symbol_id`` of the form
+``"repowise#<12-hex>"`` (from a ``[repowise#<ref>: ...]`` truncation marker)
+retrieves the omitted content from the durable omission store instead of the
+symbol index. The two id shapes are syntactically unambiguous — a real
+symbol_id always contains a file path — so dispatch is trivial and the
+symbol contract is untouched.
+
 Returns a flat dict (not wrapped in `targets`) so the agent can pipe the
 `source` field straight to its scratch buffer.
 """
 
 from __future__ import annotations
 
+import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +46,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import WikiSymbol
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -46,13 +56,92 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import symbol_hint as _symbol_hint
-from repowise.core.registry import mcp_tool_registry as mcp
 
 _log = __import__("logging").getLogger("repowise.mcp.symbol")
 
 # Safety cap so a misconfigured WikiSymbol row pointing at a giant file
 # can never blow up the agent's context window. Tuned to ~12 KB of source.
 _MAX_SOURCE_LINES = 400
+
+# Omission-ref dispatch: "repowise#<12-hex>" never collides with a
+# "{path}::{name}" symbol_id. Also tolerates a pasted whole marker.
+_OMISSION_REF_RE = re.compile(r"^repowise#([0-9a-f]{12})$")
+
+
+def _extract_omission_ref(symbol_id: str) -> str | None:
+    """Return the 12-hex omission ref when *symbol_id* is ref-shaped, else None."""
+    candidate = symbol_id.strip()
+    match = _OMISSION_REF_RE.match(candidate)
+    if match:
+        return match.group(1)
+    if candidate.startswith("[repowise#"):
+        from repowise.core.distill.markers import MARKER_RE
+
+        marker = MARKER_RE.search(candidate)
+        if marker:
+            return marker.group("ref")
+    return None
+
+
+def _resolve_omission_ref(
+    symbol_id: str, ref: str, query: str | None, repo_root: Any, t0: float
+) -> dict:
+    """Look *ref* up in the omission store(s) and shape a tool response.
+
+    Checks the repo-local store first, then the user-level fallback —
+    the same order as ``repowise expand``. Stores are only opened when the
+    DB file already exists (opening would otherwise create an empty one).
+    """
+    from repowise.core.distill.store import OmissionStore, default_store_path
+
+    candidates: list[Path] = []
+    if repo_root:
+        candidates.append(default_store_path(Path(str(repo_root))))
+    home_store = default_store_path(Path.home())
+    if home_store not in candidates:
+        candidates.append(home_store)
+
+    record: dict | None = None
+    for db_path in candidates:
+        if not db_path.exists():
+            continue
+        store = OmissionStore(db_path)
+        try:
+            record = store.get_record(ref, query=query)
+        finally:
+            store.close()
+        if record is not None:
+            break
+
+    if record is None:
+        return {
+            "symbol_id": symbol_id,
+            "ref": ref,
+            "error": (
+                f"No stored content for omission ref {ref!r} — it may have "
+                "expired (7-day TTL), been pruned, or been produced in a "
+                "different repo. Re-run the original call for fresh content."
+            ),
+            "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+        }
+
+    created = record.get("created_at")
+    response: dict[str, Any] = {
+        "symbol_id": symbol_id,
+        "ref": ref,
+        "kind": "omission",
+        "source": record.get("source"),
+        "original_tokens": record.get("original_tokens"),
+        "content": record.get("content"),
+        "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+    }
+    if isinstance(created, (int, float)):
+        response["created_at"] = datetime.fromtimestamp(created, tz=UTC).isoformat()
+    if query is not None:
+        response["query"] = query
+        if not record.get("content"):
+            response["note"] = "No lines matched the query; omit query for the full content."
+    return response
 
 
 def _parse_symbol_id(symbol_id: str) -> tuple[str | None, str | None]:
@@ -283,6 +372,7 @@ async def get_symbol(
     symbol_id: str,
     context_lines: int = 0,
     repo: str | None = None,
+    query: str | None = None,
 ) -> dict:
     """Read one function/class with exact line bounds — cheaper and safer than Read+math.
 
@@ -290,15 +380,19 @@ async def get_symbol(
     without the agent having to compute offsets or guess at file structure.
     Bounded to ~400 lines (hard cap) so a misconfigured row can never blow up
     the context window. Pass the canonical ``"path/to/file.py::Name"`` that
-    appears in ``get_context``'s symbol list.
+    appears in ``get_context``'s symbol list. Also resolves omission refs:
+    pass ``"repowise#<12-hex>"`` from a ``[repowise#...]`` truncation marker
+    to retrieve the omitted content (``query`` filters it to matching lines).
 
     Returns {file, name, kind, signature, start_line, end_line, source,
     truncated}. On miss returns {error: "Symbol not found …"}.
 
     Args:
-        symbol_id: "path/to/file.py::SymbolName" (canonical id from get_context).
-        context_lines: extra source lines before/after (0–50, default 0).
+        symbol_id: "path/to/file.py::SymbolName" (canonical id from get_context),
+            or "repowise#<12-hex>" from an omission marker.
+        context_lines: extra source lines before/after (0-50, default 0).
         repo: usually omitted.
+        query: omission refs only — regex (or substring) returning matching lines.
     """
     if repo == "all":
         return _unsupported_repo_all("get_symbol")
@@ -311,6 +405,11 @@ async def get_symbol(
             "error": "symbol_id is required",
             "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
         }
+
+    omission_ref = _extract_omission_ref(symbol_id)
+    if omission_ref is not None:
+        return _resolve_omission_ref(symbol_id, omission_ref, query, ctx.path, t0)
+
     repository = None
     if context_lines < 0 or context_lines > 50:
         # Bound context_lines to a sane range — runaway values would
@@ -346,7 +445,7 @@ async def get_symbol(
         }
 
     repo_root = Path(str(ctx.path))
-    source, start, end, total = _slice_source(
+    source, start, end, _total = _slice_source(
         repo_root, row.file_path, row.start_line, row.end_line, context_lines
     )
 

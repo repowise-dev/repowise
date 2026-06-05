@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Grep|Glob|Read|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "repowise-augment",
+            "timeout": 10,
+            "statusMessage": "Checking codebase context..."
+          }
+        ]
+      }
+    ]
+  }
+}

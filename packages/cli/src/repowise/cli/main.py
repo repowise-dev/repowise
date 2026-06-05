@@ -11,7 +11,9 @@ from repowise.cli.commands.costs_cmd import costs_command
 from repowise.cli.commands.dead_code_cmd import dead_code_command
 from repowise.cli.commands.decision_cmd import decision_group
 from repowise.cli.commands.delete_cmd import delete_command
+from repowise.cli.commands.distill_cmd import distill_command
 from repowise.cli.commands.doctor_cmd import doctor_command
+from repowise.cli.commands.expand_cmd import expand_command
 from repowise.cli.commands.export_cmd import export_command
 from repowise.cli.commands.health_cmd import health_command
 from repowise.cli.commands.hook_cmd import hook_group
@@ -19,6 +21,7 @@ from repowise.cli.commands.init_cmd import init_command
 from repowise.cli.commands.mcp_cmd import mcp_command
 from repowise.cli.commands.reindex_cmd import reindex_command
 from repowise.cli.commands.risk_cmd import risk_command
+from repowise.cli.commands.saved_cmd import saved_command
 from repowise.cli.commands.search_cmd import search_command
 from repowise.cli.commands.serve_cmd import serve_command
 from repowise.cli.commands.status_cmd import status_command
@@ -61,6 +64,9 @@ register_command(health_command)
 register_command(risk_command)
 register_command(decision_group)
 register_command(search_command)
+register_command(distill_command)
+register_command(expand_command)
+register_command(saved_command)
 register_command(export_command)
 register_command(hook_group)
 register_command(status_command)

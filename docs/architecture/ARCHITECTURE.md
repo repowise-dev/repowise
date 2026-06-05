@@ -856,7 +856,8 @@ tracked file, it computes:
   the code evolved this way and are included in generation prompts.
 - **Co-change partners** — files that changed in the same commit >= 3 times, even
   without an import relationship. Reveals hidden structural coupling.
-- **Derived signals** — `is_hotspot` (top 25% churn AND complexity), `is_stable`
+- **Derived signals** — `is_hotspot` (top-quartile decayed churn AND absolute
+  activity floors: >= 3 commits in 90d with real line movement), `is_stable`
   (>10 commits, 0 in 90 days), `churn_percentile` (0.0–1.0)
 
 **Performance targets:**
@@ -1205,7 +1206,7 @@ GraphBuilder
 GitIndexer (if git.enabled)
   mines git history → git_metadata table
   computes co-change partners → adds co_changes edges to graph
-  classifies hotspots (top 25% churn + complexity)
+  classifies hotspots (top-quartile decayed churn + absolute activity floors)
   classifies stable files (>10 commits, 0 in 90 days)
        │
        ▼

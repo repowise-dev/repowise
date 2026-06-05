@@ -26,6 +26,7 @@ from typing import Any
 
 import structlog
 
+from ...ingestion.git_indexer.enrich import count_active_contributors
 from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
     distinct_commits_in_range,
@@ -188,6 +189,24 @@ def _compute_repo_dependents_p80(parsed_files: list[Any], graph: Any) -> int | N
     return _percentile_p80(counts)
 
 
+def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | None:
+    """Distinct non-bot contributors active in the repo's trailing 90 days.
+
+    Derived from the per-author ``last_commit_ts`` timestamps already in
+    ``top_authors_json`` — no extra git work. ``None`` = unknown (git
+    skipped, or a pre-timestamp index); biomarkers then keep their
+    historical behaviour rather than mis-gating on a phantom team size.
+    """
+    metas = [m for m in git_meta_map.values() if isinstance(m, dict)]
+    if not metas:
+        return None
+    try:
+        return count_active_contributors(metas)
+    except Exception as exc:
+        log.debug("health_active_contributors_failed", error=str(exc))
+        return None
+
+
 def _build_repo_commit_counts(git_meta_map: dict[str, dict]) -> dict[str, int]:
     out: dict[str, int] = {}
     for path, meta in git_meta_map.items():
@@ -237,6 +256,7 @@ class HealthAnalyzer:
         parsed_files: list[Any] | None = None,
         coverage_map: dict[str, dict[str, Any]] | None = None,
         module_map: dict[str, str] | None = None,
+        duplication_cache_dir: Any | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -252,6 +272,10 @@ class HealthAnalyzer:
         # module rollups still group sensibly on small repos that didn't
         # produce community labels.
         self.module_map = module_map or {}
+        # Directory for the duplication token/window cache (typically the
+        # repo's ``.repowise``). None disables caching — the duplication
+        # pass then re-tokenizes everything, exactly as before.
+        self.duplication_cache_dir = duplication_cache_dir
 
     def analyze(
         self,
@@ -290,7 +314,11 @@ class HealthAnalyzer:
             dup_report = DuplicationReport()
         else:
             try:
-                dup_report = detect_clones(self.parsed_files, self.git_meta_map)
+                dup_report = detect_clones(
+                    self.parsed_files,
+                    self.git_meta_map,
+                    cache_dir=self.duplication_cache_dir,
+                )
                 _log_duplication_diagnostics(dup_report)
             except Exception as exc:
                 log.debug("health_duplication_failed", error=str(exc))
@@ -315,6 +343,7 @@ class HealthAnalyzer:
 
         repo_fn_mod_p80 = _compute_repo_function_mod_p80(walked, self.git_meta_map)
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
+        repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
         for pf, fcx in walked:
             # Side-effect: bump Symbol.complexity_estimate when we can
@@ -338,6 +367,7 @@ class HealthAnalyzer:
                 repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
                 repo_dependents_p80=repo_dependents_p80,
+                repo_active_contributors_90d=repo_active_contributors,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -397,7 +427,10 @@ class HealthAnalyzer:
         else:
             try:
                 dup_report = await asyncio.to_thread(
-                    detect_clones, self.parsed_files, self.git_meta_map
+                    detect_clones,
+                    self.parsed_files,
+                    self.git_meta_map,
+                    cache_dir=self.duplication_cache_dir,
                 )
                 _log_duplication_diagnostics(dup_report)
             except Exception as exc:
@@ -436,6 +469,7 @@ class HealthAnalyzer:
         walked = await asyncio.gather(*[_one(pf) for pf in target_files])
         repo_fn_mod_p80 = _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
+        repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
@@ -457,6 +491,7 @@ class HealthAnalyzer:
                 repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
                 repo_dependents_p80=repo_dependents_p80,
+                repo_active_contributors_90d=repo_active_contributors,
             )
             metrics.append(file_metric)
             findings.extend(file_findings)
@@ -534,6 +569,7 @@ class HealthAnalyzer:
         repo_commit_counts: dict[str, int] | None = None,
         repo_function_mod_p80: int | None = None,
         repo_dependents_p80: int | None = None,
+        repo_active_contributors_90d: int | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData]]:
         file_path = pf.file_info.path
 
@@ -591,6 +627,7 @@ class HealthAnalyzer:
             repo_commit_counts=repo_commit_counts or {},
             blame_index=blame_index,
             repo_function_mod_p80=repo_function_mod_p80,
+            repo_active_contributors_90d=repo_active_contributors_90d,
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)

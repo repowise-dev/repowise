@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from repowise.core.fs_walk import iter_glob
+
 if TYPE_CHECKING:
     from .context import ResolverContext
 
@@ -76,7 +78,9 @@ def _is_rails_repo(repo_path: Path) -> bool:
     return (repo_path / "config" / "application.rb").is_file()
 
 
-def build_rails_index(repo_path: Path | None) -> RailsIndex | None:
+def build_rails_index(
+    repo_path: Path | None, *, prune_nested_git: bool = True
+) -> RailsIndex | None:
     if repo_path is None or not repo_path.is_dir():
         return None
     if not _is_rails_repo(repo_path):
@@ -90,7 +94,7 @@ def build_rails_index(repo_path: Path | None) -> RailsIndex | None:
         if not root_path.is_dir():
             continue
         index.autoload_roots.append(root)
-        for rb in root_path.rglob("*.rb"):
+        for rb in iter_glob(root_path, "*.rb", prune_nested_git=prune_nested_git):
             try:
                 rel = rb.relative_to(repo_resolved).as_posix()
             except ValueError:
@@ -110,6 +114,6 @@ def get_or_build_rails_index(ctx: "ResolverContext") -> RailsIndex | None:
     cached = getattr(ctx, "_ruby_rails_index", "__sentinel__")
     if cached != "__sentinel__":
         return cached  # type: ignore[return-value]
-    index = build_rails_index(ctx.repo_path)
+    index = build_rails_index(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
     ctx._ruby_rails_index = index  # type: ignore[attr-defined]
     return index

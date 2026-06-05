@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from rich.console import Console
+from rich.markup import escape
 from rich.rule import Rule
-from rich.text import Text
 
 # ---------------------------------------------------------------------------
 # Brand / theme
@@ -18,24 +18,33 @@ WARN = "yellow"
 ERR = "bold red"
 
 # ---------------------------------------------------------------------------
-# ASCII art  —  bold half-block, compact lowercase, 2 lines
+# Banner  —  owl mascot + heatmap wordmark (art lives in ui/mascot.py)
 # ---------------------------------------------------------------------------
 
-_LOGO = " █▀█ █▀▀ █▀█ █▀█ █ █ █ ▀ █▀▀ █▀▀\n █▀▄ ██▄ █▀▀ █▄█ ▀▄▀▄▀ █ ▄▄█ ██▄"
+# Breathing room required beyond the rendered banner width before we pick the
+# full variant; below that we fall back to compact (same design, 1-char strokes).
+_BANNER_WIDTH_MARGIN = 4
 
 
 def print_banner(console: Console, repo_name: str | None = None) -> None:
-    """Print the repowise logo, tagline, and optional repo name."""
+    """Print the repowise owl banner, tagline, and optional repo name."""
     from repowise.cli import __version__
+    from repowise.cli.ui import mascot
 
+    compact = console.width < mascot.banner_width() + _BANNER_WIDTH_MARGIN
     console.print()
-    console.print(Text(_LOGO, style=BRAND_STYLE))
-    console.print(
-        f"  [dim]codebase intelligence for developers and AI[/dim]  [dim]v{__version__}[/dim]"
-    )
+    console.print(mascot.banner_text(repo_name, compact=compact))
+    console.print()
+    if compact:
+        console.print(f" [dim]codebase intelligence · v{__version__}[/dim]", highlight=False)
+    else:
+        console.print(
+            f" [dim]codebase intelligence for developers and AI  ·  v{__version__}[/dim]",
+            highlight=False,
+        )
     if repo_name:
         console.print()
-        console.print(f"  Repository: [bold]{repo_name}[/bold]")
+        console.print(f" Repository: [bold]{escape(repo_name)}[/bold]", highlight=False)
     console.print()
 
 

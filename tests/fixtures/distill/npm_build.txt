@@ -1,0 +1,99 @@
+﻿
+> repowise-root@0.1.0 build
+> npm run build --workspaces --if-present
+
+
+> repowise-web@0.3.0 build
+> next build
+
+   ▲ Next.js 15.5.18
+   - Environments: .env.local
+   - Experiments (use with caution):
+     · optimizePackageImports
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 10.9s
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/8) ...
+   Generating static pages (2/8) 
+node.exe : [TypeError: fetch failed] {
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([TypeError: fetch failed] {:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+}
+[TypeError: fetch failed] {
+  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+}
+[TypeError: fetch failed] {
+  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+}
+[TypeError: fetch failed] {
+  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+}
+[TypeError: fetch failed] {
+  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+}
+[TypeError: fetch failed] {
+  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+}
+[TypeError: fetch failed] {
+  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+}
+[TypeError: fetch failed] {
+  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+}
+   Generating static pages (4/8) 
+   Generating static pages (6/8) 
+ ✓ Generating static pages (8/8)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                    Size  First Load JS  Revalidate  Expire
+┌ ○ /                                       4.68 kB         147 kB         30s      1y
+├ ○ /_not-found                                1 kB         109 kB
+├ ƒ /repos/[id]                             19.9 kB         189 kB
+├ ƒ /repos/[id]/blast-radius                9.85 kB         134 kB
+├ ƒ /repos/[id]/c4                          35.7 kB         723 kB
+├ ƒ /repos/[id]/commits                     9.91 kB         145 kB
+├ ƒ /repos/[id]/costs                       83.6 kB         320 kB
+├ ƒ /repos/[id]/coverage                      172 B         108 kB
+├ ƒ /repos/[id]/dead-code                   5.58 kB         170 kB
+├ ƒ /repos/[id]/decisions                   7.45 kB         620 kB
+├ ƒ /repos/[id]/decisions/[decisionId]      9.58 kB         201 kB
+├ ƒ /repos/[id]/docs                          22 kB         221 kB
+├ ƒ /repos/[id]/docs/coverage               9.52 kB         230 kB
+├ ƒ /repos/[id]/graph                         48 kB         677 kB
+├ ƒ /repos/[id]/health                      12.3 kB         144 kB
+├ ƒ /repos/[id]/health/coverage             5.09 kB         158 kB
+├ ƒ /repos/[id]/health/refactoring-targets  5.16 kB         158 kB
+├ ƒ /repos/[id]/health/trend                6.09 kB         131 kB
+├ ƒ /repos/[id]/hotspots                    3.17 kB         256 kB
+├ ƒ /repos/[id]/modules/[path]              8.45 kB         133 kB
+├ ƒ /repos/[id]/overview                    11.6 kB         332 kB
+├ ƒ /repos/[id]/owners                      8.78 kB         161 kB
+├ ƒ /repos/[id]/owners/[owner]              9.77 kB         134 kB
+├ ƒ /repos/[id]/ownership                   13.1 kB         276 kB
+├ ƒ /repos/[id]/risk                          21 kB         341 kB
+├ ƒ /repos/[id]/search                      8.47 kB         140 kB
+├ ƒ /repos/[id]/security                      405 B         108 kB
+├ ƒ /repos/[id]/settings                    14.9 kB         191 kB
+├ ƒ /repos/[id]/symbols                     4.93 kB         177 kB
+├ ƒ /repos/[id]/wiki/[...slug]              9.02 kB         179 kB
+├ ○ /settings                                7.4 kB         164 kB
+├ ○ /workspace                              11.7 kB         191 kB         30s      1y
+├ ○ /workspace/co-changes                   2.52 kB         126 kB
+└ ○ /workspace/contracts                    4.65 kB         126 kB
++ First Load JS shared by all                108 kB
+  ├ chunks/1255-87391423b0c57e83.js         45.9 kB
+  ├ chunks/4bd1b696-100b9d70ed4e49c1.js     54.2 kB
+  └ other shared chunks (total)             7.36 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

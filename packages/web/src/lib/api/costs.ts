@@ -20,6 +20,26 @@ export interface CostSummary {
   since: string | null;
 }
 
+export interface DistillSavingsGroup {
+  group: string;
+  events: number;
+  raw_tokens: number;
+  distilled_tokens: number;
+  saved_tokens: number;
+}
+
+export interface DistillSavings {
+  available: boolean;
+  events: number;
+  raw_tokens: number;
+  distilled_tokens: number;
+  saved_tokens: number;
+  estimated_usd_saved: number;
+  pricing_model: string;
+  per_filter: DistillSavingsGroup[];
+  per_day: DistillSavingsGroup[];
+}
+
 // ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
@@ -39,6 +59,15 @@ export async function getCostSummary(
   since?: string,
 ): Promise<CostSummary> {
   return apiGet<CostSummary>(`/api/repos/${repoId}/costs/summary`, {
+    since,
+  });
+}
+
+export async function getDistillSavings(
+  repoId: string,
+  since?: string,
+): Promise<DistillSavings> {
+  return apiGet<DistillSavings>(`/api/repos/${repoId}/distill-savings`, {
     since,
   });
 }

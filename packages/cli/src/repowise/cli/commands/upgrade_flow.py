@@ -52,7 +52,16 @@ def _reparse(repo_path: Path, exclude_patterns: list[str]) -> tuple[list[Any], d
     """
     from repowise.core.ingestion import ASTParser, FileTraverser
 
-    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
+    # Honor the persisted submodule semantics of the original index — a
+    # fast index built with --include-submodules must not drop submodule
+    # files from the docs re-parse (missing key → False, legacy behavior).
+    state = load_state(repo_path)
+    traverser = FileTraverser(
+        repo_path,
+        extra_exclude_patterns=exclude_patterns or None,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+    )
     file_infos = list(traverser.traverse())
     repo_structure = traverser.get_repo_structure()
 

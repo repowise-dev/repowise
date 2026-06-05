@@ -4,25 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Breadcrumb } from "@repowise-dev/ui/shared/breadcrumb";
 import type { BreadcrumbSegment } from "@repowise-dev/ui/shared/breadcrumb";
-
-const SEGMENT_LABELS: Record<string, string> = {
-  overview: "Overview",
-  docs: "Docs",
-  coverage: "Coverage",
-  search: "Search",
-  graph: "Graph",
-  symbols: "Symbols",
-  ownership: "Ownership",
-  hotspots: "Hotspots",
-  "dead-code": "Dead Code",
-  "blast-radius": "Blast Radius",
-  decisions: "Decisions",
-  costs: "Costs",
-  risk: "Risk",
-  security: "Security",
-  settings: "Settings",
-  c4: "Knowledge Graph",
-};
+import { getRepoBreadcrumbSegmentLabel } from "./repo-breadcrumb-label";
 
 export function RepoBreadcrumb({ repoName }: { repoName: string }) {
   const pathname = usePathname();
@@ -41,7 +23,7 @@ export function RepoBreadcrumb({ repoName }: { repoName: string }) {
   for (const seg of rest) {
     currentPath += `/${seg}`;
     segments.push({
-      label: SEGMENT_LABELS[seg] || seg,
+      label: getRepoBreadcrumbSegmentLabel(seg),
       href: currentPath,
     });
   }

@@ -208,15 +208,26 @@ class PageGenerator(PerTypeGenerationMixin):
         self,
         parsed: ParsedFile,
         ctx: FilePageContext,
+        rag_prefetched: bool = False,
     ) -> GeneratedPage:
-        """Generate a file_page from a pre-assembled context (avoids double-assembly)."""
+        """Generate a file_page from a pre-assembled context (avoids double-assembly).
+
+        *rag_prefetched* is set by the level-2 builder when RAG context was
+        already resolved for the whole level in one batched search (see
+        ``levels._prefetch_rag_context``) — the per-page search below would
+        re-fetch identical results inside the LLM semaphore, so it is skipped.
+        """
         # RAG context: query vector store for related pages (B1).
         # Gated by two short-circuits so we don't burn an embedder
         # round-trip on every page when the result wouldn't help:
         #   1. ``enable_rag_context`` config flag (off → fully skip).
         #   2. ``rag_min_store_size`` — early pages run against an empty
         #      or near-empty store and the search returns nothing useful.
-        if self._vector_store is not None and getattr(self._config, "enable_rag_context", True):
+        if (
+            not rag_prefetched
+            and self._vector_store is not None
+            and getattr(self._config, "enable_rag_context", True)
+        ):
             min_store_size = max(0, int(getattr(self._config, "rag_min_store_size", 10) or 0))
             store_ok = True
             if min_store_size > 0:

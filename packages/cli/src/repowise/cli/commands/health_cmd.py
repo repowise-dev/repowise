@@ -8,6 +8,7 @@ back to a live in-process analysis when run outside an indexed repo.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import click
 from rich.table import Table
@@ -215,6 +216,7 @@ def health_command(
         git_meta_map=git_meta_map,
         parsed_files=parsed_files,
         coverage_map=coverage_map,
+        duplication_cache_dir=Path(repo_path) / ".repowise",
     )
     # Load any .repowise/health-rules.json the user keeps in the repo.
     from repowise.core.analysis.health.config import HealthConfig

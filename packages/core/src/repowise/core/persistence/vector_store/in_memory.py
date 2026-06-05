@@ -34,12 +34,7 @@ class InMemoryVectorStore(VectorStore):
         for (page_id, _text, metadata), vector in zip(items, vectors, strict=True):
             self._store[page_id] = (vector, dict(metadata))
 
-    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
-        if not self._store:
-            return []
-        q_vecs = await self._embedder.embed([query])
-        q_vec = q_vecs[0]
-
+    def _search_by_vector(self, q_vec: list[float], limit: int) -> list[SearchResult]:
         scored: list[tuple[float, str, dict]] = []
         for pid, (vec, meta) in self._store.items():
             score = cosine_similarity(q_vec, vec)
@@ -62,6 +57,23 @@ class InMemoryVectorStore(VectorStore):
                 )
             )
         return results
+
+    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        if not self._store:
+            return []
+        q_vecs = await self._embedder.embed([query])
+        return self._search_by_vector(q_vecs[0], limit)
+
+    async def search_many(
+        self, queries: list[str], limit: int = 10
+    ) -> list[list[SearchResult]]:
+        """One embedder call for all queries, then local scoring per query."""
+        if not queries:
+            return []
+        if not self._store:
+            return [[] for _ in queries]
+        q_vecs = await self._embedder.embed(list(queries))
+        return [self._search_by_vector(q_vec, limit) for q_vec in q_vecs]
 
     async def delete(self, page_id: str) -> None:
         self._store.pop(page_id, None)

@@ -473,6 +473,60 @@ class TestSubmoduleHandling:
         paths = [f.path for f in traverser.traverse()]
         assert any("libs/foo" in p for p in paths)
 
+    def test_include_submodules_with_initialized_submodule(self, tmp_path: Path) -> None:
+        """An *initialized* submodule carries a `.git` file — the nested-git
+        boundary check must not override the explicit opt-in.
+
+        Regression: ``include_submodules=True`` previously skipped parsing
+        ``.gitmodules`` entirely, so initialized submodules fell through to
+        the nested-git skip and were silently dropped anyway.
+        """
+        (tmp_path / ".gitmodules").write_text(
+            '[submodule "libs/foo"]\n'
+            "    path = libs/foo\n"
+            "    url = https://github.com/example/foo.git\n"
+        )
+        (tmp_path / "libs" / "foo").mkdir(parents=True)
+        (tmp_path / "libs" / "foo" / ".git").write_text("gitdir: ../../.git/modules/libs/foo\n")
+        (tmp_path / "libs" / "foo" / "main.py").write_text("pass")
+        traverser = FileTraverser(tmp_path, include_submodules=True)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("libs/foo/main.py" in p for p in paths)
+        assert traverser.stats.skipped_nested_repo == 0
+
+    def test_initialized_submodule_skipped_by_default(self, tmp_path: Path) -> None:
+        (tmp_path / ".gitmodules").write_text(
+            '[submodule "libs/foo"]\n'
+            "    path = libs/foo\n"
+            "    url = https://github.com/example/foo.git\n"
+        )
+        (tmp_path / "libs" / "foo").mkdir(parents=True)
+        (tmp_path / "libs" / "foo" / ".git").write_text("gitdir: ../../.git/modules/libs/foo\n")
+        (tmp_path / "libs" / "foo" / "main.py").write_text("pass")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("libs/foo" in p for p in paths)
+        assert traverser.stats.skipped_submodule >= 1
+
+    def test_include_submodules_keeps_other_nested_repos_skipped(self, tmp_path: Path) -> None:
+        """The submodule opt-in must not widen to arbitrary nested repos."""
+        (tmp_path / ".gitmodules").write_text(
+            '[submodule "libs/foo"]\n'
+            "    path = libs/foo\n"
+            "    url = https://github.com/example/foo.git\n"
+        )
+        (tmp_path / "libs" / "foo").mkdir(parents=True)
+        (tmp_path / "libs" / "foo" / ".git").write_text("gitdir: ../../.git/modules/libs/foo\n")
+        (tmp_path / "libs" / "foo" / "main.py").write_text("pass")
+        (tmp_path / "sibling_repo").mkdir()
+        (tmp_path / "sibling_repo" / ".git").mkdir()
+        (tmp_path / "sibling_repo" / "inner.py").write_text("pass")
+        traverser = FileTraverser(tmp_path, include_submodules=True)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("libs/foo/main.py" in p for p in paths)
+        assert not any("sibling_repo" in p for p in paths)
+        assert traverser.stats.skipped_nested_repo >= 1
+
     def test_no_gitmodules_file(self, tmp_path: Path) -> None:
         (tmp_path / "app.py").write_text("pass")
         traverser = FileTraverser(tmp_path)

@@ -203,6 +203,28 @@ _CO_CHANGE_DECAY_TAU: float = 180.0
 # Hotspot temporal decay: half-life for exponentially weighted churn score.
 HOTSPOT_HALFLIFE_DAYS: float = 180.0
 
+# Absolute activity floors for hotspot classification (issue #361). The
+# churn percentile is repo-relative, so on a quiet repo "top quartile"
+# degenerates to "any file touched in the last 90 days" — a single drive-by
+# maintenance commit was enough to flag a hotspot. A file must clear BOTH
+# the relative gate (top-quartile decayed churn) and these absolute floors:
+#
+# - at least HOTSPOT_MIN_COMMITS_90D commits in the window (repeated
+#   recent activity, not one drive-by), AND
+# - a decayed-churn score of at least HOTSPOT_MIN_TEMPORAL_SCORE (the
+#   commits moved real lines — e.g. one ~50-line change today, or ~3
+#   focused 20-line changes this month — not a string of one-liners),
+#   OR HOTSPOT_HIGH_COMMITS_90D+ commits in the window (sustained high
+#   commit volume is hotspot-grade activity even when numstat line counts
+#   are unavailable, e.g. binary files). The 8-commit escape matches the
+#   threshold the health biomarkers already treat as hotspot-equivalent.
+#
+# Mirrored in the SQL PERCENT_RANK path (crud/git.py::recompute_git_percentiles)
+# — keep the two in sync.
+HOTSPOT_MIN_COMMITS_90D: int = 3
+HOTSPOT_MIN_TEMPORAL_SCORE: float = 0.5
+HOTSPOT_HIGH_COMMITS_90D: int = 8
+
 # Regex to extract PR/MR numbers from commit messages.
 # Matches: "#123", "Merge pull request #456", "(#789)", "!42" (GitLab MR)
 _PR_NUMBER_RE = re.compile(r"(?:pull request |)\#(\d+)|\(#(\d+)\)|!(\d+)")

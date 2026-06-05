@@ -12,7 +12,9 @@ from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
 )
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -22,7 +24,6 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.core.registry import mcp_tool_registry as mcp
 
 
 @mcp.tool()
@@ -92,10 +93,10 @@ async def get_dead_code(
     # MCP transport rejects payloads above ~25k tokens. A single serialized
     # finding is ~400 chars, so 3 tiers x ~25 findings keeps us under budget
     # with headroom for summary/grouping fields.
-    _MAX_PER_TIER = 25
+    max_per_tier = 25
     requested_limit = limit
-    limit = min(max(limit, 1), _MAX_PER_TIER)
-    limit_clamped = requested_limit > _MAX_PER_TIER
+    limit = min(max(limit, 1), max_per_tier)
+    limit_clamped = requested_limit > max_per_tier
 
     # --- repo="all": aggregate dead code across all repos ---
     if repo == "all":
@@ -228,7 +229,7 @@ async def get_dead_code(
         if limit_clamped:
             result_ws["limit_note"] = (
                 f"Requested limit={requested_limit} exceeded the MCP transport budget "
-                f"and was clamped to {_MAX_PER_TIER}. Use tier/directory/owner filters "
+                f"and was clamped to {max_per_tier}. Use tier/directory/owner filters "
                 "or paginate to see more findings."
             )
         result_ws["_meta"] = _build_meta()
@@ -236,6 +237,9 @@ async def get_dead_code(
 
     # --- Single repo path ---
     ctx = await _resolve_repo_context(repo)
+    # Findings beyond the per-tier limit are persisted, not silently dropped —
+    # the response carries an expandable [repowise#<ref>] marker for them.
+    collector = OmissionCollector("get_dead_code", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
@@ -290,7 +294,7 @@ async def get_dead_code(
         ]
 
     # --- Build tiered structure ---
-    tiers = _build_tiers(filtered, limit, tier, git_meta_map)
+    tiers = _build_tiers(filtered, limit, tier, git_meta_map, collector)
 
     # --- Summary across ALL open findings (unfiltered) ---
     by_kind: dict[str, int] = {}
@@ -322,11 +326,12 @@ async def get_dead_code(
     if limit_clamped:
         result["limit_note"] = (
             f"Requested limit={requested_limit} exceeded the MCP transport budget "
-            f"and was clamped to {_MAX_PER_TIER}. Use tier/directory/owner filters "
+            f"and was clamped to {max_per_tier}. Use tier/directory/owner filters "
             "or paginate to see more findings."
         )
 
     result["_meta"] = _build_meta(repository=repository)
+    collector.attach(result)
     return result
 
 
@@ -412,8 +417,13 @@ def _build_tiers(
     limit: int,
     tier_filter: str | None,
     git_meta_map: dict | None = None,
+    collector: OmissionCollector | None = None,
 ) -> dict:
-    """Split findings into high/medium/low confidence tiers."""
+    """Split findings into high/medium/low confidence tiers.
+
+    With a *collector*, findings beyond the per-tier limit are captured for
+    the omission store instead of being silently truncated.
+    """
     high = sorted(
         [f for f in findings if f.confidence >= 0.8],
         key=lambda f: (-f.confidence, -f.lines),
@@ -428,6 +438,15 @@ def _build_tiers(
     )
 
     def _tier_block(name: str, items: list, description: str) -> dict:
+        beyond_limit = items[limit:]
+        if beyond_limit and collector is not None:
+            collector.add(
+                f"{name}-tier findings beyond limit={limit} ({len(beyond_limit)} dropped)",
+                "\n".join(
+                    json.dumps(_serialize_finding(f, git_meta_map), separators=(",", ":"))
+                    for f in beyond_limit
+                ),
+            )
         return {
             "description": description,
             "count": len(items),

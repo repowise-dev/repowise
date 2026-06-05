@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from repowise.core.fs_walk import iter_glob
+
 if TYPE_CHECKING:
     from .context import ResolverContext
 
@@ -289,7 +291,9 @@ def _extract_file_info(abs_path: str) -> tuple[str, tuple[str, ...], bool, bool]
 # Index building
 # ---------------------------------------------------------------------------
 
-def build_jvm_gradle_index(repo_path: Path | None) -> JvmGradleIndex:
+def build_jvm_gradle_index(
+    repo_path: Path | None, *, prune_nested_git: bool = True
+) -> JvmGradleIndex:
     """Walk Gradle config + JVM sources to build the package-resolution index."""
     index = JvmGradleIndex()
     if repo_path is None or not repo_path.is_dir():
@@ -349,7 +353,7 @@ def build_jvm_gradle_index(repo_path: Path | None) -> JvmGradleIndex:
                     continue
                 rel_roots.append(rel)
 
-                for jvm_file in root_path.rglob("*"):
+                for jvm_file in iter_glob(root_path, "*", prune_nested_git=prune_nested_git):
                     if jvm_file.suffix not in _JVM_EXTENSIONS or not jvm_file.is_file():
                         continue
                     try:
@@ -380,7 +384,7 @@ def get_or_build_jvm_gradle_index(ctx: "ResolverContext") -> JvmGradleIndex:
     cached = getattr(ctx, "_jvm_gradle_index", None)
     if cached is not None:
         return cached
-    index = build_jvm_gradle_index(ctx.repo_path)
+    index = build_jvm_gradle_index(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
     ctx._jvm_gradle_index = index  # type: ignore[attr-defined]
     return index
 

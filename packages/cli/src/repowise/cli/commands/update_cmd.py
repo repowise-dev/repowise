@@ -260,6 +260,16 @@ def _workspace_update(
         )
     )
 
+    # Backfill the distill rewrite-hook verdict for members that were just
+    # indexed for the first time (e.g. added with --no-index) — they would
+    # otherwise default to enabled despite a workspace-wide decline at init.
+    from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
+
+    for entry in ws_config.repos:
+        if repo_alias and entry.alias != repo_alias:
+            continue
+        inherit_workspace_distill_verdict((ws_root / entry.path).resolve())
+
     # Summary
     updated = sum(1 for r in results if r.updated)
     errors = sum(1 for r in results if r.error)
@@ -330,6 +340,8 @@ def _build_repo_graph(
     exclude_patterns: list[str],
     *,
     collect_sources: bool = False,
+    include_submodules: bool = False,
+    include_nested_repos: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
@@ -346,22 +358,52 @@ def _build_repo_graph(
     """
     from pathlib import Path as PathlibPath
 
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder, compute_content_hash
 
-    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
+    traverser = FileTraverser(
+        repo_path,
+        extra_exclude_patterns=exclude_patterns or None,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     file_infos = list(traverser.traverse())
     repo_structure = traverser.get_repo_structure()
 
-    parser = ASTParser()
+    # Content-hash parse cache: an incremental update re-ingests the whole
+    # repo, but only the changed files actually need a tree-sitter parse.
+    # Best-effort — any cache failure falls back to a full parse.
+    parse_cache = None
+    try:
+        from repowise.core.ingestion.parse_cache import ParseCache
+
+        parse_cache = ParseCache(PathlibPath(repo_path) / ".repowise")
+        parse_cache.load()
+    except Exception:
+        parse_cache = None
+
+    parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
     parsed_files: list = []
     source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(repo_path, exclude_patterns=exclude_patterns)
+    graph_builder = GraphBuilder(
+        repo_path,
+        exclude_patterns=exclude_patterns,
+        centrality_cache_dir=PathlibPath(repo_path) / ".repowise",
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
 
     skipped = 0
     for fi in file_infos:
         try:
             source = PathlibPath(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
+            content_hash = compute_content_hash(source)
+            parsed = parse_cache.get(fi, content_hash) if parse_cache is not None else None
+            if parsed is None:
+                if parser is None:
+                    parser = ASTParser()
+                parsed = parser.parse_file(fi, source)
+                if parse_cache is not None:
+                    parse_cache.put(parsed, content_hash)
         except Exception:
             skipped += 1
             continue
@@ -370,6 +412,8 @@ def _build_repo_graph(
             source_map[fi.path] = source
         graph_builder.add_file(parsed)
     graph_builder.build()
+    if parse_cache is not None:
+        parse_cache.save()
 
     if skipped:
         console.print(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
@@ -393,23 +437,45 @@ def _rebuild_graph_and_git(
     file_diffs: list,
     cfg: dict,
     exclude_patterns: list[str],
+    git_tier: str | None = None,
+    include_submodules: bool = False,
+    include_nested_repos: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
+
+    ``git_tier`` is the persisted ``state.json:git_tier`` value: a fast-mode
+    (ESSENTIAL) repo must not pay per-file blame on every update for signals
+    its index never had. Unknown/missing values fall back to FULL, matching
+    the historical behavior for legacy state files.
+
+    ``include_submodules`` / ``include_nested_repos`` are likewise read from
+    state.json: a repo indexed with ``init --include-submodules`` must not
+    silently drop its submodule files on every incremental update. Missing
+    keys fall back to False (legacy behavior).
 
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count, git_meta_map)``.
     """
     # Full re-ingest for graph (needed for cascade analysis)
     parsed_files, source_map, graph_builder, repo_structure, file_count = _build_repo_graph(
-        repo_path, exclude_patterns, collect_sources=True
+        repo_path,
+        exclude_patterns,
+        collect_sources=True,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
     )
 
     # Re-index git metadata for changed files
     git_meta_map: dict[str, dict] = {}
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
+        from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
 
+        try:
+            tier = GitIndexTier(git_tier) if git_tier else GitIndexTier.FULL
+        except ValueError:
+            tier = GitIndexTier.FULL
         _commit_limit = cfg.get("commit_limit")
         _follow_renames = cfg.get("follow_renames", False)
         git_indexer = GitIndexer(
@@ -417,6 +483,7 @@ def _rebuild_graph_and_git(
             commit_limit=_commit_limit,
             follow_renames=_follow_renames,
             exclude_patterns=exclude_patterns or None,
+            tier=tier,
         )
         changed_paths = _build_filtered_changed_paths(file_diffs, exclude_patterns)
         updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
@@ -424,6 +491,16 @@ def _rebuild_graph_and_git(
         graph_builder.update_co_change_edges(git_meta_map)
     except Exception as exc:
         console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
+
+    # Pre-compute centrality/community metrics with the init path's fan-out
+    # parallelism. Without this, persist_graph_nodes computes the same
+    # metrics lazily one-by-one. Runs after the co-change edge refresh so
+    # the cached subgraphs reflect the final structure. Best-effort: every
+    # metric still falls back to lazy computation.
+    try:
+        run_async(graph_builder.compute_metrics_parallel())
+    except Exception as exc:
+        console.print(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
 
     return parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map
 
@@ -453,6 +530,7 @@ def _run_partial_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            duplication_cache_dir=Path(repo_path) / ".repowise",
         )
         _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
         if _health_changed:
@@ -672,8 +750,18 @@ def _run_full_health_rescore(
     # Share the rebuild path with the incremental update so both produce the
     # same graph (same parser, same framework-aware synthetic edges).
     parsed_files, _source_map, graph_builder, _repo_structure, _file_count = _build_repo_graph(
-        repo_path, exclude_patterns
+        repo_path,
+        exclude_patterns,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
     )
+
+    # Fan-out metric precompute (mirrors _rebuild_graph_and_git) — the
+    # rescore persists graph nodes too, which reads every metric.
+    try:
+        run_async(graph_builder.compute_metrics_parallel())
+    except Exception:
+        pass  # metrics fall back to lazy computation
 
     exclude_spec = (
         pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
@@ -737,6 +825,7 @@ def _run_full_health_rescore(
                 graph_builder.graph(),
                 git_meta_map=git_meta_map,
                 parsed_files=parsed_files,
+                duplication_cache_dir=Path(repo_path) / ".repowise",
             )
             hcfg = HealthConfig.load(repo_path)
             analyzer_config = (
@@ -921,6 +1010,13 @@ def update_command(
     assert repo_path is not None  # single mode always sets repo_path
     ensure_repowise_dir(repo_path)
 
+    # If this repo is a workspace member updated here for the first time,
+    # inherit the workspace's distill rewrite-hook verdict (best-effort,
+    # no-op outside a workspace or once a verdict exists).
+    from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
+
+    inherit_workspace_distill_verdict(repo_path)
+
     # --- Fast -> full upgrade (--full): a distinct path that reuses the
     # persisted graph rather than diffing changed files. Dispatched before any
     # incremental change-detection so the normal `repowise update` flow below
@@ -1082,26 +1178,21 @@ def update_command(
         console.print(f"  [{color}]{fd.status:>10}[/{color}]  {fd.path}")
 
     # Re-parse changed files and rebuild graph for affected pages
-    from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
-
     cfg = load_config(repo_path)
-    language = cfg.get("language", "en")
-    # Config-driven (saved by `repowise init`); CLI override not surfaced
-    # on update yet — defaults to on to keep the onboarding collection
-    # fresh as the codebase evolves.
-    enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
-    config = GenerationConfig(
-        max_concurrency=concurrency,
-        language=language,
-        reasoning=resolve_reasoning(reasoning, cfg),
-        enable_onboarding=enable_onboarding_cfg,
-    )
 
     # Read exclude patterns from config (set during init or via web UI)
     exclude_patterns: list[str] = list(cfg.get("exclude_patterns") or [])
 
     parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map = (
-        _rebuild_graph_and_git(repo_path, file_diffs, cfg, exclude_patterns)
+        _rebuild_graph_and_git(
+            repo_path,
+            file_diffs,
+            cfg,
+            exclude_patterns,
+            git_tier=state.get("git_tier"),
+            include_submodules=bool(state.get("include_submodules", False)),
+            include_nested_repos=bool(state.get("include_nested_repos", False)),
+        )
     )
 
     # Determine affected pages (auto-scale budget if not explicitly set)
@@ -1144,6 +1235,23 @@ def update_command(
             [fd.path for fd in file_diffs],
         )
         return
+
+    # The generation/LLM layer is only needed past this point — importing it
+    # above the index-only branch would make every index-only update (the
+    # post-commit hook's hot path) pay the import for code it never runs.
+    from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
+
+    language = cfg.get("language", "en")
+    # Config-driven (saved by `repowise init`); CLI override not surfaced
+    # on update yet — defaults to on to keep the onboarding collection
+    # fresh as the codebase evolves.
+    enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
+    config = GenerationConfig(
+        max_concurrency=concurrency,
+        language=language,
+        reasoning=resolve_reasoning(reasoning, cfg),
+        enable_onboarding=enable_onboarding_cfg,
+    )
 
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
 

@@ -35,6 +35,11 @@ export interface GitMetadataResponse {
   commit_count_capped?: boolean;
   original_path?: string | null;
   test_gap?: boolean | null;
+  // Agent-provenance rollup (deterministic local-git channels). The pct is
+  // null/absent for indexes built before the provenance-aware walk.
+  agent_commit_count?: number;
+  agent_authored_pct?: number | null;
+  agent_tier_counts?: Record<string, number>;
 }
 
 export interface HotspotResponse {

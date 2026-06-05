@@ -17,7 +17,7 @@ from ..models import (
     GraphNode,
     _new_uuid,
 )
-from ._shared import _BATCH_SIZE, _batch_upsert
+from ._shared import _BATCH_SIZE, _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
 # Graph CRUD (batch)
@@ -59,14 +59,13 @@ async def batch_upsert_graph_nodes(
 
     Uses SELECT-then-INSERT/UPDATE for dialect portability.
     """
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GraphNode,
         nodes,
-        key_fn=lambda n: (
-            GraphNode.repository_id == repository_id,
-            GraphNode.node_id == n.get("node_id", ""),
-        ),
+        prefilter=(GraphNode.repository_id == repository_id,),
+        item_key_fn=lambda n: n.get("node_id", ""),
+        row_key_fn=lambda row: row.node_id,
         update_fn=_update_graph_node,
         insert_fn=lambda n: GraphNode(
             id=_new_uuid(),
@@ -89,16 +88,17 @@ async def batch_upsert_graph_edges(
     The unique constraint is (repository_id, source, target, edge_type),
     allowing multiple edge types between the same pair of nodes.
     """
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GraphEdge,
         edges,
-        key_fn=lambda e: (
-            GraphEdge.repository_id == repository_id,
-            GraphEdge.source_node_id == e.get("source_node_id", ""),
-            GraphEdge.target_node_id == e.get("target_node_id", ""),
-            GraphEdge.edge_type == e.get("edge_type", "imports"),
+        prefilter=(GraphEdge.repository_id == repository_id,),
+        item_key_fn=lambda e: (
+            e.get("source_node_id", ""),
+            e.get("target_node_id", ""),
+            e.get("edge_type", "imports"),
         ),
+        row_key_fn=lambda row: (row.source_node_id, row.target_node_id, row.edge_type),
         update_fn=_update_graph_edge,
         insert_fn=lambda e: GraphEdge(
             id=_new_uuid(),
@@ -125,14 +125,13 @@ async def batch_upsert_graph_metrics(
     ``GraphBuilder.load_metrics_from_sql`` on large repos. SELECT-then-write
     for dialect portability (SQLite + Postgres).
     """
-    await _batch_upsert(
+    await _batch_upsert_keyed(
         session,
         GraphMetric,
         list(metrics.items()),
-        key_fn=lambda kv: (
-            GraphMetric.repository_id == repository_id,
-            GraphMetric.node_id == kv[0],
-        ),
+        prefilter=(GraphMetric.repository_id == repository_id,),
+        item_key_fn=lambda kv: kv[0],
+        row_key_fn=lambda row: row.node_id,
         update_fn=lambda existing, kv: _update_graph_metric(existing, kv[1]),
         insert_fn=lambda kv: GraphMetric(
             id=_new_uuid(),

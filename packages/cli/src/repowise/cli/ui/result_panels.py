@@ -10,6 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from repowise.cli.ui.brand import BRAND
+from repowise.cli.ui.mascot import EYES_HAPPY, mini
 
 
 def build_analysis_summary_panel(
@@ -79,10 +80,12 @@ def build_completion_panel(
     *,
     next_steps: list[tuple[str, str]] | None = None,
 ) -> Panel:
-    """Build a bordered summary panel.
+    """Build a bordered summary panel, titled with the happy owl.
 
     *metrics* is a list of ``(label, value)`` pairs.
     *next_steps* is an optional list of ``(command, description)`` pairs.
+    The mascot prefix lives here (not at call sites) so every completion
+    panel gets it consistently.
     """
     table = Table(box=None, padding=(0, 2), show_header=False)
     table.add_column("Metric", style="dim", min_width=20)
@@ -101,7 +104,7 @@ def build_completion_panel(
 
     return Panel(
         Group(*parts),
-        title=f"[bold]{title}[/bold]",
+        title=f"[bold]{mini(EYES_HAPPY)}  {title}[/bold]",
         border_style=BRAND,
         padding=(1, 1),
     )

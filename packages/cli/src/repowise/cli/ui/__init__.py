@@ -19,6 +19,12 @@ from repowise.cli.ui.brand import (
     print_phase_header,
 )
 from repowise.cli.ui.env_persistence import load_dotenv
+from repowise.cli.ui.mascot import (
+    OWL_SPINNER,
+    THINKING_FRAMES,
+    banner_text,
+    mini,
+)
 from repowise.cli.ui.mode_selection import (
     LARGE_REPO_FILE_THRESHOLD,
     interactive_advanced_config,
@@ -55,11 +61,14 @@ __all__ = [
     "ERR",
     "LARGE_REPO_FILE_THRESHOLD",
     "OK",
+    "OWL_SPINNER",
+    "THINKING_FRAMES",
     "WARN",
     "MaybeCountColumn",
     "ProviderSelection",
     "RepoScanInfo",
     "RichProgressCallback",
+    "banner_text",
     "build_analysis_summary_panel",
     "build_completion_panel",
     "build_contextual_next_steps",
@@ -72,6 +81,7 @@ __all__ = [
     "interactive_provider_select",
     "interactive_repo_select",
     "load_dotenv",
+    "mini",
     "print_banner",
     "print_index_only_intro",
     "print_phase_header",

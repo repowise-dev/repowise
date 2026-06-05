@@ -76,17 +76,35 @@ class MetricsMixin:
     # ------------------------------------------------------------------
 
     def file_subgraph(self) -> nx.DiGraph:
-        """Return a subgraph containing only file-level nodes and import edges."""
-        g = self.graph()
-        file_nodes = [
-            n for n, d in g.nodes(data=True) if d.get("node_type", "file") in ("file", "external")
-        ]
-        sub = g.subgraph(file_nodes).copy()
-        edges_to_remove = [
-            (u, v) for u, v, d in sub.edges(data=True) if d.get("edge_type") in ("co_changes",)
-        ]
-        sub.remove_edges_from(edges_to_remove)
-        return sub
+        """Return a subgraph containing only file-level nodes and import edges.
+
+        Cached per build — five metric kernels (SCC, PageRank, betweenness,
+        in/out degree) read it, and rebuilding the filtered copy per call is
+        O(V+E) each time. The cache is guarded by ``_subgraph_lock`` because
+        the init pipeline computes metrics concurrently via
+        ``asyncio.to_thread``. Callers must treat the result as read-only.
+        """
+        cached = self._file_subgraph_cache
+        if cached is not None:
+            return cached
+        with self._subgraph_lock:
+            if self._file_subgraph_cache is not None:
+                return self._file_subgraph_cache
+            g = self.graph()
+            file_nodes = [
+                n
+                for n, d in g.nodes(data=True)
+                if d.get("node_type", "file") in ("file", "external")
+            ]
+            sub = g.subgraph(file_nodes).copy()
+            edges_to_remove = [
+                (u, v)
+                for u, v, d in sub.edges(data=True)
+                if d.get("edge_type") in ("co_changes",)
+            ]
+            sub.remove_edges_from(edges_to_remove)
+            self._file_subgraph_cache = sub
+            return sub
 
     def symbol_subgraph(self) -> nx.DiGraph:
         """Return a subgraph of symbol nodes connected by call + heritage edges.
@@ -94,17 +112,27 @@ class MetricsMixin:
         File-to-symbol ``defines`` edges and class-to-method ``has_method``
         ownership edges are dropped so that the resulting centrality
         scores reflect call/heritage flow rather than containment.
+
+        Cached per build (see :meth:`file_subgraph` for the locking
+        rationale). Callers must treat the result as read-only.
         """
-        g = self.graph()
-        symbol_nodes = [n for n, d in g.nodes(data=True) if d.get("node_type") == "symbol"]
-        sub = g.subgraph(symbol_nodes).copy()
-        edges_to_remove = [
-            (u, v)
-            for u, v, d in sub.edges(data=True)
-            if d.get("edge_type") not in ("calls", "extends", "implements")
-        ]
-        sub.remove_edges_from(edges_to_remove)
-        return sub
+        cached = self._symbol_subgraph_cache
+        if cached is not None:
+            return cached
+        with self._subgraph_lock:
+            if self._symbol_subgraph_cache is not None:
+                return self._symbol_subgraph_cache
+            g = self.graph()
+            symbol_nodes = [n for n, d in g.nodes(data=True) if d.get("node_type") == "symbol"]
+            sub = g.subgraph(symbol_nodes).copy()
+            edges_to_remove = [
+                (u, v)
+                for u, v, d in sub.edges(data=True)
+                if d.get("edge_type") not in ("calls", "extends", "implements")
+            ]
+            sub.remove_edges_from(edges_to_remove)
+            self._symbol_subgraph_cache = sub
+            return sub
 
     # ------------------------------------------------------------------
     # File-level metrics
@@ -136,15 +164,10 @@ class MetricsMixin:
         if self._betweenness_cache is not None:
             return self._betweenness_cache
         g = self.file_subgraph()
-        n = g.number_of_nodes()
-        if n == 0:
+        if g.number_of_nodes() == 0:
             self._betweenness_cache = {}
             return self._betweenness_cache
-        if n > _LARGE_REPO_THRESHOLD:
-            k = min(500, n)
-            self._betweenness_cache = nx.betweenness_centrality(g, k=k, normalized=True)
-        else:
-            self._betweenness_cache = nx.betweenness_centrality(g, normalized=True)
+        self._betweenness_cache = self._betweenness_with_disk_cache("file", g)
         return self._betweenness_cache
 
     def in_degree(self) -> dict[str, int]:
@@ -239,16 +262,51 @@ class MetricsMixin:
         if self._symbol_betweenness_cache is not None:
             return self._symbol_betweenness_cache
         sub = self.symbol_subgraph()
-        n = sub.number_of_nodes()
-        if n == 0:
+        if sub.number_of_nodes() == 0:
             self._symbol_betweenness_cache = {}
             return self._symbol_betweenness_cache
+        self._symbol_betweenness_cache = self._betweenness_with_disk_cache("symbol", sub)
+        return self._symbol_betweenness_cache
+
+    def _betweenness_with_disk_cache(self, kind: str, g: nx.DiGraph) -> dict[str, float]:
+        """Compute betweenness for *g*, consulting the structure-keyed disk cache.
+
+        With a cache attached (see ``GraphBuilder(centrality_cache_dir=...)``)
+        and an unchanged subgraph structure, the previous run's values are
+        returned without re-running Brandes — the dominant metric cost of an
+        incremental update whose change didn't move any edges. Structural
+        changes, cache errors, or no cache all fall through to the exact
+        computation used before.
+        """
+        cache = getattr(self, "_centrality_cache", None)
+        signature: str | None = None
+        if cache is not None:
+            try:
+                from ._centrality_cache import subgraph_signature
+
+                signature = subgraph_signature(g)
+                hit = cache.get(kind, signature)
+                if hit is not None:
+                    log.info("betweenness_reused_from_cache", kind=kind, nodes=len(hit))
+                    return hit
+            except Exception as exc:
+                log.debug("centrality_cache_lookup_failed", kind=kind, error=str(exc))
+                signature = None
+
+        n = g.number_of_nodes()
         if n > _LARGE_REPO_THRESHOLD:
             k = min(500, n)
-            self._symbol_betweenness_cache = nx.betweenness_centrality(sub, k=k, normalized=True)
+            values = nx.betweenness_centrality(g, k=k, normalized=True)
         else:
-            self._symbol_betweenness_cache = nx.betweenness_centrality(sub, normalized=True)
-        return self._symbol_betweenness_cache
+            from ._betweenness import betweenness_centrality_fast
+
+            values = betweenness_centrality_fast(g, normalized=True)
+        if cache is not None and signature is not None:
+            try:
+                cache.put(kind, signature, values)
+            except Exception as exc:
+                log.debug("centrality_cache_store_failed", kind=kind, error=str(exc))
+        return values
 
     # ------------------------------------------------------------------
     # Execution flows + bulk priming

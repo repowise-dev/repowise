@@ -6,17 +6,24 @@ import json
 from collections import Counter, defaultdict
 from typing import Any
 
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import func as sa_func
+from sqlalchemy import select
 
-from repowise.core.persistence.crud import (
-    get_health_metrics as _get_health_metrics,
-    get_health_summary as _get_health_summary,
-    get_kg_layers as _get_kg_layers,
-    get_kg_tour_steps as _get_kg_tour_steps,
-)
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
+)
+from repowise.core.persistence.crud import (
+    get_health_metrics as _get_health_metrics,
+)
+from repowise.core.persistence.crud import (
+    get_health_summary as _get_health_summary,
+)
+from repowise.core.persistence.crud import (
+    get_kg_layers as _get_kg_layers,
+)
+from repowise.core.persistence.crud import (
+    get_kg_tour_steps as _get_kg_tour_steps,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -26,19 +33,18 @@ from repowise.core.persistence.models import (
     GraphNode,
     Page,
 )
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
-    _is_workspace_mode,
     _resolve_all_contexts,
     _resolve_repo_context,
     filter_graph_nodes,
     filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.core.registry import mcp_tool_registry as mcp
-
 
 # ---------------------------------------------------------------------------
 # repo="all" — workspace-level summary
@@ -201,6 +207,9 @@ async def get_overview(repo: str | None = None) -> dict:
 
     ctx = await _resolve_repo_context(repo)
     exclude_spec = _get_exclude_spec(ctx.path)
+    # Entries beyond the response caps below are persisted, not silently
+    # dropped — the response carries an expandable [repowise#<ref>] marker.
+    collector = OmissionCollector("get_overview", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
@@ -232,7 +241,13 @@ async def get_overview(repo: str | None = None) -> dict:
             )
             .order_by(Page.title)
         )
-        module_pages = result.scalars().all()[:20]  # Cap to keep response bounded
+        all_module_pages = result.scalars().all()
+        module_pages = all_module_pages[:20]  # Cap to keep response bounded
+        if len(all_module_pages) > 20:
+            collector.add(
+                f"module pages beyond cap=20 ({len(all_module_pages) - 20} dropped)",
+                "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[20:]),
+            )
 
         # Get entry point files from graph nodes (exclude tests & fixtures)
         result = await session.execute(
@@ -399,10 +414,9 @@ async def get_overview(repo: str | None = None) -> dict:
                         if p.lower() not in generic_labels and p not in ("src",):
                             dir_counts[p] += 1
                             break
-                if dir_counts:
-                    display_label = dir_counts.most_common(1)[0][0]
-                else:
-                    display_label = f"cluster_{cid}"
+                display_label = (
+                    dir_counts.most_common(1)[0][0] if dir_counts else f"cluster_{cid}"
+                )
 
             community_summary.append(
                 {
@@ -420,11 +434,13 @@ async def get_overview(repo: str | None = None) -> dict:
         if kg_layers:
             architecture["layers"] = [
                 {
-                    "name": l.name,
-                    "description": (l.description or "")[:120],
-                    "file_count": len(json.loads(l.node_ids_json) if l.node_ids_json else []),
+                    "name": layer.name,
+                    "description": (layer.description or "")[:120],
+                    "file_count": len(
+                        json.loads(layer.node_ids_json) if layer.node_ids_json else []
+                    ),
                 }
-                for l in kg_layers
+                for layer in kg_layers
             ]
             architecture["tour_available"] = bool(kg_tour)
             architecture["tour_step_count"] = len(kg_tour)
@@ -583,7 +599,7 @@ async def get_overview(repo: str | None = None) -> dict:
                 }
                 for p in module_pages
             ],
-            "entry_points": [n.node_id for n in entry_nodes[:15]],
+            "entry_points": _capped_entry_points(entry_nodes, collector),
             "git_health": git_health,
             "knowledge_map": knowledge_map,
             "community_summary": community_summary,
@@ -643,4 +659,15 @@ async def get_overview(repo: str | None = None) -> dict:
             result["workspace"] = ws_footer
 
         result["_meta"] = _build_meta(repository=repository)
+        collector.attach(result)
         return result
+
+
+def _capped_entry_points(entry_nodes: list, collector: OmissionCollector) -> list[str]:
+    """First 15 entry-point ids; the remainder goes to the omission store."""
+    if len(entry_nodes) > 15:
+        collector.add(
+            f"entry points beyond cap=15 ({len(entry_nodes) - 15} dropped)",
+            "\n".join(n.node_id for n in entry_nodes[15:]),
+        )
+    return [n.node_id for n in entry_nodes[:15]]

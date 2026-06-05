@@ -90,16 +90,23 @@ def register_with_claude_code(repo_path: Path) -> Path | None:
     return settings_path if merge_mcp_entry(settings_path, entry) else None
 
 
+# Current augment PostToolUse matcher. Read/Edit/Write power the distill
+# read-intelligence layer (skeleton nudges + per-file stale-read notices);
+# legacy installs with the narrower matchers below are widened in place.
+_AUGMENT_MATCHER = "Bash|Grep|Glob|Read|Edit|Write"
+_LEGACY_AUGMENT_MATCHERS = ("Bash", "Bash|Grep|Glob")
+
+
 def install_claude_code_hooks() -> Path | None:
     """Register PostToolUse hooks in ~/.claude/settings.json.
 
-    PostToolUse detects git staleness and can enrich Grep/Glob results when
-    the hook output has useful extra context. Existing user hooks are preserved.
+    PostToolUse detects git staleness, enriches Grep/Glob results, and emits
+    Read-intelligence notices. Existing user hooks are preserved.
     """
     settings_path = _claude_code_settings_path()
 
     post_hook_entry = {
-        "matcher": "Bash|Grep|Glob",
+        "matcher": _AUGMENT_MATCHER,
         "hooks": [
             {
                 "type": "command",
@@ -119,8 +126,10 @@ def install_claude_code_hooks() -> Path | None:
 
         hooks = existing.setdefault("hooks", {})
 
-        # Drop any pre-existing repowise PreToolUse entry; the current design
-        # routes everything through PostToolUse.
+        # Drop any pre-existing legacy *augment* PreToolUse entry; augment
+        # routes everything through PostToolUse. The distill rewrite hook
+        # (`repowise-rewrite`) is a separate, opt-in PreToolUse entry managed
+        # by install/uninstall_claude_code_rewrite_hook and must be preserved.
         pre_hooks = hooks.setdefault("PreToolUse", [])
         _strip_repowise_pretool(pre_hooks)
         if not pre_hooks:
@@ -136,6 +145,113 @@ def install_claude_code_hooks() -> Path | None:
         return settings_path
     except OSError:
         return None
+
+
+_REWRITE_HOOK_COMMAND = "repowise-rewrite"
+
+
+def install_claude_code_rewrite_hook() -> Path | None:
+    """Register the opt-in distill PreToolUse rewrite hook (Bash matcher).
+
+    Idempotent; preserves user hooks and the augment PostToolUse entry.
+    Returns the settings path on success, None on failure.
+    """
+    settings_path = _claude_code_settings_path()
+    pre_hook_entry = {
+        "matcher": "Bash",
+        "hooks": [
+            {
+                "type": "command",
+                "command": _REWRITE_HOOK_COMMAND,
+                "timeout": 5,
+                "statusMessage": "Distilling command output...",
+            }
+        ],
+    }
+
+    try:
+        if settings_path.exists():
+            existing = load_existing_config(settings_path)
+        else:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+
+        hooks = existing.setdefault("hooks", {})
+        pre_hooks = hooks.setdefault("PreToolUse", [])
+        if not _has_rewrite_hook(pre_hooks):
+            pre_hooks.append(pre_hook_entry)
+            settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        return settings_path
+    except OSError:
+        return None
+
+
+def uninstall_claude_code_rewrite_hook() -> bool:
+    """Remove the distill rewrite hook; True when something was removed."""
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    pre_hooks = hooks.get("PreToolUse")
+    if not isinstance(pre_hooks, list):
+        return False
+
+    changed = _strip_hooks(pre_hooks, _is_rewrite_hook)
+    if not changed:
+        return False
+    if not pre_hooks:
+        hooks.pop("PreToolUse", None)
+
+    try:
+        settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def claude_code_rewrite_hook_installed() -> bool:
+    """True when the distill rewrite hook is registered in settings.json."""
+    settings_path = _claude_code_settings_path()
+    if not settings_path.exists():
+        return False
+    try:
+        existing = load_existing_config(settings_path)
+    except Exception:
+        return False
+    hooks = existing.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    pre_hooks = hooks.get("PreToolUse")
+    return isinstance(pre_hooks, list) and _has_rewrite_hook(pre_hooks)
+
+
+def _is_rewrite_hook(hook: dict) -> bool:
+    return _REWRITE_HOOK_COMMAND in hook.get("command", "")
+
+
+def _has_rewrite_hook(hook_list: list) -> bool:
+    return any(_is_rewrite_hook(h) for entry in hook_list for h in entry.get("hooks", []))
+
+
+def _strip_hooks(hook_list: list, predicate) -> bool:
+    """Remove hooks matching *predicate* from a hook bucket in place."""
+    changed = False
+    for entry in list(hook_list):
+        kept = [h for h in entry.get("hooks", []) if not predicate(h)]
+        if len(kept) != len(entry.get("hooks", [])):
+            changed = True
+            if kept:
+                entry["hooks"] = kept
+            else:
+                hook_list.remove(entry)
+    return changed
 
 
 def _has_repowise_hook(hook_list: list) -> bool:
@@ -154,17 +270,12 @@ def _is_repowise_hook(hook: dict) -> bool:
 
 
 def _strip_repowise_pretool(hook_list: list) -> bool:
-    """Remove repowise's PreToolUse entry from a hook bucket in place."""
-    changed = False
-    for entry in list(hook_list):
-        kept = [h for h in entry.get("hooks", []) if not _is_repowise_hook(h)]
-        if len(kept) != len(entry.get("hooks", [])):
-            changed = True
-            if kept:
-                entry["hooks"] = kept
-            else:
-                hook_list.remove(entry)
-    return changed
+    """Remove legacy *augment* PreToolUse entries from a hook bucket in place.
+
+    Matches only the augment command names — the opt-in ``repowise-rewrite``
+    PreToolUse hook is intentionally untouched.
+    """
+    return _strip_hooks(hook_list, _is_repowise_hook)
 
 
 def _migrate_legacy_hook(hook_list: list) -> bool:
@@ -178,8 +289,8 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
                 changed = True
         matcher = entry.get("matcher", "")
         only_repowise = entry.get("hooks") and all(_is_repowise_hook(h) for h in entry["hooks"])
-        if only_repowise and matcher == "Bash":
-            entry["matcher"] = "Bash|Grep|Glob"
+        if only_repowise and matcher in _LEGACY_AUGMENT_MATCHERS:
+            entry["matcher"] = _AUGMENT_MATCHER
             changed = True
     return changed
 

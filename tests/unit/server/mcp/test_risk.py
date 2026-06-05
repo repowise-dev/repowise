@@ -89,3 +89,46 @@ async def test_get_risk_stable_file(setup_mcp):
     assert t["trend"] == "stable"
     # churn_percentile=0.15, dep_count=1, no fix keywords → stable
     assert t["risk_type"] == "stable"
+
+
+# ---- _classify_risk_type small-team calibration (issue #361) ---------------
+
+
+def _bus_factor_meta():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        significant_commits_json="[]",
+        churn_percentile=0.3,
+        bus_factor=1,
+        commit_count_total=40,
+        is_hotspot=False,
+    )
+
+
+def test_classify_bus_factor_risk_on_normal_team():
+    from repowise.server.mcp_server.tool_risk import _classify_risk_type
+
+    assert _classify_risk_type(_bus_factor_meta(), dep_count=1, team_size=8) == "bus-factor-risk"
+
+
+def test_classify_bus_factor_suppressed_on_small_team():
+    """A single-author file is the expected shape of a 1-3 person repo —
+    not a bus-factor warning unless the file is hotspot-active."""
+    from repowise.server.mcp_server.tool_risk import _classify_risk_type
+
+    assert _classify_risk_type(_bus_factor_meta(), dep_count=1, team_size=2) == "stable"
+
+
+def test_classify_bus_factor_kept_on_small_team_hotspot():
+    from repowise.server.mcp_server.tool_risk import _classify_risk_type
+
+    meta = _bus_factor_meta()
+    meta.is_hotspot = True
+    assert _classify_risk_type(meta, dep_count=1, team_size=2) == "bus-factor-risk"
+
+
+def test_classify_bus_factor_unknown_team_size_keeps_behaviour():
+    from repowise.server.mcp_server.tool_risk import _classify_risk_type
+
+    assert _classify_risk_type(_bus_factor_meta(), dep_count=1, team_size=None) == "bus-factor-risk"

@@ -240,34 +240,30 @@ def _format_reasoning_modes(modes: tuple[ReasoningMode, ...]) -> str:
     return ", ".join(modes)
 
 
-def _filtered_model_options(
-    console: Console,
+_MAX_MODEL_ROWS = 40
+
+
+def _initial_model_options(
     options: tuple[ProviderModelOption, ...],
 ) -> list[ProviderModelOption]:
-    if len(options) <= 40:
+    if len(options) <= _MAX_MODEL_ROWS:
         return list(options)
-
-    console.print(f"  [dim]{len(options):,} models available.[/dim]")
-    query = click.prompt(
-        "  Filter models (Enter for recommended)",
-        default="",
-        show_default=False,
-    ).strip()
-    if query:
-        q = query.lower()
-        filtered = [
-            option
-            for option in options
-            if q in option.model.lower()
-            or (option.label and q in option.label.lower())
-            or (option.notes and q in option.notes.lower())
-        ][:40]
-        if filtered:
-            return filtered
-        console.print(f"  [{WARN}]No models matched {query!r}; showing recommended.[/]")
-
     recommended = [option for option in options if option.recommended]
-    return (recommended or list(options))[:40]
+    return (recommended or list(options))[:_MAX_MODEL_ROWS]
+
+
+def _search_model_options(
+    options: tuple[ProviderModelOption, ...],
+    query: str,
+) -> list[ProviderModelOption]:
+    q = query.lower()
+    return [
+        option
+        for option in options
+        if q in option.model.lower()
+        or (option.label and q in option.label.lower())
+        or (option.notes and q in option.notes.lower())
+    ]
 
 
 def _select_model_option(
@@ -284,74 +280,115 @@ def _select_model_option(
         "don't improve doc quality.[/]"
     )
 
-    display_options = _filtered_model_options(console, options)
+    display_options = _initial_model_options(options)
     if not display_options:
         display_options = [_fallback_model_option(provider_name)]
+    searchable = len(options) > len(display_options)
+    if searchable:
+        console.print(
+            f"  [dim]Showing {len(display_options)} recommended of "
+            f"{len(options):,} available models.[/dim]"
+        )
 
-    table = Table(
-        show_header=True,
-        box=None,
-        padding=(0, 2),
-        title="[bold]Model Options[/bold]",
-        title_style="",
-    )
-    table.add_column("#", style=BRAND_STYLE, width=4)
-    table.add_column("Model", style="bold", min_width=22)
-    table.add_column("Reasoning", style="dim")
-    table.add_column("Source", style="dim")
-    table.add_column("Notes", style="dim")
+    while True:
+        table = Table(
+            show_header=True,
+            box=None,
+            padding=(0, 2),
+            title="[bold]Model Options[/bold]",
+            title_style="",
+        )
+        table.add_column("#", style=BRAND_STYLE, width=4)
+        table.add_column("Model", style="bold", min_width=22)
+        table.add_column("Reasoning", style="dim")
+        table.add_column("Source", style="dim")
+        table.add_column("Notes", style="dim")
 
-    default_idx = "1"
-    for idx, option in enumerate(display_options, 1):
-        if option.model == default_model or option.recommended:
-            default_idx = str(idx)
-            break
+        default_idx = "1"
+        for idx, option in enumerate(display_options, 1):
+            if option.model == default_model or option.recommended:
+                default_idx = str(idx)
+                break
 
-    for idx, option in enumerate(display_options, 1):
-        label = option.label or option.model
-        if option.recommended:
-            label = f"{label} [dim](recommended)[/dim]"
+        for idx, option in enumerate(display_options, 1):
+            label = option.label or option.model
+            if option.recommended:
+                label = f"{label} [dim](recommended)[/dim]"
+            table.add_row(
+                f"[{idx}]",
+                label,
+                _format_reasoning_modes(option.reasoning_modes),
+                option.source,
+                option.notes,
+            )
+
+        custom_idx = str(len(display_options) + 1)
         table.add_row(
-            f"[{idx}]",
-            label,
-            _format_reasoning_modes(option.reasoning_modes),
-            option.source,
-            option.notes,
+            f"[{custom_idx}]",
+            "Custom model",
+            "auto",
+            "manual",
+            "type an exact model id",
         )
 
-    custom_idx = str(len(display_options) + 1)
-    table.add_row(
-        f"[{custom_idx}]",
-        "Custom model",
-        "auto",
-        "manual",
-        "type an exact model id",
-    )
+        search_idx = None
+        if searchable:
+            search_idx = str(len(display_options) + 2)
+            table.add_row(
+                f"[{search_idx}]",
+                f"Search all {len(options):,} models",
+                "",
+                "",
+                "filter the full list by name",
+            )
 
-    console.print()
-    console.print(table)
-    console.print()
+        console.print()
+        console.print(table)
+        console.print()
 
-    choice = Prompt.ask(
-        "  Select model",
-        choices=[str(i) for i in range(1, len(display_options) + 2)],
-        default=default_idx,
-        console=console,
-    )
-    if choice == custom_idx:
-        model = click.prompt("  Model", default=default_model)
-        return ProviderModelOption(
-            model=model,
-            label=model,
-            reasoning_modes=_provider_supported_reasoning_modes(
-                provider_name,
-                model,
-                repo_path,
-            ),
-            source="fallback",
+        max_choice = len(display_options) + (2 if searchable else 1)
+        choice = Prompt.ask(
+            "  Select model",
+            choices=[str(i) for i in range(1, max_choice + 1)],
+            default=default_idx,
+            console=console,
         )
+        if search_idx and choice == search_idx:
+            query = click.prompt(
+                "  Search (e.g. 'mini' or 'nano')",
+                default="",
+                show_default=False,
+            ).strip()
+            if not query:
+                continue
+            matches = _search_model_options(options, query)
+            if not matches:
+                console.print(f"  [{WARN}]No models matched {query!r}.[/]")
+                continue
+            if len(matches) > _MAX_MODEL_ROWS:
+                console.print(
+                    f"  [dim]{len(matches)} matches; showing first "
+                    f"{_MAX_MODEL_ROWS}. Refine the search to see others.[/dim]"
+                )
+                matches = matches[:_MAX_MODEL_ROWS]
+            else:
+                console.print(f"  [dim]{len(matches)} match(es) for {query!r}.[/dim]")
+            display_options = matches
+            continue
+        if choice == custom_idx:
+            model = click.prompt("  Model", default=default_model)
+            return ProviderModelOption(
+                model=model,
+                label=model,
+                reasoning_modes=_provider_supported_reasoning_modes(
+                    provider_name,
+                    model,
+                    repo_path,
+                ),
+                source="fallback",
+            )
 
-    return display_options[int(choice) - 1]
+        return display_options[int(choice) - 1]
 
 
 def _select_reasoning_mode(

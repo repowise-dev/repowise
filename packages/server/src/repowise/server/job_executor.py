@@ -26,6 +26,47 @@ from repowise.core.pipeline import persist_pipeline_result, run_pipeline
 
 logger = structlog.get_logger(__name__)
 
+
+def _repo_exclude_patterns(repo: Any, repo_path: str) -> list[str]:
+    """Collect a server job's exclude patterns from both config sources.
+
+    Web-managed repos store settings in ``Repository.settings_json``; CLI and
+    ``repowise init`` workflows write them to ``.repowise/config.yaml``. Server
+    jobs should honor either, so we merge both — order-preserving and
+    de-duplicated, settings first. A missing or malformed source is ignored
+    rather than fatal.
+    """
+    patterns: list[str] = []
+
+    def _add(values: Any) -> None:
+        if not isinstance(values, list):
+            return
+        for value in values:
+            if isinstance(value, str) and value not in patterns:
+                patterns.append(value)
+
+    # Source 1: DB-stored repo settings (web UI).
+    try:
+        settings = json.loads(getattr(repo, "settings_json", "") or "{}")
+        if isinstance(settings, dict):
+            _add(settings.get("exclude_patterns"))
+    except (TypeError, ValueError):
+        logger.debug("repo_settings_json_unparsable", repo_path=repo_path)
+
+    # Source 2: repo-local .repowise/config.yaml (CLI/init). Reuse the shared
+    # loader so we inherit its YAML + flat-format fallback handling.
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        cfg = load_repo_config(Path(repo_path))
+        if isinstance(cfg, dict):
+            _add(cfg.get("exclude_patterns"))
+    except Exception:
+        logger.debug("repo_config_yaml_unreadable", repo_path=repo_path)
+
+    return patterns
+
+
 # Phase → numeric level mapping for job.current_level
 _PHASE_LEVELS = {
     "traverse": 0,
@@ -86,9 +127,7 @@ class JobProgressCallback:
             self._sync_job_status()
 
     def on_message(self, level: str, text: str) -> None:
-        getattr(logger, level, logger.info)(
-            text, job_id=self._job_id, phase=self._phase
-        )
+        getattr(logger, level, logger.info)(text, job_id=self._job_id, phase=self._phase)
 
     def _sync_job_status(self, *, force: bool = False) -> None:
         """Fire-and-forget progress update in the current event loop.
@@ -211,11 +250,16 @@ async def execute_job(
             repo = await get_repository(session, job.repository_id)
             if repo is None:
                 logger.error("repo_not_found", job_id=job_id, repo_id=job.repository_id)
-                await update_job_status(session, job_id, "failed", error_message="Repository not found")
+                await update_job_status(
+                    session, job_id, "failed", error_message="Repository not found"
+                )
                 return
 
             repo_path = repo.local_path
             repo_id = repo.id
+            # Resolve excludes while ``repo`` is still session-attached. Every
+            # job entry point flows through here, so this covers them all.
+            exclude_patterns = _repo_exclude_patterns(repo, repo_path)
             config = json.loads(job.config_json) if job.config_json else {}
             is_full_resync = config.get("mode") == "full_resync"
 
@@ -248,6 +292,7 @@ async def execute_job(
             llm_client=llm_client,
             vector_store=vector_store,
             progress=progress,
+            exclude_patterns=exclude_patterns or None,
         )
 
         # ---- Incremental page regeneration for sync mode ------------------
@@ -257,7 +302,11 @@ async def execute_job(
         incremental_pages: list = []
         if not is_full_resync and llm_client is not None:
             incremental_pages = await _incremental_page_regen(
-                Path(repo_path), result, llm_client, config, progress,
+                Path(repo_path),
+                result,
+                llm_client,
+                config,
+                progress,
             )
 
         # ---- Persist results -----------------------------------------------
@@ -439,7 +488,9 @@ async def _incremental_page_regen(
             return []
 
         cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
-        affected = detector.get_affected_pages(file_diffs, result.graph_builder.graph(), cascade_budget)
+        affected = detector.get_affected_pages(
+            file_diffs, result.graph_builder.graph(), cascade_budget
+        )
 
         if not affected.regenerate:
             logger.info("incremental_page_regen_skipped", reason="no_affected_pages")

@@ -78,17 +78,25 @@ def extract_external_systems(
 
 def _discover(repo_root: Path) -> list[Path]:
     """Walk the repo (depth ≤ 4) collecting recognised manifest files."""
+    from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+
     seen: list[Path] = []
-    skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", "target", "dist", "build"}
     root = Path(repo_root)
-    for path in root.rglob("*"):
-        rel_parts = path.relative_to(root).parts
-        if len(rel_parts) > 4 or any(part in skip_dirs for part in rel_parts):
-            continue
-        if not path.is_file():
-            continue
-        if _parser_for(path) is not None:
-            seen.append(path)
+    # The historical depth cap was a *post-hoc* filter on an unbounded
+    # ``rglob("*")`` — the walk itself still descended into everything.
+    # walk_repo prunes junk dirs and nested git repos at traversal time;
+    # clearing ``dirnames`` at depth 3 makes the bound real (files yielded
+    # there have 4 relative parts, matching the old ``len(rel_parts) > 4``).
+    # Historical skip list included target/dist/build — preserve it on top
+    # of the shared never-source set.
+    prune = PRUNED_DIRS | {"target", "dist", "build"}
+    for dirpath, dirnames, filenames in walk_repo(root, prune_dirs=prune):
+        if len(dirpath.relative_to(root).parts) >= 3:
+            dirnames[:] = []
+        for fname in filenames:
+            path = dirpath / fname
+            if _parser_for(path) is not None:
+                seen.append(path)
     return seen
 
 

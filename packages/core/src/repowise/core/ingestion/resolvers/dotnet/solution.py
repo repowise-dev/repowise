@@ -16,6 +16,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core.fs_walk import iter_glob
+
 log = structlog.get_logger(__name__)
 
 # Project("{TYPE}") = "Name", "rel\path.csproj", "{GUID}"
@@ -56,10 +58,10 @@ def parse_sln(sln_path: Path) -> list[SolutionEntry]:
     return out
 
 
-def find_sln_files(repo_path: Path) -> list[Path]:
+def find_sln_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
     skip = {".git", "node_modules", "bin", "obj"}
     out: list[Path] = []
-    for sln in repo_path.rglob("*.sln"):
+    for sln in iter_glob(repo_path, "*.sln", prune_nested_git=prune_nested_git):
         if any(part in skip for part in sln.parts):
             continue
         out.append(sln)

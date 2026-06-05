@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+from pathlib import Path as _DoctorPath
+
 import click
 from rich.table import Table
-
-from pathlib import Path as _DoctorPath
 
 from repowise.cli.helpers import (
     console,
@@ -13,7 +14,6 @@ from repowise.cli.helpers import (
     get_repowise_dir,
     load_state,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
 )
 
@@ -57,10 +57,7 @@ def _print_cli_version_status() -> None:
         )
     else:
         status = "[green]OK[/green]"
-        detail = (
-            f"current {check.current_version} (latest), "
-            f"path {path_detail}, running {running}"
-        )
+        detail = f"current {check.current_version} (latest), path {path_detail}, running {running}"
 
     table = Table(show_header=False, box=None, pad_edge=False)
     table.add_column(style="cyan")
@@ -71,9 +68,7 @@ def _print_cli_version_status() -> None:
 
     if check.update_available:
         console.print(f"  [yellow]Update available:[/yellow] {check.suggested_command}")
-        console.print(
-            "  [dim]Restart Claude/Codex/Cursor or any MCP client after updating.[/dim]"
-        )
+        console.print("  [dim]Restart Claude/Codex/Cursor or any MCP client after updating.[/dim]")
 
 
 def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
@@ -287,7 +282,6 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     coord_drift: float | None = None
     coord_sql_pages: int | None = None
     coord_vector_count: int | None = None
-    coord_graph_nodes: int | None = None
     if db_ok:
         try:
 
@@ -321,17 +315,14 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
                     result = await coord.health_check()
 
                 if vector_store is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         await vector_store.close()
-                    except Exception:
-                        pass
                 await engine.dispose()
                 return result
 
             coord_result = run_async(_check_coordinator())
             coord_sql_pages = coord_result.get("sql_pages")
             coord_vector_count = coord_result.get("vector_count")
-            coord_graph_nodes = coord_result.get("graph_nodes")
             coord_drift = coord_result.get("drift")
 
             drift_pct = f"{coord_drift * 100:.1f}%" if coord_drift is not None else "N/A"
@@ -344,7 +335,11 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
             else:
                 drift_color = "red"
 
-            vec_display = str(coord_vector_count) if coord_vector_count != -1 and coord_vector_count is not None else "unknown"
+            vec_display = (
+                str(coord_vector_count)
+                if coord_vector_count != -1 and coord_vector_count is not None
+                else "unknown"
+            )
             drift_detail = (
                 f"SQL={coord_sql_pages}, Vector={vec_display}, "
                 f"Drift=[{drift_color}]{drift_pct}[/{drift_color}]"
@@ -353,6 +348,9 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
             checks.append(_check("Coordinator drift", coord_ok, drift_detail))
         except Exception as exc:
             checks.append(_check("Coordinator drift", True, f"Could not check: {exc}"))
+
+    # 11. Distill — config block, omission store, rewrite hook (advisory)
+    checks.extend(_distill_checks(repo_path))
 
     # Display
     table = Table(title=f"repowise Doctor — {repo_path.name}")
@@ -461,6 +459,74 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
     return all_ok
 
 
+def _distill_checks(repo_path: _DoctorPath) -> list[tuple[str, str, str]]:
+    """Distill feature health: config validity, store sizing, rewrite hook.
+
+    The rewrite hook is opt-in, so its absence is informational, never a
+    failure. Any unexpected error degrades to an advisory OK row — distill
+    problems must not break doctor.
+    """
+    checks: list[tuple[str, str, str]] = []
+
+    # Config block valid?
+    distill_cfg = None
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        distill_cfg = load_repo_config(repo_path).get("distill")
+        from repowise.core.distill.config import validate_distill_config
+
+        problems = validate_distill_config(distill_cfg)
+        if problems:
+            checks.append(_check("Distill config", False, "; ".join(problems)))
+        else:
+            checks.append(
+                _check("Distill config", True, "valid" if distill_cfg else "defaults (no block)")
+            )
+    except Exception as exc:
+        checks.append(_check("Distill config", True, f"Could not check: {exc}"))
+
+    # Omission store sizing (TTL + cap are pruned opportunistically on write,
+    # so a store far past its cap means pruning is not keeping up).
+    try:
+        from repowise.core.distill.config import omission_store_settings
+
+        _ttl_days, max_mb = omission_store_settings(distill_cfg)
+        db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
+        if not db_path.is_file():
+            checks.append(_check("Omission store", True, "not created yet"))
+        else:
+            size_bytes = db_path.stat().st_size
+            wal = db_path.with_name(db_path.name + "-wal")
+            if wal.is_file():
+                size_bytes += wal.stat().st_size
+            size_mb = size_bytes / (1024 * 1024)
+            ok = size_mb <= max_mb * 1.5  # WAL slack before checkpointing
+            detail = f"{size_mb:.1f} MB (cap {max_mb:g} MB)"
+            if not ok:
+                detail += " — over cap; pruning happens on the next distill write"
+            checks.append(_check("Omission store", ok, detail))
+    except Exception as exc:
+        checks.append(_check("Omission store", True, f"Could not check: {exc}"))
+
+    # Rewrite hook (advisory: strictly opt-in).
+    try:
+        from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+
+        installed = ClaudeCodeAdapter().rewrite_hook_installed()
+        if installed:
+            commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else None
+            opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
+            detail = "installed (this repo opted out)" if opted_out else "installed"
+        else:
+            detail = "not installed (opt-in: repowise hook rewrite install)"
+        checks.append(_check("Distill rewrite hook", True, detail))
+    except Exception as exc:
+        checks.append(_check("Distill rewrite hook", True, f"Could not check: {exc}"))
+
+    return checks
+
+
 @click.command("doctor")
 @click.argument("path", required=False, default=None)
 @click.option("--repair", is_flag=True, default=False, help="Attempt to fix detected mismatches.")
@@ -526,19 +592,19 @@ def doctor_command(
         console.print(
             f"[bold]── {entry.alias}[/bold]  "
             f"[dim]({entry.path})[/dim]"
-            + ("  [bold cyan](primary)[/bold cyan]" if entry.alias == ws_config.default_repo else "")
+            + (
+                "  [bold cyan](primary)[/bold cyan]"
+                if entry.alias == ws_config.default_repo
+                else ""
+            )
         )
         ok = _run_repo_checks(abs_path, repair)
         overall_ok = overall_ok and ok
 
     console.print()
     if not_indexed:
-        console.print(
-            f"[yellow]Not indexed:[/yellow] {', '.join(not_indexed)}"
-        )
-        console.print(
-            "  Run [bold]repowise update --workspace[/bold] to index them."
-        )
+        console.print(f"[yellow]Not indexed:[/yellow] {', '.join(not_indexed)}")
+        console.print("  Run [bold]repowise update --workspace[/bold] to index them.")
     if ws_issues and not repair:
         console.print(
             f"[yellow]{len(ws_issues)} workspace-level issue(s); "
@@ -596,24 +662,31 @@ def _run_workspace_checks(
         disk_commit = read_state_commit(abs_path)
         cfg_commit = entry.last_commit_at_index
         if disk_commit and cfg_commit and disk_commit != cfg_commit:
-            rows.append((
-                entry.alias,
-                "[yellow]DRIFT[/yellow]",
-                f"config={cfg_commit[:8]}, state.json={disk_commit[:8]}",
-            ))
+            rows.append(
+                (
+                    entry.alias,
+                    "[yellow]DRIFT[/yellow]",
+                    f"config={cfg_commit[:8]}, state.json={disk_commit[:8]}",
+                )
+            )
             issues.append(f"{entry.alias}: workspace config / state.json drift")
         elif disk_commit and not cfg_commit:
-            rows.append((
-                entry.alias,
-                "[yellow]DRIFT[/yellow]",
-                f"workspace config missing last_commit_at_index (state.json has {disk_commit[:8]})",
-            ))
+            rows.append(
+                (
+                    entry.alias,
+                    "[yellow]DRIFT[/yellow]",
+                    f"workspace config missing last_commit_at_index (state.json has {disk_commit[:8]})",
+                )
+            )
             issues.append(f"{entry.alias}: workspace config missing commit pointer")
         elif (abs_path / ".repowise").is_dir() and not disk_commit:
-            rows.append((
-                entry.alias, "[yellow]WARN[/yellow]",
-                "state.json missing or empty (run `repowise update`)",
-            ))
+            rows.append(
+                (
+                    entry.alias,
+                    "[yellow]WARN[/yellow]",
+                    "state.json missing or empty (run `repowise update`)",
+                )
+            )
             issues.append(f"{entry.alias}: missing state.json")
         else:
             rows.append((entry.alias, "[green]OK[/green]", entry.path))
@@ -634,13 +707,11 @@ def _run_workspace_checks(
         changed = sync_workspace_state_from_disk(ws_root, ws_config)
         if changed:
             console.print(
-                f"[green]Repaired workspace config from disk for:[/green] "
-                f"{', '.join(changed)}"
+                f"[green]Repaired workspace config from disk for:[/green] {', '.join(changed)}"
             )
         if dead_entries:
             console.print(
-                f"[yellow]Removing dead workspace entries:[/yellow] "
-                f"{', '.join(dead_entries)}"
+                f"[yellow]Removing dead workspace entries:[/yellow] {', '.join(dead_entries)}"
             )
             for alias in dead_entries:
                 ws_config.remove_repo(alias)
@@ -667,11 +738,13 @@ def _check_mcp_registered(ws_root: _DoctorPath) -> None:
     if appdata:
         candidates.append(_DoctorPath(appdata) / "Claude" / "claude_desktop_config.json")
     home = _DoctorPath.home()
-    candidates.extend([
-        home / ".claude" / "claude_desktop_config.json",
-        home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
-        home / ".config" / "Claude" / "claude_desktop_config.json",
-    ])
+    candidates.extend(
+        [
+            home / ".claude" / "claude_desktop_config.json",
+            home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
+            home / ".config" / "Claude" / "claude_desktop_config.json",
+        ]
+    )
 
     found_paths: list[str] = []
     for cfg in candidates:
@@ -689,9 +762,7 @@ def _check_mcp_registered(ws_root: _DoctorPath) -> None:
                 found_paths.append(f"{cfg.name}:{name}")
 
     if found_paths:
-        console.print(
-            f"  [dim]MCP: registered ({', '.join(found_paths)})[/dim]"
-        )
+        console.print(f"  [dim]MCP: registered ({', '.join(found_paths)})[/dim]")
     else:
         console.print(
             "  [dim]MCP: no claude_desktop_config.json entry found — run "

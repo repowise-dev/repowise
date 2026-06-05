@@ -17,7 +17,9 @@ layers consume:
 - co-change partners and Hassan **change entropy** (History Complexity Metric);
 - per-function blame (modification counts, line age) for function-level health;
 - **prior-defect history** — bug-fix commits touching each file in the trailing
-  window, the most cost-effective defect predictor.
+  window, the most cost-effective defect predictor;
+- **agent provenance** — which coding agent (if any) authored each commit, at
+  what autonomy tier, plus per-file `agent_authored_pct` rollups.
 
 ## Window anchoring (`REPOWISE_GIT_WINDOW_ANCHOR`)
 
@@ -94,6 +96,41 @@ live `repowise risk` path) is reconstructed **in memory** here: walking commits
 oldest→newest, each author's prior-commit count is the running tally. Empty in
 rename-tracking mode (which uses the per-file walk, not the batched index).
 
+## Agent provenance
+
+`agent_provenance.py` labels every walked commit
+`{agent, autonomy_tier, channel, confidence}` from the attribution channels
+present in **local git history** — identity fields (bot accounts / service
+e-mails), exact message footers ("Generated with Claude Code", Codex,
+opencode, aider), and `Co-authored-by:` trailers anchored to service
+identities. Tiers: **1** near-autonomous (an agent service account authored
+the commit) · **2** human-driven agent (footer, or a service identity as
+*committer* over a human author) · **3** assisted (co-author trailer only).
+
+Design rules:
+
+- **Precision-first.** Every pattern is anchored to a service identity; a bare
+  name never matches (a human contributor named "Devin" must not become the
+  Devin agent). A false "agent-authored" label on a human commit is worse
+  than a miss.
+- **Local channels only.** PR-level evidence (bot PR authors, agent branch
+  prefixes, PR-body footers) needs the forge API and is out of scope — squash
+  merges that strip trailers are a known *recall* loss, stated rather than
+  patched with network calls at index time.
+- **Zero extra cost.** Classification rides the existing commit-index walk —
+  pure in-memory regex on already-parsed records, ~20 µs/commit (≈10 ms at the
+  default commit depth), no additional `git` pass.
+- **Config-driven.** Repos can extend the registry from
+  `.repowise/config.yaml` under an `agent_provenance:` block
+  (`service_emails`, `footer_patterns`, `coauthor_patterns`) — additive on top
+  of the built-ins, malformed entries skipped with a warning.
+
+Persisted as four nullable columns on `git_commits`
+(`agent_name`/`agent_autonomy_tier`/`agent_channel`/`agent_confidence`) and a
+per-file rollup on `git_metadata` (`agent_commit_count`, `agent_authored_pct`,
+`agent_tier_counts_json`), surfaced in the `/git-metadata` file view and the
+MCP `get_context` ownership block.
+
 ## Internal layout
 
 | Module | Contents |
@@ -102,6 +139,7 @@ rename-tracking mode (which uses the per-file walk, not the batched index).
 | `_constants.py` | commit-depth defaults, decay half-lives, the bug-fix keyword classifier (`is_fix_commit`, mirrors the benchmark) + `PRIOR_DEFECT_WINDOW_DAYS`, skip heuristics, GitPython noise patch |
 | `records.py` | `_CommitRec`, `GitIndexSummary` (carries `commit_rows`), the `git log` record format + rename/skip path helpers |
 | `commit_rows.py` | `build_commit_rows` — per-commit Kamei features + change-risk from the walk's sunk commits (pure, in-memory author experience) |
+| `agent_provenance.py` | `AgentProvenanceClassifier` — deterministic per-commit agent attribution (local channels, config-extensible) |
 | `file_history.py` | `index_file` — per-file parse + base metrics (blame gated by tier) |
 | `enrich.py` | blame ownership, commit significance, rename detection, percentiles |
 | `function_blame.py` | per-line blame index → per-function modification counts + line age (FULL tier; feeds `function_hotspot` / `code_age_volatility`) |

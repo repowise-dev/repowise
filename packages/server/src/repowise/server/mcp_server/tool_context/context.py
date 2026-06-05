@@ -16,6 +16,7 @@ Optional ``include`` parameter widens the response:
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
   - include=["decisions"] → full decision records (default returns titles only)
+  - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
 
 This module is the orchestrator; single-target resolution lives in
 ``targets`` and the budget cap in ``truncation``.
@@ -29,6 +30,7 @@ from typing import Any
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector, truncate_to_budget
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -38,7 +40,6 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
-from repowise.server.mcp_server.tool_context.truncation import _truncate_to_budget
 
 
 @mcp.tool()
@@ -68,6 +69,10 @@ async def get_context(
       - "metrics":    PageRank, betweenness centrality, percentile ranks
       - "community":  architectural community membership + neighbors
       - "decisions":  full decision records (default returns titles only)
+      - "skeleton":   the file with bodies elided — every signature kept, the
+                      bodies of the highest-PageRank symbols inlined under a
+                      token budget. A fraction of the cost of Read for
+                      structure-level questions (file targets only).
 
     Example: get_context(["src/auth/service.py", "src/auth/middleware.py"])
     Example: get_context(["src/auth/service.py::verify_token"], include=["callers"])
@@ -84,7 +89,7 @@ async def get_context(
 
     # Default to docs + freshness when include is omitted. Freshness is
     # critical for the agent to detect stale index data.  The other blocks
-    # (ownership/last_change/decisions) are 200–500 bytes each and bloat
+    # (ownership/last_change/decisions) are 200-500 bytes each and bloat
     # every subsequent agent turn via cache replay. Callers that want them
     # must pass include explicitly.
     include_set = set(include) if include else {"docs", "freshness"}
@@ -106,6 +111,7 @@ async def get_context(
                     include_set,
                     compact,
                     exclude_spec=exclude_spec,
+                    repo_root=ctx.path,
                 )
                 for t in targets
             ]
@@ -164,5 +170,8 @@ async def get_context(
             if cross_repo:
                 target_data["cross_repo"] = cross_repo
 
-    # Enforce the global token cap. See ``_truncate_to_budget`` for strategy.
-    return _truncate_to_budget(response)
+    # Enforce the global token cap. Anything dropped is persisted via the
+    # collector so a truncated response always carries expandable
+    # ``[repowise#<ref>]`` markers instead of silently losing content.
+    collector = OmissionCollector("get_context", repo_root=ctx.path)
+    return truncate_to_budget(response, collector=collector)

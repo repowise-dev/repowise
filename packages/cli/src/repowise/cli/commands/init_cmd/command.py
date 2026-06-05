@@ -47,6 +47,8 @@ from repowise.cli.providers import resolve_embedder
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
+    BRAND_STYLE,
+    OWL_SPINNER,
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
@@ -63,7 +65,7 @@ from repowise.cli.ui import (
 )
 from repowise.core.reasoning import REASONING_MODES
 
-from ._interactive import offer_hook_install
+from ._interactive import offer_distill_rewrite_hook, offer_hook_install
 from .generation import cost_gate_declined, format_cost, run_repo_generation, select_coverage
 from .persistence import (
     build_resume_controller,
@@ -298,6 +300,17 @@ def _run_generation_phase(
     help="Generate or skip project-local Codex MCP config and hooks.",
 )
 @click.option(
+    "--distill-hook/--no-distill-hook",
+    "distill_hook",
+    default=None,
+    help=(
+        "Install the Claude Code command-rewrite hook that routes noisy "
+        "commands (tests, builds, git, searches) through `repowise distill` "
+        "for compact output. Default: ask when interactive; skip otherwise. "
+        "In workspace mode the verdict applies to every selected repo."
+    ),
+)
+@click.option(
     "--include-submodules",
     is_flag=True,
     default=False,
@@ -366,6 +379,7 @@ def init_command(
     no_claude_md: bool,
     agents_md: bool | None,
     codex_setup: bool | None,
+    distill_hook: bool | None,
     include_submodules: bool,
     init_all: bool,
     onboarding: bool,
@@ -405,6 +419,7 @@ def init_command(
             no_claude_md=no_claude_md,
             agents_md=agents_md,
             codex_setup=codex_setup,
+            distill_hook=distill_hook,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -455,7 +470,7 @@ def init_command(
     scan_info = None
     if is_interactive:
         print_banner(console, repo_name=repo_path.name)
-        with console.status("  Scanning repository…", spinner="dots"):
+        with console.status("  Scanning repository…", spinner=OWL_SPINNER):
             scan_info = quick_repo_scan(repo_path)
         print_scan_summary(console, scan_info)
         mode = interactive_mode_select(console)
@@ -616,7 +631,7 @@ def init_command(
         # Validate provider connection
         from repowise.core.providers.llm.base import ProviderError
 
-        with console.status("  Verifying provider connection…", spinner="dots"):
+        with console.status("  Verifying provider connection…", spinner=OWL_SPINNER):
             try:
                 run_async(
                     provider.generate(
@@ -645,7 +660,7 @@ def init_command(
     orchestrator_mode = OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
 
     with Progress(
-        SpinnerColumn(),
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         MaybeCountColumn(),
@@ -708,9 +723,11 @@ def init_command(
             with cancellation_scope():
                 result = run_async(_index_with_resume())
         except (PipelineCancelled, KeyboardInterrupt):
+            from repowise.cli.ui.mascot import EYES_SLEEPY, mini
+
             console.print(
-                "\n[yellow]Interrupted.[/] Indexed work so far has been saved — "
-                "run [bold]repowise init --resume[/] to continue where it stopped."
+                f"\n{mini(EYES_SLEEPY)} [yellow]Interrupted.[/] Indexed work so far has been "
+                "saved — run [bold]repowise init --resume[/] to continue where it stopped."
             )
             return
 
@@ -757,7 +774,7 @@ def init_command(
             console, 4, total_phases, "Persistence", "Saving to database and building search index"
         )
 
-    with console.status("  Persisting to database…", spinner="dots"):
+    with console.status("  Persisting to database…", spinner=OWL_SPINNER):
         run_async(persist_result(result, repo_path))
     console.print("  [green]✓[/green] Database updated")
 
@@ -791,6 +808,10 @@ def init_command(
     # same tier instead of silently upgrading ESSENTIAL → FULL (issue #341).
     base_state["run_mode"] = run_mode
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
+    # Record whether submodules were indexed so `repowise update` rebuilds
+    # the graph with the same boundary semantics (same pattern as git_tier:
+    # missing → False keeps legacy behavior for old state files).
+    base_state["include_submodules"] = include_submodules
     if phase_timings:
         base_state["phase_timings"] = phase_timings
     kg = getattr(result, "knowledge_graph_result", None)
@@ -820,6 +841,7 @@ def init_command(
             commit_limit=commit_limit,
             resolved_commit_limit=resolved_commit_limit,
             resolved_reasoning=resolved_reasoning,
+            include_submodules=include_submodules,
         )
 
     # ---- Completion panel ----
@@ -834,3 +856,7 @@ def init_command(
 
     # Offer to install post-commit hook (both index-only and full modes)
     offer_hook_install(console, [repo_path])
+
+    # Opt-in distill command-rewrite hook for Claude Code. The workspace flow
+    # runs its own offer across all selected repos inside _workspace_init.
+    offer_distill_rewrite_hook(console, [repo_path], distill_hook)

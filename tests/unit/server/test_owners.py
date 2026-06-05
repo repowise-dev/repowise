@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import pytest
@@ -10,6 +11,7 @@ from httpx import AsyncClient
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
+from repowise.server.services.owner_profile import aggregate_owners
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -101,6 +103,55 @@ async def test_get_owner_profile(client: AsyncClient, app) -> None:
     # Bob should appear as a co-author.
     coauthors = {c["name"] for c in data["co_authors"]}
     assert "Bob" in coauthors
+
+
+@pytest.mark.asyncio
+async def test_last_commit_uses_authors_own_timestamp(client: AsyncClient, app) -> None:
+    """A contributor's last_commit_at is their *own* last commit to a file,
+    not the file's last commit by a co-owner."""
+    repo = await create_test_repo(client)
+    alice_last = datetime(2026, 1, 10, tzinfo=UTC)
+    file_last = datetime(2026, 1, 30, tzinfo=UTC)  # Bob's later commit
+
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo["id"],
+            file_path="src/shared.py",
+            commit_count_total=20,
+            first_commit_at=datetime(2025, 1, 1, tzinfo=UTC),
+            last_commit_at=file_last,
+            primary_owner_name="Bob",
+            primary_owner_email="bob@example.com",
+            top_authors_json=json.dumps(
+                [
+                    {
+                        "name": "Bob",
+                        "email": "bob@example.com",
+                        "commit_count": 15,
+                        "last_commit_ts": int(file_last.timestamp()),
+                        "first_commit_ts": int(datetime(2025, 6, 1, tzinfo=UTC).timestamp()),
+                    },
+                    {
+                        "name": "Alice",
+                        "email": "alice@example.com",
+                        "commit_count": 5,
+                        "last_commit_ts": int(alice_last.timestamp()),
+                        "first_commit_ts": int(datetime(2025, 1, 1, tzinfo=UTC).timestamp()),
+                    },
+                ]
+            ),
+            contributor_count=2,
+        )
+
+    async with get_session(app.state.session_factory) as session:
+        accs, _ = await aggregate_owners(session, repo["id"])
+
+    alice = accs["alice@example.com"]
+    bob = accs["bob@example.com"]
+    # Alice must NOT inherit Bob's later commit to the shared file.
+    assert alice.last_commit_at == alice_last
+    assert bob.last_commit_at == file_last
 
 
 @pytest.mark.asyncio

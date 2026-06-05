@@ -1,0 +1,66 @@
+   Compiling proc-macro2 v1.0.86
+   Compiling unicode-ident v1.0.12
+   Compiling quote v1.0.36
+   Compiling syn v2.0.72
+   Compiling serde v1.0.204
+   Compiling serde_json v1.0.120
+   Compiling thiserror v1.0.61
+   Compiling repowise-core v0.16.0 (/home/dev/repowise/core)
+warning: unused variable: `budget`
+  --> core/src/distill/router.rs:48:9
+   |
+48 |     let budget = remaining_tokens(ctx);
+   |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_budget`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: `repowise-core` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.82s
+     Running unittests src/lib.rs (target/debug/deps/repowise_core-7c1f2a90b44e8d13)
+
+running 24 tests
+test graph::tests::test_pagerank_sums_to_one ... ok
+test graph::tests::test_betweenness_cached ... ok
+test ingestion::tests::test_parser_python ... ok
+test ingestion::tests::test_parser_typescript ... ok
+test ingestion::tests::test_parser_csharp ... ok
+test ingestion::tests::test_incremental_scope ... ok
+test markers::tests::test_render_roundtrip ... ok
+test markers::tests::test_invalid_ref_rejected ... ok
+test store::tests::test_put_get ... ok
+test store::tests::test_ttl_prune ... FAILED
+test store::tests::test_size_cap_prune ... ok
+test router::tests::test_command_normalize ... ok
+test router::tests::test_wrapper_strip ... FAILED
+test router::tests::test_disabled_filters ... ok
+test budget::tests::test_estimate ... ok
+test health::tests::test_biomarkers ... ok
+test health::tests::test_size_orthogonal ... ok
+test git::tests::test_blame_rollup ... ok
+test git::tests::test_cochange_window ... ok
+test git::tests::test_provenance_layer ... ok
+test dead_code::tests::test_tiering ... ok
+test dead_code::tests::test_zombie_packages ... ok
+test cli::tests::test_exit_code_passthrough ... ok
+test cli::tests::test_expand_missing_ref ... ok
+
+failures:
+
+---- store::tests::test_ttl_prune stdout ----
+thread 'store::tests::test_ttl_prune' panicked at core/src/store.rs:201:9:
+assertion `left == right` failed
+  left: 3
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- router::tests::test_wrapper_strip stdout ----
+thread 'router::tests::test_wrapper_strip' panicked at core/src/router.rs:88:5:
+assertion failed: normalized.starts_with("pytest")
+
+failures:
+    router::tests::test_wrapper_strip
+    store::tests::test_ttl_prune
+
+test result: FAILED. 22 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+error: test failed, to rerun pass `--lib`

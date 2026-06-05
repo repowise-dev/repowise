@@ -8,6 +8,7 @@ blocks delegated to ``enrichment``).
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 
@@ -35,6 +36,7 @@ from repowise.server.mcp_server.tool_context.enrichment import (
     _resolve_community,
     _resolve_health,
     _resolve_metrics,
+    _resolve_skeleton,
 )
 from repowise.server.mcp_server.tool_context.kg import (
     _classify_file_role,
@@ -73,6 +75,7 @@ async def _resolve_one_target(
     compact: bool = False,
     *,
     exclude_spec: Any = None,
+    repo_root: Any = None,
 ) -> dict:
     """Resolve a single target and return its full context."""
     repo_id = repository.id
@@ -348,10 +351,8 @@ async def _resolve_one_target(
                 gn = res.scalar_one_or_none()
                 if gn and gn.community_id is not None:
                     _cmeta: dict[str, Any] = {}
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
                         _cmeta = json.loads(gn.community_meta_json or "{}")
-                    except (json.JSONDecodeError, TypeError):
-                        pass
                     docs["community"] = {
                         "id": gn.community_id,
                         "label": _cmeta.get("label", ""),
@@ -502,6 +503,15 @@ async def _resolve_one_target(
                 if recent and recent != meta.primary_owner_name:
                     ownership["recent_owner"] = recent
                     ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
+                # Agent provenance — only surfaced when agent-attributed
+                # commits exist, so human-only files stay noise-free.
+                if getattr(meta, "agent_commit_count", 0):
+                    ownership["agent_authored_pct"] = getattr(meta, "agent_authored_pct", None)
+                    ownership["agent_commit_count"] = meta.agent_commit_count
+                    with contextlib.suppress(TypeError, ValueError):
+                        ownership["agent_tier_counts"] = json.loads(
+                            getattr(meta, "agent_tier_counts_json", None) or "{}"
+                        )
             else:
                 ownership["primary_owner"] = None
                 ownership["owner_pct"] = None
@@ -659,5 +669,11 @@ async def _resolve_one_target(
     # --- Code health (Phase 2) ---
     if include and "health" in include:
         await _resolve_health(session, repository, target, target_type, result_data)
+
+    # --- Skeleton (distill) ---
+    if include and "skeleton" in include:
+        await _resolve_skeleton(
+            session, repository, target, target_type, result_data, repo_root=repo_root
+        )
 
     return result_data

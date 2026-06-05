@@ -1,4 +1,4 @@
-"""``repowise hook`` — manage git post-commit hooks for auto-sync."""
+"""``repowise hook`` — manage git post-commit hooks and agent hooks."""
 
 from __future__ import annotations
 
@@ -6,15 +6,13 @@ import click
 
 from repowise.cli.helpers import (
     console,
-    find_workspace_root,
     resolve_command_target,
-    resolve_repo_path,
 )
 
 
 @click.group("hook")
 def hook_group() -> None:
-    """Manage git hooks for automatic wiki sync."""
+    """Manage git hooks for auto-sync and agent hooks for distill."""
 
 
 def _hook_target(
@@ -96,6 +94,91 @@ def hook_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> Non
         assert target.repo_path is not None
         result = uninstall(target.repo_path)
         console.print(f"Post-commit hook: {result}")
+
+
+@hook_group.group("rewrite")
+def rewrite_group() -> None:
+    """Manage the distill command-rewrite hook (Claude Code PreToolUse).
+
+    When installed, noisy commands an agent runs (tests, builds, git
+    status/log/diff, searches, listings) are rewritten to
+    ``repowise distill <command>`` — pending your approval — so the agent
+    sees a compact, errors-first rendering. Raw output stays recoverable
+    via ``repowise expand <ref>``.
+    """
+
+
+@rewrite_group.command("install")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--workspace",
+    "-w",
+    is_flag=True,
+    default=False,
+    help="Force workspace mode (re-enable distill rewrites for every repo in the workspace).",
+)
+@click.option(
+    "--no-workspace",
+    is_flag=True,
+    default=False,
+    help="Force single-repo mode even when invoked from a workspace.",
+)
+def rewrite_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+    """Install the rewrite hook into ~/.claude/settings.json.
+
+    The hook itself is user-level (one install covers every repo); this
+    command additionally re-enables ``distill.commands.enabled`` for the
+    target — every workspace repo in workspace mode, the target repo
+    otherwise — since a prior ``repowise init`` opt-out may have gated
+    repos off.
+    """
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+    from repowise.cli.helpers import save_distill_commands_enabled
+
+    target = _hook_target(path, workspace, no_workspace)
+
+    hook_path = ClaudeCodeAdapter().install_rewrite_hook()
+    if not hook_path:
+        console.print("Rewrite hook: [red]install failed[/red]")
+        return
+    console.print(f"Rewrite hook: [green]installed[/green] ({hook_path})")
+    console.print(
+        "  [dim]Per-repo behavior is configured under `distill.commands` "
+        "in .repowise/config.yaml (permission: ask | allow).[/dim]"
+    )
+
+    if target.is_workspace:
+        assert target.ws_root is not None and target.ws_config is not None
+        for entry in target.ws_config.repos:
+            abs_path = (target.ws_root / entry.path).resolve()
+            if (abs_path / ".repowise").is_dir():
+                save_distill_commands_enabled(abs_path, enabled=True)
+                console.print(f"  {entry.alias}: [green]enabled[/green]")
+    else:
+        assert target.repo_path is not None
+        if (target.repo_path / ".repowise").is_dir():
+            save_distill_commands_enabled(target.repo_path, enabled=True)
+
+
+@rewrite_group.command("uninstall")
+def rewrite_uninstall() -> None:
+    """Remove the rewrite hook from ~/.claude/settings.json."""
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+
+    removed = ClaudeCodeAdapter().uninstall_rewrite_hook()
+    console.print(f"Rewrite hook: {'[green]removed[/green]' if removed else 'not installed'}")
+
+
+@rewrite_group.command("status")
+def rewrite_status() -> None:
+    """Check whether the rewrite hook is installed."""
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+
+    installed = ClaudeCodeAdapter().rewrite_hook_installed()
+    icon = "[green]✓[/green]" if installed else "[dim]✗[/dim]"
+    console.print(
+        f"  {icon} claude-code rewrite hook: {'installed' if installed else 'not installed'}"
+    )
 
 
 @hook_group.command("status")

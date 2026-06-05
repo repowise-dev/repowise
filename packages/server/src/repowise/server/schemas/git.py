@@ -44,6 +44,13 @@ class GitMetadataResponse(BaseModel):
     # Rename lineage: the file's path before its most recent move, if any.
     original_path: str | None = None
     test_gap: bool | None = None
+    # Agent-provenance rollup: share of the file's indexed commits that are
+    # agent-attributed (deterministic local-git channels), with the autonomy-
+    # tier breakdown ({"1": n, "2": n, "3": n}). agent_authored_pct is None
+    # for rows persisted before the provenance-aware index ran.
+    agent_commit_count: int = 0
+    agent_authored_pct: float | None = None
+    agent_tier_counts: dict = {}
 
     @classmethod
     def from_orm(cls, obj: object) -> GitMetadataResponse:
@@ -83,6 +90,9 @@ class GitMetadataResponse(BaseModel):
             temporal_hotspot_score=obj.temporal_hotspot_score,  # type: ignore[attr-defined]
             commit_count_capped=bool(obj.commit_count_capped),  # type: ignore[attr-defined]
             original_path=obj.original_path,  # type: ignore[attr-defined]
+            agent_commit_count=getattr(obj, "agent_commit_count", 0) or 0,
+            agent_authored_pct=getattr(obj, "agent_authored_pct", None),
+            agent_tier_counts=json.loads(getattr(obj, "agent_tier_counts_json", None) or "{}"),
         )
 
 

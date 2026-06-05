@@ -106,6 +106,7 @@ async def _run_health_analysis(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
             module_map=module_map,
+            duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
         )
 
         # Load per-file override rules from `.repowise/health-rules.json`.

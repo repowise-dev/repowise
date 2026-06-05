@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 import structlog
 
@@ -75,6 +76,8 @@ class HeritageResolver:
         self,
         parsed_files: dict[str, ParsedFile],
         import_targets: dict[str, set[str]],
+        *,
+        import_maps: Any | None = None,
     ) -> None:
         # Per-file class/interface/trait index: {file: {name: symbol_id}}
         self._file_types: dict[str, dict[str, str]] = {}
@@ -85,8 +88,19 @@ class HeritageResolver:
         # Import graph
         self._import_targets = import_targets
 
-        # Import name mapping (reuses resolved_file from Import objects)
-        self._import_names: dict[str, dict[str, str]] = defaultdict(dict)
+        # Import name mapping — shared with CallResolver (built once per
+        # GraphBuilder.build() and injected; standalone construction builds
+        # it locally).
+        if import_maps is None:
+            from .import_index import build_import_name_maps
+
+            import_maps = build_import_name_maps(parsed_files)
+        self._import_names: dict[str, dict[str, str]] = import_maps.import_names
+
+        # Lazy per-file merged view of imported files' type tables —
+        # Tier-2b lookup; sorted-path merge order, first-wins (see
+        # CallResolver for rationale).
+        self._merged_import_types: dict[str, dict[str, str]] = {}
 
         # Keep reference for cross-language checks in Tier 3
         self._parsed_files = parsed_files
@@ -105,18 +119,18 @@ class HeritageResolver:
 
             self._file_types[path] = file_types
 
-            # Build import name mapping using resolved_file
-            for imp in parsed.imports:
-                if imp.resolved_file is None:
+    def _merged_types_for(self, file_path: str) -> dict[str, str]:
+        """Merged ``{type_name → symbol_id}`` across every imported file."""
+        merged = self._merged_import_types.get(file_path)
+        if merged is None:
+            merged = {}
+            for imported_file in sorted(self._import_targets.get(file_path, ())):
+                if imported_file.startswith("external:"):
                     continue
-                for binding in imp.bindings:
-                    if binding.local_name != "*":
-                        self._import_names[path][binding.local_name] = imp.resolved_file
-                # Fallback for imports without bindings
-                if not imp.bindings:
-                    for name in imp.imported_names:
-                        if name != "*":
-                            self._import_names[path][name] = imp.resolved_file
+                for name, sym_id in self._file_types.get(imported_file, {}).items():
+                    merged.setdefault(name, sym_id)
+            self._merged_import_types[file_path] = merged
+        return merged
 
     def resolve_file(
         self, file_path: str, relations: list[HeritageRelation]
@@ -162,19 +176,16 @@ class HeritageResolver:
                     line=rel.line,
                 )
 
-        # Tier 2b: scan all imported files
-        for imported_file in self._import_targets.get(file_path, set()):
-            if imported_file.startswith("external:"):
-                continue
-            imported_types = self._file_types.get(imported_file, {})
-            if parent_name in imported_types:
-                return ResolvedHeritage(
-                    child_id=child_id,
-                    parent_id=imported_types[parent_name],
-                    edge_type=edge_type,
-                    confidence=0.85,
-                    line=rel.line,
-                )
+        # Tier 2b: all imported files (pre-merged lookup)
+        merged_types = self._merged_types_for(file_path)
+        if parent_name in merged_types:
+            return ResolvedHeritage(
+                child_id=child_id,
+                parent_id=merged_types[parent_name],
+                edge_type=edge_type,
+                confidence=0.85,
+                line=rel.line,
+            )
 
         # Tier 3: global unique match — only within the same language
         candidates = self._global_types.get(parent_name, [])

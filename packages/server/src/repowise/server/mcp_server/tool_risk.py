@@ -19,7 +19,9 @@ from repowise.core.persistence.models import (
     GraphNode,
     Repository,
 )
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -32,7 +34,6 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.core.registry import mcp_tool_registry as mcp
 
 _FIX_PATTERN = re.compile(
     r"\b(fix|bug|patch|hotfix|revert|regression|broken|crash|error)\b",
@@ -81,8 +82,17 @@ def _compute_trend(meta: Any) -> str:
     return "stable"
 
 
-def _classify_risk_type(meta: Any, dep_count: int) -> str:
-    """Classify risk as churn-heavy, bug-prone, high-coupling, or bus-factor-risk."""
+def _classify_risk_type(meta: Any, dep_count: int, team_size: int | None = None) -> str:
+    """Classify risk as churn-heavy, bug-prone, high-coupling, or bus-factor-risk.
+
+    *team_size* is the repo's active-contributor count (90d). On a small
+    team (≤ SMALL_TEAM_MAX_CONTRIBUTORS) a single-author file is the
+    expected operating model, so ``bus-factor-risk`` is reserved for
+    hotspot-active files there (issue #361). ``None`` = unknown → keep
+    the historical behaviour.
+    """
+    from repowise.core.analysis.health.biomarkers.base import SMALL_TEAM_MAX_CONTRIBUTORS
+
     # Count bug-fix commits from significant_commits messages
     commits = json.loads(meta.significant_commits_json) if meta.significant_commits_json else []
     fix_count = sum(1 for c in commits if _FIX_PATTERN.search(c.get("message", "")))
@@ -91,16 +101,43 @@ def _classify_risk_type(meta: Any, dep_count: int) -> str:
     bus_factor = getattr(meta, "bus_factor", 0) or 0
     total_commits = meta.commit_count_total or 0
 
+    small_team = team_size is not None and team_size <= SMALL_TEAM_MAX_CONTRIBUTORS
+
     # Bug-prone takes priority if fix ratio is high
     if commits and fix_count / len(commits) >= 0.4:
         return "bug-prone"
     if churn_score >= 0.7:
         return "churn-heavy"
-    if bus_factor == 1 and total_commits > 20:
+    if (
+        bus_factor == 1
+        and total_commits > 20
+        and (not small_team or bool(getattr(meta, "is_hotspot", False)))
+    ):
         return "bus-factor-risk"
     if dep_count >= 5:
         return "high-coupling"
     return "stable"
+
+
+async def _get_active_contributor_count(session: AsyncSession, repo_id: str) -> int | None:
+    """Repo-wide active-contributor count from persisted git metadata.
+
+    Reuses ``count_active_contributors`` (per-author ``last_commit_ts`` in
+    ``top_authors_json``) over all rows. ``None`` = unknown (no rows, or an
+    index that predates per-author timestamps).
+    """
+    from repowise.core.ingestion.git_indexer import count_active_contributors
+
+    try:
+        rows = await session.execute(
+            select(GitMetadata.top_authors_json).where(GitMetadata.repository_id == repo_id)
+        )
+        metas = [{"top_authors_json": r[0]} for r in rows.all() if r[0]]
+        if not metas:
+            return None
+        return count_active_contributors(metas)
+    except Exception:
+        return None
 
 
 def _compute_impact_surface(
@@ -205,6 +242,7 @@ async def _assess_one_target(
     reverse_deps: dict[str, set[str]],
     node_meta: dict[str, Any],
     exclude_spec: Any = None,
+    team_size: int | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -278,7 +316,7 @@ async def _assess_one_target(
     trend = _compute_trend(meta)
 
     # --- Risk type classification ---
-    risk_type = _classify_risk_type(meta, dep_count)
+    risk_type = _classify_risk_type(meta, dep_count, team_size)
 
     # --- Impact surface ---
     impact_surface = _compute_impact_surface(target, reverse_deps, node_meta, exclude_spec)
@@ -355,6 +393,59 @@ async def _assess_one_target(
     return result_data
 
 
+def _as_path(entry: Any) -> str | None:
+    """Best-effort file path from a blast-radius list entry (str or dict)."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return (
+            entry.get("file_path")
+            or entry.get("path")
+            or entry.get("file")
+            or entry.get("missing_partner")
+            or entry.get("partner")
+        )
+    return None
+
+
+def _trim_blast_lists(
+    pr_blast_radius: dict[str, Any],
+    exclude_spec: Any,
+    collector: OmissionCollector | None = None,
+) -> dict[str, Any]:
+    """Cap the noisy ``pr_blast_radius`` lists, capturing what gets dropped.
+
+    ``pr_blast_radius`` is the analyzer's own payload — preserve it for
+    callers that want the full picture, but drop excluded paths and truncate
+    the noisy lists so we stay well under the 25k-token transport ceiling on
+    PRs that touch many files. With a *collector*, every entry trimmed for
+    size is persisted to the omission store (excluded paths are not — they
+    are filtered by policy, not budget).
+    """
+    trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
+    for key, cap in (
+        ("transitive_affected", 15),
+        ("cochange_warnings", 10),
+        ("test_gaps", 10),
+        ("recommended_reviewers", 5),
+    ):
+        value = trimmed_blast.get(key)
+        if not isinstance(value, list):
+            continue
+        if exclude_spec:
+            value = [e for e in value if not is_excluded(_as_path(e), exclude_spec)]
+            trimmed_blast[key] = value
+        if len(value) > cap:
+            trimmed_blast[key] = value[:cap]
+            trimmed_blast[f"{key}_truncated_total"] = len(value)
+            if collector is not None:
+                collector.add(
+                    f"pr_blast_radius.{key} beyond cap={cap} ({len(value) - cap} dropped)",
+                    value[cap:],
+                )
+    return trimmed_blast
+
+
 @mcp.tool()
 async def get_risk(
     targets: list[str],
@@ -423,6 +514,10 @@ async def get_risk(
         )
         node_meta = {n.node_id: n for n in node_res.scalars().all()}
 
+        # Team size is repo-wide — compute once, share across targets
+        # (small-team calibration for bus-factor-risk, issue #361).
+        team_size = await _get_active_contributor_count(session, repo_id)
+
         # Assess each target
         results = await asyncio.gather(
             *[
@@ -435,6 +530,7 @@ async def get_risk(
                     reverse_deps,
                     node_meta,
                     exclude_spec,
+                    team_size,
                 )
                 for t in targets
             ]
@@ -451,9 +547,7 @@ async def get_risk(
             .order_by(GitMetadata.churn_percentile.desc())
             .limit(len(targets) + 5)
         )
-        all_hotspots = filter_rows_by_attr(
-            list(res.scalars().all()), "file_path", exclude_spec
-        )
+        all_hotspots = filter_rows_by_attr(list(res.scalars().all()), "file_path", exclude_spec)
         global_hotspots = [
             {
                 "file_path": h.file_path,
@@ -591,48 +685,23 @@ async def get_risk(
         "targets": {r["target"]: r for r in results},
     }
 
+    collector = OmissionCollector("get_risk", repo_root=ctx.path)
     if pr_blast_radius is not None:
         # PR mode — drop global_hotspots (irrelevant to a specific diff), trim
         # per-target co-change lists, and synthesize a tight directive the
         # agent can act on without parsing the whole blast-radius dossier.
+        # Everything trimmed below is persisted via the collector so the
+        # response carries an expandable [repowise#<ref>] marker for it.
         for r in response["targets"].values():
             partners = r.get("co_change_partners") or []
             if len(partners) > 3:
                 r["co_change_partners"] = partners[:3]
-
-        def _as_path(entry: Any) -> str | None:
-            if isinstance(entry, str):
-                return entry
-            if isinstance(entry, dict):
-                return (
-                    entry.get("file_path")
-                    or entry.get("path")
-                    or entry.get("file")
-                    or entry.get("missing_partner")
-                    or entry.get("partner")
+                collector.add(
+                    f"{r.get('target')} :: co_change_partners beyond 3",
+                    partners[3:],
                 )
-            return None
 
-        # ``pr_blast_radius`` is the analyzer's own payload — preserve it for
-        # callers that want the full picture, but drop excluded paths and
-        # truncate the noisy lists so we stay well under the 25k-token transport
-        # ceiling on PRs that touch many files.
-        trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
-        for key, cap in (
-            ("transitive_affected", 15),
-            ("cochange_warnings", 10),
-            ("test_gaps", 10),
-            ("recommended_reviewers", 5),
-        ):
-            value = trimmed_blast.get(key)
-            if not isinstance(value, list):
-                continue
-            if exclude_spec:
-                value = [e for e in value if not is_excluded(_as_path(e), exclude_spec)]
-                trimmed_blast[key] = value
-            if len(value) > cap:
-                trimmed_blast[key] = value[:cap]
-                trimmed_blast[f"{key}_truncated_total"] = len(value)
+        trimmed_blast = _trim_blast_lists(pr_blast_radius, exclude_spec, collector)
         response["pr_blast_radius"] = trimmed_blast
 
         # Directive: 3 short lists the agent can read in one glance. Each
@@ -719,4 +788,5 @@ async def get_risk(
         response["global_hotspots"] = global_hotspots
 
     response["_meta"] = _build_meta(repository=repository)
+    collector.attach(response)
     return response

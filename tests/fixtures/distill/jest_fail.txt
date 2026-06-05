@@ -1,0 +1,112 @@
+> repowise-web@0.16.0 test
+> jest --ci
+
+PASS src/components/graph/__tests__/layout.test.tsx
+PASS src/components/docs/__tests__/docs-viewer.test.tsx
+PASS src/lib/__tests__/format.test.ts
+PASS src/lib/__tests__/cn.test.ts
+PASS src/components/c4/__tests__/level-switch.test.tsx
+PASS src/components/graph/__tests__/minimap.test.tsx
+  ✓ renders without crashing (2 ms)
+  ✓ matches accessibility roles (5 ms)
+  ✓ handles empty data (8 ms)
+  ✓ responds to prop changes (11 ms)
+  ✓ memoizes expensive layout (14 ms)
+  ✓ cleans up subscriptions on unmount (17 ms)
+  ✓ formats large numbers (20 ms)
+  ✓ syncs state to the URL (23 ms)
+PASS src/components/graph/__tests__/edge-bundling.test.tsx
+  ✓ renders without crashing (2 ms)
+  ✓ matches accessibility roles (5 ms)
+  ✓ handles empty data (8 ms)
+  ✓ responds to prop changes (11 ms)
+  ✓ memoizes expensive layout (14 ms)
+  ✓ cleans up subscriptions on unmount (17 ms)
+PASS src/components/health/__tests__/trend-chart.test.tsx
+  ✓ renders without crashing (2 ms)
+  ✓ matches accessibility roles (5 ms)
+  ✓ handles empty data (8 ms)
+  ✓ responds to prop changes (11 ms)
+  ✓ memoizes expensive layout (14 ms)
+  ✓ cleans up subscriptions on unmount (17 ms)
+  ✓ formats large numbers (20 ms)
+PASS src/components/commits/__tests__/commit-table.test.tsx
+  ✓ renders without crashing (2 ms)
+  ✓ matches accessibility roles (5 ms)
+  ✓ handles empty data (8 ms)
+  ✓ responds to prop changes (11 ms)
+  ✓ memoizes expensive layout (14 ms)
+  ✓ cleans up subscriptions on unmount (17 ms)
+  ✓ formats large numbers (20 ms)
+  ✓ syncs state to the URL (23 ms)
+  ✓ debounces rapid updates (26 ms)
+PASS src/components/decisions/__tests__/decision-card.test.tsx
+  ✓ renders without crashing (2 ms)
+  ✓ matches accessibility roles (5 ms)
+  ✓ handles empty data (8 ms)
+  ✓ responds to prop changes (11 ms)
+  ✓ memoizes expensive layout (14 ms)
+PASS src/lib/__tests__/token-estimate.test.ts
+  ✓ renders without crashing (2 ms)
+  ✓ matches accessibility roles (5 ms)
+  ✓ handles empty data (8 ms)
+  ✓ responds to prop changes (11 ms)
+  ✓ memoizes expensive layout (14 ms)
+  ✓ cleans up subscriptions on unmount (17 ms)
+PASS src/lib/__tests__/url-state.test.ts
+  ✓ renders without crashing (2 ms)
+  ✓ matches accessibility roles (5 ms)
+  ✓ handles empty data (8 ms)
+  ✓ responds to prop changes (11 ms)
+  ✓ memoizes expensive layout (14 ms)
+  ✓ cleans up subscriptions on unmount (17 ms)
+  ✓ formats large numbers (20 ms)
+  ✓ syncs state to the URL (23 ms)
+PASS src/hooks/__tests__/use-repo-data.test.ts
+  ✓ renders without crashing (2 ms)
+  ✓ matches accessibility roles (5 ms)
+  ✓ handles empty data (8 ms)
+  ✓ responds to prop changes (11 ms)
+  ✓ memoizes expensive layout (14 ms)
+  ✓ cleans up subscriptions on unmount (17 ms)
+  ✓ formats large numbers (20 ms)
+FAIL src/components/chat/__tests__/chat-interface.test.tsx
+  ● ChatInterface › renders streaming tokens incrementally
+
+    expect(element).toHaveTextContent()
+
+    Expected element to have text content:
+      analyzing repository structure
+    Received:
+      analyzing repository structur
+
+      45 |     await act(() => stream.push(chunk));
+      46 |     const bubble = screen.getByTestId("assistant-bubble");
+    > 47 |     expect(bubble).toHaveTextContent("analyzing repository structure");
+         |                    ^
+      48 |   });
+      49 |
+      50 |   it("retries on transient SSE disconnect", async () => {
+
+      at Object.<anonymous> (src/components/chat/__tests__/chat-interface.test.tsx:47:20)
+
+  ● ChatInterface › retries on transient SSE disconnect
+
+    TypeError: Cannot read properties of undefined (reading 'reconnect')
+
+      58 |     server.dropConnection();
+    > 59 |     await waitFor(() => expect(client.sse.reconnect).toHaveBeenCalled());
+         |                                       ^
+      60 |   });
+
+      at Object.<anonymous> (src/components/chat/__tests__/chat-interface.test.tsx:59:39)
+
+PASS src/components/health/__tests__/biomarkers.test.tsx
+PASS src/components/commits/__tests__/risk-badge.test.tsx
+PASS src/app/repos/__tests__/page.test.tsx
+
+Test Suites: 1 failed, 16 passed, 17 total
+Tests:       2 failed, 117 passed, 119 total
+Snapshots:   0 total
+Time:        14.382 s
+Ran all test suites.

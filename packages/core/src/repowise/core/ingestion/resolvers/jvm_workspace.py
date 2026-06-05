@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from repowise.core.fs_walk import iter_glob
+
 if TYPE_CHECKING:
     from .context import ResolverContext
 
@@ -175,7 +177,9 @@ _JPMS_PROVIDES_RE = re.compile(
 )
 
 
-def _scan_jpms_provides(repo_path: Path) -> dict[str, tuple[str, ...]]:
+def _scan_jpms_provides(
+    repo_path: Path, *, prune_nested_git: bool = True
+) -> dict[str, tuple[str, ...]]:
     """Scan ``module-info.java`` files for ``provides X with Y, Z`` directives.
 
     Returns a mapping iface_fqn → impl_fqns identical in shape to
@@ -185,7 +189,7 @@ def _scan_jpms_provides(repo_path: Path) -> dict[str, tuple[str, ...]]:
     the warmup fast.
     """
     out: dict[str, list[str]] = {}
-    for mi in repo_path.rglob("module-info.java"):
+    for mi in iter_glob(repo_path, "module-info.java", prune_nested_git=prune_nested_git):
         if not mi.is_file():
             continue
         try:
@@ -200,10 +204,14 @@ def _scan_jpms_provides(repo_path: Path) -> dict[str, tuple[str, ...]]:
     return {k: tuple(v) for k, v in out.items()}
 
 
-def _scan_meta_inf_services(repo_path: Path) -> dict[str, tuple[str, ...]]:
+def _scan_meta_inf_services(
+    repo_path: Path, *, prune_nested_git: bool = True
+) -> dict[str, tuple[str, ...]]:
     """Scan META-INF/services/ directories for SPI declarations."""
     services: dict[str, list[str]] = {}
-    for services_dir in repo_path.rglob("META-INF/services"):
+    for services_dir in iter_glob(
+        repo_path, "META-INF/services", prune_nested_git=prune_nested_git
+    ):
         if not services_dir.is_dir():
             continue
         try:
@@ -230,12 +238,16 @@ def _scan_meta_inf_services(repo_path: Path) -> dict[str, tuple[str, ...]]:
     return {k: tuple(v) for k, v in services.items()}
 
 
-def _scan_spring_autoconfig(repo_path: Path) -> dict[str, tuple[str, ...]]:
+def _scan_spring_autoconfig(
+    repo_path: Path, *, prune_nested_git: bool = True
+) -> dict[str, tuple[str, ...]]:
     """Scan spring.factories and Boot 3 AutoConfiguration.imports."""
     result: dict[str, list[str]] = {}
 
     # spring.factories (Boot 2 style)
-    for factories in repo_path.rglob("META-INF/spring.factories"):
+    for factories in iter_glob(
+        repo_path, "META-INF/spring.factories", prune_nested_git=prune_nested_git
+    ):
         if not factories.is_file():
             continue
         try:
@@ -264,7 +276,9 @@ def _scan_spring_autoconfig(repo_path: Path) -> dict[str, tuple[str, ...]]:
             result.setdefault(rel, []).extend(current_values)
 
     # Boot 3 style: META-INF/spring/*.imports
-    for imports_file in repo_path.rglob("META-INF/spring/*.imports"):
+    for imports_file in iter_glob(
+        repo_path, "META-INF/spring/*.imports", prune_nested_git=prune_nested_git
+    ):
         if not imports_file.is_file():
             continue
         try:
@@ -336,8 +350,8 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
     # (cheap glob, O(matching files)). Both populate ``services``; later
     # phases treat any FQN listed there as reachable.
     try:
-        services = _scan_meta_inf_services(repo_path)
-        jpms = _scan_jpms_provides(repo_path)
+        services = _scan_meta_inf_services(repo_path, prune_nested_git=ctx.prune_nested_git)
+        jpms = _scan_jpms_provides(repo_path, prune_nested_git=ctx.prune_nested_git)
         merged: dict[str, list[str]] = {k: list(v) for k, v in services.items()}
         for iface, impls in jpms.items():
             merged.setdefault(iface, []).extend(impls)
@@ -345,7 +359,9 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
     except Exception:
         pass
     try:
-        index.autoconfig_imports = _scan_spring_autoconfig(repo_path)
+        index.autoconfig_imports = _scan_spring_autoconfig(
+            repo_path, prune_nested_git=ctx.prune_nested_git
+        )
     except Exception:
         pass
 

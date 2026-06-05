@@ -469,7 +469,9 @@ The commit contains "replace" (conflict keyword) and shares "bcrypt",
 **Question:** "Which files change a lot but have no documented decisions explaining why?"
 
 ```
-hotspot_files = files where churn_percentile >= 0.75 AND commit_count_90d > 0
+hotspot_files = files where churn_percentile >= 0.75
+                AND commit_count_90d >= 3
+                AND (temporal_hotspot_score >= 0.5 OR commit_count_90d >= 8)
 
 governed_files = union of all affected_files across active decisions
 

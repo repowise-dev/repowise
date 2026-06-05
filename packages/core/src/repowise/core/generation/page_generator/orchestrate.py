@@ -365,6 +365,16 @@ class _GenerationRun:
                     error=str(exc),
                 )
                 return exc  # return as value so gather works
+            except BaseException:
+                # Cancellation (Ctrl+C teardown): CancelledError is a
+                # BaseException, so it skips the handler above. If the cancel
+                # landed while this page was still queued on the semaphore,
+                # ``coro`` was never started — close it so interpreter
+                # shutdown doesn't spray one "coroutine ... was never
+                # awaited" RuntimeWarning per pending page (issue #358).
+                # close() is a no-op on a coroutine that already ran.
+                coro.close()
+                raise
 
         tasks = [guarded_named(pid, c) for pid, c in named_coros]
         results = await asyncio.gather(*tasks)

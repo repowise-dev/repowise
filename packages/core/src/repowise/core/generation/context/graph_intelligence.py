@@ -9,15 +9,50 @@ from __future__ import annotations
 from typing import Any
 
 
-def extract_call_graph(file_path: str, graph: Any) -> list[dict]:
-    """Extract symbol-level call edges for symbols defined in this file."""
-    entries: list[dict] = []
+def build_symbol_index(graph: Any) -> dict[str, list[tuple[Any, dict]]]:
+    """Bucket symbol nodes by ``file_path`` in one pass over the graph.
+
+    ``extract_call_graph`` / ``extract_heritage`` historically scanned every
+    graph node per file — O(files x nodes) across a generation run. Callers
+    that assemble context for many files build this index once and pass it
+    in; per-file extraction becomes a dict lookup. Buckets preserve the
+    graph's node iteration order, so results are byte-identical to the scan.
+    """
+    index: dict[str, list[tuple[Any, dict]]] = {}
     try:
         for node, data in graph.nodes(data=True):
             if data.get("node_type") != "symbol":
                 continue
-            if data.get("file_path") != file_path:
-                continue
+            fp = data.get("file_path")
+            if fp:
+                index.setdefault(fp, []).append((node, data))
+    except Exception:
+        return {}
+    return index
+
+
+def _file_symbol_nodes(
+    file_path: str, graph: Any, symbol_index: dict[str, list[tuple[Any, dict]]] | None
+) -> Any:
+    """This file's symbol nodes — from the index when supplied, else a scan."""
+    if symbol_index is not None:
+        return symbol_index.get(file_path, [])
+    return (
+        (node, data)
+        for node, data in graph.nodes(data=True)
+        if data.get("node_type") == "symbol" and data.get("file_path") == file_path
+    )
+
+
+def extract_call_graph(
+    file_path: str,
+    graph: Any,
+    symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
+) -> list[dict]:
+    """Extract symbol-level call edges for symbols defined in this file."""
+    entries: list[dict] = []
+    try:
+        for node, data in _file_symbol_nodes(file_path, graph, symbol_index):
             # Outgoing calls from this symbol
             for _, target, edata in graph.out_edges(node, data=True):
                 if edata.get("edge_type") == "calls":
@@ -56,15 +91,15 @@ def extract_call_graph(file_path: str, graph: Any) -> list[dict]:
     return unique[:15]
 
 
-def extract_heritage(file_path: str, graph: Any) -> list[dict]:
+def extract_heritage(
+    file_path: str,
+    graph: Any,
+    symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
+) -> list[dict]:
     """Extract extends/implements edges for symbols in this file."""
     entries: list[dict] = []
     try:
-        for node, data in graph.nodes(data=True):
-            if data.get("node_type") != "symbol":
-                continue
-            if data.get("file_path") != file_path:
-                continue
+        for node, data in _file_symbol_nodes(file_path, graph, symbol_index):
             for _, target, edata in graph.out_edges(node, data=True):
                 etype = edata.get("edge_type", "")
                 if etype in ("extends", "implements"):

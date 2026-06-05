@@ -384,6 +384,66 @@ def _resolve_docs_flag(
     return False, "no provider configured"
 
 
+def _inherit_distill_verdict(repo_path: Path, primary_cfg: dict) -> None:
+    """Copy the primary repo's explicit distill rewrite-hook verdict.
+
+    ``repowise init`` records ``distill.commands.enabled`` in every repo it
+    asks about; a repo added later would otherwise default to enabled (with
+    the ``ask`` posture) the moment ``.repowise/`` exists — even after a
+    workspace-wide decline. No explicit verdict on the primary → leave the
+    new repo's config untouched.
+    """
+    distill = primary_cfg.get("distill")
+    commands = distill.get("commands") if isinstance(distill, dict) else None
+    enabled = commands.get("enabled") if isinstance(commands, dict) else None
+    if not isinstance(enabled, bool):
+        return
+    import contextlib
+
+    from repowise.cli.helpers import save_distill_commands_enabled
+
+    # Inheritance is best-effort; never fail an add over it.
+    with contextlib.suppress(Exception):
+        save_distill_commands_enabled(repo_path, enabled=enabled)
+
+
+def inherit_workspace_distill_verdict(repo_path: Path) -> None:
+    """Best-effort backfill of a workspace member's distill verdict.
+
+    Repos that get ``.repowise/`` outside the init flow (``workspace add
+    --no-index`` followed by an update, or first-time indexing via
+    ``repowise update``) never recorded a ``distill.commands.enabled``
+    verdict, so a globally installed rewrite hook would treat them as
+    enabled. Copies the primary repo's explicit verdict when the member has
+    none of its own. No-op when the repo has no ``.repowise/`` yet, sits
+    outside a workspace, is itself the primary, already holds a verdict, or
+    the primary never recorded one.
+    """
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        if not (repo_path / ".repowise").is_dir():
+            return
+        from repowise.cli.helpers import load_config
+        from repowise.core.workspace.config import WorkspaceConfig
+
+        cfg = load_config(repo_path)
+        distill = cfg.get("distill")
+        commands = distill.get("commands") if isinstance(distill, dict) else None
+        if isinstance(commands, dict) and isinstance(commands.get("enabled"), bool):
+            return  # repo already has its own verdict
+        ws_root = find_workspace_root(repo_path)
+        if ws_root is None:
+            return
+        primary = WorkspaceConfig.load(ws_root).get_primary()
+        if primary is None:
+            return
+        primary_path = (ws_root / primary.path).resolve()
+        if primary_path == repo_path.resolve():
+            return
+        _inherit_distill_verdict(repo_path, load_config(primary_path))
+
+
 def _run_index_for_repo(
     repo_path: Path,
     alias: str,
@@ -453,6 +513,7 @@ def _run_index_for_repo(
             docs_skip_reason = f"provider failure: {exc}"
 
     ensure_repowise_dir(repo_path)
+    _inherit_distill_verdict(repo_path, primary_cfg)
 
     async def _do_index() -> tuple[int, int, int]:
         result = await run_pipeline(
