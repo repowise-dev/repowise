@@ -260,3 +260,15 @@ def test_compute_layer_order_tests_never_top_the_stack():
     assert order[-1] == "Test"
     # Test edges don't distort the runtime ordering either.
     assert order.index("API") < order.index("Service")
+
+
+class TestRubySpecDirToken:
+    def test_ruby_file_under_spec_is_test_without_corroboration(self):
+        # RSpec convention: support helpers and vendored fixtures under
+        # spec/ are test material whatever their filename.
+        assert infer_layer("sinatra-contrib/spec/okjson.rb", language="ruby") == "Test"
+
+    def test_spec_dir_stays_ambiguous_for_other_languages(self):
+        # Polyglot fairness: ruby's rule never leaks to other languages.
+        assert infer_layer("specs/openapi.yaml", language="yaml") != "Test"
+        assert infer_layer("spec/helper.py", language="python") != "Test"

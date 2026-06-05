@@ -244,6 +244,15 @@ class LanguageRegistry:
         """Union of multi-segment test-root dir paths, sorted for determinism."""
         return tuple(sorted({p for s in self._specs.values() for p in s.test_dir_paths}))
 
+    def test_dir_tokens_by_language(self) -> dict[str, frozenset[str]]:
+        """Per-language single-segment test-dir tokens (unambiguous for
+        that language's files — ruby's ``spec/``)."""
+        return {
+            s.tag: frozenset(s.test_dir_tokens)
+            for s in self._specs.values()
+            if s.test_dir_tokens
+        }
+
     def test_dir_suffixes(self) -> tuple[str, ...]:
         """Union of case-sensitive test-project dir suffixes, sorted."""
         return tuple(sorted({p for s in self._specs.values() for p in s.test_dir_suffixes}))

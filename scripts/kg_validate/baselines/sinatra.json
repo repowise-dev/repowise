@@ -3,20 +3,23 @@
  "smells": [
   {
    "code": "catchall_layer",
-   "message": "Test holds 51% of layered nodes",
+   "message": "Test holds 54% of layered nodes",
    "severity": "WARN"
   }
  ],
  "stats": {
   "by_language": {
    "ruby": {
-    "edges_per_file": 1.48,
+    "edges_per_file": 1.31,
     "files": 147,
-    "import_edges": 218,
+    "hint_edges": {
+     "spec_mirror": 17
+    },
+    "import_edges": 192,
     "import_support": "full",
-    "orphan_files": 22,
-    "orphan_ratio": 0.15,
-    "resolution_rate": 0.624
+    "orphan_files": 6,
+    "orphan_ratio": 0.041,
+    "resolution_rate": 0.771
    }
   },
   "dominant_language": "ruby",
@@ -29,12 +32,12 @@
    "lib/sinatra/base.rb",
    "lib/sinatra.rb",
    "rack-protection/lib/rack/protection.rb",
-   "lib/sinatra/middleware/logger.rb",
    "lib/sinatra/show_exceptions.rb",
-   "lib/sinatra/version.rb",
    "lib/sinatra/indifferent_hash.rb",
+   "lib/sinatra/middleware/logger.rb",
+   "lib/sinatra/version.rb",
+   "rack-protection/lib/rack/protection/version.rb",
    "sinatra-contrib/lib/sinatra/contrib/setup.rb",
-   "sinatra-contrib/spec/okjson.rb",
    "test/test_helper.rb"
   ]
  }

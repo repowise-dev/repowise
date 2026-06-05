@@ -85,6 +85,10 @@ _TEST_DIR_PATHS: tuple[tuple[str, ...], ...] = tuple(
     tuple(p.split("/")) for p in _LANG_REGISTRY.test_dir_paths()
 )
 _TEST_DIR_SUFFIXES = _LANG_REGISTRY.test_dir_suffixes()
+# Per-language unambiguous test-dir tokens: ruby's spec/ needs no filename
+# corroboration — a Ruby file under spec/ is RSpec material whatever its
+# name (support helpers, vendored fixtures).
+_LANG_TEST_DIR_TOKENS = _LANG_REGISTRY.test_dir_tokens_by_language()
 
 
 def _is_test_file_name(filename: str) -> bool:
@@ -213,10 +217,15 @@ def infer_layer(path: str, language: str | None = None) -> str:
     if _is_test_file_name(filename):
         return "Test"
 
+    lang_test_tokens = _LANG_TEST_DIR_TOKENS.get((language or "").lower(), frozenset())
     for seg in segments:
         if seg not in _TEST_DIR_TOKENS:
             continue
-        if seg in _AMBIGUOUS_TEST_DIR_TOKENS and not _is_test_file_name(filename):
+        if (
+            seg in _AMBIGUOUS_TEST_DIR_TOKENS
+            and seg not in lang_test_tokens
+            and not _is_test_file_name(filename)
+        ):
             continue  # "spec(s)/" without a test-shaped file: not a test root
         return "Test"
 

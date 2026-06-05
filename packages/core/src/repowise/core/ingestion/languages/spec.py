@@ -86,6 +86,13 @@ class LanguageSpec:
     # roots (tests/, __tests__/) stay in the generic layer table.
     test_dir_paths: tuple[str, ...] = ()
 
+    # Single-segment test-dir tokens that are UNAMBIGUOUS for this
+    # language's files. The generic table treats "spec(s)/" as ambiguous
+    # (OpenAPI specs, language specs) and demands a test-shaped filename —
+    # but a Ruby file under spec/ is RSpec material whatever its name
+    # (support helpers, vendored fixtures like okjson.rb included).
+    test_dir_tokens: tuple[str, ...] = ()
+
     # Case-sensitive directory-segment suffixes that mark a test project
     # directory (.NET sibling test projects: "Foo.Tests/").
     test_dir_suffixes: tuple[str, ...] = ()

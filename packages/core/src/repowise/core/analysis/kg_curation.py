@@ -58,7 +58,12 @@ _FIXTURE_CAMEL_RES = _LANG_REGISTRY.camel_fixture_res_by_extension()
 # resolution) and sinatra (1.48, broken require resolution) land in
 # "sparse"; every healthy repo sits at ≥ 2.2. Repos below the file floor
 # skip the density check — density on a 7-file repo is noise, not evidence.
+# Low density alone stops indicting the resolver once the resolution rate
+# (internal targets / all targets) is strong: stdlib filtering makes an
+# honestly-resolved Ruby gem land at ~1.3 edges/file with 0.77 resolution —
+# that graph isn't lying, it's just require-light.
 _FLOW_DENSITY_FLOOR = 2.0
+_FLOW_RESOLUTION_FLOOR = 0.7
 _STRUCTURAL_DENSITY_FLOOR = 0.3
 _MODE_MIN_FILES = 25
 
@@ -88,10 +93,16 @@ def _graph_mode(dominant_lang: str, lang_by_path: dict[str, str], graph_builder:
     if not dom_files:
         return "structural"
     edge_count = 0
+    internal_targets = 0
+    external_targets = 0
     try:
-        for src, _dst, data in graph_builder.graph().edges(data=True):
+        for src, dst, data in graph_builder.graph().edges(data=True):
             if (data or {}).get("edge_type") in ("imports", "tested_by") and src in dom_files:
                 edge_count += 1
+                if isinstance(dst, str) and dst.startswith("external:"):
+                    external_targets += 1
+                else:
+                    internal_targets += 1
     except Exception:  # pragma: no cover - defensive
         return "flow" if support == "full" else "sparse"
     if len(dom_files) < _MODE_MIN_FILES:
@@ -99,8 +110,15 @@ def _graph_mode(dominant_lang: str, lang_by_path: dict[str, str], graph_builder:
     density = edge_count / len(dom_files)
     if density < _STRUCTURAL_DENSITY_FLOOR:
         return "structural"
-    if support == "partial" or density < _FLOW_DENSITY_FLOOR:
+    if support == "partial":
         return "sparse"
+    if density < _FLOW_DENSITY_FLOOR:
+        # Low density indicts the resolver only when resolution is ALSO
+        # weak — a require-light but well-resolved graph narrates honestly.
+        total = internal_targets + external_targets
+        resolution = (internal_targets / total) if total else 0.0
+        if resolution < _FLOW_RESOLUTION_FLOOR:
+            return "sparse"
     return "flow"
 
 __all__ = [

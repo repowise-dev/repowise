@@ -143,6 +143,64 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
+    def _resolve_ruby_spec_mirrors(self, progress: Any | None = None) -> None:
+        """Link rspec files to their subjects by the directory-mirror convention.
+
+        RSpec loads ``spec_helper`` through ``.rspec`` and resolves the
+        subject constant at runtime, so a typical spec file contains *no*
+        require at all — every ``spec/lib/rack/protection/base_spec.rb``
+        reads as a zero-edge orphan. The rspec convention mirrors the
+        source tree: ``<root>/spec/<sub>/<name>_spec.rb`` tests
+        ``<root>/<sub>/<name>.rb`` (or ``<root>/lib/<sub>/<name>.rb``).
+        """
+        ruby_files = [
+            p
+            for p, pf in self._parsed_files.items()
+            if pf.file_info.language == "ruby"
+        ]
+        if not ruby_files:
+            return
+
+        phase = "graph.spec_mirrors"
+        if progress:
+            progress.on_phase_start(phase, None)
+        try:
+            added = 0
+            for p in sorted(ruby_files):
+                if not p.endswith("_spec.rb") or "/spec/" not in f"/{p}":
+                    continue
+                prefix, _, sub = f"/{p}".rpartition("/spec/")
+                root = prefix.lstrip("/")
+                subject_rel = sub[: -len("_spec.rb")] + ".rb"
+                candidates = []
+                for mid in ("", "lib/"):
+                    joined = "/".join(s for s in (root, mid.rstrip("/"), subject_rel) if s)
+                    candidates.append(joined)
+                for cand in candidates:
+                    if cand == p or cand not in self._parsed_files:
+                        continue
+                    if not self._graph.has_node(p) or not self._graph.has_node(cand):
+                        continue
+                    if self._graph.has_edge(p, cand):
+                        break
+                    self._graph.add_edge(
+                        p,
+                        cand,
+                        edge_type="imports",
+                        imported_names=[],
+                        hint_source="spec_mirror",
+                    )
+                    added += 1
+                    break
+            log.info("spec_mirror_edges", language="ruby", added=added)
+        except Exception as exc:
+            log.warning("ruby_spec_mirrors_failed", error=str(exc))
+        finally:
+            if progress:
+                done = getattr(progress, "on_phase_done", None)
+                if callable(done):
+                    done(phase)
+
     def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
         """Pair C/C++ headers with their same-stem same-dir implementations.
 

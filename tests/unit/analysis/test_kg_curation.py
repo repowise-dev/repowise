@@ -972,24 +972,41 @@ class TestHonestDegradation:
         kg = _curate(flow_repo, enabled=True)
         assert kg.project["graph_mode"] == "flow"
 
-    def test_sparse_mode_for_low_density_full_support(self):
-        # 30 python files (over the small-repo floor), one edge: density
-        # ~0.03 would be structural; give it ~1/file -> sparse.
+    def test_sparse_mode_for_low_density_weak_resolution(self):
+        # 30 python files (over the small-repo floor), thin internal chain
+        # and most import targets landing on external nodes: low density
+        # AND weak resolution is the broken-resolver signature -> sparse.
         paths = [f"src/m{i}.py" for i in range(30)]
         edges = [(paths[i], paths[i + 1]) for i in range(29)]
+        edges += [(paths[i], f"external:mystery{i}") for i in range(5, 30)]
         repo = build_repo(paths, entries={"src/m0.py"}, edges=edges)
         kg = _curate(repo, enabled=True)
         assert kg.project["graph_mode"] == "sparse"
+
+    def test_flow_mode_for_low_density_strong_resolution(self):
+        # Same thin chain but almost every target resolves internally: a
+        # require-light, well-resolved graph (sinatra after stdlib
+        # filtering: 1.31 edges/file at 0.77 resolution) narrates honestly
+        # -> flow, not sparse. Low density alone no longer indicts the
+        # resolver.
+        paths = [f"src/m{i}.py" for i in range(30)]
+        edges = [(paths[i], paths[i + 1]) for i in range(29)]
+        edges += [(paths[0], "external:gem:rack")]
+        repo = build_repo(paths, entries={"src/m0.py"}, edges=edges)
+        kg = _curate(repo, enabled=True)
+        assert kg.project["graph_mode"] == "flow"
 
     def test_sparse_unreached_reason_blames_the_graph(self):
         # Files off the walk in sparse mode cite incomplete resolution, not
         # the file ("standalone or supporting" would blame the file).
         paths = [f"src/m{i}.py" for i in range(30)]
-        # Density ~0.4 (sparse band), concentrated in m0..m5: the walk's
-        # later slots fill with unreached files, whose reasons are under test.
+        # Density in the sparse band with weak resolution, edges
+        # concentrated in m0..m5: the walk's later slots fill with
+        # unreached files, whose reasons are under test.
         edges = [
             (paths[i], paths[j]) for i in range(6) for j in range(i + 1, 6)
         ][:12]
+        edges += [(paths[i], f"external:mystery{i}") for i in range(6, 30)]
         repo = build_repo(paths, entries={"src/m0.py"}, edges=edges)
         kg = _curate(repo, enabled=True)
         unreached_reasons = [

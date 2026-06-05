@@ -47,13 +47,13 @@ call resolution, named bindings, heritage extraction, and docstrings.
 |----------|-----------|-------------|-------------|
 | **Python** | `.py` `.pyi` | `main.py` `app.py` `__main__.py` `manage.py` `wsgi.py` `asgi.py` | `import x` / `from x import y` |
 | **TypeScript** | `.ts` `.tsx` | `index.ts` `main.ts` `app.ts` `server.ts` | `import { x } from 'y'` / `export { x } from 'y'` & `export * from 'y'` re-export barrels / `require()` with tsconfig path aliases, npm/yarn/pnpm `workspaces`, and optional `.vue`/`.svelte`/`.astro` SFC probing |
-| **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `index.js` `main.js` `app.js` `server.js` | `import` / `require()` |
-| **Java** | `.java` | `Main.java` `Application.java` | `import pkg.Class` / `import pkg.*` / `import static pkg.Class.*` with Maven `pom.xml` reactor + Gradle `settings.gradle(.kts)` source-sets + `gradle/libs.versions.toml` discovery, JPMS `module-info.java` / `package-info.java` recognition, fan-out to every file in the imported package (siblings share importers), same-package implicit identifier resolution |
-| **Kotlin** | `.kt` `.kts` | `Main.kt` `Application.kt` | `import com.example.Foo` / `import com.example.*` sharing the JVM workspace index with Java (cross-language resolution, `.kt` under `src/main/java` recognised) |
+| **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `index.js` `main.js` `app.js` `server.js` | `import` / `require()` incl. CommonJS re-export shapes (`module.exports = require('./x')`, `exports.foo = require('./y')`, `Object.assign(module.exports, require('./z'), …)` — flagged as re-export hubs like ESM barrels) and member picks (`var x = require('./m').member`) |
+| **Java** | `.java` | `Main.java` `Application.java` | `import pkg.Class` / `import pkg.*` / `import static pkg.Class.*` with Maven `pom.xml` reactor + Gradle `settings.gradle(.kts)` source-sets + `gradle/libs.versions.toml` discovery, JPMS `module-info.java` / `package-info.java` recognition, fan-out to every file in the imported package (siblings share importers), same-package implicit identifier resolution; JDK namespaces (`java.` / `javax.` / `jdk.`) are filtered with no node, `jakarta.` classifies as an external dependency |
+| **Kotlin** | `.kt` `.kts` | `Main.kt` `Application.kt` | `import com.example.Foo` / `import com.example.*` sharing the JVM workspace index with Java (cross-language resolution, `.kt` under `src/main/java` recognised); `kotlin.` stdlib filtered with no node, `kotlinx.` classifies as an external dependency; same-package implicit identifier resolution |
 | **Go** | `.go` | `main.go` `cmd/main.go` | `import "path"` with multi-module `go.mod` discovery (longest-prefix match); a package import fans out to **all** `.go` files in the package directory |
 | **Rust** | `.rs` | `main.rs` `lib.rs` | `use crate::` / `use super::` / `use self::` with `Cargo.toml` |
-| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | `main.cpp` `main.cc` `WinMain` `wWinMain` `LLVMFuzzerTestOneInput` `DllMain` | `#include` with `compile_commands.json` resolution + CMake / Bazel workspace public-header maps + per-target include-dir search + sibling-TU fan-out |
-| **C#** | `.cs` | `Program.cs` `Startup.cs` | `using Acme.Domain` / `global using` / `using static` / `using Alias = X.Y.Z` with `.csproj` / `.sln` / `Directory.Build.props` resolution |
+| **C++** | `.cpp` `.cc` `.cxx` `.h` `.hpp` `.hxx` | `main.cpp` `main.cc` `WinMain` `wWinMain` `LLVMFuzzerTestOneInput` `DllMain` | `#include` with `compile_commands.json` resolution + CMake / Bazel workspace public-header maps + per-target include-dir search + sibling-TU fan-out (header-only targets fan out across their headers) + same-stem same-dir header ↔ implementation pairing edges |
+| **C#** | `.cs` | `Program.cs` `Startup.cs` | `using Acme.Domain` / `global using` / `using static` / `using Alias = X.Y.Z` with `.csproj` / `.sln` / `Directory.Build.props` resolution; `partial` class co-fragments linked bidirectionally; nested types resolve one level (`Outer.Inner`) |
 
 All nine languages support:
 - Tree-sitter AST parsing with dedicated `.scm` query files
@@ -118,9 +118,9 @@ resolvers for each language.
 | Language | Extensions | Entry Points | Import Style |
 |----------|-----------|-------------|-------------|
 | **C** | `.c` | `main.c` | `#include` with `compile_commands.json` (shares C++ grammar) |
-| **Ruby** | `.rb` | `main.rb` `app.rb` `config.ru` | `require 'mod'` / `require_relative './mod'` plus Rails / Zeitwerk autoloading (gated on `config/application.rb`) |
-| **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` with SPM `Package.swift` `targets:` → directory mapping |
-| **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.{A, B => C}` with SBT `build.sbt` / Mill `build.sc` multi-project parsing |
+| **Ruby** | `.rb` | `main.rb` `app.rb` `config.ru` | `require 'mod'` / `require_relative './mod'` with `$LOAD_PATH` convention probing (`require 'sinatra/base'` → `lib/sinatra/base.rb`, including every sub-gem's `lib/` in monorepos), Ruby-stdlib requires filtered with no node, Gemfile/gemspec dependencies labelled as gem externals, rspec directory-mirror edges (`spec/lib/x_spec.rb` → `lib/x.rb`), plus Rails / Zeitwerk autoloading (gated on `config/application.rb`) |
+| **Swift** | `.swift` | `main.swift` `App.swift` | `import Foundation` with SPM `Package.swift` `targets:` → directory mapping; intra-module type references link same-target files (Swift has no intra-module imports by design); `@main` / `@UIApplicationMain` / `@NSApplicationMain` flag entry points; `@_exported import` marks re-exports |
+| **Scala** | `.scala` | `Main.scala` `App.scala` | `import pkg.Foo`, brace imports `{A, B => C}` (expanded per selected name, hidden imports skipped), wildcards (`pkg._` / Scala 3 `pkg.*`), and package imports — resolved through the shared JVM workspace index (chained package clauses, Scala ↔ Java cross-language, same-package implicit identifiers) with SBT `build.sbt` / Mill `build.sc` multi-project parsing as fallback; `scala.` and JDK namespaces filtered |
 | **PHP** | `.php` | `index.php` `public/index.php` | `use Foo\Bar\Baz` with composer.json `autoload.psr-4` longest-prefix resolution |
 
 ### Config / Data
@@ -151,10 +151,13 @@ endpoints or targets where applicable.
 
 AST parsing, symbol extraction (functions, Luau type aliases), and
 `require(...)` call capture are wired. Import resolution handles string
-literals and `script`/`script.Parent` relative instance paths. Absolute
-Roblox instance paths (`game.<Service>...`) currently register as external
-nodes and are the target of a follow-up that reads Rojo's
-`default.project.json` tree mapping — see issue #52.
+literals, `script`/`script.Parent` relative instance paths (including the
+`:WaitForChild("X")` / `:FindFirstChild("X")` idioms), absolute Roblox
+instance paths (`game.<Service>...`, plus the `game:GetService("X")` idiom)
+through Rojo's `default.project.json` tree mapping, and `@alias` requires
+through `.luaurc` `aliases` maps (nearest declaration wins, child overrides
+parent). Repos without a Rojo project file / `.luaurc` keep the conservative
+external-node fallback (issue #52 is closed by both halves).
 
 ### Git-Blame-Only
 
