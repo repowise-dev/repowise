@@ -5,7 +5,9 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="swift",
     display_name="Swift",
-    import_support="partial",
+    # Live-validated on Alamofire @ 7595cbc: intra-module type edges,
+    # SPM target mapping, @main entry detection — 0% orphans, 0.70 resolution.
+    import_support="full",
     # XCTest/SPM conventions: FooTest(s).swift; Tests/ root is a generic token.
     test_camel_suffixes=("Test", "Tests"),
     entry_point_patterns=("main.swift", "App.swift"),

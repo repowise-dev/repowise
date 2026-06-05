@@ -1,0 +1,36 @@
+{
+ "repo": "scopt",
+ "smells": [],
+ "stats": {
+  "by_language": {
+   "scala": {
+    "edges_per_file": 1.79,
+    "files": 29,
+    "hint_edges": {
+     "same_package": 23
+    },
+    "import_edges": 52,
+    "import_support": "partial",
+    "orphan_files": 7,
+    "orphan_ratio": 0.241,
+    "resolution_rate": 0.577
+   }
+  },
+  "dominant_language": "scala",
+  "entry_points": [],
+  "tour_paths": [
+   "README.md",
+   "shared/src/main/scala/scopt/ORunner.scala",
+   "shared/src/main/scala/scopt/OptionDef.scala",
+   "shared/src/main/scala/scopt/RenderingMode.scala",
+   "shared/src/main/scala/scopt/OEffect.scala",
+   "shared/src/main/scala/scopt/OParserSetup.scala",
+   "shared/src/main/scala/scopt/Validation.scala",
+   "project/Dependencies.scala",
+   "shared/src/main/scala-2.12/scopt/Seq.scala",
+   "shared/src/main/scala/scopt/OParser.scala",
+   "shared/src/main/scala/scopt/OptionParser.scala",
+   "js/src/test/scala/scopt/SpecUtilPlatform.scala"
+  ]
+ }
+}

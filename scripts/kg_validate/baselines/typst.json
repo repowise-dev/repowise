@@ -3,7 +3,7 @@
  "smells": [
   {
    "code": "catchall_layer",
-   "message": "Application holds 88% of layered nodes",
+   "message": "Application holds 84% of layered nodes",
    "severity": "WARN"
   }
  ],
@@ -19,13 +19,13 @@
     "resolution_rate": null
    },
    "rust": {
-    "edges_per_file": 8.5,
+    "edges_per_file": 8.56,
     "files": 400,
-    "import_edges": 3401,
+    "import_edges": 3423,
     "import_support": "full",
     "orphan_files": 0,
     "orphan_ratio": 0.0,
-    "resolution_rate": 0.62
+    "resolution_rate": 0.623
    },
    "typescript": {
     "edges_per_file": 3.0,
@@ -40,24 +40,24 @@
   "dominant_language": "rust",
   "entry_points": [
    "crates/typst-utils/src/lib.rs",
-   "crates/typst-syntax/src/lib.rs",
-   "crates/typst/src/lib.rs",
-   "crates/typst-macros/src/lib.rs",
-   "crates/typst-layout/src/lib.rs",
    "crates/typst-library/src/lib.rs",
-   "crates/typst-html/src/lib.rs",
-   "crates/typst-pdf/src/lib.rs"
+   "crates/typst-syntax/src/lib.rs",
+   "crates/typst-macros/src/lib.rs",
+   "crates/typst-pdf/src/lib.rs",
+   "crates/typst/src/lib.rs",
+   "crates/typst-layout/src/lib.rs",
+   "crates/typst-bundle/src/lib.rs"
   ],
   "tour_paths": [
    "README.md",
    "crates/typst-kit/src/server.rs",
    "crates/typst-cli/src/main.rs",
-   "docs/src/main.rs",
    "crates/typst-library/src/foundations/mod.rs",
    "crates/typst-library/src/layout/mod.rs",
-   "crates/typst-utils/src/lib.rs",
-   "crates/typst-syntax/src/lib.rs",
    "crates/typst-library/src/introspection/mod.rs",
+   "crates/typst-utils/src/lib.rs",
+   "crates/typst-library/src/visualize/mod.rs",
+   "crates/typst-library/src/text/mod.rs",
    "crates/typst-pdf/src/tags/util/mod.rs",
    "crates/typst-layout/src/pages/mod.rs",
    "tests/src/args.rs"

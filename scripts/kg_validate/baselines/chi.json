@@ -17,16 +17,16 @@
   "entry_points": [],
   "tour_paths": [
    "README.md",
-   "tree.go",
+   "middleware/supress_notfound.go",
    "context.go",
    "chi.go",
    "chain.go",
+   "tree.go",
    "mux.go",
    "middleware/compress.go",
    "middleware/route_headers.go",
    "middleware/wrap_writer.go",
    "middleware/throttle.go",
-   "middleware/basic_auth.go",
    "context_test.go"
   ]
  }

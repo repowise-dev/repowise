@@ -91,6 +91,10 @@ class TestParityGoldens:
                 (".Domain", "Service"),
                 (".Infrastructure", "Data"),
             ),
+            # Root-anchored ("/"): only a TOP-LEVEL include/ is a C/C++
+            # library's public API surface (libuv, fmt — validated live).
+            "c": (("/include", "API"),),
+            "cpp": (("/include", "API"),),
         }
 
     def test_camel_suffix_extension_map(self) -> None:
@@ -105,6 +109,9 @@ class TestParityGoldens:
 
     def test_test_dir_paths_union(self) -> None:
         assert REGISTRY.test_dir_paths() == (
+            # "src/*Test" = Gradle source-set wildcard (src/commonTest,
+            # src/jvmTest, … — okio, validated live).
+            "src/*Test",
             "src/integrationtest/java",
             "src/it/java",
             "src/it/scala",
@@ -114,7 +121,8 @@ class TestParityGoldens:
         )
 
     def test_test_dir_suffixes_union(self) -> None:
-        assert REGISTRY.test_dir_suffixes() == (".Tests",)
+        # .Specs = BDD-style sibling test projects (Polly, validated live).
+        assert REGISTRY.test_dir_suffixes() == (".Specs", ".Tests")
 
 
 # ---------------------------------------------------------------------------
@@ -129,12 +137,15 @@ _FULL = {
     "java",
     "javascript",
     "kotlin",
+    # php + swift promoted after live validation (Slim, Alamofire).
+    "php",
     "python",
     "ruby",
     "rust",
+    "swift",
     "typescript",
 }
-_PARTIAL = {"luau", "php", "scala", "swift"}
+_PARTIAL = {"luau", "scala"}
 
 
 class TestImportSupportTiers:

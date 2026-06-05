@@ -1,25 +1,19 @@
 {
  "repo": "gson",
- "smells": [
-  {
-   "code": "density_regression",
-   "message": "java: 10.2 -> 7.68 imports/file (25% drop)",
-   "severity": "FAIL"
-  }
- ],
+ "smells": [],
  "stats": {
   "by_language": {
    "java": {
-    "edges_per_file": 7.68,
+    "edges_per_file": 7.37,
     "files": 262,
     "hint_edges": {
-     "same_package": 147
+     "same_package": 143
     },
-    "import_edges": 2011,
+    "import_edges": 1930,
     "import_support": "full",
     "orphan_files": 8,
     "orphan_ratio": 0.031,
-    "resolution_rate": 0.685
+    "resolution_rate": 0.714
    },
    "proto": {
     "edges_per_file": 0.0,
@@ -36,13 +30,13 @@
   "tour_paths": [
    "README.md",
    "gson/src/main/java/com/google/gson/GsonBuilder.java",
-   "gson/src/main/java/com/google/gson/Gson.java",
    "gson/src/main/java/com/google/gson/stream/JsonReader.java",
-   "gson/src/main/java/com/google/gson/JsonElement.java",
    "gson/src/main/java/com/google/gson/stream/JsonWriter.java",
-   "gson/src/main/java/com/google/gson/TypeAdapter.java",
-   "gson/src/main/java/com/google/gson/Strictness.java",
+   "gson/src/main/java/com/google/gson/JsonElement.java",
    "gson/src/main/java/com/google/gson/reflect/TypeToken.java",
+   "gson/src/main/java/com/google/gson/JsonObject.java",
+   "gson/src/main/java/com/google/gson/JsonSerializer.java",
+   "gson/src/main/java/com/google/gson/JsonDeserializer.java",
    "gson/src/main/java/com/google/gson/internal/bind/util/ISO8601Utils.java",
    "extras/src/main/java/com/google/gson/interceptors/JsonPostDeserializer.java",
    "gson/src/test/java/com/google/gson/FieldAttributesTest.java"

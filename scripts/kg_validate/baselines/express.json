@@ -30,8 +30,6 @@
    "lib/response.js",
    "lib/utils.js",
    "lib/view.js",
-   "History.md",
-   "package.json",
    "test/Route.js"
   ]
  }

@@ -22,13 +22,13 @@
     "resolution_rate": 1.0
    },
    "rust": {
-    "edges_per_file": 10.54,
+    "edges_per_file": 10.58,
     "files": 125,
-    "import_edges": 1317,
+    "import_edges": 1323,
     "import_support": "full",
     "orphan_files": 1,
     "orphan_ratio": 0.008,
-    "resolution_rate": 0.428
+    "resolution_rate": 0.431
    },
    "shell": {
     "edges_per_file": 0.0,
@@ -44,14 +44,12 @@
   "entry_points": [
    "pydantic/main.py",
    "pydantic/v1/main.py",
-   "docs/plugins/main.py",
    "pydantic-core/src/lib.rs"
   ],
   "tour_paths": [
    "README.md",
    "pydantic/main.py",
    "pydantic/v1/main.py",
-   "docs/plugins/main.py",
    "pydantic-core/src/errors/mod.rs",
    "pydantic-core/src/input/mod.rs",
    "pydantic-core/src/serializers/mod.rs",
@@ -59,6 +57,7 @@
    "pydantic-core/src/serializers/type_serializers/mod.rs",
    "pydantic-core/src/common/mod.rs",
    "pydantic-core/src/validators/shared/mod.rs",
+   "pydantic-core/src/lib.rs",
    "tests/conftest.py"
   ]
  }

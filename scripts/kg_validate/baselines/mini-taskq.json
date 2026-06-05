@@ -30,7 +30,6 @@
    "taskq/task.py",
    "taskq/retry.py",
    "taskq/storage.py",
-   "pyproject.toml",
    "taskq/__init__.py",
    "tests/test_queue.py"
   ]

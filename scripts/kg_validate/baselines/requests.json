@@ -17,16 +17,16 @@
   "entry_points": [],
   "tour_paths": [
    "README.md",
-   "src/requests/models.py",
+   "src/requests/sessions.py",
    "src/requests/cookies.py",
    "src/requests/compat.py",
+   "src/requests/models.py",
    "src/requests/_types.py",
    "src/requests/_internal_utils.py",
    "src/requests/structures.py",
    "src/requests/exceptions.py",
    "src/requests/auth.py",
    "src/requests/utils.py",
-   "src/requests/adapters.py",
    "tests/conftest.py"
   ]
  }
