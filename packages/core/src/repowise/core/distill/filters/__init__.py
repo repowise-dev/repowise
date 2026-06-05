@@ -14,6 +14,7 @@ from repowise.core.distill.filters import (  # noqa: F401  (registration side ef
     git_log,
     git_status,
     logs,
+    search_results,
     test_output,
 )
 from repowise.core.distill.filters.base import ERROR_LINE_RE, OutputFilter, is_error_line

@@ -23,7 +23,6 @@ from repowise.cli.commands.augment_cmd import (
     _name_variants,
 )
 
-
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
@@ -213,3 +212,60 @@ class TestDecisionTree:
             kwargs = call_args.kwargs or {}
             mode = kwargs.get("mode") if "mode" in kwargs else args[2]
             assert mode == "triage"
+
+
+# ---------------------------------------------------------------------------
+# Grep-flood compact digest (>= _DIGEST_THRESHOLD lines)
+# ---------------------------------------------------------------------------
+
+
+def _flood(files: int, per_file: int) -> str:
+    return "\n".join(
+        f"src/file{i}.py:{j}:hit number {j}" for i in range(files) for j in range(1, per_file + 1)
+    )
+
+
+class TestFloodDigest:
+    def test_digest_on_big_flood(self, repowise_cwd) -> None:
+        """>= _DIGEST_THRESHOLD parseable lines across >= 3 files → digest."""
+        out = _call("Grep", "auth", _flood(files=8, per_file=10), repowise_cwd)
+        assert out is not None
+        assert "compact digest" in out
+        # No wiki.db in the fixture repo → ordering falls back to match count.
+        assert "match count" in out
+        assert "80 matches in 8 files" in out
+
+    def test_digest_fires_even_for_path_patterns(self, repowise_cwd) -> None:
+        """The digest summarizes results, so the concept-vs-path gate is moot."""
+        out = _call("Grep", "src/file0.py", _flood(files=8, per_file=10), repowise_cwd)
+        assert out is not None and "compact digest" in out
+
+    def test_few_files_fall_through_to_triage(self, repowise_cwd) -> None:
+        """A flood concentrated in 1-2 files is already navigable — no digest."""
+        sentinel = "triaged"
+        with patch.object(augment_cmd, "_search_enrich", return_value=sentinel) as enrich:
+            with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
+                out = _call("Grep", "auth", _flood(files=2, per_file=40), repowise_cwd)
+            assert out == sentinel
+            assert enrich.called
+
+    def test_unparseable_flood_falls_through(self, repowise_cwd) -> None:
+        """Glob-style bare path lists can't be grouped — triage handles them."""
+        big = "\n".join(f"line {i} of something unstructured" for i in range(60))
+        sentinel = "triaged"
+        with patch.object(augment_cmd, "_search_enrich", return_value=sentinel) as enrich:
+            with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
+                out = _call("Grep", "auth", big, repowise_cwd)
+            assert out == sentinel
+            assert enrich.called
+
+    def test_top_files_listed_first(self, repowise_cwd) -> None:
+        flood = "\n".join(
+            [f"src/hot.py:{j}:hit" for j in range(1, 41)]
+            + [f"src/warm.py:{j}:hit" for j in range(1, 11)]
+            + [f"src/cold{i}.py:1:hit" for i in range(5)]
+        )
+        out = _call("Grep", "auth", flood, repowise_cwd)
+        assert out is not None
+        file_lines = [ln for ln in out.splitlines() if "matches)" in ln]
+        assert file_lines[0].strip().startswith("src/hot.py")

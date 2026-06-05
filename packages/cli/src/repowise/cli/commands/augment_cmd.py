@@ -62,6 +62,8 @@ import click
 _TRIAGE_THRESHOLD = 15  # grep result lines before we surface a ranking
 _TRIAGE_TOP_N = 3
 _RESCUE_TOP_N = 2
+_DIGEST_THRESHOLD = 50  # grep result lines before the full compact digest
+_DIGEST_TOP_FILES = 10
 
 
 @click.command("augment")
@@ -217,6 +219,21 @@ def _handle_search_post(
     cwd: str,
 ) -> str | None:
     """Decide whether to enrich a Grep/Glob result and how."""
+    repo_path = _find_repo_root(Path(cwd))
+    if repo_path is None:
+        return None
+
+    output_text = _extract_output_text(tool_output)
+    result_count = _count_search_results(output_text)
+
+    # A genuine flood gets a compact per-file digest regardless of what the
+    # pattern looks like — it summarizes the actual results, not the concept.
+    if result_count >= _DIGEST_THRESHOLD:
+        digest = _grep_flood_digest(repo_path, output_text)
+        if digest:
+            return digest
+        # Unparseable output (e.g. Glob path lists): fall through to triage.
+
     pattern = tool_input.get("pattern")
     if not isinstance(pattern, str) or not pattern.strip():
         return None
@@ -225,13 +242,6 @@ def _handle_search_post(
     # is reading literal locations, not exploring a concept.
     if _looks_like_path_lookup(pattern):
         return None
-
-    repo_path = _find_repo_root(Path(cwd))
-    if repo_path is None:
-        return None
-
-    output_text = _extract_output_text(tool_output)
-    result_count = _count_search_results(output_text)
 
     # Decision tree. The skip case is the most common — that's by design.
     if result_count == 0:
@@ -244,6 +254,97 @@ def _handle_search_post(
     import asyncio
 
     return asyncio.run(_search_enrich(repo_path, pattern, mode, result_count))
+
+
+def _grep_flood_digest(repo_path: Path, output_text: str) -> str | None:
+    """Compact per-file digest of a Grep flood, index-ranked when possible.
+
+    Cannot replace the tool output (PostToolUse is additionalContext only),
+    so this is positioned as a digest the agent can navigate by instead of
+    scanning hundreds of match lines. Grouping is pure text work from the
+    shared distill filter; PageRank ordering is attempted against the index
+    and silently skipped when there is no graph (plain count order then).
+    """
+    from repowise.core.distill.filters.search_results import (
+        group_search_matches,
+        render_search_digest,
+    )
+
+    groups = group_search_matches(output_text)
+    if groups is None or len(groups) < 3:
+        # One or two files: the raw output is already navigable.
+        return None
+
+    file_order = None
+    ranked_by_graph = False
+    try:
+        import asyncio
+
+        file_order = asyncio.run(_pagerank_file_order(repo_path, list(groups.keys())))
+        ranked_by_graph = file_order is not None
+    except Exception:
+        file_order = None
+
+    if file_order is None:
+        file_order = sorted(groups, key=lambda p: -len(groups[p]))
+
+    digest = render_search_digest(groups, file_order=file_order, max_files=_DIGEST_TOP_FILES)
+    order_note = "graph centrality" if ranked_by_graph else "match count"
+    return f"[repowise] Search flood — compact digest (files ordered by {order_note}):\n{digest}"
+
+
+async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | None:
+    """Order *paths* by indexed PageRank, or None when the graph can't help."""
+    db_path = repo_path / ".repowise" / "wiki.db"
+    if not db_path.exists():
+        # Bail before the sqlalchemy imports — unindexed repos shouldn't pay
+        # the heavy-import cost for a digest that falls back to count order.
+        return None
+
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+    )
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.database import resolve_db_url
+
+    # Grep output paths may be absolute or OS-native; graph node ids are
+    # repo-relative POSIX. Normalize both ways and keep the original spelling.
+    normalized: dict[str, str] = {}
+    repo_posix = repo_path.as_posix().rstrip("/") + "/"
+    for p in paths:
+        norm = p.replace("\\", "/").removeprefix("./")
+        if norm.startswith(repo_posix):
+            norm = norm[len(repo_posix) :]
+        normalized[norm] = p
+
+    engine = create_engine(resolve_db_url(repo_path))
+    try:
+        from sqlalchemy import select
+
+        from repowise.core.persistence import GraphNode
+
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
+            stmt = select(GraphNode.node_id, GraphNode.pagerank).where(
+                GraphNode.repository_id == repo.id,
+                GraphNode.node_type == "file",
+                GraphNode.node_id.in_(normalized.keys()),
+            )
+            rows = (await session.execute(stmt)).all()
+    finally:
+        await engine.dispose()
+
+    if not rows:
+        return None
+    rank = {normalized[node_id]: pr or 0.0 for node_id, pr in rows if node_id in normalized}
+    ranked = sorted(rank, key=lambda p: -rank[p])
+    rest = [p for p in paths if p not in rank]
+    return ranked + rest
 
 
 def _looks_like_path_lookup(pattern: str) -> bool:
@@ -730,7 +831,7 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
     )
 
 
-def _read_in_flight_marker(repo_path: "object") -> dict | None:
+def _read_in_flight_marker(repo_path: object) -> dict | None:
     """Return a normalised in-flight marker, or None when nothing is running.
 
     Considers two on-disk signals as evidence of an in-flight update:

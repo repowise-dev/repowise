@@ -1,0 +1,286 @@
+﻿packages\cli\src\repowise\cli\commands\costs_cmd.py:21:def _parse_date(value: str | None) -> datetime | None:
+packages\cli\src\repowise\cli\commands\costs_cmd.py:78:def costs_command(
+packages\cli\src\repowise\cli\commands\costs_cmd.py:217:async def _query_costs(
+packages\cli\src\repowise\cli\commands\dead_code_cmd.py:71:def dead_code_command(
+packages\cli\src\repowise\cli\commands\augment_cmd.py:74:def augment_command(client: str | None = None) -> None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:85:def _run_augment(*, client: str | None = None) -> None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:116:def _emit_response(event: str, context: str) -> None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:143:def _claim_emission(event: str, context: str) -> bool:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:190:def _handle_codex_context_event(event: str, cwd: str) -> str | None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:213:def _handle_search_post(
+packages\cli\src\repowise\cli\commands\augment_cmd.py:249:def _looks_like_path_lookup(pattern: str) -> bool:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:299:def _extract_output_text(tool_output: object) -> str:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:330:def _count_search_results(output_text: str) -> int:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:354:async def _search_enrich(
+packages\cli\src\repowise\cli\commands\augment_cmd.py:398:async def _rescue(
+packages\cli\src\repowise\cli\commands\augment_cmd.py:442:        def _rank(row):
+packages\cli\src\repowise\cli\commands\augment_cmd.py:484:async def _triage(
+packages\cli\src\repowise\cli\commands\augment_cmd.py:553:def _name_variants(token: str) -> list[str]:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:598:def _handle_post_tool_use(
+packages\cli\src\repowise\cli\commands\augment_cmd.py:619:def _handle_post_edit_use(cwd: str) -> str | None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:636:def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:733:def _read_in_flight_marker(repo_path: "object") -> dict | None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:783:def _already_warned(repo_path: object, head: str) -> bool:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:795:def _record_warning(repo_path: object, head: str) -> None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:803:def _extract_exit_code(tool_output: dict) -> int | None:
+packages\cli\src\repowise\cli\commands\augment_cmd.py:821:def _find_repo_root(cwd: Path) -> Path | None:
+packages\cli\src\repowise\cli\commands\delete_cmd.py:21:def delete_command(repo_id: str | None, force: bool, path: str | None) -> None:
+packages\cli\src\repowise\cli\commands\delete_cmd.py:35:    async def _run() -> None:
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:21:def _check(name: str, ok: bool, detail: str = "") -> tuple[str, str, str]:
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:26:def _print_cli_version_status() -> None:
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:79:def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:108:            async def _check_db():
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:175:            async def _check_stale():
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:210:            async def _check_stores():
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:294:            async def _check_coordinator():
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:377:        async def _repair():
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:480:def doctor_command(
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:557:def _run_workspace_checks(
+packages\cli\src\repowise\cli\commands\doctor_cmd.py:655:def _check_mcp_registered(ws_root: _DoctorPath) -> None:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:21:def _resolve_decision_repo(path: str | None):
+packages\cli\src\repowise\cli\commands\decision_cmd.py:41:def decision_group() -> None:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:52:def decision_add(path: str | None) -> None:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:81:    async def _persist() -> str:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:142:def decision_list(
+packages\cli\src\repowise\cli\commands\decision_cmd.py:152:    async def _query() -> list:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:233:def decision_show(decision_id: str, path: str | None) -> None:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:237:    async def _query():
+packages\cli\src\repowise\cli\commands\decision_cmd.py:312:def decision_confirm(decision_id: str, path: str | None) -> None:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:316:    async def _update():
+packages\cli\src\repowise\cli\commands\decision_cmd.py:351:def decision_dismiss(decision_id: str, path: str | None) -> None:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:359:    async def _delete():
+packages\cli\src\repowise\cli\commands\decision_cmd.py:395:def decision_deprecate(decision_id: str, path: str | None, superseded_by: str | None) -> None:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:399:    async def _update():
+packages\cli\src\repowise\cli\commands\decision_cmd.py:435:def decision_health(path: str | None) -> None:
+packages\cli\src\repowise\cli\commands\decision_cmd.py:439:    async def _query():
+packages\cli\src\repowise\cli\commands\expand_cmd.py:24:def expand_command(ref: str, query: str | None) -> None:
+packages\cli\src\repowise\cli\commands\expand_cmd.py:59:def _candidate_stores() -> list[Path]:
+packages\cli\src\repowise\cli\commands\expand_cmd.py:71:def default_store_path_for(root: Path) -> Path:
+packages\cli\src\repowise\cli\commands\expand_cmd.py:77:def _echo_safely(text: str) -> None:
+packages\cli\src\repowise\cli\commands\distill_cmd.py:27:def distill_command(command: tuple[str, ...]) -> None:
+packages\cli\src\repowise\cli\commands\distill_cmd.py:64:def _render_command(tokens: tuple[str, ...]) -> str:
+packages\cli\src\repowise\cli\commands\distill_cmd.py:75:def _distill_or_raw(output: str, command_str: str, exit_code: int) -> str:
+packages\cli\src\repowise\cli\commands\distill_cmd.py:97:def _load_distill_config(repo_root: Path | None) -> tuple[bool, tuple[str, ...]]:
+packages\cli\src\repowise\cli\commands\distill_cmd.py:112:def _echo_safely(text: str) -> None:
+packages\cli\src\repowise\cli\commands\claude_md_cmd.py:54:def claude_md_command(
+packages\cli\src\repowise\cli\commands\claude_md_cmd.py:109:async def _generate(
+packages\cli\src\repowise\cli\commands\claude_md_cmd.py:161:def _generate_workspace(
+packages\core\src\repowise\core\distill\markers.py:23:def render_marker(ref: str, lines_omitted: int, tokens_omitted: int) -> str:
+packages\core\src\repowise\core\distill\markers.py:32:def parse_marker_refs(text: str) -> list[str]:
+packages\core\src\repowise\core\distill\markers.py:44:def is_valid_ref(ref: str) -> bool:
+packages\core\src\repowise\core\distill\budget.py:14:def savings_pct(raw_tokens: int, distilled_tokens: int) -> float:
+packages\core\src\repowise\core\distill\registry.py:21:    def __init__(self) -> None:
+packages\core\src\repowise\core\distill\registry.py:24:    def register(self, filter_cls: F) -> F:
+packages\core\src\repowise\core\distill\registry.py:29:    def filters(self) -> tuple[OutputFilter, ...]:
+packages\core\src\repowise\core\distill\registry.py:34:    def get(self, name: str) -> OutputFilter | None:
+packages\core\src\repowise\core\distill\registry.py:42:    def _ensure_loaded() -> None:
+packages\cli\src\repowise\cli\commands\export_cmd.py:43:def export_command(
+packages\cli\src\repowise\cli\commands\export_cmd.py:59:    async def _load_pages():
+packages\core\src\repowise\core\distill\router.py:32:def normalize_command(command: str) -> str:
+packages\core\src\repowise\core\distill\router.py:45:def select_filter(
+packages\cli\src\repowise\cli\commands\health_cmd.py:92:def health_command(
+packages\cli\src\repowise\cli\commands\health_cmd.py:363:def _effort_bucket(nloc: int) -> tuple[str, int]:
+packages\cli\src\repowise\cli\commands\health_cmd.py:373:def _render_refactoring_targets(
+packages\cli\src\repowise\cli\commands\health_cmd.py:439:def _render_trend(repo_path: object, *, fmt: str) -> None:
+packages\cli\src\repowise\cli\commands\health_cmd.py:458:    async def _fetch() -> tuple[list[dict], object]:
+packages\cli\src\repowise\cli\commands\health_cmd.py:522:def _persist_health(
+packages\cli\src\repowise\cli\commands\health_cmd.py:550:    async def _do() -> None:
+packages\cli\src\repowise\cli\commands\hook_cmd.py:16:def hook_group() -> None:
+packages\cli\src\repowise\cli\commands\hook_cmd.py:20:def _hook_target(
+packages\cli\src\repowise\cli\commands\hook_cmd.py:50:def hook_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+packages\cli\src\repowise\cli\commands\hook_cmd.py:83:def hook_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
+packages\cli\src\repowise\cli\commands\hook_cmd.py:116:def hook_status(path: str | None, workspace: bool, no_workspace: bool) -> None:
+packages\core\src\repowise\core\distill\__init__.py:61:    def savings_pct(self) -> float:
+packages\core\src\repowise\core\distill\__init__.py:65:def distill_output(
+packages\cli\src\repowise\cli\commands\mcp_cmd.py:27:def mcp_command(path: str | None, transport: str, port: int) -> None:
+packages\cli\src\repowise\cli\commands\reindex_cmd.py:27:def reindex_command(path: str | None, embedder: str, batch_size: int) -> None:
+packages\cli\src\repowise\cli\commands\reindex_cmd.py:45:async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
+packages\core\src\repowise\core\distill\tracking.py:15:def record_saving(
+packages\core\src\repowise\core\distill\tracking.py:36:def savings_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+packages\cli\src\repowise\cli\commands\search_cmd.py:46:def search_command(
+packages\cli\src\repowise\cli\commands\search_cmd.py:133:def _search_fulltext(repo_path, query: str, limit: int) -> None:
+packages\cli\src\repowise\cli\commands\search_cmd.py:134:    async def _run():
+packages\cli\src\repowise\cli\commands\search_cmd.py:148:def _search_semantic(repo_path, query: str, limit: int) -> None:
+packages\cli\src\repowise\cli\commands\search_cmd.py:149:    async def _run():
+packages\cli\src\repowise\cli\commands\search_cmd.py:183:def _search_symbol(repo_path, query: str, limit: int) -> None:
+packages\cli\src\repowise\cli\commands\search_cmd.py:184:    async def _run():
+packages\cli\src\repowise\cli\commands\search_cmd.py:224:def _display_results(results, title: str) -> None:
+packages\cli\src\repowise\cli\commands\search_cmd.py:252:def _collect_fulltext(repo_path, query: str, limit: int):
+packages\cli\src\repowise\cli\commands\search_cmd.py:253:    async def _run():
+packages\cli\src\repowise\cli\commands\search_cmd.py:266:def _collect_semantic(repo_path, query: str, limit: int):
+packages\cli\src\repowise\cli\commands\search_cmd.py:267:    async def _run():
+packages\cli\src\repowise\cli\commands\search_cmd.py:298:def _collect_symbol(repo_path, query: str, limit: int):
+packages\cli\src\repowise\cli\commands\search_cmd.py:299:    async def _run():
+packages\cli\src\repowise\cli\commands\search_cmd.py:322:def _display_results_multi(pairs, title: str) -> None:
+packages\cli\src\repowise\cli\commands\search_cmd.py:344:def _render_symbol_rows(pairs, query: str, limit: int, *, multi: bool) -> None:
+packages\core\src\repowise\core\distill\store.py:59:def default_store_path(start: Path | None = None) -> Path:
+packages\core\src\repowise\core\distill\store.py:77:def content_ref(content: str) -> str:
+packages\core\src\repowise\core\distill\store.py:89:    def __init__(
+packages\core\src\repowise\core\distill\store.py:108:    def open_default(cls, start: Path | None = None) -> OmissionStore:
+packages\core\src\repowise\core\distill\store.py:114:    def put(
+packages\core\src\repowise\core\distill\store.py:138:    def get(self, ref: str, *, query: str | None = None) -> str | None:
+packages\core\src\repowise\core\distill\store.py:158:    def prune(self) -> None:
+packages\core\src\repowise\core\distill\store.py:183:    def record_saving(
+packages\core\src\repowise\core\distill\store.py:202:    def savings_summary(self) -> dict:
+packages\core\src\repowise\core\distill\store.py:208:    def close(self) -> None:
+packages\core\src\repowise\core\distill\store.py:211:    def __enter__(self) -> OmissionStore:
+packages\core\src\repowise\core\distill\store.py:214:    def __exit__(self, *exc: object) -> None:
+packages\core\src\repowise\core\distill\store.py:218:def _filter_lines(content: str, query: str) -> str:
+packages\cli\src\repowise\cli\commands\risk_cmd.py:47:def risk_command(revspec: str, repo_path: str, ext: str | None, fmt: str) -> None:
+packages\core\src\repowise\core\distill\filters\build_output.py:51:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\build_output.py:54:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\build_output.py:59:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\core\src\repowise\core\distill\filters\build_output.py:73:        def emit(line: str) -> None:
+packages\core\src\repowise\core\distill\filters\build_output.py:83:        def flush_repeats() -> None:
+packages\core\src\repowise\core\distill\filters\base.py:32:def is_error_line(line: str) -> bool:
+packages\core\src\repowise\core\distill\filters\base.py:37:def cap_block(lines: list[str], head: int, tail: int) -> list[str]:
+packages\core\src\repowise\core\distill\filters\base.py:67:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\base.py:71:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\base.py:76:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\cli\src\repowise\cli\commands\init_cmd\command.py:81:def _run_generation_phase(
+packages\cli\src\repowise\cli\commands\init_cmd\command.py:349:def init_command(
+packages\cli\src\repowise\cli\commands\init_cmd\command.py:671:        async def _index_with_resume() -> Any:
+packages\core\src\repowise\core\distill\filters\git_diff.py:32:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\git_diff.py:35:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\git_diff.py:39:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\core\src\repowise\core\distill\filters\git_diff.py:70:    def __init__(self, path: str) -> None:
+packages\core\src\repowise\core\distill\filters\git_diff.py:77:def _split_file_blocks(output: str) -> list[_FileBlock]:
+packages\cli\src\repowise\cli\commands\init_cmd\persistence.py:26:async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any, Any]:
+packages\cli\src\repowise\cli\commands\init_cmd\persistence.py:41:async def persist_result(result: Any, repo_path: Path) -> None:
+packages\cli\src\repowise\cli\commands\init_cmd\persistence.py:139:def git_tier_for_run_mode(run_mode: str) -> str:
+packages\cli\src\repowise\cli\commands\init_cmd\persistence.py:149:def effective_run_mode_for_resume(repo_path: Path, run_mode: str, resume: bool) -> str:
+packages\cli\src\repowise\cli\commands\init_cmd\persistence.py:169:def save_full_state_and_config(
+packages\cli\src\repowise\cli\commands\init_cmd\persistence.py:183:    async def _count_db_pages() -> int:
+packages\core\src\repowise\core\distill\filters\file_listing.py:35:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\file_listing.py:38:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\file_listing.py:45:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\core\src\repowise\core\distill\filters\file_listing.py:55:def _distill_paths(paths: list[str]) -> str:
+packages\core\src\repowise\core\distill\filters\file_listing.py:75:def _distill_ls_long(lines: list[str]) -> str:
+packages\cli\src\repowise\cli\commands\init_cmd\generation.py:48:def confirm_cost_gate(message: str) -> bool:
+packages\cli\src\repowise\cli\commands\init_cmd\generation.py:63:def cost_gate_declined(est: Any, *, yes: bool, message: str) -> bool:
+packages\cli\src\repowise\cli\commands\init_cmd\generation.py:72:def format_cost(est: Any) -> str:
+packages\cli\src\repowise\cli\commands\init_cmd\generation.py:85:def select_coverage(
+packages\cli\src\repowise\cli\commands\init_cmd\generation.py:152:def _enrich_knowledge_graph(
+packages\cli\src\repowise\cli\commands\init_cmd\generation.py:172:    def _run() -> Any:
+packages\cli\src\repowise\cli\commands\init_cmd\generation.py:202:def run_repo_generation(
+packages\core\src\repowise\core\distill\filters\git_status.py:62:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\git_status.py:65:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\git_status.py:71:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\core\src\repowise\core\distill\filters\git_status.py:90:def _render_branch_line(output: str) -> str | None:
+packages\core\src\repowise\core\distill\filters\git_status.py:113:def _parse_entries(output: str) -> tuple[list[str], dict[str, int]]:
+packages\cli\src\repowise\cli\commands\init_cmd\workspace.py:73:def _run_workspace_generation(
+packages\cli\src\repowise\cli\commands\init_cmd\workspace.py:147:def _workspace_generation_provider_for_repo(provider: Any, repo_path: Path) -> Any:
+packages\cli\src\repowise\cli\commands\init_cmd\workspace.py:199:def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCtx) -> _RepoOutcome:
+packages\cli\src\repowise\cli\commands\init_cmd\workspace.py:370:def _run_cross_repo_analysis(ws_config: Any, root: Any, selected: list[Any], errors: list) -> None:
+packages\cli\src\repowise\cli\commands\init_cmd\workspace.py:384:def _workspace_init(
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:28:def _require_workspace(start: Path | None = None) -> tuple[Path, "WorkspaceConfig"]:  # type: ignore[name-defined]
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:51:def workspace_group() -> None:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:62:def workspace_list(path: str | None) -> None:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:132:def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:140:    async def _query() -> tuple[int, int]:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:188:def _format_relative_time(iso_timestamp: str | None) -> str:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:240:def workspace_add(
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:332:def _resolve_docs_flag(
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:387:def _run_index_for_repo(
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:457:    async def _do_index() -> tuple[int, int, int]:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:568:def _generate_docs_for_added_repo(
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:632:    async def _do() -> int:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:668:def workspace_remove(alias: str) -> None:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:722:def workspace_scan(path: str | None, yes: bool) -> None:
+packages\cli\src\repowise\cli\commands\workspace_cmd.py:797:def workspace_set_default(alias: str) -> None:
+packages\cli\src\repowise\cli\commands\init_cmd\_interactive.py:12:def offer_hook_install(
+packages\core\src\repowise\core\distill\filters\test_output.py:56:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\test_output.py:59:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\test_output.py:62:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\core\src\repowise\core\distill\filters\test_output.py:76:def _detect_format(output: str) -> str | None:
+packages\core\src\repowise\core\distill\filters\test_output.py:95:def _distill_pytest(lines: list[str]) -> str:
+packages\core\src\repowise\core\distill\filters\test_output.py:102:    def flush_failure_section() -> None:
+packages\core\src\repowise\core\distill\filters\test_output.py:171:def _distill_go(lines: list[str]) -> str:
+packages\core\src\repowise\core\distill\filters\test_output.py:201:def _distill_cargo(lines: list[str]) -> str:
+packages\core\src\repowise\core\distill\filters\test_output.py:230:def _distill_jest(lines: list[str]) -> str:
+packages\core\src\repowise\core\distill\filters\test_output.py:237:    def flush() -> None:
+packages\core\src\repowise\core\distill\filters\test_output.py:277:def _distill_generic(lines: list[str]) -> str:
+packages\cli\src\repowise\cli\commands\init_cmd\reporting.py:22:def show_analysis_summary(result: Any) -> None:
+packages\cli\src\repowise\cli\commands\init_cmd\reporting.py:76:def show_completion(
+packages\cli\src\repowise\cli\commands\init_cmd\reporting.py:205:def show_workspace_completion(
+packages\cli\src\repowise\cli\commands\watch_cmd.py:26:def _watch_single_repo(
+packages\cli\src\repowise\cli\commands\watch_cmd.py:42:    def _on_trigger() -> None:
+packages\cli\src\repowise\cli\commands\watch_cmd.py:71:        def on_any_event(self, event):
+packages\cli\src\repowise\cli\commands\watch_cmd.py:107:def _watch_workspace(
+packages\cli\src\repowise\cli\commands\watch_cmd.py:133:    def _make_trigger(alias: str) -> callable:
+packages\cli\src\repowise\cli\commands\watch_cmd.py:136:        def _on_trigger() -> None:
+packages\cli\src\repowise\cli\commands\watch_cmd.py:176:        def __init__(self, alias: str, repo_path: Path):
+packages\cli\src\repowise\cli\commands\watch_cmd.py:181:        def on_any_event(self, event):
+packages\cli\src\repowise\cli\commands\watch_cmd.py:256:def watch_command(
+packages\core\src\repowise\core\distill\filters\git_log.py:33:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\git_log.py:36:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\git_log.py:43:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\core\src\repowise\core\distill\filters\git_log.py:56:def _parse_full_format(lines: list[str]) -> list[tuple[str, str, str]]:
+packages\core\src\repowise\core\distill\filters\git_log.py:75:def _short_date(date: str) -> str:
+packages\core\src\repowise\core\distill\filters\git_log.py:83:def _render(commits: list[tuple[str, str, str]]) -> str:
+packages\core\src\repowise\core\distill\filters\search_results.py:46:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\search_results.py:49:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\search_results.py:56:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\core\src\repowise\core\distill\filters\search_results.py:63:def group_search_matches(output: str) -> "OrderedDict[str, list[tuple[int, str]]] | None":
+packages\core\src\repowise\core\distill\filters\search_results.py:105:def render_search_digest(
+packages\cli\src\repowise\cli\commands\init_cmd\_generation_persist.py:47:async def run_generation_with_persistence(
+packages\cli\src\repowise\cli\commands\init_cmd\_generation_persist.py:98:    async def _consumer() -> None:
+packages\cli\src\repowise\cli\commands\init_cmd\_generation_persist.py:120:    def _on_page_ready(page: Any) -> None:
+packages\core\src\repowise\core\distill\filters\logs.py:42:    def matches_command(self, command: str) -> bool:
+packages\core\src\repowise\core\distill\filters\logs.py:45:    def matches_content(self, output: str) -> bool:
+packages\core\src\repowise\core\distill\filters\logs.py:52:    def distill(self, output: str, *, command: str = "", exit_code: int = 0) -> str:
+packages\core\src\repowise\core\distill\filters\logs.py:105:def _template(line: str) -> str:
+packages\cli\src\repowise\cli\commands\status_cmd.py:26:def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
+packages\cli\src\repowise\cli\commands\status_cmd.py:29:    async def _query() -> tuple[int, int]:
+packages\cli\src\repowise\cli\commands\status_cmd.py:86:def _query_page_count(repo_path: Path) -> int:
+packages\cli\src\repowise\cli\commands\status_cmd.py:89:    async def _query() -> int:
+packages\cli\src\repowise\cli\commands\status_cmd.py:129:def _query_health_line(repo_path: Path) -> str | None:
+packages\cli\src\repowise\cli\commands\status_cmd.py:141:    async def _q() -> dict | None:
+packages\cli\src\repowise\cli\commands\status_cmd.py:197:def _format_relative_time(iso_timestamp: str | None) -> str:
+packages\cli\src\repowise\cli\commands\status_cmd.py:221:def _workspace_status(target: CommandTarget) -> None:
+packages\cli\src\repowise\cli\commands\status_cmd.py:345:def status_command(path: str | None, workspace: bool, no_workspace: bool) -> None:
+packages\cli\src\repowise\cli\commands\status_cmd.py:388:    async def _query_pages():
+packages\cli\src\repowise\cli\commands\serve_cmd.py:21:def _setup_embedder() -> None:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:105:def _get_or_prompt_api_key(embedder: str) -> str:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:125:def _set_api_key_env(embedder: str, key: str) -> None:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:136:def _save_global_embedder(embedder: str, api_key: str) -> None:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:159:def _load_local_provider_config() -> None:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:193:def _is_port_free(host: str, port: int) -> bool:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:203:def _find_free_port(host: str, preferred: int, label: str, max_attempts: int = 20) -> int:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:240:def _node_available() -> str | None:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:245:def _node_major_version(node: str) -> int | None:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:270:def _npm_available() -> str | None:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:275:def _web_is_cached(version: str) -> bool:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:283:def _find_local_web() -> Path | None:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:301:def _local_build_is_stale(web_dir: Path) -> bool:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:352:def _download_web(version: str) -> bool:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:396:def _build_local_web(web_dir: Path, npm: str) -> bool:
+packages\cli\src\repowise\cli\commands\serve_cmd.py:421:def _start_frontend(
+packages\cli\src\repowise\cli\commands\serve_cmd.py:484:def serve_command(
+packages\cli\src\repowise\cli\commands\upgrade_flow.py:46:def _reparse(repo_path: Path, exclude_patterns: list[str]) -> tuple[list[Any], dict[str, bytes], Any]:
+packages\cli\src\repowise\cli\commands\upgrade_flow.py:73:async def _backfill_git(
+packages\cli\src\repowise\cli\commands\upgrade_flow.py:132:async def _run_upgrade(
+packages\cli\src\repowise\cli\commands\upgrade_flow.py:304:def upgrade_to_full(
+packages\cli\src\repowise\cli\commands\update_cmd.py:41:def _infer_legacy_docs_enabled(state: dict) -> bool:
+packages\cli\src\repowise\cli\commands\update_cmd.py:57:def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
+packages\cli\src\repowise\cli\commands\update_cmd.py:77:def _resolve_index_only_mode(
+packages\cli\src\repowise\cli\commands\update_cmd.py:103:async def _persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
+packages\cli\src\repowise\cli\commands\update_cmd.py:132:async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
+packages\cli\src\repowise\cli\commands\update_cmd.py:171:def _workspace_update(
+packages\cli\src\repowise\cli\commands\update_cmd.py:230:    def _on_start(alias: str) -> None:
+packages\cli\src\repowise\cli\commands\update_cmd.py:233:    def _on_done(result: RepoUpdateResult) -> None:
+packages\cli\src\repowise\cli\commands\update_cmd.py:280:def _refresh_workspace_editor_project_files(
+packages\cli\src\repowise\cli\commands\update_cmd.py:317:def _build_filtered_changed_paths(file_diffs: list, exclude_patterns: list[str]) -> list[str]:
+packages\cli\src\repowise\cli\commands\update_cmd.py:328:def _build_repo_graph(
+packages\cli\src\repowise\cli\commands\update_cmd.py:416:def _rebuild_graph_and_git(
+packages\cli\src\repowise\cli\commands\update_cmd.py:478:def _run_partial_analysis(
+packages\cli\src\repowise\cli\commands\update_cmd.py:544:def _persist_index_only_update(
+packages\cli\src\repowise\cli\commands\update_cmd.py:558:    async def _persist_index_only() -> None:
+packages\cli\src\repowise\cli\commands\update_cmd.py:639:def _render_update_report(
+packages\cli\src\repowise\cli\commands\update_cmd.py:663:def _git_metadata_to_dict(gm: Any) -> dict[str, Any]:
+packages\cli\src\repowise\cli\commands\update_cmd.py:700:def _run_full_health_rescore(
+packages\cli\src\repowise\cli\commands\update_cmd.py:739:    async def _rescore() -> None:
+packages\cli\src\repowise\cli\commands\update_cmd.py:931:def update_command(
+packages\cli\src\repowise\cli\commands\update_cmd.py:1285:            async def _run_evolution() -> dict:
+packages\cli\src\repowise\cli\commands\update_cmd.py:1337:    async def _load_prior() -> dict[str, object]:
+packages\cli\src\repowise\cli\commands\update_cmd.py:1384:    async def _persist() -> None:
