@@ -219,9 +219,13 @@ class OmissionStore:
             distilled_tokens=distilled_tokens,
         )
 
-    def savings_summary(self) -> dict:
+    def savings_summary(self, *, since: float | None = None) -> dict:
         """Aggregate ledger totals, overall and per filter."""
-        return tracking.savings_summary(self._conn)
+        return tracking.savings_summary(self._conn, since=since)
+
+    def savings_rollup(self, *, by: str = "filter", since: float | None = None) -> list[dict]:
+        """Grouped ledger totals (see :func:`tracking.savings_rollup`)."""
+        return tracking.savings_rollup(self._conn, by=by, since=since)
 
     # -- lifecycle ---------------------------------------------------------
 

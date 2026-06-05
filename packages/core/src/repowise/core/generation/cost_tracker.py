@@ -59,6 +59,16 @@ def _get_pricing(model: str) -> dict[str, float]:
     return _FALLBACK_PRICING
 
 
+def get_model_pricing(model: str) -> dict[str, float]:
+    """Public pricing lookup — USD per 1M tokens, ``{"input": ..., "output": ...}``.
+
+    Unknown models fall back to the default tier (with a one-time warning).
+    Used outside generation (e.g. ``repowise saved``) to turn token counts
+    into dollar estimates with the same table the cost ledger uses.
+    """
+    return _get_pricing(model)
+
+
 # ---------------------------------------------------------------------------
 # CostTracker
 # ---------------------------------------------------------------------------

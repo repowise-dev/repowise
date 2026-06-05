@@ -21,6 +21,7 @@ from repowise.cli.commands.init_cmd import init_command
 from repowise.cli.commands.mcp_cmd import mcp_command
 from repowise.cli.commands.reindex_cmd import reindex_command
 from repowise.cli.commands.risk_cmd import risk_command
+from repowise.cli.commands.saved_cmd import saved_command
 from repowise.cli.commands.search_cmd import search_command
 from repowise.cli.commands.serve_cmd import serve_command
 from repowise.cli.commands.status_cmd import status_command
@@ -65,6 +66,7 @@ register_command(decision_group)
 register_command(search_command)
 register_command(distill_command)
 register_command(expand_command)
+register_command(saved_command)
 register_command(export_command)
 register_command(hook_group)
 register_command(status_command)
