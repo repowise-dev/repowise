@@ -29,7 +29,21 @@ Codex SessionStart/UserPromptSubmit: adds short repowise MCP usage guidance.
       commit AND no `repowise update` is in flight AND we haven't
       already warned for this HEAD, emit a one-line stale-wiki notice.
 
-  PostToolUse → edit tools
+  PostToolUse → Read
+    * Skeleton nudge: a large Read of an indexed file gets a one-line
+      pointer at the skeleton surface (get_context include=["skeleton"]),
+      with a cheap bounds-arithmetic estimate of the saving. Once per file
+      per session.
+    * Stale-read notice: when this file was Edited/Written after the
+      session's previous Read of it, flag that earlier excerpts are stale.
+      Once per file per session, never blocking.
+
+  PostToolUse → Edit / Write
+    * Record the edit in the per-session state file so a later Read can
+      detect staleness. Emits nothing itself (Claude clients); Codex
+      lifecycle hooks additionally get the index-staleness reminder below.
+
+  PostToolUse → edit tools (Codex)
     * After file edits, emit a short reminder that the indexed context may
       be stale.
 
@@ -64,6 +78,9 @@ _TRIAGE_TOP_N = 3
 _RESCUE_TOP_N = 2
 _DIGEST_THRESHOLD = 50  # grep result lines before the full compact digest
 _DIGEST_TOP_FILES = 10
+_READ_NUDGE_MIN_LINES = 100  # Read output lines before a skeleton nudge
+_READ_NUDGE_MIN_TOKENS = 800  # full-file tokens below which a nudge is noise
+_READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
 
 
 @click.command("augment")
@@ -110,7 +127,15 @@ def _run_augment(*, client: str | None = None) -> None:
         return
 
     tool_output = payload.get("tool_response", payload.get("tool_output", {}))
-    result = _handle_post_tool_use(tool_name, tool_input, tool_output, cwd, client=client)
+    session_id = payload.get("session_id", "")
+    result = _handle_post_tool_use(
+        tool_name,
+        tool_input,
+        tool_output,
+        cwd,
+        client=client,
+        session_id=session_id if isinstance(session_id, str) else "",
+    )
     if result:
         _emit_response(event, result)
 
@@ -682,6 +707,219 @@ def _name_variants(token: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# PostToolUse — Read / Edit / Write: per-session read intelligence
+# ---------------------------------------------------------------------------
+#
+# A small JSON state file under .repowise/ tracks which files this agent
+# session has Read and Edited, keyed by the hook payload's session_id. Two
+# behaviors ride on it:
+#
+#   * Stale-read notice — a Read of a file whose previous Read predates a
+#     recorded Edit/Write gets a one-line "earlier excerpts are stale" flag.
+#   * Skeleton nudge — a large Read of an indexed file gets a pointer at
+#     get_context(include=["skeleton"]) with a bounds-arithmetic estimate.
+#
+# Rate limiting is the state file itself (per-file, per-session lists), NOT
+# the _claim_emission temp marker — that TTL-based dedup only suppresses the
+# two concurrently-registered hooks racing on one tool event, which still
+# applies on top. A new session_id resets the state.
+
+
+def _session_state_path(repo_path: Path) -> Path:
+    return Path(repo_path) / ".repowise" / ".augment-session.json"
+
+
+def _load_session_state(repo_path: Path, session_id: str) -> dict:
+    """Load the per-session read/edit state, resetting on session change.
+
+    ``reads``/``edits`` map repo-relative paths to a monotonically increasing
+    per-session sequence number (``seq``) rather than wall-clock time — two
+    hook events can land within one clock tick on Windows, and ordering is
+    the only thing the stale-read comparison needs.
+    """
+    fresh = {
+        "session_id": session_id,
+        "seq": 0,
+        "reads": {},
+        "edits": {},
+        "nudged": [],
+        "stale_notified": [],
+    }
+    try:
+        state = json.loads(_session_state_path(repo_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fresh
+    if not isinstance(state, dict) or state.get("session_id") != session_id:
+        return fresh
+    for key, default in fresh.items():
+        if not isinstance(state.get(key), type(default)):
+            state[key] = default
+    return state
+
+
+def _save_session_state(repo_path: Path, state: dict) -> None:
+    """Persist session state; trims unbounded growth, never raises."""
+    for key in ("reads", "edits"):
+        entries = state.get(key, {})
+        if len(entries) > 500:
+            keep = sorted(entries, key=entries.get, reverse=True)[:400]
+            state[key] = {k: entries[k] for k in keep}
+    with contextlib.suppress(OSError, TypeError, ValueError):
+        _session_state_path(repo_path).write_text(json.dumps(state), encoding="utf-8")
+
+
+def _relativize(file_path: str, repo_path: Path) -> str | None:
+    """Repo-relative POSIX path for *file_path*, or None when outside it."""
+    try:
+        rel = Path(file_path).resolve().relative_to(Path(repo_path).resolve())
+    except (ValueError, OSError):
+        return None
+    return rel.as_posix()
+
+
+def _record_edit(tool_input: dict, cwd: str, session_id: str) -> None:
+    """Note an Edit/Write so a later Read of the file can flag staleness."""
+    file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
+    if not isinstance(file_path, str) or not file_path.strip():
+        return
+    repo_path = _find_repo_root(Path(cwd))
+    if repo_path is None:
+        return
+    rel = _relativize(file_path, repo_path)
+    if rel is None:
+        return
+    state = _load_session_state(repo_path, session_id)
+    state["seq"] += 1
+    state["edits"][rel] = state["seq"]
+    _save_session_state(repo_path, state)
+
+
+def _handle_read_post(
+    tool_input: dict,
+    tool_output: object,
+    cwd: str,
+    session_id: str,
+) -> str | None:
+    """Stale-read notice + skeleton nudge for a completed Read."""
+    file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
+    if not isinstance(file_path, str) or not file_path.strip():
+        return None
+    repo_path = _find_repo_root(Path(cwd))
+    if repo_path is None:
+        return None
+    rel = _relativize(file_path, repo_path)
+    if rel is None:
+        return None
+
+    state = _load_session_state(repo_path, session_id)
+    notices: list[str] = []
+
+    # Stale-read: this session Read the file, then Edited/Wrote it, and is
+    # now Reading it again. The fresh Read is fine — the flag is about any
+    # reasoning still anchored on the pre-edit excerpt.
+    last_read = state["reads"].get(rel)
+    last_edit = state["edits"].get(rel)
+    if (
+        last_read is not None
+        and last_edit is not None
+        and last_read < last_edit
+        and rel not in state["stale_notified"]
+    ):
+        state["stale_notified"].append(rel)
+        notices.append(
+            f"[repowise] {rel} changed (Edit/Write) after your previous read of it — "
+            "excerpts from before that edit are stale."
+        )
+
+    state["seq"] += 1
+    state["reads"][rel] = state["seq"]
+
+    nudge = _skeleton_nudge(repo_path, rel, tool_output, state)
+    if nudge:
+        notices.append(nudge)
+
+    _save_session_state(repo_path, state)
+    return "\n".join(notices) if notices else None
+
+
+def _read_output_line_count(tool_output: object) -> int:
+    """Line count of a Read result across the hook payload shapes we see."""
+    if isinstance(tool_output, dict):
+        file_block = tool_output.get("file")
+        if isinstance(file_block, dict):
+            n = file_block.get("numLines")
+            if isinstance(n, int):
+                return n
+            content = file_block.get("content")
+            if isinstance(content, str):
+                return content.count("\n") + 1
+    text = _extract_output_text(tool_output)
+    return (text.count("\n") + 1) if text.strip() else 0
+
+
+def _skeleton_nudge(repo_path: Path, rel: str, tool_output: object, state: dict) -> str | None:
+    """One-line skeleton pointer for a large Read of an indexed file.
+
+    Cheap by construction: bails before any non-stdlib import when the repo
+    has no wiki.db, and the size estimate is pure bounds arithmetic — the
+    skeleton itself is never rendered on the hook path.
+    """
+    if rel in state["nudged"]:
+        return None
+    if _read_output_line_count(tool_output) < _READ_NUDGE_MIN_LINES:
+        return None
+    db_path = repo_path / ".repowise" / "wiki.db"
+    if not db_path.exists():
+        return None
+
+    bounds = _file_symbol_bounds(db_path, rel)
+    if not bounds:
+        return None
+    try:
+        size = (repo_path / rel).stat().st_size
+    except OSError:
+        return None
+    full_tokens = size // 4
+    if full_tokens < _READ_NUDGE_MIN_TOKENS:
+        return None
+
+    from repowise.core.distill.skeleton import estimate_skeleton_tokens
+
+    skeleton_tokens = estimate_skeleton_tokens(bounds, file_size_bytes=size)
+    if skeleton_tokens > full_tokens * _READ_NUDGE_MAX_RATIO:
+        return None
+
+    state["nudged"].append(rel)
+    return (
+        f"[repowise] A skeleton of {rel} is ~{skeleton_tokens} tokens vs ~{full_tokens} "
+        f'for the full file. For structure-level questions use get_context(["{rel}"], '
+        'include=["skeleton"]).'
+    )
+
+
+def _file_symbol_bounds(db_path: Path, rel: str) -> list[tuple[int, int]]:
+    """Persisted (start_line, end_line) pairs for one file, or [] on any miss.
+
+    Direct read-only stdlib sqlite3 — the hook path must not pay the
+    sqlalchemy import for two integers per symbol.
+    """
+    import sqlite3
+
+    try:
+        con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=1)
+        try:
+            rows = con.execute(
+                "SELECT start_line, end_line FROM wiki_symbols WHERE file_path = ?",
+                (rel,),
+            ).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return []
+    return [(s, e) for s, e in rows if isinstance(s, int) and isinstance(e, int) and s > 0]
+
+
+# ---------------------------------------------------------------------------
 # PostToolUse — Bash: stale-wiki detection after git commits
 # ---------------------------------------------------------------------------
 
@@ -703,13 +941,20 @@ def _handle_post_tool_use(
     cwd: str,
     *,
     client: str | None = None,
+    session_id: str = "",
 ) -> str | None:
     """Dispatch PostToolUse events from Claude or Codex."""
-    # The edit-tool freshness notice is a Codex-only lifecycle hook. Gate it on the
-    # Codex client so a future widening of the Claude installer's PostToolUse matcher
-    # can't start emitting Codex-flavored banners to existing Claude Code users.
-    if client == "codex" and tool_name in _EDIT_TOOL_NAMES:
-        return _handle_post_edit_use(cwd)
+    # The edit-tool freshness notice is a Codex-only lifecycle hook, gated on
+    # the Codex client so the widened Claude matcher (Read|Edit|Write) can't
+    # emit Codex-flavored banners to Claude Code users. Both clients record
+    # the edit for the per-session stale-read state machine first.
+    if tool_name in _EDIT_TOOL_NAMES:
+        _record_edit(tool_input, cwd, session_id)
+        if client == "codex":
+            return _handle_post_edit_use(cwd)
+        return None
+    if tool_name == "Read":
+        return _handle_read_post(tool_input, tool_output, cwd, session_id)
     if tool_name == "Bash":
         return _handle_bash_post(tool_input, tool_output, cwd)
     if tool_name in ("Grep", "Glob"):
@@ -812,7 +1057,9 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
         _record_warning(repo_path, head)
         target_short = (in_flight.get("target_commit") or head)[:8]
         elapsed = in_flight.get("elapsed_seconds")
-        elapsed_str = f"started {int(elapsed)}s ago" if isinstance(elapsed, (int, float)) else "running now"
+        elapsed_str = (
+            f"started {int(elapsed)}s ago" if isinstance(elapsed, (int, float)) else "running now"
+        )
         return (
             f"[repowise] Wiki update in background — {elapsed_str}, "
             f"target {target_short}. State will catch up once it finishes."

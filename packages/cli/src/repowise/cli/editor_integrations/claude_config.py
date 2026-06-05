@@ -90,16 +90,23 @@ def register_with_claude_code(repo_path: Path) -> Path | None:
     return settings_path if merge_mcp_entry(settings_path, entry) else None
 
 
+# Current augment PostToolUse matcher. Read/Edit/Write power the distill
+# read-intelligence layer (skeleton nudges + per-file stale-read notices);
+# legacy installs with the narrower matchers below are widened in place.
+_AUGMENT_MATCHER = "Bash|Grep|Glob|Read|Edit|Write"
+_LEGACY_AUGMENT_MATCHERS = ("Bash", "Bash|Grep|Glob")
+
+
 def install_claude_code_hooks() -> Path | None:
     """Register PostToolUse hooks in ~/.claude/settings.json.
 
-    PostToolUse detects git staleness and can enrich Grep/Glob results when
-    the hook output has useful extra context. Existing user hooks are preserved.
+    PostToolUse detects git staleness, enriches Grep/Glob results, and emits
+    Read-intelligence notices. Existing user hooks are preserved.
     """
     settings_path = _claude_code_settings_path()
 
     post_hook_entry = {
-        "matcher": "Bash|Grep|Glob",
+        "matcher": _AUGMENT_MATCHER,
         "hooks": [
             {
                 "type": "command",
@@ -173,9 +180,7 @@ def install_claude_code_rewrite_hook() -> Path | None:
         pre_hooks = hooks.setdefault("PreToolUse", [])
         if not _has_rewrite_hook(pre_hooks):
             pre_hooks.append(pre_hook_entry)
-            settings_path.write_text(
-                json.dumps(existing, indent=2) + "\n", encoding="utf-8"
-            )
+            settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
     except OSError:
         return None
@@ -232,9 +237,7 @@ def _is_rewrite_hook(hook: dict) -> bool:
 
 
 def _has_rewrite_hook(hook_list: list) -> bool:
-    return any(
-        _is_rewrite_hook(h) for entry in hook_list for h in entry.get("hooks", [])
-    )
+    return any(_is_rewrite_hook(h) for entry in hook_list for h in entry.get("hooks", []))
 
 
 def _strip_hooks(hook_list: list, predicate) -> bool:
@@ -286,8 +289,8 @@ def _migrate_legacy_hook(hook_list: list) -> bool:
                 changed = True
         matcher = entry.get("matcher", "")
         only_repowise = entry.get("hooks") and all(_is_repowise_hook(h) for h in entry["hooks"])
-        if only_repowise and matcher == "Bash":
-            entry["matcher"] = "Bash|Grep|Glob"
+        if only_repowise and matcher in _LEGACY_AUGMENT_MATCHERS:
+            entry["matcher"] = _AUGMENT_MATCHER
             changed = True
     return changed
 

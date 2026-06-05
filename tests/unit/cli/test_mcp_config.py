@@ -404,7 +404,7 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert settings_path == tmp_path / ".claude" / "settings.json"
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
 
 
 def test_install_claude_code_hooks_preserves_user_pretool_hooks(
@@ -439,7 +439,7 @@ def test_install_claude_code_hooks_preserves_user_pretool_hooks(
     assert saved["hooks"]["PreToolUse"][0]["matcher"] == "Read"
     assert saved["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo read"
     # PostToolUse now has the repowise hook.
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +453,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
     """Pre-0.6.1 entries used the legacy ``repowise augment`` Click command.
     Installer should drop the PreToolUse repowise entry entirely (the new
     design moves enrichment to PostToolUse) and rewrite + widen the
-    PostToolUse entry to ``Bash|Grep|Glob`` with ``repowise-augment``."""
+    PostToolUse entry to ``Bash|Grep|Glob|Read|Edit|Write`` with ``repowise-augment``."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
@@ -483,14 +483,14 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
 
 
 def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """0.6.1 entries had ``repowise-augment`` already but kept matcher=Bash.
-    The matcher should widen to ``Bash|Grep|Glob`` so the same hook covers
+    The matcher should widen to ``Bash|Grep|Glob|Read|Edit|Write`` so the same hook covers
     Grep/Glob enrichment too."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     settings_path = tmp_path / ".claude" / "settings.json"
@@ -521,7 +521,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
 
 
 def test_install_claude_code_hooks_idempotent_on_current_shape(
@@ -575,10 +575,70 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
 
     # Idempotent: a second run finds nothing to do.
     assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_migrate_claude_code_hooks_widens_grep_glob_matcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-read-intelligence installs used matcher ``Bash|Grep|Glob``;
+    migration widens it to include Read/Edit/Write."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Bash|Grep|Glob",
+                            "hooks": [{"type": "command", "command": "repowise-augment"}],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
+
+
+def test_migrate_claude_code_hooks_never_widens_user_matcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy matcher whose hook list contains a user hook is left alone."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Bash|Grep|Glob",
+                            "hooks": [
+                                {"type": "command", "command": "repowise-augment"},
+                                {"type": "command", "command": "my-linter"},
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is False
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert saved["hooks"]["PostToolUse"][0]["matcher"] == "Bash|Grep|Glob"
 
 
 def test_migrate_claude_code_hooks_preserves_user_sibling_hook(
@@ -626,7 +686,7 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
         "hooks": {
             "PostToolUse": [
                 {
-                    "matcher": "Bash|Grep|Glob",
+                    "matcher": "Bash|Grep|Glob|Read|Edit|Write",
                     "hooks": [{"type": "command", "command": "repowise-augment"}],
                 }
             ]

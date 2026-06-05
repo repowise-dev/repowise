@@ -62,7 +62,7 @@ lives at the repo root.
 The `repowise` binary must be on PATH (`/repowise:init` installs it).
 
 **`hooks/hooks.json`** — Registers a `PostToolUse` hook
-(`Bash|Grep|Glob` → `repowise-augment`) so context enrichment works as soon as
+(`Bash|Grep|Glob|Read|Edit|Write` → `repowise-augment`) so context enrichment works as soon as
 the plugin is installed. This mirrors the hook `repowise init` writes to
 `~/.claude/settings.json`; both firing is safe — see "Hook de-duplication".
 
