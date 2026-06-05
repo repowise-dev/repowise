@@ -1,0 +1,42 @@
+{
+ "repo": "gson",
+ "smells": [],
+ "stats": {
+  "by_language": {
+   "java": {
+    "edges_per_file": 10.2,
+    "files": 262,
+    "import_edges": 2672,
+    "import_support": "full",
+    "orphan_files": 11,
+    "orphan_ratio": 0.042,
+    "resolution_rate": 0.461
+   },
+   "proto": {
+    "edges_per_file": 0.0,
+    "files": 4,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 4,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "java",
+  "entry_points": [],
+  "tour_paths": [
+   "README.md",
+   "gson/src/main/java/com/google/gson/GsonBuilder.java",
+   "gson/src/main/java/com/google/gson/Gson.java",
+   "gson/src/main/java/com/google/gson/stream/JsonReader.java",
+   "gson/src/main/java/com/google/gson/stream/JsonWriter.java",
+   "gson/src/main/java/com/google/gson/TypeAdapter.java",
+   "gson/src/main/java/com/google/gson/reflect/TypeToken.java",
+   "gson/src/main/java/com/google/gson/Strictness.java",
+   "gson/src/main/java/com/google/gson/InstanceCreator.java",
+   "gson/src/main/java/com/google/gson/internal/bind/util/ISO8601Utils.java",
+   "extras/src/main/java/com/google/gson/interceptors/JsonPostDeserializer.java",
+   "test-jpms/src/test/java/module-info.java"
+  ]
+ }
+}

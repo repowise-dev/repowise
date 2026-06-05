@@ -1,0 +1,84 @@
+# KG validation matrix — every repo pinned to a commit so baselines and
+# regressions are reproducible. Clones live under /tmp/kg-validate (override
+# with KG_VALIDATE_DIR). `source` is a git URL or a local path to clone from.
+#
+# tier: import-support tier of the dominant language (1 = full resolver +
+# validated, 2 = resolver never live-validated, 3 = passthrough).
+
+[chi]
+source = "https://github.com/go-chi/chi"
+sha = "3b171578ca44dfd75ca3c5cbddc7b44c600a7b49"
+language = "go"
+tier = 1
+
+[django]
+source = "test-repos/django"
+sha = "a53e02af6d7a07d0367b534f7107a0e2a37e3d34"
+language = "python"
+tier = 1
+
+[express]
+source = "https://github.com/expressjs/express"
+sha = "dae209ae6559c29cfca2a1f4414c51d89ea643d5"
+language = "javascript"
+tier = 1
+
+[fd]
+source = "https://github.com/sharkdp/fd"
+sha = "f7d4d717c287a7834f8721efc0fa91c51d92afee"
+language = "rust"
+tier = 1
+
+[flask]
+source = "test-repos/flask"
+sha = "954f5684e4841aad84a8eec7ace7b81a0d3f6831"
+language = "python"
+tier = 1
+
+[gson]
+source = "https://github.com/google/gson"
+sha = "004e7a4949e08b430e3c8996998ee5a17ff9423a"
+language = "java"
+tier = 1
+
+[httpx]
+source = "test-repos/httpx"
+sha = "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+language = "python"
+tier = 1
+
+[mini-taskq]
+source = "test-repos/mini-taskq"
+sha = "245eb8213b4ac28571d83cb5080a3146548e4324"
+language = "python"
+tier = 1
+
+[pydantic]
+source = "test-repos/pydantic"
+sha = "86f6bbfc3597088df757e8a2c40eb04a38699492"
+language = "python"
+tier = 1
+
+[repowise-main]
+source = "."
+sha = "413e82905e2d48b8699c7a61c2b98920c2fc555a"
+language = "python"
+tier = 1
+
+[requests]
+source = "test-repos/requests"
+sha = "cd90742ed94d901759e26766197d0ce7c7bd9c8e"
+language = "python"
+tier = 1
+
+[sinatra]
+source = "https://github.com/sinatra/sinatra"
+sha = "5236d3459b8b9015e5ce21ddd0c6beb0db4081d4"
+language = "ruby"
+tier = 1
+
+[typst]
+source = "test-repos/typst"
+sha = "07f5f1afca0a037e03911c8b56e8a14742ac2e8d"
+language = "rust"
+tier = 1

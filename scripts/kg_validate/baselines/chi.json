@@ -1,0 +1,33 @@
+{
+ "repo": "chi",
+ "smells": [],
+ "stats": {
+  "by_language": {
+   "go": {
+    "edges_per_file": 14.06,
+    "files": 78,
+    "import_edges": 1097,
+    "import_support": "full",
+    "orphan_files": 1,
+    "orphan_ratio": 0.013,
+    "resolution_rate": 0.768
+   }
+  },
+  "dominant_language": "go",
+  "entry_points": [],
+  "tour_paths": [
+   "README.md",
+   "tree.go",
+   "context.go",
+   "chi.go",
+   "chain.go",
+   "mux.go",
+   "middleware/compress.go",
+   "middleware/route_headers.go",
+   "middleware/wrap_writer.go",
+   "middleware/throttle.go",
+   "middleware/basic_auth.go",
+   "context_test.go"
+  ]
+ }
+}

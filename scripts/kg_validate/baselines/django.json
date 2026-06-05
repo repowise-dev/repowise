@@ -1,0 +1,64 @@
+{
+ "repo": "django",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Test holds 68% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "javascript": {
+    "edges_per_file": 0.02,
+    "files": 45,
+    "import_edges": 1,
+    "import_support": "full",
+    "orphan_files": 43,
+    "orphan_ratio": 0.956,
+    "resolution_rate": 0.0
+   },
+   "python": {
+    "edges_per_file": 3.44,
+    "files": 2591,
+    "import_edges": 8909,
+    "import_support": "full",
+    "orphan_files": 602,
+    "orphan_ratio": 0.232,
+    "resolution_rate": 1.0
+   },
+   "shell": {
+    "edges_per_file": 0.0,
+    "files": 2,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 2,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "python",
+  "entry_points": [
+   "django/core/handlers/wsgi.py",
+   "django/core/handlers/asgi.py",
+   "django/__main__.py",
+   "django/contrib/admin/views/main.py",
+   "django/core/wsgi.py",
+   "django/core/asgi.py"
+  ],
+  "tour_paths": [
+   "django",
+   "django/__main__.py",
+   "django/core/handlers/wsgi.py",
+   "django/core/handlers/asgi.py",
+   "django/contrib/admin/views/main.py",
+   "django/core/wsgi.py",
+   "django/middleware/csrf.py",
+   "django/conf/project_template/manage.py-tpl",
+   "django/db/__init__.py",
+   "django/utils/functional.py",
+   "django/core/management/commands/makemigrations.py",
+   "tests/runtests.py"
+  ]
+ }
+}

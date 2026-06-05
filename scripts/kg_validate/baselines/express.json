@@ -1,0 +1,38 @@
+{
+ "repo": "express",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Test holds 59% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "javascript": {
+    "edges_per_file": 1.89,
+    "files": 141,
+    "import_edges": 266,
+    "import_support": "full",
+    "orphan_files": 7,
+    "orphan_ratio": 0.05,
+    "resolution_rate": 0.169
+   }
+  },
+  "dominant_language": "javascript",
+  "entry_points": [],
+  "tour_paths": [
+   "Readme.md",
+   "index.js",
+   "lib/express.js",
+   "lib/application.js",
+   "lib/request.js",
+   "lib/response.js",
+   "lib/utils.js",
+   "lib/view.js",
+   "History.md",
+   "package.json",
+   "test/Route.js"
+  ]
+ }
+}
