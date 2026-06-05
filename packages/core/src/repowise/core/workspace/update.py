@@ -40,7 +40,15 @@ def _lock_path(repo_path: Path) -> Path:
 
 
 def _read_lock(repo_path: Path) -> dict[str, Any] | None:
-    """Return a live lock payload, or None when absent / stale / unreadable."""
+    """Return a live lock payload, or None when absent / stale / unreadable.
+
+    Mirrors ``cli/helpers.read_update_lock``: a lock is stale past the
+    wall-clock window, or immediately when its owning PID is positively
+    dead / recycled (so a crashed update can't block the repo for 30 min).
+    Unknown probe results fall back to the wall clock.
+    """
+    from repowise.core.procutils import pid_alive, process_create_token
+
     path = _lock_path(repo_path)
     if not path.exists():
         return None
@@ -53,16 +61,31 @@ def _read_lock(repo_path: Path) -> dict[str, Any] | None:
         return None
     if time.time() - started > _LOCK_STALE_AFTER_SECONDS:
         return None
+
+    pid = payload.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        alive = pid_alive(pid)
+        if alive is False:
+            return None
+        if alive is True:
+            stored_token = payload.get("pid_create_token")
+            if isinstance(stored_token, str) and stored_token:
+                current_token = process_create_token(pid)
+                if current_token is not None and current_token != stored_token:
+                    return None
     return payload
 
 
 def _acquire_lock(repo_path: Path, target_commit: str | None) -> None:
     """Best-effort write of the lock file. Caller still must release."""
+    from repowise.core.procutils import process_create_token
+
     try:
         (repo_path / ".repowise").mkdir(parents=True, exist_ok=True)
         _lock_path(repo_path).write_text(
             _json.dumps({
                 "pid": os.getpid(),
+                "pid_create_token": process_create_token(os.getpid()),
                 "target_commit": target_commit,
                 "started_at": time.time(),
             }),

@@ -211,16 +211,22 @@ def acquire_update_lock(repo_path: Path, target_commit: str | None) -> Path:
     """Write the update lock file. Returns its path.
 
     The lock contains the PID and target commit so the augment hook can
-    decide whether a stale-wiki warning is redundant. Best-effort: if write
-    fails (read-only fs, permissions), returns the path anyway — callers
-    must still call ``release_update_lock`` in a finally block.
+    decide whether a stale-wiki warning is redundant, plus the writing
+    process's creation-time token so ``read_update_lock`` can tell a live
+    lock owner apart from an unrelated process that recycled the PID.
+    Best-effort: if write fails (read-only fs, permissions), returns the
+    path anyway — callers must still call ``release_update_lock`` in a
+    finally block.
     """
     import time
+
+    from repowise.core.procutils import process_create_token
 
     ensure_repowise_dir(repo_path)
     lock_path = _update_lock_path(repo_path)
     payload = {
         "pid": os.getpid(),
+        "pid_create_token": process_create_token(os.getpid()),
         "target_commit": target_commit,
         "started_at": time.time(),
     }
@@ -240,8 +246,20 @@ def release_update_lock(repo_path: Path) -> None:
 
 
 def read_update_lock(repo_path: Path) -> dict[str, Any] | None:
-    """Return the lock payload if present and not stale, else ``None``."""
+    """Return the lock payload if present and not stale, else ``None``.
+
+    A lock is stale when its wall-clock age exceeds
+    ``UPDATE_LOCK_STALE_AFTER_SECONDS`` (a hung-but-alive update must not
+    block forever) — or, much sooner, when its owning PID is positively
+    dead or has been recycled by an unrelated process. The PID probe means
+    a crashed/killed update (SIGKILL, power loss — paths atexit can't
+    cover) no longer blocks further updates for the full 30-minute window.
+    Probes that can't decide ("unknown") fall back to the wall clock, so a
+    live update is never treated as stale by mistake.
+    """
     import time
+
+    from repowise.core.procutils import pid_alive, process_create_token
 
     lock_path = _update_lock_path(repo_path)
     if not lock_path.exists():
@@ -256,6 +274,20 @@ def read_update_lock(repo_path: Path) -> dict[str, Any] | None:
         return None
     if time.time() - started > UPDATE_LOCK_STALE_AFTER_SECONDS:
         return None
+
+    pid = payload.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        alive = pid_alive(pid)
+        if alive is False:
+            return None
+        if alive is True:
+            stored_token = payload.get("pid_create_token")
+            # Legacy locks (pre-token) skip the identity check and rely on
+            # liveness + wall clock alone.
+            if isinstance(stored_token, str) and stored_token:
+                current_token = process_create_token(pid)
+                if current_token is not None and current_token != stored_token:
+                    return None
     return payload
 
 

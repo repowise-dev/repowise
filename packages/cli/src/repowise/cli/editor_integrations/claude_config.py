@@ -10,6 +10,7 @@ from repowise.cli.mcp_config import (
     generate_mcp_config,
     load_existing_config,
     merge_mcp_entry,
+    resolve_repowise_command,
 )
 from repowise.core.workspace.config import find_workspace_root
 
@@ -71,7 +72,11 @@ def register_with_claude_desktop(repo_path: Path) -> Path | None:
         # Claude Desktop not installed
         return None
     target = _resolve_mcp_target(repo_path)
-    entry = generate_mcp_config(target)["mcpServers"]
+    # Per-user config: pin the absolute path of the running install so a
+    # PATH shadow install (conda, old pip, pipx) can't hijack the server.
+    # Refreshed on every re-registration, so a moved venv self-heals on the
+    # next `repowise init`/`update`.
+    entry = generate_mcp_config(target, command=resolve_repowise_command())["mcpServers"]
     return config_path if merge_mcp_entry(config_path, entry) else None
 
 
@@ -86,7 +91,8 @@ def register_with_claude_code(repo_path: Path) -> Path | None:
     """
     settings_path = _claude_code_settings_path()
     target = _resolve_mcp_target(repo_path)
-    entry = generate_mcp_config(target)["mcpServers"]
+    # Per-user config: absolute command, see register_with_claude_desktop.
+    entry = generate_mcp_config(target, command=resolve_repowise_command())["mcpServers"]
     return settings_path if merge_mcp_entry(settings_path, entry) else None
 
 

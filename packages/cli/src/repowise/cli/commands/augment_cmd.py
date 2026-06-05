@@ -1097,19 +1097,23 @@ def _read_in_flight_marker(repo_path: object) -> dict | None:
     repo_path = Path(repo_path)
     now = time.time()
 
-    lock_path = repo_path / ".repowise" / ".update.lock"
-    if lock_path.exists():
-        try:
-            payload = json.loads(lock_path.read_text(encoding="utf-8"))
-            started = payload.get("started_at")
-            if isinstance(started, (int, float)) and now - started <= 30 * 60:
-                return {
-                    "source": "lock",
-                    "target_commit": payload.get("target_commit"),
-                    "elapsed_seconds": now - started,
-                }
-        except (json.JSONDecodeError, OSError):
-            pass
+    # Delegate lock freshness to the canonical reader: it layers a live-PID
+    # probe on top of the wall-clock window, so a crashed update's leftover
+    # lock can't suppress real stale-wiki warnings until the window expires.
+    from repowise.cli.helpers import read_update_lock
+
+    try:
+        payload = read_update_lock(repo_path)
+    except Exception:
+        payload = None
+    if payload is not None:
+        started = payload.get("started_at")
+        if isinstance(started, (int, float)):
+            return {
+                "source": "lock",
+                "target_commit": payload.get("target_commit"),
+                "elapsed_seconds": now - started,
+            }
 
     queued_path = repo_path / ".repowise" / ".update.queued"
     if queued_path.exists():

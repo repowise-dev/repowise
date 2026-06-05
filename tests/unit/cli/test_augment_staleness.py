@@ -102,11 +102,14 @@ class TestUpdateLockSuppression:
         _state(repo_path, last_sync_commit=head, docs_enabled=True)
         new_head = _commit(repo_path)
 
+        import os
         import time
 
+        # A live PID: read_update_lock now probes liveness, so a fabricated
+        # dead PID would (correctly) be treated as a crashed update.
         (repo_path / ".repowise" / ".update.lock").write_text(
             json.dumps({
-                "pid": 999999,
+                "pid": os.getpid(),
                 "target_commit": new_head,
                 "started_at": time.time(),
             }),
@@ -117,6 +120,33 @@ class TestUpdateLockSuppression:
         assert msg is not None
         assert "update in background" in msg
         assert "stale" not in msg.lower()
+
+    def test_lock_from_dead_pid_does_not_suppress(self, repo):
+        # A crashed update's leftover lock must NOT suppress the stale
+        # warning for the rest of the 30-min window — the dead owner makes
+        # it stale immediately.
+        import subprocess
+        import sys
+        import time
+
+        repo_path, head = repo
+        _state(repo_path, last_sync_commit=head, docs_enabled=True)
+        _commit(repo_path)
+
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait(timeout=30)
+        (repo_path / ".repowise" / ".update.lock").write_text(
+            json.dumps({
+                "pid": proc.pid,
+                "target_commit": "x",
+                "started_at": time.time(),
+            }),
+            encoding="utf-8",
+        )
+
+        msg = _post(repo_path)
+        assert msg is not None
+        assert "stale" in msg.lower()
 
     def test_stale_lock_does_not_suppress(self, repo):
         repo_path, head = repo
@@ -141,11 +171,12 @@ class TestUpdateLockSuppression:
         _state(repo_path, last_sync_commit=head, docs_enabled=True)
         _commit(repo_path)
 
+        import os
         import time
 
         (repo_path / ".repowise" / ".update.lock").write_text(
             json.dumps({
-                "pid": 1,
+                "pid": os.getpid(),  # live owner — see liveness probe note above
                 "target_commit": head,  # old HEAD, not the current one
                 "started_at": time.time(),
             }),

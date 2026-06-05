@@ -412,4 +412,11 @@ def run_mcp(
         mcp.settings.port = port
         mcp.run(transport="sse")
     else:
+        # stdio servers are spawned per-session by the MCP client; when the
+        # client dies abnormally the stdio loop doesn't exit (and Windows
+        # never kills children), leaking servers that hold wiki.db handles.
+        # The watchdog exits this process once the client is gone.
+        from repowise.server.mcp_server._watchdog import start_parent_watchdog
+
+        start_parent_watchdog()
         mcp.run(transport="stdio")
