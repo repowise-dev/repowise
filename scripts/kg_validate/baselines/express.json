@@ -10,13 +10,13 @@
  "stats": {
   "by_language": {
    "javascript": {
-    "edges_per_file": 1.89,
+    "edges_per_file": 2.03,
     "files": 141,
-    "import_edges": 266,
+    "import_edges": 286,
     "import_support": "full",
-    "orphan_files": 7,
-    "orphan_ratio": 0.05,
-    "resolution_rate": 0.169
+    "orphan_files": 6,
+    "orphan_ratio": 0.043,
+    "resolution_rate": 0.185
    }
   },
   "dominant_language": "javascript",

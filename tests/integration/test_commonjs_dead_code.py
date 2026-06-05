@@ -78,3 +78,56 @@ def test_resolution_is_targeted_not_whole_module(graph_and_report):
     graph, _ = graph_and_report
     assert "svc.js::reallyDead" in graph
     assert not _calls_to(graph, "svc.js::reallyDead")
+
+
+# ---------------------------------------------------------------------------
+# Chained CJS re-exports: index.js -> lib/api.js -> lib/impl.js
+# ---------------------------------------------------------------------------
+
+INDEX_JS = """'use strict';
+module.exports = require('./lib/api');
+"""
+
+API_JS = """'use strict';
+Object.assign(module.exports, require('./impl'));
+"""
+
+IMPL_JS = """function realWork() {
+  return 42;
+}
+
+module.exports = { realWork };
+"""
+
+
+@pytest.fixture(scope="module")
+def chained_graph(tmp_path_factory):
+    repo = tmp_path_factory.mktemp("cjs_chain")
+    (repo / "index.js").write_text(INDEX_JS, encoding="utf-8")
+    lib = repo / "lib"
+    lib.mkdir()
+    (lib / "api.js").write_text(API_JS, encoding="utf-8")
+    (lib / "impl.js").write_text(IMPL_JS, encoding="utf-8")
+
+    traverser = FileTraverser(repo)
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=repo)
+    for fi in traverser.traverse():
+        source = Path(fi.abs_path).read_bytes()
+        builder.add_file(parser.parse_file(fi, source))
+    return builder.build()
+
+
+def test_reexport_chain_produces_import_edges(chained_graph):
+    """module.exports = require(...) / Object.assign(module.exports, ...)
+    must produce real import edges (express's 2.0-edges/file gap)."""
+    assert chained_graph.has_edge("index.js", "lib/api.js")
+    assert chained_graph["index.js"]["lib/api.js"]["edge_type"] == "imports"
+    assert chained_graph.has_edge("lib/api.js", "lib/impl.js")
+
+
+def test_reexport_chain_reaches_the_implementation(chained_graph):
+    """BFS from the package root must transit the whole a -> b -> c chain."""
+    import networkx as nx
+
+    assert nx.has_path(chained_graph, "index.js", "lib/impl.js")

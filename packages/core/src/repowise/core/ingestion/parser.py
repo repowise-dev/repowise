@@ -561,6 +561,36 @@ class ASTParser:
                     )
                 continue
 
+            # CommonJS assignment / Object.assign shapes: the query captures
+            # the outer statement once; walk it for every require() it
+            # contains (a hub like Object.assign(module.exports,
+            # require('./a'), require('./b')) is several imports) and mark
+            # module.exports/exports shapes as re-exports so barrel logic
+            # treats CJS hubs like ESM barrels.
+            if file_info.language in ("javascript", "typescript") and stmt_node.type in (
+                "assignment_expression",
+                "call_expression",
+            ):
+                from .extractors.bindings.ts_js import (
+                    cjs_statement_is_reexport,
+                    collect_cjs_requires,
+                )
+
+                cjs_reexport = cjs_statement_is_reexport(stmt_node, src)
+                for cjs_module in collect_cjs_requires(stmt_node, src):
+                    imports.append(
+                        Import(
+                            raw_statement=raw,
+                            module_path=cjs_module,
+                            imported_names=["*"] if cjs_reexport else [],
+                            is_relative=cjs_module.startswith("."),
+                            resolved_file=None,
+                            bindings=[],
+                            is_reexport=cjs_reexport,
+                        )
+                    )
+                continue
+
             # Rust #[path = "..."] attribute overrides module file location.
             # In tree-sitter-rust, outer attributes are preceding siblings of
             # the item, not children.

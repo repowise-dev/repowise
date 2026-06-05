@@ -170,3 +170,53 @@ def extract_ts_js_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[N
         bindings.append(NamedBinding(local_name="*", exported_name=None, source_file=None))
 
     return names, bindings
+
+
+def collect_cjs_requires(stmt_node: Node, src: str) -> list[str]:
+    """Collect every ``require('<literal>')`` module string inside *stmt_node*.
+
+    Used for the CommonJS assignment / ``Object.assign`` shapes
+    (``module.exports = require('./x')``,
+    ``Object.assign(module.exports, require('./a'), require('./b'))``)
+    where the query captures the outer statement once — the parser then
+    walks it for ALL contained requires so multi-require hubs survive
+    raw-statement dedup.
+    """
+    out: list[str] = []
+
+    def _walk(node: Node) -> None:
+        if node.type == "call_expression":
+            fn = node.child_by_field_name("function")
+            if fn is not None and fn.type == "identifier" and node_text(fn, src) == "require":
+                args = node.child_by_field_name("arguments")
+                if args is not None:
+                    for child in args.named_children:
+                        if child.type == "string":
+                            module = node_text(child, src).strip("\"'`")
+                            if module:
+                                out.append(module)
+                        break  # first argument only
+        for child in node.children:
+            _walk(child)
+
+    _walk(stmt_node)
+    return out
+
+
+def cjs_statement_is_reexport(stmt_node: Node, src: str) -> bool:
+    """True when a CJS require statement re-exports through ``module.exports``.
+
+    Climbs to the enclosing statement and inspects the text *before* the
+    first ``require`` — ``module.exports = require(...)``,
+    ``exports.foo = require(...)`` and
+    ``Object.assign(module.exports, require(...))`` all qualify;
+    ``app.use(require('./mw'))`` does not.
+    """
+    ctx = stmt_node
+    parent = stmt_node.parent
+    while parent is not None and parent.type not in ("program", "statement_block"):
+        ctx = parent
+        parent = parent.parent
+    head = node_text(ctx, src).split("require", 1)[0]
+    stripped = head.lstrip()
+    return "module.exports" in head or stripped.startswith("exports.")
