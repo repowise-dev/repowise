@@ -10,7 +10,7 @@ SPEC = LanguageSpec(
     test_camel_suffixes=("Test", "Tests", "Spec", "Specs"),
     test_dir_suffixes=(".Tests",),
     # Clean-architecture project-dir suffixes (Foo.Api/, Foo.Domain/,
-    # Foo.Infrastructure/) — to be verified on a live .NET repo in Phase 3.
+    # Foo.Infrastructure/) — not yet verified against a live .NET repo.
     layer_dir_hints=((".Api", "API"), (".Domain", "Service"), (".Infrastructure", "Data")),
     extensions=frozenset({".cs"}),
     grammar_package="tree_sitter_c_sharp",

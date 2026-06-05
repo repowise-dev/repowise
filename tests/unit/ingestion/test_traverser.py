@@ -652,7 +652,7 @@ class TestNestedGitRepoHandling:
 
 
 # ---------------------------------------------------------------------------
-# Entry-point flag (Phase 1.3 — registry-derived conventions)
+# Entry-point flag (registry-derived conventions)
 # ---------------------------------------------------------------------------
 
 

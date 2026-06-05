@@ -150,9 +150,9 @@ _MANIFEST_FILES: frozenset[str] = frozenset(
     {"pyproject.toml", "package.json", "Cargo.toml", "go.mod"}
 )
 
-# Entry-point evidence, all registry-derived (Phase 1.3 of the KG accuracy
-# work): exact filenames (Main.kt, config.ru), "*"-prefixed filename
-# suffixes (OTP's <name>_app.erl), and the flag-stem set. The historical
+# Entry-point evidence, all registry-derived: exact filenames (Main.kt,
+# config.ru), "*"-prefixed filename suffixes (OTP's <name>_app.erl), and
+# the flag-stem set. The historical
 # extra {run.py, server.py} patterns were dropped — the run/server stems
 # already cover them.
 _ENTRY_POINT_STEMS: frozenset[str] = _LANG_REGISTRY.entry_flag_stems()

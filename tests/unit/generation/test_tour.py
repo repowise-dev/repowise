@@ -196,7 +196,7 @@ def test_build_tour_respects_max_stops():
 
 
 def test_score_entry_points_withholds_bonuses_from_api_contracts_and_infra():
-    # Phase 1.5: schema/data languages (graphql, proto, sql, openapi) and
+    # Schema/data languages (graphql, proto, sql, openapi) and
     # infra wiring (shell, terraform, dockerfile) never earn entry bonuses,
     # however entry-like their stems are.
     files = [

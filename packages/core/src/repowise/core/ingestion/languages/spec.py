@@ -70,9 +70,9 @@ class LanguageSpec:
     test_fixture_stems: tuple[str, ...] = ()  # ("conftest",)
 
     # Case-sensitive camel-boundary test suffixes, applied ONLY to this
-    # language's own extensions (rule 12: per-file-language). ``FooTest.java``
-    # matches; ``latest.java`` and bare ``Test.java`` never do (rule 11:
-    # conventions match with their own case sensitivity).
+    # language's own extensions — a convention never leaks to other
+    # languages' files. ``FooTest.java`` matches; ``latest.java`` and bare
+    # ``Test.java`` never do (conventions match with their own case).
     test_camel_suffixes: tuple[str, ...] = ()  # ("Test", "Tests", "IT")
 
     # Multi-segment test-root directory paths, lowercase, matched as
@@ -94,7 +94,7 @@ class LanguageSpec:
     descriptor_filenames: tuple[str, ...] = ()
 
     # Extra (dir_hint → layer_name) hints applied ONLY to this language's
-    # files (rule 12), consulted after the generic layer table at each path
+    # files (never other languages'), consulted after the generic layer table at each path
     # depth. Three hint shapes, distinguished by the key:
     #   "internal"  — exact lowercase dir-name token (Go internal/ → Service)
     #   "src/bin"   — multi-segment path, matched as consecutive segments

@@ -1,21 +1,20 @@
-"""Language capability registry — parity goldens and drift manifests.
+"""Language capability registry — parity goldens and derivation pins.
 
-Phase 0 of the cross-language KG accuracy work moved per-language knowledge
-(test filename conventions, entry stems, import-support tiers) onto the
-``LanguageSpec`` registry and switched ``generation/layers.py`` and
-``generation/tour.py`` to registry derivations.
+Per-language knowledge (test filename conventions, entry stems,
+import-support tiers, layer hints) lives on the ``LanguageSpec`` registry;
+``generation/layers.py``, ``generation/tour.py``, the traverser, and
+``analysis/kg_curation.py`` consume registry derivations.
 
 Two kinds of test live here:
 
-1. **Parity goldens** — the derived unions must equal the historical
-   hard-coded literals exactly. Phase 0 is a behavior-preserving refactor;
-   any spec edit that changes a union must update the golden *consciously*.
+1. **Parity goldens** — the derived unions are pinned exactly. Any spec
+   edit that changes a union must update the golden *consciously*: these
+   sets steer test detection, entry scoring, and layer inference globally.
 
-2. **Drift manifests** — where the registry knows MORE than the pipeline's
-   frozen literals (``_CODE_SUFFIXES``, ``_NON_CODE_LANGUAGES``), the exact
-   delta is pinned here. These deltas are the reviewed change-list for the
-   Phase 1 switch-over; a failure means the gap moved and the manifest (and
-   Phase 1 plan) must be updated together.
+2. **Derivation pins** — constants that used to be drifting hard-coded
+   literals (``_CODE_SUFFIXES``, ``_NON_CODE_LANGUAGES``) are now registry
+   derivations; the pins assert the derivation relationship and its key
+   membership so a regression back to drift cannot land silently.
 """
 
 from __future__ import annotations
@@ -54,8 +53,8 @@ class TestParityGoldens:
         assert set(layers._TEST_FILE_STEM_PREFIXES) == {"test_"}
 
     def test_test_stem_suffixes_match_historical_set(self) -> None:
-        # Phase 1.1 added "_unittest" (C/C++ GoogleTest convention) to the
-        # historical {"_test", "_spec"} — a conscious Phase 1 change.
+        # "_unittest" (C/C++ GoogleTest convention) was a conscious
+        # addition to the historical {"_test", "_spec"} union.
         assert set(layers._TEST_FILE_STEM_SUFFIXES) == {"_test", "_spec", "_unittest"}
 
     def test_test_infixes_match_historical_set(self) -> None:
@@ -67,8 +66,8 @@ class TestParityGoldens:
         )
 
     def test_suite_anchor_stems(self) -> None:
-        # Phase 1.4: ruby (rspec/minitest helpers) and elixir (ExUnit's
-        # test_helper.exs) joined python's conftest as closing-stop anchors.
+        # ruby (rspec/minitest helpers) and elixir (ExUnit's
+        # test_helper.exs) join python's conftest as closing-stop anchors.
         assert REGISTRY.suite_anchor_stems() == frozenset(
             {"conftest", "spec_helper", "test_helper"}
         )
@@ -80,9 +79,9 @@ class TestParityGoldens:
         )
 
     def test_layer_dir_hints_by_language(self) -> None:
-        # Phase 1.2: per-language hints (consulted after the generic table,
-        # only for the declaring language's files). csharp's project-suffix
-        # hints await live verification on a .NET repo in Phase 3.
+        # Per-language hints (consulted after the generic table, only for
+        # the declaring language's files). csharp's project-suffix hints
+        # await verification against a live .NET repo.
         assert REGISTRY.layer_dir_hints_by_language() == {
             "go": (("internal", "Service"), ("pkg", "Service")),
             "rust": (("-cli", "CLI"), ("src/bin", "CLI")),
@@ -95,7 +94,7 @@ class TestParityGoldens:
         }
 
     def test_camel_suffix_extension_map(self) -> None:
-        # Phase 1.1: case-sensitive camel-boundary test suffixes per language.
+        # Case-sensitive camel-boundary test suffixes per language.
         camel = REGISTRY.camel_test_res_by_extension()
         assert set(camel) == {
             ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
@@ -156,9 +155,8 @@ class TestImportSupportTiers:
 
 
 # ---------------------------------------------------------------------------
-# Derivation pins — Phase 1.5 consumed the Phase-0 drift manifests: both
-# constants are now registry derivations. These tests pin the derivation
-# relationship instead of a frozen literal.
+# Derivation pins — constants that used to be drifting frozen literals are
+# now registry derivations; pin the relationship, not a literal.
 # ---------------------------------------------------------------------------
 
 # Non-tag defensive aliases inside tour._NON_CODE_LANGUAGES (none is a
@@ -168,10 +166,10 @@ _NON_CODE_ALIASES = {
     "xml", "yml",
 }  # fmt: skip
 
-# Entry patterns merged from the dead LanguageConfig table in Phase 1.3
-# (the backlog recorded by Phase 0). "public/index.php" was intentionally
+# Entry-point conventions per language, including those recovered from the
+# deleted dead LanguageConfig table. "public/index.php" was intentionally
 # dropped: patterns match bare filenames, and "index.php" subsumes it.
-_PHASE13_MERGED_ENTRY_PATTERNS = {
+_ENTRY_PATTERNS_BY_LANGUAGE = {
     "kotlin": ("Main.kt", "Application.kt"),
     "ruby": ("main.rb", "app.rb", "config.ru"),
     "swift": ("main.swift", "App.swift"),
@@ -216,10 +214,10 @@ class TestDriftManifests:
         assert {"python", "elixir", "dart", "haskell", "go"} & _NON_CODE_LANGUAGES == set()
 
     def test_merged_entry_patterns_present_on_specs(self) -> None:
-        # Phase 1.3 closed the entry-pattern backlog: every language with a
-        # citable convention now declares it (skips — julia, r, lua,
-        # PHP bin/console — are recorded in DECISIONS D-022/D-023).
-        for tag, patterns in _PHASE13_MERGED_ENTRY_PATTERNS.items():
+        # Every language with a citable convention declares it. Deliberate
+        # skips: julia (src/<Pkg>.jl is package-named), R (no convention),
+        # PHP bin/console (the bare filename "console" is too generic).
+        for tag, patterns in _ENTRY_PATTERNS_BY_LANGUAGE.items():
             spec = REGISTRY.get(tag)
             assert spec is not None, tag
             assert spec.entry_point_patterns == patterns, tag

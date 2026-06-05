@@ -232,8 +232,8 @@ class LanguageRegistry:
     def layer_dir_hints_by_language(self) -> dict[str, tuple[tuple[str, str], ...]]:
         """Per-language (dir_hint, layer_name) hints, sorted for determinism.
 
-        Keys are language tags; hints apply only to that language's files
-        (rule 12). See ``LanguageSpec.layer_dir_hints`` for the hint shapes.
+        Keys are language tags; hints apply only to that language's files —
+        never another's. See ``LanguageSpec.layer_dir_hints`` for the shapes.
         """
         return {
             s.tag: tuple(sorted(s.layer_dir_hints))

@@ -34,10 +34,10 @@ LanguageTag = Literal[
     "kotlin",
     "scala",
     "luau",
-    # Tier-3 passthrough code languages (no AST parser yet — empty ParsedFile,
-    # files enter the graph via the generic resolver). Added in Phase 1.3 of
-    # the KG accuracy work: before this they were silently skipped at
-    # traversal, so e.g. an Elixir repo indexed only its yaml/markdown.
+    # Passthrough code languages (no AST parser yet — empty ParsedFile,
+    # files enter the graph via the generic resolver). Before these tags
+    # existed the traverser silently skipped such files as unknown, so e.g.
+    # an Elixir repo indexed only its yaml/markdown.
     "elixir",
     "erlang",
     "clojure",

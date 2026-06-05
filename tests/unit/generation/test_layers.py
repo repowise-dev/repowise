@@ -91,7 +91,7 @@ def test_infer_layer_test_root_beats_deeper_hints():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1.1 — case-sensitive camel-suffix test conventions (per language)
+# Case-sensitive camel-suffix test conventions (per language)
 # ---------------------------------------------------------------------------
 
 
@@ -120,7 +120,7 @@ def test_infer_layer_camel_suffix_false_positive_guards():
     assert infer_layer("app/MyTestimony.kt") != "Test"
     assert infer_layer("src/UNIT.java") != "Test"  # uppercase boundary before IT
     # Conventions don't leak across languages: Java's IT rule means nothing
-    # for Python; Haskell's Spec rule means nothing for Go (rule 12).
+    # for Python; Haskell's Spec rule means nothing for Go.
     assert infer_layer("src/SplitIT.py") != "Test"
     assert infer_layer("pkg/HandlerSpec.go") != "Test"
 
@@ -152,7 +152,7 @@ def test_infer_layer_dotnet_test_project_dirs():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1.2 — per-language layer-dir hints
+# Per-language layer-dir hints
 # ---------------------------------------------------------------------------
 
 
