@@ -227,9 +227,11 @@ class FileTraverser:
         self._dir_ignore_cache: dict[str, pathspec.PathSpec] = {
             str(self.repo_root): self._extra_ignore,
         }
-        self._submodule_paths: frozenset[str] = frozenset()
-        if not include_submodules:
-            self._submodule_paths = _parse_gitmodules(self.repo_root)
+        # Parse .gitmodules unconditionally: when submodules are *included*
+        # the set is what exempts initialized submodules (whose `.git` file
+        # makes them look like nested repos) from the nested-git skip below.
+        self._submodule_paths: frozenset[str] = _parse_gitmodules(self.repo_root)
+        self._include_submodules = include_submodules
         self._include_nested_repos = include_nested_repos
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
@@ -238,7 +240,7 @@ class FileTraverser:
             repo_root=str(self.repo_root),
             max_file_size_kb=max_file_size_kb,
             extra_exclude_patterns=len(patterns),
-            submodules_skipped=len(self._submodule_paths),
+            submodules_skipped=0 if include_submodules else len(self._submodule_paths),
             include_nested_repos=include_nested_repos,
         )
 
@@ -352,15 +354,19 @@ class FileTraverser:
         if dirname in _BLOCKED_DIRS:
             return True
         rel_str = rel_path.as_posix()
-        if rel_str in self._submodule_paths:
+        is_submodule = rel_str in self._submodule_paths
+        if is_submodule and not self._include_submodules:
             self.stats.skipped_submodule += 1
             return True
         # Nested git repos are independent units — stop at the boundary
         # unless the caller explicitly opted in. Mirrors the workspace
         # scanner, which already refuses to descend into nested `.git`
         # markers. Without this, a parent repo that physically contains
-        # sibling repos gets walked end-to-end.
-        if not self._include_nested_repos and _is_nested_git_repo(abs_path):
+        # sibling repos gets walked end-to-end. An *initialized* submodule
+        # carries a `.git` file and would match here too — submodules that
+        # were explicitly opted in above are exempt (they still fall through
+        # to the gitignore/exclude checks below).
+        if not self._include_nested_repos and not is_submodule and _is_nested_git_repo(abs_path):
             self.stats.skipped_nested_repo += 1
             log.debug("Skipping nested git repo", path=rel_str)
             return True
@@ -479,7 +485,10 @@ class FileTraverser:
         """
         packages: list[PackageInfo] = []
         seen_paths: set[str] = set()
-        prune_nested = not self._include_nested_repos
+        # Mirrors GraphBuilder._prune_nested_git: when submodules or nested
+        # repos are indexed, package-language/entry-point scans must not
+        # prune them (both are `.git`-bearing subdirs to fs_walk).
+        prune_nested = not (self._include_submodules or self._include_nested_repos)
 
         for depth in (1, 2):
             pattern = "/".join(["*"] * depth) + "/*"

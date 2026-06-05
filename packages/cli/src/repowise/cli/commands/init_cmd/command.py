@@ -806,6 +806,10 @@ def init_command(
     # same tier instead of silently upgrading ESSENTIAL → FULL (issue #341).
     base_state["run_mode"] = run_mode
     base_state["git_tier"] = git_tier_for_run_mode(run_mode)
+    # Record whether submodules were indexed so `repowise update` rebuilds
+    # the graph with the same boundary semantics (same pattern as git_tier:
+    # missing → False keeps legacy behavior for old state files).
+    base_state["include_submodules"] = include_submodules
     if phase_timings:
         base_state["phase_timings"] = phase_timings
     kg = getattr(result, "knowledge_graph_result", None)
@@ -835,6 +839,7 @@ def init_command(
             commit_limit=commit_limit,
             resolved_commit_limit=resolved_commit_limit,
             resolved_reasoning=resolved_reasoning,
+            include_submodules=include_submodules,
         )
 
     # ---- Completion panel ----

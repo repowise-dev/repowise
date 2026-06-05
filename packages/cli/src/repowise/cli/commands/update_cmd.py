@@ -330,6 +330,8 @@ def _build_repo_graph(
     exclude_patterns: list[str],
     *,
     collect_sources: bool = False,
+    include_submodules: bool = False,
+    include_nested_repos: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
@@ -348,7 +350,12 @@ def _build_repo_graph(
 
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder, compute_content_hash
 
-    traverser = FileTraverser(repo_path, extra_exclude_patterns=exclude_patterns or None)
+    traverser = FileTraverser(
+        repo_path,
+        extra_exclude_patterns=exclude_patterns or None,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     file_infos = list(traverser.traverse())
     repo_structure = traverser.get_repo_structure()
 
@@ -371,6 +378,8 @@ def _build_repo_graph(
         repo_path,
         exclude_patterns=exclude_patterns,
         centrality_cache_dir=PathlibPath(repo_path) / ".repowise",
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
     )
 
     skipped = 0
@@ -419,6 +428,8 @@ def _rebuild_graph_and_git(
     cfg: dict,
     exclude_patterns: list[str],
     git_tier: str | None = None,
+    include_submodules: bool = False,
+    include_nested_repos: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -428,12 +439,21 @@ def _rebuild_graph_and_git(
     its index never had. Unknown/missing values fall back to FULL, matching
     the historical behavior for legacy state files.
 
+    ``include_submodules`` / ``include_nested_repos`` are likewise read from
+    state.json: a repo indexed with ``init --include-submodules`` must not
+    silently drop its submodule files on every incremental update. Missing
+    keys fall back to False (legacy behavior).
+
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count, git_meta_map)``.
     """
     # Full re-ingest for graph (needed for cascade analysis)
     parsed_files, source_map, graph_builder, repo_structure, file_count = _build_repo_graph(
-        repo_path, exclude_patterns, collect_sources=True
+        repo_path,
+        exclude_patterns,
+        collect_sources=True,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
     )
 
     # Re-index git metadata for changed files
@@ -720,7 +740,10 @@ def _run_full_health_rescore(
     # Share the rebuild path with the incremental update so both produce the
     # same graph (same parser, same framework-aware synthetic edges).
     parsed_files, _source_map, graph_builder, _repo_structure, _file_count = _build_repo_graph(
-        repo_path, exclude_patterns
+        repo_path,
+        exclude_patterns,
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
     )
 
     # Fan-out metric precompute (mirrors _rebuild_graph_and_git) — the
@@ -1145,7 +1168,13 @@ def update_command(
 
     parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map = (
         _rebuild_graph_and_git(
-            repo_path, file_diffs, cfg, exclude_patterns, git_tier=state.get("git_tier")
+            repo_path,
+            file_diffs,
+            cfg,
+            exclude_patterns,
+            git_tier=state.get("git_tier"),
+            include_submodules=bool(state.get("include_submodules", False)),
+            include_nested_repos=bool(state.get("include_nested_repos", False)),
         )
     )
 
