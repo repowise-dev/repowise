@@ -499,7 +499,12 @@ def _curate_tour(
         candidates = [p for p in by_layer.get(layer, []) if p not in walk and p != overview_target]
         if not candidates:
             continue
-        rep = _best_in_layer(candidates, rank, pagerank)
+        # Prefer a code file as the layer's face; configs/docs only when the
+        # layer holds nothing else (a .json must not be a layer "anchor").
+        code_candidates = [
+            p for p in candidates if type_by_path.get(p) not in {"config", "document"}
+        ]
+        rep = _best_in_layer(code_candidates or candidates, rank, pagerank)
         pos = redundant_positions.pop()
         replaced = base_code.get(walk[pos])
         swapped_depth[rep] = replaced.depth if replaced is not None else 0
