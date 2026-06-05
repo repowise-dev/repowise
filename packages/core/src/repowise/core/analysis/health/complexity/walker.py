@@ -118,6 +118,7 @@ class FileComplexity:
 
     functions: list[FunctionComplexity]
     classes: list[ClassComplexity]
+    file_nloc: int = 0
 
 
 # Leaf node types that carry a declared name at the bottom of a C/C++
@@ -164,6 +165,41 @@ def _count_nloc(node: Node, source: bytes) -> int:
     except Exception:
         return end - start + 1
     return sum(1 for line in snippet.splitlines() if line.strip())
+
+
+def _count_file_nloc(source: bytes) -> int:
+    """Count non-blank lines in *source* bytes (plain fallback, no tree)."""
+    try:
+        text = source.decode("utf-8", errors="replace")
+    except Exception:
+        return 0
+    return sum(1 for line in text.splitlines() if line.strip())
+
+
+def _count_file_nloc_tree(root_node: Node, source: bytes) -> int:
+    """Count lines that have at least one non-comment token.
+
+    Lines where all content is inside comment nodes are excluded; lines
+    with real code plus a trailing comment still count.
+    """
+    try:
+        lines = source.decode("utf-8", errors="replace").splitlines()
+    except Exception:
+        return 0
+    code_lines: set[int] = set()
+    stack = [root_node]
+    while stack:
+        node = stack.pop()
+        if "comment" in node.type:
+            continue
+        if not node.children and node.start_byte < node.end_byte:
+            for line in range(node.start_point[0], node.end_point[0] + 1):
+                if line < len(lines) and lines[line].strip():
+                    code_lines.add(line)
+        else:
+            for child in node.children:
+                stack.append(child)
+    return len(code_lines)
 
 
 def _is_boolean_operator(node: Node, lmap: LanguageNodeMap) -> bool:
@@ -829,7 +865,7 @@ def walk_file(
     """
     lmap = get_language_map(language)
     if lmap is None:
-        return FileComplexity(functions=[], classes=[])
+        return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
     try:
         from tree_sitter import Parser
@@ -840,18 +876,18 @@ def walk_file(
         from repowise.core.ingestion.parser import _get_language
     except Exception as exc:
         log.debug("complexity_walker_import_failed", error=str(exc))
-        return FileComplexity(functions=[], classes=[])
+        return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
     grammar = _get_language(language)
     if grammar is None:
-        return FileComplexity(functions=[], classes=[])
+        return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
     try:
         parser = Parser(grammar)
         tree = parser.parse(source)
     except Exception as exc:
         log.debug("complexity_walker_parse_failed", path=abs_path, error=str(exc))
-        return FileComplexity(functions=[], classes=[])
+        return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
     functions: list[FunctionComplexity] = []
     fc_by_node_id: dict[int, FunctionComplexity] = {}
@@ -875,7 +911,11 @@ def walk_file(
         fc_by_node_id[fn_node.id] = fc
 
     classes = _collect_classes(tree.root_node, lmap, source, fc_by_node_id)
-    return FileComplexity(functions=functions, classes=classes)
+    return FileComplexity(
+        functions=functions,
+        classes=classes,
+        file_nloc=_count_file_nloc_tree(tree.root_node, source),
+    )
 
 
 def walk_file_complexity(

@@ -577,7 +577,7 @@ class HealthAnalyzer:
         fn_metrics: dict[str, FunctionComplexity] = {fc.name: fc for fc in fc_list}
         max_ccn = max((fc.ccn for fc in fc_list), default=1)
         max_nesting = max((fc.max_nesting for fc in fc_list), default=0)
-        nloc = sum(fc.nloc for fc in fc_list)
+        nloc = fcx.file_nloc
 
         dependents_count = 0
         if self.graph is not None and file_path in self.graph:
