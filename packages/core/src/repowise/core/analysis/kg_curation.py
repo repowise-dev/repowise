@@ -5,7 +5,7 @@ AST/dependency graph that powers queries. This module is the single seam where
 the skeleton produced by :func:`build_knowledge_graph_skeleton` is reshaped into
 something a human (or an AI reading the graph cold) can navigate: bounded,
 dependency-ordered layers; a capped, ranked set of real entry points; one
-canonical layer-aware tour; typed infra/CI/data nodes; and never-empty
+canonical execution-flow tour; typed infra/CI/data nodes; and never-empty
 summaries.
 
 **Hard invariant.** Curation reads the NetworkX graph, communities, and
@@ -30,7 +30,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult, _slugify
-from repowise.core.generation.layers import compute_layer_order, infer_layer
+from repowise.core.generation.layers import ADJACENT_LAYERS, compute_layer_order, infer_layer
 from repowise.core.generation.tour import (
     DEFAULT_MAX_STOPS,
     build_tour,
@@ -354,7 +354,7 @@ def _curate_entry_points(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — canonical, layer-aware tour
+# Phase 3 — canonical execution-flow tour
 # ---------------------------------------------------------------------------
 
 
@@ -381,14 +381,18 @@ def _best_in_layer(paths: list[str], rank: dict[str, float], pagerank: dict[str,
 def _curate_tour(
     kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any
 ) -> list[dict] | None:
-    """Build one canonical, layer-aware tour over the curated layers.
+    """Build one canonical, execution-flow tour over the curated layers.
 
-    Uses the deterministic :func:`build_tour` (BFS-from-entry + PageRank) as the
-    base ordering, opens with the repo README/overview, then diversifies so the
-    walk covers as many curated layers as the step budget allows (swapping
-    redundant same-layer stops for representatives of uncovered layers). Every
-    step carries a ``layer_id`` mapping it to a curated layer, so the tour reads
-    the architecture top→bottom. The LLM may later rewrite step *prose* only.
+    Keeps the deterministic :func:`build_tour` ordering — README/overview
+    first, then the entry points and their import neighbourhood walking inward
+    (BFS depth) — so the tour follows how the program actually runs, not an
+    abstract stack walk. Layer coverage is preserved by *swapping* redundant
+    same-layer stops for representatives of uncovered runtime layers, never by
+    re-sorting the walk. Adjacent layers (tests) take no walk slots: the suite
+    gets a single closing stop before infrastructure. Step reasons state
+    evidence (entry point, import depth, layer anchor), not stack position.
+    Every step carries a ``layer_id`` mapping it to a curated layer; the LLM
+    may later rewrite step *prose* only.
     """
     file_nodes = _file_nodes(kg)
     if not file_nodes:
@@ -398,7 +402,6 @@ def _curate_tour(
     type_by_path = {n["filePath"]: n.get("type", "file") for n in file_nodes}
     file_layers = {p: infer_layer(p) for p in paths}
     order = compute_layer_order(file_layers, _file_import_edges(graph_builder))
-    layer_index = {name: i for i, name in enumerate(order)}
 
     pagerank = graph_builder.pagerank() or {}
     rank = {path: s for s, path in score_entry_points(parsed_files, pagerank)}
@@ -418,41 +421,56 @@ def _curate_tour(
     )
 
     overview = [s for s in base if s.kind == "overview"]
-    code = [s for s in base if s.kind == "code"]
     infra = [s for s in base if s.kind == "infra"]
+    base_code = {s.target_path: s for s in base if s.kind == "code"}
 
-    # --- Diversify code stops for layer coverage -------------------------
     by_layer: dict[str, list[str]] = defaultdict(list)
     for p in paths:
         by_layer[file_layers[p]].append(p)
 
-    code_paths = [s.target_path for s in code]
+    # One closing stop per adjacent layer present (the test suite) — tests
+    # verify the system, they don't start it, so they never lead the walk.
+    closing_paths: list[str] = []
+    for layer in order:
+        if layer in ADJACENT_LAYERS and by_layer.get(layer):
+            closing_paths.append(_best_in_layer(by_layer[layer], rank, pagerank))
+
+    # The walk = build_tour's execution order minus adjacent-layer stops,
+    # truncated up front so later swaps land inside the kept window.
+    walk = [
+        s.target_path
+        for s in base
+        if s.kind == "code" and file_layers.get(s.target_path) not in ADJACENT_LAYERS
+    ]
+    budget = max(0, DEFAULT_MAX_STOPS - len(overview) - len(closing_paths) - len(infra))
+    walk = walk[:budget]
+
+    # --- Diversify for layer coverage (swap slots, never re-sort) ---------
     seen_layers: set[str] = set()
     redundant_positions: list[int] = []
-    for i, p in enumerate(code_paths):
+    for i, p in enumerate(walk):
         layer = file_layers.get(p)
         if layer in seen_layers:
             redundant_positions.append(i)
         else:
             seen_layers.add(layer)
 
-    uncovered = [name for name in order if name not in seen_layers]
+    swapped_depth: dict[str, int] = {}  # rep path -> depth of the slot it fills
+    uncovered = [
+        name for name in order if name not in seen_layers and name not in ADJACENT_LAYERS
+    ]
     for layer in uncovered:
         if not redundant_positions:
             break
-        candidates = [p for p in by_layer.get(layer, []) if p not in code_paths]
+        candidates = [p for p in by_layer.get(layer, []) if p not in walk]
         if not candidates:
             continue
         rep = _best_in_layer(candidates, rank, pagerank)
         pos = redundant_positions.pop()
-        code_paths[pos] = rep
+        replaced = base_code.get(walk[pos])
+        swapped_depth[rep] = replaced.depth if replaced is not None else 0
+        walk[pos] = rep
         seen_layers.add(layer)
-
-    # Order the walk top→bottom: by layer dependency rank, then path.
-    code_paths = sorted(
-        dict.fromkeys(code_paths),
-        key=lambda p: (layer_index.get(file_layers.get(p, ""), len(order)), p),
-    )
 
     # --- Assemble the exported tour --------------------------------------
     tour: list[dict] = []
@@ -471,25 +489,47 @@ def _curate_tour(
             ov["layer_id"] = None
         tour.append(ov)
 
-    for p in code_paths:
+    max_depth = 0
+    for p in walk:
         order_n += 1
         layer = file_layers.get(p, "")
-        idx = layer_index.get(layer, len(order))
-        if idx == 0:
-            reason = f"Top of the stack ({layer}) — start of the request/control flow."
-        elif idx >= len(order) - 1:
-            reason = f"Foundational layer ({layer}) — the others build on this."
-        else:
-            reason = f"The {layer} layer — sits mid-stack between consumers and foundations."
+        step = base_code.get(p)
+        if p in swapped_depth:
+            depth = swapped_depth[p]
+            reason = f"The {layer} layer's anchor — its most depended-on file."
+        elif step is not None:
+            depth = step.depth
+            reason = step.reason
+        else:  # pragma: no cover - walk paths come from base or swaps
+            depth = 0
+            reason = f"A key {layer} file on the walk from the entry points."
+        max_depth = max(max_depth, depth)
         tour.append(
             {
                 "order": order_n,
                 "target_path": p,
                 "page_type": "file_page",
                 "title": PurePosixPath(p).name,
-                "depth": idx,
+                "depth": depth,
                 "kind": "code",
                 "reason": reason,
+                "layer_id": f"layer:{_slugify(layer)}",
+            }
+        )
+
+    for p in closing_paths:
+        order_n += 1
+        layer = file_layers.get(p, "Test")
+        max_depth += 1
+        tour.append(
+            {
+                "order": order_n,
+                "target_path": p,
+                "page_type": "file_page",
+                "title": PurePosixPath(p).name,
+                "depth": max_depth,
+                "kind": "code",
+                "reason": "The test suite — how the system's behavior is verified.",
                 "layer_id": f"layer:{_slugify(layer)}",
             }
         )

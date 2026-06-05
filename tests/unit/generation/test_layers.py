@@ -42,6 +42,23 @@ def test_infer_layer_falls_back_for_unmatched_paths():
     assert infer_layer("random/folder/thing.py") == DEFAULT_LAYER
 
 
+def test_infer_layer_spec_dirs_need_test_shaped_files():
+    # A "specs/" directory of ordinary modules is a specification folder —
+    # the scan continues outward instead of branding them tests.
+    assert infer_layer("core/ingestion/languages/specs/dockerfile.py") == "Service"
+    assert infer_layer("specs/openapi.py") == DEFAULT_LAYER
+    # With a test-shaped filename the same dirs DO mean tests.
+    assert infer_layer("specs/auth.spec.ts") == "Test"
+    assert infer_layer("spec/test_auth.py") == "Test"
+
+
+def test_infer_layer_unambiguous_test_dirs_take_any_file():
+    # tests/ and __tests__/ are test roots regardless of filename.
+    assert infer_layer("tests/helpers.py") == "Test"
+    assert infer_layer("tests/conftest.py") == "Test"
+    assert infer_layer("src/__tests__/render.tsx") == "Test"
+
+
 # ---------------------------------------------------------------------------
 # compute_layer_order — top→bottom by dependency direction
 # ---------------------------------------------------------------------------
@@ -83,3 +100,26 @@ def test_compute_layer_order_stable_without_edges():
 def test_compute_layer_order_single_layer():
     assert compute_layer_order({"a.py": "API"}, []) == ["API"]
     assert compute_layer_order({}, []) == []
+
+
+def test_compute_layer_order_tests_never_top_the_stack():
+    # Tests import everything and are imported by nothing — by raw import
+    # math they'd win "top consumer" in every codebase. They must be pinned
+    # after the runtime layers instead.
+    file_layers = {
+        "api/h.py": "API",
+        "services/s.py": "Service",
+        "tests/test_h.py": "Test",
+        "tests/test_s.py": "Test",
+    }
+    edges = [
+        ("api/h.py", "services/s.py"),
+        ("tests/test_h.py", "api/h.py"),
+        ("tests/test_h.py", "services/s.py"),
+        ("tests/test_s.py", "services/s.py"),
+        ("tests/test_s.py", "api/h.py"),
+    ]
+    order = compute_layer_order(file_layers, edges)
+    assert order[-1] == "Test"
+    # Test edges don't distort the runtime ordering either.
+    assert order.index("API") < order.index("Service")

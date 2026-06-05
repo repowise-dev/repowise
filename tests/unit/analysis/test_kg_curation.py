@@ -417,6 +417,29 @@ def readme_repo():
     return build_repo(paths)
 
 
+@pytest.fixture
+def flow_repo():
+    """A repo with a real entry point, an import chain, and a test suite."""
+    paths = [
+        "README.md",
+        "src/cli/main.py",
+        "src/api/route.py",
+        "src/services/svc.py",
+        "src/models/model.py",
+        "src/utils/helpers.py",
+        "tests/conftest.py",
+        "tests/test_svc.py",
+    ]
+    edges = [
+        ("src/cli/main.py", "src/api/route.py"),
+        ("src/api/route.py", "src/services/svc.py"),
+        ("src/services/svc.py", "src/models/model.py"),
+        ("tests/test_svc.py", "src/services/svc.py"),
+        ("tests/conftest.py", "src/cli/main.py"),
+    ]
+    return build_repo(paths, entries={"src/cli/main.py"}, edges=edges)
+
+
 def _layer_ids(kg) -> set[str]:
     return {layer["id"] for layer in kg.layers}
 
@@ -461,6 +484,48 @@ class TestCuratedTour:
     def test_flag_off_leaves_tour_empty(self, large_repo):
         kg = _curate(large_repo, enabled=False)
         assert kg.tour == []
+
+    def test_entry_point_leads_the_walk(self, flow_repo):
+        # Execution-flow order: right after the overview comes a real entry
+        # point, never a test fixture or an arbitrary "top layer" file.
+        kg = _curate(flow_repo, enabled=True)
+        assert kg.tour[0]["kind"] == "overview"
+        assert kg.tour[1]["target_path"] == "src/cli/main.py"
+        assert "entry point" in kg.tour[1]["reason"]
+
+    def test_walk_follows_import_depth(self, flow_repo):
+        # main -> route -> svc -> model: the chain appears in BFS order.
+        kg = _curate(flow_repo, enabled=True)
+        pos = {s["target_path"]: i for i, s in enumerate(kg.tour)}
+        assert (
+            pos["src/cli/main.py"]
+            < pos["src/api/route.py"]
+            < pos["src/services/svc.py"]
+            < pos["src/models/model.py"]
+        )
+
+    def test_tests_take_one_closing_stop(self, flow_repo):
+        # The Test layer never competes for walk slots — exactly one closing
+        # stop, after every runtime code stop.
+        kg = _curate(flow_repo, enabled=True)
+        test_steps = [s for s in kg.tour if s["layer_id"] == "layer:test"]
+        assert len(test_steps) == 1
+        last_runtime = max(
+            i
+            for i, s in enumerate(kg.tour)
+            if s["kind"] == "code" and s["layer_id"] != "layer:test"
+        )
+        assert kg.tour.index(test_steps[0]) > last_runtime
+        assert "verified" in test_steps[0]["reason"]
+
+    def test_no_stack_position_claims(self, flow_repo, large_repo):
+        # Reasons state evidence, never sort position ("Top of the stack"
+        # branded conftest.py the start of the control flow).
+        for repo in (flow_repo, large_repo):
+            kg = _curate(repo, enabled=True)
+            for step in kg.tour:
+                assert "Top of the stack" not in step["reason"]
+                assert "mid-stack" not in step["reason"]
 
 
 # ---------------------------------------------------------------------------

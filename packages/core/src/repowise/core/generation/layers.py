@@ -44,6 +44,36 @@ _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("Types", frozenset({"types", "interfaces", "schemas", "contracts", "dtos", "typings"})),
 )
 
+# Layers that observe or support the runtime stack rather than participate in
+# it. Tests import production code and are never imported back, so letting
+# them compete on import direction would crown them the top "consumer" in
+# every codebase that has tests. They are excluded from the dependency race
+# and pinned after the runtime layers instead.
+ADJACENT_LAYERS: frozenset[str] = frozenset({"Test"})
+
+# Test-dir tokens that also name non-test directories in the wild ("spec(s)" =
+# specifications, OpenAPI specs, language specs, …). These assign the Test
+# layer only when the *file* corroborates; otherwise the scan continues
+# outward to the next matching segment.
+_AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs"})
+
+# Filename shapes that mark a test on their own (pytest, Go, Jest/Vitest, …).
+_TEST_FILE_STEM_PREFIXES = ("test_",)
+_TEST_FILE_STEM_SUFFIXES = ("_test", "_spec")
+_TEST_FILE_INFIXES = (".test.", ".spec.")
+
+
+def _is_test_file_name(filename: str) -> bool:
+    """Whether *filename* alone marks a test (test_x.py, x_test.go, x.spec.ts, …)."""
+    name = filename.lower()
+    stem = PurePosixPath(name).stem
+    return (
+        stem == "conftest"
+        or stem.startswith(_TEST_FILE_STEM_PREFIXES)
+        or stem.endswith(_TEST_FILE_STEM_SUFFIXES)
+        or any(m in name for m in _TEST_FILE_INFIXES)
+    )
+
 # Fallback layer for files whose path matches no hint (root scripts, etc.).
 DEFAULT_LAYER = "Application"
 
@@ -70,15 +100,27 @@ def infer_layer(path: str) -> str:
     """Return the architectural layer name for *path*.
 
     Scans path segments from the deepest directory outward and returns the
-    first layer whose hint set contains a segment. Falls back to
-    :data:`DEFAULT_LAYER` when nothing matches.
+    first layer whose hint set contains a segment. Ambiguous test-dir tokens
+    (``spec``/``specs``) count only when the filename itself looks like a test
+    — a ``specs/`` directory full of ordinary modules is a specification
+    folder, not a test suite. Falls back to :data:`DEFAULT_LAYER` when nothing
+    matches.
     """
-    segments = [s.lower() for s in PurePosixPath(path).parts[:-1]]  # drop filename
+    parts = [s.lower() for s in PurePosixPath(path).parts]
+    filename = parts[-1] if parts else ""
+    segments = parts[:-1]  # drop filename
     # Deepest directory first — the closest folder describes the file best.
     for seg in reversed(segments):
         for layer_name, tokens in _LAYER_HINTS:
-            if seg in tokens:
-                return layer_name
+            if seg not in tokens:
+                continue
+            if (
+                layer_name == "Test"
+                and seg in _AMBIGUOUS_TEST_DIR_TOKENS
+                and not _is_test_file_name(filename)
+            ):
+                continue  # "spec(s)/" without a test-shaped file: keep scanning
+            return layer_name
     return DEFAULT_LAYER
 
 
@@ -102,10 +144,18 @@ def compute_layer_order(
     imports many but is imported by few is a consumer (top). Ties fall back to
     the canonical rank so the result is stable on graphs with no clear
     direction.
+
+    :data:`ADJACENT_LAYERS` (tests) sit outside the runtime stack: their edges
+    are excluded from the race (a test importing a service says nothing about
+    where the service sits) and they are appended after the runtime layers in
+    canonical-rank order.
     """
     layers = sorted(set(file_layers.values()))
     if len(layers) <= 1:
         return layers
+
+    runtime = [layer for layer in layers if layer not in ADJACENT_LAYERS]
+    adjacent = [layer for layer in layers if layer in ADJACENT_LAYERS]
 
     out_deg: dict[str, int] = defaultdict(int)  # edges leaving the layer
     in_deg: dict[str, int] = defaultdict(int)  # edges entering the layer
@@ -116,6 +166,8 @@ def compute_layer_order(
         ld = file_layers.get(dst)
         if not ls or not ld or ls == ld:
             continue
+        if ls in ADJACENT_LAYERS or ld in ADJACENT_LAYERS:
+            continue
         out_deg[ls] += 1
         in_deg[ld] += 1
 
@@ -125,4 +177,6 @@ def compute_layer_order(
         net = in_deg[layer] - out_deg[layer]
         return (net, _CANONICAL_RANK.get(layer, len(_CANONICAL_RANK)))
 
-    return sorted(layers, key=sort_key)
+    ordered = sorted(runtime, key=sort_key)
+    ordered += sorted(adjacent, key=lambda la: _CANONICAL_RANK.get(la, len(_CANONICAL_RANK)))
+    return ordered
