@@ -16,6 +16,7 @@ from rich.table import Table
 from repowise.cli.helpers import (
     console,
     err_console,
+    load_state,
     resolve_command_target,
     run_async,
     silence_logs_for_machine_output,
@@ -150,10 +151,25 @@ def health_command(
         _render_trend(repo_path, fmt=fmt)
         return
 
-    traverser = FileTraverser(repo_path)
+    # Analyze the same file set that was indexed: a repo initialized with
+    # --include-submodules persists the flag in state.json, and a flagless
+    # traverser here would silently score a different (smaller) tree.
+    state = load_state(repo_path)
+    include_submodules = bool(state.get("include_submodules", False))
+    include_nested_repos = bool(state.get("include_nested_repos", False))
+
+    traverser = FileTraverser(
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     file_infos = list(traverser.traverse())
     parser = ASTParser()
-    graph_builder = GraphBuilder(repo_path)
+    graph_builder = GraphBuilder(
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
 
     parsed_files = []
     for fi in file_infos:

@@ -9,8 +9,8 @@ from rich.table import Table
 
 from repowise.cli.helpers import (
     console,
+    load_state,
     resolve_command_target,
-    resolve_repo_path,
     run_async,
     silence_logs_for_machine_output,
 )
@@ -122,11 +122,25 @@ def dead_code_command(
 
     console.print(f"[bold]repowise dead-code[/bold] — {repo_path}")
 
-    # Ingest
-    traverser = FileTraverser(repo_path)
+    # Ingest — honor the persisted submodule flags so the analyzed file set
+    # matches what `init` indexed (a flagless traverser on a submodule-indexed
+    # repo would drop submodule files and skew reachability).
+    state = load_state(repo_path)
+    include_submodules = bool(state.get("include_submodules", False))
+    include_nested_repos = bool(state.get("include_nested_repos", False))
+
+    traverser = FileTraverser(
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     file_infos = list(traverser.traverse())
     parser = ASTParser()
-    graph_builder = GraphBuilder(repo_path)
+    graph_builder = GraphBuilder(
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
 
     for fi in file_infos:
         try:
