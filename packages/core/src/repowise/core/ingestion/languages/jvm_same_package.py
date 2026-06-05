@@ -56,6 +56,10 @@ _TYPE_IDENT_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 # name so explicitly-imported names never produce a same-package edge.
 _IMPORT_LINE_RE = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)", re.MULTILINE)
 
+# Scala brace imports: ``import a.b.{C, D => E}`` — every name inside the
+# braces (sources and rename targets alike) shadows same-package types.
+_IMPORT_BRACES_RE = re.compile(r"^\s*import\s+[\w.]+\.\{([^}]*)\}", re.MULTILINE)
+
 # Kotlin default-import types (kotlin.*, kotlin.collections.*, kotlin.io.*,
 # kotlin.text.*, kotlin.ranges.*, kotlin.sequences.*, kotlin.annotation.*,
 # kotlin.jvm.*) — visible without an import in every Kotlin file, exactly
@@ -84,6 +88,17 @@ _KOTLIN_DEFAULT_TYPES = frozenset({
     "StringBuilder", "KClass",
 })
 
+# Scala Predef / default-import types — visible without an import in every
+# Scala file. Names shared with java.lang/Kotlin (String, Exception, …) are
+# already covered by those sets; this adds the Scala-specific surface.
+_SCALA_DEFAULT_TYPES = frozenset({
+    "Option", "Some", "None", "Either", "Left", "Right", "Try", "Success",
+    "Failure", "Future", "Promise", "Seq", "IndexedSeq", "LinearSeq", "Vector",
+    "Stream", "LazyList", "Nil", "AnyRef", "AnyVal", "BigInt", "BigDecimal",
+    "Ordering", "Ordered", "PartialFunction", "Symbol", "Tuple1", "Tuple2",
+    "Tuple3", "Range", "App", "Serializable", "Product", "Equals", "Unit",
+})
+
 _SAME_PACKAGE_HINT = "same_package"
 
 
@@ -101,7 +116,7 @@ def resolve_jvm_same_package_refs(
     """
     from ..resolvers.jvm_workspace import _JAVA_LANG_TYPES
 
-    skip_names = _JAVA_LANG_TYPES | _KOTLIN_DEFAULT_TYPES
+    skip_names = _JAVA_LANG_TYPES | _KOTLIN_DEFAULT_TYPES | _SCALA_DEFAULT_TYPES
 
     count = 0
     for path, text in texts.items():
@@ -115,8 +130,11 @@ def resolve_jvm_same_package_refs(
         # Simple names this file already imports explicitly — an explicit
         # import of com.other.Foo shadows a same-package Foo.
         explicit_imports = {
-            m.group(1).rsplit(".", 1)[-1] for m in _IMPORT_LINE_RE.finditer(text)
+            m.group(1).rstrip(".").rsplit(".", 1)[-1]
+            for m in _IMPORT_LINE_RE.finditer(text)
         }
+        for m in _IMPORT_BRACES_RE.finditer(text):
+            explicit_imports.update(re.findall(r"\w+", m.group(1)))
 
         # target file → referenced type names
         found: dict[str, list[str]] = {}

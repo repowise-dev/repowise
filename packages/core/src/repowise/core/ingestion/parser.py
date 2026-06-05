@@ -529,6 +529,38 @@ class ASTParser:
             if not module_text:
                 continue
 
+            # Scala: the query's ``(identifier)`` capture is only the FIRST
+            # path segment (``import com.foo.Bar`` arrived as ``com``), and
+            # one declaration can hold several clauses, brace selectors,
+            # renames, and wildcards. Reconstruct full dotted paths and emit
+            # one Import per selected name.
+            if file_info.language == "scala" and stmt_node.type == "import_declaration":
+                from .extractors.bindings.scala import expand_scala_import_clauses
+
+                from .models import NamedBinding
+
+                for clause_path, clause_names in expand_scala_import_clauses(stmt_node, src):
+                    local = clause_names[0]
+                    exported = None if local == "*" else clause_path.rsplit(".", 1)[-1]
+                    imports.append(
+                        Import(
+                            raw_statement=raw,
+                            module_path=clause_path,
+                            imported_names=clause_names,
+                            is_relative=False,
+                            resolved_file=None,
+                            bindings=[
+                                NamedBinding(
+                                    local_name=local,
+                                    exported_name=exported,
+                                    source_file=None,
+                                )
+                            ],
+                            is_reexport=False,
+                        )
+                    )
+                continue
+
             # Rust #[path = "..."] attribute overrides module file location.
             # In tree-sitter-rust, outer attributes are preceding siblings of
             # the item, not children.

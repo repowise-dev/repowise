@@ -200,3 +200,39 @@ class TestKotlinSamePackage:
         added = resolve_jvm_same_package_refs(graph, index, texts)
         assert added == 1
         assert graph.has_edge("src/com/app/Service.java", "src/com/app/Repo.kt")
+
+
+class TestScalaSamePackage:
+    def test_scala_sibling_trait_reference(self, tmp_path: Path) -> None:
+        graph, index, texts = _setup(tmp_path, {
+            "src/main/scala/com/app/Api.scala": "package com.app\n\ntrait Api\n",
+            "src/main/scala/com/app/Service.scala": (
+                "package com.app\n\nclass Service extends Api\n"
+            ),
+        })
+        added = resolve_jvm_same_package_refs(graph, index, texts)
+        assert added == 1
+        assert graph.has_edge(
+            "src/main/scala/com/app/Service.scala", "src/main/scala/com/app/Api.scala"
+        )
+
+    def test_scala_predef_names_skipped(self, tmp_path: Path) -> None:
+        graph, index, texts = _setup(tmp_path, {
+            "src/main/scala/com/app/Option.scala": "package com.app\n\nclass Option\n",
+            "src/main/scala/com/app/Use.scala": (
+                "package com.app\n\nclass Use {\n  val o: Option[Int] = None\n}\n"
+            ),
+        })
+        added = resolve_jvm_same_package_refs(graph, index, texts)
+        assert added == 0
+
+    def test_scala_brace_import_shadows_same_package(self, tmp_path: Path) -> None:
+        graph, index, texts = _setup(tmp_path, {
+            "src/main/scala/com/app/Helper.scala": "package com.app\n\nclass Helper\n",
+            "src/main/scala/com/app/Use.scala": (
+                "package com.app\n\nimport com.other.{Helper, Misc}\n\n"
+                "class Use {\n  val h = new Helper()\n}\n"
+            ),
+        })
+        added = resolve_jvm_same_package_refs(graph, index, texts)
+        assert added == 0

@@ -302,6 +302,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.kotlin import resolve_kotlin_import_all
 
                     targets = resolve_kotlin_import_all(imp.module_path, path, ctx)
+                elif _lang == "scala":
+                    from ..resolvers.scala import resolve_scala_import_all
+
+                    targets = resolve_scala_import_all(imp.module_path, path, ctx)
                 elif _lang in ("cpp", "c"):
                     # Fan-out across sibling TUs in the same CMake/Bazel
                     # target so a public header reached by one ``.cc`` is

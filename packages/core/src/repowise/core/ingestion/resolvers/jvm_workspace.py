@@ -32,14 +32,20 @@ _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
 # Compound kinds (``enum class`` / ``annotation class`` — Kotlin) must come
 # before their single-keyword prefixes in the alternation, otherwise the
 # bare ``enum`` / ``annotation`` branch matches first and captures the
-# literal word "class" as the type name.
+# literal word "class" as the type name. ``trait`` and the ``case`` /
+# ``implicit`` modifiers cover Scala's type declarations.
 _TOP_LEVEL_TYPE_RE = re.compile(
     r"^\s*(?:public\s+|private\s+|protected\s+|internal\s+|abstract\s+|final\s+"
-    r"|sealed\s+|open\s+|data\s+|value\s+|inline\s+)*"
-    r"(?:annotation\s+class|enum\s+class|class|interface|enum|object|record|annotation)\s+(\w+)",
+    r"|sealed\s+|open\s+|data\s+|value\s+|inline\s+|case\s+|implicit\s+)*"
+    r"(?:annotation\s+class|enum\s+class|class|interface|trait|enum|object|record|annotation)\s+(\w+)",
     re.MULTILINE,
 )
-_JVM_EXTENSIONS = frozenset({".java", ".kt"})
+_JVM_EXTENSIONS = frozenset({".java", ".kt", ".scala"})
+
+# Chained Scala package clauses (``package org.example`` then ``package
+# tools`` → org.example.tools) are scanned line-wise from the top of the
+# file; ``package object foo`` is a definition, not a clause.
+_SCALA_PACKAGE_LINE_RE = re.compile(r"package\s+(?!object\b)([\w.]+)")
 
 # JDK / Kotlin-stdlib namespaces never resolve to repo files and produce
 # no node at all. Each prefix carries its trailing dot so matching stays
@@ -195,15 +201,39 @@ def _scan_jvm_file(abs_path: str) -> tuple[str, tuple[str, ...]]:
         return "", ()
 
     package = ""
-    pkg_match = _PACKAGE_RE.search(text)
-    if pkg_match:
-        package = pkg_match.group(1)
+    if abs_path.endswith(".scala"):
+        package = _scala_package(text)
+    else:
+        pkg_match = _PACKAGE_RE.search(text)
+        if pkg_match:
+            package = pkg_match.group(1)
 
     types: list[str] = []
     for m in _TOP_LEVEL_TYPE_RE.finditer(text):
         types.append(m.group(1))
 
     return package, tuple(types)
+
+
+def _scala_package(text: str) -> str:
+    """Join chained Scala package clauses from the top of the file.
+
+    ``package org.example`` followed by ``package tools`` nests —
+    the file's package is ``org.example.tools``. Scanning stops at the
+    first non-package code line so a ``package`` token later in the file
+    (strings, comments mid-file) cannot append junk.
+    """
+    pkgs: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("//", "/*", "*")):
+            continue
+        m = _SCALA_PACKAGE_LINE_RE.match(stripped)
+        if m:
+            pkgs.append(m.group(1))
+            continue
+        break
+    return ".".join(pkgs)
 
 
 _JPMS_PROVIDES_RE = re.compile(
@@ -351,7 +381,7 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
     pkg_types: dict[str, dict[str, list[str]]] = {}
 
     for path in ctx.sorted_paths:
-        if not (path.endswith(".java") or path.endswith(".kt")):
+        if not path.endswith((".java", ".kt", ".scala")):
             continue
 
         abs_path = str((repo_path / path).resolve())
