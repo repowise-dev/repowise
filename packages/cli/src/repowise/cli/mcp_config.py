@@ -6,22 +6,77 @@ import json
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
 import click
 
 
-def generate_mcp_config(repo_path: Path) -> dict:
+def _looks_transient(path: Path) -> bool:
+    """True when *path* lives somewhere that won't survive (temp, uvx cache).
+
+    ``uvx repowise`` runs from an ephemeral cache environment; pinning a
+    registration to it would break on the next cache eviction. Same for
+    anything under the OS temp dir.
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return True
+    try:
+        if resolved.is_relative_to(Path(tempfile.gettempdir()).resolve()):
+            return True
+    except (OSError, ValueError):
+        pass
+    parts = {part.lower() for part in resolved.parts}
+    # uv tool-run cache: ~/.cache/uv/archive-v0/... (POSIX) or
+    # %LOCALAPPDATA%/uv/cache/archive-v0/... (Windows).
+    return "uv" in parts and ("cache" in parts or ".cache" in parts)
+
+
+def resolve_repowise_command(script: str = "repowise") -> str:
+    """Absolute path of the *running* install's console script, or the bare name.
+
+    Registrations that store the bare command name are resolved via PATH at
+    session start, so any shadow install (conda, old pip, pipx, uv tool)
+    silently hijacks the MCP server. For **per-user** config files we pin
+    the absolute path of the install that ran ``init`` instead. Repo-shared
+    files (``.mcp.json``, ``.codex/config.toml``) must keep the bare name —
+    they may be committed, and one contributor's absolute path would break
+    everyone else's checkout.
+
+    The lookup is the running interpreter's scripts directory (``Scripts``
+    on Windows, ``bin`` elsewhere) — i.e. the venv/conda/pipx/uv-tool
+    environment actually executing right now, never PATH. Falls back to the
+    bare name when the script isn't there (e.g. ``python -m`` from a source
+    checkout) or the location is transient (uvx cache, temp dir).
+    """
+    suffix = ".exe" if sys.platform == "win32" else ""
+    try:
+        candidate = Path(sys.executable).parent / f"{script}{suffix}"
+        if candidate.is_file() and not _looks_transient(candidate):
+            return str(candidate.resolve()).replace("\\", "/")
+    except OSError:
+        pass
+    return script
+
+
+def generate_mcp_config(repo_path: Path, *, command: str | None = None) -> dict:
     """Generate MCP config JSON for a repository.
 
-    Returns a dict in the standard mcpServers format.
+    Returns a dict in the standard mcpServers format. *command* defaults to
+    the bare ``repowise`` (PATH-resolved) — callers writing **per-user**
+    config files should pass ``resolve_repowise_command()`` to pin the
+    registration to the install that ran ``init``; repo-shared files keep
+    the default (see :func:`resolve_repowise_command`).
     """
     abs_path = str(repo_path.resolve()).replace("\\", "/")
     return {
         "mcpServers": {
             "repowise": {
-                "command": "repowise",
+                "command": command or "repowise",
                 "args": ["mcp", abs_path, "--transport", "stdio"],
                 "description": "repowise: codebase intelligence — docs, graph, git signals, dead code, decisions",
             }
