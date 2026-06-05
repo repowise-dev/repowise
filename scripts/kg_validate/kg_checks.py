@@ -12,10 +12,11 @@ Two layers, both side-effect free so they unit-test on synthetic dicts:
   sanity). Each smell carries a severity: FAIL smells gate, WARN smells
   report.
 
-Thresholds are deliberately permissive (observe first; lock them once the
-full validation matrix provides evidence). The degradation-honesty check:
-a dominant language with no import support must yield a structural tour —
-no execution-flow vocabulary, layers labeled canonical.
+Thresholds were locked at the project's acceptance gate from the 38-repo
+matrix data (each enforced value leaves ~30% headroom past the worst clean
+repo of its tier). The degradation-honesty check: a dominant language with
+no import support must yield a structural tour — no execution-flow
+vocabulary, layers labeled canonical.
 """
 
 from __future__ import annotations
@@ -23,11 +24,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-# Density floors per import-support tier. Deliberately permissive — only
-# "broken graph" obviousness; real per-language floors need matrix data.
-EDGELESS_FLOOR = 0.05  # imports/file below this with full/partial support = broken
-DENSITY_REGRESSION_TOLERANCE = 0.15  # >15% drop vs baseline fails
-CATCHALL_WARN_FRACTION = 0.50  # one layer holding >50% of code files
+# --- Enforced thresholds (locked from the 38-repo matrix) -------------------
+#
+# Density floors (FAIL): dominant-language imports/file below the tier floor.
+#   full    0.9  — matrix minimum 1.31 (sinatra, post-stdlib-filter honest)
+#   partial 0.8  — matrix minimum 1.17 (jason) among repos at/above the
+#                  small-repo cutoff
+# Repos with fewer than SMALL_REPO_FILES dominant-language files are exempt:
+# a 3-file repo's density is noise, not evidence (roblox-lua-promise 0.67).
+# Same rationale as the curation graph-mode small-repo skip.
+DENSITY_FLOORS = {"full": 0.9, "partial": 0.8}
+SMALL_REPO_FILES = 10
+# Orphan-ratio ceilings (FAIL): dominant language only.
+#   full    0.30 — matrix maximum 0.232 (django: test-heavy, honest)
+#   partial 0.35 — matrix maximum 0.25 (plug/jason: elixir fully-qualified
+#                  module references need no alias — recorded residual)
+ORPHAN_CEILINGS = {"full": 0.30, "partial": 0.35}
+# A floor for "graph claims support but is effectively edgeless" — kept
+# below the tier floors so it still guards small-repo-exempt dominants.
+EDGELESS_FLOOR = 0.05
+DENSITY_REGRESSION_TOLERANCE = 0.15  # >15% drop vs baseline fails; conscious
+# baseline updates are the escape hatch — that friction is the feature.
+CATCHALL_WARN_FRACTION = 0.50  # one layer holding >50% of layered nodes
+# WARN escalates to FAIL when a single layer holds >95% in a repo with at
+# least CATCHALL_FAIL_MIN_FILES code files: layering effectively failed.
+# Tiny flat repos legitimately approach one layer (cowlib 95.1% at 29 code
+# files is exempt via the size gate; dfmt 93% at 256 files passes).
+CATCHALL_FAIL_FRACTION = 0.95
+CATCHALL_FAIL_MIN_FILES = 30
 LAYER_COUNT_MIN, LAYER_COUNT_MAX = 2, 12  # sanity for repos > LAYER_COUNT_MIN_FILES
 LAYER_COUNT_MIN_FILES = 30
 
@@ -233,6 +257,26 @@ def run_smells(
                     f"edges_per_file={dom.get('edges_per_file')}",
                 )
             )
+        floor = DENSITY_FLOORS[dom["import_support"]]
+        if dom.get("files", 0) >= SMALL_REPO_FILES and dom.get("edges_per_file", 0.0) < floor:
+            smells.append(
+                Smell(
+                    "FAIL",
+                    "density_floor",
+                    f"{dominant} ({dom['import_support']}) edges_per_file="
+                    f"{dom.get('edges_per_file')} < tier floor {floor}",
+                )
+            )
+        ceiling = ORPHAN_CEILINGS[dom["import_support"]]
+        if dom.get("orphan_ratio", 0.0) > ceiling:
+            smells.append(
+                Smell(
+                    "FAIL",
+                    "orphan_ceiling",
+                    f"{dominant} ({dom['import_support']}) orphan_ratio="
+                    f"{dom.get('orphan_ratio')} > tier ceiling {ceiling}",
+                )
+            )
 
     # -- degradation honesty -----------------------------------------------
     if dom and dom.get("import_support") == "none":
@@ -292,7 +336,16 @@ def run_smells(
         frac = len(biggest.get("nodeIds", [])) / max(
             1, sum(len(l.get("nodeIds", [])) for l in layers)
         )
-        if frac > CATCHALL_WARN_FRACTION:
+        if frac > CATCHALL_FAIL_FRACTION and code_file_count >= CATCHALL_FAIL_MIN_FILES:
+            smells.append(
+                Smell(
+                    "FAIL",
+                    "catchall_layer",
+                    f"{biggest.get('name')} holds {frac:.0%} of layered nodes "
+                    f"({code_file_count} code files — layering effectively failed)",
+                )
+            )
+        elif frac > CATCHALL_WARN_FRACTION:
             smells.append(
                 Smell(
                     "WARN",

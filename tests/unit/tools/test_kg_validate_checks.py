@@ -175,6 +175,78 @@ class TestSmells:
         catchall = [s for s in smells if s.code == "catchall_layer"]
         assert catchall and catchall[0].severity == "WARN"
 
+    def test_density_floor_fails_below_tier_floor(self) -> None:
+        # 12 go files (full tier, above the small-repo cutoff), one edge:
+        # 0.08 e/f clears EDGELESS_FLOOR but not the full-tier floor of 0.9.
+        kg = _kg(
+            files=[(f"f{i}.go", "go") for i in range(12)],
+            imports=[("f0.go", "f1.go")],
+            tour=self._clean_tour(),
+        )
+        smells = run_smells(kg, compute_stats(kg, SUPPORT))
+        floor = [s for s in smells if s.code == "density_floor"]
+        assert floor and floor[0].severity == "FAIL"
+
+    def test_density_floor_exempts_small_repos(self) -> None:
+        # 3 files < SMALL_REPO_FILES: density is noise, floor must not fire.
+        kg = _kg(
+            files=[("a.go", "go"), ("b.go", "go"), ("c.go", "go")],
+            imports=[("a.go", "b.go")],
+            tour=self._clean_tour(),
+        )
+        codes = {s.code for s in run_smells(kg, compute_stats(kg, SUPPORT))}
+        assert "density_floor" not in codes
+
+    def test_orphan_ceiling_fails_above_tier_ceiling(self) -> None:
+        # 10 files, 4 orphans = 0.4 > the full-tier ceiling of 0.30.
+        kg = _kg(
+            files=[(f"f{i}.go", "go") for i in range(10)],
+            imports=[(f"f{i}.go", f"f{i + 1}.go") for i in range(5)]
+            + [(f"f{i}.go", f"f{i}.go") for i in (0,) * 15],  # keep density above floor
+            tour=self._clean_tour(),
+        )
+        stats = compute_stats(kg, SUPPORT)
+        assert stats["by_language"]["go"]["orphan_ratio"] > 0.30
+        smells = run_smells(kg, stats)
+        ceiling = [s for s in smells if s.code == "orphan_ceiling"]
+        assert ceiling and ceiling[0].severity == "FAIL"
+
+    def test_catchall_layer_fails_above_95_when_big_enough(self) -> None:
+        n = 40
+        layers = [
+            {"id": "layer:app", "name": "Application", "display_order": 0,
+             "nodeIds": [f"file:f{i}.py" for i in range(n - 1)]},
+            {"id": "layer:test", "name": "Test", "display_order": 1,
+             "nodeIds": ["file:t.py"]},
+        ]
+        kg = _kg(
+            files=[(f"f{i}.py", "python") for i in range(n - 1)] + [("t.py", "python")],
+            imports=[(f"f{i}.py", f"f{i + 1}.py") for i in range(n - 2)],
+            layers=layers,
+            tour=self._clean_tour(),
+        )
+        smells = run_smells(kg, compute_stats(kg, SUPPORT))
+        catchall = [s for s in smells if s.code == "catchall_layer"]
+        assert catchall and catchall[0].severity == "FAIL"
+
+    def test_catchall_layer_stays_warn_below_size_gate(self) -> None:
+        # 96% catch-all but only 10 code files — tiny flat repos are honest.
+        layers = [
+            {"id": "layer:app", "name": "Application", "display_order": 0,
+             "nodeIds": [f"file:f{i}.py" for i in range(24)]},
+            {"id": "layer:test", "name": "Test", "display_order": 1,
+             "nodeIds": ["file:t.py"]},
+        ]
+        kg = _kg(
+            files=[(f"f{i}.py", "python") for i in range(9)] + [("t.py", "python")],
+            imports=[(f"f{i}.py", f"f{i + 1}.py") for i in range(8)],
+            layers=layers,
+            tour=self._clean_tour(),
+        )
+        smells = run_smells(kg, compute_stats(kg, SUPPORT))
+        catchall = [s for s in smells if s.code == "catchall_layer"]
+        assert catchall and catchall[0].severity == "WARN"
+
     def test_entry_point_sanity(self) -> None:
         kg = _kg(
             files=[("a.py", "python")],
