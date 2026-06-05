@@ -564,3 +564,103 @@ class TestBinTargetDiscovery:
         assert idx is not None
         foo = next(c for c in idx.crates if c.name == "foo")
         assert foo.bin_paths == ()
+
+
+def _parsed_with_imports(import_specs: list[tuple[str, bool, list[str]]]):
+    """Fake ParsedFile carrying Import-shaped objects (module_path, is_reexport, names)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        imports=[
+            SimpleNamespace(module_path=mp, is_reexport=rx, imported_names=names)
+            for mp, rx, names in import_specs
+        ]
+    )
+
+
+class TestPubUseReexportFollowing:
+    def test_prelude_pattern_within_crate(self, tmp_path: Path) -> None:
+        # lib.rs: pub use crate::engine::Engine; app.rs: use crate::Engine
+        paths = ["src/lib.rs", "src/engine.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports(
+                [("crate::engine::Engine", True, ["Engine"])]
+            ),
+            "src/engine.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::Engine", "src/app.rs", ctx)
+        assert got == "src/engine.rs"
+
+    def test_workspace_cross_crate_reexport(self, tmp_path: Path) -> None:
+        _write_workspace(tmp_path, ["crates/core", "crates/app"])
+        _write_member_crate(tmp_path, "crates/core", "my_core")
+        _write_member_crate(tmp_path, "crates/app", "my_app")
+        paths = [
+            "crates/core/src/lib.rs",
+            "crates/core/src/store.rs",
+            "crates/app/src/lib.rs",
+            "crates/app/src/main.rs",
+        ]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "crates/core/src/lib.rs": _parsed_with_imports(
+                [("crate::store::Store", True, ["Store"])]
+            ),
+            "crates/core/src/store.rs": _parsed_with_imports([]),
+            "crates/app/src/lib.rs": _parsed_with_imports([]),
+            "crates/app/src/main.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("my_core::Store", "crates/app/src/main.rs", ctx)
+        assert got == "crates/core/src/store.rs"
+
+    def test_brace_group_reexport(self, tmp_path: Path) -> None:
+        paths = ["src/lib.rs", "src/types.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports(
+                [("crate::types::{Foo, Bar}", True, ["Foo", "Bar"])]
+            ),
+            "src/types.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::Bar", "src/app.rs", ctx)
+        assert got == "src/types.rs"
+
+    def test_glob_reexport(self, tmp_path: Path) -> None:
+        paths = ["src/lib.rs", "src/prelude.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports([("crate::prelude::*", True, ["*"])]),
+            "src/prelude.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::Anything", "src/app.rs", ctx)
+        assert got == "src/prelude.rs"
+
+    def test_non_reexport_use_not_followed(self, tmp_path: Path) -> None:
+        # A plain (non-pub) use in lib.rs is not part of the crate's API.
+        paths = ["src/lib.rs", "src/engine.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports(
+                [("crate::engine::Engine", False, ["Engine"])]
+            ),
+            "src/engine.rs": _parsed_with_imports([]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::Engine", "src/app.rs", ctx)
+        assert got is None
+
+    def test_reexport_cycle_does_not_recurse(self, tmp_path: Path) -> None:
+        # lib.rs re-exporting an unresolvable name through itself must
+        # terminate (depth cap), not recurse.
+        paths = ["src/lib.rs", "src/app.rs"]
+        ctx = _ctx(tmp_path, paths)
+        ctx.parsed_files = {
+            "src/lib.rs": _parsed_with_imports([("crate::Ghost", True, ["Ghost"])]),
+            "src/app.rs": _parsed_with_imports([]),
+        }
+        got = resolve_rust_import("crate::Ghost", "src/app.rs", ctx)
+        assert got is None
