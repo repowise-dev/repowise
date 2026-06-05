@@ -2,11 +2,6 @@
  "repo": "jason",
  "smells": [
   {
-   "code": "tour_too_short",
-   "message": "only 4 steps",
-   "severity": "WARN"
-  },
-  {
    "code": "catchall_layer",
    "message": "Application holds 92% of layered nodes",
    "severity": "WARN"
@@ -15,21 +10,29 @@
  "stats": {
   "by_language": {
    "elixir": {
-    "edges_per_file": 0.0,
+    "edges_per_file": 1.17,
     "files": 24,
-    "import_edges": 0,
-    "import_support": "none",
-    "orphan_files": 24,
-    "orphan_ratio": 1.0,
-    "resolution_rate": null
+    "import_edges": 28,
+    "import_support": "partial",
+    "orphan_files": 6,
+    "orphan_ratio": 0.25,
+    "resolution_rate": 0.893
    }
   },
   "dominant_language": "elixir",
   "entry_points": [],
   "tour_paths": [
    "README.md",
-   "lib/jason.ex",
+   "lib/encode.ex",
    "lib/codegen.ex",
+   "lib/ordered_object.ex",
+   "lib/fragment.ex",
+   "lib/jason.ex",
+   "lib/decoder.ex",
+   "lib/formatter.ex",
+   "lib/helpers.ex",
+   "lib/sigil.ex",
+   "lib/encoder.ex",
    "test/test_helper.exs"
   ]
  }

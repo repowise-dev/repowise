@@ -24,13 +24,13 @@
     "resolution_rate": 0.917
    },
    "fsharp": {
-    "edges_per_file": 0.0,
+    "edges_per_file": 2.0,
     "files": 1,
-    "import_edges": 0,
-    "import_support": "none",
-    "orphan_files": 1,
-    "orphan_ratio": 1.0,
-    "resolution_rate": null
+    "import_edges": 2,
+    "import_support": "partial",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.0
    },
    "javascript": {
     "edges_per_file": 0.0,

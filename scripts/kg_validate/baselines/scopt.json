@@ -3,6 +3,15 @@
  "smells": [],
  "stats": {
   "by_language": {
+   "markdown": {
+    "edges_per_file": 0.0,
+    "files": 16,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 16,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
    "scala": {
     "edges_per_file": 1.79,
     "files": 29,
@@ -26,9 +35,9 @@
    "shared/src/main/scala/scopt/OEffect.scala",
    "shared/src/main/scala/scopt/OParserSetup.scala",
    "shared/src/main/scala/scopt/Validation.scala",
-   "project/Dependencies.scala",
    "shared/src/main/scala-2.12/scopt/Seq.scala",
    "shared/src/main/scala/scopt/OParser.scala",
+   "project/Dependencies.scala",
    "shared/src/main/scala/scopt/OptionParser.scala",
    "js/src/test/scala/scopt/SpecUtilPlatform.scala"
   ]

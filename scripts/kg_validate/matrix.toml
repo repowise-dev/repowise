@@ -87,7 +87,7 @@ tier = 1
 source = "https://github.com/michalmuskala/jason"
 sha = "4ede42858eb19f80ec9e863aab52df466eab8608"
 language = "elixir"
-tier = 3
+tier = 2
 
 # --- Tier-2 live-validation batch ---
 
@@ -146,3 +146,100 @@ source = "https://github.com/go-task/task"
 sha = "f50327f2a2883f9e5b4d7c7c2ae489d6334e2bd9"
 language = "go"
 tier = 1
+
+# --- Lightweight regex-resolver batch (promoted from passthrough) ---
+
+[plug]
+source = "https://github.com/elixir-plug/plug"
+sha = "d2580b0579a7d804b2dfa0f9ed35d459236143ed"
+language = "elixir"
+tier = 2
+
+[args]
+source = "https://github.com/dart-lang/args"
+sha = "7a2dfb528768f0a2e5680f711dbfb948f1d6c255"
+language = "dart"
+tier = 2
+
+[compojure]
+source = "https://github.com/weavejester/compojure"
+sha = "8a4758d28e8fcd28fa7610dca6e2908d039e6a4f"
+language = "clojure"
+tier = 2
+
+[aeson]
+source = "https://github.com/haskell/aeson"
+sha = "19f8eddb9bd6aaa464f21a54fa1f7cd7740112c3"
+language = "haskell"
+tier = 2
+
+[argu]
+source = "https://github.com/fsprojects/Argu"
+sha = "198f4d50fd5208a84c4e02c87eba8cc92a13a5f0"
+language = "fsharp"
+tier = 2
+
+# cowlib substitutes rebar3 (a large build tool with vendored deps) — a
+# pure small Erlang library exercises include/behaviour/qualified-call
+# resolution at harness-friendly size.
+[cowlib]
+source = "https://github.com/ninenines/cowlib"
+sha = "71ae94fa42cbe55fdc5bfbb3d712ba8ab1b2918f"
+language = "erlang"
+tier = 2
+
+# --- Structural-mode batch (no resolver; harness-only acceptance) ---
+
+[zig-clap]
+source = "https://github.com/Hejsil/zig-clap"
+sha = "bf56f229ed5b6c381d90e192234913c6deb3f688"
+language = "zig"
+tier = 3
+
+[jsony]
+source = "https://github.com/treeform/jsony"
+sha = "c5874fb71435e3ced8ee0025822e15f5d0e8e622"
+language = "nim"
+tier = 3
+
+[dfmt]
+source = "https://github.com/dlang-community/dfmt"
+sha = "c65d1c8a9cd2d784ded4cc7517c2cdd42c0c5c76"
+language = "dlang"
+tier = 3
+
+[glue]
+source = "https://github.com/tidyverse/glue"
+sha = "da9c73f7a3de6a27f3103cb5bb2355820a4c3a6a"
+language = "r"
+tier = 3
+
+[ordered-collections]
+source = "https://github.com/JuliaCollections/OrderedCollections.jl"
+sha = "d5d76c771c7e5a49100ee65720a9d5a9654be420"
+language = "julia"
+tier = 3
+
+[elm-html]
+source = "https://github.com/elm/html"
+sha = "1affbf39efef4b4529110a567f706130c178a457"
+language = "elm"
+tier = 3
+
+[kemal]
+source = "https://github.com/kemalcr/kemal"
+sha = "73e4c01d0ae40a01feb3ca759eed709c356a6701"
+language = "crystal"
+tier = 3
+
+[sexplib]
+source = "https://github.com/janestreet/sexplib"
+sha = "7d6edfaa89ae1182f51fe1161b86c773bdf31778"
+language = "ocaml"
+tier = 3
+
+[afnetworking]
+source = "https://github.com/AFNetworking/AFNetworking"
+sha = "d9f589cc2c1fe9d55eb5eea00558010afea7a41e"
+language = "objectivec"
+tier = 3

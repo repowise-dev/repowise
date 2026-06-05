@@ -3,12 +3,21 @@
  "smells": [
   {
    "code": "catchall_layer",
-   "message": "Test holds 54% of layered nodes",
+   "message": "Test holds 55% of layered nodes",
    "severity": "WARN"
   }
  ],
  "stats": {
   "by_language": {
+   "asciidoc": {
+    "edges_per_file": 0.0,
+    "files": 1,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 1,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
    "ruby": {
     "edges_per_file": 1.31,
     "files": 147,
