@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 from typing import Any
@@ -103,64 +102,22 @@ def _resolve_index_only_mode(
 async def _persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
     """Upsert health findings + metrics for the changed-files subset.
 
-    Unlike ``persist_pipeline_result`` (which delete-then-inserts the
-    whole repo), this writer only touches rows whose ``file_path`` is in
-    the partial report — so unchanged files keep their existing findings
-    and metrics across an incremental ``repowise update``.
+    Delegates to :mod:`repowise.core.pipeline.incremental` — the logic moved
+    to core so workspace updates can reuse the incremental path.
     """
-    from repowise.core.persistence.crud import (
-        upsert_health_findings,
-        upsert_health_metrics,
-    )
+    from repowise.core.pipeline.incremental import persist_partial_health
 
-    changed_paths = sorted({m.file_path for m in report.metrics or []})
-    if not changed_paths:
-        return
-    await upsert_health_metrics(session, repo_id, report.metrics or [])
-    await upsert_health_findings(
-        session, repo_id, list(report.findings or []), file_paths=changed_paths
-    )
-    # Per-function blame rollup for the changed files (keeps git_function_blame
-    # current between full indexes; FULL git tier only — empty otherwise).
-    fn_blame_rows = getattr(report, "function_blame_rows", None)
-    if fn_blame_rows:
-        from repowise.core.persistence.crud import upsert_git_function_blame_bulk
-
-        await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+    await persist_partial_health(session, repo_id, report)
 
 
 async def _persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
     """Capture + upsert ``git_commits`` rows for commits new since the last index.
 
-    Foundation 1 only populated the per-commit table on the full orchestrator
-    index; without this, the commits/change-risk surface goes stale between full
-    re-indexes. Bounds the walk to commits newer than the newest persisted
-    ``committed_at`` (one ``git log`` pass) and upserts (idempotent on sha).
+    Delegates to :mod:`repowise.core.pipeline.incremental`.
     """
-    from repowise.core.ingestion.git_indexer import GitIndexer
-    from repowise.core.persistence.crud import (
-        get_latest_commit_committed_at,
-        upsert_git_commits_bulk,
-    )
+    from repowise.core.pipeline.incremental import persist_incremental_commits
 
-    cfg = load_config(repo_path)
-    indexer = GitIndexer(
-        repo_path,
-        commit_limit=cfg.get("commit_limit"),
-        follow_renames=cfg.get("follow_renames", False),
-    )
-    newest = await get_latest_commit_committed_at(session, repo_id)
-    since_ts: int | None = None
-    if newest is not None:
-        # SQLite drops tzinfo, so a naive read must be interpreted as UTC (the
-        # column is stored tz-aware) rather than local time.
-        from datetime import UTC
-
-        dt = newest if newest.tzinfo is not None else newest.replace(tzinfo=UTC)
-        since_ts = int(dt.timestamp())
-    rows = await asyncio.to_thread(indexer.capture_new_commit_rows, since_ts=since_ts)
-    if rows:
-        await upsert_git_commits_bulk(session, repo_id, rows)
+    await persist_incremental_commits(session, repo_id, repo_path)
 
 
 # ---------------------------------------------------------------------------
@@ -326,13 +283,9 @@ def _refresh_workspace_editor_project_files(
 
 def _build_filtered_changed_paths(file_diffs: list, exclude_patterns: list[str]) -> list[str]:
     """Extract paths from file_diffs, filtering out excluded patterns."""
-    paths = [fd.path for fd in file_diffs]
-    if not exclude_patterns:
-        return paths
-    import pathspec
+    from repowise.core.pipeline.incremental import build_filtered_changed_paths
 
-    spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
-    return [p for p in paths if not spec.match_file(p)]
+    return build_filtered_changed_paths(file_diffs, exclude_patterns)
 
 
 def _build_repo_graph(
@@ -345,91 +298,21 @@ def _build_repo_graph(
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
-    Shared by the incremental rebuild path (:func:`_rebuild_graph_and_git`) and
-    the config-triggered re-score path (:func:`_run_full_health_rescore`) so both
-    build the same graph from the same parser and the same synthetic edge step.
-
-    Files that fail to read/parse are skipped and reported as a count rather than
-    swallowed silently. ``source_map`` is populated only when ``collect_sources``
-    is set (the re-score path doesn't need the raw bytes).
-
-    Returns ``(parsed_files, source_map, graph_builder, repo_structure,
-    file_count)``.
+    Delegates to :mod:`repowise.core.pipeline.incremental` — the logic moved
+    to core so workspace updates can reuse the incremental path. Shared by
+    the incremental rebuild path (:func:`_rebuild_graph_and_git`) and the
+    config-triggered re-score path (:func:`_run_full_health_rescore`).
     """
-    from pathlib import Path as PathlibPath
+    from repowise.core.pipeline.incremental import build_repo_graph
 
-    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder, compute_content_hash
-
-    traverser = FileTraverser(
+    return build_repo_graph(
         repo_path,
-        extra_exclude_patterns=exclude_patterns or None,
+        exclude_patterns,
+        collect_sources=collect_sources,
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
+        log=console.print,
     )
-    file_infos = list(traverser.traverse())
-    repo_structure = traverser.get_repo_structure()
-
-    # Content-hash parse cache: an incremental update re-ingests the whole
-    # repo, but only the changed files actually need a tree-sitter parse.
-    # Best-effort — any cache failure falls back to a full parse.
-    parse_cache = None
-    try:
-        from repowise.core.ingestion.parse_cache import ParseCache
-
-        parse_cache = ParseCache(PathlibPath(repo_path) / ".repowise")
-        parse_cache.load()
-    except Exception:
-        parse_cache = None
-
-    parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
-    parsed_files: list = []
-    source_map: dict[str, bytes] = {}
-    graph_builder = GraphBuilder(
-        repo_path,
-        exclude_patterns=exclude_patterns,
-        centrality_cache_dir=PathlibPath(repo_path) / ".repowise",
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
-
-    skipped = 0
-    for fi in file_infos:
-        try:
-            source = PathlibPath(fi.abs_path).read_bytes()
-            content_hash = compute_content_hash(source)
-            parsed = parse_cache.get(fi, content_hash) if parse_cache is not None else None
-            if parsed is None:
-                if parser is None:
-                    parser = ASTParser()
-                parsed = parser.parse_file(fi, source)
-                if parse_cache is not None:
-                    parse_cache.put(parsed, content_hash)
-        except Exception:
-            skipped += 1
-            continue
-        parsed_files.append(parsed)
-        if collect_sources:
-            source_map[fi.path] = source
-        graph_builder.add_file(parsed)
-    graph_builder.build()
-    if parse_cache is not None:
-        parse_cache.save()
-
-    if skipped:
-        console.print(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
-
-    # Add framework-aware synthetic edges (conftest, Django, FastAPI, Flask).
-    try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
-
-        tech_items = detect_tech_stack(repo_path)
-        fw_count = graph_builder.add_framework_edges([item.name for item in tech_items])
-        if fw_count:
-            console.print(f"Framework edges added: [cyan]{fw_count}[/cyan]")
-    except Exception:
-        pass  # framework edge detection is best-effort
-
-    return parsed_files, source_map, graph_builder, repo_structure, len(file_infos)
 
 
 def _rebuild_graph_and_git(
@@ -454,55 +337,26 @@ def _rebuild_graph_and_git(
     silently drop its submodule files on every incremental update. Missing
     keys fall back to False (legacy behavior).
 
+    Delegates to :mod:`repowise.core.pipeline.incremental` — the logic moved
+    to core so workspace updates can reuse the incremental path.
+
     Returns ``(parsed_files, source_map, graph_builder, repo_structure,
     file_count, git_meta_map)``.
     """
-    # Full re-ingest for graph (needed for cascade analysis)
-    parsed_files, source_map, graph_builder, repo_structure, file_count = _build_repo_graph(
-        repo_path,
-        exclude_patterns,
-        collect_sources=True,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-    )
+    from repowise.core.pipeline.incremental import rebuild_graph_and_git
 
-    # Re-index git metadata for changed files
-    git_meta_map: dict[str, dict] = {}
-    try:
-        from repowise.core.ingestion.git_indexer import GitIndexer
-        from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
-
-        try:
-            tier = GitIndexTier(git_tier) if git_tier else GitIndexTier.FULL
-        except ValueError:
-            tier = GitIndexTier.FULL
-        _commit_limit = cfg.get("commit_limit")
-        _follow_renames = cfg.get("follow_renames", False)
-        git_indexer = GitIndexer(
+    return run_async(
+        rebuild_graph_and_git(
             repo_path,
-            commit_limit=_commit_limit,
-            follow_renames=_follow_renames,
-            exclude_patterns=exclude_patterns or None,
-            tier=tier,
+            file_diffs,
+            cfg,
+            exclude_patterns,
+            git_tier=git_tier,
+            include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
+            log=console.print,
         )
-        changed_paths = _build_filtered_changed_paths(file_diffs, exclude_patterns)
-        updated_meta = run_async(git_indexer.index_changed_files(changed_paths))
-        git_meta_map = {m["file_path"]: m for m in updated_meta}
-        graph_builder.update_co_change_edges(git_meta_map)
-    except Exception as exc:
-        console.print(f"[yellow]Git re-index skipped: {exc}[/yellow]")
-
-    # Pre-compute centrality/community metrics with the init path's fan-out
-    # parallelism. Without this, persist_graph_nodes computes the same
-    # metrics lazily one-by-one. Runs after the co-change edge refresh so
-    # the cached subgraphs reflect the final structure. Best-effort: every
-    # metric still falls back to lazy computation.
-    try:
-        run_async(graph_builder.compute_metrics_parallel())
-    except Exception as exc:
-        console.print(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
-
-    return parsed_files, source_map, graph_builder, repo_structure, file_count, git_meta_map
+    )
 
 
 def _run_partial_analysis(
@@ -514,61 +368,22 @@ def _run_partial_analysis(
 ) -> tuple[Any, Any]:
     """Run partial code-health + dead-code analysis for the changed files.
 
+    Delegates to :mod:`repowise.core.pipeline.incremental` — the logic moved
+    to core so workspace updates can reuse the incremental path.
+
     Returns ``(partial_health_report, dead_code_report)`` — either may be
     ``None`` if its analysis failed (both are best-effort).
     """
-    # Run partial code-health analysis up front so both the index-only
-    # and full paths can upsert findings/metrics for changed files only.
-    # The full file-list is needed because duplication is cross-file —
-    # but only files in ``changed_paths`` produce new findings/metrics.
-    partial_health_report = None
-    try:
-        from repowise.core.analysis.health import HealthAnalyzer
-        from repowise.core.analysis.health.config import HealthConfig
+    from repowise.core.pipeline.incremental import run_partial_analysis
 
-        _health_analyzer = HealthAnalyzer(
-            graph_builder.graph(),
-            git_meta_map=git_meta_map,
-            parsed_files=parsed_files,
-            duplication_cache_dir=Path(repo_path) / ".repowise",
-        )
-        _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
-        if _health_changed:
-            _hcfg = HealthConfig.load(repo_path)
-            _analyzer_config = (
-                _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-                if (_hcfg.disabled_biomarkers or _hcfg.rules)
-                else None
-            )
-            partial_health_report = _health_analyzer.analyze(
-                _analyzer_config, changed_files=_health_changed
-            )
-            console.print(
-                f"Health analysis (partial): [cyan]{len(_health_changed)} files[/cyan], "
-                f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
-            )
-    except Exception as exc:
-        console.print(f"[yellow]Health analysis skipped: {exc}[/yellow]")
-
-    # Run partial dead-code analysis up front so both branches can
-    # persist its results. Previously this sat below the ``if index_only``
-    # short-circuit, which left the closure's reference to
-    # ``dead_code_report`` unbound and crashed every ``--index-only`` run.
-    dead_code_report = None
-    try:
-        from repowise.core.analysis.dead_code import DeadCodeAnalyzer
-
-        _analyzer_partial = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
-        _changed_paths_partial = [fd.path for fd in file_diffs]
-        dead_code_report = _analyzer_partial.analyze_partial(_changed_paths_partial)
-        if dead_code_report.total_findings:
-            console.print(
-                f"Dead code findings (partial): [yellow]{dead_code_report.total_findings}[/yellow]"
-            )
-    except Exception as exc:
-        console.print(f"[yellow]Dead code analysis skipped: {exc}[/yellow]")
-
-    return partial_health_report, dead_code_report
+    return run_partial_analysis(
+        repo_path,
+        graph_builder,
+        git_meta_map,
+        parsed_files,
+        file_diffs,
+        log=console.print,
+    )
 
 
 def _persist_index_only_update(
@@ -583,76 +398,24 @@ def _persist_index_only_update(
     changed_paths: list[str],
 ) -> None:
     """Persist the index-only update (graph + git + dead-code + health), save
-    state, and print the completion line. No LLM regeneration."""
+    state, and print the completion line. No LLM regeneration.
 
-    async def _persist_index_only() -> None:
-        from repowise.cli.helpers import get_db_url_for_repo
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-            upsert_repository,
+    DB persistence delegates to :mod:`repowise.core.pipeline.incremental`;
+    state-file updates and console reporting stay here.
+    """
+    from repowise.core.pipeline.incremental import persist_incremental_index
+
+    run_async(
+        persist_incremental_index(
+            repo_path,
+            graph_builder,
+            git_meta_map,
+            dead_code_report,
+            partial_health_report,
+            changed_paths,
+            log=console.print,
         )
-
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-            repo_id = repo.id
-
-            if git_meta_map:
-                try:
-                    from repowise.core.persistence.crud import (
-                        recompute_git_percentiles,
-                        upsert_git_metadata_bulk,
-                    )
-
-                    await upsert_git_metadata_bulk(session, repo_id, list(git_meta_map.values()))
-                    await recompute_git_percentiles(session, repo_id)
-                except Exception as exc:
-                    console.print(f"[yellow]Git persist skipped: {exc}[/yellow]")
-
-                try:
-                    await _persist_incremental_commits(session, repo_id, repo_path)
-                except Exception as exc:
-                    console.print(f"[yellow]Commit capture skipped: {exc}[/yellow]")
-
-            if dead_code_report is not None:
-                try:
-                    from repowise.core.persistence.crud import (
-                        upsert_dead_code_findings,
-                    )
-
-                    await upsert_dead_code_findings(
-                        session, repo_id, dead_code_report.findings, file_paths=changed_paths
-                    )
-                except Exception as exc:
-                    console.print(f"[yellow]Dead-code persist skipped: {exc}[/yellow]")
-
-            if partial_health_report is not None:
-                try:
-                    await _persist_partial_health(session, repo_id, partial_health_report)
-                except Exception as exc:
-                    console.print(f"[yellow]Health persist skipped: {exc}[/yellow]")
-
-            # Re-persist graph_nodes so symbol-level PageRank /
-            # betweenness / community ids stay in sync with the
-            # current graph build. Without this, ``repowise update``
-            # leaves stale per-symbol metrics from the original init
-            # and the UI shows "Not indexed in graph" for every
-            # symbol on existing repos.
-            try:
-                from repowise.core.pipeline.persist import persist_graph_nodes
-
-                await persist_graph_nodes(session, repo_id, graph_builder)
-            except Exception as exc:
-                console.print(f"[yellow]Graph nodes persist skipped: {exc}[/yellow]")
-
-    run_async(_persist_index_only())
+    )
     from repowise.cli.helpers import config_fingerprint
 
     save_state(

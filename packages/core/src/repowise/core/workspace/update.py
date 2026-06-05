@@ -135,19 +135,42 @@ def count_commits_between(repo_path: Path, base: str, head: str) -> int:
     return 0
 
 
-def read_state_commit(repo_path: Path) -> str | None:
-    """Return ``last_sync_commit`` from ``<repo>/.repowise/state.json`` or None."""
-    import json as _json
+def commit_exists(repo_path: Path, sha: str) -> bool:
+    """Return True when *sha* resolves to a commit in *repo_path*.
 
+    The incremental path must verify this itself: ``ChangeDetector`` returns
+    an **empty** diff for unresolvable refs, which would masquerade as "no
+    changes" and let the caller bump ``last_sync_commit`` past commits that
+    were never indexed (e.g. after a rebase or an aggressive ``git gc``).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=str(repo_path),
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def read_repo_state(repo_path: Path) -> dict[str, Any]:
+    """Return the parsed ``<repo>/.repowise/state.json``, or ``{}``."""
     state_path = repo_path / ".repowise" / "state.json"
     if not state_path.is_file():
-        return None
+        return {}
     try:
         data = _json.loads(state_path.read_text(encoding="utf-8"))
-        sha = data.get("last_sync_commit")
-        return str(sha) if sha else None
+        return data if isinstance(data, dict) else {}
     except Exception:
-        return None
+        return {}
+
+
+def read_state_commit(repo_path: Path) -> str | None:
+    """Return ``last_sync_commit`` from ``<repo>/.repowise/state.json`` or None."""
+    sha = read_repo_state(repo_path).get("last_sync_commit")
+    return str(sha) if sha else None
 
 
 def sync_workspace_state_from_disk(
@@ -213,6 +236,106 @@ def check_repo_staleness(
 # ---------------------------------------------------------------------------
 
 
+async def _incremental_repo_update(
+    repo_path: Path,
+    *,
+    state: dict[str, Any],
+    base_ref: str,
+    exclude_patterns: list[str] | None = None,
+) -> RepoUpdateResult | None:
+    """Refresh an already-indexed repo through the incremental update path.
+
+    Mirrors the single-repo ``repowise update --index-only`` flow: diff
+    ``base_ref..HEAD``, rebuild the graph (parse-cache backed), re-index git
+    metadata for the changed files only, run partial health/dead-code
+    analysis, and upsert the results. State-file updates stay with the
+    caller (``update_workspace``'s ``_update_one``).
+
+    Returns ``None`` when the diff contains deletions or renames: the
+    incremental persistence is upsert-only, so rows for removed paths would
+    linger in graph/health tables forever. The full pipeline's
+    delete-then-insert persistence prunes them — the caller runs it instead.
+
+    Raises on failure — the caller falls back to the full pipeline.
+    """
+    from ..ingestion.change_detector import ChangeDetector
+    from ..pipeline.incremental import (
+        persist_incremental_index,
+        rebuild_graph_and_git,
+        run_partial_analysis,
+    )
+    from ..pipeline.phases.git import drop_transient_git_signals
+    from ..repo_config import load_repo_config
+
+    alias = repo_path.name
+    head = get_head_commit(repo_path) or "HEAD"
+
+    detector = ChangeDetector(repo_path)
+    file_diffs = detector.get_changed_files(base_ref, head)
+    if not file_diffs:
+        # New commits but nothing the index cares about changed (merge/empty
+        # commits, or every change excluded). Report success so the caller
+        # bumps ``last_sync_commit`` instead of re-diffing forever.
+        return RepoUpdateResult(alias=alias, updated=True)
+
+    if any(fd.status in ("deleted", "renamed") for fd in file_diffs):
+        # Upsert-only persistence can't remove rows for paths that no longer
+        # exist; hand off to the full pipeline so its prune pass cleans up.
+        _log.info(
+            "workspace_update: %s has deleted/renamed files — using the full "
+            "pipeline so stale index rows are pruned",
+            alias,
+        )
+        return None
+
+    # Per-repo config, like the single-repo update path. The workspace-level
+    # ``exclude_patterns`` (when provided) apply on top.
+    cfg = load_repo_config(repo_path)
+    merged_excludes = list(cfg.get("exclude_patterns") or [])
+    for pattern in exclude_patterns or []:
+        if pattern not in merged_excludes:
+            merged_excludes.append(pattern)
+
+    parsed_files, _source_map, graph_builder, _structure, file_count, git_meta_map = (
+        await rebuild_graph_and_git(
+            repo_path,
+            file_diffs,
+            cfg,
+            merged_excludes,
+            git_tier=state.get("git_tier"),
+            include_submodules=bool(state.get("include_submodules", False)),
+            include_nested_repos=bool(state.get("include_nested_repos", False)),
+            log=_log.info,
+        )
+    )
+
+    partial_health_report, dead_code_report = run_partial_analysis(
+        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs, log=_log.info
+    )
+
+    # Partial health has consumed the per-file ``BlameIndex``; drop it before
+    # the metadata reaches persistence so the transient, non-serializable
+    # object can never leak downstream (mirrors the CLI update path).
+    drop_transient_git_signals(list(git_meta_map.values()))
+
+    await persist_incremental_index(
+        repo_path,
+        graph_builder,
+        git_meta_map,
+        dead_code_report,
+        partial_health_report,
+        [fd.path for fd in file_diffs],
+        log=_log.info,
+    )
+
+    return RepoUpdateResult(
+        alias=alias,
+        updated=True,
+        file_count=file_count,
+        symbol_count=sum(len(pf.symbols) for pf in parsed_files),
+    )
+
+
 async def update_single_repo_index(
     repo_path: Path,
     *,
@@ -220,12 +343,14 @@ async def update_single_repo_index(
     exclude_patterns: list[str] | None = None,
     progress: Any | None = None,
 ) -> RepoUpdateResult:
-    """Re-run the ingestion pipeline (index-only) for a single repo.
+    """Refresh the index for a single repo.
 
-    This refreshes graph, git stats, dead code, and decisions — everything
-    except wiki pages. Used by workspace update when no LLM provider is set.
+    Already-indexed repos (a persisted ``last_sync_commit`` whose commit
+    still resolves, plus an existing ``wiki.db``) go through the incremental
+    update path — changed-files diff, partial analysis, upsert persistence.
+    Never-indexed repos, and any incremental failure, run the full
+    ingestion pipeline instead (index-only — no wiki pages).
     """
-    from ..pipeline import run_pipeline
     from ..persistence import (
         create_engine,
         create_session_factory,
@@ -234,15 +359,42 @@ async def update_single_repo_index(
         upsert_repository,
     )
     from ..persistence.database import resolve_db_url
+    from ..pipeline import run_pipeline
     from ..pipeline.persist import persist_pipeline_result
 
     alias = repo_path.name
+    state = read_repo_state(repo_path)
+    base_ref = state.get("last_sync_commit")
+
+    if (
+        base_ref
+        and (repo_path / ".repowise" / "wiki.db").is_file()
+        and commit_exists(repo_path, str(base_ref))
+    ):
+        try:
+            incremental_result = await _incremental_repo_update(
+                repo_path,
+                state=state,
+                base_ref=str(base_ref),
+                exclude_patterns=exclude_patterns,
+            )
+            if incremental_result is not None:
+                return incremental_result
+            # None → the diff needs the full pipeline's prune pass.
+        except Exception:
+            _log.warning(
+                "Incremental update failed for %s — falling back to the full pipeline",
+                repo_path,
+                exc_info=True,
+            )
 
     try:
         result = await run_pipeline(
             repo_path,
             commit_depth=commit_depth,
             exclude_patterns=exclude_patterns,
+            include_submodules=bool(state.get("include_submodules", False)),
+            include_nested_repos=bool(state.get("include_nested_repos", False)),
             generate_docs=False,
             progress=progress,
         )
