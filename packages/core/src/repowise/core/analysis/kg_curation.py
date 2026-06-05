@@ -478,7 +478,15 @@ def _curate_tour(
             closing_paths.append(conftests[0])
             continue
         code_cands = [p for p in cands if type_by_path.get(p) not in {"config", "document"}]
-        closing_paths.append(_best_in_layer(code_cands or cands, rank, pagerank))
+        if code_cands:
+            # No conftest (non-pytest suites): the shallowest test-root file
+            # (django's tests/runtests.py), most-imported as the tie-break.
+            code_cands.sort(
+                key=lambda p: (len(PurePosixPath(p).parts), -pagerank.get(p, 0.0), p)
+            )
+            closing_paths.append(code_cands[0])
+        else:
+            closing_paths.append(_best_in_layer(cands, rank, pagerank))
 
     # The walk = build_tour's execution order minus adjacent-layer stops,
     # truncated up front so later swaps land inside the kept window.
