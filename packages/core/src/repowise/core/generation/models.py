@@ -121,7 +121,7 @@ class GenerationConfig:
     # "top_dir" by top-level directory.
     # min_module_size is the floor below which a group doesn't get its own
     # page (its files still appear under file_page).
-    module_grouping: Literal["community", "top_dir", "curated"] = "community"
+    module_grouping: Literal["community", "top_dir", "curated"] = "curated"
     min_module_size: int = 3
     # Phase 3: emit the curated Onboarding collection at level 8. Each
     # subkind defines its own gate; slots whose gates fail are silently
