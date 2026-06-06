@@ -275,6 +275,13 @@ def _handle_search_post(
 
     # Decision tree. The skip case is the most common — that's by design.
     if result_count == 0:
+        # Rescue relevance guards. A regex pattern loses its structure in the
+        # symbol-lookup sanitizer (`distill|savings` → `distillsavings`), so
+        # any "closest symbol" answer would be luck, not signal. And a grep
+        # scoped to one non-code file is a config-key check, not a symbol
+        # hunt — the wiki has nothing useful to add to either.
+        if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
+            return None
         mode = "rescue"
     elif result_count >= _TRIAGE_THRESHOLD:
         mode = "triage"
@@ -425,6 +432,52 @@ def _looks_like_path_lookup(pattern: str) -> bool:
         ".md",
     )
     return lower.endswith(exts)
+
+
+def _looks_like_regex(pattern: str) -> bool:
+    """Heuristic: pattern uses regex syntax, not a literal symbol name.
+
+    Flags unescaped alternation/class/group openers and the common regex
+    idioms (``\\b``, ``.*``, ``.+``) that agents reach for. Escaped literals
+    (``\\[``, ``\\|``) stay eligible for rescue.
+    """
+    import re
+
+    return re.search(r"(?<!\\)[|\[(]|\\b|\.[*+]", pattern) is not None
+
+
+# Extensions where a zero-match grep is a config/doc lookup, not a missed
+# symbol — rescue would answer a question the agent isn't asking.
+_NON_CODE_SUFFIXES = (
+    ".yaml",
+    ".yml",
+    ".json",
+    ".jsonc",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".md",
+    ".rst",
+    ".txt",
+    ".lock",
+    ".env",
+)
+
+
+def _targets_single_non_code_file(tool_input: dict) -> bool:
+    """True when the Grep was scoped to one non-code file (path or glob)."""
+    if not isinstance(tool_input, dict):
+        return False
+    path = tool_input.get("path")
+    if isinstance(path, str) and path.lower().rstrip("/\\").endswith(_NON_CODE_SUFFIXES):
+        return True
+    glob = tool_input.get("glob")
+    return (
+        isinstance(glob, str)
+        and "*" not in glob
+        and "?" not in glob
+        and glob.lower().endswith(_NON_CODE_SUFFIXES)
+    )
 
 
 def _extract_output_text(tool_output: object) -> str:

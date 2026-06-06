@@ -20,8 +20,10 @@ from repowise.cli.commands.augment_cmd import (
     _extract_output_text,
     _handle_search_post,
     _looks_like_path_lookup,
+    _looks_like_regex,
     _name_variants,
     _search_result_count,
+    _targets_single_non_code_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -190,6 +192,65 @@ class TestSearchResultCount:
         assert _search_result_count("Found 0 files") == 0
 
 
+class TestLooksLikeRegex:
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "distill|savings",
+            "def (parse|load)_yaml",
+            r"\bparse_yaml\b",
+            "parse.*yaml",
+            "parse.+yaml",
+            "[Pp]arse_yaml",
+            "log(ger)?",
+        ],
+    )
+    def test_regex_patterns_flag(self, pattern: str) -> None:
+        assert _looks_like_regex(pattern) is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "parse_yaml",
+            "GraphBuilder",
+            "use cache",
+            r"escaped \| pipe",
+            r"escaped \[ bracket",
+            "v1.2",  # dot without a quantifier is fine
+        ],
+    )
+    def test_literal_patterns_do_not_flag(self, pattern: str) -> None:
+        assert _looks_like_regex(pattern) is False
+
+
+class TestTargetsSingleNonCodeFile:
+    @pytest.mark.parametrize(
+        "tool_input",
+        [
+            {"pattern": "x", "path": "config/settings.yaml"},
+            {"pattern": "x", "path": "package.json"},
+            {"pattern": "x", "path": "README.md"},
+            {"pattern": "x", "path": "pyproject.toml"},
+            {"pattern": "x", "glob": "uv.lock"},
+        ],
+    )
+    def test_single_non_code_targets(self, tool_input: dict) -> None:
+        assert _targets_single_non_code_file(tool_input) is True
+
+    @pytest.mark.parametrize(
+        "tool_input",
+        [
+            {"pattern": "x"},  # repo-wide grep
+            {"pattern": "x", "path": "src/auth/service.py"},  # code file
+            {"pattern": "x", "path": "packages/core"},  # directory scope
+            {"pattern": "x", "glob": "**/*.yaml"},  # many files
+            {"pattern": "x", "glob": "*.json"},
+        ],
+    )
+    def test_everything_else_stays_eligible(self, tool_input: dict) -> None:
+        assert _targets_single_non_code_file(tool_input) is False
+
+
 class TestCountSearchResults:
     def test_empty(self) -> None:
         assert _count_search_results("") == 0
@@ -341,6 +402,27 @@ class TestDecisionTree:
                 tool_name="Grep",
                 tool_input={"pattern": "parse_yaml"},
                 tool_output=tool_output,
+                cwd=str(repowise_cwd),
+            )
+            assert result is None
+            enrich.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "tool_input",
+        [
+            {"pattern": "distill|savings"},  # regex alternation, sanitizer-mangled
+            {"pattern": r"\bdistill\b"},
+            {"pattern": "default_model", "path": "config/settings.yaml"},
+            {"pattern": "permission", "glob": "package.json"},
+        ],
+    )
+    def test_zero_match_rescue_skipped_when_irrelevant(self, repowise_cwd, tool_input) -> None:
+        """Regex patterns and single non-code-file scopes never rescue."""
+        with patch.object(augment_cmd, "_search_enrich") as enrich:
+            result = _handle_search_post(
+                tool_name="Grep",
+                tool_input=tool_input,
+                tool_output=GREP_FILES_MODE_ZERO,
                 cwd=str(repowise_cwd),
             )
             assert result is None
