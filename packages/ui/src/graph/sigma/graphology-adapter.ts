@@ -16,9 +16,13 @@ import {
   CURVED_EDGE_THRESHOLD,
   getScaledNodeSize,
   getNodeMass,
-  getCommunityColor,
   languageColor,
 } from "./constants";
+
+// Build-time placeholder for module/community node fills. The theme-aware
+// community palette is applied by use-sigma's color effect (per light/dark);
+// this neutral keeps modules visible for the one frame before that runs.
+const PLACEHOLDER_NODE_COLOR = EDGE_COLORS.dynamic;
 import { groupNodesAsModules } from "../elk-layout";
 
 function simpleHash(str: string): number {
@@ -83,13 +87,64 @@ function computeEdgeCurvature(edgeKey: string): number {
   return 0.12 + (hash % 80) / 1000;
 }
 
+// Yield to the event loop, preferring requestIdleCallback when available so we
+// don't starve interaction; falls back to a macrotask elsewhere (tests, SSR).
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    const ric = (globalThis as { requestIdleCallback?: (cb: () => void) => void })
+      .requestIdleCallback;
+    if (typeof ric === "function") {
+      ric(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+const CHUNK_SIZE = 500;
+
+export type FileGraphAdapterOptions = {
+  signals?: { hotNodeIds?: Set<string>; deadNodeIds?: Set<string> };
+  nodeCount?: number;
+};
+
 export function fileGraphToGraphology(
   graph: GraphExport,
-  options?: {
-    signals?: { hotNodeIds?: Set<string>; deadNodeIds?: Set<string> };
-    nodeCount?: number;
-  },
+  options?: FileGraphAdapterOptions,
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> {
+  const it = buildFileGraph(graph, options);
+  // Sync path: drain the generator without ever yielding.
+  let next = it.next();
+  while (!next.done) next = it.next();
+  return next.value;
+}
+
+/**
+ * Async variant of {@link fileGraphToGraphology} that yields to the event loop
+ * every CHUNK_SIZE nodes/edges, keeping the main thread responsive while large
+ * graphs are constructed. Callers should keep their loading state up until this
+ * resolves.
+ */
+export async function fileGraphToGraphologyAsync(
+  graph: GraphExport,
+  options?: FileGraphAdapterOptions,
+): Promise<Graph<SigmaNodeAttributes, SigmaEdgeAttributes>> {
+  const it = buildFileGraph(graph, options);
+  let next = it.next();
+  while (!next.done) {
+    await yieldToEventLoop();
+    next = it.next();
+  }
+  return next.value;
+}
+
+// Generator that builds the file graph, yielding (an undefined) every CHUNK_SIZE
+// items so callers can choose to await between chunks (async) or drain inline
+// (sync). The single body keeps the two public entry points in lockstep.
+function* buildFileGraph(
+  graph: GraphExport,
+  options?: FileGraphAdapterOptions,
+): Generator<undefined, Graph<SigmaNodeAttributes, SigmaEdgeAttributes>, void> {
   const result = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = options?.nodeCount ?? graph.nodes.length;
 
@@ -112,6 +167,7 @@ export function fileGraphToGraphology(
   const communityCount = sortedCommunities.length;
   const jitter = Math.sqrt(nodeCount) * 3;
 
+  let processed = 0;
   for (let i = 0; i < sortedCommunities.length; i++) {
     const communityId = sortedCommunities[i]!;
     const members = communityNodes.get(communityId)!;
@@ -180,6 +236,7 @@ export function fileGraphToGraphology(
       attrs.primaryOwner = node.primary_owner ?? null;
 
       result.addNode(node.node_id, attrs);
+      if (++processed % CHUNK_SIZE === 0) yield;
     }
   }
 
@@ -208,7 +265,9 @@ export function fileGraphToGraphology(
   const maxEdgesPerNode = nodeCount > 1000 ? 25 : Infinity;
   const edgesPerSource = new Map<string, number>();
 
+  let edgeProcessed = 0;
   for (const link of orderedLinks) {
+    if (++edgeProcessed % CHUNK_SIZE === 0) yield;
     if (!result.hasNode(link.source) || !result.hasNode(link.target)) continue;
     const edgeKey = link.source + "→" + link.target;
     if (result.hasEdge(edgeKey)) continue;
@@ -302,7 +361,9 @@ export function moduleGraphToGraphology(
 
       const baseSize = getScaledNodeSize(NODE_BASE_SIZES.module, nodeCount);
       const size = baseSize * (0.5 + Math.min(Math.log2(Math.max(mod.file_count, 1)) * 0.3, 1.5));
-      const color = getCommunityColor(communityId);
+      // Theme-aware community hub color is applied later by use-sigma; this is a
+      // neutral placeholder for the initial (pre-effect) frame.
+      const color = PLACEHOLDER_NODE_COLOR;
 
       result.addNode(mod.module_id, {
         x,

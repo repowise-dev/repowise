@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fileGraphToGraphology, moduleGraphToGraphology } from "../../src/graph/sigma/graphology-adapter";
+import { fileGraphToGraphology, fileGraphToGraphologyAsync, moduleGraphToGraphology } from "../../src/graph/sigma/graphology-adapter";
 import type { GraphExport, GraphNode, GraphLink, ModuleGraph, ModuleNode, ModuleEdge, CommunitySummaryItem } from "@repowise-dev/types/graph";
 
 function makeNode(overrides: Partial<GraphNode> & { node_id: string }): GraphNode {
@@ -94,6 +94,23 @@ describe("fileGraphToGraphology", () => {
     expect(g.order).toBe(1);
     const attrs = g.getNodeAttributes("src/minimal.ts");
     expect(attrs.nodeType).toBe("file");
+  });
+
+  it("async variant produces a graph matching the sync builder across chunks", async () => {
+    // Span multiple chunk boundaries (CHUNK_SIZE === 500).
+    const nodes = Array.from({ length: 1200 }, (_, i) =>
+      makeNode({ node_id: `src/f${i}.ts`, community_id: i % 7 }),
+    );
+    const links: GraphLink[] = Array.from({ length: 1100 }, (_, i) => ({
+      source: `src/f${i}.ts`,
+      target: `src/f${i + 1}.ts`,
+      imported_names: ["x"],
+    }));
+    const graph = makeFileGraph(nodes, links);
+    const sync = fileGraphToGraphology(graph);
+    const async = await fileGraphToGraphologyAsync(graph);
+    expect(async.order).toBe(sync.order);
+    expect(async.size).toBe(sync.size);
   });
 });
 

@@ -92,9 +92,22 @@ export function useFA2Layout(
           setIsRunning(false);
         };
 
-        // Convergence detection: sample 50 nodes every 500ms
-        const sampleSize = Math.min(50, graph.order);
-        const nodeIds = graph.nodes().slice(0, sampleSize);
+        // Convergence detection: sample 100 random nodes every 500ms
+        const sampleSize = Math.min(100, graph.order);
+        const allNodeIds = graph.nodes();
+        const nodeIds: string[] = [];
+        if (sampleSize >= allNodeIds.length) {
+          nodeIds.push(...allNodeIds);
+        } else {
+          const stride = allNodeIds.length / sampleSize;
+          for (let i = 0; i < sampleSize; i++) {
+            nodeIds.push(
+              allNodeIds[
+                Math.floor((i + Math.random()) * stride) % allNodeIds.length
+              ]!,
+            );
+          }
+        }
         let prevPositions = nodeIds.map((id) => {
           const a = graph.getNodeAttributes(id);
           return { x: a.x, y: a.y };

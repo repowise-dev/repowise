@@ -104,7 +104,7 @@ function computeLayout(data: WorkspaceGraphData): { nodes: Node[]; edges: Edge[]
       label: e.label ?? undefined,
       style: {
         strokeWidth: 1 + e.strength * 4,
-        stroke: e.type === "contract" ? "#3b82f6" : "#8b5cf6",
+        stroke: e.type === "contract" ? "var(--color-accent-secondary)" : "var(--color-edge-co-change)",
         strokeDasharray: e.type === "co_change" ? "6 3" : undefined,
       },
       labelStyle: { fontSize: 10, fill: "var(--color-text-tertiary)" },

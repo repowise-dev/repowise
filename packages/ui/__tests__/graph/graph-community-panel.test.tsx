@@ -34,6 +34,32 @@ describe("GraphCommunityPanel", () => {
     expect(screen.getByText("db-cluster")).toBeTruthy();
   });
 
+  it("shows the expand-on-canvas affordance only when the callback is provided", () => {
+    const onExpand = vi.fn();
+    const { rerender } = render(
+      <GraphCommunityPanel
+        communityId={7}
+        community={sampleCommunity}
+        isLoading={false}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText("Expand on canvas")).toBeNull();
+
+    rerender(
+      <GraphCommunityPanel
+        communityId={7}
+        community={sampleCommunity}
+        isLoading={false}
+        onClose={vi.fn()}
+        onExpandOnCanvas={onExpand}
+      />,
+    );
+    const btn = screen.getByText("Expand on canvas");
+    btn.click();
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to a numeric label when community is null", () => {
     render(
       <GraphCommunityPanel

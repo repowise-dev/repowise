@@ -84,6 +84,23 @@ export interface ArchitectureGraph {
 }
 
 // ---------------------------------------------------------------------------
+// Community slice (constellation blossom — one hub's member sub-graph)
+// ---------------------------------------------------------------------------
+
+export interface CommunitySliceNode extends GraphNode {
+  /** True for one-hop neighbor stubs outside the community (cross-cluster). */
+  is_boundary?: boolean;
+}
+
+export interface CommunitySlice {
+  nodes: CommunitySliceNode[];
+  links: GraphLink[];
+  community_id: number;
+  member_count: number;
+  truncated?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // NetworkX-shaped raw payload (what some downstream backends emit)
 // ---------------------------------------------------------------------------
 

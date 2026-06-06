@@ -43,21 +43,21 @@ export const BADGE_DEFS: readonly BadgeDef[] = [
 
 /** Hex colors mirrored on the Sigma canvas dot renderer (see sigma-canvas). */
 export const BADGE_COLORS: Record<BadgeDef["tone"], string> = {
-  danger: "#ef4444",
-  warn: "#f59520",
-  success: "#22c55e",
-  info: "#a78bfa",
-  accent: "#60a5fa",
-  neutral: "#94a3b8",
+  danger: "var(--color-error)",
+  warn: "var(--color-accent-primary)",
+  success: "var(--color-success)",
+  info: "var(--color-plum-400)",
+  accent: "var(--color-info)",
+  neutral: "var(--color-text-tertiary)",
 };
 
 const TONE_CLASSES: Record<BadgeDef["tone"], string> = {
-  danger: "bg-red-500/10 text-red-400",
-  warn: "bg-amber-500/10 text-amber-400",
-  success: "bg-green-500/10 text-green-400",
-  info: "bg-purple-500/10 text-purple-400",
-  accent: "bg-sky-500/10 text-sky-400",
-  neutral: "bg-slate-500/10 text-slate-400",
+  danger: "bg-[var(--color-error)]/10 text-[var(--color-error)]",
+  warn: "bg-[var(--color-warning)]/10 text-[var(--color-warning)]",
+  success: "bg-[var(--color-success)]/10 text-[var(--color-success)]",
+  info: "bg-[var(--color-plum-400)]/10 text-[var(--color-plum-400)]",
+  accent: "bg-[var(--color-info)]/10 text-[var(--color-info)]",
+  neutral: "bg-[var(--color-text-tertiary)]/10 text-[var(--color-text-tertiary)]",
 };
 
 export interface NodeBadgesProps {

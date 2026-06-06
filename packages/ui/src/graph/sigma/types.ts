@@ -16,8 +16,9 @@ export interface SigmaNodeAttributes {
   color: string;
   label: string;
 
-  // Identity
-  nodeType: "file" | "module";
+  // Identity. "hub"/"core" are the constellation (radial) super-graph kinds:
+  // one hub disc per community, a single dark repo-core at the origin.
+  nodeType: "file" | "module" | "hub" | "core";
   fullPath: string;
   language: string;
 
@@ -35,6 +36,16 @@ export interface SigmaNodeAttributes {
   avgPagerank?: number | undefined;
   docCoveragePct?: number | undefined;
   dominantCommunityId?: number | undefined;
+
+  // Constellation hub-specific (only set when nodeType === "hub" / "core")
+  memberCount?: number | undefined;
+  hotspotCount?: number | undefined;
+  deadCount?: number | undefined;
+  languages?: string[] | undefined;
+  /** Family hub hue for the soft halo ring drawn around hub discs. */
+  haloColor?: string | undefined;
+  /** Render the label even when density culling would hide it (hubs/core). */
+  forceLabel?: boolean | undefined;
 
   // Signal overlays (set by adapter based on signal data)
   isHotspot?: boolean | undefined;

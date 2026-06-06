@@ -35,6 +35,13 @@ export function useGraphSearch(opts: GraphSearchOptions) {
   const [searchResults, setSearchResults] = useState<string[]>([]);
   const [searchResultIndex, setSearchResultIndex] = useState(0);
 
+  // The index is built over the *rendered* sigma graph. In the constellation
+  // scope this means hub labels plus, once a hub is expanded, its satellite
+  // (member file) nodes — the memo re-runs whenever the merged graph changes, so
+  // expanding a hub makes its members searchable automatically. LIMITATION:
+  // member file names are NOT indexed before their hub is expanded (full member
+  // lists aren't fetched until expansion), so a pre-expansion search matches hub
+  // labels only.
   const fuseIndex = useMemo(() => {
     if (!sigmaGraph)
       return new Fuse<{ id: string; label: string }>([], {

@@ -3,19 +3,10 @@ import { LANGUAGE_COLORS, languageColor } from "../../lib/confidence";
 // Re-export for convenience
 export { LANGUAGE_COLORS, languageColor };
 
-// ---- Community palette (24 perceptually-optimized colors for dark backgrounds) ----
-
-export const COMMUNITY_COLORS = [
-  "#FF6B6B", "#4ECDC4", "#FFE66D", "#AA96DA", "#F38181",
-  "#A8E6CF", "#87CEEB", "#F4A460", "#98FB98", "#FF69B4",
-  "#20B2AA", "#FFA07A", "#9370DB", "#3CB371", "#FF7F50",
-  "#6495ED", "#DAA520", "#00CED1", "#FF1493", "#32CD32",
-  "#BA55D3", "#FF8C00", "#7B68EE", "#48D1CC",
-];
-
-export function getCommunityColor(communityId: number): string {
-  return COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length] ?? "#6366f1";
-}
+// Community colors are no longer a static jewel-tone array. They live as the
+// warm `--color-community-*` token pairs in styles/globals.css and are resolved
+// at runtime (per theme) by getCommunityFamily in shared/use-theme-tokens.ts.
+// use-sigma's color effect applies them so they track light/dark.
 
 // ---- Node base sizes ----
 
@@ -50,15 +41,52 @@ export function getNodeMass(
     : 3 * baseMassMultiplier;
 }
 
-// ---- Edge colors by semantic type ----
+// ---- Edge colors by semantic type (warm theme palette) ----
+//
+// Per-theme literal hex (canvas can't resolve var()); mirrors the semantic
+// edge palette in lib/confidence.ts EDGE_COLORS — import = brand orange,
+// crossCommunity = plum (--color-accent-secondary), internal = sage/green
+// (--color-success family). Dark variants are lifted to read on the near-black
+// plum canvas. Resolve via edgeColorsForTheme(); kept literal + allowlisted.
 
-export const EDGE_COLORS = {
-  import: "#1d4ed8",
-  crossCommunity: "#7c3aed",
-  internal: "#2d5a3d",
-  dynamic: "#6b7280",
-  lowConfidence: "#475569",
-} as const;
+export type EdgeKind =
+  | "import"
+  | "crossCommunity"
+  | "internal"
+  | "dynamic"
+  | "lowConfidence";
+
+export const EDGE_COLORS_BY_THEME: Record<
+  "light" | "dark",
+  Record<EdgeKind, string>
+> = {
+  light: {
+    import: "#f59520", // brand orange
+    crossCommunity: "#58436c", // plum (accent-secondary)
+    internal: "#1d8155", // sage/green (success)
+    dynamic: "#8c7f88", // muted text-tertiary
+    lowConfidence: "#b8aeb3", // faint plum-gray
+  },
+  dark: {
+    import: "#f59520", // brand orange
+    crossCommunity: "#a98fc4", // plum-300 (accent-secondary dark)
+    internal: "#34d399", // green (success dark)
+    dynamic: "#786f84", // muted text-tertiary dark
+    lowConfidence: "#544c5e", // faint plum-gray dark
+  },
+};
+
+export function edgeColorsForTheme(
+  theme: "light" | "dark",
+): Record<EdgeKind, string> {
+  return EDGE_COLORS_BY_THEME[theme] ?? EDGE_COLORS_BY_THEME.dark;
+}
+
+/**
+ * Default edge palette for build-time adapter use before the theme-aware
+ * recolor effect runs. Dark is the product default theme.
+ */
+export const EDGE_COLORS = EDGE_COLORS_BY_THEME.dark;
 
 export const EDGE_SIZE_MULTIPLIERS = {
   import: 0.6,
@@ -93,12 +121,8 @@ export function getFA2Settings(nodeCount: number): Record<string, unknown> {
  * How long FA2 should run before stopping (ms).
  */
 export function getLayoutDuration(nodeCount: number): number {
-  if (nodeCount > 10000) return 20000;
-  if (nodeCount > 5000) return 15000;
   if (nodeCount > 2000) return 12000;
-  if (nodeCount > 1000) return 10000;
-  if (nodeCount > 500) return 8000;
-  return 5000;
+  return 8000;
 }
 
 // ---- Noverlap post-layout settings ----
@@ -122,12 +146,11 @@ export const LABEL_DENSITY = 0.15;
 export const LABEL_GRID_CELL_SIZE = 80;
 export const LABEL_RENDERED_SIZE_THRESHOLD = 6;
 
-// ---- Surface depth system (for panels, tooltips, controls) ----
+/** Sparser labels on large graphs to keep repaint cheap. */
+export function getLabelDensity(nodeCount: number): number {
+  return nodeCount > 2000 ? 0.07 : LABEL_DENSITY;
+}
 
-export const SURFACE_COLORS = {
-  void: "#06060a",
-  deep: "#0a0a10",
-  surface: "#101018",
-  elevated: "#16161f",
-  hover: "#1c1c28",
-} as const;
+export function getLabelRenderedSizeThreshold(nodeCount: number): number {
+  return nodeCount > 2000 ? 8 : LABEL_RENDERED_SIZE_THRESHOLD;
+}
