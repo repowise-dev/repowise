@@ -22,6 +22,7 @@ def build_generation_plan(
     config: Any,
     skip_tests: bool = False,
     skip_infra: bool = False,
+    kg_modules: list[dict] | None = None,
 ) -> list[PageTypePlan]:
     """Return the per-page-type plan that ``generate_all`` will execute.
 
@@ -35,6 +36,11 @@ def build_generation_plan(
         Finalized GraphBuilder (build() already called).
     config:
         GenerationConfig — its ``coverage_pct`` drives the budget.
+    kg_modules:
+        Curated wiki modules from the KG artifact, when available. Must be
+        passed for ``module_grouping="curated"`` estimates to match the
+        actual run — without it the selector falls back to community
+        grouping, exactly as generation itself would without an artifact.
     """
     files = parsed_files
     if skip_tests:
@@ -63,6 +69,7 @@ def build_generation_plan(
             sccs=sccs,
             git_meta_map=None,
             config=config,
+            kg_modules=kg_modules,
         )
     )
 

@@ -241,7 +241,8 @@ class TestBuildLevel5Coros:
         run = self._make_run(tmp_path, layers)
         coros = build_level5_coros(run)
         assert len(coros) == 1
-        assert coros[0][0] == "layer_page:layer:Core"
+        # Page keyed by the layer's stable slug id, not its display name.
+        assert coros[0][0] == "layer_page:layer:core"
 
     def test_skips_small_layers(self, tmp_path):
         from repowise.core.generation.page_generator.levels import build_level5_coros
@@ -279,7 +280,7 @@ class TestBuildLevel5Coros:
              "nodeIds": ["file:a.py", "file:b.py", "file:c.py"]},
         ]
         run = self._make_run(tmp_path, layers)
-        run.completed_ids = {"layer_page:layer:Core"}
+        run.completed_ids = {"layer_page:layer:core"}
         coros = build_level5_coros(run)
         assert len(coros) == 0
 
@@ -298,5 +299,50 @@ class TestBuildLevel5Coros:
         coros = build_level5_coros(run)
         assert len(coros) == 2
         page_ids = {c[0] for c in coros}
-        assert "layer_page:layer:Core" in page_ids
-        assert "layer_page:layer:API" in page_ids
+        assert "layer_page:layer:core" in page_ids
+        assert "layer_page:layer:api" in page_ids
+
+    def test_page_key_uses_slug_not_display_name(self, tmp_path):
+        """The page key derives from the stable slug id, never the mutable
+        display name — a layer named "Task Queue Core" with id ``layer:queue``
+        is keyed by ``layer:queue`` so an LLM rename can't churn the key."""
+        from repowise.core.generation.page_generator.levels import build_level5_coros
+
+        layers = [
+            {"id": "layer:queue", "name": "Task Queue Core",
+             "nodeIds": ["file:a.py", "file:b.py", "file:c.py"]},
+        ]
+        run = self._make_run(tmp_path, layers)
+        coros = build_level5_coros(run)
+        assert len(coros) == 1
+        assert coros[0][0] == "layer_page:layer:queue"
+
+
+# ---------------------------------------------------------------------------
+# Slug identity stability under enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestLayerIdStability:
+    def test_enrichment_renames_name_not_id_so_page_key_is_stable(self, tmp_path):
+        """The LLM layer-name enrichment mutates ``name`` only; the slug ``id``
+        — and therefore the layer page key — is unchanged across the rename."""
+        from repowise.core.generation.page_generator.levels import build_level5_coros
+
+        node_ids = ["file:a.py", "file:b.py", "file:c.py"]
+
+        def key_for(name: str) -> str:
+            layers = [{"id": "layer:queue", "name": name, "nodeIds": node_ids}]
+            run = self._make_run(tmp_path, layers)
+            coros = build_level5_coros(run)
+            assert len(coros) == 1
+            return coros[0][0]
+
+        # Heuristic name -> page key.
+        before = key_for("Application")
+        # Enrichment rewrites the display name; id (and key) must not move.
+        after = key_for("Task Queue Core")
+        assert before == after == "layer_page:layer:queue"
+
+    # Reuse the level-5 fixture harness verbatim.
+    _make_run = TestBuildLevel5Coros._make_run

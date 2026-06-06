@@ -136,6 +136,16 @@ class PipelineResult:
     it is already on disk — and writes only analysis + generation. False for
     every non-resume caller, which persist the full result as before."""
 
+    authoritative_page_types: set[str] = field(default_factory=set)
+    """Structural page types this run fully decided — i.e. its emitted set is
+    "exactly these, possibly none". The stale-page sweep retires prior rows of
+    a type when it was produced OR is named here, so a legitimately-empty
+    authoritative type (e.g. every curated module collapsed into its layer via
+    wholeLayer) still wipes the previous run's stragglers. Populated only on a
+    curated run with a real KG; left empty on degraded/community fallback and
+    on incremental no-KG paths, which preserves degradation honesty (a fallback
+    run never wipes curated pages it could not reproduce)."""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -525,6 +535,34 @@ async def run_pipeline(
                     f"{len(knowledge_graph_result.layers)} layers",
                 )
         _phase_done(progress, "knowledge_graph.skeleton")
+
+        # ---- KG curation/presentation pass (flagged, default on) ---------
+        # Reshapes only the exported KG (layers/tour/entry-points/summaries);
+        # never touches the AST graph, communities, or centrality. No-op when
+        # REPOWISE_KG_CURATION is set to a falsy value (the raw uncurated
+        # export). Runs in BOTH FAST and STANDARD (before the generate branch).
+        if knowledge_graph_result is not None:
+            from repowise.core.analysis.kg_curation import (
+                curate_knowledge_graph,
+                curation_enabled,
+            )
+
+            try:
+                # In generate mode the summary floor is deferred to run after
+                # the wiki-page backfill (in ``enrich_knowledge_graph``), so
+                # rich page summaries win; FAST mode floors here.
+                will_generate = generate_docs and llm_client is not None
+                knowledge_graph_result = curate_knowledge_graph(
+                    knowledge_graph_result,
+                    parsed_files=parsed_files,
+                    graph_builder=graph_builder,
+                    repo_structure=repo_structure,
+                    community_info=graph_builder.community_info(),
+                    enabled=curation_enabled(),
+                    defer_summary_floor=will_generate,
+                )
+            except (ValueError, KeyError, RuntimeError) as cur_err:
+                logger.error("kg_curation_failed", error=str(cur_err), exc_info=True)
     except (ValueError, KeyError, OSError, RuntimeError) as kg_err:
         logger.error("kg_skeleton_building_failed", error=str(kg_err), exc_info=True)
 
@@ -543,6 +581,10 @@ async def run_pipeline(
 
     # ---- Phase 3: Generation (optional) ------------------------------------
     generated_pages: list[Any] | None = None
+    # Structural page types this run was authoritative for (see
+    # PipelineResult.authoritative_page_types). Stays empty unless curated
+    # generation engaged below.
+    authoritative_page_types: set[str] = set()
     if generate_docs and llm_client is not None:
         if progress:
             progress.on_message("info", "Phase 3: Generation")
@@ -590,7 +632,38 @@ async def run_pipeline(
             decision_report=gen_decision_report,
             external_systems=external_systems,
             on_page_ready=on_page_ready,
+            # In-memory KG — the artifact file is written after generation,
+            # so it cannot carry layers/tour/modules on a fresh init.
+            kg_modules=(
+                knowledge_graph_result.modules or None
+                if knowledge_graph_result is not None
+                else None
+            ),
+            kg_data=(
+                knowledge_graph_result.to_dict()
+                if knowledge_graph_result is not None
+                else None
+            ),
         )
+
+        # Record which structural page types this run authoritatively decided,
+        # so the sweep can retire prior rows of a type even when this run
+        # legitimately emitted zero pages of it. Mirrors the selector's curated
+        # engagement test (_build_curated_module_groups returns None — i.e.
+        # falls back to community — only when kg_modules is empty) so the signal
+        # is set iff the curated grouping actually engaged. On the degraded
+        # community fallback both stay unset, preserving degradation honesty.
+        kg_modules_present = bool(
+            knowledge_graph_result is not None and knowledge_graph_result.modules
+        )
+        kg_layers_present = bool(
+            knowledge_graph_result is not None and knowledge_graph_result.layers
+        )
+        module_grouping = getattr(resolved_generation_config, "module_grouping", "community")
+        if module_grouping == "curated" and kg_modules_present:
+            authoritative_page_types.add("module_page")
+        if kg_layers_present:
+            authoritative_page_types.add("layer_page")
 
     # ---- Knowledge Graph LLM enrichment (layer naming + tour) -----------------
     if knowledge_graph_result is not None and generate_docs and llm_client is not None:
@@ -674,6 +747,7 @@ async def run_pipeline(
         index_persisted_incrementally=(
             resume_controller.index_persisted if resume_controller is not None else False
         ),
+        authoritative_page_types=authoritative_page_types,
     )
 
 

@@ -610,3 +610,60 @@ def test_subkind_template_renders(subkind_slot: str, ctx_factory: Any) -> None:
     rendered = template.render(ctx=ctx, slot=subkind_slot)
     assert rendered.strip()  # non-empty
     assert "{{" not in rendered  # no unrendered Jinja
+
+
+def test_how_it_works_renders_curated_tour_steps() -> None:
+    """Curated tour steps (target_path + reason, no nodeIds/description) must
+    normalize into the strict template's expected shape — regression for the
+    first docs run against a curated KG ('dict object' has no attribute
+    'nodeIds')."""
+    import dataclasses
+
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    sig = _signals(
+        files=[_file("src/main.py", is_entry_point=True)],
+        entry_points=["src/main.py"],
+    )
+    curated_steps = (
+        {"order": 1, "target_path": "README.md", "page_type": "repo_overview",
+         "title": "README.md", "depth": 0, "kind": "overview",
+         "reason": "Start here for the end-to-end picture."},
+        {"order": 2, "target_path": "src/main.py", "page_type": "file_page",
+         "title": "main.py", "depth": 1, "kind": "code",
+         "reason": "An entry point — execution and imports fan out from here."},
+    )
+    sig = dataclasses.replace(sig, kg_tour_steps=curated_steps)
+    ctx = spec.build_context(sig)
+    assert ctx is not None
+    # Normalized: description fed from reason, nodeIds synthesized from target_path.
+    assert ctx.kg_tour_steps[0]["description"].startswith("Start here")
+    assert ctx.kg_tour_steps[1]["nodeIds"] == ["file:src/main.py"]
+
+    rendered = _jinja_env().get_template("onboarding/how_it_works.j2").render(ctx=ctx)
+    assert "`src/main.py`" in rendered
+    assert "An entry point" in rendered
+
+
+def test_how_it_works_renders_legacy_tour_steps() -> None:
+    """The pre-curation step shape (nodeIds + description) keeps working."""
+    import dataclasses
+
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    sig = _signals(
+        files=[_file("src/main.py", is_entry_point=True)],
+        entry_points=["src/main.py"],
+    )
+    legacy_steps = (
+        {"order": 1, "title": "Start Here",
+         "description": "Begin with the entry point.",
+         "nodeIds": ["file:src/main.py"]},
+    )
+    sig = dataclasses.replace(sig, kg_tour_steps=legacy_steps)
+    ctx = spec.build_context(sig)
+    assert ctx is not None
+    assert ctx.kg_tour_steps[0]["description"] == "Begin with the entry point."
+    assert ctx.kg_tour_steps[0]["nodeIds"] == ["file:src/main.py"]
+    rendered = _jinja_env().get_template("onboarding/how_it_works.j2").render(ctx=ctx)
+    assert "`src/main.py`" in rendered
