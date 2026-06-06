@@ -37,12 +37,13 @@ repowise saved                    # tokens & dollars saved so far
 
 Runs the command (shell semantics preserved), captures stdout+stderr, picks a
 filter by command shape (then by content sniff), and prints the compact
-rendering. Eight filters ship:
+rendering. Nine filters ship:
 
 | Filter | Commands | What it keeps |
 |---|---|---|
 | `test_output` | pytest, jest, vitest, cargo test, go test | failures + assertion details + summary; collapses pass parades |
 | `build_output` | npm/tsc/cargo/go builds | errors and warnings grouped; strips progress/boilerplate |
+| `lint_output` | eslint/biome, ruff/flake8/mypy, clippy, golangci-lint | errors verbatim; warnings grouped by rule id with counts + file:line anchors; fixable totals |
 | `git_status` | `git status` | porcelain-style compact status |
 | `git_log` | `git log` | recent subjects + counts |
 | `git_diff` | `git diff`/`show` | stat + the most relevant hunks |
@@ -237,8 +238,8 @@ output. In an end-to-end agent spot-check on the same repo (a seeded
 11-failure bug), the agent diagnosed the exact root-cause line and fix from
 the distilled test output — identical conclusion to the raw-output run.
 
-Fixture-suite medians across the seven core filters: ≥60% reduction on
-test/build output with zero error-line loss (asserted in CI).
+Fixture-suite medians across the core filters: ≥60% reduction on
+test/build/lint output with zero error-line loss (asserted in CI).
 
 ---
 

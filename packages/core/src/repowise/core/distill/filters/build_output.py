@@ -16,9 +16,9 @@ from repowise.core.distill.registry import filter_registry
 
 _COMMAND_RE = re.compile(
     r"^(npm(?:\.cmd)? run b|npm(?:\.cmd)? run-script b|pnpm (?:run )?b|yarn (?:run )?b|"
-    r"tsc\b|cargo(?:\.exe)? (?:build|check|clippy)\b|go(?:\.exe)? (?:build|vet)\b|"
+    r"tsc\b|cargo(?:\.exe)? (?:build|check)\b|go(?:\.exe)? (?:build|vet)\b|"
     r"make\b|vite build|webpack\b|next(?:\.cmd)? build|dotnet(?:\.exe)? build\b|"
-    r"npm(?:\.cmd)? run (?:type-check|typecheck|lint|compile)\b|gradle|mvn\b)"
+    r"npm(?:\.cmd)? run (?:type-check|typecheck|compile)\b|gradle|mvn\b)"
 )
 
 # Progress verbs collapsed to "<verb> ... (xN)".

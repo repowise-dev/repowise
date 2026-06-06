@@ -1,0 +1,11 @@
+packages/core/src/repowise/core/distill/markers.py:31: error: Incompatible types in assignment (expression has type "str", variable has type "int")  [assignment]
+packages/core/src/repowise/core/distill/markers.py:48: error: Argument 1 to "render_marker" has incompatible type "Optional[str]"; expected "str"  [arg-type]
+packages/core/src/repowise/core/distill/markers.py:48: note: "render_marker" is defined here
+packages/core/src/repowise/core/distill/budget.py:12: error: Function is missing a return type annotation  [no-untyped-def]
+packages/core/src/repowise/core/distill/budget.py:12: note: Use "-> None" if function does not return a value
+packages/core/src/repowise/core/distill/budget.py:27: warning: Returning Any from function declared to return "int"  [no-any-return]
+packages/core/src/repowise/core/distill/budget.py:33: error: Unsupported operand types for + ("int" and "str")  [operator]
+packages/core/src/repowise/core/distill/store.py:102: error: Item "None" of "Optional[Connection]" has no attribute "execute"  [union-attr]
+packages/core/src/repowise/core/distill/store.py:140: warning: Returning Any from function declared to return "str"  [no-any-return]
+packages/core/src/repowise/core/distill/store.py:171: error: Missing positional argument "source" in call to "put"  [call-arg]
+Found 7 errors in 3 files (checked 11 source files)

@@ -1,0 +1,756 @@
+﻿I001 [*] Import block is un-sorted or un-formatted
+  --> packages\core\src\repowise\core\persistence\coordinator.py:33:1
+   |
+31 |   to avoid triggering a full ``build()`` call.
+32 |   """
+33 | / from __future__ import annotations
+34 | |
+35 | | import asyncio
+36 | | from contextlib import asynccontextmanager
+37 | | from dataclasses import dataclass, field
+38 | | from typing import Any, AsyncIterator
+39 | | import structlog
+   | |________________^
+40 |
+41 |   log = structlog.get_logger(__name__)
+   |
+help: Organize imports
+
+UP035 [*] Import from `collections.abc` instead: `AsyncIterator`
+  --> packages\core\src\repowise\core\persistence\coordinator.py:38:1
+   |
+36 | from contextlib import asynccontextmanager
+37 | from dataclasses import dataclass, field
+38 | from typing import Any, AsyncIterator
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+39 | import structlog
+   |
+help: Import from `collections.abc`
+
+ANN401 Dynamically typed expressions (typing.Any) are disallowed in `obj`
+  --> packages\core\src\repowise\core\persistence\coordinator.py:51:28
+   |
+49 |     pending_vectors: list[tuple[str, dict]] = field(default_factory=list)  # (id, record)
+50 |
+51 |     def add_sql(self, obj: Any) -> None:
+   |                            ^^^
+52 |         self.pending_sql_objects.append(obj)
+   |
+
+D101 Missing docstring in public class
+  --> packages\core\src\repowise\core\persistence\coordinator.py:69:7
+   |
+69 | class AtomicStorageCoordinator:
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^
+70 |     def __init__(self, session, graph_builder=None, vector_store=None) -> None:
+71 |         self._session = session
+   |
+
+D107 Missing docstring in `__init__`
+  --> packages\core\src\repowise\core\persistence\coordinator.py:70:9
+   |
+69 | class AtomicStorageCoordinator:
+70 |     def __init__(self, session, graph_builder=None, vector_store=None) -> None:
+   |         ^^^^^^^^
+71 |         self._session = session
+72 |         self._graph_builder = graph_builder
+   |
+
+ANN001 Missing type annotation for function argument `session`
+  --> packages\core\src\repowise\core\persistence\coordinator.py:70:24
+   |
+69 | class AtomicStorageCoordinator:
+70 |     def __init__(self, session, graph_builder=None, vector_store=None) -> None:
+   |                        ^^^^^^^
+71 |         self._session = session
+72 |         self._graph_builder = graph_builder
+   |
+
+ANN001 Missing type annotation for function argument `graph_builder`
+  --> packages\core\src\repowise\core\persistence\coordinator.py:70:33
+   |
+69 | class AtomicStorageCoordinator:
+70 |     def __init__(self, session, graph_builder=None, vector_store=None) -> None:
+   |                                 ^^^^^^^^^^^^^
+71 |         self._session = session
+72 |         self._graph_builder = graph_builder
+   |
+
+ANN001 Missing type annotation for function argument `vector_store`
+  --> packages\core\src\repowise\core\persistence\coordinator.py:70:53
+   |
+69 | class AtomicStorageCoordinator:
+70 |     def __init__(self, session, graph_builder=None, vector_store=None) -> None:
+   |                                                     ^^^^^^^^^^^^
+71 |         self._session = session
+72 |         self._graph_builder = graph_builder
+   |
+
+C901 `transaction` is too complex (21 > 10)
+  --> packages\core\src\repowise\core\persistence\coordinator.py:77:15
+   |
+76 |     @asynccontextmanager
+77 |     async def transaction(self) -> AsyncIterator[_PendingTransaction]:
+   |               ^^^^^^^^^^^
+78 |         txn = _PendingTransaction()
+79 |         applied_nodes: list[str] = []
+   |
+
+PLR0912 Too many branches (20 > 12)
+  --> packages\core\src\repowise\core\persistence\coordinator.py:77:15
+   |
+76 |     @asynccontextmanager
+77 |     async def transaction(self) -> AsyncIterator[_PendingTransaction]:
+   |               ^^^^^^^^^^^
+78 |         txn = _PendingTransaction()
+79 |         applied_nodes: list[str] = []
+   |
+
+D102 Missing docstring in public method
+  --> packages\core\src\repowise\core\persistence\coordinator.py:77:15
+   |
+76 |     @asynccontextmanager
+77 |     async def transaction(self) -> AsyncIterator[_PendingTransaction]:
+   |               ^^^^^^^^^^^
+78 |         txn = _PendingTransaction()
+79 |         applied_nodes: list[str] = []
+   |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:126:24
+    |
+124 |                 try:
+125 |                     await self._session.rollback()
+126 |                 except Exception as e2:
+    |                        ^^^^^^^^^
+127 |                     log.error("sql_rollback_failed", error=str(e2))
+128 |                 # Graph rollback
+    |
+
+TRY400 Use `logging.exception` instead of `logging.error`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:127:21
+    |
+125 |                     await self._session.rollback()
+126 |                 except Exception as e2:
+127 |                     log.error("sql_rollback_failed", error=str(e2))
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+128 |                 # Graph rollback
+129 |                 if self._graph_builder is not None:
+    |
+help: Replace with `exception`
+
+BLE001 Do not catch blind exception: `Exception`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:143:32
+    |
+141 |                         try:
+142 |                             await _vector_delete(self._vector_store, vid)
+143 |                         except Exception as e2:
+    |                                ^^^^^^^^^
+144 |                             log.error("vector_rollback_failed", id=vid, error=str(e2))
+145 |                 raise
+    |
+
+TRY400 Use `logging.exception` instead of `logging.error`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:144:29
+    |
+142 |                             await _vector_delete(self._vector_store, vid)
+143 |                         except Exception as e2:
+144 |                             log.error("vector_rollback_failed", id=vid, error=str(e2))
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+145 |                 raise
+    |
+help: Replace with `exception`
+
+PLC0415 `import` should be at the top-level of a file
+   --> packages\core\src\repowise\core\persistence\coordinator.py:149:9
+    |
+147 |     async def health_check(self) -> dict:
+148 |         """Compare counts across stores. Returns drift report."""
+149 |         from sqlalchemy import text
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+150 |         report: dict = {"sql_pages": None, "vector_count": None, "graph_nodes": None, "drift": None}
+151 |         try:
+    |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:154:16
+    |
+152 |             res = await self._session.execute(text("SELECT COUNT(*) FROM wiki_pages"))
+153 |             report["sql_pages"] = int(res.scalar() or 0)
+154 |         except Exception as e:
+    |                ^^^^^^^^^
+155 |             report["sql_pages_error"] = str(e)
+156 |         if self._graph_builder is not None:
+    |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:164:20
+    |
+162 |                 res = await self._session.execute(text("SELECT COUNT(*) FROM graph_nodes"))
+163 |                 report["graph_nodes"] = int(res.scalar() or 0)
+164 |             except Exception as e:
+    |                    ^^^^^^^^^
+165 |                 report["graph_nodes_error"] = str(e)
+166 |         if self._vector_store is not None:
+    |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:169:20
+    |
+167 |             try:
+168 |                 report["vector_count"] = await _vector_count(self._vector_store)
+169 |             except Exception as e:
+    |                    ^^^^^^^^^
+170 |                 report["vector_count_error"] = str(e)
+171 |         # Compute drift between SQL and vector if both available
+    |
+
+ANN001 Missing type annotation for function argument `store`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:188:26
+    |
+186 | # ---------------------------------------------------------------------------
+187 |
+188 | async def _vector_upsert(store, vid: str, record: dict) -> None:
+    |                          ^^^^^
+189 |     """Call embed_and_upsert on the store.
+    |
+
+TRY003 Avoid specifying long messages outside the exception class
+   --> packages\core\src\repowise\core\persistence\coordinator.py:196:15
+    |
+194 |       text = record.get("text")
+195 |       if text is None:
+196 |           raise ValueError(
+    |  _______________^
+197 | |             f"_vector_upsert: record for '{vid}' is missing required 'text' key. "
+198 | |             f"Keys present: {list(record.keys())}"
+199 | |         )
+    | |_________^
+200 |       metadata = {k: v for k, v in record.items() if k != "text"}
+201 |       await store.embed_and_upsert(vid, text, metadata)
+    |
+
+EM102 Exception must not use an f-string literal, assign to variable first
+   --> packages\core\src\repowise\core\persistence\coordinator.py:197:13
+    |
+195 |       if text is None:
+196 |           raise ValueError(
+197 | /             f"_vector_upsert: record for '{vid}' is missing required 'text' key. "
+198 | |             f"Keys present: {list(record.keys())}"
+    | |__________________________________________________^
+199 |           )
+200 |       metadata = {k: v for k, v in record.items() if k != "text"}
+    |
+help: Assign to variable; remove f-string literal
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\coordinator.py:198:51
+    |
+196 |         raise ValueError(
+197 |             f"_vector_upsert: record for '{vid}' is missing required 'text' key. "
+198 |             f"Keys present: {list(record.keys())}"
+    |                                                   ^
+199 |         )
+200 |     metadata = {k: v for k, v in record.items() if k != "text"}
+    |
+help: Add trailing comma
+
+ANN001 Missing type annotation for function argument `store`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:204:26
+    |
+204 | async def _vector_delete(store, vid: str) -> None:
+    |                          ^^^^^
+205 |     """Call delete(page_id) on the store."""
+206 |     await store.delete(vid)
+    |
+
+ANN001 Missing type annotation for function argument `store`
+   --> packages\core\src\repowise\core\persistence\coordinator.py:209:25
+    |
+209 | async def _vector_count(store) -> int:
+    |                         ^^^^^
+210 |     """Return the number of vectors in the store.
+    |
+
+TC003 Move standard library import `collections.abc.AsyncGenerator` into a type-checking block
+  --> packages\core\src\repowise\core\persistence\database.py:15:29
+   |
+14 | import os
+15 | from collections.abc import AsyncGenerator
+   |                             ^^^^^^^^^^^^^^
+16 | from contextlib import asynccontextmanager
+17 | from pathlib import Path
+   |
+help: Move into type-checking block
+
+ANN202 Missing return type annotation for private function `_make_pragma_listener`
+  --> packages\core\src\repowise\core\persistence\database.py:54:5
+   |
+54 | def _make_pragma_listener(busy_timeout_ms: int):
+   |     ^^^^^^^^^^^^^^^^^^^^^
+55 |     """Build a ``connect`` event listener that applies our SQLite pragmas.
+   |
+help: Add return type annotation
+
+PIE810 Call `startswith` once with a `tuple`
+   --> packages\core\src\repowise\core\persistence\database.py:141:8
+    |
+139 |         return url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+140 |
+141 |     if url.startswith("postgresql://") or url.startswith("postgres://"):
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+142 |         return url.replace("://", "+asyncpg://", 1)
+    |
+help: Merge into a single `startswith` call
+
+D413 [*] Missing blank line after last section ("Args")
+   --> packages\core\src\repowise\core\persistence\database.py:182:5
+    |
+180 |     """Create an AsyncEngine for the given database URL.
+181 |
+182 |     Args:
+    |     ^^^^
+183 |         url:             Raw or async-prefixed database URL.  Defaults to SQLite.
+184 |         echo:            Log all SQL statements (useful for debugging).
+    |
+help: Add blank line after "Args"
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\database.py:349:76
+    |
+347 |             column_ddl = _add_column_ddl(column, dialect)
+348 |             connection.execute(  # type: ignore[attr-defined]
+349 |                 text(f'ALTER TABLE "{table.name}" ADD COLUMN {column_ddl}')
+    |                                                                            ^
+350 |             )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\database.py:384:68
+    |
+382 |                 text(
+383 |                     "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
+384 |                     "USING fts5(page_id UNINDEXED, title, content)"
+    |                                                                    ^
+385 |                 )
+386 |             )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\database.py:385:18
+    |
+383 |                     "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
+384 |                     "USING fts5(page_id UNINDEXED, title, content)"
+385 |                 )
+    |                  ^
+386 |             )
+    |
+help: Add trailing comma
+
+TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+  --> packages\core\src\repowise\core\persistence\decision_graph.py:22:36
+   |
+21 | from sqlalchemy import delete, select
+22 | from sqlalchemy.ext.asyncio import AsyncSession
+   |                                    ^^^^^^^^^^^^
+23 |
+24 | from .models import DecisionEdge, DecisionNodeLink, DecisionRecord
+   |
+help: Move into type-checking block
+
+PLR0913 Too many arguments in function definition (7 > 5)
+  --> packages\core\src\repowise\core\persistence\decision_graph.py:52:11
+   |
+52 | async def upsert_decision_edge(
+   |           ^^^^^^^^^^^^^^^^^^^^
+53 |     session: AsyncSession,
+54 |     *,
+   |
+
+COM812 [*] Trailing comma missing
+  --> packages\core\src\repowise\core\persistence\decision_graph.py:80:14
+   |
+78 |                 DecisionEdge.dst_decision_id == dst_decision_id,
+79 |                 DecisionEdge.kind == kind,
+80 |             )
+   |              ^
+81 |         )
+82 |     ).scalar_one_or_none()
+   |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:125:60
+    |
+123 |         clauses.append(
+124 |             (DecisionEdge.src_decision_id == decision_id)
+125 |             | (DecisionEdge.dst_decision_id == decision_id)
+    |                                                            ^
+126 |         )
+127 |     q = select(DecisionEdge).where(*clauses)
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:141:18
+    |
+139 |                     DecisionEdge.repository_id == repository_id,
+140 |                     DecisionEdge.kind == "conflicts_with",
+141 |                 )
+    |                  ^
+142 |             )
+143 |         )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:145:15
+    |
+143 |         )
+144 |         .scalars()
+145 |         .all()
+    |               ^
+146 |     )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:169:84
+    |
+167 |     """
+168 |     await session.execute(
+169 |         delete(DecisionNodeLink).where(DecisionNodeLink.decision_id == decision_id)
+    |                                                                                    ^
+170 |     )
+171 |     seen: set[tuple[str, str]] = set()
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:183:14
+    |
+181 |                 node_id=node_id,
+182 |                 link_type="file",
+183 |             )
+    |              ^
+184 |         )
+185 |     for node_id in modules or []:
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:196:14
+    |
+194 |                 node_id=node_id,
+195 |                 link_type="module",
+196 |             )
+    |              ^
+197 |         )
+198 |     await session.flush()
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:214:14
+    |
+212 |                 DecisionNodeLink.repository_id == repository_id,
+213 |                 DecisionNodeLink.node_id == node_id,
+214 |             )
+    |              ^
+215 |         )
+216 |     ).scalars()
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:228:92
+    |
+226 |         (
+227 |             await session.execute(
+228 |                 select(DecisionNodeLink).where(DecisionNodeLink.decision_id == decision_id)
+    |                                                                                            ^
+229 |             )
+230 |         )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:232:15
+    |
+230 |         )
+231 |         .scalars()
+232 |         .all()
+    |               ^
+233 |     )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:302:14
+    |
+300 |                 # how the *newer* decision related to this one (None for the leaf)
+301 |                 "relation": kind,
+302 |             }
+    |              ^
+303 |         )
+304 |     return chain
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:325:88
+    |
+323 |         (
+324 |             await session.execute(
+325 |                 select(DecisionEdge).where(DecisionEdge.repository_id == repository_id)
+    |                                                                                        ^
+326 |             )
+327 |         )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:329:15
+    |
+327 |         )
+328 |         .scalars()
+329 |         .all()
+    |               ^
+330 |     )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:345:96
+    |
+343 |         (
+344 |             await session.execute(
+345 |                 select(DecisionNodeLink).where(DecisionNodeLink.repository_id == repository_id)
+    |                                                                                                ^
+346 |             )
+347 |         )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\decision_graph.py:349:15
+    |
+347 |         )
+348 |         .scalars()
+349 |         .all()
+    |               ^
+350 |     )
+    |
+help: Add trailing comma
+
+TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncEngine` into a type-checking block
+  --> packages\core\src\repowise\core\persistence\search.py:22:36
+   |
+20 | from typing import Literal
+21 |
+22 | from sqlalchemy.ext.asyncio import AsyncEngine
+   |                                    ^^^^^^^^^^^
+23 | from sqlalchemy.sql import text
+   |
+help: Move into type-checking block
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:127:6
+    |
+125 |         "too",
+126 |         "only",
+127 |     }
+    |      ^
+128 | )
+    |
+help: Add trailing comma
+
+PLC0415 `import` should be at the top-level of a file
+   --> packages\core\src\repowise\core\persistence\search.py:139:5
+    |
+137 |     Falls back to the raw (quoted) query when all tokens are stop words.
+138 |     """
+139 |     import re
+    |     ^^^^^^^^^
+140 |
+141 |     # Keep only alphanumeric tokens
+    |
+
+D107 Missing docstring in `__init__`
+   --> packages\core\src\repowise\core\persistence\search.py:162:9
+    |
+160 |     """Full-text search backed by SQLite FTS5 or PostgreSQL tsvector."""
+161 |
+162 |     def __init__(self, engine: AsyncEngine) -> None:
+    |         ^^^^^^^^
+163 |         self._engine = engine
+164 |         self._dialect = engine.dialect.name  # "sqlite" or "postgresql"
+    |
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:178:72
+    |
+176 |                     text(
+177 |                         "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
+178 |                         "USING fts5(page_id UNINDEXED, title, content)"
+    |                                                                        ^
+179 |                     )
+180 |                 )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:179:22
+    |
+177 |                         "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
+178 |                         "USING fts5(page_id UNINDEXED, title, content)"
+179 |                     )
+    |                      ^
+180 |                 )
+181 |         elif self._dialect == "postgresql":
+    |
+help: Add trailing comma
+
+E501 Line too long (103 > 100)
+   --> packages\core\src\repowise\core\persistence\search.py:187:101
+    |
+185 |                         "CREATE INDEX IF NOT EXISTS idx_wiki_pages_fts "
+186 |                         "ON wiki_pages USING GIN("
+187 |                         "  to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(content, ''))"
+    |                                                                                                     ^^^
+188 |                         ")"
+189 |                     )
+    |
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:188:28
+    |
+186 |                         "ON wiki_pages USING GIN("
+187 |                         "  to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(content, ''))"
+188 |                         ")"
+    |                            ^
+189 |                     )
+190 |                 )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:189:22
+    |
+187 |                         "  to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(content, ''))"
+188 |                         ")"
+189 |                     )
+    |                      ^
+190 |                 )
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:204:58
+    |
+202 |                     text(
+203 |                         "INSERT INTO page_fts(page_id, title, content) "
+204 |                         "VALUES (:pid, :title, :content)"
+    |                                                          ^
+205 |                     ),
+206 |                     {"pid": page_id, "title": title, "content": content},
+    |
+help: Add trailing comma
+
+S608 Possible SQL injection vector through string-based query construction
+   --> packages\core\src\repowise\core\persistence\search.py:233:30
+    |
+231 |                     params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+232 |                     await conn.execute(
+233 |                         text(f"DELETE FROM page_fts WHERE page_id IN ({placeholders})"),
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+234 |                         params,
+235 |                     )
+    |
+
+D413 [*] Missing blank line after last section ("Returns")
+   --> packages\core\src\repowise\core\persistence\search.py:261:9
+    |
+259 |             limit: Maximum number of results to return.
+260 |
+261 |         Returns:
+    |         ^^^^^^^
+262 |             List of SearchResult objects sorted by relevance (descending).
+263 |         """
+    |
+help: Add blank line after "Returns"
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:282:33
+    |
+280 |                     "WHERE page_fts MATCH :q "
+281 |                     "ORDER BY rank "
+282 |                     "LIMIT :lim"
+    |                                 ^
+283 |                 ),
+284 |                 {"q": fts_query, "lim": limit},
+    |
+help: Add trailing comma
+
+S608 Possible SQL injection vector through string-based query construction
+   --> packages\core\src\repowise\core\persistence\search.py:302:21
+    |
+300 |               page_rows = await conn.execute(
+301 |                   text(
+302 | /                     f"SELECT id, page_type, target_path FROM wiki_pages "
+303 | |                     f"WHERE id IN ({placeholders})"
+    | |___________________________________________________^
+304 |                   ),
+305 |                   params,
+    |
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:303:52
+    |
+301 |                 text(
+302 |                     f"SELECT id, page_type, target_path FROM wiki_pages "
+303 |                     f"WHERE id IN ({placeholders})"
+    |                                                    ^
+304 |                 ),
+305 |                 params,
+    |
+help: Add trailing comma
+
+COM812 [*] Trailing comma missing
+   --> packages\core\src\repowise\core\persistence\search.py:322:18
+    |
+320 |                     snippet=_snippet(content_by_id[pid]),
+321 |                     search_type="fulltext",
+322 |                 )
+    |                  ^
+323 |             )
+324 |         return results
+    |
+help: Add trailing comma
+
+E501 Line too long (101 > 100)
+   --> packages\core\src\repowise\core\persistence\search.py:333:101
+    |
+331 |                     "SELECT id, title, content, page_type, target_path, "
+332 |                     "  ts_rank("
+333 |                     "    to_tsvector('english', COALESCE(title,'') || ' ' || COALESCE(content,'')), "
+    |                                                                                                     ^
+334 |                     "    plainto_tsquery('english', :q)"
+335 |                     "  ) AS rank "
+    |
+
+E501 Line too long (102 > 100)
+   --> packages\core\src\repowise\core\persistence\search.py:337:101
+    |
+335 |                     "  ) AS rank "
+336 |                     "FROM wiki_pages "
+337 |                     "WHERE to_tsvector('english', COALESCE(title,'') || ' ' || COALESCE(content,'')) "
+    |                                                                                                     ^^
+338 |                     "  @@ plainto_tsquery('english', :q) "
+339 |                     "ORDER BY rank DESC "
+    |
+
+Found 67 errors.
+[*] 32 fixable with the `--fix` option (7 hidden fixes can be enabled with the `--unsafe-fixes` option).

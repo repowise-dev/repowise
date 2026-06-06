@@ -44,6 +44,15 @@ class TestClassify:
             ("cargo build --release", "build_output"),
             ("go vet ./...", "build_output"),
             ("make", "build_output"),
+            # linters
+            ("npm run lint", "lint_output"),
+            ("eslint src", "lint_output"),
+            ("npx eslint .", "lint_output"),
+            ("ruff check .", "lint_output"),
+            ("flake8 src", "lint_output"),
+            ("mypy packages", "lint_output"),
+            ("cargo clippy", "lint_output"),
+            ("golangci-lint run", "lint_output"),
             # git
             ("git status", "git_status"),
             ("git log --oneline -20", "git_log"),
@@ -120,6 +129,7 @@ class TestClassify:
             # opted-out variants
             "git status --porcelain",
             "git diff --stat",
+            "ruff format .",
             # non-table commands
             "docker compose up",
             "curl https://example.com",

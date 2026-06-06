@@ -1,0 +1,673 @@
+﻿packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:14:22: TC003 Move standard library import `datetime.datetime` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:18:5: TC001 Move application import `..models.CoverageFile` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:19:5: TC001 Move application import `..models.DeadCodeFinding` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:20:5: TC001 Move application import `..models.DecisionRecord` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:21:5: TC001 Move application import `..models.GitMetadata` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:22:5: TC001 Move application import `..models.HealthFileMetric` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:23:5: TC001 Move application import `..models.HealthFinding` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:24:5: TC001 Move application import `..models.HealthSnapshot` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:37:70: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:42:49: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:47:56: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:52:33: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:57:60: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:69:55: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:84:68: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:95:47: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**kwargs`
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:99:56: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:106:15: PLR0913 Too many arguments in function definition (8 > 5)
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:139:43: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**fields`
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:139:46: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:147:64: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:152:57: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:164:54: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:169:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:183:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:199:73: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:207:43: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:211:15: PLR0913 Too many arguments in function definition (7 > 5)
+packages\core\src\repowise\core\persistence\_interfaces\_analysis.py:225:62: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:16:22: TC001 Move application import `..models.ExternalSystem` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:16:38: TC001 Move application import `..models.GraphEdge` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:16:49: TC001 Move application import `..models.GraphNode` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:28:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:33:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:38:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:54:54: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:72:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:77:77: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:82:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:91:54: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:96:61: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:101:33: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_graph_records.py:110:48: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:18:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:18:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:18:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:18:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:18:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:18:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:18:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:19:5: TC001 Move application import `..models.ChatMessage` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:20:5: TC001 Move application import `..models.Conversation` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:21:5: TC001 Move application import `..models.GenerationJob` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:22:5: TC001 Move application import `..models.Page` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:23:5: TC001 Move application import `..models.PageVersion` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:24:5: TC001 Move application import `..models.Repository` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:25:5: TC001 Move application import `..models.WebhookEvent` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:64:15: PLR0913 Too many arguments in function definition (7 > 5)
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:80:15: PLR0913 Too many arguments in function definition (7 > 5)
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:97:43: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**kwargs`
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:101:57: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:108:15: PLR0913 Too many arguments in function definition (6 > 5)
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:121:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:147:58: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:156:69: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:161:35: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:166:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:171:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:182:64: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\_meta.py:187:35: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\graph_store.py:40:47: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**attrs`
+packages\core\src\repowise\core\persistence\_interfaces\graph_store.py:44:59: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**attrs`
+packages\core\src\repowise\core\persistence\_interfaces\graph_store.py:65:9: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\_interfaces\graph_store.py:65:9: D209 [*] Multi-line docstring closing quotes should be on a separate line
+packages\core\src\repowise\core\persistence\_interfaces\job_store.py:23:22: TC003 Move standard library import `datetime.datetime` into a type-checking block
+packages\core\src\repowise\core\persistence\_interfaces\job_store.py:82:9: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\_interfaces\job_store.py:82:9: D209 [*] Multi-line docstring closing quotes should be on a separate line
+packages\core\src\repowise\core\persistence\_interfaces\job_store.py:96:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\_interfaces\job_store.py:98:9: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\coordinator.py:33:1: I001 [*] Import block is un-sorted or un-formatted
+packages\core\src\repowise\core\persistence\coordinator.py:38:1: UP035 [*] Import from `collections.abc` instead: `AsyncIterator`
+packages\core\src\repowise\core\persistence\coordinator.py:51:28: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `obj`
+packages\core\src\repowise\core\persistence\coordinator.py:69:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\coordinator.py:70:9: D107 Missing docstring in `__init__`
+packages\core\src\repowise\core\persistence\coordinator.py:70:24: ANN001 Missing type annotation for function argument `session`
+packages\core\src\repowise\core\persistence\coordinator.py:70:33: ANN001 Missing type annotation for function argument `graph_builder`
+packages\core\src\repowise\core\persistence\coordinator.py:70:53: ANN001 Missing type annotation for function argument `vector_store`
+packages\core\src\repowise\core\persistence\coordinator.py:77:15: C901 `transaction` is too complex (21 > 10)
+packages\core\src\repowise\core\persistence\coordinator.py:77:15: PLR0912 Too many branches (20 > 12)
+packages\core\src\repowise\core\persistence\coordinator.py:77:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\coordinator.py:126:24: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\coordinator.py:127:21: TRY400 Use `logging.exception` instead of `logging.error`
+packages\core\src\repowise\core\persistence\coordinator.py:143:32: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\coordinator.py:144:29: TRY400 Use `logging.exception` instead of `logging.error`
+packages\core\src\repowise\core\persistence\coordinator.py:149:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\coordinator.py:154:16: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\coordinator.py:164:20: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\coordinator.py:169:20: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\coordinator.py:188:26: ANN001 Missing type annotation for function argument `store`
+packages\core\src\repowise\core\persistence\coordinator.py:196:15: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\coordinator.py:197:13: EM102 Exception must not use an f-string literal, assign to variable first
+packages\core\src\repowise\core\persistence\coordinator.py:198:51: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\coordinator.py:204:26: ANN001 Missing type annotation for function argument `store`
+packages\core\src\repowise\core\persistence\coordinator.py:209:25: ANN001 Missing type annotation for function argument `store`
+packages\core\src\repowise\core\persistence\crud\_shared.py:11:29: TC003 Move standard library import `collections.abc.Callable` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\_shared.py:11:39: TC003 Move standard library import `collections.abc.Iterable` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\_shared.py:16:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\_shared.py:32:11: PLR0913 Too many arguments in function definition (9 > 5)
+packages\core\src\repowise\core\persistence\crud\_shared.py:44:5: D401 First line of docstring should be in imperative mood: "Generic batch upsert with ONE existence query for the whole batch."
+packages\core\src\repowise\core\persistence\crud\analysis.py:10:22: TC003 Move standard library import `datetime.datetime` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\analysis.py:14:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\analysis.py:32:33: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `finding`
+packages\core\src\repowise\core\persistence\crud\analysis.py:39:36: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `finding`
+packages\core\src\repowise\core\persistence\crud\analysis.py:40:5: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\crud\analysis.py:40:5: D209 [*] Multi-line docstring closing quotes should be on a separate line
+packages\core\src\repowise\core\persistence\crud\analysis.py:57:73: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:90:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:125:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:184:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:193:28: PLR2004 Magic value used in comparison, consider replacing `0.7` with a constant variable
+packages\core\src\repowise\core\persistence\crud\analysis.py:195:30: PLR2004 Magic value used in comparison, consider replacing `0.4` with a constant variable
+packages\core\src\repowise\core\persistence\crud\analysis.py:230:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:266:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:272:73: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:308:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:348:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:366:88: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:400:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:405:11: PLR0913 Too many arguments in function definition (6 > 5)
+packages\core\src\repowise\core\persistence\crud\analysis.py:405:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\analysis.py:433:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\analysis.py:470:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:481:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\analysis.py:500:11: PLR0913 Too many arguments in function definition (8 > 5)
+packages\core\src\repowise\core\persistence\crud\analysis.py:537:76: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:553:5: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\crud\analysis.py:553:5: D209 [*] Multi-line docstring closing quotes should be on a separate line
+packages\core\src\repowise\core\persistence\crud\analysis.py:587:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:624:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:647:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:684:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:709:80: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:751:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\analysis.py:756:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:12:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\chat.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\chat.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\chat.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\chat.py:25:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:37:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:41:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:42:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\chat.py:48:22: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\chat.py:53:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:54:60: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\chat.py:64:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:86:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:103:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:107:48: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\chat.py:112:11: D103 Missing docstring in public function
+packages\core\src\repowise\core\persistence\crud\chat.py:116:63: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:10:22: TC003 Move standard library import `datetime.datetime` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\decisions.py:14:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\decisions.py:18:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\decisions.py:19:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\decisions.py:19:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\decisions.py:19:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\decisions.py:19:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\decisions.py:19:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\decisions.py:34:11: PLR0913 Too many arguments in function definition (22 > 5)
+packages\core\src\repowise\core\persistence\crud\decisions.py:136:11: PLR0913 Too many arguments in function definition (9 > 5)
+packages\core\src\repowise\core\persistence\crud\decisions.py:204:15: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\crud\decisions.py:205:13: EM102 Exception must not use an f-string literal, assign to variable first
+packages\core\src\repowise\core\persistence\crud\decisions.py:205:100: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:221:15: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**fields`
+packages\core\src\repowise\core\persistence\crud\decisions.py:279:5: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\crud\decisions.py:284:12: RET504 Unnecessary assignment to `t` before `return` statement
+packages\core\src\repowise\core\persistence\crud\decisions.py:296:11: PLR0913 Too many arguments in function definition (10 > 5)
+packages\core\src\repowise\core\persistence\crud\decisions.py:351:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:372:90: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:382:11: C901 `bulk_upsert_decisions` is too complex (15 > 10)
+packages\core\src\repowise\core\persistence\crud\decisions.py:382:11: PLR0912 Too many branches (14 > 12)
+packages\core\src\repowise\core\persistence\crud\decisions.py:382:11: PLR0915 Too many statements (60 > 50)
+packages\core\src\repowise\core\persistence\crud\decisions.py:387:19: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `vector_store`
+packages\core\src\repowise\core\persistence\crud\decisions.py:430:84: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:445:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\crud\decisions.py:580:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:591:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\crud\decisions.py:600:51: PLR2004 Magic value used in comparison, consider replacing `0.01` with a constant variable
+packages\core\src\repowise\core\persistence\crud\decisions.py:621:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:634:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:647:37: PLR2004 Magic value used in comparison, consider replacing `0.5` with a constant variable
+packages\core\src\repowise\core\persistence\crud\decisions.py:660:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\decisions.py:666:5: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\crud\decisions.py:666:5: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\decisions.py:681:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\external_systems.py:12:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\external_systems.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\external_systems.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\external_systems.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\external_systems.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\external_systems.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\external_systems.py:53:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\external_systems.py:93:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\external_systems.py:117:39: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\external_systems.py:127:21: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `sym`
+packages\core\src\repowise\core\persistence\crud\external_systems.py:131:52: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `sym`
+packages\core\src\repowise\core\persistence\crud\git.py:10:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\git.py:12:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\git.py:12:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\git.py:12:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\git.py:12:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\git.py:12:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\git.py:38:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:61:62: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:68:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:74:69: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:83:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:91:78: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:134:5: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\crud\git.py:150:5: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\crud\git.py:159:78: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:251:100: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:256:11: ANN201 Missing return type annotation for public function `get_latest_commit_committed_at`
+packages\core\src\repowise\core\persistence\crud\git.py:263:97: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:274:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:291:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:315:24: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:363:88: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:373:64: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:379:62: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\git.py:386:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:12:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\graph.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\graph.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\graph.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\graph.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\graph.py:155:78: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:182:74: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:218:74: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:233:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:253:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:258:11: PLR0913 Too many arguments in function definition (6 > 5)
+packages\core\src\repowise\core\persistence\crud\graph.py:258:11: D417 Missing argument descriptions in the docstring for `get_graph_edges_for_node`: `node_id`, `repository_id`, `session`
+packages\core\src\repowise\core\persistence\crud\graph.py:269:5: D413 [*] Missing blank line after last section ("Parameters")
+packages\core\src\repowise\core\persistence\crud\graph.py:323:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:347:22: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:361:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:430:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:460:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\graph.py:468:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:12:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:27:88: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:38:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:48:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:56:94: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:66:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\knowledge_graph.py:76:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\pages.py:10:22: TC003 Move standard library import `datetime.datetime` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\pages.py:14:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\pages.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\pages.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\pages.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\pages.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\pages.py:29:11: PLR0913 Too many arguments in function definition (20 > 5)
+packages\core\src\repowise\core\persistence\crud\pages.py:124:5: RET505 [*] Unnecessary `else` after `return` statement
+packages\core\src\repowise\core\persistence\crud\pages.py:165:5: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\crud\pages.py:186:5: D401 First line of docstring should be in imperative mood: "Convenience wrapper that unpacks a GeneratedPage dataclass."
+packages\core\src\repowise\core\persistence\crud\pages.py:222:11: PLR0913 Too many arguments in function definition (7 > 5)
+packages\core\src\repowise\core\persistence\crud\pages.py:259:22: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\pages.py:273:10: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\repository.py:12:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\crud\repository.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\repository.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\repository.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\repository.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\repository.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\repository.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\crud\repository.py:29:11: PLR0913 Too many arguments in function definition (6 > 5)
+packages\core\src\repowise\core\persistence\crud\repository.py:105:11: PLR0913 Too many arguments in function definition (8 > 5)
+packages\core\src\repowise\core\persistence\crud\repository.py:136:11: PLR0913 Too many arguments in function definition (8 > 5)
+packages\core\src\repowise\core\persistence\crud\repository.py:149:5: D413 [*] Missing blank line after last section ("Raises")
+packages\core\src\repowise\core\persistence\crud\repository.py:154:15: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\crud\repository.py:155:13: EM102 Exception must not use an f-string literal, assign to variable first
+packages\core\src\repowise\core\persistence\crud\repository.py:155:90: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\repository.py:160:15: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\crud\repository.py:160:27: EM102 Exception must not use an f-string literal, assign to variable first
+packages\core\src\repowise\core\persistence\crud\repository.py:190:11: PLR0913 Too many arguments in function definition (6 > 5)
+packages\core\src\repowise\core\persistence\crud\repository.py:215:71: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\crud\repository.py:220:15: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\crud\repository.py:220:27: EM102 Exception must not use an f-string literal, assign to variable first
+packages\core\src\repowise\core\persistence\database.py:15:29: TC003 Move standard library import `collections.abc.AsyncGenerator` into a type-checking block
+packages\core\src\repowise\core\persistence\database.py:54:5: ANN202 Missing return type annotation for private function `_make_pragma_listener`
+packages\core\src\repowise\core\persistence\database.py:141:8: PIE810 Call `startswith` once with a `tuple`
+packages\core\src\repowise\core\persistence\database.py:182:5: D413 [*] Missing blank line after last section ("Args")
+packages\core\src\repowise\core\persistence\database.py:349:76: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\database.py:384:68: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\database.py:385:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:22:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\decision_graph.py:52:11: PLR0913 Too many arguments in function definition (7 > 5)
+packages\core\src\repowise\core\persistence\decision_graph.py:80:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:125:60: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:141:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:145:15: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:169:84: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:183:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:196:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:214:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:228:92: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:232:15: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:302:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:325:88: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:329:15: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:345:96: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\decision_graph.py:349:15: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:39:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\models.py:43:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\models.py:54:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:57:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:61:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\models.py:66:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:78:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:81:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:99:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:147:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:151:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\models.py:156:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:183:99: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:186:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:193:5: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\models.py:205:98: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:215:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:223:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\models.py:228:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:236:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:263:98: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:272:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:278:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\models.py:283:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:291:89: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:294:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:309:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:327:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:330:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:344:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:417:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:420:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:444:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:487:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:490:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:495:5: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\models.py:520:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:544:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:547:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:552:5: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\models.py:552:5: D209 [*] Multi-line docstring closing quotes should be on a separate line
+packages\core\src\repowise\core\persistence\models.py:568:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:574:55: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:590:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:601:57: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:606:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:612:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:615:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:660:57: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:664:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:704:90: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:707:90: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:710:35: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:715:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:754:51: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:757:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:768:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:772:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:775:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:786:87: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:791:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:802:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:820:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:828:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:839:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:842:35: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:858:51: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:862:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:873:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:886:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:889:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:900:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:913:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:928:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:931:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:947:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:956:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:979:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:993:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:999:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\models.py:1004:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:1012:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:1018:7: D101 Missing docstring in public class
+packages\core\src\repowise\core\persistence\models.py:1023:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:1030:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:1055:86: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:1061:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\models.py:1064:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:22:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncEngine` into a type-checking block
+packages\core\src\repowise\core\persistence\search.py:127:6: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:139:5: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\search.py:162:9: D107 Missing docstring in `__init__`
+packages\core\src\repowise\core\persistence\search.py:178:72: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:179:22: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:187:101: E501 Line too long (103 > 100)
+packages\core\src\repowise\core\persistence\search.py:188:28: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:189:22: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:204:58: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:233:30: S608 Possible SQL injection vector through string-based query construction
+packages\core\src\repowise\core\persistence\search.py:261:9: D413 [*] Missing blank line after last section ("Returns")
+packages\core\src\repowise\core\persistence\search.py:282:33: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:302:21: S608 Possible SQL injection vector through string-based query construction
+packages\core\src\repowise\core\persistence\search.py:303:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:322:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\search.py:333:101: E501 Line too long (101 > 100)
+packages\core\src\repowise\core\persistence\search.py:337:101: E501 Line too long (102 > 100)
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:9:22: TC003 Move standard library import `datetime.datetime` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:12:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:15:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:17:5: TC001 Move application import `..models.CoverageFile` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:18:5: TC001 Move application import `..models.DeadCodeFinding` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:19:5: TC001 Move application import `..models.DecisionRecord` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:20:5: TC001 Move application import `..models.GitMetadata` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:21:5: TC001 Move application import `..models.HealthFileMetric` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:22:5: TC001 Move application import `..models.HealthFinding` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:23:5: TC001 Move application import `..models.HealthSnapshot` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:33:70: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:43:49: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:48:56: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:51:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:55:33: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:60:60: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:63:56: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:70:55: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:91:68: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:94:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:100:47: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**kwargs`
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:104:56: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:111:15: PLR0913 Too many arguments in function definition (8 > 5)
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:157:76: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:161:43: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**fields`
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:161:46: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:169:64: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:172:55: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:176:57: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:179:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:186:54: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:191:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:203:74: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:207:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:230:73: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:233:64: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:240:43: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:243:46: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:246:15: PLR0913 Too many arguments in function definition (7 > 5)
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:269:62: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:272:54: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_analysis.py:298:64: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:9:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:11:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:12:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:13:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:13:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:13:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:13:22: TC001 Move application import `..models.ExternalSystem` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:13:38: TC001 Move application import `..models.GraphEdge` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:13:49: TC001 Move application import `..models.GraphNode` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:22:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:27:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:32:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:55:54: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:58:51: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:81:52: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:84:55: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:95:75: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:99:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:102:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:106:54: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:109:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:113:61: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:116:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:120:33: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_graph_records.py:125:48: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:11:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:13:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:15:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:15:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:15:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:15:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:15:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:15:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:15:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:16:5: TC001 Move application import `..models.ChatMessage` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:17:5: TC001 Move application import `..models.Conversation` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:18:5: TC001 Move application import `..models.GenerationJob` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:19:5: TC001 Move application import `..models.Page` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:20:5: TC001 Move application import `..models.PageVersion` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:21:5: TC001 Move application import `..models.Repository` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:22:5: TC001 Move application import `..models.WebhookEvent` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:61:15: PLR0913 Too many arguments in function definition (7 > 5)
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:86:15: PLR0913 Too many arguments in function definition (7 > 5)
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:108:43: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**kwargs`
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:112:57: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:115:57: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:121:15: PLR0913 Too many arguments in function definition (6 > 5)
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:142:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:171:58: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:176:69: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:179:68: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:186:53: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:191:47: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:194:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\_sql_meta.py:204:64: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:28:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:34:9: D107 Missing docstring in `__init__`
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:55:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:55:47: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**attrs`
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:59:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:59:59: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `**attrs`
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:63:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:66:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:69:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:74:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:83:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:91:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:94:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:97:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:102:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:112:57: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:114:15: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:114:26: EM102 Exception must not use an f-string literal, assign to variable first
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:120:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:129:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:138:9: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:145:17: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\stores\in_process_graph_store.py:148:65: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\sql_index_store.py:17:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\sql_index_store.py:19:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\sql_index_store.py:33:9: D107 Missing docstring in `__init__`
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:14:36: TC002 Move third-party import `sqlalchemy.ext.asyncio.AsyncSession` into a type-checking block
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:16:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:17:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:42:9: D107 Missing docstring in `__init__`
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:45:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:65:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:69:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:79:19: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:79:31: EM102 Exception must not use an f-string literal, assign to variable first
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:89:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:92:19: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:92:31: EM102 Exception must not use an f-string literal, assign to variable first
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:98:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:99:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:103:65: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:104:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\stores\sql_job_store.py:112:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\_base.py:14:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\vector_store\_base.py:14:22: TC001 Move application import `..search.SearchResult` into a type-checking block
+packages\core\src\repowise\core\persistence\vector_store\_base.py:56:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\_base.py:58:9: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\vector_store\_base.py:68:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\_base.py:73:84: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\_base.py:95:46: ARG002 Unused method argument: `path`
+packages\core\src\repowise\core\persistence\vector_store\_base.py:113:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\_base.py:122:17: PERF403 Use a dictionary comprehension instead of a for-loop
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:5:52: TC001 Move application import `repowise.core.providers.embedding.base.Embedder` into a type-checking block
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:7:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:20:9: D107 Missing docstring in `__init__`
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:25:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:29:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:57:18: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:61:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:68:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:78:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:81:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:84:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:94:32: PERF102 When using only the values of a dict use the `values()` method
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:102:9: D205 1 blank line required between summary line and description
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:109:32: PERF102 When using only the values of a dict use the `values()` method
+packages\core\src\repowise\core\persistence\vector_store\in_memory.py:121:9: D105 Missing docstring in magic method
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:5:52: TC001 Move application import `repowise.core.providers.embedding.base.Embedder` into a type-checking block
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:7:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:37:9: D107 Missing docstring in `__init__`
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:48:13: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:50:19: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:51:17: EM101 Exception must not use a string literal, assign to variable first
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:51:95: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:62:30: ANN001 Missing type annotation for function argument `schema`
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:88:13: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:90:19: TRY003 Avoid specifying long messages outside the exception class
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:91:17: EM101 Exception must not use a string literal, assign to variable first
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:92:62: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:113:14: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:116:59: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:147:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:155:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:192:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:201:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:214:20: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:218:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:224:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:228:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:255:16: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\vector_store\lancedb_store.py:283:16: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:7:52: TC001 Move application import `repowise.core.providers.embedding.base.Embedder` into a type-checking block
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:9:1: TID252 Prefer absolute imports over relative imports from parent modules
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:29:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:52:9: D107 Missing docstring in `__init__`
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:60:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:60:63: ARG002 Unused method argument: `metadata`
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:64:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:69:93: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:75:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:85:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:88:85: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:96:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:100:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:110:33: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:130:50: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:137:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:145:25: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:152:66: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:155:24: BLE001 Do not catch blind exception: `Exception`
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:170:22: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:174:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:175:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:184:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:187:15: D102 Missing docstring in public method
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:188:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:192:81: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:203:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:210:30: COM812 [*] Trailing comma missing
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:231:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:232:9: PLC0415 `import` should be at the top-level of a file
+packages\core\src\repowise\core\persistence\vector_store\pgvector_store.py:236:42: COM812 [*] Trailing comma missing
+Found 671 errors.
+[*] 305 fixable with the `--fix` option (174 hidden fixes can be enabled with the `--unsafe-fixes` option).

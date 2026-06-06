@@ -13,6 +13,7 @@ from repowise.core.distill.filters import (  # noqa: F401  (registration side ef
     git_diff,
     git_log,
     git_status,
+    lint_output,
     logs,
     search_results,
     test_output,

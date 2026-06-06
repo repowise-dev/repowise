@@ -41,7 +41,18 @@ def test_normalize_command(raw: str, expected: str) -> None:
         ("npm run build", "build_output"),
         ("tsc --noEmit", "build_output"),
         ("cargo build --release", "build_output"),
+        ("cargo check", "build_output"),
         ("npm run type-check", "build_output"),
+        ("npm run lint", "lint_output"),
+        ("eslint src --format stylish", "lint_output"),
+        ("npx eslint .", "lint_output"),
+        ("ruff check packages", "lint_output"),
+        ("uv run ruff check .", "lint_output"),
+        ("flake8 src", "lint_output"),
+        ("mypy packages/core", "lint_output"),
+        ("cargo clippy --workspace", "lint_output"),
+        ("golangci-lint run ./...", "lint_output"),
+        ("biome check src", "lint_output"),
         ("find . -name *.py", "file_listing"),
         ("ls -la", "file_listing"),
         ("tree packages", "file_listing"),
@@ -67,6 +78,7 @@ def test_select_filter_by_command(command: str, filter_name: str) -> None:
         "python script.py",
         "lsof -i :8000",  # 'ls' must not greedily match
         "git statuses",  # word boundary
+        "ruff format .",  # formatter, not a linter
     ],
 )
 def test_unrelated_commands_do_not_match(command: str) -> None:

@@ -13,6 +13,7 @@ Two invariants run across the board:
 
 from __future__ import annotations
 
+import re
 import statistics
 
 import pytest
@@ -142,6 +143,101 @@ def test_tsc_all_error_output_is_kept_whole(load_fixture) -> None:
     assert "Found 6 errors in 4 files." in distilled
 
 
+# -- lint_output ---------------------------------------------------------------
+
+#: (fixture, command) pairs for the lint savings bench. ruff fixtures are real
+#: output from this repo (`--select ALL` over core/persistence); eslint is real
+#: output from packages/web; clippy/golangci/mypy are format-faithful samples
+#: for toolchains not installed here. eslint and mypy are error-heavy by
+#: construction — they participate in the median as the all-signal end.
+LINT_BENCH_CASES = [
+    ("ruff_check_full.txt", "ruff check packages"),
+    ("ruff_check_concise.txt", "ruff check --output-format=concise packages"),
+    ("eslint_fail.txt", "npm run lint"),
+    ("clippy_warnings.txt", "cargo clippy"),
+    ("golangci_lint.txt", "golangci-lint run ./..."),
+    ("mypy_errors.txt", "mypy packages"),
+]
+
+
+@pytest.mark.parametrize(("fixture", "command"), LINT_BENCH_CASES)
+def test_lint_no_error_line_lost(load_fixture, fixture, command) -> None:
+    raw, distilled = _distill(load_fixture, fixture, "lint_output", command)
+    _assert_no_error_line_lost(raw, distilled)
+
+
+def test_lint_bench_median_savings_at_least_60pct(load_fixture) -> None:
+    """Exit criterion: >=60% median token reduction across the lint fixtures."""
+    pcts = []
+    for fixture, command in LINT_BENCH_CASES:
+        raw, distilled = _distill(load_fixture, fixture, "lint_output", command)
+        pcts.append(_pct(raw, distilled))
+    assert statistics.median(pcts) >= 60.0, f"median savings {pcts}"
+
+
+def test_ruff_full_groups_by_rule_and_keeps_summary(load_fixture) -> None:
+    raw, distilled = _distill(load_fixture, "ruff_check_full.txt", "lint_output", "ruff check")
+    # Rule groups carry counts and file:line anchors.
+    assert re.search(r"D\d{3} ×\d+", distilled)  # noqa: RUF001
+    assert re.search(r"coordinator\.py:\d+", distilled)
+    # The tool's own totals and fixable summary survive verbatim.
+    assert re.search(r"^Found \d+ errors\.$", distilled, re.MULTILINE)
+    assert "fixable with the `--fix` option" in distilled
+    assert _pct(raw, distilled) >= 75.0
+
+
+def test_ruff_concise_groups_by_rule(load_fixture) -> None:
+    raw, distilled = _distill(load_fixture, "ruff_check_concise.txt", "lint_output", "ruff check")
+    assert re.search(r"[A-Z]+\d+ ×\d+, \d+ fixable", distilled)  # noqa: RUF001
+    assert _pct(raw, distilled) >= 70.0
+
+
+def test_eslint_errors_verbatim_warnings_grouped(load_fixture) -> None:
+    raw, distilled = _distill(load_fixture, "eslint_fail.txt", "lint_output", "npm run lint")
+    # Every error row survives verbatim (the hooks error among them).
+    assert 'React Hook "useEffect" is called conditionally' in distilled
+    # Identical repeated error rows collapse to one annotated copy.
+    assert distilled.count("no-html-link-for-pages") < raw.count("no-html-link-for-pages")
+    assert "(×5)" in distilled  # noqa: RUF001
+    # Warnings are grouped by rule.
+    assert re.search(r"@next/next/no-img-element ×\d+", distilled)  # noqa: RUF001
+    # The problems summary survives.
+    assert "✖ 19 problems (9 errors, 10 warnings)" in distilled
+
+
+def test_clippy_error_block_survives_warnings_group(load_fixture) -> None:
+    raw, distilled = _distill(load_fixture, "clippy_warnings.txt", "lint_output", "cargo clippy")
+    # The compile error block is verbatim, frame included.
+    assert "error[E0308]: mismatched types" in distilled
+    assert "expected `usize`, found `Option<usize>`" in distilled
+    # Warning blocks collapse into clippy rule groups.
+    assert re.search(r"clippy::redundant_clone ×\d+", distilled)  # noqa: RUF001
+    assert "error: could not compile `gitscan`" in distilled
+    assert _pct(raw, distilled) >= 60.0
+
+
+def test_golangci_errcheck_lines_survive(load_fixture) -> None:
+    raw, distilled = _distill(load_fixture, "golangci_lint.txt", "lint_output", "golangci-lint run")
+    # Error-classified messages survive verbatim, not as a lossy group.
+    for line in raw.splitlines():
+        if "Error return value" in line:
+            assert line in distilled
+    assert re.search(r"wsl ×8", distilled)  # noqa: RUF001
+
+
+def test_mypy_all_signal_output_keeps_every_error(load_fixture) -> None:
+    """mypy output is mostly errors — nothing to win, nothing to lose."""
+    raw, distilled = _distill(load_fixture, "mypy_errors.txt", "lint_output", "mypy packages")
+    _assert_no_error_line_lost(raw, distilled)
+    assert "Found 7 errors in 3 files" in distilled
+
+
+def test_lint_unrecognized_raises() -> None:
+    f = filter_registry.get("lint_output")
+    with pytest.raises(ValueError, match="lint"):
+        f.distill("random text\n" * 50, command="npm run lint")
+
+
 # -- git family -------------------------------------------------------------------
 
 
@@ -233,11 +329,12 @@ def test_logs_collapse_templates_keep_errors(load_fixture) -> None:
 # -- registry/meta -----------------------------------------------------------------
 
 
-def test_all_seven_filters_registered() -> None:
+def test_all_core_filters_registered() -> None:
     names = {f.name for f in filter_registry.filters()}
     assert names >= {
         "test_output",
         "build_output",
+        "lint_output",
         "git_status",
         "git_log",
         "git_diff",

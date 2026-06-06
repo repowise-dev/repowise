@@ -1,0 +1,81 @@
+internal/scan/walker.go:42:2: ineffectual assignment to depth (ineffassign)
+	depth := opts.Depth
+	^
+internal/scan/walker.go:88:15: Error return value of `f.Close` is not checked (errcheck)
+	defer f.Close()
+	             ^
+internal/repo/head.go:118:9: Error return value of `w.Flush` is not checked (errcheck)
+	w.Flush()
+	       ^
+internal/repo/head.go:131:6: func `peelTag` is unused (unused)
+func peelTag(ref *plumbing.Reference) string {
+     ^
+internal/output/render.go:55:2: S1000: should use a simple channel send/receive instead of `select` with a single case (gosimple)
+	select {
+	^
+internal/output/render.go:61:12: G104: Errors unhandled. (gosec)
+	io.Copy(dst, src)
+	          ^
+internal/output/render.go:74:2: declarations should never be cuddled (wsl)
+	var totals Summary
+	^
+internal/output/render.go:75:2: assignments should only be cuddled with other assignments (wsl)
+	rows := collect(totals)
+	^
+internal/scan/match.go:23:10: G304: Potential file inclusion via variable (gosec)
+	f, err := os.Open(path)
+	        ^
+internal/scan/match.go:51:2: `if` block ends with a `return` statement, so drop this `else` and outdent its block (indent-error-flow) (revive)
+	} else {
+	^
+internal/scan/match.go:67:14: Error return value of `scanner.Err` is not checked (errcheck)
+	scanner.Err()
+	            ^
+internal/config/load.go:18:2: import 'github.com/pkg/errors' is not allowed from list 'main' (depguard)
+	"github.com/pkg/errors"
+	^
+internal/config/load.go:34:2: declarations should never be cuddled (wsl)
+	var path string
+	^
+internal/config/load.go:35:2: assignments should only be cuddled with other assignments (wsl)
+	base := filepath.Dir(path)
+	^
+internal/config/load.go:52:2: declarations should never be cuddled (wsl)
+	var merged Config
+	^
+internal/config/load.go:61:2: declarations should never be cuddled (wsl)
+	var overrides []Override
+	^
+internal/scan/match.go:84:2: declarations should never be cuddled (wsl)
+	var hits []Match
+	^
+internal/scan/walker.go:120:2: declarations should never be cuddled (wsl)
+	var pending []string
+	^
+internal/output/render.go:92:9: Error return value of `enc.Encode` is not checked (errcheck)
+	enc.Encode(rows)
+	          ^
+internal/output/render.go:108:11: Error return value of `tw.Flush` is not checked (errcheck)
+	tw.Flush()
+	        ^
+internal/repo/head.go:144:13: Error return value of `it.ForEach` is not checked (errcheck)
+	it.ForEach(visit)
+	          ^
+internal/scan/match.go:92:7: G304: Potential file inclusion via variable (gosec)
+	g, err := os.Open(rel)
+	        ^
+internal/scan/walker.go:133:10: G104: Errors unhandled. (gosec)
+	filepath.Walk(root, visit)
+	             ^
+internal/repo/head.go:152:6: func `resolveSymbolic` is unused (unused)
+func resolveSymbolic(r *Repo) string {
+     ^
+24 issues:
+* wsl: 8
+* errcheck: 6
+* gosec: 4
+* ineffassign: 1
+* unused: 2
+* gosimple: 1
+* revive: 1
+* depguard: 1
