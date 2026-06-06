@@ -79,7 +79,8 @@ _RESCUE_TOP_N = 2
 _DIGEST_THRESHOLD = 50  # grep result lines before the full compact digest
 _DIGEST_TOP_FILES = 10
 _READ_NUDGE_MIN_LINES = 100  # Read output lines before a skeleton nudge
-_READ_NUDGE_MIN_TOKENS = 800  # full-file tokens below which a nudge is noise
+_READ_NUDGE_MIN_TOKENS = 3000  # full-file tokens below which a nudge is noise
+_READ_NUDGE_MIN_SAVINGS = 1500  # estimated tokens saved must clear this
 _READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
 
 
@@ -998,6 +999,10 @@ def _skeleton_nudge(repo_path: Path, rel: str, tool_output: object, state: dict)
 
     skeleton_tokens = estimate_skeleton_tokens(bounds, file_size_bytes=size)
     if skeleton_tokens > full_tokens * _READ_NUDGE_MAX_RATIO:
+        return None
+    # A nudge is only worth the agent's attention when acting on it buys a
+    # real saving — a few hundred tokens on a mid-size file is noise.
+    if full_tokens - skeleton_tokens < _READ_NUDGE_MIN_SAVINGS:
         return None
 
     state["nudged"].append(rel)

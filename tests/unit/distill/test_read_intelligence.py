@@ -44,7 +44,8 @@ def _index_file(repo: Path, rel: str, bounds: list[tuple[int, int]]) -> None:
     con.close()
 
 
-def _write_big_file(repo: Path, rel: str, lines: int = 200) -> Path:
+def _write_big_file(repo: Path, rel: str, lines: int = 600) -> Path:
+    """Default size clears the nudge's full-file token floor (~3k tokens)."""
     path = repo / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(f"x{n} = {n}  # padding padding" for n in range(lines)) + "\n")
@@ -126,6 +127,21 @@ class TestSkeletonNudge:
         path.write_text("x = 1\n" * 30)
         _index_file(repo, "src/small.py", [(1, 30)])
         assert _read_event(repo, "src/small.py") is None
+
+    def test_silent_below_token_floor(self, repo: Path) -> None:
+        # The live noise case: a ~1.5k-token file with a perfectly valid
+        # skeleton (~600 tokens saved) is a hint nobody should act on.
+        _write_big_file(repo, "src/mid.py", lines=200)
+        _index_file(repo, "src/mid.py", [(10, 60), (70, 150), (160, 195)])
+        assert _read_event(repo, "src/mid.py") is None
+
+    def test_fires_above_token_floor_with_real_savings(self, repo: Path) -> None:
+        # Same shape as the noise case, just genuinely large: ≥3k full-file
+        # tokens with ≥1.5k estimated savings.
+        _write_big_file(repo, "src/big.py", lines=600)
+        _index_file(repo, "src/big.py", [(10, 60), (70, 150), (160, 195)])
+        result = _read_event(repo, "src/big.py")
+        assert result is not None and 'include=["skeleton"]' in result
 
 
 class TestStaleReadNotice:
