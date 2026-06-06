@@ -19,8 +19,8 @@ def offer_distill_rewrite_hook(
     ``flag`` is the resolved ``--distill-hook/--no-distill-hook`` value:
     True installs without prompting, False skips AND gates the repos off in
     config (so a hook installed globally from another repo stays inert
-    there), None prompts when interactive and does nothing otherwise —
-    strictly opt-in.
+    there), None prompts when interactive (defaulting to yes) and does
+    nothing otherwise.
 
     The hook itself is user-level (one install covers every repo), but the
     verdict is recorded per repo as ``distill.commands.enabled`` in each
@@ -60,7 +60,7 @@ def offer_distill_rewrite_hook(
             f"  [dim]{scope}Each rewrite is shown for approval; raw output stays "
             "recoverable via `repowise expand`.[/dim]"
         )
-        flag = click.confirm("  Install the Claude Code rewrite hook?", default=False)
+        flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)
 
     if flag:
         path = adapter.install_rewrite_hook()

@@ -71,10 +71,11 @@ MCP clients without a shell can resolve the same refs through
 
 ### 3. The command-rewrite hook (Claude Code + Codex)
 
-Opt-in. A PreToolUse hook rewrites noisy agent commands —
+A PreToolUse hook rewrites noisy agent commands —
 `pytest -x` → `repowise distill pytest -x` — **pending your approval**: the
 default posture is `ask`, so Claude Code shows you the modified command before
-running it. Install:
+running it. `repowise init` offers to install it (default: yes); install
+manually with:
 
 ```bash
 repowise hook rewrite install      # or opt in during `repowise init`
