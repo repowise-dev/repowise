@@ -139,3 +139,78 @@ async def test_sweep_noop_on_empty_run(async_session):
     assert swept == []
     swept = await _sweep_stale_generated_pages(async_session, repo.id, None)
     assert swept == []
+
+
+async def test_authoritative_type_sweeps_when_zero_produced(async_session):
+    """Regression for the live mini-taskq bug.
+
+    A curated full run derived modules 1:1 with layers (every module
+    ``wholeLayer``-skipped), so it emitted layer pages and ZERO module pages
+    while still being authoritative for ``module_page``. The pre-curated
+    community module page must be swept even though the run produced none.
+    """
+    repo = await insert_repo(async_session)
+    async_session.add(_page_row(repo.id, "module_page", "community-0"))
+    async_session.add(_page_row(repo.id, "layer_page", "layer:Data"))
+    await async_session.flush()
+
+    swept = await _sweep_stale_generated_pages(
+        async_session,
+        repo.id,
+        [_generated("layer_page", "layer:Data")],
+        {"module_page", "layer_page"},
+    )
+    await async_session.commit()
+
+    assert swept == ["module_page:community-0"]
+    remaining = (
+        (await async_session.execute(select(Page.id).where(Page.repository_id == repo.id)))
+        .scalars()
+        .all()
+    )
+    assert set(remaining) == {"layer_page:layer:Data"}
+
+
+async def test_degraded_run_does_not_wipe_layer_pages(async_session):
+    """A community-fallback (degraded) run is authoritative for nothing.
+
+    It produces module pages but no layer authority, so pre-existing curated
+    layer pages it cannot reproduce must survive — degradation honesty.
+    """
+    repo = await insert_repo(async_session)
+    async_session.add(_page_row(repo.id, "layer_page", "layer:Core"))
+    async_session.add(_page_row(repo.id, "module_page", "community-1"))
+    await async_session.flush()
+
+    swept = await _sweep_stale_generated_pages(
+        async_session,
+        repo.id,
+        [_generated("module_page", "community-2")],
+        set(),  # degraded: no authority
+    )
+    await async_session.commit()
+
+    # The stale community module page is swept (its type was produced), but the
+    # curated layer page is untouched (not produced, not authoritative). The
+    # produced ``community-2`` page is upserted elsewhere, not by the sweep, so
+    # it is not among the seeded rows here.
+    assert swept == ["module_page:community-1"]
+    remaining = (
+        (await async_session.execute(select(Page.id).where(Page.repository_id == repo.id)))
+        .scalars()
+        .all()
+    )
+    assert set(remaining) == {"layer_page:layer:Core"}
+
+
+async def test_incremental_no_authority_sweeps_nothing(async_session):
+    """Incremental no-KG run: generated_pages None + empty authority → no-op."""
+    repo = await insert_repo(async_session)
+    async_session.add(_page_row(repo.id, "module_page", "community-1"))
+    async_session.add(_page_row(repo.id, "layer_page", "layer:Core"))
+    await async_session.flush()
+
+    swept = await _sweep_stale_generated_pages(async_session, repo.id, None, set())
+    assert swept == []
+    swept = await _sweep_stale_generated_pages(async_session, repo.id, None, None)
+    assert swept == []

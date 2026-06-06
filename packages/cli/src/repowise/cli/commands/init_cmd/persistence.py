@@ -97,10 +97,15 @@ async def persist_result(result: Any, repo_path: Path) -> None:
             # sweep only retires structurally-keyed pages this run did not
             # reproduce. Without it the incremental-index path (every normal
             # single-repo init) strands stale community-N / scc / layer pages
-            # forever. Per-type ``if not current: continue`` protects skipped
-            # levels — same guard the full path relies on.
+            # forever. A type is swept when the run produced pages of it OR
+            # declared authority over it (curated runs are authoritative for
+            # module/layer pages even when every module page was skipped as
+            # 1:1 with a layer); types that are neither stay protected.
             swept_page_ids = await sweep_stale_generated_pages(
-                session, repo.id, result.generated_pages
+                session,
+                repo.id,
+                result.generated_pages,
+                getattr(result, "authoritative_page_types", None),
             )
         else:
             swept_page_ids = await persist_pipeline_result(result, session, repo.id)

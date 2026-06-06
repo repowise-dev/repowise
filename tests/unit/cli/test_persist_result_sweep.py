@@ -55,6 +55,7 @@ def _result(
     generated_pages: list[GeneratedPage],
     *,
     vector_store=None,
+    authoritative_page_types: set[str] | None = None,
 ) -> SimpleNamespace:
     """A minimal PipelineResult stand-in for the ``index_done`` branch.
 
@@ -72,6 +73,7 @@ def _result(
         decision_report=None,
         git_metadata_list=[],
         knowledge_graph_result=None,
+        authoritative_page_types=authoritative_page_types or set(),
     )
 
 
@@ -191,5 +193,35 @@ async def test_persist_result_index_done_keeps_pages_when_no_module_run(tmp_path
             ids = (await session.execute(select(Page.id))).scalars().all()
         assert stale_id in ids
         assert "file_page:src/app.py" in ids
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_persist_result_curated_zero_modules_sweeps_stale(tmp_path):
+    """Live mini-taskq regression through the CLI path.
+
+    A curated run authoritative for ``module_page`` that emitted ZERO module
+    pages (every module collapsed into its layer via wholeLayer) must still
+    sweep the pre-curated ``module_page:community-0``.
+    """
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    stale_id = "module_page:community-0"
+    await _seed_stale_module_page(repo_path, stale_id)
+
+    # Run emits only a layer page but is authoritative for module_page too.
+    current = _generated_page("layer_page", "layer:Data")
+    await persist_result(
+        _result("r", [current], authoritative_page_types={"module_page", "layer_page"}),
+        repo_path,
+    )
+
+    engine, sf, _ = await open_repo_db(repo_path, repo_name="r")
+    try:
+        async with get_session(sf) as session:
+            ids = (await session.execute(select(Page.id))).scalars().all()
+        assert stale_id not in ids
+        assert "layer_page:layer:Data" in ids
     finally:
         await engine.dispose()

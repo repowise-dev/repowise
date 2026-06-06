@@ -224,16 +224,25 @@ _SWEPT_GENERATED_PAGE_TYPES = ("module_page", "layer_page", "scc_page")
 
 
 async def _sweep_stale_generated_pages(
-    session: Any, repo_id: str, generated_pages: list[Any] | None
+    session: Any,
+    repo_id: str,
+    generated_pages: list[Any] | None,
+    authoritative_page_types: set[str] | None = None,
 ) -> list[str]:
     """Delete structurally-keyed generated pages this run did not produce.
 
-    Sweeps per page type and only when the run produced at least one page of
-    that type, so a skipped or failed generation level never wipes the last
-    good set. Page versions go with their page (FK enforcement requires it,
-    and a retired structural id never comes back to claim its history).
-    Returns the swept page ids so the caller can drop them from FTS after
-    the session closes (the FTS store must not be touched in-session).
+    Sweeps a page type when the run either produced at least one page of it OR
+    declared itself authoritative for it (``authoritative_page_types`` — set by
+    the generation layer when it fully decided the type, even if that decision
+    was "emit none"; e.g. a curated run whose modules all collapsed into their
+    layers via ``wholeLayer``). A type that is neither produced nor authoritative
+    is left untouched, so a skipped/failed/degraded level never wipes the last
+    good set. When authoritative-but-empty, the current set is empty and every
+    prior row of that type is retired. Page versions go with their page (FK
+    enforcement requires it, and a retired structural id never comes back to
+    claim its history). Returns the swept page ids so the caller can drop them
+    from FTS after the session closes (the FTS store must not be touched
+    in-session).
     """
     from sqlalchemy import delete, select
 
@@ -242,12 +251,14 @@ async def _sweep_stale_generated_pages(
     produced: dict[str, set[str]] = {}
     for page in generated_pages or []:
         produced.setdefault(page.page_type, set()).add(page.page_id)
+    authoritative = authoritative_page_types or set()
 
     swept: list[str] = []
     for page_type in _SWEPT_GENERATED_PAGE_TYPES:
         current = produced.get(page_type)
-        if not current:
+        if not current and page_type not in authoritative:
             continue
+        current = current or set()
         existing = (
             (
                 await session.execute(
@@ -626,7 +637,12 @@ async def persist_pipeline_result(
     # run did not reproduce — their ids drift between runs, so without the
     # sweep every re-index strands the previous set as duplicates. Full runs
     # only, same rule as _prune_stale_file_rows.
-    swept_page_ids = await _sweep_stale_generated_pages(session, repo_id, result.generated_pages)
+    swept_page_ids = await _sweep_stale_generated_pages(
+        session,
+        repo_id,
+        result.generated_pages,
+        getattr(result, "authoritative_page_types", None),
+    )
 
     logger.info(
         "pipeline_result_persisted",
