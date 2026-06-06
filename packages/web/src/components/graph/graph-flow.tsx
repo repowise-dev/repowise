@@ -9,11 +9,14 @@ import {
   useModuleGraph,
   useGraph,
   useArchitectureGraph,
+  useArchitectureCommunityGraph,
   useDeadCodeGraph,
   useHotFilesGraph,
   useCommunities,
+  useCommunitySlices,
   useExecutionFlows,
 } from "@/lib/hooks/use-graph";
+import { useRepo } from "@/lib/hooks/use-repo";
 import { PathFinderPanel } from "./path-finder-panel";
 import { GraphCommunityPanel } from "./graph-community-panel";
 import type {
@@ -21,12 +24,15 @@ import type {
   ModuleGraph,
   ExecutionFlows,
   CommunitySummaryItem,
+  ArchitectureGraph,
+  CommunitySlice,
 } from "@repowise-dev/types/graph";
 
 type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
 
 export interface GraphFlowProps {
   repoId: string;
+  repoName?: string;
   initialViewMode?: ViewMode;
   initialSelectedNode?: string | null;
   onNodeClick?: GraphFlowShellProps["onNodeClick"];
@@ -35,19 +41,29 @@ export interface GraphFlowProps {
    *  Page uses this to dismiss the doc panel so the right rail stays
    *  to a single surface. */
   onCommunityPanelOpen?: (communityId: number) => void;
+  /** Fired whenever the live scope (viewMode) changes. The page uses this to
+   *  track the current scope so it can conditionally fetch the capped full
+   *  graph (and gate the truncation banner) only for scopes that render it. */
+  onViewModeChange?: (mode: ViewMode) => void;
 }
 
 export function GraphFlow({
   repoId,
+  repoName,
   initialViewMode,
   initialSelectedNode,
   onNodeClick,
   onNodeViewDocs,
   onCommunityPanelOpen,
+  onViewModeChange,
 }: GraphFlowProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "module");
+  // Constellation (Knowledge Graph) is the default scope.
+  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
   const [modulePath, setModulePath] = useState<string[]>([]);
   const [hasExpandedModules, setHasExpandedModules] = useState(false);
+  // Currently-expanded constellation hubs (community ids). Drives the slice
+  // fetch; the shell owns the actual expand/collapse interaction state.
+  const [expandedHubs, setExpandedHubs] = useState<number[]>([]);
   const isDrilledDown = modulePath.length > 0;
   const isModuleView = viewMode === "module";
 
@@ -58,20 +74,35 @@ export function GraphFlow({
   const { graph: fullGraph, isLoading: fullLoading } = useGraph(
     needsFullGraph ? repoId : null,
   );
-  const { graph: archGraph, isLoading: archLoading } = useArchitectureGraph(
-    viewMode === "architecture" ? repoId : null,
-  );
+  const { graph: archGraph, isLoading: archLoading } = useArchitectureGraph(null);
+  // Constellation community super-graph — only fetched for the radial scope.
+  const { graph: constellationGraph, isLoading: constellationLoading } =
+    useArchitectureCommunityGraph(viewMode === "architecture" ? repoId : null);
   const { graph: deadGraph, isLoading: deadLoading } = useDeadCodeGraph(
     viewMode === "dead" ? repoId : null,
   );
   const { graph: hotGraph, isLoading: hotLoading } = useHotFilesGraph(
     viewMode === "hotfiles" ? repoId : null,
   );
+  // Member slices for expanded hubs — only fetched in the constellation scope
+  // and only while at least one hub is open (conditional SWR inside the hook).
+  const { slices: constellationSlices } = useCommunitySlices(
+    viewMode === "architecture" ? repoId : null,
+    expandedHubs,
+  );
+  const { repo } = useRepo(repoId);
+  const resolvedRepoName = repoName ?? repo?.name;
   const { communities } = useCommunities(repoId);
-  const { flows: executionFlowsData } = useExecutionFlows(repoId, {
-    top_n: 10,
-    max_depth: 6,
-  });
+  // Execution flows only highlight a file-level trace, so defer the fetch until
+  // a full/file graph is actually needed (keeps the modules mount to
+  // /communities + /modules only).
+  const { flows: executionFlowsData } = useExecutionFlows(
+    needsFullGraph ? repoId : null,
+    {
+      top_n: 10,
+      max_depth: 6,
+    },
+  );
 
   return (
     <GraphFlowShell
@@ -81,6 +112,11 @@ export function GraphFlow({
       isLoadingFullGraph={fullLoading}
       architectureGraph={archGraph as GraphExport | undefined}
       isLoadingArchitectureGraph={archLoading}
+      constellationGraph={constellationGraph as ArchitectureGraph | undefined}
+      isLoadingConstellationGraph={constellationLoading}
+      constellationSlices={constellationSlices as Map<number, CommunitySlice> | undefined}
+      onExpandedHubsChange={setExpandedHubs}
+      {...(resolvedRepoName ? { repoName: resolvedRepoName } : {})}
       deadCodeGraph={deadGraph as GraphExport | undefined}
       isLoadingDeadCodeGraph={deadLoading}
       hotFilesGraph={hotGraph as GraphExport | undefined}
@@ -89,7 +125,10 @@ export function GraphFlow({
       executionFlows={executionFlowsData as ExecutionFlows | undefined}
       initialViewMode={initialViewMode}
       initialSelectedNode={initialSelectedNode}
-      onViewModeChange={setViewMode}
+      onViewModeChange={(mode) => {
+        setViewMode(mode);
+        onViewModeChange?.(mode);
+      }}
       onModulePathChange={setModulePath}
       onExpandedModulesChange={(expanded) => setHasExpandedModules(expanded.size > 0)}
       onNodeClick={onNodeClick}
@@ -110,6 +149,7 @@ export function GraphFlow({
           repoId={repoId}
           communityId={props.communityId}
           onClose={props.onClose}
+          onExpandOnCanvas={props.onExpandOnCanvas}
         />
       )}
     />

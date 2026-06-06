@@ -140,13 +140,13 @@ export default async function WikiPageRoute({ params }: Props) {
 
           {/* Hallucination warnings */}
           {Array.isArray(page.metadata?.hallucination_warnings) && (page.metadata.hallucination_warnings as string[]).length > 0 && (
-            <div className="mt-6 rounded-lg border border-amber-400/30 bg-amber-50/5 px-4 py-3">
-              <p className="text-xs font-medium text-amber-400 mb-1.5">
+            <div className="mt-6 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-4 py-3">
+              <p className="text-xs font-medium text-[var(--color-warning)] mb-1.5">
                 Possible inaccuracies detected
               </p>
               <ul className="space-y-0.5">
                 {(page.metadata.hallucination_warnings as string[]).map((w, i) => (
-                  <li key={i} className="text-xs text-amber-300/80 font-mono">
+                  <li key={i} className="text-xs text-[var(--color-text-secondary)] font-mono">
                     {String(w)}
                   </li>
                 ))}

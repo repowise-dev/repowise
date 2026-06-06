@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { FileCheck } from "lucide-react";
+import { DocsHeader } from "@/components/docs/docs-header";
 import { CoverageDonut } from "@repowise-dev/ui/coverage/coverage-donut";
 import { DriftBanner } from "@repowise-dev/ui/coverage/drift-banner";
 import { ConfidenceVsFreshnessMatrix } from "@repowise-dev/ui/coverage/confidence-vs-freshness-matrix";
@@ -34,17 +34,14 @@ export default async function CoveragePage({
   const freshPct = pages.length > 0 ? Math.round((fresh / pages.length) * 100) : 0;
 
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
-      <div>
-        <h1 className="text-xl font-semibold text-[var(--color-text-primary)] mb-1 flex items-center gap-2">
-          <FileCheck className="h-5 w-5 text-[var(--color-accent-primary)]" />
-          Documentation Coverage
-        </h1>
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          Freshness breakdown across {formatNumber(total)} wiki pages.
-        </p>
-      </div>
+    <div className="flex flex-col h-full">
+      <DocsHeader>
+        <span className="text-xs text-[var(--color-text-tertiary)]">
+          Freshness across {formatNumber(total)} pages
+        </span>
+      </DocsHeader>
 
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 max-w-[1600px]">
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
         {/* Donut */}
         <div className="flex flex-col items-center gap-4 lg:w-56 shrink-0">
@@ -79,19 +76,19 @@ export default async function CoveragePage({
         <div>
           <p className="text-xs text-[var(--color-text-tertiary)] mb-1.5">Distribution</p>
           <div className="h-3 rounded-full overflow-hidden flex">
-            <div className="bg-green-500" style={{ width: `${(fresh / pages.length) * 100}%` }} />
-            <div className="bg-yellow-500" style={{ width: `${(stale / pages.length) * 100}%` }} />
-            <div className="bg-red-500" style={{ width: `${(outdated / pages.length) * 100}%` }} />
+            <div className="bg-[var(--color-fresh)]" style={{ width: `${(fresh / pages.length) * 100}%` }} />
+            <div className="bg-[var(--color-stale)]" style={{ width: `${(stale / pages.length) * 100}%` }} />
+            <div className="bg-[var(--color-outdated)]" style={{ width: `${(outdated / pages.length) * 100}%` }} />
           </div>
           <div className="flex gap-4 mt-1.5 text-xs text-[var(--color-text-tertiary)]">
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-green-500" /> Fresh
+              <span className="h-2 w-2 rounded-full bg-[var(--color-fresh)]" /> Fresh
             </span>
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-yellow-500" /> Stale
+              <span className="h-2 w-2 rounded-full bg-[var(--color-stale)]" /> Stale
             </span>
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-red-500" /> Outdated
+              <span className="h-2 w-2 rounded-full bg-[var(--color-outdated)]" /> Outdated
             </span>
           </div>
         </div>
@@ -104,6 +101,7 @@ export default async function CoveragePage({
       )}
 
       <FreshnessTableWithRegenerate pages={pages} />
+      </div>
     </div>
   );
 }

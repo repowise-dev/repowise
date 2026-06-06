@@ -3,6 +3,7 @@ import type {
   ArchitectureGraphResponse,
   CallersCalleesResponse,
   CommunityDetailResponse,
+  CommunitySliceResponse,
   CommunitySummaryItem,
   DeadCodeGraphResponse,
   EgoGraphResponse,
@@ -15,8 +16,14 @@ import type {
   NodeSearchResult,
 } from "./types";
 
-export async function getGraph(repoId: string): Promise<GraphExportResponse> {
-  return apiGet<GraphExportResponse>(`/api/graph/${repoId}`);
+export async function getGraph(
+  repoId: string,
+  limit?: number,
+): Promise<GraphExportResponse> {
+  return apiGet<GraphExportResponse>(
+    `/api/graph/${repoId}`,
+    limit != null ? { limit } : undefined,
+  );
 }
 
 export async function getGraphPath(
@@ -66,6 +73,18 @@ export async function getArchitectureCommunityGraph(
   });
 }
 
+/**
+ * Constellation (radial Knowledge Graph) data source — the community
+ * super-graph. Thin alias over {@link getArchitectureCommunityGraph} so the
+ * G3 wiring reads cleanly.
+ */
+export async function getArchitecture(
+  repoId: string,
+  minMembers = 2,
+): Promise<ArchitectureGraphResponse> {
+  return getArchitectureCommunityGraph(repoId, minMembers);
+}
+
 export async function getDeadCodeGraph(repoId: string): Promise<DeadCodeGraphResponse> {
   return apiGet<DeadCodeGraphResponse>(`/api/graph/${repoId}/dead-nodes`);
 }
@@ -94,6 +113,20 @@ export async function getCommunityDetail(
   return apiGet<CommunityDetailResponse>(
     `/api/graph/${repoId}/communities/${communityId}`,
     params,
+  );
+}
+
+/**
+ * Constellation blossom slice: a single community's member file nodes, the
+ * edges among them, and one-hop boundary stubs (neighbor nodes flagged
+ * `is_boundary`) so cross-cluster edges render. Fetched on hub expand.
+ */
+export async function getCommunitySlice(
+  repoId: string,
+  communityId: number,
+): Promise<CommunitySliceResponse> {
+  return apiGet<CommunitySliceResponse>(
+    `/api/graph/${repoId}/communities/${communityId}/slice`,
   );
 }
 
