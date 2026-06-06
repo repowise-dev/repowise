@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.17.0] — 2026-06-06
 
 ### Added
 - **Distill — index-aware output distillation.** A new capability that
@@ -47,6 +47,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overrides, disabled filters, omission-store TTL/size). `repowise doctor`
   validates the block, reports omission-store size against its cap, and shows
   rewrite-hook install state.
+- **Distill on Codex CLI.** The rewrite hook now supports Codex CLI alongside
+  Claude Code, with repowise-command corrections (#391). A lint filter joins
+  the filter set, `repowise saved` discovers missed savings, and the ledger
+  tags savings per surface (#390).
+- **Multi-language import resolution.** Lightweight per-language import
+  resolvers with same-scope linking and spec metadata sharpen the dependency
+  graph across the language registry (#392).
+- **Light-default design-token theme system.** The web UI moves to a
+  design-token theme with light as the default and a dual-theme component
+  sweep (#405).
+- **Owl mascot init banner.** `repowise init` opens with the owl mascot and a
+  repo-seeded heatmap wordmark (#364), plus a clearer mode panel and
+  searchable model selection (#379).
+- **Agent-provenance layer in the git indexer.** Commit indexing records a
+  deterministic agent-provenance layer (#366).
+- **Claude Code plugin.** A `repowise` Claude Code plugin and root
+  marketplace, refreshed to the current command/skill/MCP surface (#356).
+
+### Changed
+- **`repowise init` defaults the distill rewrite-hook prompt to yes** (#409),
+  and every init flow records the verdict (#382).
+- **Indexing and incremental updates scale with change size.** Parsing and
+  betweenness results are cached across incremental updates (#369, #368),
+  workspace indexing routes already-indexed repos through the incremental
+  path (#384), and filesystem walks prune nested repos and junk trees (#380).
+
+### Fixed
+- **`get_context` hardened** — segment-boundary partial matching, git-file
+  fall-through, and batch isolation (#401).
+- **Distill correctness:** Grep-rescue fixes, PowerShell hook coverage, a
+  nudge floor, and allowlist seeding (#389).
+- **Health scoring:** `duplication_pct` computed from the union of clone
+  ranges (#388), whole-file NLOC for file metrics instead of function-body
+  sums (#387), and hotspot/ownership signals calibrated for small teams and
+  quiet repos (#363).
+- **Submodules:** persisted include-submodules flags are honored in health,
+  dead-code, incremental updates, and upgrades (#383, #381).
+- **Dead code:** local Express route middleware rescued from unused-export
+  detection (#386); explicit relative JS imports resolve (#376).
+- **Process hygiene:** MCP orphan watchdog, live-PID update locks, and
+  PATH-hijack-proof registration (#385).
+- **Generation:** never-started page coroutines are closed on cancellation
+  (#365).
+- **Server:** jobs honor `exclude_patterns` and prune stale rows (#354);
+  breadcrumb path labels are decoded in the web UI (#359).
+
+### Dependencies
+- starlette 0.52.1 → 1.0.1 (#367).
 
 ---
 

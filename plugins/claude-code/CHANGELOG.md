@@ -2,6 +2,13 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.17.0
+
+### Changed
+- Widened the bundled `PostToolUse` hook matcher to include `PowerShell`
+  (the Windows Claude Code shell tool), matching the CLI-installed augment
+  hook.
+
 ## 0.16.0
 
 First release distributed through the marketplace at the repo root

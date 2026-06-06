@@ -1,7 +1,7 @@
 {
   "name": "repowise",
   "description": "Codebase intelligence for Claude Code. Indexes your codebase into five layers (Graph, Git, Docs, Decisions, Code Health) and exposes them through nine task-shaped MCP tools — so Claude understands architecture, ownership, hotspots, why code is built the way it is, and where the defect risk lives.",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "author": {
     "name": "Repowise",
     "email": "hello@repowise.dev",
