@@ -23,6 +23,26 @@ def _check(name: str, ok: bool, detail: str = "") -> tuple[str, str, str]:
     return (name, status, detail)
 
 
+async def _decision_vector_ids(session, repository_id: str) -> set[str]:
+    """Vector-store ids for this repo's decision records.
+
+    Decisions are co-located in the *page* vector store under the
+    ``decision:<record_id>`` namespace (no separate table). The store therefore
+    legitimately holds page vectors *and* decision vectors, so any SQL↔vector
+    reconciliation must count decisions on the SQL side — otherwise every
+    decision embedding reads as an orphan.
+    """
+    from sqlalchemy import text as _sql_text
+
+    from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
+
+    rows = await session.execute(
+        _sql_text("SELECT id FROM decision_records WHERE repository_id = :rid"),
+        {"rid": repository_id},
+    )
+    return {f"{DECISION_VECTOR_PREFIX}{r[0]}" for r in rows}
+
+
 def _print_cli_version_status() -> None:
     """Print a best-effort CLI update-check line.
 
@@ -228,6 +248,14 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
                         return set(), set(), set(), set()
                     pages = await list_pages(session, repo.id, limit=10000)
                     sql_ids = {p.page_id for p in pages}
+                    # The page vector store also holds decision embeddings under
+                    # the "decision:<id>" namespace, so they belong on the SQL
+                    # side of the ORPHAN check (but NOT FTS, which only indexes
+                    # pages). They are deliberately excluded from the MISSING
+                    # check: a decision can legitimately have no vector (empty
+                    # match text, swallowed embed failure) and repair cannot
+                    # re-embed it, so flagging it would be permanent noise.
+                    vector_sql_ids = sql_ids | await _decision_vector_ids(session, repo.id)
 
                 # Check vector store
                 vs_ids: set[str] = set()
@@ -242,7 +270,7 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
                         pass  # LanceDB not available
 
                 m_vec = sql_ids - vs_ids if vs_ids else set()
-                o_vec = vs_ids - sql_ids if vs_ids else set()
+                o_vec = vs_ids - vector_sql_ids if vs_ids else set()
 
                 # Check FTS
                 fts = FullTextSearch(engine)
@@ -289,6 +317,7 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
                 from repowise.core.persistence import (
                     create_engine,
                     create_session_factory,
+                    get_repository_by_path,
                     get_session,
                 )
                 from repowise.core.persistence.coordinator import AtomicStorageCoordinator
@@ -313,6 +342,33 @@ def _run_repo_checks(repo_path: _DoctorPath, repair: bool) -> bool:
                         session, graph_builder=None, vector_store=vector_store
                     )
                     result = await coord.health_check()
+
+                    # The coordinator's drift compares wiki_pages count against
+                    # the vector count, but the vector store also holds decision
+                    # embeddings ("decision:<id>" namespace). Without counting
+                    # decisions on the SQL side, every decision reads as drift.
+                    # Recompute drift with a decision-aware SQL count so a
+                    # consistent store reports ~0% rather than a false FAIL.
+                    # Count only decisions that actually have a vector: a
+                    # decision can legitimately be unembedded (empty match
+                    # text, swallowed embed failure), and counting it would
+                    # bias drift positive (SQL > Vector) forever.
+                    repo = await get_repository_by_path(session, str(repo_path))
+                    if repo is not None:
+                        dec_ids = await _decision_vector_ids(session, repo.id)
+                        decision_count = len(dec_ids)
+                        if vector_store is not None:
+                            with contextlib.suppress(Exception):
+                                store_ids = await vector_store.list_page_ids()
+                                decision_count = len(dec_ids & store_ids)
+                        sql_pages = result.get("sql_pages")
+                        vector_count = result.get("vector_count")
+                        if sql_pages is not None:
+                            adjusted_sql = sql_pages + decision_count
+                            result["sql_pages"] = adjusted_sql
+                            if vector_count is not None and vector_count != -1:
+                                denom = max(adjusted_sql, 1)
+                                result["drift"] = abs(adjusted_sql - vector_count) / denom
 
                 if vector_store is not None:
                     with contextlib.suppress(Exception):
