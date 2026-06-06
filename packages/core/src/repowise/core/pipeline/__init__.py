@@ -12,6 +12,9 @@ Usage::
 
 from .orchestrator import PipelineResult, run_generation, run_pipeline
 from .persist import (
+    _sweep_stale_generated_pages as sweep_stale_generated_pages,
+)
+from .persist import (
     persist_analysis,
     persist_generation,
     persist_git,
@@ -35,4 +38,5 @@ __all__ = [
     "rehydrate_graph_builder",
     "run_generation",
     "run_pipeline",
+    "sweep_stale_generated_pages",
 ]

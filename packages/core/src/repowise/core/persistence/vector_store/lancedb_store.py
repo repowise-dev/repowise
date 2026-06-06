@@ -21,6 +21,16 @@ def _paths_in_filter(paths: list[str]) -> str:
     return f"target_path IN ({quoted})"
 
 
+def _page_ids_in_filter(page_ids: list[str]) -> str:
+    """Build an SQL-injection-safe ``page_id IN (...)`` LanceDB filter.
+
+    Mirrors :func:`_paths_in_filter` but on the ``page_id`` column, using the
+    same quote-doubling escape as the single-id delete.
+    """
+    quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in page_ids)
+    return f"page_id IN ({quoted})"
+
+
 class LanceDBVectorStore(VectorStore):
     """Vector store backed by LanceDB (embedded, local file storage).
 
@@ -197,9 +207,7 @@ class LanceDBVectorStore(VectorStore):
         q_vecs = await self._embedder.embed([query])
         return await self._search_by_vector([float(v) for v in q_vecs[0]], limit)
 
-    async def search_many(
-        self, queries: list[str], limit: int = 10
-    ) -> list[list[SearchResult]]:
+    async def search_many(self, queries: list[str], limit: int = 10) -> list[list[SearchResult]]:
         """One embedder call for all queries; the vector lookups are local."""
         if not queries:
             return []
@@ -220,6 +228,18 @@ class LanceDBVectorStore(VectorStore):
         if self._table is not None:
             safe_id = page_id.replace("'", "''")
             await self._table.delete(f"page_id = '{safe_id}'")  # type: ignore[union-attr]
+
+    async def delete_many(self, page_ids: list[str]) -> None:
+        if not page_ids:
+            return
+        await self._ensure_connected()
+        if self._table is None:
+            return
+        # LanceDB's ``.where()`` has no bind params, so build a quoted IN
+        # predicate; chunk to keep the SQL string bounded.
+        for i in range(0, len(page_ids), 500):
+            batch = page_ids[i : i + 500]
+            await self._table.delete(_page_ids_in_filter(batch))  # type: ignore[union-attr]
 
     async def close(self) -> None:
         self._table = None

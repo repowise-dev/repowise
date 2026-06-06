@@ -51,6 +51,7 @@ async def persist_result(result: Any, repo_path: Path) -> None:
         persist_analysis,
         persist_generation,
         persist_pipeline_result,
+        sweep_stale_generated_pages,
     )
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
@@ -92,6 +93,15 @@ async def persist_result(result: Any, repo_path: Path) -> None:
         if index_done:
             await persist_analysis(result, session, repo.id)
             await persist_generation(result, session, repo.id)
+            # persist_generation has already upserted the current pages, so the
+            # sweep only retires structurally-keyed pages this run did not
+            # reproduce. Without it the incremental-index path (every normal
+            # single-repo init) strands stale community-N / scc / layer pages
+            # forever. Per-type ``if not current: continue`` protects skipped
+            # levels — same guard the full path relies on.
+            swept_page_ids = await sweep_stale_generated_pages(
+                session, repo.id, result.generated_pages
+            )
         else:
             swept_page_ids = await persist_pipeline_result(result, session, repo.id)
 
@@ -110,12 +120,27 @@ async def persist_result(result: Any, repo_path: Path) -> None:
         job.started_at = now
         job.finished_at = now
 
-    # FTS indexing is done outside the session to avoid SQLite write conflicts
+        # Drop swept pages from the vector store *before* the SQL session
+        # commits. The vector store is a separate engine/file (pgvector DB,
+        # LanceDB dir, or in-memory) so there is no SQLite write-lock conflict,
+        # and the delete is idempotent. Keeping the SQL commit last as the
+        # durable source of truth means an interrupted run self-heals: the
+        # vector embedding is already gone, the SQL rows follow on commit.
+        if swept_page_ids:
+            store = getattr(result, "vector_store", None)
+            if store is not None:
+                await store.delete_many(swept_page_ids)
+
+    # FTS deletes/indexing run outside the session: the FTS index lives in the
+    # *same* SQLite file as the session, so touching it while the session still
+    # holds a write lock raises "database is locked". The swept-id delete must
+    # therefore stay here (it cannot move ahead of the SQL commit like the
+    # vector delete can); it is idempotent and narrow (orphan FTS rows only).
+    if fts is not None and swept_page_ids:
+        await fts.delete_many(swept_page_ids)
     if fts is not None and result.generated_pages:
         for page in result.generated_pages:
             await fts.index(page.page_id, page.title, page.content)
-    if fts is not None and swept_page_ids:
-        await fts.delete_many(swept_page_ids)
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
     # they're persisted, so a future resume can skip them too.

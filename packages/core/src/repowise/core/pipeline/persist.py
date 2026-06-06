@@ -249,12 +249,16 @@ async def _sweep_stale_generated_pages(
         if not current:
             continue
         existing = (
-            await session.execute(
-                select(Page.id).where(
-                    Page.repository_id == repo_id, Page.page_type == page_type
+            (
+                await session.execute(
+                    select(Page.id).where(
+                        Page.repository_id == repo_id, Page.page_type == page_type
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         stale = [pid for pid in existing if pid not in current]
         for i in range(0, len(stale), _PRUNE_CHUNK):
             batch = stale[i : i + _PRUNE_CHUNK]
@@ -622,9 +626,7 @@ async def persist_pipeline_result(
     # run did not reproduce — their ids drift between runs, so without the
     # sweep every re-index strands the previous set as duplicates. Full runs
     # only, same rule as _prune_stale_file_rows.
-    swept_page_ids = await _sweep_stale_generated_pages(
-        session, repo_id, result.generated_pages
-    )
+    swept_page_ids = await _sweep_stale_generated_pages(session, repo_id, result.generated_pages)
 
     logger.info(
         "pipeline_result_persisted",
