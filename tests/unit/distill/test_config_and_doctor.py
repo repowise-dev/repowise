@@ -129,6 +129,18 @@ def repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _isolate_codex(monkeypatch):
+    """Never let these flows see the developer's real ~/.codex.
+
+    Individual tests re-patch ``detect`` to True when exercising the Codex
+    surfaces explicitly (against patched paths).
+    """
+    from repowise.cli.agent_adapters.codex import CodexAdapter
+
+    monkeypatch.setattr(CodexAdapter, "detect", lambda self: False)
+
+
 @pytest.fixture
 def no_real_hook(monkeypatch):
     """Keep doctor away from the developer's real ~/.claude/settings.json."""
@@ -191,7 +203,18 @@ def test_doctor_hook_installed_with_repo_opt_out(repo: Path, monkeypatch) -> Non
         "distill:\n  commands:\n    enabled: false\n", encoding="utf-8"
     )
     rows = _rows(repo)
-    assert rows["Distill rewrite hook"][1] == "installed (this repo opted out)"
+    assert rows["Distill rewrite hook"][1] == "installed: claude-code (this repo opted out)"
+
+
+def test_doctor_reports_codex_surface_when_installed(repo: Path, monkeypatch) -> None:
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+    from repowise.cli.agent_adapters.codex import CodexAdapter
+
+    monkeypatch.setattr(ClaudeCodeAdapter, "rewrite_hook_installed", lambda self: True)
+    monkeypatch.setattr(CodexAdapter, "detect", lambda self: True)
+    monkeypatch.setattr(CodexAdapter, "rewrite_hook_installed", lambda self: True)
+    rows = _rows(repo)
+    assert rows["Distill rewrite hook"][1] == "installed: claude-code, codex"
 
 
 # ---------------------------------------------------------------------------
@@ -276,3 +299,112 @@ def test_uninstall_removes_hook_but_leaves_repo_config(
     # later reinstall does not need to re-discover repo preferences.
     cfg = load_repo_config(repo)
     assert cfg["distill"]["commands"]["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# hook rewrite — the Codex surfaces (hooks.json + AGENTS.md awareness section)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def codex_env(tmp_path, monkeypatch):
+    """A detected Codex whose hooks.json lands in tmp, version patchable."""
+    from repowise.cli.agent_adapters.codex import CodexAdapter
+    from repowise.cli.editor_integrations import codex_config
+
+    hooks_path = tmp_path / ".codex" / "hooks.json"
+    monkeypatch.setattr(CodexAdapter, "detect", lambda self: True)
+    monkeypatch.setattr(codex_config, "_codex_hooks_path", lambda: hooks_path)
+    return hooks_path
+
+
+def _make_repo(tmp_path, monkeypatch) -> Path:
+    repo = tmp_path / "repo"
+    (repo / ".repowise").mkdir(parents=True)
+    monkeypatch.chdir(repo)
+    return repo
+
+
+def test_install_with_supported_codex_writes_hook_and_agents_md(
+    tmp_path: Path, settings_path: Path, codex_env: Path, monkeypatch
+) -> None:
+    from repowise.cli.editor_integrations import codex_config
+
+    monkeypatch.setattr(codex_config, "codex_cli_version", lambda: (0, 137, 0))
+    repo = _make_repo(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(rewrite_install, [])
+    assert result.exit_code == 0
+    assert "Codex rewrite hook: installed" in result.output
+    assert "ask-with-rewrite" in result.output  # the honesty note
+    data = json.loads(codex_env.read_text(encoding="utf-8"))
+    commands = [h["command"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]]
+    assert commands == ["repowise-rewrite --agent codex"]
+    assert "REPOWISE_DISTILL" in (repo / "AGENTS.md").read_text(encoding="utf-8")
+
+
+def test_install_with_old_codex_is_awareness_only(
+    tmp_path: Path, settings_path: Path, codex_env: Path, monkeypatch
+) -> None:
+    from repowise.cli.editor_integrations import codex_config
+
+    monkeypatch.setattr(codex_config, "codex_cli_version", lambda: (0, 120, 0))
+    repo = _make_repo(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(rewrite_install, [])
+    assert result.exit_code == 0
+    # Honest, no implied parity: skipped + the minimum version named.
+    assert "Codex rewrite hook: skipped" in result.output
+    assert "0.137" in result.output
+    assert not codex_env.exists()  # no hook entry on a build that rejects rewrites
+    assert "REPOWISE_DISTILL" in (repo / "AGENTS.md").read_text(encoding="utf-8")
+
+
+def test_uninstall_removes_codex_hook_and_agents_md_section(
+    tmp_path: Path, settings_path: Path, codex_env: Path, monkeypatch
+) -> None:
+    from repowise.cli.editor_integrations import codex_config
+
+    monkeypatch.setattr(codex_config, "codex_cli_version", lambda: (0, 137, 0))
+    repo = _make_repo(tmp_path, monkeypatch)
+
+    CliRunner().invoke(rewrite_install, [])
+    result = CliRunner().invoke(rewrite_uninstall, [])
+    assert result.exit_code == 0
+    assert "Codex rewrite hook: removed" in result.output
+    data = json.loads(codex_env.read_text(encoding="utf-8"))
+    assert not data.get("hooks", {}).get("PreToolUse")
+    assert not (repo / "AGENTS.md").exists()  # awareness section round-tripped away
+
+
+def test_status_is_honest_about_codex_capability(
+    tmp_path: Path, settings_path: Path, codex_env: Path, monkeypatch
+) -> None:
+    from repowise.cli.commands.hook_cmd import rewrite_status
+    from repowise.cli.editor_integrations import codex_config
+
+    monkeypatch.setattr(codex_config, "codex_cli_version", lambda: (0, 120, 0))
+    _make_repo(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(rewrite_status, [])
+    assert result.exit_code == 0
+    assert "codex rewrite hook: not installed" in result.output
+    assert "0.137" in result.output  # names the version it would need
+    assert "AGENTS.md distill section: not installed" in result.output
+
+
+def test_status_notes_allow_only_posture_on_supported_codex(
+    tmp_path: Path, settings_path: Path, codex_env: Path, monkeypatch
+) -> None:
+    from repowise.cli.commands.hook_cmd import rewrite_status
+    from repowise.cli.editor_integrations import codex_config
+
+    monkeypatch.setattr(codex_config, "codex_cli_version", lambda: (0, 137, 0))
+    _make_repo(tmp_path, monkeypatch)
+
+    CliRunner().invoke(rewrite_install, [])
+    result = CliRunner().invoke(rewrite_status, [])
+    assert result.exit_code == 0
+    assert "codex rewrite hook: installed" in result.output
+    assert "ask-with-rewrite" in result.output
+    assert "AGENTS.md distill section: installed" in result.output

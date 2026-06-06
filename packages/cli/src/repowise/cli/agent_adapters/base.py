@@ -59,6 +59,13 @@ class AgentAdapter(ABC):
     #: Stable adapter identifier (e.g. ``"claude-code"``).
     name: ClassVar[str]
 
+    #: Permission postures this agent's hook protocol can actually honor for
+    #: a rewritten command. Claude Code supports ask-with-mutation; an agent
+    #: that can only allow-with-mutation (Codex) narrows this to
+    #: ``{"allow"}`` and the hook passes ``ask`` decisions through untouched
+    #: rather than silently escalating them to an unprompted rewrite.
+    rewrite_permissions: ClassVar[frozenset[str]] = frozenset({"ask", "allow"})
+
     @abstractmethod
     def detect(self) -> bool:
         """True when this agent appears to be installed for the current user."""
