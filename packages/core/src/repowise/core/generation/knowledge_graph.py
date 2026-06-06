@@ -113,23 +113,28 @@ async def _enrich_layers(
 
     pagerank = graph_builder.pagerank()
     enriched = list(layers)
+    # Join LLM responses back onto layers by their stable id, never by list
+    # position: positional joins silently corrupt every name when a model
+    # returns batch-relative indices.
+    by_id = {layer["id"]: layer for layer in enriched if layer.get("id")}
 
     for batch_start in range(0, len(layers), _LAYER_BATCH_SIZE):
         batch = layers[batch_start : batch_start + _LAYER_BATCH_SIZE]
         batch_context = []
-        for i, layer in enumerate(batch):
+        for layer in batch:
             node_ids = layer.get("nodeIds", [])
             file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
             top_files = sorted(file_paths, key=lambda p: pagerank.get(p, 0.0), reverse=True)[:20]
 
             batch_context.append({
-                "index": batch_start + i,
+                "id": layer.get("id", ""),
                 "heuristic_label": layer["name"],
                 "file_count": len(file_paths),
                 "top_files": top_files,
             })
 
         user_prompt = _build_layer_naming_prompt(batch_context, tech_stack, repo_structure)
+        batch_ids = {layer.get("id") for layer in batch}
 
         try:
             response = await llm_client.generate(
@@ -142,12 +147,19 @@ async def _enrich_layers(
             parsed = _parse_json_response(response.content)
             if parsed and "layers" in parsed:
                 for item in parsed["layers"]:
-                    idx = item.get("index")
-                    if idx is not None and 0 <= idx < len(enriched):
-                        if item.get("name"):
-                            enriched[idx]["name"] = item["name"]
-                        if item.get("description"):
-                            enriched[idx]["description"] = item["description"]
+                    layer_id = item.get("id")
+                    target = by_id.get(layer_id) if layer_id in batch_ids else None
+                    if target is None:
+                        logger.warning(
+                            "kg_layer_naming_unknown_id",
+                            layer_id=layer_id,
+                            batch_ids=sorted(filter(None, batch_ids)),
+                        )
+                        continue
+                    if item.get("name"):
+                        target["name"] = item["name"]
+                    if item.get("description"):
+                        target["description"] = item["description"]
         except Exception as exc:
             logger.warning("kg_layer_naming_batch_failed", error=str(exc))
 
@@ -173,14 +185,15 @@ def _build_layer_naming_prompt(
     ]
 
     for ctx in batch_context:
-        lines.append(f"\n--- Community {ctx['index']} ---")
+        lines.append(f"\n--- Community \"{ctx['id']}\" ---")
         lines.append(f"Heuristic label: {ctx['heuristic_label']}")
         lines.append(f"File count: {ctx['file_count']}")
         lines.append(f"Top files: {', '.join(ctx['top_files'][:10])}")
 
     lines.append("")
     lines.append(
-        'Respond with: {"layers": [{"index": 0, "name": "...", "description": "..."}]}'
+        "Respond with each community's id echoed verbatim: "
+        '{"layers": [{"id": "...", "name": "...", "description": "..."}]}'
     )
     return "\n".join(lines)
 
