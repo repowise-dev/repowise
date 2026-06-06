@@ -206,6 +206,51 @@ def install_claude_code_rewrite_hook() -> Path | None:
         return None
 
 
+# Permission allow rules for rewritten commands. A rewrite changes the
+# command string, so the user's existing allowlist entries (e.g.
+# ``Bash(git diff:*)``) stop matching the rewritten ``repowise distill …``
+# and every approved family starts prompting again. One rule per shell tool
+# covers the distill prefix; `repowise distill` runs the wrapped command
+# unchanged, so the rule never widens what a command can do.
+DISTILL_ALLOW_RULES = (
+    "Bash(repowise distill:*)",
+    "PowerShell(repowise distill:*)",
+)
+
+
+def add_claude_code_distill_allow_rules() -> Path | None:
+    """Append the distill allow rules to ``permissions.allow`` (idempotent).
+
+    Returns the settings path on success, None when settings.json exists but
+    can't be read or written. Strictly additive — user rules are untouched.
+    """
+    settings_path = _claude_code_settings_path()
+    try:
+        if settings_path.exists():
+            existing = load_existing_config(settings_path)
+        else:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+    except Exception:
+        return None
+
+    permissions = existing.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        return None
+    allow = permissions.setdefault("allow", [])
+    if not isinstance(allow, list):
+        return None
+
+    missing = [rule for rule in DISTILL_ALLOW_RULES if rule not in allow]
+    if missing:
+        allow.extend(missing)
+        try:
+            settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            return None
+    return settings_path
+
+
 def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
     """Widen legacy rewrite-hook matchers in place (``Bash`` → current)."""
     changed = False

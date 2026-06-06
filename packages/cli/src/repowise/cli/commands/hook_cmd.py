@@ -123,7 +123,19 @@ def rewrite_group() -> None:
     default=False,
     help="Force single-repo mode even when invoked from a workspace.",
 )
-def rewrite_install(path: str | None, workspace: bool, no_workspace: bool) -> None:
+@click.option(
+    "--allow-rule/--no-allow-rule",
+    "allow_rule",
+    default=None,
+    help=(
+        "Seed a Claude Code permission allow rule for `repowise distill` "
+        "commands so existing allowlist entries keep working after rewrites. "
+        "Prompts when omitted (interactive only)."
+    ),
+)
+def rewrite_install(
+    path: str | None, workspace: bool, no_workspace: bool, allow_rule: bool | None
+) -> None:
     """Install the rewrite hook into ~/.claude/settings.json.
 
     The hook itself is user-level (one install covers every repo); this
@@ -132,6 +144,8 @@ def rewrite_install(path: str | None, workspace: bool, no_workspace: bool) -> No
     otherwise — since a prior ``repowise init`` opt-out may have gated
     repos off.
     """
+    import sys
+
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
     from repowise.cli.helpers import save_distill_commands_enabled
 
@@ -146,6 +160,31 @@ def rewrite_install(path: str | None, workspace: bool, no_workspace: bool) -> No
         "  [dim]Per-repo behavior is configured under `distill.commands` "
         "in .repowise/config.yaml (permission: ask | allow).[/dim]"
     )
+
+    # A rewrite changes the command string, so a user's existing allowlist
+    # entry (e.g. `Bash(git diff:*)`) no longer matches the rewritten
+    # `repowise distill git diff …` — every rewrite asks again. Offer to
+    # seed an allow rule for the distill prefix; strictly opt-in, the hook
+    # posture itself stays `ask`.
+    if allow_rule is None and sys.stdin.isatty():
+        console.print(
+            "  [dim]Rewritten commands no longer match your existing Claude Code "
+            "allowlist entries (e.g. `Bash(git diff:*)`), so they prompt again.[/dim]"
+        )
+        allow_rule = click.confirm(
+            "  Add a permission allow rule for `repowise distill` commands?",
+            default=False,
+        )
+    if allow_rule:
+        from repowise.cli.editor_integrations.claude_config import (
+            add_claude_code_distill_allow_rules,
+        )
+
+        settings = add_claude_code_distill_allow_rules()
+        if settings:
+            console.print(f"  [green]✓[/green] Allow rule added ({settings})")
+        else:
+            console.print("  [yellow]Could not update permission rules.[/yellow]")
 
     if target.is_workspace:
         assert target.ws_root is not None and target.ws_config is not None
