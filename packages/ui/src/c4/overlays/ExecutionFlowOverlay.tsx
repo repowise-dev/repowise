@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Badge } from "../panels/panel-atoms";
+import { THEME } from "../theme/theme-variables";
 
 export interface ExecutionFlowEntry {
   id: string;
@@ -43,11 +44,11 @@ export function ExecutionFlowOverlay({ flows, visible }: ExecutionFlowOverlayPro
           width: 340,
           maxHeight: "70vh",
           overflowY: "auto",
-          background: "rgba(15, 23, 42, 0.95)",
-          border: "1px solid rgba(148, 163, 184, 0.2)",
+          background: THEME.surface.elevated,
+          border: `1px solid ${THEME.border.default}`,
           borderRadius: 8,
           padding: 16,
-          color: "#e2e8f0",
+          color: THEME.text.primary,
           fontSize: 13,
           zIndex: 500,
         }}
@@ -66,11 +67,11 @@ export function ExecutionFlowOverlay({ flows, visible }: ExecutionFlowOverlayPro
         width: 340,
         maxHeight: "70vh",
         overflowY: "auto",
-        background: "rgba(15, 23, 42, 0.95)",
-        border: "1px solid rgba(148, 163, 184, 0.2)",
+        background: THEME.surface.elevated,
+        border: `1px solid ${THEME.border.default}`,
         borderRadius: 8,
         padding: 16,
-        color: "#e2e8f0",
+        color: THEME.text.primary,
         fontSize: 13,
         zIndex: 500,
       }}
@@ -83,7 +84,7 @@ export function ExecutionFlowOverlay({ flows, visible }: ExecutionFlowOverlayPro
             key={flow.id}
             style={{
               padding: "8px 0",
-              borderBottom: "1px solid rgba(148, 163, 184, 0.12)",
+              borderBottom: `1px solid ${THEME.border.subtle}`,
             }}
           >
             <div
@@ -100,7 +101,7 @@ export function ExecutionFlowOverlay({ flows, visible }: ExecutionFlowOverlayPro
               <Badge label={flow.score.toFixed(2)} />
             </div>
             {flow.crosses_community && (
-              <div style={{ color: "#fbbf24", fontSize: 11, marginTop: 4, marginLeft: 20 }}>
+              <div style={{ color: "var(--color-warning)", fontSize: 11, marginTop: 4, marginLeft: 20 }}>
                 ⚠ Cross-boundary
               </div>
             )}
@@ -115,7 +116,7 @@ export function ExecutionFlowOverlay({ flows, visible }: ExecutionFlowOverlayPro
                       opacity: 0.85,
                     }}
                   >
-                    <span style={{ color: "#94a3b8", marginRight: 6 }}>{idx + 1}.</span>
+                    <span style={{ color: THEME.text.secondary, marginRight: 6 }}>{idx + 1}.</span>
                     {nodeId}
                   </div>
                 ))}

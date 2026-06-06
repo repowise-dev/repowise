@@ -1,8 +1,18 @@
 "use client";
 
-import { Compass } from "lucide-react";
+import { BookOpen, Compass, FileCode, Server } from "lucide-react";
 import { useArchitectureStore } from "../store/use-architecture-store";
+import type { ArchTourStepKind } from "../types";
 import { Section, ActionButton, Pill } from "./panel-atoms";
+
+/** Iconography per curated step kind (viewer plan C-2). */
+function KindIcon({ kind }: { kind: ArchTourStepKind }) {
+  const style = { flexShrink: 0, opacity: 0.8 } as const;
+  if (kind === "overview") return <BookOpen size={13} style={style} aria-label="Overview step" />;
+  if (kind === "infra") return <Server size={13} style={style} aria-label="Infrastructure step" />;
+  if (kind === "code") return <FileCode size={13} style={style} aria-label="Code step" />;
+  return null;
+}
 
 export function LearnPanel() {
   const view = useArchitectureStore((s) => s.view);
@@ -70,12 +80,13 @@ export function LearnPanel() {
                     justifyContent: "center",
                     fontSize: 9,
                     fontWeight: 600,
-                    background: "rgba(148,163,184,0.15)",
+                    background: "var(--color-bg-wash-hover)",
                     flexShrink: 0,
                   }}
                 >
                   {i + 1}
                 </span>
+                <KindIcon kind={step.kind} />
                 <span>{step.title}</span>
               </div>
             ))}
@@ -87,6 +98,12 @@ export function LearnPanel() {
 
   const step = tour[currentTourStep];
   const progress = ((currentTourStep + 1) / tour.length) * 100;
+  // Curated steps carry the "why this stop" prose in `reason` (plan C-2);
+  // legacy LLM tours keep their description.
+  const stepBody = step?.reason || step?.description || "";
+  const stepLayer = step?.layer_id
+    ? view?.layers.find((l) => l.id === step.layer_id)
+    : undefined;
 
   return (
     <Section>
@@ -96,7 +113,7 @@ export function LearnPanel() {
           style={{
             height: 3,
             borderRadius: 2,
-            background: "rgba(148,163,184,0.15)",
+            background: "var(--color-bg-wash-hover)",
             marginBottom: 12,
             overflow: "hidden",
           }}
@@ -105,21 +122,29 @@ export function LearnPanel() {
             style={{
               width: `${progress}%`,
               height: "100%",
-              background: "var(--color-accent-primary, #f59520)",
+              background: "var(--color-accent-primary)",
               borderRadius: 2,
               transition: "width 0.3s ease",
             }}
           />
         </div>
 
-        {/* Step title */}
-        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
-          {step?.title}
+        {/* Step title + kind icon */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+          {step && <KindIcon kind={step.kind} />}
+          <span>{step?.title}</span>
         </div>
 
-        {/* Step description */}
+        {/* Layer the step belongs to (the canvas follows it) */}
+        {stepLayer && (
+          <div style={{ marginBottom: 6 }}>
+            <Pill label={stepLayer.name} />
+          </div>
+        )}
+
+        {/* Step body: curated reason, or legacy description */}
         <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.5, marginBottom: 10 }}>
-          {step?.description}
+          {stepBody}
         </div>
 
         {/* Referenced nodes */}
@@ -172,8 +197,8 @@ export function LearnPanel() {
                 borderRadius: "50%",
                 background:
                   i === currentTourStep
-                    ? "var(--color-accent-primary, #f59520)"
-                    : "rgba(148,163,184,0.3)",
+                    ? "var(--color-accent-primary)"
+                    : "var(--color-border-default)",
                 border: "none",
                 cursor: "pointer",
                 padding: 0,

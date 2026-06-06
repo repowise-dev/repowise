@@ -22,7 +22,13 @@ export function useArchitectureNavigation(): void {
             state.closeCodeViewer();
           } else if (state.selectedNodeId !== null) {
             state.selectNode(null);
-          } else if (state.navigationLevel === "layer-detail") {
+          } else if (state.expandedContainers.size > 0) {
+            // Grammar parity with the dependency graph's hub collapse:
+            // Esc peels the most recently expanded container before
+            // popping the tier (insertion-ordered Set).
+            const last = Array.from(state.expandedContainers).pop();
+            if (last) state.toggleContainer(last);
+          } else if (state.navigationLevel !== "overview") {
             state.drillOut();
           }
           break;

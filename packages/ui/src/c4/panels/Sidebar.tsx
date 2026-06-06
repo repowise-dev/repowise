@@ -37,13 +37,13 @@ const TAB_STYLE_BASE: React.CSSProperties = {
   borderBottomWidth: 2,
   borderBottomStyle: "solid",
   borderBottomColor: "transparent",
-  color: "var(--color-text-secondary, #94a3b8)",
+  color: "var(--color-text-secondary)",
 };
 
 const TAB_STYLE_ACTIVE: React.CSSProperties = {
   ...TAB_STYLE_BASE,
-  color: "var(--color-accent-primary, #f59520)",
-  borderBottomColor: "var(--color-accent-primary, #f59520)",
+  color: "var(--color-accent-primary)",
+  borderBottomColor: "var(--color-accent-primary)",
 };
 
 export function Sidebar(props: SidebarProps) {
@@ -64,9 +64,9 @@ export function Sidebar(props: SidebarProps) {
         width: 320,
         maxHeight: "calc(100% - 24px)",
         background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
-        border: "1px solid var(--color-border-default, #334155)",
+        border: "1px solid var(--color-border-default)",
         borderRadius: 8,
-        color: "var(--color-text-primary, #f1f5f9)",
+        color: "var(--color-text-primary)",
         fontSize: 12,
         zIndex: 5,
         display: "flex",
@@ -79,7 +79,7 @@ export function Sidebar(props: SidebarProps) {
         aria-label="Sidebar tabs"
         style={{
           display: "flex",
-          borderBottom: "1px solid var(--color-border-default, #334155)",
+          borderBottom: "1px solid var(--color-border-default)",
           flexShrink: 0,
         }}
       >

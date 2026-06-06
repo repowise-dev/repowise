@@ -87,17 +87,17 @@ describe("ProjectOverview", () => {
     expect(screen.getByText("fastapi")).toBeInTheDocument();
   });
 
-  it("shows Start Guided Tour button when tour exists", () => {
+  it("shows Start tour button when tour exists", () => {
     act(() => store.getState().setView(mockView));
     render(<ProjectOverview />);
-    expect(screen.getByText("Start Guided Tour (3 steps)")).toBeInTheDocument();
+    expect(screen.getByText("Start tour (3 steps)")).toBeInTheDocument();
   });
 
   it("hides tour button when tour is empty", () => {
     const viewNoTour = { ...mockView, tour: [] };
     act(() => store.getState().setView(viewNoTour));
     render(<ProjectOverview />);
-    expect(screen.queryByText(/Start Guided Tour/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Start tour/)).not.toBeInTheDocument();
   });
 
   it("hides tour button when tour is already active", () => {
@@ -106,7 +106,7 @@ describe("ProjectOverview", () => {
       store.getState().startTour();
     });
     render(<ProjectOverview />);
-    expect(screen.queryByText(/Start Guided Tour/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Start tour/)).not.toBeInTheDocument();
   });
 
   it("shows most connected nodes sorted by degree", () => {
