@@ -183,9 +183,12 @@ function buildTree(pages: DocPage[]): TreeNode[] {
     if (!targetPath) continue;
 
     if (page.page_type === "module_page") {
-      // Module pages become directories with their page attached
+      // Module pages become directories with their page attached. Community
+      // modules have synthetic target_paths ("community-207") — show the
+      // derived module name instead of the raw graph id.
       const dirNode = ensureDir(targetPath);
       dirNode.page = page;
+      if (RAW_GRAPH_ID.test(dirNode.name)) dirNode.name = displayLabel(page);
     } else {
       // File pages go into their parent directory
       const parts = targetPath.split("/");
@@ -264,11 +267,6 @@ const SECTION_KEYS = {
 
 export const DOMAIN_SECTION_KEYS = Object.values(SECTION_KEYS);
 
-function parentDirOf(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i === -1 ? "" : path.slice(0, i);
-}
-
 // Layers ordered top→bottom by dependency direction, persisted on the repo
 // overview page at generation time. Used to order the Architecture section and
 // the Modules section so the tree reads as a dependency hierarchy rather than
@@ -300,6 +298,64 @@ function dominantLayer(files: DocPage[]): string {
   }
   return best;
 }
+
+// ---------------------------------------------------------------------------
+// Display labels — replace raw graph ids with derived names
+// ---------------------------------------------------------------------------
+//
+// Generation titles carry raw graph ids ("Module: community-207",
+// "Circular Dependency: scc-103"). The human-readable names live on the page
+// itself — module titles already carry the derived path, and SCC members are
+// listed in the cycle description — so the tree derives display labels
+// client-side instead of leaking ids. metadata.derived_label, when present,
+// always wins (future-proofing for generation-side labels).
+
+const RAW_GRAPH_ID = /^(?:community|scc)[-_\s]?\d+$/i;
+
+function sccDisplayLabel(page: DocPage): string {
+  // Cycle members appear back-ticked in the generated description; prefer
+  // the "Files Involved" section when present so prose mentions don't leak in.
+  const involved = page.content.split(/^##\s+Files Involved\s*$/im)[1];
+  const section = involved ? involved.split(/^##\s/m)[0] ?? involved : page.content;
+  const paths = [...section.matchAll(/`([^`\s]+\/[^`\s]+)`/g)].map((m) => m[1]!);
+  if (paths.length === 0) return page.title;
+
+  // Common directory of the members, shown as its last two segments —
+  // "Cycle: generation/page_generator" reads better than "scc-103".
+  let common = (paths[0] ?? "").split("/").slice(0, -1);
+  for (const p of paths.slice(1)) {
+    const parts = p.split("/").slice(0, -1);
+    let i = 0;
+    while (i < common.length && i < parts.length && common[i] === parts[i]) i++;
+    common = common.slice(0, i);
+  }
+  const dir = common.slice(-2).join("/");
+  return dir ? `Cycle: ${dir}` : page.title;
+}
+
+function displayLabel(page: DocPage): string {
+  const metaLabel = page.metadata?.["derived_label"];
+  if (typeof metaLabel === "string" && metaLabel) return metaLabel;
+
+  if (page.page_type === "module_page") {
+    const name = page.title.replace(/^Module:\s*/i, "");
+    if (name && !RAW_GRAPH_ID.test(name)) return name;
+    const fallback = page.target_path.split("/").pop() ?? page.target_path;
+    return RAW_GRAPH_ID.test(fallback) ? page.title : fallback;
+  }
+  if (page.page_type === "scc_page") return sccDisplayLabel(page);
+  if (page.page_type === "layer_page") return page.title.replace(/^Layer:\s*/i, "");
+  return page.title;
+}
+
+// Collapsible sub-groups inside the Architecture section. Namespaced with
+// "@group:" so they never collide with target_paths or "@section:" keys —
+// and, unlike sections, they are NOT auto-expanded (40 layers / 38 cycles
+// would otherwise drown the spine).
+const GROUP_KEYS = {
+  layers: "@group:layers",
+  sccs: "@group:sccs",
+} as const;
 
 function buildDomainTree(pages: DocPage[]): TreeNode[] {
   const sections: TreeNode[] = [];
@@ -334,18 +390,54 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
     });
   }
 
-  // ---- Architecture (layers / knowledge graph / strongly-connected) ----
+  // ---- Architecture (diagrams up top; layers and cycles in collapsible
+  // sub-groups so 40 layers / 38 SCCs don't drown the spine) ----
   const archTypes = new Set(["layer_page", "architecture_diagram", "scc_page"]);
-  const archChildren: TreeNode[] = pages
-    .filter((p) => archTypes.has(p.page_type) && !tourIds.has(p.id))
-    // Order layer pages top→bottom by dependency direction; other arch pages
-    // (knowledge graph, SCCs) fall after, alphabetically.
+  const archPages = pages.filter((p) => archTypes.has(p.page_type) && !tourIds.has(p.id));
+
+  const toLeaf = (p: DocPage): TreeNode => ({
+    name: displayLabel(p),
+    path: p.id,
+    isDir: false,
+    page: p,
+    children: [],
+  });
+
+  const diagramLeaves = archPages
+    .filter((p) => p.page_type === "architecture_diagram")
+    .sort((a, b) => a.title.localeCompare(b.title))
+    .map(toLeaf);
+  // Order layer pages top→bottom by dependency direction.
+  const layerLeaves = archPages
+    .filter((p) => p.page_type === "layer_page")
     .sort((a, b) => {
-      const ra = a.page_type === "layer_page" ? rankOf(a.title.replace(/^Layer:\s*/, "")) : Number.MAX_SAFE_INTEGER;
-      const rb = b.page_type === "layer_page" ? rankOf(b.title.replace(/^Layer:\s*/, "")) : Number.MAX_SAFE_INTEGER;
+      const ra = rankOf(a.title.replace(/^Layer:\s*/, ""));
+      const rb = rankOf(b.title.replace(/^Layer:\s*/, ""));
       return ra - rb || a.title.localeCompare(b.title);
     })
-    .map((p) => ({ name: p.title, path: p.id, isDir: false, page: p, children: [] }));
+    .map(toLeaf);
+  const sccLeaves = archPages
+    .filter((p) => p.page_type === "scc_page")
+    .map(toLeaf)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const archChildren: TreeNode[] = [...diagramLeaves];
+  if (layerLeaves.length > 0) {
+    archChildren.push({
+      name: `Layers (${layerLeaves.length})`,
+      path: GROUP_KEYS.layers,
+      isDir: true,
+      children: layerLeaves,
+    });
+  }
+  if (sccLeaves.length > 0) {
+    archChildren.push({
+      name: `Circular dependencies (${sccLeaves.length})`,
+      path: GROUP_KEYS.sccs,
+      isDir: true,
+      children: sccLeaves,
+    });
+  }
   if (archChildren.length > 0) {
     sections.push({
       name: "Architecture",
@@ -362,23 +454,34 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
   const modulePaths = new Set(modulePages.map((p) => p.target_path));
   const claimedFileIds = new Set<string>();
 
+  // Claim each file page by its NEAREST module ancestor, not just the direct
+  // parent dir — curated modules are directory subtrees whose files can sit
+  // several levels deep (e.g. module "core/ingestion" owning
+  // "core/ingestion/resolvers/dotnet/index.py").
+  const sortedModulePaths = [...modulePaths].sort((a, b) => b.length - a.length);
+  const fileToModule = new Map<string, string>();
+  for (const p of pages) {
+    if (p.page_type !== "file_page" || !p.target_path) continue;
+    const owner = sortedModulePaths.find((mp) => p.target_path.startsWith(mp + "/"));
+    if (owner) fileToModule.set(p.id, owner);
+  }
+
   const moduleChildren: TreeNode[] = modulePages.map((mod) => {
     const files = pages
-      .filter(
-        (p) =>
-          p.page_type === "file_page" &&
-          p.target_path &&
-          parentDirOf(p.target_path) === mod.target_path,
-      )
+      .filter((p) => fileToModule.get(p.id) === mod.target_path)
       .sort((a, b) => a.target_path.localeCompare(b.target_path));
     for (const f of files) claimedFileIds.add(f.id);
     return {
-      name: mod.title || mod.target_path.split("/").pop() || mod.target_path,
+      name: displayLabel(mod) || mod.target_path.split("/").pop() || mod.target_path,
       path: mod.id,
       isDir: true,
       page: mod,
       children: files.map((f) => ({
-        name: f.target_path.split("/").pop() || f.target_path,
+        // Path relative to the module dir, so deep files stay unambiguous
+        // ("resolvers/dotnet/index.py", not three siblings named "index.py").
+        name: f.target_path.startsWith(mod.target_path + "/")
+          ? f.target_path.slice(mod.target_path.length + 1)
+          : f.target_path.split("/").pop() || f.target_path,
         path: f.id,
         isDir: false,
         page: f,
@@ -473,6 +576,7 @@ function matchesFilters(
   search: string,
   typeFilter: TypeFilter,
   freshnessFilter: FreshnessFilter,
+  displayName?: string,
 ): boolean {
   if (!page) return true; // directories always pass (will be pruned if empty)
   if (typeFilter !== "all" && page.page_type !== typeFilter) return false;
@@ -481,7 +585,10 @@ function matchesFilters(
     const q = search.toLowerCase();
     return (
       page.title.toLowerCase().includes(q) ||
-      page.target_path.toLowerCase().includes(q)
+      page.target_path.toLowerCase().includes(q) ||
+      // Derived tree labels (e.g. "Cycle: generation/page_generator") are
+      // what the user sees — make them searchable too.
+      (displayName ?? "").toLowerCase().includes(q)
     );
   }
   return true;
@@ -498,13 +605,13 @@ function filterTree(
     if (node.isDir) {
       const filteredChildren = filterTree(node.children, search, typeFilter, freshnessFilter);
       const dirPageMatches = node.page
-        ? matchesFilters(node.page, search, typeFilter, freshnessFilter)
+        ? matchesFilters(node.page, search, typeFilter, freshnessFilter, node.name)
         : false;
       if (filteredChildren.length > 0 || dirPageMatches) {
         result.push({ ...node, children: filteredChildren });
       }
     } else {
-      if (matchesFilters(node.page, search, typeFilter, freshnessFilter)) {
+      if (matchesFilters(node.page, search, typeFilter, freshnessFilter, node.name)) {
         result.push(node);
       }
     }
@@ -523,6 +630,7 @@ function TreeItem({
   expandedDirs,
   toggleDir,
   onSelectPage,
+  forceExpand = false,
 }: {
   node: TreeNode;
   depth: number;
@@ -530,8 +638,10 @@ function TreeItem({
   expandedDirs: Set<string>;
   toggleDir: (path: string) => void;
   onSelectPage: (page: DocPage) => void;
+  /** Open every dir while a search is active so matches are never hidden. */
+  forceExpand?: boolean;
 }) {
-  const isExpanded = expandedDirs.has(node.path);
+  const isExpanded = forceExpand || expandedDirs.has(node.path);
   const isSelected = node.page && node.page.id === selectedPageId;
   const hasChildren = node.children.length > 0;
 
@@ -543,6 +653,7 @@ function TreeItem({
             toggleDir(node.path);
             if (node.page) onSelectPage(node.page);
           }}
+          {...(node.page && node.page.title !== node.name ? { title: node.page.title } : {})}
           className={cn(
             "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)]",
             isSelected
@@ -609,6 +720,7 @@ function TreeItem({
                 expandedDirs={expandedDirs}
                 toggleDir={toggleDir}
                 onSelectPage={onSelectPage}
+                forceExpand={forceExpand}
               />
             ))}
           </div>
@@ -621,6 +733,7 @@ function TreeItem({
   return (
     <button
       onClick={() => node.page && onSelectPage(node.page)}
+      {...(node.page && node.page.title !== node.name ? { title: node.page.title } : {})}
       className={cn(
         "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-[var(--color-bg-elevated)]",
         isSelected
@@ -645,12 +758,11 @@ function TreeItem({
 }
 
 function FreshnessDot({ status }: { status: FreshnessStatus }) {
+  // Fresh is the expected state — only flag pages that need attention, so a
+  // healthy tree stays visually quiet instead of showing hundreds of dots.
+  if (status === "fresh") return null;
   const color =
-    status === "fresh"
-      ? "bg-green-500"
-      : status === "stale"
-        ? "bg-yellow-500"
-        : "bg-red-500";
+    status === "stale" ? "bg-[var(--color-warning)]" : "bg-[var(--color-error)]";
   return <span className={cn("ml-auto h-1.5 w-1.5 rounded-full shrink-0", color)} />;
 }
 
@@ -678,7 +790,9 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
     }
     return dirs;
   });
-  const [showFilters, setShowFilters] = useState(true);
+  // Filters are a power-user affordance — start hidden so the panel opens
+  // calm; the funnel button shows a count when any filter is active.
+  const [showFilters, setShowFilters] = useState(false);
 
   const tree = useMemo(
     () => (viewMode === "domain" ? buildDomainTree(pages) : buildTree(pages)),
@@ -701,6 +815,9 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   // Stats
   const totalPages = pages.length;
   const freshCount = pages.filter((p) => p.freshness_status === "fresh").length;
+  const needAttention = totalPages - freshCount;
+  const activeFilterCount =
+    (typeFilter !== "all" ? 1 : 0) + (freshnessFilter !== "all" ? 1 : 0);
 
   return (
     <div className={cn("flex flex-col h-full", className)}>
@@ -740,14 +857,21 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
           </div>
           <button
             onClick={() => setShowFilters((s) => !s)}
+            aria-label="Toggle filters"
+            aria-expanded={showFilters}
             className={cn(
-              "rounded-md p-1.5 transition-colors",
-              showFilters
+              "relative rounded-md p-1.5 transition-colors",
+              showFilters || activeFilterCount > 0
                 ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                 : "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]",
             )}
           >
             <Filter className="h-3.5 w-3.5" />
+            {activeFilterCount > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[var(--color-accent-fill)] text-[9px] font-semibold text-[var(--color-text-on-accent)]">
+                {activeFilterCount}
+              </span>
+            )}
           </button>
         </div>
 
@@ -792,10 +916,14 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
           </div>
         )}
 
-        {/* Stats line */}
-        <div className="flex items-center justify-between text-[10px] text-[var(--color-text-tertiary)]">
-          <span>{totalPages} pages</span>
-          <span>{freshCount} fresh · {totalPages - freshCount} need attention</span>
+        {/* Stats line — quiet when everything is fresh */}
+        <div className="text-[10px] text-[var(--color-text-tertiary)]">
+          {totalPages} pages
+          {needAttention === 0 ? (
+            <span> · all fresh</span>
+          ) : (
+            <span className="text-[var(--color-warning)]"> · {needAttention} need attention</span>
+          )}
         </div>
       </div>
 
@@ -816,6 +944,7 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
                 expandedDirs={expandedDirs}
                 toggleDir={toggleDir}
                 onSelectPage={onSelectPage}
+                forceExpand={search.trim().length > 0}
               />
             ))}
           </div>

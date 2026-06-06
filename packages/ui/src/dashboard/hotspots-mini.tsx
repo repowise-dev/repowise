@@ -58,7 +58,7 @@ export function HotspotsMini({
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center justify-between">
           <span className="flex items-center gap-2">
-            <Flame className="h-4 w-4 text-red-500" />
+            <Flame className="h-4 w-4 text-[var(--color-error)]" />
             Top Hotspots
             <span className="text-[10px] font-normal text-[var(--color-text-tertiary)] tabular-nums">
               {top.length} of {fullCount.toLocaleString()}

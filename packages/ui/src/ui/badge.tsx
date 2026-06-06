@@ -10,11 +10,11 @@ const badgeVariants = cva(
         default:
           "border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]",
         fresh:
-          "border-green-500/20 bg-green-500/10 text-green-500",
+          "border-[color-mix(in_srgb,var(--color-confidence-fresh)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-confidence-fresh)_12%,transparent)] text-[var(--color-confidence-fresh)]",
         stale:
-          "border-yellow-500/20 bg-yellow-500/10 text-yellow-500",
+          "border-[color-mix(in_srgb,var(--color-confidence-stale)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-confidence-stale)_12%,transparent)] text-[var(--color-confidence-stale)]",
         outdated:
-          "border-red-500/20 bg-red-500/10 text-red-500",
+          "border-[color-mix(in_srgb,var(--color-confidence-outdated)_28%,transparent)] bg-[color-mix(in_srgb,var(--color-confidence-outdated)_12%,transparent)] text-[var(--color-confidence-outdated)]",
         accent:
           "border-[var(--color-accent-muted)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]",
         outline:

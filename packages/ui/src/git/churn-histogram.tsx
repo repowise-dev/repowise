@@ -18,11 +18,11 @@ interface ChurnHistogramProps {
 }
 
 const BUCKET_COLORS = [
-  "#22c55e", "#22c55e", "#22c55e", "#22c55e", "#22c55e",
-  "#eab308", "#eab308", "#f59520",
-  "#ef4444", "#ef4444",
+  "var(--color-success)", "var(--color-success)", "var(--color-success)", "var(--color-success)", "var(--color-success)",
+  "var(--color-warning)", "var(--color-warning)", "var(--color-accent-fill)",
+  "var(--color-error)", "var(--color-error)",
 ];
-const BUCKET_FALLBACK = "#8b5cf6";
+const BUCKET_FALLBACK = "var(--color-accent-secondary)";
 
 export function ChurnHistogram({ hotspots }: ChurnHistogramProps) {
   if (!hotspots || hotspots.length === 0) {

@@ -1,73 +1,111 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Bind Tailwind's `dark:` variant to next-themes' `.dark` class. Without
+   this, Tailwind v4 defaults `dark:` to prefers-color-scheme — utilities
+   would follow the OS appearance instead of the in-app Light/Dark toggle. */
+@custom-variant dark (&:is(.dark *));
+
 /*
- * @repowise-dev/ui â€” canonical design tokens.
+ * @repowise-dev/ui — canonical design tokens (design tokens).
  *
- * Imported by every consumer that wants the standard Repowise look.
- * Tailwind v4 `@theme` block defines CSS custom properties; base styles,
- * scrollbar, focus, prose overrides, and React Flow theming follow.
+ * Three-tier token model:
+ *   1. Primitives — raw brand ramps (theme-independent), in @theme.
+ *   2. Semantic   — purpose-named tokens; registered in @theme at their
+ *                   LIGHT values (so Tailwind v4 generates utilities and
+ *                   :root defaults to light) and overridden under `.dark`.
+ *   3. Component  — graph / React Flow / data-viz tokens, mostly derived
+ *                   from semantic tokens via var() so they auto-theme.
  *
- * The `@source` directive below tells Tailwind v4 to scan component
- * source under `packages/ui/src/**` for utility classes â€” required so
- * consumers that import this file pick up classes used by shared
- * components without each consumer re-declaring the source path.
+ * Theme contract: `:root` = light (default), `.dark` (class on <html>,
+ * managed by next-themes) = dark overrides. Every theme-switched token has
+ * an explicit value in @theme (light) and a matching override in `.dark`.
+ * Derived tokens reference others via var() and need no override.
  *
- * Consumers can override individual tokens (accent, surface) by
- * declaring a `@theme` block of their own after importing this file.
+ * Backward-compat: every token name that existed before the redesign is
+ * preserved (parity-gated). Consumers can still override individual tokens
+ * by declaring their own @theme block after importing this file.
+ *
+ * @source tells Tailwind v4 to scan component source for utility classes
+ * so consumers pick them up without re-declaring the path.
  */
 
 @source "../src/**/*.{ts,tsx}";
 
 @theme {
-  /* ------------------------------------------------------------------ */
-  /* Core Surfaces                                                       */
-  /* ------------------------------------------------------------------ */
-  --color-bg-root: #0d0d0d;
-  --color-bg-surface: #141414;
-  --color-bg-elevated: #1c1c1c;
-  --color-bg-overlay: #202020;
-  --color-bg-inset: #0a0a0a;
+  /* ================================================================== */
+  /* TIER 1 — Primitive ramps (theme-independent; never used directly)  */
+  /* ================================================================== */
+  --color-sunset-50: #fff4ed;
+  --color-sunset-100: #ffe6d5;
+  --color-sunset-200: #ffc4b1;
+  --color-sunset-300: #f7a56e;
+  --color-sunset-400: #f2a03d;
+  --color-sunset-500: #f27f3d;
+  --color-sunset-600: #e0651f;
+  --color-sunset-700: #c04e14;
+  --color-sunset-800: #8c3d35;
+  --color-sunset-900: #5e2a22;
 
-  /* ------------------------------------------------------------------ */
-  /* Borders                                                             */
-  /* ------------------------------------------------------------------ */
-  --color-border-default: rgba(255, 255, 255, 0.06);
-  --color-border-hover: rgba(255, 255, 255, 0.12);
-  --color-border-active: rgba(255, 255, 255, 0.20);
+  --color-plum-50: #f4f1f8;
+  --color-plum-100: #e7e1f0;
+  --color-plum-200: #cfc3df;
+  --color-plum-300: #a98fc4;
+  --color-plum-400: #826aa0;
+  --color-plum-500: #58436c;
+  --color-plum-600: #473659;
+  --color-plum-700: #362945;
+  --color-plum-800: #261c32;
+  --color-plum-900: #1a1320;
 
-  /* ------------------------------------------------------------------ */
-  /* Text                                                                */
-  /* ------------------------------------------------------------------ */
-  --color-text-primary: #ececec;
-  --color-text-secondary: #999999;
-  --color-text-tertiary: #5c5c5c;
-  --color-text-inverse: #0d0d0d;
+  --color-clay: #8c3d35;
+  --color-peach: #ffc4b1;
+  --color-cream: #fce9dd;
+  --color-amber: #f2a03d;
 
-  /* ------------------------------------------------------------------ */
-  /* Accent â€” repowise Orange                                            */
-  /* ------------------------------------------------------------------ */
-  --color-accent-primary: #f59520;
-  --color-accent-hover: #f7a94d;
-  --color-accent-muted: rgba(245, 149, 32, 0.15);
+  /* ================================================================== */
+  /* TIER 2 — Semantic tokens (LIGHT defaults; `.dark` overrides below) */
+  /* ================================================================== */
 
-  /* ------------------------------------------------------------------ */
-  /* Confidence System                                                   */
-  /* ------------------------------------------------------------------ */
-  --color-confidence-fresh: #22c55e;
-  --color-confidence-stale: #eab308;
-  --color-confidence-outdated: #ef4444;
+  /* Core surfaces — warm paper / pure-white cards */
+  --color-bg-root: #fbf6f1;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #fbf4ee;
+  --color-bg-overlay: #ffffff;
+  --color-bg-inset: #f4eae1;
 
-  /* ------------------------------------------------------------------ */
-  /* Semantic                                                            */
-  /* ------------------------------------------------------------------ */
-  --color-success: #22c55e;
-  --color-warning: #eab308;
-  --color-error: #ef4444;
-  --color-info: #f59520;
+  /* Borders — plum-tinted hairlines */
+  --color-border-default: rgba(88, 67, 108, 0.12);
+  --color-border-hover: rgba(88, 67, 108, 0.22);
+  --color-border-active: rgba(176, 107, 18, 0.9);
 
-  /* Aliases â€” short names used in component class strings.              */
-  /* Keep these in sync with the canonical confidence/accent tokens.     */
+  /* Text — plum-near-black on warm paper */
+  --color-text-primary: #241b2c;
+  --color-text-secondary: #5e5360;
+  --color-text-tertiary: #8c7f88;
+  --color-text-inverse: #ffffff;
+  --color-text-on-accent: #241b2c;
+
+  /* Accent — warm orange */
+  --color-accent-primary: #a16215;
+  --color-accent-fill: #f59520;
+  --color-accent-fill-hover: #e0850f;
+  --color-accent-hover: #824f10;
+  --color-accent-muted: rgba(245, 149, 32, 0.12);
+  --color-accent-secondary: #58436c;
+
+  /* Confidence system */
+  --color-confidence-fresh: #1d8155;
+  --color-confidence-stale: #9a6614;
+  --color-confidence-outdated: #b23a2e;
+
+  /* Semantic status */
+  --color-success: #1d8155;
+  --color-warning: #9a6614;
+  --color-error: #b23a2e;
+  --color-info: #58436c;
+
+  /* Aliases — short names used in component class strings. Keep in sync. */
   --color-fresh: var(--color-confidence-fresh);
   --color-stale: var(--color-confidence-stale);
   --color-outdated: var(--color-confidence-outdated);
@@ -75,19 +113,38 @@
   --color-accent-blue: var(--color-accent-primary);
   --color-border-accent: var(--color-accent-primary);
 
-  /* ------------------------------------------------------------------ */
-  /* Graph â€” React Flow                                                  */
-  /* ------------------------------------------------------------------ */
-  --color-accent-graph: #f59520;
-  --color-risk-low: #22c55e;
-  --color-risk-medium: #f59520;
-  --color-risk-high: #ef4444;
-  --color-node-documented: #22c55e;
-  --color-node-undocumented: #64748b;
+  /* ================================================================== */
+  /* TIER 3 — Graph / data-viz (derived; auto-theme via var())          */
+  /* ================================================================== */
+  --color-accent-graph: var(--color-accent-fill);
+  --color-risk-low: var(--color-success);
+  --color-risk-medium: var(--color-warning);
+  --color-risk-high: var(--color-error);
+  --color-node-documented: var(--color-success);
+  --color-node-undocumented: #9a8da0; /* light; overridden in .dark */
+  --viz-node-stroke: rgba(36, 27, 44, 0.25); /* halo so nodes read on bg */
 
-  /* ------------------------------------------------------------------ */
-  /* Language Colors (graph nodes)                                       */
-  /* ------------------------------------------------------------------ */
+  /* Mermaid / generated diagrams — blueprint look: ink blocks on a faint
+     grid, dashed connectors, brand-orange entry node. */
+  --color-diagram-node-fill: #241b2c; /* ink plum block */
+  --color-diagram-node-fill-2: #4a4152; /* recessed gray-plum ink (supporting cast) */
+  --color-diagram-node-text: #fbf6f1; /* warm paper on ink */
+  --color-diagram-node-border: #241b2c;
+  --color-diagram-edge: #4a3d59; /* plum line, dashed */
+
+  /* KG canvas node faces — light mode is "blueprint drawn ON the paper":
+     warm-white cards with a crisp ink outline (user pick, 2026-06-05);
+     dark mode aliases back to the solid ink blocks. Mermaid keeps using
+     the diagram-node tokens above. */
+  --color-kg-node-fill: #fffdf8; /* warm white card */
+  --color-kg-node-fill-2: #f3ece2; /* cream-taupe supporting card */
+  --color-kg-node-text: #241b2c; /* dark plum ink text */
+  --color-kg-node-border: #241b2c; /* ink outline */
+  --color-kg-node-border-2: #8c7f88; /* faded ink outline (supporting) */
+  --color-diagram-cluster-border: #826aa0; /* plum-400 */
+  --color-diagram-grid: rgba(245, 149, 32, 0.10); /* faint orange grid */
+
+  /* Language colors (canonical brand hues — theme-independent) */
   --color-lang-python: #3776ab;
   --color-lang-typescript: #3178c6;
   --color-lang-go: #00add8;
@@ -97,20 +154,73 @@
   --color-lang-config: #6b7280;
   --color-lang-other: #8b5cf6;
 
-  /* ------------------------------------------------------------------ */
-  /* Edge Colors (graph edges)                                           */
-  /* ------------------------------------------------------------------ */
-  --color-edge-imports: #f59520;
-  --color-edge-calls: #22c55e;
-  --color-edge-inherits: #a855f7;
-  --color-edge-implements: #ec4899;
-  --color-edge-co-change: #8b5cf6;
+  /* Edge colors (graph edges) — remapped to the new palette */
+  --color-edge-imports: var(--color-accent-fill);
+  --color-edge-calls: var(--color-success);
+  --color-edge-inherits: #826aa0; /* plum-400 */
+  --color-edge-implements: #c85aa0; /* warm magenta */
+  --color-edge-co-change: #7c5cc4;
 
-  /* ------------------------------------------------------------------ */
-  /* Typography                                                          */
-  /* ------------------------------------------------------------------ */
+  /* Community families — 12 warm/plum-anchored hues for graph clustering.
+     LIGHT values are declared in a plain `:root {}` block below (NOT here in
+     @theme) because they are referenced *only* dynamically — getCommunityFamily
+     in shared/use-theme-tokens.ts builds `--color-community-${n}` strings at
+     runtime, so Tailwind v4 (which tree-shakes @theme vars with no static
+     reference) would prune communities 2–12 from the emitted light CSS. The
+     `.dark` overrides live in plain CSS already, which is why dark never broke. */
+
+  /* C4 / graph canvas surfaces — consumed via the `THEME` object in
+     c4/graph-primitives, which can't see component classes. Previously these
+     names were undefined, so the canvas fell back to hardcoded dark navy in
+     BOTH themes; aliasing them to theme-aware surfaces fixes light mode. */
+  --color-bg-canvas: var(--color-bg-inset);
+  --color-canvas-dot: rgba(36, 27, 44, 0.08);
+  --color-bg-glass: rgba(255, 255, 255, 0.72);
+  /* Neutral hover washes for canvas-adjacent chrome (rows, chips, stubs) —
+     plum-alpha on paper, lavender-alpha on dark (same idiom as canvas-dot). */
+  --color-bg-wash: rgba(36, 27, 44, 0.05);
+  --color-bg-wash-hover: rgba(36, 27, 44, 0.1);
+  --color-border-subtle: var(--color-border-default);
+  --color-text-muted: var(--color-text-tertiary);
+
+  /* Viz state colors (selection / diff) — brand-aligned + theme-aware */
+  --color-viz-selection: var(--color-accent-fill);
+  --color-viz-diff-changed: var(--color-error);
+  --color-viz-diff-affected: var(--color-warning);
+
+  /* ================================================================== */
+  /* Signature gradients (theme-independent)                            */
+  /* ================================================================== */
+  --gradient-sunset: linear-gradient(135deg, #58436c 0%, #f59520 55%, #f7a94d 100%);
+  --gradient-ember: linear-gradient(135deg, #f59520 0%, #f7a94d 100%);
+  --gradient-peach: linear-gradient(160deg, #ffc4b1 0%, #f59520 100%);
+  --gradient-plum: linear-gradient(135deg, #362945 0%, #58436c 100%);
+
+  /* Soft saturated -> pale warm gradient (the "smooth two-tone" style):
+     brand orange melting into a warm peach. For brand chips, icon blobs,
+     small accent panels, avatars, selected/active art. Dark text reads on
+     the whole sweep. `--gradient-warm-wash` is the ultra-subtle background
+     version (theme-aware) for empty-states, hero washes, and section bands. */
+  --gradient-warm: linear-gradient(135deg, #f59520 0%, #ffd9b0 100%);
+  --gradient-warm-wash: linear-gradient(160deg, #fff4ea 0%, #ffe6cf 55%, #ffd9bd 100%);
+
+  /* ================================================================== */
+  /* Elevation — warm/plum-tinted shadows (LIGHT; `.dark` overrides)    */
+  /* ================================================================== */
+  --shadow-sm: 0 1px 2px rgba(36, 27, 44, 0.06);
+  --shadow-md: 0 2px 8px rgba(36, 27, 44, 0.08), 0 1px 2px rgba(36, 27, 44, 0.06);
+  --shadow-lg: 0 8px 24px rgba(36, 27, 44, 0.1), 0 2px 6px rgba(36, 27, 44, 0.06);
+  --shadow-xl: 0 16px 48px rgba(36, 27, 44, 0.14), 0 4px 12px rgba(36, 27, 44, 0.08);
+  --shadow-button: 0 1px 2px rgba(214, 127, 16, 0.22);
+
+  /* ================================================================== */
+  /* Non-color tokens (theme-independent)                               */
+  /* ================================================================== */
   --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Geist Mono", "JetBrains Mono", "Fira Code", monospace;
+  /* Serif display face for docs/wiki headings (loaded via next/font as
+     --font-lora; Georgia fallback keeps SSR/storybook surfaces sane). */
+  --font-serif: var(--font-lora), "Lora", Georgia, serif;
 
   --text-xs: 0.8125rem;
   --text-sm: 0.875rem;
@@ -124,9 +234,6 @@
   --leading-normal: 1.5;
   --leading-relaxed: 1.75;
 
-  /* ------------------------------------------------------------------ */
-  /* Spacing (4px base grid)                                             */
-  /* ------------------------------------------------------------------ */
   --spacing-1: 0.25rem;
   --spacing-2: 0.5rem;
   --spacing-3: 0.75rem;
@@ -138,17 +245,11 @@
   --spacing-12: 3rem;
   --spacing-16: 4rem;
 
-  /* ------------------------------------------------------------------ */
-  /* Radii                                                               */
-  /* ------------------------------------------------------------------ */
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 10px;
   --radius-xl: 14px;
 
-  /* ------------------------------------------------------------------ */
-  /* Z-Index Scale                                                       */
-  /* ------------------------------------------------------------------ */
   --z-base: 0;
   --z-elevated: 10;
   --z-dropdown: 20;
@@ -157,16 +258,10 @@
   --z-command: 50;
   --z-toast: 60;
 
-  /* ------------------------------------------------------------------ */
-  /* Layout                                                              */
-  /* ------------------------------------------------------------------ */
   --sidebar-width: 260px;
   --context-panel-width: 280px;
   --content-max-width: 768px;
 
-  /* ------------------------------------------------------------------ */
-  /* Animation                                                           */
-  /* ------------------------------------------------------------------ */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-inout: cubic-bezier(0.87, 0, 0.13, 1);
@@ -176,12 +271,165 @@
 }
 
 /* -------------------------------------------------------------------- */
-/* Base Styles                                                           */
+/* DARK overrides — only the theme-switched tokens                       */
 /* -------------------------------------------------------------------- */
 
-html {
+.dark {
+  /* Plum-tinted charcoal base — the theme's own dark identity.
+     A restrained violet cast (hue ~270, low sat) differentiates the product
+     from the many neutral-charcoal + orange UIs while keeping the brand
+     orange accent popping. Verified in docs/design/contrast_check.py. */
+  --color-bg-root: #17131d;
+  --color-bg-surface: #211b29;
+  --color-bg-elevated: #2a2335;
+  --color-bg-overlay: #322a3e;
+  --color-bg-inset: #110d17;
+
+  --color-border-default: rgba(213, 197, 232, 0.1);
+  --color-border-hover: rgba(213, 197, 232, 0.18);
+  --color-border-active: rgba(245, 149, 32, 0.55);
+
+  --color-text-primary: #eeeaf4;
+  --color-text-secondary: #a79db3;
+  --color-text-tertiary: #786f84;
+  --color-text-inverse: #17131d;
+  --color-text-on-accent: #17131d;
+
+  --color-accent-primary: #f59520;
+  --color-accent-fill: #f59520;
+  --color-accent-fill-hover: #f7a94d;
+  --color-accent-hover: #f7a94d;
+  --color-accent-muted: rgba(245, 149, 32, 0.16);
+  --color-accent-secondary: #a98fc4;
+
+  --color-confidence-fresh: #34d399;
+  --color-confidence-stale: #f2a03d;
+  --color-confidence-outdated: #e06a5a;
+
+  --color-success: #34d399;
+  --color-warning: #f2a03d;
+  --color-error: #e06a5a;
+  --color-info: #a98fc4;
+
+  --color-node-undocumented: #6f6678;
+  --viz-node-stroke: rgba(222, 210, 235, 0.22);
+
+  /* Mermaid / generated diagrams — dark: raised plum blocks on subtle grid.
+     Border alpha 0.45: the boundary (not the fill) carries the 3:1 non-text
+     separation on the near-black canvas — see contrast_check.py. */
+  --color-diagram-node-fill: #322a3e;
+  --color-diagram-node-fill-2: #261f30; /* recessed ink (supporting cast) */
+  --color-diagram-node-text: #eeeaf4;
+  --color-diagram-node-border: rgba(222, 210, 235, 0.45);
+
+  /* KG node faces — dark keeps the solid ink blocks (alias the ink tokens) */
+  --color-kg-node-fill: var(--color-diagram-node-fill);
+  --color-kg-node-fill-2: var(--color-diagram-node-fill-2);
+  --color-kg-node-text: var(--color-diagram-node-text);
+  --color-kg-node-border: var(--color-diagram-node-border);
+  --color-kg-node-border-2: var(--color-diagram-node-border);
+  --color-diagram-edge: #b3a6c4; /* lavender line, dashed */
+  --color-diagram-cluster-border: #a98fc4;
+  --color-diagram-grid: rgba(222, 210, 235, 0.05);
+
+  /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
+     flip on their own; only the explicit rgbas need a dark override). */
+  --color-canvas-dot: rgba(222, 210, 235, 0.06);
+  --color-bg-glass: rgba(33, 27, 41, 0.72);
+  --color-bg-wash: rgba(222, 210, 235, 0.05);
+  --color-bg-wash-hover: rgba(222, 210, 235, 0.1);
+
+  /* Edge hue that isn't a pure var() derivation gets a dark-legible tweak */
+  --color-edge-inherits: #a98fc4; /* plum-300 reads better on dark */
+
+  /* Community families — dark variants (lifted/desaturated to read on the
+     near-black plum canvas; soft = a deeper in-family tint for satellites). */
+  --color-community-1: #f59520;  --color-community-1-soft: #c97a1a;  /* brand orange */
+  --color-community-2: #a98fc4;  --color-community-2-soft: #7d659c;  /* plum */
+  --color-community-3: #e06a5a;  --color-community-3-soft: #b04c3e;  /* terracotta */
+  --color-community-4: #a9bb6f;  --color-community-4-soft: #7e8f4e;  /* olive/sage */
+  --color-community-5: #d795b1;  --color-community-5-soft: #a86a87;  /* dusty rose */
+  --color-community-6: #8fa3c0;  --color-community-6-soft: #66799a;  /* slate blue */
+  --color-community-7: #d9b04a;  --color-community-7-soft: #a8821f;  /* gold */
+  --color-community-8: #b8a68e;  --color-community-8-soft: #8a7a66;  /* taupe */
+  --color-community-9: #c4708f;  --color-community-9-soft: #94506a;  /* wine */
+  --color-community-10: #eba585; --color-community-10-soft: #c4734f; /* peach */
+  --color-community-11: #6fb3ab; --color-community-11-soft: #4a8780; /* deep teal */
+  --color-community-12: #a79db3; --color-community-12-soft: #786f84; /* charcoal mauve */
+
+  /* Deep shadows with a neutral inset hairline for premium depth */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(222, 210, 235, 0.05);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(222, 210, 235, 0.06);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(222, 210, 235, 0.07);
+  --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
+
+  /* Dark soft wash — plum charcoal with a faint warm lift at the end */
+  --gradient-warm-wash: linear-gradient(160deg, #1b1622 0%, #241d2e 55%, #2e2629 100%);
+}
+
+/* -------------------------------------------------------------------- */
+/* Community families (LIGHT) — plain CSS, NOT @theme                     */
+/* -------------------------------------------------------------------- */
+/* These 12 warm/plum-anchored hues are resolved *only* at runtime by
+   getCommunityFamily (shared/use-theme-tokens.ts builds the var names
+   dynamically), so they MUST NOT live in @theme — Tailwind v4 tree-shakes
+   @theme vars that have no static reference, which previously pruned
+   communities 2–12 from light mode. Declaring them in a plain `:root {}`
+   keeps them in the emitted CSS, mirroring how `.dark` declares them.
+   `hub` colors community centroids; `-soft` tints satellites. One cool
+   counterpoint (slate blue / deep teal) is deliberate for 12-way
+   distinguishability. Verified against --color-bg-canvas in
+   docs/design/contrast_check.py. `.dark` overrides above. */
+:root {
+  --color-community-1: #c0641a;  --color-community-1-soft: #f7a94d;  /* brand orange (deepened for 3:1 on warm canvas) */
+  --color-community-2: #58436c;  --color-community-2-soft: #826aa0;  /* plum */
+  --color-community-3: #b23a2e;  --color-community-3-soft: #cf6a55;  /* terracotta */
+  --color-community-4: #6b7a3d;  --color-community-4-soft: #90a05e;  /* olive/sage */
+  --color-community-5: #b06a86;  --color-community-5-soft: #cf93ab;  /* dusty rose */
+  --color-community-6: #4a5d7a;  --color-community-6-soft: #71849f;  /* slate blue */
+  --color-community-7: #a8821f;  --color-community-7-soft: #c9a544;  /* gold */
+  --color-community-8: #8a7a66;  --color-community-8-soft: #a89882;  /* taupe */
+  --color-community-9: #7a2f4a;  --color-community-9-soft: #9e5570;  /* wine */
+  --color-community-10: #b85a38; --color-community-10-soft: #eba585; /* peach (deepened for 3:1 on warm canvas) */
+  --color-community-11: #2f6b66; --color-community-11-soft: #558f89; /* deep teal */
+  --color-community-12: #5e5360; --color-community-12-soft: #84778a; /* charcoal mauve */
+
+  /* KG card texture — ruled-paper photo under a warm translucent wash
+     (keeps text contrast); asset in packages/web/public. Light only; the
+     .dark override resolves to none (solid ink blocks). Plain :root, not
+     @theme: referenced only from inline styles, so Tailwind would
+     tree-shake it out of @theme (same lesson as the community tokens). */
+  --kg-card-texture: linear-gradient(rgba(255, 253, 248, 0.78), rgba(255, 253, 248, 0.78)),
+    url("/kg-card-paper.jpg");
+}
+
+.dark {
+  /* Dark mode keeps the texture too (user pick, 2026-06-05): the same
+     photo under a heavy plum-ink wash — 0.85 alpha of the ink fill
+     (#322a3e), so the crumple/ruled lines read as subtle relief while
+     --color-kg-node-text stays ≥4.5:1 (composite ≈ #4D4658, pair in
+     contrast_check.py). Declared AFTER the :root block so the cascade is
+     unambiguous (same pattern as color-scheme below). */
+  --kg-card-texture: linear-gradient(rgba(50, 42, 62, 0.85), rgba(50, 42, 62, 0.85)),
+    url("/kg-card-paper.jpg");
+}
+
+/* -------------------------------------------------------------------- */
+/* Color-scheme — dynamic, fixes native controls & scrollbars            */
+/* -------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light;
+}
+
+.dark {
   color-scheme: dark;
 }
+
+/* -------------------------------------------------------------------- */
+/* Base Styles                                                           */
+/* -------------------------------------------------------------------- */
 
 body {
   background-color: var(--color-bg-root);
@@ -194,7 +442,7 @@ body {
 }
 
 /* -------------------------------------------------------------------- */
-/* Scrollbar                                                             */
+/* Scrollbar — plum-tinted thumb (light) / warm-white (dark)             */
 /* -------------------------------------------------------------------- */
 
 ::-webkit-scrollbar {
@@ -207,12 +455,20 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(88, 67, 108, 0.25);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(88, 67, 108, 0.4);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(222, 210, 235, 0.12);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(222, 210, 235, 0.22);
 }
 
 /* -------------------------------------------------------------------- */
@@ -220,7 +476,7 @@ body {
 /* -------------------------------------------------------------------- */
 
 :focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+  outline: 2px solid var(--color-accent-fill);
   outline-offset: 2px;
 }
 
@@ -249,7 +505,7 @@ body {
 }
 
 /* -------------------------------------------------------------------- */
-/* Typography: prose overrides for wiki content                          */
+/* Typography: prose overrides for wiki content (token-driven)           */
 /* -------------------------------------------------------------------- */
 
 .prose {
@@ -290,6 +546,29 @@ body {
 }
 
 /* -------------------------------------------------------------------- */
+/* Shiki dual themes (light: github-light · dark: vesper)                */
+/* Tokens are emitted as --shiki-light/--shiki-dark CSS vars             */
+/* (defaultColor: false); pick one per theme so code stays readable on   */
+/* warm paper. Backgrounds stay token-driven via the pre wrappers.       */
+/* -------------------------------------------------------------------- */
+
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  font-style: var(--shiki-light-font-style, inherit);
+  font-weight: var(--shiki-light-font-weight, inherit);
+  text-decoration: var(--shiki-light-text-decoration, inherit);
+}
+
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+  font-style: var(--shiki-dark-font-style, inherit);
+  font-weight: var(--shiki-dark-font-weight, inherit);
+  text-decoration: var(--shiki-dark-text-decoration, inherit);
+}
+
+/* -------------------------------------------------------------------- */
 /* Tabular numbers for data tables                                       */
 /* -------------------------------------------------------------------- */
 
@@ -298,29 +577,41 @@ body {
 }
 
 /* -------------------------------------------------------------------- */
-/* React Flow Dark Theme                                                 */
+/* React Flow theme (token-driven; light default + dark overrides)       */
 /* -------------------------------------------------------------------- */
 
 .react-flow {
   --xy-background-color: transparent;
   --xy-minimap-background-color: var(--color-bg-surface);
-  --xy-minimap-mask-background: rgba(0, 0, 0, 0.6);
+  --xy-minimap-mask-background: rgba(36, 27, 44, 0.4);
   --xy-minimap-mask-stroke: none;
   --xy-controls-button-background-color: var(--color-bg-elevated);
   --xy-controls-button-background-color-hover: var(--color-bg-overlay);
   --xy-controls-button-border-color: var(--color-border-default);
   --xy-controls-button-color: var(--color-text-secondary);
   --xy-controls-button-color-hover: var(--color-text-primary);
-  --xy-edge-stroke: rgba(245, 149, 32, 0.3);
+  --xy-edge-stroke: rgba(214, 127, 16, 0.35);
   --xy-edge-stroke-selected: var(--color-accent-graph);
   --xy-node-border-radius: var(--radius-lg);
 }
 
+.dark .react-flow {
+  --xy-minimap-mask-background: rgba(0, 0, 0, 0.6);
+  --xy-edge-stroke: rgba(245, 149, 32, 0.3);
+}
+
 @keyframes graph-path-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 149, 32, 0.4); }
-  50% { box-shadow: 0 0 12px 4px rgba(245, 149, 32, 0.2); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 149, 32, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px rgba(245, 149, 32, 0.2);
+  }
 }
 
 @keyframes graph-marching-ants {
-  to { stroke-dashoffset: -20; }
+  to {
+    stroke-dashoffset: -20;
+  }
 }

@@ -22,18 +22,18 @@ function busFactorStroke(bf: number | undefined, isSilo: boolean): {
   width: number;
   dash: string;
 } {
-  if (isSilo) return { stroke: "#f59520", width: 2, dash: "4 2" };
+  if (isSilo) return { stroke: "var(--color-accent-primary)", width: 2, dash: "4 2" };
   if (bf === undefined) return { stroke: "none", width: 0, dash: "none" };
-  if (bf <= 1) return { stroke: "#ef4444", width: 2, dash: "none" };
-  if (bf === 2) return { stroke: "#f59520", width: 1.5, dash: "none" };
-  return { stroke: "#22c55e", width: 1, dash: "none" };
+  if (bf <= 1) return { stroke: "var(--color-risk-high)", width: 2, dash: "none" };
+  if (bf === 2) return { stroke: "var(--color-risk-medium)", width: 1.5, dash: "none" };
+  return { stroke: "var(--color-risk-low)", width: 1, dash: "none" };
 }
 
 const OWNER_COLORS = [
-  "#5b9cf6", "#a855f7", "#22c55e", "#eab308",
-  "#ec4899", "#6366f1", "#14b8a6", "#f59520",
+  "var(--color-accent-fill)", "var(--color-accent-secondary)", "var(--color-success)", "var(--color-warning)",
+  "var(--color-info)", "var(--color-edge-co-change)", "var(--color-plum-400)", "var(--color-accent-primary)",
 ];
-const OWNER_FALLBACK = "#4b5563";
+const OWNER_FALLBACK = "var(--color-text-tertiary)";
 
 function ownerColor(name: string | null): string {
   if (!name) return OWNER_FALLBACK;
@@ -171,7 +171,7 @@ export function OwnershipTreemap({ entries, busFactorByModule, onSelect }: Owner
                   <text
                     x={x0 + 6}
                     y={y0 + 14}
-                    fill="#fff"
+                    fill="var(--color-text-primary)"
                     fontSize={11}
                     fontWeight={600}
                     fontFamily="var(--font-geist-mono)"
@@ -182,7 +182,7 @@ export function OwnershipTreemap({ entries, busFactorByModule, onSelect }: Owner
                   <text
                     x={x0 + 6}
                     y={y0 + 27}
-                    fill="rgba(255,255,255,0.7)"
+                    fill="color-mix(in srgb, var(--color-text-primary) 70%, transparent)"
                     fontSize={10}
                     pointerEvents="none"
                   >
@@ -231,21 +231,21 @@ export function OwnershipTreemap({ entries, busFactorByModule, onSelect }: Owner
       {busFactorByModule && (
         <div className="mt-2 flex flex-wrap items-center gap-3 text-[10px] text-[var(--color-text-tertiary)]">
           <span className="flex items-center gap-1">
-            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "#ef4444" }} />
+            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "var(--color-risk-high)" }} />
             bus ≤ 1
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "#f59520" }} />
+            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "var(--color-risk-medium)" }} />
             bus = 2
           </span>
           <span className="flex items-center gap-1">
-            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "#22c55e" }} />
+            <span className="inline-block h-2 w-3 rounded-sm border-2" style={{ borderColor: "var(--color-risk-low)" }} />
             bus ≥ 3
           </span>
           <span className="flex items-center gap-1">
             <span
               className="inline-block h-2 w-3 rounded-sm border-2"
-              style={{ borderColor: "#f59520", borderStyle: "dashed" }}
+              style={{ borderColor: "var(--color-accent-primary)", borderStyle: "dashed" }}
             />
             silo (&gt;80% owner)
           </span>

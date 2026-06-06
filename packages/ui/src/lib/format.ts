@@ -103,6 +103,12 @@ export function formatAgeDays(n: number): string {
   return `${years} year${years !== 1 ? "s" : ""}`;
 }
 
+/** Strip inline markdown emphasis/code markers for plain-text display:
+ *  "**`litellm` API-key resolution** in CLI" → "litellm API-key resolution in CLI" */
+export function stripMarkdown(text: string): string {
+  return text.replace(/\*\*|__|`/g, "");
+}
+
 /** Format a confidence score as a percentage string: 0.87 → "87%" */
 export function formatConfidence(score: number): string {
   return `${Math.round(score * 100)}%`;

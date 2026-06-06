@@ -43,13 +43,13 @@ export function FindingsByDirectory({ findings, depth = 2 }: FindingsByDirectory
             </div>
             <div className="flex h-2 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
               {r.high > 0 && (
-                <div style={{ width: `${(r.high / max) * 100}%`, backgroundColor: "#ef4444" }} />
+                <div style={{ width: `${(r.high / max) * 100}%`, backgroundColor: "var(--color-error)" }} />
               )}
               {r.med > 0 && (
-                <div style={{ width: `${(r.med / max) * 100}%`, backgroundColor: "#f59e0b" }} />
+                <div style={{ width: `${(r.med / max) * 100}%`, backgroundColor: "var(--color-warning)" }} />
               )}
               {r.low > 0 && (
-                <div style={{ width: `${(r.low / max) * 100}%`, backgroundColor: "#10b981" }} />
+                <div style={{ width: `${(r.low / max) * 100}%`, backgroundColor: "var(--color-success)" }} />
               )}
             </div>
           </div>

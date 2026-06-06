@@ -29,6 +29,10 @@ export interface FileEntityMeta {
   hasDocs?: boolean;
   hasDeadCode?: boolean;
   language?: string | null;
+  /** Curated one-line summary from the knowledge graph (never-empty floor). */
+  summary?: string | null;
+  /** Curated tags (entry_point, barrel, ci, …). */
+  tags?: string[];
 }
 
 export interface SymbolEntityMeta {

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Badge } from "../ui/badge";
 import { VerificationBadge } from "./verification-badge";
+import { stripMarkdown } from "../lib/format";
 import type {
   DecisionRecord,
   DecisionStatus,
@@ -116,17 +117,15 @@ export function DecisionsTable({
             {decisions?.map((d) => (
               <tr
                 key={d.id}
-                className={`border-b border-[var(--color-border-default)] transition-colors hover:bg-[var(--color-bg-elevated)] ${
-                  d.status === "proposed" ? "border-l-2 border-l-amber-400" : ""
-                }`}
+                className="border-b border-[var(--color-border-default)] transition-colors hover:bg-[var(--color-bg-elevated)]"
               >
                 <td className="px-4 py-2.5 min-w-[240px] max-w-[520px]">
                   <Link
                     href={`${prefix}/decisions/${d.id}`}
-                    className="font-medium text-[var(--color-accent-primary)] hover:underline block truncate"
-                    title={d.title}
+                    className="font-medium text-[var(--color-text-primary)] hover:text-[var(--color-accent-primary)] hover:underline block truncate"
+                    title={stripMarkdown(d.title)}
                   >
-                    {d.title}
+                    {stripMarkdown(d.title)}
                   </Link>
                 </td>
                 <td className="px-4 py-2.5">

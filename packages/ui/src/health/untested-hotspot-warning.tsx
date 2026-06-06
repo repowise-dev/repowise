@@ -20,9 +20,9 @@ export function UntestedHotspotWarning({
   if (entries.length === 0) return null;
   const shown = entries.slice(0, limit);
   return (
-    <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
+    <div className="rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/5 p-4">
       <div className="flex items-start gap-2 mb-2">
-        <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5" />
+        <AlertTriangle className="h-4 w-4 text-[var(--color-warning)] mt-0.5" />
         <div>
           <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
             Untested hotspots

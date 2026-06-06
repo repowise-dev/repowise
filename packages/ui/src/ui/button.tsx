@@ -9,9 +9,9 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)] hover:bg-[var(--color-accent-hover)]",
+          "bg-[var(--color-accent-fill)] [background-image:var(--gradient-ember)] text-[var(--color-text-on-accent)] shadow-[var(--shadow-button)] transition-[filter,box-shadow] hover:brightness-[1.06]",
         destructive:
-          "bg-[var(--color-error)] text-white hover:bg-red-600",
+          "bg-[var(--color-error)] text-[var(--color-text-inverse)] hover:opacity-90",
         outline:
           "border border-[var(--color-border-default)] bg-transparent text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] hover:border-[var(--color-border-hover)]",
         secondary:

@@ -18,11 +18,15 @@ interface ContributorLink extends d3.SimulationLinkDatum<ContributorNode> {
   sharedFiles: number;
 }
 
+// Categorical contributor palette — token-driven so it themes (SVG fill
+// accepts var()). 12 distinct warm-palette hues; mirrors the viz tokens.
 const PALETTE = [
-  "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#3b82f6", "#a855f7",
-  "#14b8a6", "#f97316", "#84cc16", "#06b6d4", "#e11d48", "#8b5cf6",
+  "var(--color-accent-fill)", "var(--color-accent-secondary)", "var(--color-success)",
+  "var(--color-warning)", "var(--color-info)", "var(--color-edge-co-change)",
+  "var(--color-edge-implements)", "var(--color-plum-400)", "var(--color-sunset-300)",
+  "var(--color-edge-inherits)", "var(--color-plum-300)", "var(--color-amber)",
 ];
-const PALETTE_FALLBACK = "#6366f1";
+const PALETTE_FALLBACK = "var(--color-accent-secondary)";
 
 export function ContributorNetwork({ hotspots }: ContributorNetworkProps) {
   const svgRef = useRef<SVGSVGElement>(null);

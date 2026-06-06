@@ -68,15 +68,15 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
             </text>
           </g>
         ))}
-        <path d={path("average_health")} stroke="#10b981" strokeWidth={1.8} fill="none" />
-        <path d={path("hotspot_health")} stroke="#f59e0b" strokeWidth={1.8} fill="none" />
-        <path d={path("worst_performer_score")} stroke="#ef4444" strokeWidth={1.4} fill="none" strokeDasharray="3 3" />
+        <path d={path("average_health")} stroke="var(--color-success)" strokeWidth={1.8} fill="none" />
+        <path d={path("hotspot_health")} stroke="var(--color-warning)" strokeWidth={1.8} fill="none" />
+        <path d={path("worst_performer_score")} stroke="var(--color-error)" strokeWidth={1.4} fill="none" strokeDasharray="3 3" />
         {history.map((p, i) => (
           <g key={i}>
-            <circle cx={xScale(i)} cy={yScale(p.average_health)} r={2.5} fill="#10b981" />
-            <circle cx={xScale(i)} cy={yScale(p.hotspot_health)} r={2.5} fill="#f59e0b" />
+            <circle cx={xScale(i)} cy={yScale(p.average_health)} r={2.5} fill="var(--color-success)" />
+            <circle cx={xScale(i)} cy={yScale(p.hotspot_health)} r={2.5} fill="var(--color-warning)" />
             {p.worst_performer_score != null ? (
-              <circle cx={xScale(i)} cy={yScale(p.worst_performer_score)} r={2} fill="#ef4444" />
+              <circle cx={xScale(i)} cy={yScale(p.worst_performer_score)} r={2} fill="var(--color-error)" />
             ) : null}
           </g>
         ))}

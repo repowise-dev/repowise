@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
+import { stripMarkdown } from "../lib/format";
 
 export type AttentionItemType =
   | "stale_decision"
@@ -124,7 +125,7 @@ export function AttentionPanel({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium text-[var(--color-text-primary)] truncate group-hover:text-[var(--color-accent-primary)] transition-colors">
-                      {item.title}
+                      {stripMarkdown(item.title)}
                     </span>
                     <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
                       {TYPE_LABELS[item.type]}

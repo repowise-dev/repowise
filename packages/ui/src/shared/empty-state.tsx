@@ -17,12 +17,14 @@ export function EmptyState({ icon, title, description, action, className }: Empt
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-[var(--color-border-default)] p-12 text-center",
+        "flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-[var(--color-border-default)] p-12 text-center [background-image:var(--gradient-warm-wash)]",
         className,
       )}
     >
       {icon && (
-        <div className="text-[var(--color-text-tertiary)]">{icon}</div>
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl text-[var(--color-text-on-accent)] shadow-[var(--shadow-md)] [background-image:var(--gradient-warm)]">
+          {icon}
+        </div>
       )}
       <div className="space-y-1">
         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</h3>

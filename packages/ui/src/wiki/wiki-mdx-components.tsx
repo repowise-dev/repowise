@@ -23,7 +23,7 @@ export const wikiMdxComponents = {
     return (
       <h2
         id={id}
-        className="mt-8 mb-4 text-xl font-semibold text-[var(--color-text-primary)] first:mt-0 scroll-mt-16"
+        className="mt-10 mb-4 font-serif text-3xl font-semibold tracking-tight text-[var(--color-text-primary)] first:mt-0 scroll-mt-16"
         {...props}
       />
     );
@@ -33,7 +33,7 @@ export const wikiMdxComponents = {
     return (
       <h2
         id={id}
-        className="mt-6 mb-3 text-lg font-semibold text-[var(--color-text-primary)] scroll-mt-16"
+        className="mt-9 mb-3 font-serif text-2xl font-semibold tracking-tight text-[var(--color-text-primary)] scroll-mt-16"
         {...props}
       />
     );
@@ -43,22 +43,22 @@ export const wikiMdxComponents = {
     return (
       <h3
         id={id}
-        className="mt-5 mb-2 text-base font-semibold text-[var(--color-text-primary)] scroll-mt-16"
+        className="mt-7 mb-2 font-serif text-xl font-semibold text-[var(--color-text-primary)] scroll-mt-16"
         {...props}
       />
     );
   },
   p: (props: React.HTMLAttributes<HTMLParagraphElement>) => (
-    <p className="mb-4 text-sm leading-7 text-[var(--color-text-secondary)]" {...props} />
+    <p className="mb-4 text-base leading-[1.75] text-[var(--color-text-secondary)]" {...props} />
   ),
   ul: (props: React.HTMLAttributes<HTMLUListElement>) => (
-    <ul className="mb-4 ml-4 space-y-1 list-disc text-sm text-[var(--color-text-secondary)]" {...props} />
+    <ul className="mb-4 ml-4 space-y-1.5 list-disc text-base text-[var(--color-text-secondary)]" {...props} />
   ),
   ol: (props: React.HTMLAttributes<HTMLOListElement>) => (
-    <ol className="mb-4 ml-4 space-y-1 list-decimal text-sm text-[var(--color-text-secondary)]" {...props} />
+    <ol className="mb-4 ml-4 space-y-1.5 list-decimal text-base text-[var(--color-text-secondary)]" {...props} />
   ),
   li: (props: React.HTMLAttributes<HTMLLIElement>) => (
-    <li className="leading-6" {...props} />
+    <li className="leading-7" {...props} />
   ),
   blockquote: (props: React.HTMLAttributes<HTMLQuoteElement>) => (
     <blockquote
@@ -98,7 +98,7 @@ export const wikiMdxComponents = {
   ),
   code: (props: React.HTMLAttributes<HTMLElement>) => (
     <code
-      className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-xs font-mono text-[var(--color-accent-primary)]"
+      className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[0.85em] font-mono text-[var(--color-accent-primary)]"
       {...props}
     />
   ),

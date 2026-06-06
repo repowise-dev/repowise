@@ -10,9 +10,9 @@ const SEVERITY_LABELS: Record<string, string> = {
   low: "Low",
 };
 const SEVERITY_COLORS: Record<string, string> = {
-  high: "#ef4444",
-  med: "#f59e0b",
-  low: "#10b981",
+  high: "var(--color-error)",
+  med: "var(--color-warning)",
+  low: "var(--color-success)",
 };
 
 export interface SeverityDistributionProps {

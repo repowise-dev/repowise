@@ -70,6 +70,20 @@ function headingHidden(headingText: string, hideList: string[]): boolean {
  * always retained. Returns the original content unchanged for the `deep`
  * persona (or when there is nothing to hide).
  */
+/**
+ * Whether persona filtering changes anything for this content — i.e. at least
+ * one H2 matches a hide-list. Curated pages (onboarding, overviews, diagrams)
+ * have none, so the reader-level control would be a no-op; callers use this
+ * to hide it. `deep` never filters, so only the two filtering personas count.
+ */
+export function personaFilteringApplies(content: string): boolean {
+  const base = content.trim();
+  return (
+    filterMarkdownByPersona(content, "overview") !== base ||
+    filterMarkdownByPersona(content, "contributor") !== base
+  );
+}
+
 export function filterMarkdownByPersona(content: string, persona: ReaderPersona): string {
   const hideList = HIDE_BY_PERSONA[persona];
   if (!hideList || hideList.length === 0) return content;

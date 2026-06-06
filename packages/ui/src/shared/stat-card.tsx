@@ -10,6 +10,8 @@ interface StatCardProps {
   icon?: React.ReactNode;
   className?: string;
   href?: string;
+  /** Tighter padding for dense stat strips. */
+  dense?: boolean;
 }
 
 export function StatCard({
@@ -20,10 +22,11 @@ export function StatCard({
   icon,
   className,
   href,
+  dense,
 }: StatCardProps) {
   const card = (
-    <Card className={cn("transition-colors hover:border-[var(--color-border-hover)]", href && "cursor-pointer", className)}>
-      <CardContent className="p-4">
+    <Card className={cn("h-full transition-colors hover:border-[var(--color-border-hover)]", href && "cursor-pointer", className)}>
+      <CardContent className={dense ? "p-3" : "p-4"}>
         <div className="flex items-start justify-between">
           <div className="space-y-1">
             <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider">
@@ -62,7 +65,7 @@ export function StatCard({
 
   if (href) {
     return (
-      <a href={href} className="block no-underline">
+      <a href={href} className="block h-full no-underline">
         {card}
       </a>
     );

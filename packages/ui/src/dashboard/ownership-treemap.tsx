@@ -8,11 +8,11 @@ import { Users } from "lucide-react";
 import type { OwnershipEntry } from "@repowise-dev/types/git";
 
 const OWNER_COLORS = [
-  "#3b82f6", "#8b5cf6", "#06b6d4", "#f59520", "#22c55e",
-  "#ec4899", "#eab308", "#ef4444", "#14b8a6", "#a855f7",
-  "#6366f1", "#f97316",
+  "var(--color-accent-fill)", "var(--color-accent-secondary)", "var(--color-success)", "var(--color-warning)", "var(--color-info)",
+  "var(--color-edge-co-change)", "var(--color-plum-400)", "var(--color-accent-fill)", "var(--color-accent-secondary)", "var(--color-success)",
+  "var(--color-warning)", "var(--color-info)",
 ];
-const OWNER_FALLBACK = "#6b7280";
+const OWNER_FALLBACK = "var(--color-text-tertiary)";
 
 interface OwnershipTreemapProps {
   entries: OwnershipEntry[];
@@ -126,7 +126,8 @@ export function OwnershipTreemap({ entries }: OwnershipTreemapProps) {
                       <text
                         x={(leaf.x0 ?? 0) + 4}
                         y={(leaf.y0 ?? 0) + 14}
-                        className="text-[10px] fill-white pointer-events-none"
+                        className="text-[10px] pointer-events-none"
+                        fill="var(--color-text-primary)"
                         opacity={0.9}
                       >
                         {d.name.length > w / 6 ? d.name.slice(0, Math.floor(w / 6)) + "…" : d.name}

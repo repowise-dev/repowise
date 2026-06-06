@@ -2,6 +2,7 @@
 
 import { User } from "lucide-react";
 import { cn } from "../lib/cn";
+import { BrandMark } from "../shared/brand-mark";
 import { ToolCallBlock } from "./tool-call-block";
 import { ChatMarkdown } from "./chat-markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
@@ -42,12 +43,9 @@ export function ChatMessage({
         {isUser ? (
           <User className="h-4 w-4 text-white" />
         ) : (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img
-            src={assistantAvatarSrc}
-            alt="repowise"
-            width={22}
-            height={22}
+          <BrandMark
+            darkSrc={assistantAvatarSrc}
+            size={22}
             className="drop-shadow-[0_0_4px_rgba(245,149,32,0.25)]"
           />
         )}

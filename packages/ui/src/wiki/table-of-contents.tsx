@@ -54,20 +54,21 @@ export function TableOfContents({ content }: { content: string }) {
 
   return (
     <nav aria-label="Table of contents">
-      <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-2">
-        Contents
+      <p className="text-xs font-semibold text-[var(--color-text-primary)] mb-2">
+        On this page
       </p>
-      <ul className="space-y-1">
+      {/* Left rail: a hairline the active item's accent bar sits on. */}
+      <ul className="border-l border-[var(--color-border-default)]">
         {headings.map(({ id, text, level }) => (
           <li key={id}>
             <a
               href={`#${id}`}
               className={cn(
-                "block text-xs leading-snug transition-colors hover:text-[var(--color-text-primary)]",
-                level === 1 ? "pl-0" : level === 2 ? "pl-2" : "pl-4",
+                "block -ml-px border-l-2 py-1 text-[13px] leading-snug transition-colors hover:text-[var(--color-text-primary)]",
+                level === 1 ? "pl-3" : level === 2 ? "pl-3" : "pl-6",
                 activeId === id
-                  ? "text-[var(--color-accent-primary)]"
-                  : "text-[var(--color-text-tertiary)]",
+                  ? "border-[var(--color-accent-primary)] font-medium text-[var(--color-accent-primary)]"
+                  : "border-transparent text-[var(--color-text-tertiary)]",
               )}
             >
               {text}

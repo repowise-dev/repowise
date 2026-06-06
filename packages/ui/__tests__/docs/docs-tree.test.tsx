@@ -58,4 +58,66 @@ describe("DocsTree", () => {
     fireEvent.click(screen.getByText("x.ts"));
     expect(onSelectPage).toHaveBeenCalledWith(target);
   });
+
+  it("claims deep files for their nearest module ancestor", () => {
+    const mod = makePage({
+      id: "module_page:core/ingestion",
+      page_type: "module_page",
+      title: "Module: core/ingestion",
+      target_path: "core/ingestion",
+    });
+    const deepFile = makePage({
+      id: "file_page:core/ingestion/resolvers/dotnet/index.py",
+      page_type: "file_page",
+      title: "index.py",
+      target_path: "core/ingestion/resolvers/dotnet/index.py",
+    });
+    render(
+      <DocsTree
+        pages={[mod, deepFile]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    // Curated module name renders (path-shaped, not a raw graph id).
+    const modNode = screen.getByText("core/ingestion");
+    expect(modNode).toBeInTheDocument();
+    // Expanding the module reveals the deep file, named relative to the
+    // module dir so nested files stay unambiguous.
+    fireEvent.click(modNode);
+    expect(
+      screen.getByText("resolvers/dotnet/index.py"),
+    ).toBeInTheDocument();
+  });
+
+  it("prefers the deepest module when modules nest", () => {
+    const outer = makePage({
+      id: "module_page:core",
+      page_type: "module_page",
+      title: "Module: core",
+      target_path: "core",
+    });
+    const inner = makePage({
+      id: "module_page:core/ingestion",
+      page_type: "module_page",
+      title: "Module: core/ingestion",
+      target_path: "core/ingestion",
+    });
+    const file = makePage({
+      id: "file_page:core/ingestion/parser.py",
+      page_type: "file_page",
+      title: "parser.py",
+      target_path: "core/ingestion/parser.py",
+    });
+    render(
+      <DocsTree
+        pages={[outer, inner, file]}
+        selectedPageId={null}
+        onSelectPage={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText("core/ingestion"));
+    // File appears under the inner module (relative name), not the outer one.
+    expect(screen.getByText("parser.py")).toBeInTheDocument();
+  });
 });

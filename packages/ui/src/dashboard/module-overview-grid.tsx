@@ -64,10 +64,10 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix, initialVi
           {visibleModules.map((m) => {
             const coverageColor =
               m.doc_coverage_pct >= 70
-                ? "bg-green-500"
+                ? "bg-[var(--color-success)]"
                 : m.doc_coverage_pct >= 30
-                  ? "bg-yellow-500"
-                  : "bg-red-500";
+                  ? "bg-[var(--color-warning)]"
+                  : "bg-[var(--color-text-tertiary)]/50";
 
             return (
               <a
@@ -92,10 +92,10 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix, initialVi
                   <div className="flex items-center justify-between text-[10px]">
                     <span className={cn(
                       m.doc_coverage_pct >= 70
-                        ? "text-green-500"
+                        ? "text-[var(--color-success)]"
                         : m.doc_coverage_pct >= 30
-                          ? "text-yellow-500"
-                          : "text-red-500",
+                          ? "text-[var(--color-warning)]"
+                          : "text-[var(--color-text-tertiary)]",
                     )}>
                       {Math.round(m.doc_coverage_pct)}% docs
                     </span>

@@ -26,29 +26,29 @@ export function statusColor(status: FreshnessStatus): string {
   }
 }
 
-/** Tailwind text color class for a given freshness status */
+/** Tailwind text color class for a given freshness status (theme-aware) */
 export function statusTextClass(status: FreshnessStatus): string {
   switch (status) {
     case "fresh":
-      return "text-green-500";
+      return "text-[var(--color-confidence-fresh)]";
     case "stale":
-      return "text-yellow-500";
+      return "text-[var(--color-confidence-stale)]";
     case "outdated":
     default:
-      return "text-red-500";
+      return "text-[var(--color-confidence-outdated)]";
   }
 }
 
-/** Tailwind bg + text badge classes for a given freshness status */
+/** Tailwind bg + text badge classes for a given freshness status (theme-aware) */
 export function statusBadgeClasses(status: FreshnessStatus): string {
   switch (status) {
     case "fresh":
-      return "bg-green-500/10 text-green-500 border-green-500/20";
+      return "bg-[color-mix(in_srgb,var(--color-confidence-fresh)_12%,transparent)] text-[var(--color-confidence-fresh)] border-[color-mix(in_srgb,var(--color-confidence-fresh)_28%,transparent)]";
     case "stale":
-      return "bg-yellow-500/10 text-yellow-500 border-yellow-500/20";
+      return "bg-[color-mix(in_srgb,var(--color-confidence-stale)_12%,transparent)] text-[var(--color-confidence-stale)] border-[color-mix(in_srgb,var(--color-confidence-stale)_28%,transparent)]";
     case "outdated":
     default:
-      return "bg-red-500/10 text-red-500 border-red-500/20";
+      return "bg-[color-mix(in_srgb,var(--color-confidence-outdated)_12%,transparent)] text-[var(--color-confidence-outdated)] border-[color-mix(in_srgb,var(--color-confidence-outdated)_28%,transparent)]";
   }
 }
 
@@ -65,7 +65,16 @@ export function statusLabel(status: FreshnessStatus): string {
   }
 }
 
-/** Color hex for a graph language node */
+/*
+ * ALLOWLISTED raw hex (no-raw-hex gate): LANGUAGE_COLORS are canonical
+ * language brand colors and EDGE_COLORS feed <canvas>/SVG viz where a CSS
+ * var() string cannot resolve — both must be literal hex. Values mirror the
+ * --color-lang-* / --color-edge-* tokens in styles/globals.css; keep in sync.
+ * Theme-aware canvas tinting (resolving these from CSS vars at runtime) is
+ * tracked as follow-up viz work.
+ */
+
+/** Color hex for a graph language node (canonical brand hues) */
 export const LANGUAGE_COLORS: Record<string, string> = {
   python: "#3776AB",
   typescript: "#3178C6",
@@ -86,16 +95,16 @@ export function languageColor(lang: string): string {
   return LANGUAGE_COLORS[lang.toLowerCase()] ?? LANGUAGE_COLORS.other ?? "#8B5CF6";
 }
 
-/** Color hex for a graph edge type */
+/** Color hex for a graph edge type (warm theme palette; mirrors --color-edge-*) */
 export const EDGE_COLORS: Record<string, string> = {
-  imports: "#5B9CF6",
-  calls: "#22c55e",
-  inherits: "#a855f7",
-  implements: "#ec4899",
-  co_change: "#8b5cf6",
-  co_changes: "#8b5cf6",
+  imports: "#F59520",
+  calls: "#34D399",
+  inherits: "#A98FC4",
+  implements: "#C85AA0",
+  co_change: "#7C5CC4",
+  co_changes: "#7C5CC4",
 };
 
 export function edgeColor(edgeType: string): string {
-  return EDGE_COLORS[edgeType.toLowerCase()] ?? "#5B9CF6";
+  return EDGE_COLORS[edgeType.toLowerCase()] ?? EDGE_COLORS.imports ?? "#F27F3D";
 }
