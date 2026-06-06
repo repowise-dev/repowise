@@ -359,3 +359,33 @@ describe("useArchitectureStore", () => {
     });
   });
 });
+
+describe("setView legacy-payload hardening (kg-ux)", () => {
+  it("survives an API response that predates the curated-KG schema", () => {
+    // A pre-curation backend serves layers without sub_groups and no
+    // entry_points/tour — the page must degrade, never crash
+    // ("layer.sub_groups is not iterable" regression).
+    const legacy = createMockView();
+    for (const layer of legacy.layers) {
+      delete (layer as Partial<ArchLayer>).sub_groups;
+      delete (layer as Partial<ArchLayer>).display_order;
+    }
+    delete (legacy as Partial<typeof legacy>).entry_points;
+    delete (legacy as Partial<typeof legacy>).entry_candidates;
+    delete (legacy as Partial<typeof legacy>).tour;
+    for (const node of legacy.nodes) {
+      delete (node as Partial<ArchNode>).tags;
+    }
+
+    expect(() => store.getState().setView(legacy)).not.toThrow();
+
+    const view = store.getState().view!;
+    expect(view.layers.every((l) => Array.isArray(l.sub_groups))).toBe(true);
+    expect(view.layers.map((l) => l.display_order)).toEqual(
+      view.layers.map((_, i) => i),
+    );
+    expect(view.entry_points).toEqual([]);
+    expect(view.tour).toEqual([]);
+    expect(view.nodes.every((n) => Array.isArray(n.tags))).toBe(true);
+  });
+});

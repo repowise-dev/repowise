@@ -1,6 +1,6 @@
 export const THEME = {
   canvas: {
-    bg: "var(--color-bg-canvas, #0f172a)",
+    bg: "var(--color-bg-canvas)",
     dot: "var(--color-canvas-dot, rgba(148,163,184,0.08))",
   },
 
@@ -9,48 +9,64 @@ export const THEME = {
     overlay: "var(--color-bg-overlay, rgba(15,23,42,0.92))",
     glass: "var(--color-bg-glass, rgba(17,24,39,0.75))",
     glassBlur: "blur(8px)",
+    wash: "var(--color-bg-wash)",
+    washHover: "var(--color-bg-wash-hover)",
   },
 
   border: {
-    default: "var(--color-border-default, #334155)",
+    default: "var(--color-border-default)",
     subtle: "var(--color-border-subtle, rgba(148,163,184,0.12))",
   },
 
   text: {
-    primary: "var(--color-text-primary, #f1f5f9)",
-    secondary: "var(--color-text-secondary, #94a3b8)",
-    muted: "var(--color-text-muted, #64748b)",
+    primary: "var(--color-text-primary)",
+    secondary: "var(--color-text-secondary)",
+    muted: "var(--color-text-muted)",
   },
 
   accent: {
-    primary: "var(--color-accent-primary, #f59520)",
+    primary: "var(--color-accent-primary)",
     muted: "var(--color-accent-muted, rgba(245,149,32,0.2))",
     hover: "var(--color-accent-hover, rgba(245,149,32,0.35))",
   },
 
   selection: {
-    ring: "#fbbf24",
-    ringAlpha: "rgba(251,191,36,0.4)",
+    ring: "var(--color-viz-selection)",
+    ringAlpha: "var(--color-accent-muted, rgba(245,149,32,0.16))",
   },
 
   complexity: {
-    simple: "#22c55e",
-    moderate: "#f59e0b",
-    complex: "#ef4444",
+    simple: "var(--color-success)",
+    moderate: "var(--color-warning)",
+    complex: "var(--color-error)",
   } as Record<string, string>,
 
+  /** Status badge glyphs (entry / hotspot / dead) — semantic tokens, both themes. */
+  status: {
+    entry: "var(--color-success)",
+    hotspot: "var(--color-error)",
+    dead: "var(--color-text-muted)",
+  },
+
+  /** Health-score buckets (≥80 / ≥60 / below). */
+  health: {
+    good: "var(--color-success)",
+    fair: "var(--color-warning)",
+    poor: "var(--color-error)",
+  },
+
   edge: {
-    imports: "#d4a754",
-    depends_on: "#e8976b",
-    contains: "#a78bfa",
-    tested_by: "#6ee7b7",
-    default: "#8b9dc3",
+    imports: "var(--color-edge-imports)",
+    depends_on: "var(--color-warning)",
+    contains: "var(--color-accent-secondary)",
+    tested_by: "var(--color-success)",
+    default: "var(--color-text-tertiary)",
   } as Record<string, string>,
 
   diff: {
-    changed: "#fca5a5",
+    changed: "var(--color-viz-diff-changed)",
     changedAlpha: "rgba(252,165,165,0.4)",
-    affected: "#fbbf24",
+    affected: "var(--color-viz-diff-affected)",
     affectedAlpha: "rgba(251,191,36,0.3)",
   },
 
@@ -70,6 +86,11 @@ export const THEME = {
     tooltip: "0 8px 24px rgba(0,0,0,0.4)",
   },
 } as const;
+
+/** Edge color for a relation type, falling back to the muted default. */
+export function edgeColor(edgeType: string): string {
+  return THEME.edge[edgeType] ?? "var(--color-text-tertiary)";
+}
 
 export const KEYFRAMES = {
   accentPulse: `

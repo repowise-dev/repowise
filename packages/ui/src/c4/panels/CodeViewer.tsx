@@ -101,7 +101,7 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
     background: "none",
     border: "none",
     cursor: "pointer",
-    color: "var(--color-text-secondary, #cbd5e1)",
+    color: "var(--color-text-secondary)",
     padding: 4,
     display: "inline-flex",
     alignItems: "center",
@@ -115,7 +115,7 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
         alignItems: "center",
         justifyContent: "space-between",
         padding: "8px 12px",
-        borderBottom: "1px solid var(--color-border-default, #334155)",
+        borderBottom: "1px solid var(--color-border-default)",
         flexShrink: 0,
         gap: 8,
       }}
@@ -127,7 +127,7 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
               width: 40,
               height: 4,
               borderRadius: 2,
-              background: "var(--color-text-secondary, #94a3b8)",
+              background: "var(--color-text-secondary)",
               opacity: 0.4,
               marginRight: 8,
             }}
@@ -179,7 +179,7 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
           style={{
             height: 14,
             borderRadius: 4,
-            background: "rgba(148,163,184,0.15)",
+            background: "var(--color-bg-wash-hover)",
             width: `${60 + (i % 4) * 10}%`,
             animation: "pulse 1.5s ease-in-out infinite",
           }}
@@ -199,16 +199,16 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
         flex: 1,
       }}
     >
-      <AlertCircle size={32} style={{ color: "#ef4444" }} />
-      <div style={{ fontSize: 13, color: "var(--color-text-secondary, #cbd5e1)" }}>{error}</div>
+      <AlertCircle size={32} style={{ color: "var(--color-error)" }} />
+      <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>{error}</div>
       <button
         type="button"
         onClick={doFetch}
         style={{
           padding: "6px 14px",
           background: "var(--color-accent-muted, rgba(245,149,32,0.2))",
-          color: "var(--color-accent-primary, #f59520)",
-          border: "1px solid var(--color-accent-primary, #f59520)",
+          color: "var(--color-accent-primary)",
+          border: "1px solid var(--color-accent-primary)",
           borderRadius: 4,
           cursor: "pointer",
           fontSize: 12,
@@ -248,7 +248,7 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
                   display: "flex",
                   background: inRange ? "rgba(245,149,32,0.1)" : "transparent",
                   borderLeft: inRange
-                    ? "3px solid var(--color-accent-primary, #f59520)"
+                    ? "3px solid var(--color-accent-primary)"
                     : "3px solid transparent",
                 }}
               >
@@ -258,7 +258,7 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
                     width: 50,
                     textAlign: "right",
                     paddingRight: 12,
-                    color: "var(--color-text-secondary, #94a3b8)",
+                    color: "var(--color-text-secondary)",
                     opacity: 0.5,
                     userSelect: "none",
                     flexShrink: 0,
@@ -305,10 +305,10 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
             display: "flex",
             flexDirection: "column",
             background: "var(--color-bg-elevated, rgba(17,24,39,0.98))",
-            border: "1px solid var(--color-border-default, #334155)",
+            border: "1px solid var(--color-border-default)",
             borderRadius: 8,
             boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
-            color: "var(--color-text-primary, #f1f5f9)",
+            color: "var(--color-text-primary)",
             fontFamily: "var(--font-sans, system-ui, sans-serif)",
             overflow: "hidden",
           }}
@@ -331,9 +331,9 @@ export function CodeViewer({ fetchContent }: CodeViewerProps): React.ReactElemen
         display: "flex",
         flexDirection: "column",
         background: "var(--color-bg-elevated, rgba(17,24,39,0.98))",
-        borderTop: "1px solid var(--color-border-default, #334155)",
+        borderTop: "1px solid var(--color-border-default)",
         boxShadow: "0 -10px 30px rgba(0,0,0,0.3)",
-        color: "var(--color-text-primary, #f1f5f9)",
+        color: "var(--color-text-primary)",
         fontFamily: "var(--font-sans, system-ui, sans-serif)",
       }}
     >

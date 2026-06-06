@@ -12,6 +12,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlow,
@@ -151,7 +152,7 @@ function C4DiagramInner({
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        background: "var(--color-bg-canvas, #0b1220)",
+        background: "var(--color-bg-canvas)",
       }}
     >
       {/* Toolbar row */}
@@ -161,7 +162,7 @@ function C4DiagramInner({
           alignItems: "center",
           gap: 16,
           padding: "8px 12px",
-          borderBottom: "1px solid var(--color-border-default, #334155)",
+          borderBottom: "1px solid var(--color-border-default)",
           background: "var(--color-bg-surface, rgba(15,23,42,0.6))",
         }}
       >
@@ -170,7 +171,7 @@ function C4DiagramInner({
           onLevelChange={onLevelChange}
           l3Enabled={activeContainerId != null || level === 3}
         />
-        <div style={{ width: 1, height: 20, background: "var(--color-border-default, #334155)" }} />
+        <div style={{ width: 1, height: 20, background: "var(--color-border-default)" }} />
         <C4Breadcrumb
           level={level}
           systemName={systemName}
@@ -215,9 +216,12 @@ function C4DiagramInner({
           nodesDraggable={false}
           nodesConnectable={false}
         >
-          <Background gap={28} size={1} color="rgba(148,163,184,0.18)" />
+          {/* Blueprint graph paper: 24px line grid on the warm canvas, matching
+              the mermaid container (kg-ux plan §2.1). */}
+          <Background variant={BackgroundVariant.Lines} gap={24} size={1} color="var(--color-diagram-grid)" />
           <Controls showInteractive={false} />
-          <MiniMap pannable zoomable maskColor="rgba(11,18,32,0.85)" />
+          {/* maskColor comes from --xy-minimap-mask-background (theme-aware). */}
+          <MiniMap pannable zoomable />
         </ReactFlow>
 
         {selectedData && renderInspector
@@ -254,10 +258,10 @@ function exportFileStem(systemName: string, level: C4Level, activePath: string |
 function CenteredMessage({ tone, text }: { tone: "info" | "empty" | "error"; text: string }) {
   const color =
     tone === "error"
-      ? "#fca5a5"
+      ? "var(--color-error)"
       : tone === "empty"
-      ? "var(--color-text-tertiary, #64748b)"
-      : "var(--color-text-secondary, #94a3b8)";
+      ? "var(--color-text-tertiary)"
+      : "var(--color-text-secondary)";
   return (
     <div
       role="status"

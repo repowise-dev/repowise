@@ -22,9 +22,11 @@ interface ArchitectureStoreState {
   edgesBySource: Map<string, ArchEdge[]>;
   edgesByTarget: Map<string, ArchEdge[]>;
   nodeIdToLayerId: Map<string, string>;
+  nodeIdToSubGroupId: Map<string, string>;
 
   navigationLevel: NavigationLevel;
   activeLayerId: string | null;
+  activeSubGroupId: string | null;
   selectedNodeId: string | null;
 
   expandedContainers: Set<string>;
@@ -41,6 +43,8 @@ interface ArchitectureStoreState {
   filters: ArchFilters;
   nodeTypeFilters: Record<string, boolean>;
   filterPanelOpen: boolean;
+  /** Test layer is demoted by default (locked decision 2); this restores it. */
+  showTests: boolean;
 
   tourActive: boolean;
   currentTourStep: number;
@@ -65,6 +69,7 @@ interface ArchitectureStoreActions {
   clearView: () => void;
 
   drillIntoLayer: (layerId: string) => void;
+  drillIntoSubGroup: (subGroupId: string) => void;
   drillOut: () => void;
 
   selectNode: (nodeId: string | null) => void;
@@ -87,6 +92,7 @@ interface ArchitectureStoreActions {
   setEdgeCategoryFilter: (category: string, visible: boolean) => void;
   resetFilters: () => void;
   setFilterPanelOpen: (open: boolean) => void;
+  setShowTests: (show: boolean) => void;
 
   startTour: () => void;
   endTour: () => void;
@@ -135,6 +141,7 @@ function buildIndexes(view: ArchitectureView) {
   const edgesBySource = new Map<string, ArchEdge[]>();
   const edgesByTarget = new Map<string, ArchEdge[]>();
   const nodeIdToLayerId = new Map<string, string>();
+  const nodeIdToSubGroupId = new Map<string, string>();
 
   for (const node of view.nodes) {
     nodesById.set(node.id, node);
@@ -159,9 +166,96 @@ function buildIndexes(view: ArchitectureView) {
     for (const nodeId of layer.node_ids) {
       nodeIdToLayerId.set(nodeId, layer.id);
     }
+    for (const group of layer.sub_groups) {
+      for (const nodeId of group.node_ids) {
+        nodeIdToSubGroupId.set(nodeId, group.id);
+      }
+    }
   }
 
-  return { nodesById, edgesBySource, edgesByTarget, nodeIdToLayerId };
+  return { nodesById, edgesBySource, edgesByTarget, nodeIdToLayerId, nodeIdToSubGroupId };
+}
+
+/** Tolerate older / uncurated backend payloads (kg-ux hardening): the API
+ * response may predate the curated-KG schema (no sub_groups / entry_points /
+ * tour — e.g. a server running pre-curation code), and JSON from the wire is
+ * never as trustworthy as the TS types claim. Every field the viewer
+ * iterates gets a safe default so a stale backend degrades to the uncurated
+ * experience instead of crashing the page. */
+function normalizeView(view: ArchitectureView): ArchitectureView {
+  return {
+    ...view,
+    layers: (view.layers ?? []).map((l, i) => ({
+      ...l,
+      node_ids: l.node_ids ?? [],
+      sub_groups: l.sub_groups ?? [],
+      display_order: l.display_order ?? i,
+      health_score: l.health_score ?? null,
+      complexity_distribution: l.complexity_distribution ?? {},
+    })),
+    nodes: (view.nodes ?? []).map((n) => ({ ...n, tags: n.tags ?? [] })),
+    edges: view.edges ?? [],
+    tour: view.tour ?? [],
+    languages: view.languages ?? [],
+    frameworks: view.frameworks ?? [],
+    external_systems: view.external_systems ?? [],
+    entry_points: view.entry_points ?? [],
+    entry_candidates: view.entry_candidates ?? [],
+  };
+}
+
+/** Drill state that lands on *nodeId*'s file card: its layer, and — when the
+ * layer is curated into sub-groups — the sub-group that contains it.
+ * Returns {} when the node's layer is unknown or already active. */
+function drillStateForNode(
+  state: ArchitectureStoreState,
+  nodeId: string | null,
+): Partial<ArchitectureStoreState> {
+  if (!nodeId) return {};
+  const layerId = state.nodeIdToLayerId.get(nodeId) ?? null;
+  if (!layerId) return {};
+  const subGroupId = state.nodeIdToSubGroupId.get(nodeId) ?? null;
+  if (
+    state.navigationLevel === "layer-detail" &&
+    layerId === state.activeLayerId &&
+    subGroupId === state.activeSubGroupId
+  ) {
+    return {};
+  }
+  return {
+    navigationLevel: "layer-detail" as NavigationLevel,
+    activeLayerId: layerId,
+    activeSubGroupId: subGroupId,
+    expandedContainers: new Set<string>(),
+    containerLayoutCache: new Map<string, ContainerLayoutResult>(),
+  };
+}
+
+/** Drill state for a tour step: follow the step's node when it's in the
+ * graph, else fall back to the step's curated layer_id so the canvas still
+ * follows the walk (viewer plan C-2). */
+function drillStateForStep(
+  state: ArchitectureStoreState,
+  nodeId: string | null,
+  layerId: string | null | undefined,
+): Partial<ArchitectureStoreState> {
+  if (nodeId && state.nodeIdToLayerId.has(nodeId)) {
+    return drillStateForNode(state, nodeId);
+  }
+  if (
+    layerId &&
+    layerId !== state.activeLayerId &&
+    state.view?.layers.some((l: ArchLayer) => l.id === layerId)
+  ) {
+    return {
+      navigationLevel: "layer-detail" as NavigationLevel,
+      activeLayerId: layerId,
+      activeSubGroupId: null,
+      expandedContainers: new Set<string>(),
+      containerLayoutCache: new Map<string, ContainerLayoutResult>(),
+    };
+  }
+  return {};
 }
 
 const INITIAL_STATE: ArchitectureStoreState = {
@@ -170,9 +264,11 @@ const INITIAL_STATE: ArchitectureStoreState = {
   edgesBySource: new Map(),
   edgesByTarget: new Map(),
   nodeIdToLayerId: new Map(),
+  nodeIdToSubGroupId: new Map(),
 
   navigationLevel: "overview",
   activeLayerId: null,
+  activeSubGroupId: null,
   selectedNodeId: null,
 
   expandedContainers: new Set(),
@@ -194,6 +290,7 @@ const INITIAL_STATE: ArchitectureStoreState = {
   },
   nodeTypeFilters: { ...DEFAULT_NODE_TYPE_FILTERS },
   filterPanelOpen: false,
+  showTests: false,
 
   tourActive: false,
   currentTourStep: 0,
@@ -218,8 +315,10 @@ export const useArchitectureStore = create<ArchitectureStore>()(
     (set, get) => ({
       ...INITIAL_STATE,
 
-      setView: (view: ArchitectureView) => {
-        const { nodesById, edgesBySource, edgesByTarget, nodeIdToLayerId } = buildIndexes(view);
+      setView: (rawView: ArchitectureView) => {
+        const view = normalizeView(rawView);
+        const { nodesById, edgesBySource, edgesByTarget, nodeIdToLayerId, nodeIdToSubGroupId } =
+          buildIndexes(view);
         const filters = buildFiltersFromView(view);
         set({
           view,
@@ -227,9 +326,11 @@ export const useArchitectureStore = create<ArchitectureStore>()(
           edgesBySource,
           edgesByTarget,
           nodeIdToLayerId,
+          nodeIdToSubGroupId,
           filters,
           navigationLevel: "overview",
           activeLayerId: null,
+          activeSubGroupId: null,
           selectedNodeId: null,
           expandedContainers: new Set(),
           containerLayoutCache: new Map(),
@@ -247,9 +348,26 @@ export const useArchitectureStore = create<ArchitectureStore>()(
       },
 
       drillIntoLayer: (layerId: string) => {
+        // Layers curated into sub-groups land on the intermediate
+        // "layer-groups" tier; small/uncurated layers drill straight to
+        // file cards (locked decision 1 — never synthesize a one-group tier).
+        const layer = get().view?.layers.find((l: ArchLayer) => l.id === layerId);
+        const hasSubGroups = (layer?.sub_groups.length ?? 0) > 0;
+        set({
+          navigationLevel: hasSubGroups ? "layer-groups" : "layer-detail",
+          activeLayerId: layerId,
+          activeSubGroupId: null,
+          selectedNodeId: null,
+          focusNodeId: null,
+          expandedContainers: new Set(),
+          containerLayoutCache: new Map(),
+        });
+      },
+
+      drillIntoSubGroup: (subGroupId: string) => {
         set({
           navigationLevel: "layer-detail",
-          activeLayerId: layerId,
+          activeSubGroupId: subGroupId,
           selectedNodeId: null,
           focusNodeId: null,
           expandedContainers: new Set(),
@@ -258,9 +376,24 @@ export const useArchitectureStore = create<ArchitectureStore>()(
       },
 
       drillOut: () => {
+        const state = get();
+        // layer-detail inside a sub-group steps back up to the groups tier;
+        // everything else returns to the overview.
+        if (state.navigationLevel === "layer-detail" && state.activeSubGroupId) {
+          set({
+            navigationLevel: "layer-groups",
+            activeSubGroupId: null,
+            selectedNodeId: null,
+            focusNodeId: null,
+            expandedContainers: new Set(),
+            containerLayoutCache: new Map(),
+          });
+          return;
+        }
         set({
           navigationLevel: "overview",
           activeLayerId: null,
+          activeSubGroupId: null,
           selectedNodeId: null,
           focusNodeId: null,
           expandedContainers: new Set(),
@@ -270,23 +403,11 @@ export const useArchitectureStore = create<ArchitectureStore>()(
 
       selectNode: (nodeId: string | null) => {
         const state = get();
-
-        if (nodeId !== null) {
-          const nodeLayerId = state.nodeIdToLayerId.get(nodeId);
-          if (nodeLayerId && nodeLayerId !== state.activeLayerId) {
-            set({
-              navigationLevel: "layer-detail",
-              activeLayerId: nodeLayerId,
-              selectedNodeId: nodeId,
-              focusNodeId: null,
-              expandedContainers: new Set(),
-              containerLayoutCache: new Map(),
-            });
-            return;
-          }
-        }
-
-        set({ selectedNodeId: nodeId, focusNodeId: null });
+        set({
+          ...drillStateForNode(state, nodeId),
+          selectedNodeId: nodeId,
+          focusNodeId: null,
+        });
       },
 
       toggleContainer: (containerId: string) => {
@@ -418,6 +539,10 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         set({ filterPanelOpen: open });
       },
 
+      setShowTests: (show: boolean) => {
+        set({ showTests: show });
+      },
+
       startTour: () => {
         const state = get();
         const tour = state.view?.tour;
@@ -425,19 +550,13 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         const firstStep = tour[0];
         const nodeIds = firstStep?.node_ids ?? [];
         const firstNodeId = nodeIds[0] ?? null;
-        const layerId = firstNodeId ? state.nodeIdToLayerId.get(firstNodeId) ?? null : null;
         set({
           tourActive: true,
           currentTourStep: 0,
           tourHighlightedNodeIds: new Set(nodeIds),
           selectedNodeId: firstNodeId,
           focusNodeId: null,
-          ...(layerId ? {
-            navigationLevel: "layer-detail" as NavigationLevel,
-            activeLayerId: layerId,
-            expandedContainers: new Set<string>(),
-            containerLayoutCache: new Map<string, ContainerLayoutResult>(),
-          } : {}),
+          ...drillStateForStep(state, firstNodeId, firstStep?.layer_id),
         });
       },
 
@@ -455,23 +574,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         if (!tour || tour.length === 0) return;
         const maxStep = tour.length - 1;
         if (state.currentTourStep >= maxStep) return;
-        const nextIdx = state.currentTourStep + 1;
-        const step = tour[nextIdx];
-        const nodeIds = step?.node_ids ?? [];
-        const firstNodeId = nodeIds[0] ?? null;
-        const layerId = firstNodeId ? state.nodeIdToLayerId.get(firstNodeId) ?? null : null;
-        set({
-          currentTourStep: nextIdx,
-          tourHighlightedNodeIds: new Set(nodeIds),
-          selectedNodeId: firstNodeId,
-          focusNodeId: null,
-          ...(layerId && layerId !== state.activeLayerId ? {
-            navigationLevel: "layer-detail" as NavigationLevel,
-            activeLayerId: layerId,
-            expandedContainers: new Set<string>(),
-            containerLayoutCache: new Map<string, ContainerLayoutResult>(),
-          } : {}),
-        });
+        get().goToTourStep(state.currentTourStep + 1);
       },
 
       prevTourStep: () => {
@@ -479,23 +582,7 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         const tour = state.view?.tour;
         if (!tour || tour.length === 0) return;
         if (state.currentTourStep <= 0) return;
-        const prevIdx = state.currentTourStep - 1;
-        const step = tour[prevIdx];
-        const nodeIds = step?.node_ids ?? [];
-        const firstNodeId = nodeIds[0] ?? null;
-        const layerId = firstNodeId ? state.nodeIdToLayerId.get(firstNodeId) ?? null : null;
-        set({
-          currentTourStep: prevIdx,
-          tourHighlightedNodeIds: new Set(nodeIds),
-          selectedNodeId: firstNodeId,
-          focusNodeId: null,
-          ...(layerId && layerId !== state.activeLayerId ? {
-            navigationLevel: "layer-detail" as NavigationLevel,
-            activeLayerId: layerId,
-            expandedContainers: new Set<string>(),
-            containerLayoutCache: new Map<string, ContainerLayoutResult>(),
-          } : {}),
-        });
+        get().goToTourStep(state.currentTourStep - 1);
       },
 
       goToTourStep: (step: number) => {
@@ -506,18 +593,12 @@ export const useArchitectureStore = create<ArchitectureStore>()(
         const tourStep = tour[clamped];
         const nodeIds = tourStep?.node_ids ?? [];
         const firstNodeId = nodeIds[0] ?? null;
-        const layerId = firstNodeId ? state.nodeIdToLayerId.get(firstNodeId) ?? null : null;
         set({
           currentTourStep: clamped,
           tourHighlightedNodeIds: new Set(nodeIds),
           selectedNodeId: firstNodeId,
           focusNodeId: null,
-          ...(layerId && layerId !== state.activeLayerId ? {
-            navigationLevel: "layer-detail" as NavigationLevel,
-            activeLayerId: layerId,
-            expandedContainers: new Set<string>(),
-            containerLayoutCache: new Map<string, ContainerLayoutResult>(),
-          } : {}),
+          ...drillStateForStep(state, firstNodeId, tourStep?.layer_id),
         });
       },
 

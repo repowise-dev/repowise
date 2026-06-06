@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 
 export function Section({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <div style={{ padding: "10px 12px", borderBottom: "1px solid rgba(148,163,184,0.12)" }}>
+    <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--color-border-subtle)" }}>
       {title && (
         <div
           style={{
@@ -43,7 +43,7 @@ export function KVList({ rows }: { rows: [string, string][] }) {
             justifyContent: "space-between",
             gap: 8,
             padding: "3px 0",
-            borderTop: "1px solid rgba(148,163,184,0.12)",
+            borderTop: "1px solid var(--color-border-subtle)",
             fontSize: 11,
           }}
         >
@@ -79,9 +79,9 @@ export function ActionButton({
         padding: "5px 10px",
         background: primary ? "var(--color-accent-muted, rgba(245,149,32,0.2))" : "transparent",
         color: primary
-          ? "var(--color-accent-primary, #f59520)"
-          : "var(--color-text-secondary, #cbd5e1)",
-        border: `1px solid ${primary ? "var(--color-accent-primary, #f59520)" : "var(--color-border-default, #334155)"}`,
+          ? "var(--color-accent-primary)"
+          : "var(--color-text-secondary)",
+        border: `1px solid ${primary ? "var(--color-accent-primary)" : "var(--color-border-default)"}`,
         borderRadius: 4,
         cursor: "pointer",
         fontSize: 11,
@@ -115,8 +115,8 @@ export function Badge({
         fontSize: 10,
         fontWeight: 600,
         letterSpacing: 0.4,
-        color: color ?? "#ffffff",
-        background: bg ?? "rgba(148,163,184,0.2)",
+        color: color ?? "var(--color-text-primary)",
+        background: bg ?? "var(--color-border-default)",
         textTransform: "uppercase",
       }}
     >
@@ -134,9 +134,9 @@ export function Pill({ label }: { label: string }) {
         borderRadius: 10,
         fontSize: 10,
         fontWeight: 500,
-        background: "rgba(148,163,184,0.15)",
-        color: "var(--color-text-secondary, #94a3b8)",
-        border: "1px solid rgba(148,163,184,0.2)",
+        background: "var(--color-bg-wash-hover)",
+        color: "var(--color-text-secondary)",
+        border: "1px solid var(--color-border-default)",
       }}
     >
       {label}

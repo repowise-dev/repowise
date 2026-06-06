@@ -77,9 +77,9 @@ describe("Theme Variables", () => {
     expect(THEME.accent.primary).toContain("--color-accent-primary");
     expect(THEME.selection).toBeDefined();
     expect(THEME.complexity).toBeDefined();
-    expect(THEME.complexity.simple).toBe("#22c55e");
-    expect(THEME.complexity.moderate).toBe("#f59e0b");
-    expect(THEME.complexity.complex).toBe("#ef4444");
+    expect(THEME.complexity.simple).toContain("--color-success");
+    expect(THEME.complexity.moderate).toContain("--color-warning");
+    expect(THEME.complexity.complex).toContain("--color-error");
     expect(THEME.diff).toBeDefined();
     expect(THEME.font).toBeDefined();
     expect(THEME.radius).toBeDefined();

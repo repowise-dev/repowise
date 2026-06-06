@@ -23,14 +23,14 @@ function CheckboxRow({
         padding: "4px 0",
         fontSize: 11,
         cursor: "pointer",
-        color: "var(--color-text-primary, #f1f5f9)",
+        color: "var(--color-text-primary)",
       }}
     >
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        style={{ accentColor: "var(--color-accent-primary, #f59520)" }}
+        style={{ accentColor: "var(--color-accent-primary)" }}
       />
       {label}
     </label>
@@ -47,6 +47,11 @@ export function FilterPanel() {
   const setEdgeCategoryFilter = useArchitectureStore((s) => s.setEdgeCategoryFilter);
   const resetFilters = useArchitectureStore((s) => s.resetFilters);
   const setFilterPanelOpen = useArchitectureStore((s) => s.setFilterPanelOpen);
+  const showTests = useArchitectureStore((s) => s.showTests);
+  const setShowTests = useArchitectureStore((s) => s.setShowTests);
+  const hasTestLayer = useArchitectureStore(
+    (s) => s.view?.layers.some((l) => l.id === "layer:test") ?? false,
+  );
 
   const nodeTypes = useMemo(() => {
     if (!view) return [];
@@ -76,7 +81,7 @@ export function FilterPanel() {
         left: 12,
         width: 280,
         background: "var(--color-bg-elevated, rgba(17,24,39,0.96))",
-        border: "1px solid var(--color-border-default, #334155)",
+        border: "1px solid var(--color-border-default)",
         borderRadius: 8,
         boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
         zIndex: 8,
@@ -90,10 +95,10 @@ export function FilterPanel() {
           alignItems: "center",
           justifyContent: "space-between",
           padding: "10px 12px",
-          borderBottom: "1px solid rgba(148,163,184,0.12)",
+          borderBottom: "1px solid var(--color-border-subtle)",
         }}
       >
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-primary, #f1f5f9)" }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-primary)" }}>
           Filters
         </span>
         <button
@@ -103,7 +108,7 @@ export function FilterPanel() {
             background: "transparent",
             border: "none",
             cursor: "pointer",
-            color: "var(--color-text-secondary, #94a3b8)",
+            color: "var(--color-text-secondary)",
             padding: 2,
           }}
         >
@@ -132,6 +137,17 @@ export function FilterPanel() {
           />
         ))}
       </Section>
+
+      {hasTestLayer && (
+        <Section title="Display">
+          {/* Tests mirror the code — demoted by default (decision 2). */}
+          <CheckboxRow
+            label="Show tests"
+            checked={showTests}
+            onChange={setShowTests}
+          />
+        </Section>
+      )}
 
       <Section title="Layers">
         {view.layers.map((layer) => (

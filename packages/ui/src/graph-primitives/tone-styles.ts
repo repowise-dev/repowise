@@ -1,24 +1,33 @@
+/*
+ * Categorical node-tone palette (C4 / arch diagrams). These are
+ * the data-viz counterpart to LANGUAGE_COLORS — literal hex because they feed
+ * the static SVG exporter where a CSS var() string can't resolve. Retuned from
+ * the old cool navy/teal/purple set to the warm/plum families (mirrors the
+ * --color-community-* / --color-accent-secondary spine). Dark plum-tinted
+ * fills carry the C4 node body; the hub hue lines the border + kind band. Each
+ * pairing keeps light text >= AA on its fill.
+ */
 export const TONE_STYLES = {
-  system:       { bg: "#1f3a8a", border: "#1e40af", band: "#1e40af", text: "#ffffff" },
-  person:       { bg: "#374151", border: "#4b5563", band: "#4b5563", text: "#ffffff" },
-  external:     { bg: "#1f2937", border: "#374151", band: "#374151", text: "#e5e7eb" },
-  container:    { bg: "#0f3a5f", border: "#1d4ed8", band: "#1d4ed8", text: "#ffffff" },
-  component:    { bg: "#0d2a47", border: "#1e3a8a", band: "#1e3a8a", text: "#e5e7eb" },
-  file:         { bg: "#0f3a5f", border: "#1a6b8a", band: "#1a6b8a", text: "#ffffff" },
-  function:     { bg: "#1a3d2e", border: "#2d7d5a", band: "#2d7d5a", text: "#ffffff" },
-  class:        { bg: "#2d1f4a", border: "#6b4fa0", band: "#6b4fa0", text: "#ffffff" },
-  config:       { bg: "#3d2f0a", border: "#8a6b1a", band: "#8a6b1a", text: "#ffffff" },
-  document:     { bg: "#1a3a5a", border: "#4a8ab0", band: "#4a8ab0", text: "#ffffff" },
-  service:      { bg: "#3d1a2f", border: "#8a4a6b", band: "#8a4a6b", text: "#ffffff" },
-  pipeline:     { bg: "#2d1f3d", border: "#6b5a8a", band: "#6b5a8a", text: "#ffffff" },
-  module:       { bg: "#1f2d1a", border: "#5a7a4a", band: "#5a7a4a", text: "#ffffff" },
-  layerCluster: { bg: "#0d1a2d", border: "#1a3a5a", band: "#1a3a5a", text: "#f1f5f9" },
-  portal:       { bg: "transparent", border: "#475569", band: "#475569", text: "#94a3b8" },
-  concept:      { bg: "#1f2937", border: "#374151", band: "#374151", text: "#e5e7eb" },
-  table:        { bg: "#1a2d3d", border: "#3d6b8a", band: "#3d6b8a", text: "#ffffff" },
-  endpoint:     { bg: "#2d3d1a", border: "#6b8a3d", band: "#6b8a3d", text: "#ffffff" },
-  schema:       { bg: "#1a2d3d", border: "#3d6b8a", band: "#3d6b8a", text: "#ffffff" },
-  resource:     { bg: "#2d1f3d", border: "#6b5a8a", band: "#6b5a8a", text: "#ffffff" },
+  system:       { bg: "#3a2417", border: "#f59520", band: "#f59520", text: "#ffffff" }, // brand orange
+  person:       { bg: "#2c2530", border: "#84778a", band: "#84778a", text: "#ffffff" }, // charcoal mauve
+  external:     { bg: "#251f2c", border: "#5e5360", band: "#5e5360", text: "#e7e1f0" }, // muted plum-gray
+  container:    { bg: "#3a2417", border: "#d9825f", band: "#d9825f", text: "#ffffff" }, // peach
+  component:    { bg: "#2d1f1a", border: "#cf6a55", band: "#cf6a55", text: "#f1ece9" }, // terracotta
+  file:         { bg: "#2a1c33", border: "#826aa0", band: "#826aa0", text: "#ffffff" }, // plum
+  function:     { bg: "#1f2a18", border: "#6b7a3d", band: "#6b7a3d", text: "#ffffff" }, // olive/sage
+  class:        { bg: "#2a1c33", border: "#a98fc4", band: "#a98fc4", text: "#ffffff" }, // plum-300
+  config:       { bg: "#33280a", border: "#a8821f", band: "#a8821f", text: "#ffffff" }, // gold
+  document:     { bg: "#1a2c2a", border: "#558f89", band: "#558f89", text: "#ffffff" }, // deep teal
+  service:      { bg: "#2d1620", border: "#9e5570", band: "#9e5570", text: "#ffffff" }, // wine
+  pipeline:     { bg: "#251f2c", border: "#7d659c", band: "#7d659c", text: "#ffffff" }, // plum-soft
+  module:       { bg: "#1f2a18", border: "#90a05e", band: "#90a05e", text: "#ffffff" }, // sage-soft
+  layerCluster: { bg: "#1a1320", border: "#58436c", band: "#58436c", text: "#f4f1f8" }, // deep plum
+  portal:       { bg: "transparent", border: "#8c7f88", band: "#8c7f88", text: "#a79db3" }, // neutral
+  concept:      { bg: "#251f2c", border: "#5e5360", band: "#5e5360", text: "#e7e1f0" }, // charcoal mauve
+  table:        { bg: "#2d1f1c", border: "#b06a86", band: "#b06a86", text: "#ffffff" }, // dusty rose
+  endpoint:     { bg: "#2a2417", border: "#c9a544", band: "#c9a544", text: "#ffffff" }, // gold-soft
+  schema:       { bg: "#2d1f1c", border: "#cf93ab", band: "#cf93ab", text: "#ffffff" }, // dusty rose-soft
+  resource:     { bg: "#251f2c", border: "#7d659c", band: "#7d659c", text: "#ffffff" }, // plum-soft
 } as const;
 
 export type ToneName = keyof typeof TONE_STYLES;
@@ -44,4 +53,6 @@ export const ARCH_NODE_SIZES = {
   endpoint:     { width: 260, height: 110 },
   schema:       { width: 260, height: 110 },
   resource:     { width: 260, height: 110 },
+  /** Collapsed folder container card (ArchContainerNode, chevron closed). */
+  containerCollapsed: { width: 260, height: 64 },
 } as const;

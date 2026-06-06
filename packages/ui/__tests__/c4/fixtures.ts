@@ -5,8 +5,8 @@ export function createMockView(overrides?: Partial<ArchitectureView>): Architect
     project_name: "test-project",
     project_description: "A test project",
     layers: [
-      { id: "layer:api", name: "API", description: "API layer", node_ids: ["src/app.py", "src/routes.py"], file_count: 2, complexity_distribution: { simple: 1, moderate: 1, complex: 0 }, health_score: 85 },
-      { id: "layer:core", name: "Core", description: "Core logic", node_ids: ["src/models.py"], file_count: 1, complexity_distribution: { simple: 0, moderate: 0, complex: 1 }, health_score: 72 },
+      { id: "layer:api", name: "API", description: "API layer", node_ids: ["src/app.py", "src/routes.py"], file_count: 2, complexity_distribution: { simple: 1, moderate: 1, complex: 0 }, health_score: 85, sub_groups: [], display_order: 0 },
+      { id: "layer:core", name: "Core", description: "Core logic", node_ids: ["src/models.py"], file_count: 1, complexity_distribution: { simple: 0, moderate: 0, complex: 1 }, health_score: 72, sub_groups: [], display_order: 1 },
     ],
     nodes: [
       { id: "src/app.py", node_type: "file", name: "app.py", file_path: "src/app.py", line_range: null, summary: "Main application entry point", complexity: "simple", tags: ["python", "entry"], language: "python", pagerank: 0.5, pagerank_percentile: 90, betweenness: 0.3, in_degree: 2, out_degree: 3, community_id: 1, is_entry_point: true, is_test: false, is_hotspot: false, is_dead: false, has_doc: true, primary_owner: "dev1", primary_owner_pct: 0.75, bus_factor: 2 },
@@ -19,9 +19,9 @@ export function createMockView(overrides?: Partial<ArchitectureView>): Architect
       { source: "src/routes.py", target: "src/models.py", edge_type: "calls", direction: "forward", weight: 0.8, confidence: 0.9 },
     ],
     tour: [
-      { order: 1, title: "Entry Point", description: "Start here", node_ids: ["src/app.py"] },
-      { order: 2, title: "Routes", description: "HTTP handlers", node_ids: ["src/routes.py"] },
-      { order: 3, title: "Models", description: "Data layer", node_ids: ["src/models.py"] },
+      { order: 1, title: "Entry Point", description: "Start here", node_ids: ["src/app.py"], target_path: null, layer_id: null, reason: "", depth: null, kind: "" as const, page_type: null },
+      { order: 2, title: "Routes", description: "HTTP handlers", node_ids: ["src/routes.py"], target_path: null, layer_id: null, reason: "", depth: null, kind: "" as const, page_type: null },
+      { order: 3, title: "Models", description: "Data layer", node_ids: ["src/models.py"], target_path: null, layer_id: null, reason: "", depth: null, kind: "" as const, page_type: null },
     ],
     total_files: 3,
     total_symbols: 25,
@@ -29,6 +29,8 @@ export function createMockView(overrides?: Partial<ArchitectureView>): Architect
     languages: ["python"],
     frameworks: ["fastapi"],
     external_systems: [],
+    entry_points: [],
+    entry_candidates: [],
     ...overrides,
   };
 }

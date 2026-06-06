@@ -1,17 +1,18 @@
 "use client";
 
 /**
- * Styled C4 relation edge — a bezier line with an optional label pill
- * showing edge count and dominant edge type.
+ * Styled C4 relation edge — blueprint dashed smooth-step line with an
+ * optional paper chip showing edge count and dominant edge type.
  */
 
 import { memo } from "react";
 import {
   BaseEdge,
   EdgeLabelRenderer,
-  getBezierPath,
+  getSmoothStepPath,
   type EdgeProps,
 } from "@xyflow/react";
+import { THEME } from "../theme/theme-variables";
 import type { C4EdgeData } from "../types";
 
 function RelationEdgeImpl(props: EdgeProps) {
@@ -29,16 +30,17 @@ function RelationEdgeImpl(props: EdgeProps) {
   } = props;
   const relation = (data as C4EdgeData | undefined)?.relation;
 
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
+    borderRadius: 8,
   });
 
-  const stroke = selected ? "#fbbf24" : "#94a3b8";
+  const stroke = selected ? THEME.selection.ring : "var(--color-diagram-edge)";
   const strokeWidth = relation && relation.edge_count > 5 ? 2 : 1.25;
 
   const label = relation
@@ -50,21 +52,27 @@ function RelationEdgeImpl(props: EdgeProps) {
 
   return (
     <>
-      <BaseEdge id={id} path={edgePath} {...(markerEnd ? { markerEnd } : {})} style={{ stroke, strokeWidth }} />
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        {...(markerEnd ? { markerEnd } : {})}
+        style={{ stroke, strokeWidth, strokeDasharray: selected ? "none" : "6 4" }}
+      />
       {label && (
         <EdgeLabelRenderer>
           <div
             style={{
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              background: "rgba(15, 23, 42, 0.92)",
-              color: "#e2e8f0",
-              padding: "2px 6px",
-              borderRadius: 4,
-              fontSize: 10,
+              background: "var(--color-bg-surface)",
+              color: THEME.text.secondary,
+              padding: "2px 7px",
+              borderRadius: 6,
+              fontFamily: "var(--font-mono, ui-monospace, monospace)",
+              fontSize: 9.5,
               fontWeight: 500,
               pointerEvents: "none",
-              border: "1px solid rgba(148, 163, 184, 0.25)",
+              border: `1px solid ${THEME.border.default}`,
               whiteSpace: "nowrap",
             }}
             className="nodrag nopan"

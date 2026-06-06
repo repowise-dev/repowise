@@ -40,9 +40,9 @@ export function PathFinderModal() {
   const selectStyle: React.CSSProperties = {
     width: "100%",
     padding: "8px 12px",
-    background: "#1e293b",
-    color: "#e2e8f0",
-    border: "1px solid rgba(148,163,184,0.3)",
+    background: "var(--color-bg-surface)",
+    color: "var(--color-text-primary)",
+    border: "1px solid var(--color-border-default)",
     borderRadius: 6,
     fontSize: 13,
   };
@@ -67,11 +67,11 @@ export function PathFinderModal() {
           width: 500,
           maxHeight: "80vh",
           overflowY: "auto",
-          background: "#0f172a",
-          border: "1px solid rgba(148, 163, 184, 0.2)",
+          background: "var(--color-bg-elevated)",
+          border: "1px solid var(--color-border-default)",
           borderRadius: 12,
           padding: 24,
-          color: "#e2e8f0",
+          color: "var(--color-text-primary)",
         }}
       >
         <div
@@ -90,7 +90,7 @@ export function PathFinderModal() {
             style={{
               background: "none",
               border: "none",
-              color: "#94a3b8",
+              color: "var(--color-text-secondary)",
               cursor: "pointer",
               fontSize: 18,
               padding: 4,
@@ -145,8 +145,8 @@ export function PathFinderModal() {
           style={{
             width: "100%",
             padding: "10px 0",
-            background: fromId && toId ? "#f59520" : "rgba(148,163,184,0.2)",
-            color: fromId && toId ? "#0f172a" : "#94a3b8",
+            background: fromId && toId ? "var(--color-accent-fill)" : "var(--color-bg-wash-hover)",
+            color: fromId && toId ? "var(--color-text-on-accent)" : "var(--color-text-secondary)",
             border: "none",
             borderRadius: 6,
             fontSize: 13,
@@ -180,10 +180,10 @@ export function PathFinderModal() {
                         padding: "8px 10px",
                         borderRadius: 6,
                         cursor: "pointer",
-                        borderBottom: "1px solid rgba(148,163,184,0.12)",
+                        borderBottom: "1px solid var(--color-border-subtle)",
                       }}
                     >
-                      <span style={{ fontSize: 12, color: "#94a3b8", minWidth: 20 }}>
+                      <span style={{ fontSize: 12, color: "var(--color-text-secondary)", minWidth: 20 }}>
                         {idx + 1}.
                       </span>
                       <span style={{ flex: 1, fontSize: 13 }}>

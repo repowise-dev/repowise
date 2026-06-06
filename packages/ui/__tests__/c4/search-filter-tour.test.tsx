@@ -9,7 +9,10 @@ import { PersonaSelector } from "../../src/c4/panels/PersonaSelector";
 import { fuzzyMatch, scoreField } from "../../src/c4/utils/fuzzy-match";
 import { createMockView } from "./fixtures";
 
-vi.mock("lucide-react", () => ({
+vi.mock("lucide-react", async (importOriginal) => ({
+  // Partial mock: kind-icons.ts pulls many glyphs; only the ones these
+  // tests assert on are replaced with testid stubs.
+  ...(await importOriginal<typeof import("lucide-react")>()),
   Search: ({ size }: { size?: number }) => <span data-testid="icon-search">S</span>,
   Filter: ({ size }: { size?: number }) => <span data-testid="icon-filter">F</span>,
   Compass: ({ size }: { size?: number }) => <span data-testid="icon-compass">C</span>,

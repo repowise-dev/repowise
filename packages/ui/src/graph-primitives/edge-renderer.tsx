@@ -4,9 +4,10 @@ import { memo } from "react";
 import {
   BaseEdge,
   EdgeLabelRenderer,
-  getBezierPath,
+  getSmoothStepPath,
   type EdgeProps,
 } from "@xyflow/react";
+import { ArrowRight, Check, Folder, Link2, Zap, type LucideIcon } from "lucide-react";
 import { THEME } from "../c4/theme/theme-variables";
 
 export interface ArchEdgeData {
@@ -18,24 +19,39 @@ export interface ArchEdgeData {
 }
 
 export const EDGE_CATEGORY_COLORS: Record<string, string> = {
-  structural: "#60a5fa",
-  behavioral: "#4ade80",
-  "data-flow": "#c084fc",
-  dependencies: "#fb923c",
-  semantic: "#94a3b8",
+  structural: "var(--color-accent-secondary)",
+  behavioral: "var(--color-success)",
+  "data-flow": "var(--color-edge-co-change)",
+  dependencies: "var(--color-accent-fill)",
+  semantic: "var(--color-text-tertiary)",
 };
 
-const EDGE_DEFAULT_COLOR = "#8b9dc3";
+const EDGE_DEFAULT_COLOR = "var(--color-text-tertiary)";
 
+/** Semantic tint — carried by the chip glyph, not the stroke (kg-ux §2.3). */
 function getEdgeColor(edgeType: string | undefined): string {
   if (!edgeType) return EDGE_DEFAULT_COLOR;
   return THEME.edge[edgeType] ?? EDGE_CATEGORY_COLORS[edgeType] ?? EDGE_DEFAULT_COLOR;
 }
 
+const EDGE_TYPE_ICONS: Record<string, LucideIcon> = {
+  imports: ArrowRight,
+  calls: Zap,
+  contains: Folder,
+  tested_by: Check,
+  depends_on: Link2,
+};
+
 export function computeEdgeStrokeWidth(count: number): number {
-  return Math.min(1.5 + Math.log2(count + 1), 5);
+  return Math.min(1 + Math.log2(count + 1) * 0.5, 2.5);
 }
 
+/**
+ * Blueprint edge (kg-ux plan §2.3): orthogonal smooth-step path, thin dashed
+ * ink stroke (--color-diagram-edge), with a small paper CHIP riding the edge
+ * — relation glyph (semantic tint) + label in mono. Selected = solid orange
+ * with marching ants; everything else is calm and static.
+ */
 function ArchEdgeRendererImpl(props: EdgeProps) {
   const {
     id,
@@ -56,22 +72,24 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
   const isPortal = edgeData?.isPortalEdge ?? false;
   const dimmed = edgeData?.dimmed ?? false;
 
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
+    borderRadius: 8,
   });
 
-  const baseColor = getEdgeColor(edgeType);
-  const stroke = selected ? "#fbbf24" : baseColor;
-  const strokeWidth = dimmed ? 1 : computeEdgeStrokeWidth(count);
-  const strokeOpacity = selected ? 1.0 : dimmed ? 0.06 : 0.75;
+  const stroke = selected ? "var(--color-viz-selection)" : "var(--color-diagram-edge)";
+  const strokeWidth = dimmed ? 1 : selected ? 2 : computeEdgeStrokeWidth(count);
+  const strokeOpacity = selected ? 1.0 : dimmed ? 0.06 : 0.9;
 
   const typeLabel = (edgeType ?? "").replace(/_/g, " ");
-  const label = dimmed ? "" : count > 3 ? `${typeLabel} (${count})` : typeLabel || "";
+  const label = dimmed ? "" : count > 1 ? `${typeLabel} ×${count}` : typeLabel || "";
+  const ChipIcon = (edgeType && EDGE_TYPE_ICONS[edgeType]) || ArrowRight;
+  const chipTint = getEdgeColor(edgeType);
 
   return (
     <>
@@ -82,8 +100,8 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
         style={{
           stroke,
           strokeWidth,
-          strokeDasharray: isPortal ? "6 3" : "8 4",
-          animation: dimmed ? "none" : "edgeFlow 1.5s linear infinite",
+          strokeDasharray: selected ? "none" : isPortal ? "4 3" : "6 4",
+          animation: selected ? "edgeFlow 1.5s linear infinite" : "none",
           opacity: strokeOpacity,
         }}
       />
@@ -93,20 +111,28 @@ function ArchEdgeRendererImpl(props: EdgeProps) {
             style={{
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              background: "rgba(15, 23, 42, 0.88)",
-              color: stroke,
-              padding: "2px 6px",
-              borderRadius: 4,
-              fontSize: 10,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              background: "var(--color-bg-surface)",
+              color: "var(--color-text-secondary)",
+              padding: "2px 7px",
+              borderRadius: 6,
+              fontFamily: "var(--font-mono, ui-monospace, monospace)",
+              fontSize: 9.5,
               fontWeight: 500,
               letterSpacing: 0.3,
               pointerEvents: "none",
-              border: `1px solid ${stroke}33`,
+              border: selected
+                ? "1px solid var(--color-viz-selection)"
+                : "1px solid var(--color-border-default)",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
               whiteSpace: "nowrap",
-              opacity: selected ? 1 : 0.85,
+              opacity: selected ? 1 : 0.92,
             }}
             className="nodrag nopan"
           >
+            <ChipIcon size={10} aria-hidden style={{ color: chipTint, flexShrink: 0 }} />
             {label}
           </div>
         </EdgeLabelRenderer>
