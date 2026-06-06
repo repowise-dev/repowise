@@ -310,7 +310,10 @@ class PerTypeGenerationMixin:
         ctx: LayerPageContext,
     ) -> GeneratedPage:
         user_prompt = self._render("layer_page.j2", ctx=ctx)
-        target = f"layer:{ctx.layer_name}"
+        # target_path = the layer's STABLE slug id, so the page key survives
+        # the post-generation LLM rename of ``layer_name``. The title still
+        # uses the (heuristic) display name.
+        target = ctx.layer_id
         response = await self._call_provider(
             "layer_page", user_prompt, str(uuid.uuid4()), target_path=target
         )

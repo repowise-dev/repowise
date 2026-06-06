@@ -58,13 +58,34 @@ async def enrich_knowledge_graph(
         reasoning=reasoning,
     )
 
-    tour = await _generate_tour(
-        enriched_layers, llm_client, graph_builder, repo_structure, kg_skeleton,
-        reasoning=reasoning,
-    )
+    # When curation is enabled it has already written the canonical,
+    # layer-aware tour (deterministic, one per layer top→bottom). The LLM must
+    # not reselect or reorder it — keep the curated tour as-is (prose narration
+    # can be layered on separately). Otherwise fall back to LLM tour generation.
+    from repowise.core.analysis.kg_curation import curation_enabled
+
+    if curation_enabled() and kg_skeleton.tour:
+        tour = kg_skeleton.tour
+    else:
+        tour = await _generate_tour(
+            enriched_layers, llm_client, graph_builder, repo_structure, kg_skeleton,
+            reasoning=reasoning,
+        )
 
     if generated_pages:
         _backfill_summaries(kg_skeleton, generated_pages)
+
+    # Deterministic summary floor, applied *after* the page backfill so rich
+    # page summaries always win and only never-paged files fall back. Gated by
+    # the curation flag (the seam already floored FAST-mode output; this covers
+    # the generate-mode path where the seam deferred to let backfill run first).
+    if curation_enabled():
+        from repowise.core.analysis.kg_curation import apply_summary_floor
+
+        try:
+            apply_summary_floor(kg_skeleton)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("kg_summary_floor_failed", error=str(exc))
 
     kg_skeleton.layers = enriched_layers
     kg_skeleton.tour = tour
@@ -92,23 +113,28 @@ async def _enrich_layers(
 
     pagerank = graph_builder.pagerank()
     enriched = list(layers)
+    # Join LLM responses back onto layers by their stable id, never by list
+    # position: positional joins silently corrupt every name when a model
+    # returns batch-relative indices.
+    by_id = {layer["id"]: layer for layer in enriched if layer.get("id")}
 
     for batch_start in range(0, len(layers), _LAYER_BATCH_SIZE):
         batch = layers[batch_start : batch_start + _LAYER_BATCH_SIZE]
         batch_context = []
-        for i, layer in enumerate(batch):
+        for layer in batch:
             node_ids = layer.get("nodeIds", [])
             file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
             top_files = sorted(file_paths, key=lambda p: pagerank.get(p, 0.0), reverse=True)[:20]
 
             batch_context.append({
-                "index": batch_start + i,
+                "id": layer.get("id", ""),
                 "heuristic_label": layer["name"],
                 "file_count": len(file_paths),
                 "top_files": top_files,
             })
 
         user_prompt = _build_layer_naming_prompt(batch_context, tech_stack, repo_structure)
+        batch_ids = {layer.get("id") for layer in batch}
 
         try:
             response = await llm_client.generate(
@@ -121,12 +147,19 @@ async def _enrich_layers(
             parsed = _parse_json_response(response.content)
             if parsed and "layers" in parsed:
                 for item in parsed["layers"]:
-                    idx = item.get("index")
-                    if idx is not None and 0 <= idx < len(enriched):
-                        if item.get("name"):
-                            enriched[idx]["name"] = item["name"]
-                        if item.get("description"):
-                            enriched[idx]["description"] = item["description"]
+                    layer_id = item.get("id")
+                    target = by_id.get(layer_id) if layer_id in batch_ids else None
+                    if target is None:
+                        logger.warning(
+                            "kg_layer_naming_unknown_id",
+                            layer_id=layer_id,
+                            batch_ids=sorted(filter(None, batch_ids)),
+                        )
+                        continue
+                    if item.get("name"):
+                        target["name"] = item["name"]
+                    if item.get("description"):
+                        target["description"] = item["description"]
         except Exception as exc:
             logger.warning("kg_layer_naming_batch_failed", error=str(exc))
 
@@ -152,14 +185,15 @@ def _build_layer_naming_prompt(
     ]
 
     for ctx in batch_context:
-        lines.append(f"\n--- Community {ctx['index']} ---")
+        lines.append(f"\n--- Community \"{ctx['id']}\" ---")
         lines.append(f"Heuristic label: {ctx['heuristic_label']}")
         lines.append(f"File count: {ctx['file_count']}")
         lines.append(f"Top files: {', '.join(ctx['top_files'][:10])}")
 
     lines.append("")
     lines.append(
-        'Respond with: {"layers": [{"index": 0, "name": "...", "description": "..."}]}'
+        "Respond with each community's id echoed verbatim: "
+        '{"layers": [{"id": "...", "name": "...", "description": "..."}]}'
     )
     return "\n".join(lines)
 
@@ -328,10 +362,15 @@ def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
             page_summaries[target] = summary
 
     for node in kg_result.nodes:
-        if node["type"] in ("file", "config", "service", "document"):
-            path = node.get("filePath", node["id"].removeprefix("file:"))
-            if path in page_summaries and not node.get("summary"):
-                node["summary"] = page_summaries[path]
+        # Any file-level node (any presentation type — file/config/service/
+        # pipeline/schema/document). Only fill empties: a page summary is the
+        # richest source, and the deterministic curation floor is applied
+        # *after* this backfill so it never blocks a real page summary.
+        if not str(node.get("id", "")).startswith("file:"):
+            continue
+        path = node.get("filePath", node["id"].removeprefix("file:"))
+        if path in page_summaries and not node.get("summary"):
+            node["summary"] = page_summaries[path]
 
 
 # ---------------------------------------------------------------------------
