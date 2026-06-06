@@ -23,9 +23,9 @@ export function C4NodeInspector({ data, onClose, onDrillIn }: C4NodeInspectorPro
         overflow: "auto",
         padding: 12,
         background: "var(--color-bg-elevated, rgba(17,24,39,0.95))",
-        border: "1px solid var(--color-border-default, #334155)",
+        border: "1px solid var(--color-border-default)",
         borderRadius: 8,
-        color: "var(--color-text-primary, #f1f5f9)",
+        color: "var(--color-text-primary)",
         fontSize: 12,
         zIndex: 5,
       }}
@@ -96,8 +96,8 @@ function InspectorBody({
                 marginTop: 10,
                 padding: "5px 10px",
                 background: "var(--color-accent-muted, rgba(245,149,32,0.2))",
-                color: "var(--color-accent-primary, #f59520)",
-                border: "1px solid var(--color-accent-primary, #f59520)",
+                color: "var(--color-accent-primary)",
+                border: "1px solid var(--color-accent-primary)",
                 borderRadius: 4,
                 cursor: "pointer",
                 fontSize: 11,
@@ -135,7 +135,7 @@ function Row({ title, sub }: { title: string; sub?: string }) {
 
 function KV({ k, v }: { k: string; v: string }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid rgba(148,163,184,0.15)" }}>
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderTop: "1px solid var(--color-bg-wash-hover)" }}>
       <span style={{ opacity: 0.6 }}>{k}</span>
       <span style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)" }}>{v}</span>
     </div>

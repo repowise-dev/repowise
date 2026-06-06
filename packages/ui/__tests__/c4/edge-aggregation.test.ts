@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { aggregateEdges } from "../../src/c4/layout/edge-aggregation";
+import {
+  aggregateEdges,
+  capAggregatedEdges,
+  MAX_VISIBLE_AGGREGATED_EDGES,
+} from "../../src/c4/layout/edge-aggregation";
 import type { ArchEdge } from "../../src/c4/types";
 
 function makeEdge(source: string, target: string, edge_type: string): ArchEdge {
@@ -97,5 +101,43 @@ describe("aggregateEdges", () => {
     ]);
     const result = aggregateEdges(edges, nodeToBox);
     expect(result[0]!.count).toBeGreaterThan(result[1]!.count);
+  });
+});
+
+describe("capAggregatedEdges", () => {
+  function agg(i: number, count: number) {
+    return {
+      id: `agg:s${i}→t${i}`,
+      source: `s${i}`,
+      target: `t${i}`,
+      count,
+      dominantType: "imports",
+      types: ["imports"],
+    };
+  }
+
+  it("passes through when under the budget", () => {
+    const edges = [agg(1, 5), agg(2, 3)];
+    const { visible, hiddenCount } = capAggregatedEdges(edges);
+    expect(visible).toHaveLength(2);
+    expect(hiddenCount).toBe(0);
+  });
+
+  it("keeps the heaviest arrows and reports the dropped count", () => {
+    // 30 aggregated arrows with descending weight (pre-sorted contract).
+    const edges = Array.from({ length: 30 }, (_, i) => agg(i, 30 - i));
+    const { visible, hiddenCount } = capAggregatedEdges(edges);
+    expect(visible).toHaveLength(MAX_VISIBLE_AGGREGATED_EDGES);
+    expect(hiddenCount).toBe(30 - MAX_VISIBLE_AGGREGATED_EDGES);
+    // Heaviest survive; the weakest are the ones dropped.
+    expect(visible[0]!.count).toBe(30);
+    expect(visible.at(-1)!.count).toBe(30 - MAX_VISIBLE_AGGREGATED_EDGES + 1);
+  });
+
+  it("honours a custom budget", () => {
+    const edges = Array.from({ length: 5 }, (_, i) => agg(i, 5 - i));
+    const { visible, hiddenCount } = capAggregatedEdges(edges, 2);
+    expect(visible.map((e) => e.count)).toEqual([5, 4]);
+    expect(hiddenCount).toBe(3);
   });
 });

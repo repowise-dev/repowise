@@ -1,6 +1,6 @@
 "use client";
 
-import { X, Code, MapPin, Layers, ExternalLink } from "lucide-react";
+import { X, Code, MapPin, Layers, ExternalLink, Folder, CornerDownRight } from "lucide-react";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { getTone } from "../../graph-primitives/tone-styles";
 import { THEME } from "../theme/theme-variables";
@@ -33,11 +33,101 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
   const nodeIdToLayerId = useArchitectureStore((s) => s.nodeIdToLayerId);
   const selectNode = useArchitectureStore((s) => s.selectNode);
   const drillIntoLayer = useArchitectureStore((s) => s.drillIntoLayer);
+  const drillIntoSubGroup = useArchitectureStore((s) => s.drillIntoSubGroup);
   const openCodeViewer = useArchitectureStore((s) => s.openCodeViewer);
   const setFocusNode = useArchitectureStore((s) => s.setFocusNode);
   const view = useArchitectureStore((s) => s.view);
 
   const node = selectedNodeId ? nodesById.get(selectedNodeId) ?? null : null;
+
+  // Scope selection (kg-ux plan B5): single-clicking a layer/group card
+  // selects it — this panel is the "inspect" half of the grammar, with the
+  // explicit drill affordance ("Open on canvas") as the other half.
+  if (!node && selectedNodeId && view) {
+    const layerScope = view.layers.find((l) => l.id === selectedNodeId);
+    if (layerScope) {
+      return (
+        <ScopeInfo
+          kind="layer"
+          name={layerScope.name}
+          description={layerScope.description}
+          fileCount={layerScope.file_count}
+          groupCount={layerScope.sub_groups.length}
+          healthScore={layerScope.health_score}
+          onClose={() => selectNode(null)}
+          onOpen={() => drillIntoLayer(layerScope.id)}
+        />
+      );
+    }
+    for (const l of view.layers) {
+      const group = l.sub_groups.find((g) => g.id === selectedNodeId);
+      if (group) {
+        return (
+          <ScopeInfo
+            kind="group"
+            name={group.name}
+            description={`Sub-group of ${l.name}`}
+            fileCount={group.node_ids.length}
+            onClose={() => selectNode(null)}
+            onOpen={() => drillIntoSubGroup(group.id)}
+          />
+        );
+      }
+    }
+
+    // Folder containers (dir:<path>) — the boxes the detail canvas groups
+    // files into. They aren't ArchNodes, so without this branch selecting
+    // one left the inspector blank.
+    if (selectedNodeId.startsWith("dir:")) {
+      const path = selectedNodeId.slice(4);
+      const memberCount = view.nodes.filter((n) => n.id.startsWith(`${path}/`)).length;
+      return (
+        <ScopeInfo
+          kind="folder"
+          name={path.split("/").pop() ?? path}
+          description={path}
+          fileCount={memberCount}
+          onClose={() => selectNode(null)}
+          onOpen={() => useArchitectureStore.getState().toggleContainer(selectedNodeId)}
+        />
+      );
+    }
+
+    // The "+N more" card that absorbs files beyond the visible-box budget.
+    if (selectedNodeId === "container:__overflow") {
+      return (
+        <ScopeInfo
+          kind="folder"
+          name="More files"
+          description="Files beyond the visible-box budget for this scope. Expand the card to lay them out."
+          onClose={() => selectNode(null)}
+          onOpen={() => useArchitectureStore.getState().toggleContainer(selectedNodeId)}
+        />
+      );
+    }
+
+    // Portal chips (portal:layer:A→layer:B) — wayfinding to a neighbouring
+    // layer this scope exchanges imports with.
+    if (selectedNodeId.startsWith("portal:")) {
+      const targetLayerId = selectedNodeId.split("→")[1];
+      const targetLayer = targetLayerId
+        ? view.layers.find((l) => l.id === targetLayerId)
+        : undefined;
+      if (targetLayer) {
+        return (
+          <ScopeInfo
+            kind="portal"
+            name={targetLayer.name}
+            description={`Files in this scope exchange imports with the ${targetLayer.name} layer. Open it to follow them.`}
+            fileCount={targetLayer.file_count}
+            onClose={() => selectNode(null)}
+            onOpen={() => drillIntoLayer(targetLayer.id)}
+          />
+        );
+      }
+    }
+  }
+
   if (!node) return null;
 
   const tone = getTone(node.node_type);
@@ -90,7 +180,7 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
 
       {props.docContent && props.renderDoc ? (
         <Section title="Wiki">
-          <div style={{ fontSize: 12, lineHeight: 1.45, color: "var(--color-text-secondary, #cbd5e1)" }}>
+          <div style={{ fontSize: 12, lineHeight: 1.45, color: "var(--color-text-secondary)" }}>
             {props.renderDoc(props.docContent)}
           </div>
           {props.onOpenDoc && (
@@ -103,7 +193,7 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
         </Section>
       ) : (
         <Section title="Wiki">
-          <div style={{ fontSize: 11, color: "var(--color-text-secondary, #94a3b8)", opacity: 0.7 }}>
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary)", opacity: 0.7 }}>
             Wiki not generated yet. Run docs generation to populate this section.
           </div>
         </Section>
@@ -132,7 +222,7 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
                   display: "flex",
                   justifyContent: "space-between",
                   padding: "3px 0",
-                  borderTop: "1px solid rgba(148,163,184,0.12)",
+                  borderTop: "1px solid var(--color-border-subtle)",
                   fontSize: 11,
                 }}
               >
@@ -187,7 +277,7 @@ function HeaderSection({
   tone: { band: string; text: string };
   onClose: () => void;
 }) {
-  const dotColor = THEME.complexity[node.complexity] ?? "#94a3b8";
+  const dotColor = THEME.complexity[node.complexity] ?? "var(--color-text-muted)";
 
   return (
     <header
@@ -196,7 +286,7 @@ function HeaderSection({
         alignItems: "center",
         justifyContent: "space-between",
         padding: "10px 12px",
-        borderBottom: "1px solid var(--color-border-default, #334155)",
+        borderBottom: "1px solid var(--color-border-default)",
         gap: 8,
       }}
     >
@@ -249,7 +339,7 @@ function HealthSection({
         />
       </div>
       {health.is_silo && (
-        <div style={{ marginTop: 6, fontSize: 10, color: "#fbbf24", fontWeight: 600 }}>
+        <div style={{ marginTop: 6, fontSize: 10, color: "var(--color-warning)", fontWeight: 600 }}>
           ⚠ Knowledge silo detected
         </div>
       )}
@@ -355,11 +445,11 @@ function ConnectionList({
               border: "none",
               borderRadius: 4,
               cursor: "pointer",
-              color: "var(--color-text-primary, #f1f5f9)",
+              color: "var(--color-text-primary)",
               fontSize: 11,
               textAlign: "left",
             }}
-            onMouseEnter={(e) => { (e.currentTarget.style.background = "rgba(148,163,184,0.1)"); }}
+            onMouseEnter={(e) => { (e.currentTarget.style.background = "var(--color-bg-wash-hover)"); }}
             onMouseLeave={(e) => { (e.currentTarget.style.background = "none"); }}
           >
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -373,5 +463,94 @@ function ConnectionList({
         <Sub style={{ paddingLeft: 6 }}>+{remaining} more</Sub>
       )}
     </div>
+  );
+}
+
+/** Inspect card for a selected layer / sub-group (kg-ux plan B5): summary +
+ * stats + the explicit drill button mirroring double-click on the canvas. */
+function ScopeInfo({
+  kind,
+  name,
+  description,
+  fileCount,
+  groupCount,
+  healthScore,
+  onClose,
+  onOpen,
+}: {
+  kind: "layer" | "group" | "folder" | "portal";
+  name: string;
+  description?: string | undefined;
+  fileCount?: number | undefined;
+  groupCount?: number | undefined;
+  healthScore?: number | null | undefined;
+  onClose: () => void;
+  onOpen: () => void;
+}) {
+  const Icon = kind === "layer" ? Layers : kind === "portal" ? ExternalLink : Folder;
+  const rows: [string, string][] = fileCount != null ? [["Files", String(fileCount)]] : [];
+  if (kind === "layer" && groupCount && groupCount > 0) {
+    rows.push(["Groups", String(groupCount)]);
+  }
+  if (healthScore !== null && healthScore !== undefined) {
+    rows.push(["Health", String(Math.round(healthScore))]);
+  }
+
+  return (
+    <>
+      <Section>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <Icon size={16} style={{ flexShrink: 0, marginTop: 2, color: "var(--color-accent-primary)" }} aria-hidden />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Title>{name}</Title>
+            <Sub style={{ marginTop: 2 }}>
+              {kind === "layer"
+                ? "Layer"
+                : kind === "folder"
+                  ? "Folder"
+                  : kind === "portal"
+                    ? "Connected layer"
+                    : "Group"}
+            </Sub>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close inspector"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--color-text-secondary)",
+              cursor: "pointer",
+              padding: 2,
+            }}
+          >
+            <X size={14} aria-hidden />
+          </button>
+        </div>
+        {description && <Sub style={{ marginTop: 6 }}>{description}</Sub>}
+      </Section>
+
+      {rows.length > 0 && (
+        <Section>
+          <KVList rows={rows} />
+        </Section>
+      )}
+
+      <Section>
+        <ActionRow>
+          <ActionButton onClick={onOpen} icon={CornerDownRight} variant="primary">
+            {kind === "layer" || kind === "portal"
+              ? "Open layer"
+              : kind === "folder"
+                ? "Expand on canvas"
+                : "Open group"}
+          </ActionButton>
+        </ActionRow>
+        <Sub style={{ marginTop: 6, fontSize: 10 }}>
+          Double-clicking the card does the same. Esc deselects.
+        </Sub>
+      </Section>
+    </>
   );
 }

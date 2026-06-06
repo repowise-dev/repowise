@@ -16,6 +16,8 @@ export { Sidebar } from "./Sidebar";
 export type { SidebarProps } from "./Sidebar";
 export { ProjectOverview } from "./ProjectOverview";
 export { ArchNodeInfo } from "./ArchNodeInfo";
+export { ArchBreadcrumb } from "./ArchBreadcrumb";
+export { ArchLegend } from "./ArchLegend";
 export type { ArchNodeInfoProps, ArchNodeHealth } from "./ArchNodeInfo";
 export { FileExplorer } from "./FileExplorer";
 export { SearchBar } from "./SearchBar";

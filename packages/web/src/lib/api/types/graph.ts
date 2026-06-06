@@ -46,6 +46,19 @@ export interface GraphExportResponse extends GraphLike<GraphNodeResponse> {
   total_node_count?: number;
 }
 
+// Community slice (Phase G4 — constellation blossom)
+export interface CommunitySliceNodeResponse extends GraphNodeResponse {
+  /** True for one-hop neighbor stubs outside the community. */
+  is_boundary?: boolean;
+}
+
+export interface CommunitySliceResponse
+  extends GraphLike<CommunitySliceNodeResponse> {
+  community_id: number;
+  member_count: number;
+  truncated?: boolean;
+}
+
 // Architecture super-node graph (Phase A)
 export interface ArchitectureNodeResponse {
   community_id: number;

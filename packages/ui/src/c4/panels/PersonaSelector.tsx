@@ -13,11 +13,11 @@ export function PersonaSelector() {
       onChange={(e) => setPersona(e.target.value as Persona)}
       style={{
         background: "transparent",
-        border: "1px solid var(--color-border-default, #334155)",
+        border: "1px solid var(--color-border-default)",
         borderRadius: 4,
         padding: "4px 8px",
         fontSize: 11,
-        color: "var(--color-text-primary, #f1f5f9)",
+        color: "var(--color-text-primary)",
         cursor: "pointer",
         outline: "none",
       }}

@@ -234,7 +234,7 @@ export function PathFinderPanel({
         className="w-full h-7 text-xs font-medium gap-1.5"
         style={{
           background: "var(--color-accent-graph)",
-          color: "#000",
+          color: "var(--color-text-on-accent)",
         }}
       >
         {loading ? (

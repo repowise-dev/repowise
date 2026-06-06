@@ -30,9 +30,12 @@ export async function WikiRenderer({ content, wikiLinks, repoId }: Props) {
 
   const preprocessed = await preprocessWikiCodeBlocks(content, {
     highlight: async (code, lang) =>
+      // Dual themes: tokens carry --shiki-light/--shiki-dark CSS vars and
+      // globals.css picks one per theme (see ".shiki span" rules there).
       codeToHtml(code, {
         lang: lang as Parameters<typeof codeToHtml>[1]["lang"],
-        theme: "vesper",
+        themes: { light: "github-light", dark: "vesper" },
+        defaultColor: false,
       }),
     resolveWikiLink,
     buildWikiLinkUrl,

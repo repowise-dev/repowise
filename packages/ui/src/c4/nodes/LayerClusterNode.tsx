@@ -2,7 +2,8 @@
 
 import { memo, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { NodeShell } from "../../graph-primitives/node-shell";
+import { InkNodeShell, type InkRole } from "./ink-node-shell";
+import { getKindIcon } from "./kind-icons";
 import { useArchitectureStore } from "../store/use-architecture-store";
 import { THEME } from "../theme/theme-variables";
 import type { ArchLayer } from "../types";
@@ -10,15 +11,33 @@ import type { ArchLayer } from "../types";
 export interface LayerClusterNodeProps {
   layer: ArchLayer;
   searchHighlight?: boolean | undefined;
+  /** "layer" (default) drills into the layer; "subGroup" renders the same
+   * card as a curated sub-group and drills into it. Reuse, not a fork. */
+  kind?: "layer" | "subGroup" | undefined;
+  /** Visually de-emphasized (Test layer by default — decision 2). */
+  demoted?: boolean | undefined;
+  /** Collapsed sibling card in the detail tier — supporting cast, not the
+   * active scope, so it recedes to secondary ink (kg-ux plan §2.2). */
+  sibling?: boolean | undefined;
+  /** Unrelated to the current selection — fade, never vanish (plan D). */
+  dimmed?: boolean | undefined;
 }
 
 function LayerClusterNodeImpl(props: NodeProps) {
   const { data, selected } = props as NodeProps & { data: LayerClusterNodeProps };
-  const { layer, searchHighlight } = data;
+  const { layer, searchHighlight, demoted, sibling, dimmed } = data;
+  const kind = data.kind ?? "layer";
   const [hovered, setHovered] = useState(false);
 
-  const handleClick = () => {
-    useArchitectureStore.getState().drillIntoLayer(layer.id);
+  // Active-scope cards are primary ink; demoted (Test) and collapsed
+  // siblings recede to secondary ink.
+  const role: InkRole = demoted || sibling ? "secondary" : "primary";
+
+  // Unified click grammar (kg-ux plan B5): single click / Enter = select +
+  // inspect (the page-level onNodeClick handles mouse; keyboard mirrors it
+  // here). Drilling moved to double-click, owned by the page handler.
+  const handleSelect = () => {
+    useArchitectureStore.getState().selectNode(layer.id);
   };
 
   const dominantComplexity = (["complex", "moderate", "simple"] as const)
@@ -53,7 +72,7 @@ function LayerClusterNodeImpl(props: NodeProps) {
         style={{
           fontSize: 12,
           fontWeight: 600,
-          color: layer.health_score >= 80 ? "#4ade80" : layer.health_score >= 60 ? "#fbbf24" : "#f87171",
+          color: layer.health_score >= 80 ? THEME.health.good : layer.health_score >= 60 ? THEME.health.fair : THEME.health.poor,
         }}
       >
         {Math.round(layer.health_score)}
@@ -74,41 +93,52 @@ function LayerClusterNodeImpl(props: NodeProps) {
         style={{
           fontSize: 10,
           opacity: hovered ? 0.9 : 0,
-          color: "var(--color-accent-primary, #f59520)",
+          color: "currentColor",
           transition: "opacity 0.2s ease",
           textAlign: "right",
         }}
       >
-        Click to explore →
+        Double-click to open →
       </div>
     </div>
   );
 
   return (
     <div
-      onClick={handleClick}
+      role="button"
+      tabIndex={0}
+      aria-label={`${kind === "subGroup" ? "Inspect group" : "Inspect layer"} ${layer.name}`}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleSelect();
+        }
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         cursor: "pointer",
         boxShadow: hovered
-          ? "0 4px 16px rgba(0,0,0,0.4)"
+          ? "0 4px 16px rgba(0,0,0,0.25)"
           : "none",
-        borderRadius: 8,
-        transition: "box-shadow 0.2s ease",
+        borderRadius: 12,
+        opacity: (demoted || dimmed) && !hovered ? 0.45 : 1,
+        transition: "box-shadow 0.2s ease, opacity 0.2s ease",
       }}
     >
-      <NodeShell
-        tone="layerCluster"
-        kindLabel="LAYER"
+      <InkNodeShell
+        role={role}
+        icon={getKindIcon(kind === "subGroup" ? "subGroup" : "layer")}
+        heroIcon
+        kindLabel={kind === "subGroup" ? "GROUP" : "LAYER"}
         title={layer.name}
         subtitle={layer.description}
-        footer={footer}
+        meta={footer}
         selected={selected}
         searchHighlight={searchHighlight}
         width={360}
         height={220}
-        titleFontSize={18}
+        titleFontSize={16}
         subtitleLineClamp={2}
         badges={
           <span style={{

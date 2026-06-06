@@ -73,6 +73,8 @@ export {
   FilterPanel,
   NodeTypeCategoryFilters,
   LearnPanel,
+  ArchBreadcrumb,
+  ArchLegend,
   PersonaSelector,
   CodeViewer,
   getLanguageFromPath,

@@ -45,8 +45,8 @@ export function C4Breadcrumb({
               padding: 0,
               cursor: seg.current ? "default" : "pointer",
               color: seg.current
-                ? "var(--color-text-primary, #f1f5f9)"
-                : "var(--color-text-secondary, #94a3b8)",
+                ? "var(--color-text-primary)"
+                : "var(--color-text-secondary)",
               fontWeight: seg.current ? 600 : 500,
             }}
           >

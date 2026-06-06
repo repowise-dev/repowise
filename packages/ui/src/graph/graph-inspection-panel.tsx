@@ -20,7 +20,7 @@ import { formatNumber } from "../lib/format";
 import type { FileNodeData, ModuleNodeData } from "./elk-layout";
 import type Graph from "graphology";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./sigma/types";
-import { COMMUNITY_COLORS } from "./sigma/constants";
+import { useCommunityFamilies } from "../shared/use-theme-tokens";
 
 interface NeighborInfo {
   id: string;
@@ -78,6 +78,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
   onEgoDepthChange,
   egoVisibleCount,
 }: GraphInspectionPanelProps) {
+  const communityFamily = useCommunityFamilies();
   const neighbors = useMemo(() => {
     if (!graph || !graph.hasNode(nodeId)) return [];
     const result: NeighborInfo[] = [];
@@ -164,6 +165,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
               inDegree={inDegree}
               outDegree={outDegree}
               communityLabel={communityLabel}
+              communityColor={communityFamily((data as FileNodeData).communityId).hub}
             />
           )}
 
@@ -182,7 +184,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
                   >
                     <span
                       className="w-0.5 h-5 rounded-full shrink-0"
-                      style={{ background: COMMUNITY_COLORS[n.communityId % COMMUNITY_COLORS.length] }}
+                      style={{ background: communityFamily(n.communityId).hub }}
                     />
                     <div className="min-w-0 flex-1">
                       <p className="text-[11px] font-mono text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] truncate">
@@ -289,6 +291,7 @@ function FileMetadata({
   inDegree,
   outDegree,
   communityLabel,
+  communityColor,
 }: {
   data: FileNodeData;
   pagerankPct: number;
@@ -296,6 +299,7 @@ function FileMetadata({
   inDegree: number;
   outDegree: number;
   communityLabel?: string | undefined;
+  communityColor: string;
 }) {
   return (
     <div className="space-y-2">
@@ -333,7 +337,7 @@ function FileMetadata({
         <span className="flex items-center gap-1.5">
           <span
             className="w-2 h-2 rounded-full"
-            style={{ background: COMMUNITY_COLORS[data.communityId % COMMUNITY_COLORS.length] }}
+            style={{ background: communityColor }}
           />
           <span className="font-medium text-[var(--color-text-primary)]">
             {communityLabel ?? `#${data.communityId}`}
@@ -388,7 +392,7 @@ function ModuleMetadata({
   outDegree: number;
 }) {
   const docPct = Math.round((data.docCoveragePct ?? 0) * 100);
-  const docColor = docPct >= 70 ? "#22c55e" : docPct >= 30 ? "#f59e0b" : "#ef4444";
+  const docColor = docPct >= 70 ? "var(--color-success)" : docPct >= 30 ? "var(--color-warning)" : "var(--color-error)";
 
   return (
     <div className="space-y-2">

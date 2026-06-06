@@ -132,9 +132,9 @@ export function C4ExportMenu({
           padding: "4px 10px",
           fontSize: 11,
           fontWeight: 500,
-          color: "var(--color-text-secondary, #cbd5e1)",
+          color: "var(--color-text-secondary)",
           background: "transparent",
-          border: "1px solid var(--color-border-default, #334155)",
+          border: "1px solid var(--color-border-default)",
           borderRadius: 4,
           cursor: disabled ? "not-allowed" : "pointer",
           opacity: disabled ? 0.5 : 1,
@@ -151,8 +151,8 @@ export function C4ExportMenu({
             top: "calc(100% + 4px)",
             right: 0,
             minWidth: 200,
-            background: "var(--color-bg-elevated, #111827)",
-            border: "1px solid var(--color-border-default, #334155)",
+            background: "var(--color-bg-elevated)",
+            border: "1px solid var(--color-border-default)",
             borderRadius: 6,
             boxShadow: "0 10px 30px rgba(0,0,0,0.4)",
             padding: 4,
@@ -187,7 +187,7 @@ export function C4ExportMenu({
             </>
           )}
           {status === "error" && (
-            <div style={{ padding: "6px 10px", fontSize: 10, color: "#fca5a5" }}>
+            <div style={{ padding: "6px 10px", fontSize: 10, color: "var(--color-error)" }}>
               Export failed. Try again.
             </div>
           )}
@@ -219,13 +219,13 @@ function MenuItem({
         padding: "6px 10px",
         background: "transparent",
         border: "none",
-        color: "var(--color-text-primary, #f1f5f9)",
+        color: "var(--color-text-primary)",
         fontSize: 12,
         textAlign: "left",
         cursor: "pointer",
         borderRadius: 4,
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(148,163,184,0.12)")}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-border-subtle)")}
       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
     >
       {icon}
@@ -239,7 +239,7 @@ function Divider() {
     <div
       style={{
         height: 1,
-        background: "var(--color-border-default, #334155)",
+        background: "var(--color-border-default)",
         margin: "4px 2px",
       }}
     />

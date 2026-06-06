@@ -40,13 +40,13 @@ export function C4LevelTabs({ level, onLevelChange, l3Enabled }: C4LevelTabsProp
               fontSize: 12,
               fontWeight: 500,
               borderRadius: 6,
-              border: "1px solid var(--color-border-default, #334155)",
+              border: "1px solid var(--color-border-default)",
               background: active
                 ? "var(--color-accent-muted, rgba(245,149,32,0.15))"
                 : "transparent",
               color: active
-                ? "var(--color-accent-primary, #f59520)"
-                : "var(--color-text-secondary, #94a3b8)",
+                ? "var(--color-accent-primary)"
+                : "var(--color-text-secondary)",
               cursor: disabled ? "not-allowed" : "pointer",
               opacity: disabled ? 0.4 : 1,
             }}

@@ -25,7 +25,7 @@ import { Button } from "../ui/button";
 
 export type ColorMode = "language" | "community" | "risk";
 export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
-export type LayoutMode = "hierarchical" | "force";
+export type LayoutMode = "hierarchical" | "force" | "radial";
 export type GraphTheme = "light" | "dark";
 
 /**
@@ -115,6 +115,14 @@ const LAYOUT_MODES: { id: LayoutMode; icon: typeof GitBranch; label: string }[] 
   { id: "hierarchical", icon: GitBranch, label: "Hierarchical" },
 ];
 
+// The constellation (Knowledge Graph) scope is always radial — a single
+// disabled-looking indicator replaces the Force/Hierarchical toggle there.
+const RADIAL_LAYOUT: { id: LayoutMode; icon: typeof GitFork; label: string } = {
+  id: "radial",
+  icon: GitFork,
+  label: "Radial",
+};
+
 export const GraphToolbar = memo(function GraphToolbar({
   viewMode,
   onViewChange,
@@ -141,6 +149,11 @@ export const GraphToolbar = memo(function GraphToolbar({
   // the single source of truth — callers can continue to round-trip the
   // wire-format ``viewMode`` value through query params without translation.
   const { scope: activeScope, overlays: activeOverlays } = viewModeToScopeOverlays(viewMode);
+
+  // The Knowledge Graph (constellation) scope is a fixed radial composition:
+  // overlays / FA2 / hierarchical layout don't apply, so those controls are
+  // hidden here rather than shown in a half-working state.
+  const isConstellation = activeScope === "architecture";
 
   const setScope = (next: Scope) => {
     onViewChange(scopeOverlaysToViewMode(next, activeOverlays));
@@ -180,7 +193,8 @@ export const GraphToolbar = memo(function GraphToolbar({
         })}
       </div>
 
-      {/* Overlays (additive signal chips) */}
+      {/* Overlays (additive signal chips) — not applicable in the constellation */}
+      {!isConstellation && (
       <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
         {OVERLAYS.map((o) => {
           const Icon = o.icon;
@@ -204,29 +218,45 @@ export const GraphToolbar = memo(function GraphToolbar({
           );
         })}
       </div>
+      )}
 
       <div className="flex gap-1.5 items-center">
         <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
-          {LAYOUT_MODES.map((m) => {
-            const Icon = m.icon;
-            const isActive = layoutMode === m.id;
-            return (
-              <button
-                key={m.id}
-                onClick={() => onLayoutModeChange(m.id)}
-                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
-                  isActive
-                    ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
-                    : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
-                }`}
-                title={m.label}
-                aria-label={m.label}
-                aria-pressed={isActive}
-              >
-                <Icon className="w-3 h-3" />
-              </button>
-            );
-          })}
+          {isConstellation ? (
+            // Constellation is locked to the radial layout; show a single
+            // active indicator instead of the Force/Hierarchical toggle.
+            <button
+              key={RADIAL_LAYOUT.id}
+              disabled
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)] cursor-default"
+              title={`${RADIAL_LAYOUT.label} (fixed for Knowledge Graph)`}
+              aria-label={RADIAL_LAYOUT.label}
+              aria-pressed
+            >
+              <RADIAL_LAYOUT.icon className="w-3 h-3" />
+            </button>
+          ) : (
+            LAYOUT_MODES.map((m) => {
+              const Icon = m.icon;
+              const isActive = layoutMode === m.id;
+              return (
+                <button
+                  key={m.id}
+                  onClick={() => onLayoutModeChange(m.id)}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                    isActive
+                      ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
+                      : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
+                  }`}
+                  title={m.label}
+                  aria-label={m.label}
+                  aria-pressed={isActive}
+                >
+                  <Icon className="w-3 h-3" />
+                </button>
+              );
+            })
+          )}
         </div>
 
         <div className="flex gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-lg shadow-black/20">
@@ -264,6 +294,9 @@ export const GraphToolbar = memo(function GraphToolbar({
           >
             {graphTheme === "dark" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
           </Button>
+          {/* Path finder / execution flows operate on file-level nodes and
+              don't apply to the community constellation — hidden there. */}
+          {!isConstellation && (
           <Button
             size="sm"
             variant="ghost"
@@ -275,6 +308,8 @@ export const GraphToolbar = memo(function GraphToolbar({
           >
             <Route className="w-3.5 h-3.5" />
           </Button>
+          )}
+          {!isConstellation && (
           <Button
             size="sm"
             variant="ghost"
@@ -286,6 +321,8 @@ export const GraphToolbar = memo(function GraphToolbar({
           >
             <Workflow className="w-3.5 h-3.5" />
           </Button>
+          )}
+          {!isConstellation && (
           <Button
             size="sm"
             variant="ghost"
@@ -297,6 +334,7 @@ export const GraphToolbar = memo(function GraphToolbar({
           >
             <EyeOff className="w-3.5 h-3.5" />
           </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"

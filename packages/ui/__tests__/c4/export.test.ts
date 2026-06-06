@@ -124,12 +124,14 @@ function makeArchView(overrides?: Partial<ArchitectureView>): ArchitectureView {
         node_ids: ["file1", "func1"], file_count: 2,
         complexity_distribution: { simple: 1, moderate: 1, complex: 0 },
         health_score: 90,
+        sub_groups: [], display_order: 0,
       },
       {
         id: "layer:core", name: "Core", description: "Core layer",
         node_ids: ["class1"], file_count: 1,
         complexity_distribution: { simple: 0, moderate: 0, complex: 1 },
         health_score: 70,
+        sub_groups: [], display_order: 1,
       },
     ],
     nodes,
@@ -141,6 +143,8 @@ function makeArchView(overrides?: Partial<ArchitectureView>): ArchitectureView {
     languages: ["typescript"],
     frameworks: [],
     external_systems: [],
+    entry_points: [],
+    entry_candidates: [],
     ...overrides,
   };
 }
@@ -174,7 +178,7 @@ describe("SVG export - new node types", () => {
     expect(svg).toContain("7 files");
   });
 
-  it("test_svg_export_tone_colors: fill colors match TONE_STYLES", () => {
+  it("test_svg_export_ink_palette: arch nodes render blueprint ink (kg-ux B7)", () => {
     const nodes: Node[] = [
       makeArchFileNode("f1", "file"),
       makeLayerClusterNode("lc1"),
@@ -182,15 +186,21 @@ describe("SVG export - new node types", () => {
     ];
     const svg = buildC4Svg(nodes, []);
 
-    expect(svg).toContain(TONE_STYLES.file.bg);
-    expect(svg).toContain(TONE_STYLES.file.border);
-    expect(svg).toContain(TONE_STYLES.file.band);
+    // Headless export resolves the light-mode fallbacks of the kg tokens.
+    expect(svg).toContain("#fffdf8"); // --color-kg-node-fill (paper card)
+    expect(svg).toContain("#241b2c"); // --color-kg-node-text / ink outline
+    expect(svg).toContain("#826aa0"); // --color-diagram-cluster-border (ghost portal)
+    expect(svg).toContain("#f4eae1"); // warm paper canvas
+    expect(svg).toContain("kg-grid"); // graph-paper pattern
+    expect(svg).toContain('stroke-dasharray="8 5"'); // dashed ghost boundary
+  });
 
-    expect(svg).toContain(TONE_STYLES.layerCluster.bg);
-    expect(svg).toContain(TONE_STYLES.layerCluster.band);
-
-    expect(svg).toContain(TONE_STYLES.portal.border);
-    expect(svg).toContain(TONE_STYLES.portal.band);
+  it("test_svg_export_entry_accent: entry points render the ember gradient", () => {
+    const entry = makeArchFileNode("e1", "file");
+    (entry.data as { node: { is_entry_point: boolean } }).node.is_entry_point = true;
+    const svg = buildC4Svg([entry], []);
+    expect(svg).toContain("url(#kg-ember)");
+    expect(svg).toContain("#f59520");
   });
 
   it("test_svg_export_backward_compat: existing C4 node types still render", () => {
