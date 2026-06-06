@@ -1,0 +1,59 @@
+{
+ "repo": "fd",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 77% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "rust": {
+    "edges_per_file": 7.48,
+    "files": 23,
+    "import_edges": 172,
+    "import_support": "full",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.32
+   },
+   "shell": {
+    "edges_per_file": 0.0,
+    "files": 4,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 4,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "rust",
+  "entry_points": [
+   "src/main.rs"
+  ],
+  "modules": {
+   "count": 2,
+   "max_size": 36,
+   "min_size": 9,
+   "names": [
+    "Application",
+    "Config"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "src/main.rs",
+   "src/cli.rs",
+   "src/fmt/mod.rs",
+   "src/exec/mod.rs",
+   "src/filter/mod.rs",
+   "src/filesystem.rs",
+   "src/exit_codes.rs",
+   "src/filter/size.rs",
+   "src/filter/time.rs",
+   "src/dir_entry.rs",
+   "tests/tests.rs"
+  ]
+ }
+}

@@ -1,0 +1,61 @@
+{
+ "repo": "gson",
+ "smells": [],
+ "stats": {
+  "by_language": {
+   "java": {
+    "edges_per_file": 7.37,
+    "files": 262,
+    "hint_edges": {
+     "same_package": 143
+    },
+    "import_edges": 1930,
+    "import_support": "full",
+    "orphan_files": 8,
+    "orphan_ratio": 0.031,
+    "resolution_rate": 0.714
+   },
+   "proto": {
+    "edges_per_file": 0.0,
+    "files": 4,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 4,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "java",
+  "entry_points": [],
+  "modules": {
+   "count": 9,
+   "max_size": 87,
+   "min_size": 3,
+   "names": [
+    "Application (top-level)",
+    "Config",
+    "Middleware",
+    "gson",
+    "proto/test",
+    "test",
+    "test-shrinker",
+    "test/functional",
+    "test/internal"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "gson/src/main/java/com/google/gson/GsonBuilder.java",
+   "gson/src/main/java/com/google/gson/stream/JsonReader.java",
+   "gson/src/main/java/com/google/gson/stream/JsonWriter.java",
+   "gson/src/main/java/com/google/gson/JsonElement.java",
+   "gson/src/main/java/com/google/gson/reflect/TypeToken.java",
+   "gson/src/main/java/com/google/gson/JsonObject.java",
+   "gson/src/main/java/com/google/gson/JsonSerializer.java",
+   "gson/src/main/java/com/google/gson/JsonDeserializer.java",
+   "gson/src/main/java/com/google/gson/internal/bind/util/ISO8601Utils.java",
+   "extras/src/main/java/com/google/gson/interceptors/JsonPostDeserializer.java",
+   "gson/src/test/java/com/google/gson/FieldAttributesTest.java"
+  ]
+ }
+}

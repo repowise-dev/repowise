@@ -1,0 +1,245 @@
+# KG validation matrix — every repo pinned to a commit so baselines and
+# regressions are reproducible. Clones live under /tmp/kg-validate (override
+# with KG_VALIDATE_DIR). `source` is a git URL or a local path to clone from.
+#
+# tier: import-support tier of the dominant language (1 = full resolver +
+# validated, 2 = resolver never live-validated, 3 = passthrough).
+
+[chi]
+source = "https://github.com/go-chi/chi"
+sha = "3b171578ca44dfd75ca3c5cbddc7b44c600a7b49"
+language = "go"
+tier = 1
+
+[django]
+source = "https://github.com/django/django"
+sha = "a53e02af6d7a07d0367b534f7107a0e2a37e3d34"
+language = "python"
+tier = 1
+
+[express]
+source = "https://github.com/expressjs/express"
+sha = "dae209ae6559c29cfca2a1f4414c51d89ea643d5"
+language = "javascript"
+tier = 1
+
+[fd]
+source = "https://github.com/sharkdp/fd"
+sha = "f7d4d717c287a7834f8721efc0fa91c51d92afee"
+language = "rust"
+tier = 1
+
+[flask]
+source = "https://github.com/pallets/flask"
+sha = "954f5684e4841aad84a8eec7ace7b81a0d3f6831"
+language = "python"
+tier = 1
+
+[gson]
+source = "https://github.com/google/gson"
+sha = "004e7a4949e08b430e3c8996998ee5a17ff9423a"
+language = "java"
+tier = 1
+
+[httpx]
+source = "https://github.com/encode/httpx"
+sha = "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+language = "python"
+tier = 1
+
+[mini-taskq]
+source = "fixtures/mini-taskq.bundle"
+sha = "245eb8213b4ac28571d83cb5080a3146548e4324"
+language = "python"
+tier = 1
+
+[pydantic]
+source = "https://github.com/pydantic/pydantic"
+sha = "86f6bbfc3597088df757e8a2c40eb04a38699492"
+language = "python"
+tier = 1
+
+[repowise-main]
+source = "."
+sha = "413e82905e2d48b8699c7a61c2b98920c2fc555a"
+language = "python"
+tier = 1
+
+[requests]
+source = "https://github.com/psf/requests"
+sha = "cd90742ed94d901759e26766197d0ce7c7bd9c8e"
+language = "python"
+tier = 1
+
+[sinatra]
+source = "https://github.com/sinatra/sinatra"
+sha = "5236d3459b8b9015e5ce21ddd0c6beb0db4081d4"
+language = "ruby"
+tier = 1
+
+[typst]
+source = "https://github.com/typst/typst"
+sha = "07f5f1afca0a037e03911c8b56e8a14742ac2e8d"
+language = "rust"
+tier = 1
+
+[jason]
+source = "https://github.com/michalmuskala/jason"
+sha = "4ede42858eb19f80ec9e863aab52df466eab8608"
+language = "elixir"
+tier = 2
+
+# --- Tier-2 live-validation batch ---
+
+[okio]
+source = "https://github.com/square/okio"
+sha = "722c8be0043d99b7b08d169b0ae90a24c15267ff"
+language = "kotlin"
+tier = 1
+
+[scopt]
+source = "https://github.com/scopt/scopt"
+sha = "9512cd03475c4c6421cd6ab5a588cb3e1bb7b7e8"
+language = "scala"
+tier = 2
+
+[polly]
+source = "https://github.com/App-vNext/Polly"
+sha = "e984839b8324a163270f0bc686929a1066de69e0"
+language = "csharp"
+tier = 1
+
+[fmt]
+source = "https://github.com/fmtlib/fmt"
+sha = "e6a8751df7a68144952d5b21b0d4a76327b6c9f7"
+language = "cpp"
+tier = 1
+
+[alamofire]
+source = "https://github.com/Alamofire/Alamofire"
+sha = "7595cbcf59809f9977c5f6378500de2ad73b7ddb"
+language = "swift"
+tier = 1
+
+[slim]
+source = "https://github.com/slimphp/Slim"
+sha = "e12cb05ca2a14e8f459d019e87a31dc915b80470"
+language = "php"
+tier = 1
+
+[roblox-lua-promise]
+source = "https://github.com/evaera/roblox-lua-promise"
+sha = "031d429c82ee458a849e79fa523523bd349d7695"
+language = "luau"
+tier = 2
+
+[libuv]
+source = "https://github.com/libuv/libuv"
+sha = "cdc632c68feb3961f84ea109295db38dfa082347"
+language = "c"
+tier = 1
+
+# Go repo WITH internal/ — exercises the Go internal/->Service layer hints
+# that chi's flat layout never reaches.
+[task]
+source = "https://github.com/go-task/task"
+sha = "f50327f2a2883f9e5b4d7c7c2ae489d6334e2bd9"
+language = "go"
+tier = 1
+
+# --- Lightweight regex-resolver batch (promoted from passthrough) ---
+
+[plug]
+source = "https://github.com/elixir-plug/plug"
+sha = "d2580b0579a7d804b2dfa0f9ed35d459236143ed"
+language = "elixir"
+tier = 2
+
+[args]
+source = "https://github.com/dart-lang/args"
+sha = "7a2dfb528768f0a2e5680f711dbfb948f1d6c255"
+language = "dart"
+tier = 2
+
+[compojure]
+source = "https://github.com/weavejester/compojure"
+sha = "8a4758d28e8fcd28fa7610dca6e2908d039e6a4f"
+language = "clojure"
+tier = 2
+
+[aeson]
+source = "https://github.com/haskell/aeson"
+sha = "19f8eddb9bd6aaa464f21a54fa1f7cd7740112c3"
+language = "haskell"
+tier = 2
+
+[argu]
+source = "https://github.com/fsprojects/Argu"
+sha = "198f4d50fd5208a84c4e02c87eba8cc92a13a5f0"
+language = "fsharp"
+tier = 2
+
+# cowlib substitutes rebar3 (a large build tool with vendored deps) — a
+# pure small Erlang library exercises include/behaviour/qualified-call
+# resolution at harness-friendly size.
+[cowlib]
+source = "https://github.com/ninenines/cowlib"
+sha = "71ae94fa42cbe55fdc5bfbb3d712ba8ab1b2918f"
+language = "erlang"
+tier = 2
+
+# --- Structural-mode batch (no resolver; harness-only acceptance) ---
+
+[zig-clap]
+source = "https://github.com/Hejsil/zig-clap"
+sha = "bf56f229ed5b6c381d90e192234913c6deb3f688"
+language = "zig"
+tier = 3
+
+[jsony]
+source = "https://github.com/treeform/jsony"
+sha = "c5874fb71435e3ced8ee0025822e15f5d0e8e622"
+language = "nim"
+tier = 3
+
+[dfmt]
+source = "https://github.com/dlang-community/dfmt"
+sha = "c65d1c8a9cd2d784ded4cc7517c2cdd42c0c5c76"
+language = "dlang"
+tier = 3
+
+[glue]
+source = "https://github.com/tidyverse/glue"
+sha = "da9c73f7a3de6a27f3103cb5bb2355820a4c3a6a"
+language = "r"
+tier = 3
+
+[ordered-collections]
+source = "https://github.com/JuliaCollections/OrderedCollections.jl"
+sha = "d5d76c771c7e5a49100ee65720a9d5a9654be420"
+language = "julia"
+tier = 3
+
+[elm-html]
+source = "https://github.com/elm/html"
+sha = "1affbf39efef4b4529110a567f706130c178a457"
+language = "elm"
+tier = 3
+
+[kemal]
+source = "https://github.com/kemalcr/kemal"
+sha = "73e4c01d0ae40a01feb3ca759eed709c356a6701"
+language = "crystal"
+tier = 3
+
+[sexplib]
+source = "https://github.com/janestreet/sexplib"
+sha = "7d6edfaa89ae1182f51fe1161b86c773bdf31778"
+language = "ocaml"
+tier = 3
+
+[afnetworking]
+source = "https://github.com/AFNetworking/AFNetworking"
+sha = "d9f589cc2c1fe9d55eb5eea00558010afea7a41e"
+language = "objectivec"
+tier = 3

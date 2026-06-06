@@ -1,0 +1,64 @@
+{
+ "repo": "sinatra",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Test holds 55% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "asciidoc": {
+    "edges_per_file": 0.0,
+    "files": 1,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 1,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "ruby": {
+    "edges_per_file": 1.31,
+    "files": 147,
+    "hint_edges": {
+     "spec_mirror": 17
+    },
+    "import_edges": 192,
+    "import_support": "full",
+    "orphan_files": 6,
+    "orphan_ratio": 0.041,
+    "resolution_rate": 0.771
+   }
+  },
+  "dominant_language": "ruby",
+  "entry_points": [
+   "lib/sinatra/main.rb"
+  ],
+  "modules": {
+   "count": 4,
+   "max_size": 94,
+   "min_size": 3,
+   "names": [
+    "Application",
+    "Config",
+    "Service",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "lib/sinatra/main.rb",
+   "lib/sinatra/base.rb",
+   "lib/sinatra.rb",
+   "rack-protection/lib/rack/protection.rb",
+   "lib/sinatra/show_exceptions.rb",
+   "lib/sinatra/indifferent_hash.rb",
+   "lib/sinatra/middleware/logger.rb",
+   "lib/sinatra/version.rb",
+   "rack-protection/lib/rack/protection/version.rb",
+   "sinatra-contrib/lib/sinatra/contrib/setup.rb",
+   "test/test_helper.rb"
+  ]
+ }
+}

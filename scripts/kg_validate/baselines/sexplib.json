@@ -1,0 +1,38 @@
+{
+ "repo": "sexplib",
+ "smells": [],
+ "stats": {
+  "by_language": {
+   "ocaml": {
+    "edges_per_file": 0.0,
+    "files": 54,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 54,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "ocaml",
+  "entry_points": [],
+  "modules": {
+   "count": 3,
+   "max_size": 29,
+   "min_size": 6,
+   "names": [
+    "Application",
+    "Service",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "sexplib",
+   "src/sexplib.ml",
+   "src/conv.ml",
+   "num/lib/sexplib_num.ml",
+   "unix/lib/sexplib_unix.ml",
+   "top/sexplib_install_printers.ml",
+   "test/import.ml"
+  ]
+ }
+}

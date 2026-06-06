@@ -1,0 +1,98 @@
+{
+ "repo": "typst",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 84% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "javascript": {
+    "edges_per_file": 0.0,
+    "files": 2,
+    "import_edges": 0,
+    "import_support": "full",
+    "orphan_files": 2,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "rust": {
+    "edges_per_file": 8.56,
+    "files": 400,
+    "import_edges": 3423,
+    "import_support": "full",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.623
+   },
+   "typescript": {
+    "edges_per_file": 3.0,
+    "files": 1,
+    "import_edges": 3,
+    "import_support": "full",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 0.0
+   }
+  },
+  "dominant_language": "rust",
+  "entry_points": [
+   "crates/typst-utils/src/lib.rs",
+   "crates/typst-library/src/lib.rs",
+   "crates/typst-syntax/src/lib.rs",
+   "crates/typst-macros/src/lib.rs",
+   "crates/typst-pdf/src/lib.rs",
+   "crates/typst/src/lib.rs",
+   "crates/typst-layout/src/lib.rs",
+   "crates/typst-bundle/src/lib.rs"
+  ],
+  "modules": {
+   "count": 25,
+   "max_size": 55,
+   "min_size": 4,
+   "names": [
+    "CLI",
+    "Config",
+    "Test",
+    "UI",
+    "Utility",
+    "crates",
+    "docs",
+    "typst-eval",
+    "typst-html",
+    "typst-ide",
+    "typst-kit",
+    "typst-layout",
+    "typst-library/foundations",
+    "typst-library/introspection",
+    "typst-library/layout",
+    "typst-library/loading",
+    "typst-library/math",
+    "typst-library/model",
+    "typst-library/text",
+    "typst-library/visualize",
+    "typst-macros",
+    "typst-pdf",
+    "typst-svg",
+    "typst-syntax",
+    "typst-utils"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "crates/typst-kit/src/server.rs",
+   "crates/typst-cli/src/main.rs",
+   "crates/typst-library/src/foundations/mod.rs",
+   "crates/typst-library/src/layout/mod.rs",
+   "crates/typst-library/src/introspection/mod.rs",
+   "crates/typst-utils/src/lib.rs",
+   "crates/typst-library/src/visualize/mod.rs",
+   "crates/typst-library/src/text/mod.rs",
+   "crates/typst-pdf/src/tags/util/mod.rs",
+   "crates/typst-layout/src/pages/mod.rs",
+   "tests/src/args.rs"
+  ]
+ }
+}

@@ -1,0 +1,45 @@
+{
+ "repo": "jsony",
+ "smells": [
+  {
+   "code": "tour_too_short",
+   "message": "only 4 steps",
+   "severity": "WARN"
+  },
+  {
+   "code": "catchall_layer",
+   "message": "Test holds 91% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "nim": {
+    "edges_per_file": 0.0,
+    "files": 32,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 32,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "nim",
+  "entry_points": [],
+  "modules": {
+   "count": 2,
+   "max_size": 30,
+   "min_size": 3,
+   "names": [
+    "Application",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "src/jsony.nim",
+   "src/jsony/objvar.nim",
+   "tests/all.nim"
+  ]
+ }
+}

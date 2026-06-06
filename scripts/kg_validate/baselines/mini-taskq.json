@@ -1,0 +1,45 @@
+{
+ "repo": "mini-taskq",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 82% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "python": {
+    "edges_per_file": 1.71,
+    "files": 7,
+    "import_edges": 12,
+    "import_support": "full",
+    "orphan_files": 0,
+    "orphan_ratio": 0.0,
+    "resolution_rate": 1.0
+   }
+  },
+  "dominant_language": "python",
+  "entry_points": [
+   "taskq/cli.py"
+  ],
+  "modules": {
+   "count": 1,
+   "max_size": 9,
+   "min_size": 9,
+   "names": [
+    "Application"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "taskq/cli.py",
+   "taskq/queue.py",
+   "taskq/task.py",
+   "taskq/retry.py",
+   "taskq/storage.py",
+   "taskq/__init__.py",
+   "tests/test_queue.py"
+  ]
+ }
+}

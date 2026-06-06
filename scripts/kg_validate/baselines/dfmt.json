@@ -1,0 +1,62 @@
+{
+ "repo": "dfmt",
+ "smells": [
+  {
+   "code": "tour_too_short",
+   "message": "only 5 steps",
+   "severity": "WARN"
+  },
+  {
+   "code": "catchall_layer",
+   "message": "Test holds 93% of layered nodes",
+   "severity": "WARN"
+  },
+  {
+   "code": "module_oversized",
+   "message": "Test has 247 files with subdirs (window 120)",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "dlang": {
+    "edges_per_file": 0.0,
+    "files": 256,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 256,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   },
+   "shell": {
+    "edges_per_file": 0.0,
+    "files": 4,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 4,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "dlang",
+  "entry_points": [
+   "src/dfmt/main.d"
+  ],
+  "modules": {
+   "count": 2,
+   "max_size": 247,
+   "min_size": 17,
+   "names": [
+    "Application",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "dubhash.d",
+   "src/dfmt/ast_info.d",
+   "release-windows.sh",
+   "tests/2d_arrays.d"
+  ]
+ }
+}

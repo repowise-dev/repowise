@@ -1,0 +1,55 @@
+{
+ "repo": "plug",
+ "smells": [],
+ "stats": {
+  "by_language": {
+   "elixir": {
+    "edges_per_file": 1.18,
+    "files": 77,
+    "import_edges": 91,
+    "import_support": "partial",
+    "orphan_files": 19,
+    "orphan_ratio": 0.247,
+    "resolution_rate": 0.989
+   },
+   "erlang": {
+    "edges_per_file": 0.0,
+    "files": 1,
+    "import_edges": 0,
+    "import_support": "partial",
+    "orphan_files": 1,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "elixir",
+  "entry_points": [
+   "lib/plug/application.ex"
+  ],
+  "modules": {
+   "count": 4,
+   "max_size": 41,
+   "min_size": 3,
+   "names": [
+    "Application",
+    "Config",
+    "Service",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "lib/plug/application.ex",
+   "lib/plug/router.ex",
+   "lib/plug/builder.ex",
+   "lib/plug/error_handler.ex",
+   "lib/plug/debugger.ex",
+   "lib/plug/conn.ex",
+   "lib/plug/conn/unfetched.ex",
+   "lib/plug.ex",
+   "src/plug_multipart.erl",
+   "config/config.exs",
+   "test/test_helper.exs"
+  ]
+ }
+}

@@ -1,0 +1,43 @@
+{
+ "repo": "elm-html",
+ "smells": [
+  {
+   "code": "tour_too_short",
+   "message": "only 3 steps",
+   "severity": "WARN"
+  },
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 90% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "elm": {
+    "edges_per_file": 0.0,
+    "files": 5,
+    "import_edges": 0,
+    "import_support": "none",
+    "orphan_files": 5,
+    "orphan_ratio": 1.0,
+    "resolution_rate": null
+   }
+  },
+  "dominant_language": "elm",
+  "entry_points": [],
+  "modules": {
+   "count": 1,
+   "max_size": 9,
+   "min_size": 9,
+   "names": [
+    "Application"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "src/Html.elm",
+   "src/Html/Attributes.elm"
+  ]
+ }
+}

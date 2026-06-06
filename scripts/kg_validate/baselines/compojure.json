@@ -1,0 +1,46 @@
+{
+ "repo": "compojure",
+ "smells": [
+  {
+   "code": "catchall_layer",
+   "message": "Application holds 61% of layered nodes",
+   "severity": "WARN"
+  }
+ ],
+ "stats": {
+  "by_language": {
+   "clojure": {
+    "edges_per_file": 2.33,
+    "files": 12,
+    "import_edges": 28,
+    "import_support": "partial",
+    "orphan_files": 1,
+    "orphan_ratio": 0.083,
+    "resolution_rate": 0.464
+   }
+  },
+  "dominant_language": "clojure",
+  "entry_points": [
+   "src/compojure/core.clj"
+  ],
+  "modules": {
+   "count": 2,
+   "max_size": 11,
+   "min_size": 5,
+   "names": [
+    "Application",
+    "Test"
+   ]
+  },
+  "tour_paths": [
+   "README.md",
+   "src/compojure/core.clj",
+   "src/compojure/response.clj",
+   "src/compojure/coercions.clj",
+   "src/compojure/route.clj",
+   "src/compojure/middleware.clj",
+   "src/compojure/handler.clj",
+   "test/compojure/coercions_test.clj"
+  ]
+ }
+}
