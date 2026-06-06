@@ -346,29 +346,3 @@ export function mergeCommunitySlice(
 
   return { satelliteIds };
 }
-
-/**
- * Remove a community's blossomed satellites/edges/stubs from *graph*, restoring
- * the collapsed constellation. Drops member nodes, their slice/spoke edges, and
- * boundary stubs that are no longer referenced by any remaining slice edge.
- */
-export function dropCommunitySlice(
-  graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
-  communityId: number,
-  slice: CommunitySlice,
-): void {
-  const members = slice.nodes.filter((n) => !n.is_boundary);
-  const boundary = slice.nodes.filter((n) => n.is_boundary);
-
-  for (const m of members) {
-    if (graph.hasNode(m.node_id)) graph.dropNode(m.node_id);
-  }
-  // Boundary stubs may be shared by another still-expanded community; only drop
-  // ones with no remaining edges after the member nodes were removed.
-  for (const b of boundary) {
-    if (graph.hasNode(b.node_id) && graph.degree(b.node_id) === 0) {
-      graph.dropNode(b.node_id);
-    }
-  }
-  void communityId;
-}

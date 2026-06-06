@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import type Sigma from "sigma";
 import type Graph from "graphology";
+import type { NodeLabelDrawingFunction, drawDiscNodeLabel } from "sigma/rendering";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
 import type { ColorMode } from "../graph-toolbar";
 import type { Signal } from "../context";
@@ -31,6 +32,196 @@ const THEME_COLORS = {
   dark:  { bg: [18, 18, 28] as const, text: "#f5f5f7", subtitle: "#888888", tooltip: "#12121c" },
   light: { bg: [250, 250, 252] as const, text: "#1a1a2e", subtitle: "#666666", tooltip: "#ffffff" },
 };
+
+/**
+ * Hub/core disc-label drawer, built per theme. Hub/core labels render centered
+ * *inside* the disc (ROBOTICS-style) with a soft halo ring in the family hue;
+ * everything else falls through to Sigma's stock side-label drawer. Factored out
+ * of the init effect so the theme effect can re-set it on light/dark toggle
+ * (the closure must NOT capture stale theme colors). Closes over only its args +
+ * the stable THEME_COLORS import.
+ */
+function makeDrawNodeLabel(
+  graphTheme: "light" | "dark",
+  drawDisc: typeof drawDiscNodeLabel,
+): NodeLabelDrawingFunction {
+  return (context, data, settings) => {
+    const extra = data as unknown as Record<string, unknown>;
+    const kind = extra.nodeType as string | undefined;
+    if (kind !== "hub" && kind !== "core") {
+      drawDisc(context, data, settings);
+      return;
+    }
+
+    const theme = THEME_COLORS[graphTheme] ?? THEME_COLORS.dark;
+    const size = data.size || 20;
+
+    // Soft 2px halo ring in the family hue (emulated — NodeCircleProgram
+    // has no border and @sigma/node-border isn't a dependency).
+    const halo = (extra.haloColor as string) || data.color;
+    context.beginPath();
+    context.arc(data.x, data.y, size + 2.5, 0, Math.PI * 2);
+    context.lineWidth = 2;
+    context.strokeStyle = halo;
+    context.globalAlpha = 0.55;
+    context.stroke();
+    context.globalAlpha = 1;
+
+    const label = data.label;
+    if (!label) return;
+
+    // Fit the uppercase label inside the disc; shrink for long names.
+    const font = settings.labelFont || "JetBrains Mono, monospace";
+    let fontSize = Math.max(9, Math.min(13, size * 0.55));
+    context.font = `600 ${fontSize}px ${font}`;
+    const maxWidth = size * 1.9;
+    while (context.measureText(label).width > maxWidth && fontSize > 7) {
+      fontSize -= 1;
+      context.font = `600 ${fontSize}px ${font}`;
+    }
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    // Core is dark → light text; hubs are warm → dark text for contrast.
+    context.fillStyle = kind === "core" ? theme.text : "#1a1320";
+    context.fillText(label, data.x, data.y);
+  };
+}
+
+/**
+ * Hover tooltip drawer, built per theme. Hubs get a small surface card (member
+ * count, doc %, langs); other nodes get a label/path pill. Factored out of the
+ * init effect alongside makeDrawNodeLabel so the theme effect can re-set it on
+ * light/dark toggle. Closes over only its arg + the stable THEME_COLORS import.
+ */
+function makeDrawNodeHover(graphTheme: "light" | "dark"): NodeLabelDrawingFunction {
+  return (context, data, settings) => {
+    const label = data.label;
+    if (!label) return;
+
+    const theme = THEME_COLORS[graphTheme] ?? THEME_COLORS.dark;
+    const extra = data as Record<string, unknown>;
+    const fullPath = (extra.fullPath as string) ?? undefined;
+
+    // Hub tooltip: a small surface card with member count, doc %, langs.
+    if (extra.nodeType === "hub") {
+      const font = settings.labelFont || "JetBrains Mono, monospace";
+      const members = (extra.memberCount as number) ?? 0;
+      const docPct = Math.round(((extra.docCoveragePct as number) ?? 0) * 100);
+      const langs = ((extra.languages as string[]) ?? []).slice(0, 3).join(", ");
+      const lines: string[] = [
+        `${members} file${members === 1 ? "" : "s"} · ${docPct}% documented`,
+      ];
+      if (langs) lines.push(langs);
+
+      const titleSize = (settings.labelSize || 11) + 1;
+      const lineSize = 9;
+      context.font = `600 ${titleSize}px ${font}`;
+      let maxW = context.measureText(label).width;
+      context.font = `400 ${lineSize}px ${font}`;
+      for (const l of lines) maxW = Math.max(maxW, context.measureText(l).width);
+
+      const padX = 12;
+      const padY = 8;
+      const gap = 4;
+      const w = maxW + padX * 2;
+      const h = titleSize + lines.length * (lineSize + gap) + padY * 2;
+      const nodeSize = data.size || 20;
+      const cx = data.x;
+      const cy = data.y - nodeSize - 14 - h / 2;
+
+      context.fillStyle = theme.tooltip;
+      context.beginPath();
+      context.roundRect(cx - w / 2, cy - h / 2, w, h, 6);
+      context.fill();
+      context.lineWidth = 1.5;
+      context.strokeStyle = data.color || "#6366f1";
+      context.stroke();
+
+      context.textAlign = "center";
+      context.textBaseline = "top";
+      let ty = cy - h / 2 + padY;
+      context.fillStyle = theme.text;
+      context.font = `600 ${titleSize}px ${font}`;
+      context.fillText(label, cx, ty);
+      ty += titleSize + gap;
+      context.fillStyle = theme.subtitle;
+      context.font = `400 ${lineSize}px ${font}`;
+      for (const l of lines) {
+        context.fillText(l, cx, ty);
+        ty += lineSize + gap;
+      }
+
+      // Halo emphasis on hover.
+      context.beginPath();
+      context.arc(data.x, data.y, nodeSize + 4, 0, Math.PI * 2);
+      context.strokeStyle = (extra.haloColor as string) || data.color || "#6366f1";
+      context.lineWidth = 2.5;
+      context.globalAlpha = 0.6;
+      context.stroke();
+      context.globalAlpha = 1;
+      return;
+    }
+
+    const primarySize = settings.labelSize || 11;
+    const secondarySize = 9;
+    const font = settings.labelFont || "JetBrains Mono, monospace";
+    context.font = `500 ${primarySize}px ${font}`;
+    const labelWidth = context.measureText(label).width;
+
+    let showPath = false;
+    let pathWidth = 0;
+    if (fullPath && fullPath !== label) {
+      context.font = `400 ${secondarySize}px ${font}`;
+      pathWidth = context.measureText(fullPath).width;
+      showPath = true;
+    }
+
+    const nodeSize = data.size || 8;
+    const paddingX = 10;
+    const paddingY = 5;
+    const lineGap = showPath ? 3 : 0;
+    const width = Math.max(labelWidth, pathWidth) + paddingX * 2;
+    const height =
+      primarySize + (showPath ? lineGap + secondarySize : 0) + paddingY * 2;
+    const radius = 5;
+    const x = data.x;
+    const y = data.y - nodeSize - 12 - height / 2;
+
+    context.fillStyle = theme.tooltip;
+    context.beginPath();
+    context.roundRect(x - width / 2, y - height / 2, width, height, radius);
+    context.fill();
+    context.lineWidth = 2;
+    context.strokeStyle = data.color || "#6366f1";
+    context.stroke();
+
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+
+    const labelY = showPath ? y - (lineGap + secondarySize) / 2 : y;
+    context.fillStyle = theme.text;
+    context.font = `500 ${primarySize}px ${font}`;
+    context.fillText(label, x, labelY);
+
+    if (showPath) {
+      context.fillStyle = theme.subtitle;
+      context.font = `400 ${secondarySize}px ${font}`;
+      context.fillText(
+        fullPath!,
+        x,
+        labelY + primarySize / 2 + lineGap + secondarySize / 2,
+      );
+    }
+
+    context.beginPath();
+    context.arc(data.x, data.y, nodeSize + 4, 0, Math.PI * 2);
+    context.strokeStyle = data.color || "#6366f1";
+    context.lineWidth = 2;
+    context.globalAlpha = 0.5;
+    context.stroke();
+    context.globalAlpha = 1;
+  };
+}
 
 /**
  * Theme-aware viz colors resolved from the live design tokens. Read on the
@@ -162,6 +353,9 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
   const vizRef = useRef<VizPalette>(resolveVizPalette(options.graphTheme));
 
   const sigmaRef = useRef<Sigma | null>(null);
+  // Sigma's stock disc-label drawer, captured from the dynamic import in the
+  // init effect so the theme effect can rebuild the label drawer factory.
+  const drawDiscRef = useRef<typeof drawDiscNodeLabel | null>(null);
   const [sigmaReady, setSigmaReady] = useState<Sigma | null>(null);
   const selectedRef = useRef<string | null>(null);
   const highlightedPathRef = useRef<Set<string>>(new Set());
@@ -274,12 +468,23 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     );
   }, [options.graph, options.graphTheme, themeVersion]);
 
-  // Keep the label color in the active text token when the theme flips.
+  // Keep the label color in the active text token when the theme flips, and
+  // rebuild the hub/core disc-label + hover drawers so their theme-dependent
+  // text/tooltip colors track the toggle (the init-effect closures would
+  // otherwise stay pinned to the mount-time theme until remount).
   useEffect(() => {
     const sigma = sigmaRef.current;
     if (!sigma) return;
     const label = (vizRef.current = resolveVizPalette(options.graphTheme)).label;
     sigma.setSetting("labelColor", { color: label });
+    const drawDisc = drawDiscRef.current;
+    if (drawDisc) {
+      sigma.setSetting(
+        "defaultDrawNodeLabel",
+        makeDrawNodeLabel(options.graphTheme, drawDisc),
+      );
+    }
+    sigma.setSetting("defaultDrawNodeHover", makeDrawNodeHover(options.graphTheme));
     sigma.refresh();
   }, [options.graphTheme, themeVersion]);
 
@@ -301,6 +506,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         ]);
       const EdgeLineProgram = sigmaRendering.EdgeLineProgram;
       const drawDiscNodeLabel = sigmaRendering.drawDiscNodeLabel;
+      drawDiscRef.current = drawDiscNodeLabel;
 
       if (cancelled) return;
 
@@ -328,177 +534,11 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         hideEdgesOnMove: true,
         zIndex: true,
 
-        // Hub/core labels render centered *inside* the disc (ROBOTICS-style),
-        // with a soft halo ring in the family hue. Everything else uses the
-        // stock side-label drawer. Sigma's grid honors forceLabel on these.
-        defaultDrawNodeLabel: (context, data, settings) => {
-          const extra = data as unknown as Record<string, unknown>;
-          const kind = extra.nodeType as string | undefined;
-          if (kind !== "hub" && kind !== "core") {
-            drawDiscNodeLabel(context, data, settings);
-            return;
-          }
-
-          const theme = THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark;
-          const size = data.size || 20;
-
-          // Soft 2px halo ring in the family hue (emulated — NodeCircleProgram
-          // has no border and @sigma/node-border isn't a dependency).
-          const halo = (extra.haloColor as string) || data.color;
-          context.beginPath();
-          context.arc(data.x, data.y, size + 2.5, 0, Math.PI * 2);
-          context.lineWidth = 2;
-          context.strokeStyle = halo;
-          context.globalAlpha = 0.55;
-          context.stroke();
-          context.globalAlpha = 1;
-
-          const label = data.label;
-          if (!label) return;
-
-          // Fit the uppercase label inside the disc; shrink for long names.
-          const font = settings.labelFont || "JetBrains Mono, monospace";
-          let fontSize = Math.max(9, Math.min(13, size * 0.55));
-          context.font = `600 ${fontSize}px ${font}`;
-          const maxWidth = size * 1.9;
-          while (context.measureText(label).width > maxWidth && fontSize > 7) {
-            fontSize -= 1;
-            context.font = `600 ${fontSize}px ${font}`;
-          }
-          context.textAlign = "center";
-          context.textBaseline = "middle";
-          // Core is dark → light text; hubs are warm → dark text for contrast.
-          context.fillStyle = kind === "core" ? theme.text : "#1a1320";
-          context.fillText(label, data.x, data.y);
-        },
-
-        defaultDrawNodeHover: (context, data, settings) => {
-          const label = data.label;
-          if (!label) return;
-
-          const theme = THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark;
-          const extra = data as Record<string, unknown>;
-          const fullPath = (extra.fullPath as string) ?? undefined;
-
-          // Hub tooltip: a small surface card with member count, doc %, langs.
-          if (extra.nodeType === "hub") {
-            const font = settings.labelFont || "JetBrains Mono, monospace";
-            const members = (extra.memberCount as number) ?? 0;
-            const docPct = Math.round(((extra.docCoveragePct as number) ?? 0) * 100);
-            const langs = ((extra.languages as string[]) ?? []).slice(0, 3).join(", ");
-            const lines: string[] = [
-              `${members} file${members === 1 ? "" : "s"} · ${docPct}% documented`,
-            ];
-            if (langs) lines.push(langs);
-
-            const titleSize = (settings.labelSize || 11) + 1;
-            const lineSize = 9;
-            context.font = `600 ${titleSize}px ${font}`;
-            let maxW = context.measureText(label).width;
-            context.font = `400 ${lineSize}px ${font}`;
-            for (const l of lines) maxW = Math.max(maxW, context.measureText(l).width);
-
-            const padX = 12;
-            const padY = 8;
-            const gap = 4;
-            const w = maxW + padX * 2;
-            const h = titleSize + lines.length * (lineSize + gap) + padY * 2;
-            const nodeSize = data.size || 20;
-            const cx = data.x;
-            const cy = data.y - nodeSize - 14 - h / 2;
-
-            context.fillStyle = theme.tooltip;
-            context.beginPath();
-            context.roundRect(cx - w / 2, cy - h / 2, w, h, 6);
-            context.fill();
-            context.lineWidth = 1.5;
-            context.strokeStyle = data.color || "#6366f1";
-            context.stroke();
-
-            context.textAlign = "center";
-            context.textBaseline = "top";
-            let ty = cy - h / 2 + padY;
-            context.fillStyle = theme.text;
-            context.font = `600 ${titleSize}px ${font}`;
-            context.fillText(label, cx, ty);
-            ty += titleSize + gap;
-            context.fillStyle = theme.subtitle;
-            context.font = `400 ${lineSize}px ${font}`;
-            for (const l of lines) {
-              context.fillText(l, cx, ty);
-              ty += lineSize + gap;
-            }
-
-            // Halo emphasis on hover.
-            context.beginPath();
-            context.arc(data.x, data.y, nodeSize + 4, 0, Math.PI * 2);
-            context.strokeStyle = (extra.haloColor as string) || data.color || "#6366f1";
-            context.lineWidth = 2.5;
-            context.globalAlpha = 0.6;
-            context.stroke();
-            context.globalAlpha = 1;
-            return;
-          }
-
-          const primarySize = settings.labelSize || 11;
-          const secondarySize = 9;
-          const font = settings.labelFont || "JetBrains Mono, monospace";
-          context.font = `500 ${primarySize}px ${font}`;
-          const labelWidth = context.measureText(label).width;
-
-          let showPath = false;
-          let pathWidth = 0;
-          if (fullPath && fullPath !== label) {
-            context.font = `400 ${secondarySize}px ${font}`;
-            pathWidth = context.measureText(fullPath).width;
-            showPath = true;
-          }
-
-          const nodeSize = data.size || 8;
-          const paddingX = 10;
-          const paddingY = 5;
-          const lineGap = showPath ? 3 : 0;
-          const width = Math.max(labelWidth, pathWidth) + paddingX * 2;
-          const height =
-            primarySize + (showPath ? lineGap + secondarySize : 0) + paddingY * 2;
-          const radius = 5;
-          const x = data.x;
-          const y = data.y - nodeSize - 12 - height / 2;
-
-          context.fillStyle = theme.tooltip;
-          context.beginPath();
-          context.roundRect(x - width / 2, y - height / 2, width, height, radius);
-          context.fill();
-          context.lineWidth = 2;
-          context.strokeStyle = data.color || "#6366f1";
-          context.stroke();
-
-          context.textAlign = "center";
-          context.textBaseline = "middle";
-
-          const labelY = showPath ? y - (lineGap + secondarySize) / 2 : y;
-          context.fillStyle = theme.text;
-          context.font = `500 ${primarySize}px ${font}`;
-          context.fillText(label, x, labelY);
-
-          if (showPath) {
-            context.fillStyle = theme.subtitle;
-            context.font = `400 ${secondarySize}px ${font}`;
-            context.fillText(
-              fullPath!,
-              x,
-              labelY + primarySize / 2 + lineGap + secondarySize / 2,
-            );
-          }
-
-          context.beginPath();
-          context.arc(data.x, data.y, nodeSize + 4, 0, Math.PI * 2);
-          context.strokeStyle = data.color || "#6366f1";
-          context.lineWidth = 2;
-          context.globalAlpha = 0.5;
-          context.stroke();
-          context.globalAlpha = 1;
-        },
+        // Hub/core disc labels + hover tooltips. Built per theme via module-level
+        // factories so the theme effect can re-set them on light/dark toggle
+        // without remount (single source of truth — no duplicated drawer logic).
+        defaultDrawNodeLabel: makeDrawNodeLabel(options.graphTheme, drawDiscNodeLabel),
+        defaultDrawNodeHover: makeDrawNodeHover(options.graphTheme),
 
         // --- nodeReducer: ONLY handles interaction state (selection, search, path) ---
         // Colors and sizes are pre-set on the graphology graph by the effect above.

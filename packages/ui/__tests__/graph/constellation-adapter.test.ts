@@ -4,7 +4,6 @@ import {
   hubNodeId,
   CORE_NODE_ID,
   mergeCommunitySlice,
-  dropCommunitySlice,
   satelliteSizeFromPagerank,
 } from "../../src/graph/sigma/constellation-adapter";
 import type {
@@ -323,21 +322,5 @@ describe("mergeCommunitySlice", () => {
     const g = baseGraph();
     const { satelliteIds } = mergeCommunitySlice(g, 42, makeSlice({ community_id: 42 }));
     expect(satelliteIds).toEqual([]);
-  });
-});
-
-describe("dropCommunitySlice", () => {
-  it("removes satellites and spokes, restoring the constellation", () => {
-    const g = architectureToGraphology(
-      makeArch([makeArchNode({ community_id: 0, member_count: 2 })]),
-    );
-    const baseOrder = g.order;
-    const baseSize = g.size;
-    const slice = makeSlice();
-    mergeCommunitySlice(g, 0, slice);
-    expect(g.order).toBeGreaterThan(baseOrder);
-    dropCommunitySlice(g, 0, slice);
-    expect(g.order).toBe(baseOrder);
-    expect(g.size).toBe(baseSize);
   });
 });
