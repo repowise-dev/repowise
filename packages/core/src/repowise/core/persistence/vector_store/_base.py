@@ -52,9 +52,7 @@ class VectorStore(ABC):
         """Embed *query* and return the *limit* nearest pages."""
         ...
 
-    async def search_many(
-        self, queries: list[str], limit: int = 10
-    ) -> list[list[SearchResult]]:
+    async def search_many(self, queries: list[str], limit: int = 10) -> list[list[SearchResult]]:
         """Batch variant of :meth:`search` — one result list per query, aligned
         by index.
 
@@ -78,6 +76,18 @@ class VectorStore(ABC):
     async def delete(self, page_id: str) -> None:
         """Remove the vector for *page_id* from the store."""
         ...
+
+    async def delete_many(self, page_ids: list[str]) -> None:
+        """Remove the vectors for many *page_ids* from the store.
+
+        Embeddings are keyed by page_id, so when a re-index sweeps stale
+        structurally-keyed pages their vectors must be dropped too — otherwise
+        a retired page's embedding lingers and pollutes search. The default
+        implementation loops over :meth:`delete`; backends that can express a
+        single bulk delete override this. Empty input is a no-op.
+        """
+        for page_id in page_ids:
+            await self.delete(page_id)
 
     @abstractmethod
     async def close(self) -> None:
