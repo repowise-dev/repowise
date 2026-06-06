@@ -111,6 +111,16 @@ class C4L3:
 
 
 @dataclass(frozen=True)
+class ArchSubGroup:
+    """A curated sub-group inside a layer (drill-down tier between layer
+    cards and file cards). Produced by the KG curation pass."""
+
+    id: str
+    name: str
+    node_ids: list[str]
+
+
+@dataclass(frozen=True)
 class ArchLayer:
     id: str
     name: str
@@ -119,6 +129,8 @@ class ArchLayer:
     file_count: int
     complexity_distribution: dict[str, int]
     health_score: float | None
+    sub_groups: list[ArchSubGroup] = field(default_factory=list)
+    display_order: int = 0
 
 
 @dataclass(frozen=True)
@@ -164,6 +176,13 @@ class ArchTourStep:
     title: str
     description: str
     node_ids: list[str]
+    # Curated, layer-aware fields (None/empty for legacy LLM tours).
+    target_path: str | None = None
+    layer_id: str | None = None
+    reason: str = ""
+    depth: int | None = None
+    kind: str = ""
+    page_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -180,3 +199,6 @@ class ArchitectureView:
     languages: list[str]
     frameworks: list[str]
     external_systems: list[ExternalSystemView]
+    # Curated, ranked entry points (repo-relative paths; empty when uncurated).
+    entry_points: list[str] = field(default_factory=list)
+    entry_candidates: list[str] = field(default_factory=list)
