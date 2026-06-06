@@ -509,16 +509,27 @@ def _module_smells(kg: dict, code_file_count: int) -> list[Smell]:
             smells.append(Smell("FAIL", label, str(dupes)))
     generic = _dominant_path_segments(sorted(file_paths.values()))
     layer_names = {(layer.get("name") or "").lower() for layer in layers}
-    for name in names:
+    for m in modules:
+        name = m.get("name", "")
         if not name.strip() or name.strip().lower() in {"(root)", "root"}:
             smells.append(Smell("FAIL", "module_empty_name", repr(name)))
             continue
         if re.search(r"\(\d+\)\s*$", name):
             smells.append(Smell("FAIL", "module_size_suffix", name))
         segs = [s.lower() for s in name.split("/")]
-        # Layer-named modules (whole-layer fallback) are exempt: "API" is an
-        # honest name for the API layer even if "api" is also a path segment.
-        if segs and all(s in generic for s in segs) and name.lower() not in layer_names:
+        # Two honest exemptions: layer-named modules (whole-layer fallback —
+        # "API" names the API layer even if "api" is also a path segment),
+        # and modules whose OWN path offers no informative segment (fixture
+        # subtrees that dominate the repo: the raw tail is the best name
+        # available, flagging it would demand a name that can't exist).
+        path_segs = {s.lower() for s in (m.get("path") or "").split("/") if s}
+        had_alternative = bool(path_segs - generic)
+        if (
+            segs
+            and all(s in generic for s in segs)
+            and name.lower() not in layer_names
+            and had_alternative
+        ):
             smells.append(
                 Smell("FAIL", "module_generic_name", f"{name!r} is namespace noise only")
             )

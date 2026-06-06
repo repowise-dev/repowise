@@ -352,12 +352,37 @@ class TestModuleSmells:
         assert {"module_name_collision", "module_size_suffix"} <= codes
 
     def test_generic_only_name_fails(self) -> None:
-        # "src" appears in 100% of app paths → namespace noise, not a name.
-        kg = self._kg_with_modules()
+        # "src" appears in 100% of paths → namespace noise; the module's own
+        # path offered an informative segment ("app", 50% of paths), so a
+        # generic-only name is a derivation bug, not a forced fallback.
+        app = [(f"src/app/f{i}.py", "python") for i in range(6)]
+        web = [(f"src/web/w{i}.py", "python") for i in range(6)]
+        layers = [
+            {"id": "layer:app", "name": "Application", "display_order": 0,
+             "nodeIds": [f"file:{p}" for p, _ in app + web]},
+        ]
+        kg = _kg(files=app + web, imports=[], layers=layers, tour=self._clean_tour())
         kg["modules"] = [
-            self._module("src", "src", [f"file:src/app/f{i}.py" for i in range(12)])
+            self._module("src", "src/app", [f"file:{p}" for p, _ in app]),
+            self._module("web", "src/web", [f"file:{p}" for p, _ in web]),
         ]
         assert "module_generic_name" in self._codes(kg)
+
+    def test_generic_name_exempt_when_no_alternative_exists(self) -> None:
+        # Fixture-dominated repos (aeson-shaped): every segment of the module
+        # path is dominant — the raw tail is the best name available and
+        # flagging it would demand a name that cannot exist.
+        files = [(f"suite/case{i}.json", "python") for i in range(10)]
+        layers = [
+            {"id": "layer:test", "name": "Test", "display_order": 0,
+             "nodeIds": [f"file:{p}" for p, _ in files]},
+        ]
+        kg = _kg(files=files, imports=[], layers=layers, tour=self._clean_tour())
+        kg["modules"] = [
+            self._module("suite", "suite", [f"file:{p}" for p, _ in files],
+                         layer_id="layer:test")
+        ]
+        assert "module_generic_name" not in self._codes(kg)
 
     def test_layer_named_module_is_exempt_from_generic_check(self) -> None:
         # Whole-layer fallback names a module after its layer; honest even if

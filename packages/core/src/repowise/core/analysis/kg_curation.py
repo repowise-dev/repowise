@@ -439,6 +439,18 @@ _GENERIC_SEGMENT_FRACTION = 0.60
 _SIZE_SUFFIX_RE = re.compile(r"\(\d+\)\s*$")
 
 
+# Universal organizational directory names — containers, not domain labels.
+# Shared with community labeling; the data-driven ``dominant_segments`` set
+# complements this with per-repo namespace noise (the repo's own name).
+GENERIC_ORG_SEGMENTS = frozenset({
+    "src", "lib", "core", "common", "shared", "internal", "pkg",
+    "main", "app", "utils", "helpers", "index", "mod",
+    # Monorepo organisational directories
+    "packages", "modules", "workspace", "workspaces", "libs",
+    "projects", "services", "apps",
+})
+
+
 def dominant_segments(paths: list[str]) -> set[str]:
     """Directory segments appearing in > 60% of *paths* (namespace noise).
 
@@ -505,8 +517,33 @@ def _merge_small_groups(
     folds into the layer's dominant module rather than minting a confetti
     page. Never merges across layers (callers pass one layer at a time). A
     layer that is itself below ``target_min`` stays one whole group.
+
+    A pre-pass fuses *small sibling* groups into one group at their common
+    parent when that collection is itself module-sized — ninety tiny locale
+    dirs become one ``conf/locale`` module instead of folding into whichever
+    sibling sorts first and misnaming it. The fold-in loop then never renames
+    a survivor: a healthy ``core/providers`` absorbing a 2-file sibling keeps
+    its identity.
     """
     merged = [(d, list(ids)) for d, ids in groups]
+
+    by_parent: dict[tuple[str, ...], list[tuple[tuple[str, ...], list[str]]]] = {}
+    for g in merged:
+        if len(g[1]) < target_min and len(g[0]) > 0:
+            by_parent.setdefault(g[0][:-1], []).append(g)
+    for parent, sibs in sorted(by_parent.items()):
+        if len(sibs) < 2 or sum(len(g[1]) for g in sibs) < target_min:
+            continue
+        fused = sorted(nid for g in sibs for nid in g[1])
+        for g in sibs:
+            merged.remove(g)
+        existing = next((g for g in merged if g[0] == parent), None)
+        if existing is not None:
+            existing[1].extend(fused)
+            existing[1].sort()
+        else:
+            merged.append((parent, fused))
+    merged.sort(key=lambda g: g[0])
 
     def shared(a: tuple[str, ...], b: tuple[str, ...]) -> int:
         return len(_common_dir_prefix([a, b]))
@@ -532,19 +569,30 @@ def _merge_small_groups(
 def _name_modules(mods: list[dict], generic: set[str]) -> None:
     """Assign unique, human module names in place.
 
-    Initial name = the last one or two *informative* directory segments (generic
-    namespace segments stripped). Collisions extend leftward by one more
-    informative parent segment — NEVER a size suffix. Single-module layers
-    take the layer's name; a surviving root group (no informative segments)
-    becomes "<Layer> (top-level)". The absolute fallback (identical
-    informative paths across layers) appends the layer name, which is unique
-    by construction.
+    Initial name = the last one or two *informative* directory segments
+    (generic namespace segments stripped; when stripping consumes every
+    segment, the raw tail is used instead). Collisions extend leftward by
+    one more parent segment — NEVER a size suffix. Single-module layers
+    take the layer's name; the root group (empty dir) becomes
+    "<Layer> (top-level)". The absolute fallback (identical informative
+    paths across layers) appends the layer name, which is unique by
+    construction.
     """
     per_layer: Counter[str] = Counter(m["layerId"] for m in mods)
     info_by: dict[int, list[str]] = {}
     used: dict[int, int | None] = {}  # informative segments consumed; None = fixed
     for m in mods:
-        info = [s for s in m["_dir"] if s not in generic]
+        # Data-driven stripping can consume EVERY segment on fixture-dominated
+        # repos (aeson: tests/JSONTestSuite/test_parsing is >60% of all
+        # paths). The raw dir tail is still the honest name there —
+        # "(top-level)" would mislabel a real directory and collide across
+        # sibling groups (which trips the export degradation guard and ships
+        # no modules). Universal organizational dirs (pkg, src, packages…)
+        # stay excluded even in the fallback: "(top-level)" reads better than
+        # a container name, so it remains the name for true root groups.
+        info = [s for s in m["_dir"] if s not in generic] or [
+            s for s in m["_dir"] if s.lower() not in GENERIC_ORG_SEGMENTS
+        ]
         info_by[id(m)] = info
         if per_layer[m["layerId"]] == 1:
             m["name"] = m["_layerName"]
@@ -573,12 +621,27 @@ def _name_modules(mods: list[dict], generic: set[str]) -> None:
         if not progressed:
             break
 
+    # Two all-organizational groups in one layer (a root remnant plus a
+    # "packages"-style container) would both read "<Layer> (top-level)" —
+    # the container's raw tail is the honest tiebreak.
+    names = Counter(m["name"] for m in mods)
+    for m in mods:
+        if names[m["name"]] > 1 and not info_by[id(m)] and m["_dir"]:
+            m["name"] = "/".join(m["_dir"][-min(2, len(m["_dir"])) :])
+
     # Same informative dir in two layers (or no segments left): the layer
     # name disambiguates — (dir, layer) is unique by construction.
     names = Counter(m["name"] for m in mods)
     for m in mods:
         if names[m["name"]] > 1:
             m["name"] = f"{m['name']} ({m['_layerName']})"
+
+    # Absolute backstop (two all-org dirs in one layer sharing a tail): the
+    # full dir path is unique per layer.
+    names = Counter(m["name"] for m in mods)
+    for m in mods:
+        if names[m["name"]] > 1 and m["_dir"]:
+            m["name"] = "/".join(m["_dir"])
 
 
 def derive_modules(

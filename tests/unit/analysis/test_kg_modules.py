@@ -335,3 +335,68 @@ class TestArtifactSeam:
         metrics = validate_kg(kg).metrics
         assert metrics["module_count"] == len(kg.modules)
         assert metrics["module_coverage_pct"] > 0
+
+
+class TestMatrixSurfacedShapes:
+    """Regression shapes surfaced by the 38-repo validation matrix."""
+
+    def test_fixture_dominated_repo_keeps_real_dir_names(self):
+        # aeson shape: one fixture subtree IS >60% of the repo, so every one
+        # of its segments is "dominant". Naming must fall back to the raw
+        # dir tail — the old "<Layer> (top-level)" fallback collided across
+        # sibling groups and tripped the export degradation guard (0 modules).
+        parsing = [f"tests/JSONTestSuite/test_parsing/case{i}.json" for i in range(300)]
+        transform = [f"tests/JSONTestSuite/test_transform/case{i}.json" for i in range(22)]
+        unit = [f"tests/UnitTests/u{i}.hs" for i in range(13)]
+        src = [f"src/Data/Aeson/m{i}.hs" for i in range(40)]
+        layers = [
+            _layer("Application", src),
+            _layer("Test", parsing + transform + unit),
+        ]
+        modules = _derive(layers, _id_map(parsing, transform, unit, src))
+        names = [m["name"] for m in modules]
+        assert len(names) == len(set(names)), names  # no collision → no degradation
+        joined = " ".join(names)
+        assert "test_parsing" in joined and "test_transform" in joined
+        assert "(top-level)" not in joined
+
+    def test_small_siblings_fuse_into_parent_dir_module(self):
+        # django/conf/locale shape: ~30 tiny per-locale dirs. They must fuse
+        # into ONE module at the parent dir — not fold into the
+        # alphabetically-first locale and misname 170 files as "locale/ar".
+        locales = [
+            f"django/conf/locale/{loc}/f{i}.py"
+            for loc in ("ar", "be", "cs", "da", "de", "el", "es", "fi", "fr", "he")
+            for i in range(3)
+        ]
+        core = [f"django/core/c{i}.py" for i in range(20)]
+        layers = [_layer("Application", locales + core)]
+        modules = _derive(layers, _id_map(locales, core))
+        by_path = {m["path"]: m for m in modules}
+        assert "django/conf/locale" in by_path, sorted(by_path)
+        assert len(by_path["django/conf/locale"]["nodeIds"]) == 30
+        assert by_path["django/conf/locale"]["name"].endswith("locale")
+
+    def test_healthy_module_keeps_identity_absorbing_small_sibling(self):
+        # The sibling fuse must not generalise a big module's dir upward:
+        # core/providers absorbing a 2-file sibling stays core/providers.
+        providers = [f"acme/core/providers/p{i}.py" for i in range(20)]
+        stray = [f"acme/core/stray/s{i}.py" for i in range(2)]
+        other = [f"acme/web/w{i}.py" for i in range(20)]
+        layers = [_layer("Service", providers + stray + other)]
+        # target_max=20 forces core(22) to split into providers(20)+stray(2)
+        modules = _derive(layers, _id_map(providers, stray, other), target_max=20)
+        paths = {m["path"] for m in modules}
+        assert "acme/core/providers" in paths, sorted(paths)
+
+    def test_two_all_org_groups_in_one_layer_get_unique_names(self):
+        # repowise shape: a root remnant AND a "packages" container group in
+        # the same layer both strip to nothing. The container takes its raw
+        # tail; only the true root group reads "(top-level)".
+        root = ["Makefile.py", "conftest.py", "setup.py", "tasks.py", "noxfile.py"]
+        pkgs = [f"packages/p{i}.py" for i in range(6)]
+        deep = [f"packages/acme/src/acme/core/d{i}.py" for i in range(40)]
+        layers = [_layer("Application", root + pkgs + deep)]
+        modules = _derive(layers, _id_map(root, pkgs, deep), target_max=20)
+        names = [m["name"] for m in modules]
+        assert len(names) == len(set(names)), names

@@ -21,7 +21,7 @@ from pathlib import PurePosixPath
 import networkx as nx
 import structlog
 
-from repowise.core.analysis.kg_curation import dominant_segments
+from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
 
 log = structlog.get_logger(__name__)
 
@@ -42,15 +42,10 @@ _SYMBOL_COMMUNITY_EDGE_TYPES = frozenset({
     "calls", "extends", "implements", "has_method",
 })
 
-# Generic directory segments excluded from heuristic labeling.
-# These are organisational containers, not meaningful domain labels.
-_GENERIC_SEGMENTS = frozenset({
-    "src", "lib", "core", "common", "shared", "internal", "pkg",
-    "main", "app", "utils", "helpers", "index", "mod",
-    # Monorepo organisational directories
-    "packages", "modules", "workspace", "workspaces", "libs",
-    "projects", "services", "apps",
-})
+# Generic directory segments excluded from heuristic labeling — the shared
+# organisational-container vocabulary lives in kg_curation next to its
+# data-driven complement (dominant_segments).
+_GENERIC_SEGMENTS = GENERIC_ORG_SEGMENTS
 
 # Keywords checked in filename stems for fallback labeling
 _LABEL_KEYWORDS = (
