@@ -8,6 +8,7 @@ Usage (from the repo root):
     python scripts/kg_validate/run.py --skip-index     # reuse existing exports
     python scripts/kg_validate/run.py --update-baselines
     python scripts/kg_validate/run.py --json           # machine-readable
+    python scripts/kg_validate/run.py --modules-report /tmp/modules.md
 
 Environment:
     KG_VALIDATE_DIR   clone/work dir (default /tmp/kg-validate)
@@ -121,6 +122,16 @@ def check_repo(name: str, support: dict[str, str], *, skip_index: bool) -> RepoR
     # Keep tour paths in the report so baseline diffs show walk changes.
     report.stats["tour_paths"] = [s.get("target_path") for s in kg.get("tour", [])]
     report.stats["entry_points"] = (kg.get("project") or {}).get("entry_points", [])
+    layer_names = {l.get("id"): l.get("name", "") for l in kg.get("layers", [])}  # noqa: E741
+    report.modules_detail = [
+        {
+            "name": m.get("name", ""),
+            "path": m.get("path", ""),
+            "layer": layer_names.get(m.get("layerId"), m.get("layerId", "")),
+            "size": len(m.get("nodeIds", [])),
+        }
+        for m in kg.get("modules", [])
+    ]
     return report
 
 
@@ -130,6 +141,11 @@ def main() -> int:
     ap.add_argument("--skip-index", action="store_true")
     ap.add_argument("--update-baselines", action="store_true")
     ap.add_argument("--json", action="store_true", dest="as_json")
+    ap.add_argument(
+        "--modules-report",
+        metavar="PATH",
+        help="write a per-repo curated-module inventory (markdown) for human review",
+    )
     args = ap.parse_args()
 
     matrix = load_matrix()
@@ -174,6 +190,22 @@ def main() -> int:
 
     if args.as_json:
         print(json.dumps([r.as_dict() for r in reports], indent=1, sort_keys=True))
+
+    if args.modules_report:
+        lines = ["# Curated module inventory", ""]
+        for r in reports:
+            lines.append(f"## {r.repo}")
+            if not r.modules_detail:
+                lines.extend(["", "_no modules in artifact_", ""])
+                continue
+            lines.extend(["", "| Module | Path | Layer | Files |", "|---|---|---|---|"])
+            for m in sorted(r.modules_detail, key=lambda m: (-m["size"], m["name"])):
+                lines.append(
+                    f"| {m['name']} | `{m['path'] or '(layer root)'}` | {m['layer']} | {m['size']} |"
+                )
+            lines.append("")
+        Path(args.modules_report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"modules report written to {args.modules_report}")
 
     failed = [r.repo for r in reports if r.failed]
     print(f"\n{len(reports) - len(failed)}/{len(reports)} clean" + (f"; FAILED: {failed}" if failed else ""))
