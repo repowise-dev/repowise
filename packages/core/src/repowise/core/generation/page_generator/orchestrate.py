@@ -60,6 +60,8 @@ class _GenerationRun:
         decision_report: Any | None,
         external_systems: list[dict] | None,
         on_page_ready: Callable[[GeneratedPage], None] | None = None,
+        kg_modules: list[dict] | None = None,
+        kg_data: dict | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -83,6 +85,11 @@ class _GenerationRun:
         self.resume = resume
         self.repo_path = repo_path
         self.external_systems = external_systems or []
+        # Curated wiki modules from the IN-MEMORY pipeline result. The kg_ctx
+        # file fallback below is one run stale on update and absent on a
+        # fresh init (the artifact is written AFTER generation) — the live
+        # repowise run shipped community-grouped module pages because of it.
+        self.kg_modules = kg_modules or []
 
         # ---- Graph metrics ----
         self.graph = graph_builder.graph()
@@ -98,17 +105,27 @@ class _GenerationRun:
         # ---- KG context (per-file knowledge graph lookups) ----
         from repowise.core.generation.kg_context import KnowledgeGraphContext
 
-        kg_path = None
+        # Prefer the in-memory KG (the pipeline result's export dict): the
+        # artifact file is only written during persistence — AFTER this
+        # generation pass — so on a fresh init the file path below finds
+        # nothing and every kg_ctx-derived page (layer pages, tour context,
+        # file layers) silently vanished from first-run wikis.
+        rp = None
         if repo_path:
             rp = Path(repo_path) if not isinstance(repo_path, Path) else repo_path
-            for candidate in [
-                rp / ".repowise" / "knowledge-graph.json",
-                rp / ".understand-anything" / "knowledge-graph.json",
-            ]:
-                if candidate.exists():
-                    kg_path = candidate
-                    break
-        self.kg_ctx = KnowledgeGraphContext(kg_path)
+        if kg_data is not None:
+            self.kg_ctx = KnowledgeGraphContext(None, rp, data=kg_data)
+        else:
+            kg_path = None
+            if rp:
+                for candidate in [
+                    rp / ".repowise" / "knowledge-graph.json",
+                    rp / ".understand-anything" / "knowledge-graph.json",
+                ]:
+                    if candidate.exists():
+                        kg_path = candidate
+                        break
+            self.kg_ctx = KnowledgeGraphContext(kg_path)
 
         # ---- Run bookkeeping ----
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)
@@ -214,6 +231,11 @@ class _GenerationRun:
                 git_meta_map=self.git_meta_map,
                 config=self.config,
                 kg_file_scores=kg_scores or None,
+                # Curated wiki modules: prefer the in-memory pipeline
+                # result (fresh); the artifact file is absent on first init
+                # and one run stale on update. Inert unless
+                # module_grouping == "curated".
+                kg_modules=self.kg_modules or self.kg_ctx.get_modules() or None,
             )
         )
 
@@ -293,24 +315,40 @@ class _GenerationRun:
 
         import_edges = self._file_import_edges()
 
-        # Tour: ordered stops over the selected file/infra pages + overview.
-        stops = build_tour(
-            self.parsed_files,
-            self.pagerank,
-            import_edges,
-            file_page_paths=self.sel_file_paths,
-            infra_paths=self.sel_infra_paths,
-            repo_name=self.repo_name,
-        )
-        self.tour_stops = [s.as_dict() for s in stops]
+        # When the indexed KG carries the curated tour (project.graph_mode is
+        # written only by the curation pass), adopt it wholesale instead of
+        # re-deriving a second, divergent tour from the raw graph: the curated
+        # tour knows the repo's honesty mode (flow/sparse/structural), walks
+        # imports-type edges only, and excludes support paths — and the wiki's
+        # file cards already cite its steps. One tour, every surface.
+        if self.kg_ctx.available and self.kg_ctx.get_graph_mode():
+            self.tour_stops = [dict(s) for s in self.kg_ctx.get_tour()]
+        if not self.tour_stops:
+            # Tour: ordered stops over the selected file/infra pages + overview.
+            stops = build_tour(
+                self.parsed_files,
+                self.pagerank,
+                import_edges,
+                file_page_paths=self.sel_file_paths,
+                infra_paths=self.sel_infra_paths,
+                repo_name=self.repo_name,
+            )
+            self.tour_stops = [s.as_dict() for s in stops]
 
         # Layer spine: every documented file gets a layer (KG when present,
         # path-based inference otherwise), then layers are ordered top→bottom
         # by inter-layer dependency direction.
+        lang_by_path = {
+            p.file_info.path: (getattr(p.file_info, "language", "") or "").lower()
+            for p in self.parsed_files
+            if getattr(p, "file_info", None)
+        }
         file_layers: dict[str, str] = {}
         for path in self.sel_file_paths:
             kg_fc = self.kg_ctx.get_file_context(path) if self.kg_ctx.available else None
-            file_layers[path] = (kg_fc.layer_name if kg_fc and kg_fc.layer_name else "") or infer_layer(path)
+            file_layers[path] = (kg_fc.layer_name if kg_fc and kg_fc.layer_name else "") or infer_layer(
+                path, lang_by_path.get(path)
+            )
         self.layer_order = compute_layer_order(file_layers, import_edges)
 
     # ------------------------------------------------------------------

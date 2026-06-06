@@ -45,8 +45,9 @@ class ModuleGroup:
     """One ``module_page`` worth of files.
 
     ``key`` is the stable identifier persisted as ``target_path``:
-    ``community-<id>`` when grouping by community, the top-level
-    directory when falling back to ``top_dir``.
+    the module's real directory path when grouping by curated KG modules
+    (so path-prefix child lookups work), ``community-<id>`` when grouping
+    by community, the top-level directory when falling back to ``top_dir``.
     """
 
     key: str
@@ -108,6 +109,11 @@ class SelectionInputs:
     git_meta_map: dict[str, dict] | None
     config: Any  # GenerationConfig — duck-typed to avoid the import cycle
     kg_file_scores: dict[str, float] | None = None
+    # Curated wiki modules from the KG artifact (``modules`` top-level key),
+    # passed through — never re-derived here. Only read when
+    # ``config.module_grouping == "curated"``; ``None``/empty falls back to
+    # community grouping (the fallback-matrix "degraded" row).
+    kg_modules: list[dict] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -184,11 +190,84 @@ def _build_symbol_candidates(
     return scored
 
 
+def _build_curated_module_groups(
+    inputs: SelectionInputs, min_size: int
+) -> list[tuple[float, ModuleGroup]] | None:
+    """Scored groups from curated KG modules, or ``None`` when unavailable.
+
+    ``key`` = the module's real directory path (its ``target_path``, so the
+    MCP child lookup ``target_path LIKE 'dir/%'`` works), ``display``/``label``
+    = the curated human name, ``cohesion`` = None (the community block in the
+    template is conditional and has no meaning for directory groups). Ranked
+    by Σ PageRank of members — better than ``score_module``'s cohesion term,
+    which is meaningless here. Returns ``None`` only when no curated modules
+    were passed in (→ community fallback); an artifact whose modules all fall
+    below the floor yields an empty list, not a vocabulary mix.
+    """
+    if not inputs.kg_modules:
+        return None
+
+    code_by_path = {
+        p.file_info.path: p for p in inputs.parsed_files if _is_code_file(p)
+    }
+    scored: list[tuple[float, ModuleGroup]] = []
+    seen_keys: set[str] = set()
+    for module in inputs.kg_modules:
+        if module.get("wholeLayer"):
+            # 1:1 with a layer page (single-module layers, flat libs) — a
+            # module doc would re-document the layer. Skip the page; the
+            # module stays in the KG artifact for canvas/coverage.
+            continue
+        member_paths = sorted(
+            path
+            for nid in module.get("nodeIds", [])
+            if isinstance(nid, str)
+            and (path := nid.removeprefix("file:")) in code_by_path
+        )
+        if len(member_paths) < min_size:
+            continue
+        key = module.get("path") or (module.get("id") or "").removeprefix("module:")
+        if not key or key in seen_keys:
+            # Rare cross-layer dir collision: the slug id is still unique.
+            key = (module.get("id") or "").removeprefix("module:")
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        name = module.get("name") or key
+        language = module.get("language") or code_by_path[
+            member_paths[0]
+        ].file_info.language
+        score = sum(inputs.pagerank.get(p, 0.0) for p in member_paths)
+        scored.append(
+            (
+                score,
+                ModuleGroup(
+                    key=key,
+                    display=name,
+                    language=language,
+                    file_paths=tuple(member_paths),
+                    label=name,
+                    cohesion=None,
+                ),
+            )
+        )
+    scored.sort(key=lambda x: (-x[0], x[1].key))
+    return scored
+
+
 def _build_module_groups(inputs: SelectionInputs) -> list[tuple[float, ModuleGroup]]:
-    """Return scored module groups — either community-based or top-dir."""
+    """Return scored module groups — curated, community-based, or top-dir."""
     cfg = inputs.config
     min_size = max(1, getattr(cfg, "min_module_size", 3))
-    use_communities = getattr(cfg, "module_grouping", "community") == "community"
+    grouping = getattr(cfg, "module_grouping", "community")
+
+    if grouping == "curated":
+        curated = _build_curated_module_groups(inputs, min_size)
+        if curated is not None:
+            return curated
+        grouping = "community"  # no curated artifact → today's path, unchanged
+
+    use_communities = grouping == "community"
 
     # Bucket files into groups.
     groups: dict[str, list[Any]] = {}

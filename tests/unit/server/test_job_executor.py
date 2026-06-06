@@ -8,13 +8,18 @@ are not re-indexed.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from repowise.core.persistence.crud import upsert_generation_job, upsert_repository
-from repowise.server.job_executor import _repo_exclude_patterns, execute_job
+from repowise.server.job_executor import (
+    _incremental_page_regen,
+    _repo_exclude_patterns,
+    execute_job,
+)
 
 
 def _fake_result() -> SimpleNamespace:
@@ -154,3 +159,68 @@ async def test_execute_job_merges_config_yaml_excludes(session_factory, tmp_path
 
     run_pipeline_mock.assert_awaited_once()
     assert run_pipeline_mock.await_args.kwargs["exclude_patterns"] == ["tools/"]
+
+
+@pytest.mark.asyncio
+async def test_incremental_page_regen_passes_repo_path(tmp_path):
+    """Incremental regen must forward repo_path to generate_all.
+
+    Without it, generate_all can't load the curated knowledge-graph.json
+    artifact and silently falls back to community module grouping, which
+    overwrites curated module pages with the wrong ids.
+    """
+    repo_path = tmp_path
+    repowise_dir = repo_path / ".repowise"
+    repowise_dir.mkdir()
+    (repowise_dir / "state.json").write_text(
+        '{"last_sync_commit": "base-sha"}', encoding="utf-8"
+    )
+
+    result = SimpleNamespace(
+        file_count=10,
+        parsed_files=[],
+        source_map={},
+        graph_builder=SimpleNamespace(graph=lambda: object()),
+        repo_structure=object(),
+        repo_name="test-repo",
+        git_meta_map={},
+    )
+
+    # Stub git HEAD lookup to a sha != base so regen proceeds.
+    head_proc = SimpleNamespace(returncode=0, stdout="head-sha\n")
+
+    # Detector reports one changed/affected file so generation runs.
+    detector = MagicMock()
+    detector.get_changed_files.return_value = [object()]
+    affected = SimpleNamespace(regenerate=["foo.py"])
+    detector.get_affected_pages.return_value = affected
+
+    generator = MagicMock()
+    generator.generate_all = AsyncMock(return_value=[])
+
+    with (
+        patch("subprocess.run", return_value=head_proc),
+        patch(
+            "repowise.core.ingestion.ChangeDetector",
+            return_value=detector,
+        ),
+        patch(
+            "repowise.core.ingestion.change_detector.compute_adaptive_budget",
+            return_value=5,
+        ),
+        patch("repowise.core.generation.PageGenerator", return_value=generator),
+        patch("repowise.core.generation.ContextAssembler"),
+        patch("repowise.core.generation.GenerationConfig"),
+        patch("repowise.core.reasoning.resolve_reasoning", return_value="low"),
+        patch("repowise.core.repo_config.load_repo_config", return_value={}),
+    ):
+        await _incremental_page_regen(
+            Path(repo_path),
+            result,
+            llm_client=object(),
+            job_config={},
+            progress=None,
+        )
+
+    generator.generate_all.assert_awaited_once()
+    assert generator.generate_all.await_args.kwargs["repo_path"] == Path(repo_path)
