@@ -61,6 +61,7 @@ class _GenerationRun:
         external_systems: list[dict] | None,
         on_page_ready: Callable[[GeneratedPage], None] | None = None,
         kg_modules: list[dict] | None = None,
+        kg_data: dict | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -104,17 +105,27 @@ class _GenerationRun:
         # ---- KG context (per-file knowledge graph lookups) ----
         from repowise.core.generation.kg_context import KnowledgeGraphContext
 
-        kg_path = None
+        # Prefer the in-memory KG (the pipeline result's export dict): the
+        # artifact file is only written during persistence — AFTER this
+        # generation pass — so on a fresh init the file path below finds
+        # nothing and every kg_ctx-derived page (layer pages, tour context,
+        # file layers) silently vanished from first-run wikis.
+        rp = None
         if repo_path:
             rp = Path(repo_path) if not isinstance(repo_path, Path) else repo_path
-            for candidate in [
-                rp / ".repowise" / "knowledge-graph.json",
-                rp / ".understand-anything" / "knowledge-graph.json",
-            ]:
-                if candidate.exists():
-                    kg_path = candidate
-                    break
-        self.kg_ctx = KnowledgeGraphContext(kg_path)
+        if kg_data is not None:
+            self.kg_ctx = KnowledgeGraphContext(None, rp, data=kg_data)
+        else:
+            kg_path = None
+            if rp:
+                for candidate in [
+                    rp / ".repowise" / "knowledge-graph.json",
+                    rp / ".understand-anything" / "knowledge-graph.json",
+                ]:
+                    if candidate.exists():
+                        kg_path = candidate
+                        break
+            self.kg_ctx = KnowledgeGraphContext(kg_path)
 
         # ---- Run bookkeeping ----
         self.semaphore = asyncio.Semaphore(self.config.max_concurrency)

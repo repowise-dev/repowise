@@ -526,3 +526,76 @@ async def test_generate_all_uses_in_memory_kg_modules_without_artifact_file():
     assert targets, "no module pages generated"
     assert targets <= {"pkg/core", "pkg/web"}, targets
     assert not any(t.startswith("community-") for t in targets)
+
+
+async def test_generate_all_builds_kg_ctx_from_in_memory_kg_data():
+    """Layer pages must generate on a FRESH init via the in-memory KG.
+
+    kg_ctx previously only read knowledge-graph.json, which is written during
+    persistence — after generation — so first-run wikis silently had zero
+    layer pages (caught live: fresh repowise wiki had 37 module pages and no
+    Architecture layers).
+    """
+    config = GenerationConfig(
+        max_tokens=256,
+        token_budget=100_000,
+        max_concurrency=2,
+        coverage_pct=1.0,
+        dedupe_near_clones=False,
+    )
+    provider = MockProvider()
+    assembler = ContextAssembler(config)
+    gen = PageGenerator(provider, assembler, config)
+
+    paths = [f"pkg/core/m{i}.py" for i in range(4)]
+    parsed = []
+    for p in paths:
+        fi = _make_file_info(p, language="python")
+        sym = _make_symbol(file_path=p)
+        parsed.append(
+            ParsedFile(
+                file_info=fi, symbols=[sym], imports=[], exports=[],
+                docstring=None, parse_errors=[],
+            )
+        )
+    repo = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={"python": 1.0},
+        total_files=len(paths),
+        total_loc=100,
+        entry_points=[],
+    )
+    kg_data = {
+        "version": "1.0.0",
+        "project": {"name": "test-repo", "total_files": len(paths), "entry_points": []},
+        "nodes": [
+            {"id": f"file:{p}", "type": "file", "filePath": p, "language": "python"}
+            for p in paths
+        ],
+        "edges": [],
+        "layers": [
+            {
+                "id": "layer:service",
+                "name": "Service",
+                "nodeIds": [f"file:{p}" for p in paths],
+                "display_order": 0,
+            }
+        ],
+        "tour": [],
+    }
+
+    builder = _make_builder_with(parsed)
+    # repo_path deliberately omitted → no knowledge-graph.json on disk.
+    pages = await gen.generate_all(
+        parsed,
+        {p: b"pass" for p in paths},
+        builder,
+        repo,
+        "test-repo",
+        kg_data=kg_data,
+    )
+
+    layer_pages = [p for p in pages if p.page_type == "layer_page"]
+    assert layer_pages, "no layer pages generated from in-memory KG"
+    assert any("Service" in p.title for p in layer_pages)

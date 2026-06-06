@@ -174,6 +174,7 @@ class PageGenerator(PerTypeGenerationMixin):
         external_systems: list[dict] | None = None,
         on_page_ready: Callable[[GeneratedPage], None] | None = None,
         kg_modules: list[dict] | None = None,
+        kg_data: dict | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -202,6 +203,7 @@ class PageGenerator(PerTypeGenerationMixin):
             external_systems=external_systems,
             on_page_ready=on_page_ready,
             kg_modules=kg_modules,
+            kg_data=kg_data,
         )
 
     # ------------------------------------------------------------------

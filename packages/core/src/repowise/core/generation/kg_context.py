@@ -32,7 +32,13 @@ class KGFileContext:
 class KnowledgeGraphContext:
     """Index a knowledge-graph.json for fast per-file lookups during generation."""
 
-    def __init__(self, kg_path: Path | None, repo_root: Path | None = None):
+    def __init__(
+        self,
+        kg_path: Path | None,
+        repo_root: Path | None = None,
+        *,
+        data: dict | None = None,
+    ):
         self._file_to_layer: dict[str, dict] = {}
         self._file_to_tour: dict[str, dict] = {}
         self._file_to_node: dict[str, dict] = {}
@@ -43,7 +49,15 @@ class KnowledgeGraphContext:
         self._edges_by_source: dict[str, list[dict]] = {}
         self._edges_by_target: dict[str, list[dict]] = {}
         self._loaded = False
-        if kg_path and kg_path.exists():
+        if data is not None:
+            # In-memory KG (the pipeline result's export dict). The artifact
+            # file is only written during persistence — AFTER generation — so
+            # a fresh init has no file to read and silently lost every
+            # kg_ctx-derived page (layer pages, tour context, file layers).
+            if repo_root is None and kg_path is not None:
+                repo_root = kg_path.parent.parent
+            self._index(data, repo_root or Path())
+        elif kg_path and kg_path.exists():
             self._load(kg_path, repo_root)
 
     @property
@@ -60,7 +74,9 @@ class KnowledgeGraphContext:
 
         if repo_root is None:
             repo_root = path.parent.parent
+        self._index(kg, repo_root)
 
+    def _index(self, kg: dict, repo_root: Path) -> None:
         for node in kg.get("nodes", []):
             fp = node.get("filePath", "")
             if fp:

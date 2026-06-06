@@ -283,6 +283,11 @@ def run_repo_generation(
                     )
                     or None
                 ),
+                kg_data=(
+                    result.knowledge_graph_result.to_dict()
+                    if getattr(result, "knowledge_graph_result", None) is not None
+                    else None
+                ),
             )
         )
 
