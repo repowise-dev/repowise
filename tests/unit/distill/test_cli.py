@@ -104,6 +104,28 @@ def test_expand_invalid_ref_fails_cleanly(repo_cwd: Path) -> None:
     assert result.exit_code == 2
 
 
+def test_distill_source_flag_tags_the_ledger(repo_cwd: Path) -> None:
+    """The hook's --source tag flows into the ledger for `saved --by source`."""
+    runner = CliRunner()
+    noisy = "import sys; sys.stdout.write('x.py:1:1: E501 line too long\\n' * 80)"
+    result = runner.invoke(distill_command, ["--source", "hook-powershell", *_py(noisy)])
+    assert result.exit_code == 0
+    store = OmissionStore(repo_cwd / ".repowise" / "omissions" / "omissions.db")
+    rows = store.savings_rollup(by="source")
+    store.close()
+    assert [r["group"] for r in rows] == ["hook-powershell"]
+
+
+def test_distill_does_not_eat_the_wrapped_commands_source_flag(repo_cwd: Path) -> None:
+    """--source after the command belongs to the command, not to distill."""
+    result = CliRunner().invoke(
+        distill_command,
+        _py("import sys; print(sys.argv[1:])") + ["--source", "mine"],
+    )
+    assert result.exit_code == 0
+    assert "['--source', 'mine']" in result.output
+
+
 def test_distill_records_savings_ledger(repo_cwd: Path, fixtures_dir: Path) -> None:
     fixture = fixtures_dir / "distill" / "find_paths.txt"
     raw = fixture.read_text(encoding="utf-8-sig")

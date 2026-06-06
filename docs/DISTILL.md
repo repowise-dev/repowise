@@ -203,7 +203,7 @@ inside a repowise repo.
 ```bash
 repowise saved                  # per-filter rollup + totals + est. dollars
 repowise saved --by day         # daily rollup
-repowise saved --by source      # cli vs hook surfaces
+repowise saved --by source      # cli vs hook-bash vs hook-powershell
 repowise saved --since 2026-06-01
 repowise saved --model claude-opus-4-6   # price the estimate differently
 repowise saved --missed                  # savings raw commands left on the table

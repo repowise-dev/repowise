@@ -80,7 +80,7 @@ def test_p95_under_100ms(tmp_path: Path) -> None:
         result = subprocess.run(cmd, input=payload, capture_output=True, text=True)
         timings.append((time.perf_counter() - start) * 1000)
         assert result.returncode == 0
-        assert "repowise distill pytest -x" in result.stdout
+        assert "repowise distill --source hook-bash pytest -x" in result.stdout
 
     timings.sort()
     p95 = timings[int(len(timings) * 0.95) - 1]

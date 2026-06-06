@@ -307,8 +307,11 @@ def decide(command: str, cwd: str, shell: str = "posix") -> RewriteResult | None
     if family_setting in _VALID_PERMISSIONS:
         permission = family_setting
 
+    # The --source tag lands in the savings ledger so `repowise saved
+    # --by source` can tell hook surfaces apart from direct CLI use.
+    source = "hook-powershell" if shell == "powershell" else "hook-bash"
     return RewriteResult(
-        command=f"repowise distill {command.strip()}",
+        command=f"repowise distill --source {source} {command.strip()}",
         permission=permission,
         reason=(
             f"repowise distill: compact {family} rendering; full output stays "

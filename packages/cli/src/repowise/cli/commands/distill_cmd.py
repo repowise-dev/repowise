@@ -20,11 +20,19 @@ from repowise.cli.helpers import find_repowise_repo_root
 
 @click.command(
     "distill",
-    context_settings={"ignore_unknown_options": True},
+    # allow_interspersed_args=False keeps option parsing strictly *before* the
+    # wrapped command — a command that itself takes --source is never touched.
+    context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False},
     short_help="Run a command and print a compact, reversible rendering of its output.",
 )
+@click.option(
+    "--source",
+    default="cli",
+    hidden=True,
+    help="Ledger surface label (the rewrite hook tags hook-bash / hook-powershell).",
+)
 @click.argument("command", nargs=-1, required=True, type=click.UNPROCESSED)
-def distill_command(command: tuple[str, ...]) -> None:
+def distill_command(source: str, command: tuple[str, ...]) -> None:
     """Run COMMAND and print a distilled rendering of its output.
 
     Examples:
@@ -56,7 +64,7 @@ def distill_command(command: tuple[str, ...]) -> None:
     if proc.stderr:
         output = output + ("\n" if output and not output.endswith("\n") else "") + proc.stderr
 
-    text = _distill_or_raw(output, command_str, proc.returncode)
+    text = _distill_or_raw(output, command_str, proc.returncode, source)
     _echo_safely(text)
     sys.exit(proc.returncode)
 
@@ -72,7 +80,7 @@ def _render_command(tokens: tuple[str, ...]) -> str:
     return shlex.join(tokens)
 
 
-def _distill_or_raw(output: str, command_str: str, exit_code: int) -> str:
+def _distill_or_raw(output: str, command_str: str, exit_code: int, source: str = "cli") -> str:
     """Distill *output*, honoring the repo's ``distill:`` config block."""
     try:
         repo_root = find_repowise_repo_root()
@@ -92,7 +100,7 @@ def _distill_or_raw(output: str, command_str: str, exit_code: int) -> str:
                 output,
                 command=command_str,
                 exit_code=exit_code,
-                source="cli",
+                source=source,
                 store=store,
                 disabled_filters=disabled,
             ).text

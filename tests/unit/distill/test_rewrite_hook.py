@@ -188,7 +188,7 @@ class TestDecide:
     def test_default_is_ask(self, repo) -> None:
         result = decide("pytest -x", str(repo))
         assert result is not None
-        assert result.command == "repowise distill pytest -x"
+        assert result.command == "repowise distill --source hook-bash pytest -x"
         assert result.permission == "ask"
         assert "repowise expand" in result.reason
 
@@ -271,7 +271,7 @@ class TestDecidePowerShell:
     def test_shell_neutral_commands_rewrite(self, repo, command) -> None:
         result = decide(command, str(repo), shell="powershell")
         assert result is not None
-        assert result.command == f"repowise distill {command}"
+        assert result.command == f"repowise distill --source hook-powershell {command}"
         assert result.permission == "ask"
 
 
@@ -311,7 +311,7 @@ class TestMain:
         hso = response["hookSpecificOutput"]
         assert hso["hookEventName"] == "PreToolUse"
         assert hso["permissionDecision"] == "ask"
-        assert hso["updatedInput"] == {"command": "repowise distill pytest -x"}
+        assert hso["updatedInput"] == {"command": "repowise distill --source hook-bash pytest -x"}
         assert hso["permissionDecisionReason"]
 
     def test_passthrough_emits_nothing(self, monkeypatch, repo) -> None:
@@ -323,7 +323,9 @@ class TestMain:
     def test_powershell_tool_rewrites(self, monkeypatch, repo) -> None:
         out = _run_main(monkeypatch, _payload("git status", str(repo), tool_name="PowerShell"))
         hso = json.loads(out)["hookSpecificOutput"]
-        assert hso["updatedInput"] == {"command": "repowise distill git status"}
+        assert hso["updatedInput"] == {
+            "command": "repowise distill --source hook-powershell git status"
+        }
         assert hso["permissionDecision"] == "ask"
 
     def test_powershell_alias_passes_through(self, monkeypatch, repo) -> None:
