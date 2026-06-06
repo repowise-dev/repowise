@@ -12,6 +12,7 @@ from .architecture import (
     ArchitectureViewResponse,
     ArchLayerResponse,
     ArchNodeResponse,
+    ArchSubGroupResponse,
     ArchTourStepResponse,
 )
 from .blast_radius import (
@@ -69,6 +70,8 @@ from .graph import (
     ArchitectureEdgeResponse,
     ArchitectureGraphResponse,
     ArchitectureNodeResponse,
+    CommunitySliceNodeResponse,
+    CommunitySliceResponse,
     DeadCodeGraphNodeResponse,
     DeadCodeGraphResponse,
     EgoGraphResponse,
@@ -163,6 +166,7 @@ __all__ = [
     "ArchEdgeResponse",
     "ArchLayerResponse",
     "ArchNodeResponse",
+    "ArchSubGroupResponse",
     "ArchTourStepResponse",
     "ArchitectureEdgeResponse",
     "ArchitectureGraphResponse",
@@ -188,6 +192,8 @@ __all__ = [
     "CommitResponse",
     "CommunityDetailResponse",
     "CommunityMember",
+    "CommunitySliceNodeResponse",
+    "CommunitySliceResponse",
     "CommunitySummaryItem",
     "ConversationResponse",
     "CoordinatorHealthResponse",

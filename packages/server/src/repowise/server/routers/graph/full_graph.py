@@ -17,8 +17,9 @@ from repowise.server.routers.graph.signals import (
 from repowise.server.schemas import GraphExportResponse, NodeSearchResult
 
 # Cap on full-graph export; above this we return top-N by PageRank with truncated=True.
-# Sized to fit a modern client-side force layout without hitching.
-_FULL_GRAPH_NODE_CAP = 5000
+# Sized to keep the client-side force layout responsive; clients can step the
+# limit up via the truncation banner.
+_FULL_GRAPH_NODE_CAP = 1500
 
 router = APIRouter()
 
@@ -54,8 +55,8 @@ async def export_graph(
     limit: int = Query(
         _FULL_GRAPH_NODE_CAP,
         ge=1,
-        le=100_000,
-        description="Maximum nodes to return (top-N by PageRank). Set very high to fetch all.",
+        le=6000,
+        description="Maximum nodes to return (top-N by PageRank). Stepped up by the client.",
     ),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
     _repo: object = Depends(with_repo),

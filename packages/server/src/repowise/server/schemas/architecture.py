@@ -7,6 +7,12 @@ from pydantic import BaseModel
 from .c4 import C4ExternalSystemResponse
 
 
+class ArchSubGroupResponse(BaseModel):
+    id: str
+    name: str
+    node_ids: list[str]
+
+
 class ArchLayerResponse(BaseModel):
     id: str
     name: str
@@ -15,6 +21,8 @@ class ArchLayerResponse(BaseModel):
     file_count: int
     complexity_distribution: dict[str, int]
     health_score: float | None
+    sub_groups: list[ArchSubGroupResponse] = []
+    display_order: int = 0
 
 
 class ArchNodeResponse(BaseModel):
@@ -57,6 +65,13 @@ class ArchTourStepResponse(BaseModel):
     title: str
     description: str
     node_ids: list[str]
+    # Curated, layer-aware fields (None/empty for legacy LLM tours).
+    target_path: str | None = None
+    layer_id: str | None = None
+    reason: str = ""
+    depth: int | None = None
+    kind: str = ""
+    page_type: str | None = None
 
 
 class ArchitectureViewResponse(BaseModel):
@@ -72,3 +87,6 @@ class ArchitectureViewResponse(BaseModel):
     languages: list[str]
     frameworks: list[str]
     external_systems: list[C4ExternalSystemResponse]
+    # Curated, ranked entry points (repo-relative paths; empty when uncurated).
+    entry_points: list[str] = []
+    entry_candidates: list[str] = []
