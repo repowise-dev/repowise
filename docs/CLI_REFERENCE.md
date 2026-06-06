@@ -412,6 +412,27 @@ repowise saved --since 2026-06-01
 
 ---
 
+### `repowise corrections [PATH]`
+
+Mine local agent transcripts for recurring command fumbles — consecutive runs
+of the same base command where the first failed and a later variant succeeded
+(wrong tool, wrong path, unknown flag, missing argument). Report-only by
+default; entirely local. See [DISTILL.md](DISTILL.md#repowise-corrections--recurring-command-fumbles).
+
+| Flag | Description |
+|------|-------------|
+| `--days` | Transcript window for the scan (default 30) |
+| `--write` | Maintain the "Known command corrections" managed block in `.claude/CLAUDE.md` / `AGENTS.md` (opt-in) |
+| `--min-count` | Occurrences a rule needs before `--write` includes it (default 2) |
+
+```bash
+repowise corrections                 # report recurring fumbles
+repowise corrections --days 60
+repowise corrections --write         # seed the agent guidance block
+```
+
+---
+
 ### `repowise costs`
 
 Show LLM spend tracking.

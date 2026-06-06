@@ -265,6 +265,47 @@ stat sourced from the same local scan.
 
 ---
 
+## `repowise corrections` — recurring command fumbles
+
+The same transcript reader, pointed at a different waste: commands the agent
+got *wrong* and then fixed. The scan finds consecutive runs of the same base
+command where the first failed (the transcript records a real exit code) and
+a later variant succeeded, classifies the fumble, and aggregates the
+recurring rules:
+
+```bash
+repowise corrections                # report-only (default window: 30 days)
+repowise corrections --days 60
+repowise corrections --write        # maintain the managed guidance block
+```
+
+| Kind | Example rule |
+|---|---|
+| wrong tool | use `.venv\Scripts\python.exe` instead of bare `python` |
+| wrong path | `pytest`: use `tests/unit/cli/`, not `../../tests/unit/cli/` |
+| unknown flag | `pytest` does not support `--looponfail` |
+| missing arg | `tool` needs `--required-thing` |
+
+Classification is deliberately precision-first: apart from the structural
+wrong-tool case, a rule only forms when the error text corroborates it (the
+dropped flag or path is actually named by the error) — a red-green dev loop
+re-running tests with different selections never becomes a "correction".
+Wrong-path rules consult the symbol index when available and note where the
+corrected target actually lives.
+
+`--write` (strictly opt-in) maintains a short **"Known command corrections"**
+managed block — most-frequent rules first, at least 2 occurrences each,
+capped at 10 lines — between `REPOWISE_CORRECTIONS` markers in the repo's
+`.claude/CLAUDE.md` (and `AGENTS.md` when one exists), so the next agent
+session is told up front. Re-running `--write` refreshes the block in place;
+when no rule clears the threshold anymore, the block is removed. Content
+outside the markers is never touched.
+
+The same privacy contract as the missed scan applies: read-only, best-effort,
+entirely local.
+
+---
+
 ## Measured savings
 
 On a public OSS repository (microdot), one run per command, tokens estimated
