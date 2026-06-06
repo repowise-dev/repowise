@@ -25,17 +25,54 @@ class KnowledgeGraphResult:
     edges: list[dict] = field(default_factory=list)
     layers: list[dict] = field(default_factory=list)
     tour: list[dict] = field(default_factory=list)
+    # Curated wiki modules (``derive_modules`` in kg_curation): right-sized
+    # directory groups with stable path-derived ids. Only the curated export
+    # populates this; empty means the key is omitted from ``to_dict`` so the
+    # flag-off artifact stays byte-identical.
+    modules: list[dict] = field(default_factory=list)
     fingerprint: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        # Canonical ordering: node/edge/layer-member lists carry no semantic
+        # order, but file-traversal and graph-insertion order vary run to
+        # run. Sorting here makes the exported artifact byte-stable across
+        # identical runs (baseline diffs, fingerprint reuse, clean diffs).
+        nodes = sorted(self.nodes, key=lambda n: str(n.get("id", "")))
+        edges = sorted(
+            self.edges,
+            key=lambda e: (
+                str(e.get("source", "")),
+                str(e.get("target", "")),
+                str(e.get("type", "")),
+            ),
+        )
+        def _canonical_layer(layer: dict) -> dict:
+            out = {**layer, "nodeIds": sorted(layer.get("nodeIds", []))}
+            if isinstance(layer.get("subGroups"), list):
+                out["subGroups"] = [
+                    {**sg, "nodeIds": sorted(sg.get("nodeIds", []))}
+                    if isinstance(sg, dict)
+                    else sg
+                    for sg in layer["subGroups"]
+                ]
+            return out
+
+        layers = [_canonical_layer(layer) for layer in self.layers]
+        out = {
             "version": "1.0.0",
             "project": self.project,
-            "nodes": self.nodes,
-            "edges": self.edges,
-            "layers": self.layers,
+            "nodes": nodes,
+            "edges": edges,
+            "layers": layers,
             "tour": self.tour,
         }
+        if self.modules:
+            # Additive key: present only when curation derived modules, so
+            # the uncurated export's byte shape is unchanged.
+            out["modules"] = [
+                {**m, "nodeIds": sorted(m.get("nodeIds", []))} for m in self.modules
+            ]
+        return out
 
     @classmethod
     def from_file(cls, path: Path) -> KnowledgeGraphResult | None:
@@ -50,6 +87,7 @@ class KnowledgeGraphResult:
             edges=data.get("edges", []),
             layers=data.get("layers", []),
             tour=data.get("tour", []),
+            modules=data.get("modules", []),
         )
 
 
@@ -71,6 +109,8 @@ _INFRA_NAMES = frozenset({
     "vagrantfile", "procfile",
 })
 
+_INFRA_LANGUAGES = frozenset({"dockerfile", "makefile"})
+
 _DOC_EXTENSIONS = frozenset({
     ".md", ".rst", ".txt", ".adoc",
 })
@@ -82,7 +122,14 @@ def _classify_file_type(path: str, language: str, is_config: bool) -> str:
 
     if is_config or ext in _CONFIG_EXTENSIONS:
         return "config"
-    if ext in _INFRA_EXTENSIONS or stem in _INFRA_NAMES:
+    # Infra names only count for extension-less files (Dockerfile, Makefile)
+    # or when ingestion parsed the file as an infra language — a Python module
+    # *named* dockerfile.py is code, not infrastructure.
+    if (
+        ext in _INFRA_EXTENSIONS
+        or language in _INFRA_LANGUAGES
+        or (not ext and stem in _INFRA_NAMES)
+    ):
         return "service"
     if ext in _DOC_EXTENSIONS:
         return "document"
@@ -250,13 +297,22 @@ def build_knowledge_graph_skeleton(
             continue
         seen_edges.add(edge_key)
 
-        edges.append({
+        edge_dict = {
             "source": source_id,
             "target": target_id,
             "type": kg_type,
             "direction": "forward",
             "weight": data.get("confidence", 1.0),
-        })
+        }
+        # Additive provenance marker: edges synthesised from convention
+        # passes (e.g. JVM same-package references) carry their origin so
+        # density metrics can separate them from declared imports and any
+        # false positive is diagnosable at the source. Key absent for
+        # regular declared-import edges.
+        hint = data.get("hint_source")
+        if hint:
+            edge_dict["hint"] = hint
+        edges.append(edge_dict)
 
     # ---- Layers (from communities) ---------------------------------------
     layers_by_id: dict[str, dict] = {}
