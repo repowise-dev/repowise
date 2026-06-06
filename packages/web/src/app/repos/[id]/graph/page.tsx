@@ -10,7 +10,22 @@ import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-b
 import { getGraph } from "@/lib/api/graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 
-const VALID_VIEW_MODES = new Set(["module", "full", "architecture", "dead", "hotfiles", "unified"]);
+type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
+
+const VALID_VIEW_MODES = new Set<ViewMode>([
+  "module",
+  "full",
+  "architecture",
+  "dead",
+  "hotfiles",
+  "unified",
+]);
+
+// Scopes that render their own dedicated endpoint and therefore never touch the
+// capped full-graph endpoint (`/api/graph`). The constellation ("architecture")
+// and the module browser fetch their own graphs, so the page must NOT eagerly
+// fetch the full graph — nor show its truncation banner — for these scopes.
+const SCOPES_WITHOUT_FULL_GRAPH = new Set<ViewMode>(["architecture", "module"]);
 
 export default function GraphPage({
   params,
@@ -21,17 +36,28 @@ export default function GraphPage({
   const searchParams = useSearchParams();
 
   const viewModeParam = searchParams.get("viewMode");
-  const initialViewMode = VALID_VIEW_MODES.has(viewModeParam ?? "")
-    ? (viewModeParam as "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified")
+  const initialViewMode = VALID_VIEW_MODES.has((viewModeParam ?? "") as ViewMode)
+    ? (viewModeParam as ViewMode)
     : undefined;
   const initialNode = searchParams.get("node");
 
   const [, setSelectedNode] = useQueryState("node");
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
+  const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
+
+  // Track the live scope so we only fetch the capped full graph (and render its
+  // truncation banner) for scopes that actually use it. Constellation
+  // ("architecture") is the default, and — like "module" — fetches its own
+  // endpoint inside GraphFlow, so the page must stay off /api/graph there.
+  // A pinned node forces the "full" scope (see initialViewMode below).
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    initialNode ? "full" : initialViewMode ?? "architecture",
+  );
+  const usesFullGraph = !SCOPES_WITHOUT_FULL_GRAPH.has(viewMode);
 
   const { data: graphData } = useSWR<GraphExportResponse>(
-    `graph:${repoId}`,
-    () => getGraph(repoId),
+    usesFullGraph ? `graph:${repoId}:${graphLimit ?? "default"}` : null,
+    () => getGraph(repoId, graphLimit),
     { revalidateOnFocus: false, revalidateOnReconnect: false },
   );
 
@@ -75,12 +101,16 @@ export default function GraphPage({
         </p>
       </div>
 
-      {/* Truncation banner — shown when the server capped the full graph */}
-      {graphData?.truncated && graphData.total_node_count != null && (
+      {/* Truncation banner — shown only when the current scope renders the
+          capped full graph and the server actually capped it. Constellation /
+          module scopes use their own endpoints, so the banner stays hidden. */}
+      {usesFullGraph && graphData?.truncated && graphData.total_node_count != null && (
         <div className="shrink-0 px-4 sm:px-6 pt-3">
           <GraphTruncationBanner
             shown={graphData.nodes.length}
             total={graphData.total_node_count}
+            limit={graphLimit ?? graphData.nodes.length}
+            onLoadMore={(nextLimit) => setGraphLimit(nextLimit)}
             onSwitchToArchitecture={() => {
               const url = new URL(window.location.href);
               url.searchParams.set("viewMode", "architecture");
@@ -101,6 +131,7 @@ export default function GraphPage({
             onNodeClick={handleNodeClick}
             onNodeViewDocs={handleNodeViewDocs}
             onCommunityPanelOpen={handleCommunityPanelOpen}
+            onViewModeChange={setViewMode}
           />
 
           {/* Doc panel — shows on file click. Single right-rail surface. */}

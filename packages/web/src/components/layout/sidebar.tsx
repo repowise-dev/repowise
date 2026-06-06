@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import Image from "next/image";
+import { BrandLogo } from "./brand-logo";
 import {
   LayoutDashboard,
   Activity,
@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils/cn";
 import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
 import { Separator } from "@repowise-dev/ui/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise-dev/ui/ui/tooltip";
+import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
@@ -98,7 +99,25 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
       });
     }
   }, [derivedActiveRepoId]);
-  const [collapsed, setCollapsed] = React.useState(false);
+  // Docs is a reading surface — auto-collapse the sidebar on entering it so
+  // the page gets the width, and restore the previous state on leaving.
+  // Manual toggles always win while the route type is unchanged.
+  const isDocsRoute = /^\/repos\/[^/]+\/docs(\/|$)/.test(pathname ?? "");
+  const [collapsed, setCollapsed] = React.useState(isDocsRoute);
+  const preDocsCollapsed = React.useRef(false);
+  const wasDocsRoute = React.useRef(isDocsRoute);
+  React.useEffect(() => {
+    if (isDocsRoute === wasDocsRoute.current) return;
+    wasDocsRoute.current = isDocsRoute;
+    if (isDocsRoute) {
+      setCollapsed((c) => {
+        preDocsCollapsed.current = c;
+        return true;
+      });
+    } else {
+      setCollapsed(preDocsCollapsed.current);
+    }
+  }, [isDocsRoute]);
 
   const toggleRepo = (id: string) => {
     setExpandedRepos((prev) => {
@@ -118,15 +137,15 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
         isIconOnly ? "w-[56px]" : "w-[260px]",
       )}
     >
-      {/* Logo */}
-      <div className="flex h-14 items-center gap-3 px-4">
-        <Image
-          src="/repowise-logo.png"
-          alt="repowise"
-          width={28}
-          height={28}
-          className="shrink-0 drop-shadow-[0_0_8px_rgba(245,149,32,0.3)]"
-        />
+      {/* Logo. Collapsed (56px) can't fit logo + toggle on one row — the
+          button used to spill out over the breadcrumb — so stack them. */}
+      <div
+        className={cn(
+          "flex items-center gap-3",
+          isIconOnly ? "flex-col gap-1.5 px-0 pt-3 pb-1" : "h-14 px-4",
+        )}
+      >
+        <BrandLogo size={28} />
         {!isIconOnly && (
           <span className="text-base font-semibold text-[var(--color-text-primary)] tracking-tight flex-1 truncate">
             repowise
@@ -134,7 +153,10 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
         )}
         <button
           onClick={() => setCollapsed((c) => !c)}
-          className="ml-auto shrink-0 rounded-md p-2.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] transition-colors"
+          className={cn(
+            "shrink-0 rounded-md p-2.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)] transition-colors",
+            !isIconOnly && "ml-auto",
+          )}
           aria-label={isIconOnly ? "Expand sidebar" : "Collapse sidebar"}
           aria-expanded={!isIconOnly}
           aria-controls="sidebar-nav"
@@ -332,7 +354,8 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
 
       {/* Footer */}
       {!isIconOnly && (
-        <div className="border-t border-[var(--color-border-default)] px-4 py-3">
+        <div className="flex flex-col gap-3 border-t border-[var(--color-border-default)] px-4 py-3">
+          <ThemeToggle className="w-full justify-between" />
           <p className="text-xs text-[var(--color-text-tertiary)]">
             repowise v0.16.0
           </p>

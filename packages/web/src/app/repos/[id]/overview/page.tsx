@@ -24,6 +24,7 @@ import { ExecutionFlowsPanel } from "@repowise-dev/ui/dashboard/execution-flows-
 import { BusFactorPanel } from "@repowise-dev/ui/git/bus-factor-panel";
 import { CommitCategorySparkline } from "@repowise-dev/ui/git/commit-category-sparkline";
 import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@repowise-dev/ui/ui/tabs";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type {
   RepoStatsResponse,
@@ -109,6 +110,15 @@ export default async function OverviewPage({ params }: Props) {
   // Aggregate language distribution from graph nodes
   const langDistribution = graph ? aggregateLanguages(graph.nodes) : {};
 
+  // Aggregate commit categories across hotspots for the Activity tab
+  const aggregatedCategories: Record<string, number> = {};
+  for (const h of hotspots ?? []) {
+    for (const [cat, count] of Object.entries(h.commit_categories ?? {})) {
+      aggregatedCategories[cat] = (aggregatedCategories[cat] || 0) + count;
+    }
+  }
+  const hasCategories = Object.values(aggregatedCategories).some((v) => v > 0);
+
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
       {/* ── Hero: Health Score + Repo Info + Quick Actions ── */}
@@ -156,25 +166,25 @@ export default async function OverviewPage({ params }: Props) {
               label="Files"
               value={stats ? formatNumber(stats.file_count) : "–"}
               href={`/repos/${id}/graph`}
-              className="!p-0 [&>div]:!p-3"
+              dense
             />
             <StatCard
               label="Symbols"
               value={stats ? formatNumber(stats.symbol_count) : "–"}
               href={`/repos/${id}/symbols`}
-              className="!p-0 [&>div]:!p-3"
+              dense
             />
             <StatCard
               label="Entry Points"
               value={stats ? formatNumber(stats.entry_point_count) : "–"}
               href={`/repos/${id}/graph?viewMode=architecture`}
-              className="!p-0 [&>div]:!p-3"
+              dense
             />
             <StatCard
               label="Doc Coverage"
               value={stats ? `${Math.round(stats.doc_coverage_pct)}%` : "–"}
               href={`/repos/${id}/docs/coverage`}
-              className="!p-0 [&>div]:!p-3"
+              dense
             />
             <StatCard
               label="Dead Exports"
@@ -185,17 +195,36 @@ export default async function OverviewPage({ params }: Props) {
                   : undefined
               }
               href={`/repos/${id}/dead-code`}
-              className="!p-0 [&>div]:!p-3"
+              dense
             />
           </div>
         </div>
       </div>
 
-      {/* ── Main Grid ── */}
+      {/* ── At a glance: what needs eyes now ── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Left column — Attention + Hotspots */}
-        <div className="space-y-4 lg:col-span-2">
+        <div className="lg:col-span-2">
           <AttentionPanel items={attentionItems} repoId={id} />
+        </div>
+        <div>
+          <LanguageDonut
+            distribution={langDistribution}
+            viewAllHref={`/repos/${id}/graph?colorMode=language`}
+          />
+        </div>
+      </div>
+
+      {/* ── Detail sections — one focus at a time ── */}
+      <Tabs defaultValue="activity">
+        <TabsList>
+          <TabsTrigger value="activity">Activity</TabsTrigger>
+          <TabsTrigger value="architecture">Architecture</TabsTrigger>
+          <TabsTrigger value="graph">Graph</TabsTrigger>
+          <TabsTrigger value="ownership">Ownership</TabsTrigger>
+        </TabsList>
+
+        {/* Activity — recent change pressure and decisions */}
+        <TabsContent value="activity" className="mt-4 space-y-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <HotspotsMini hotspots={hotspots ?? []} repoId={id} />
             <DecisionsTimeline
@@ -209,40 +238,7 @@ export default async function OverviewPage({ params }: Props) {
               repoId={id}
             />
           </div>
-        </div>
-
-        {/* Right column — Visualizations */}
-        <div className="space-y-4">
-          <LanguageDonut distribution={langDistribution} />
-          <a
-            href={`/repos/${id}/graph?colorMode=language`}
-            className="block text-[10px] text-[var(--color-accent-primary)] hover:underline text-right -mt-1"
-          >
-            View in Graph →
-          </a>
-        </div>
-      </div>
-
-      {/* ── Git Insights ── */}
-      {hotspots && hotspots.length > 0 && (() => {
-        const aggregatedCategories: Record<string, number> = {};
-        for (const h of hotspots) {
-          for (const [cat, count] of Object.entries(h.commit_categories ?? {})) {
-            aggregatedCategories[cat] = (aggregatedCategories[cat] || 0) + count;
-          }
-        }
-        const hasCategories = Object.values(aggregatedCategories).some((v) => v > 0);
-
-        return hasCategories ? (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
-                Git Insights
-              </h2>
-              <a href={`/repos/${id}/hotspots`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
-                View all →
-              </a>
-            </div>
+          {hasCategories && (
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium">Commit Activity</CardTitle>
@@ -250,33 +246,32 @@ export default async function OverviewPage({ params }: Props) {
               <CardContent>
                 <CommitCategorySparkline categories={aggregatedCategories} />
                 <div className="flex items-center gap-4 mt-2 text-[10px] text-[var(--color-text-tertiary)]">
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#5b9cf6" }} /> Feature</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#ef4444" }} /> Fix</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#a855f7" }} /> Refactor</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "#f59520" }} /> Dependency</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-info)" }} /> Feature</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-error)" }} /> Fix</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-accent-secondary)" }} /> Refactor</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-accent-fill)" }} /> Dependency</span>
                 </div>
               </CardContent>
             </Card>
-          </div>
-        ) : null;
-      })()}
+          )}
+        </TabsContent>
 
-      {/* ── Architecture ── */}
-      {moduleGraph && moduleGraph.nodes.length > 0 && (
-        <ModuleOverviewGrid
-          nodes={moduleGraph.nodes}
-          edges={moduleGraph.edges}
-          repoId={id}
-        />
-      )}
+        {/* Architecture — module map */}
+        <TabsContent value="architecture" className="mt-4">
+          {moduleGraph && moduleGraph.nodes.length > 0 ? (
+            <ModuleOverviewGrid
+              nodes={moduleGraph.nodes}
+              edges={moduleGraph.edges}
+              repoId={id}
+            />
+          ) : (
+            <p className="text-sm text-[var(--color-text-tertiary)]">No module graph available.</p>
+          )}
+        </TabsContent>
 
-      {/* ── Graph Intelligence: Communities & Execution Flows ── */}
-      {((communities && communities.length > 0) || (executionFlows && executionFlows.flows.length > 0)) && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
-              Graph Intelligence
-            </h2>
+        {/* Graph — communities & execution flows */}
+        <TabsContent value="graph" className="mt-4 space-y-4">
+          <div className="flex justify-end">
             <a href={`/repos/${id}/graph?colorMode=community`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
               View all →
             </a>
@@ -289,16 +284,14 @@ export default async function OverviewPage({ params }: Props) {
               <ExecutionFlowsPanel flows={executionFlows.flows} repoId={id} />
             )}
           </div>
-        </div>
-      )}
+          {!(communities && communities.length > 0) && !(executionFlows && executionFlows.flows.length > 0) && (
+            <p className="text-sm text-[var(--color-text-tertiary)]">No graph intelligence available.</p>
+          )}
+        </TabsContent>
 
-      {/* ── Ownership & Knowledge ── */}
-      {(hotspots || knowledgeMap) && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-[var(--color-text-secondary)] uppercase tracking-wider">
-              Ownership & Knowledge
-            </h2>
+        {/* Ownership — bus factor, silos, onboarding */}
+        <TabsContent value="ownership" className="mt-4 space-y-4">
+          <div className="flex justify-end">
             <a href={`/repos/${id}/ownership`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
               View all →
             </a>
@@ -390,8 +383,8 @@ export default async function OverviewPage({ params }: Props) {
               </Card>
             )}
           </div>
-        </div>
-      )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

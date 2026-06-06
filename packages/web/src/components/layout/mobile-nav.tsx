@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import Image from "next/image";
+import { BrandLogo } from "./brand-logo";
 import {
   Menu,
   Activity,
@@ -118,13 +118,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
         <Menu className="h-5 w-5" />
       </Button>
       <div className="flex items-center gap-2 min-w-0 flex-1">
-        <Image
-          src="/repowise-logo.png"
-          alt="repowise"
-          width={24}
-          height={24}
-          className="shrink-0 drop-shadow-[0_0_8px_rgba(245,149,32,0.3)]"
-        />
+        <BrandLogo size={24} />
         <span className="text-base font-semibold text-[var(--color-text-primary)] tracking-tight truncate">
           repowise
         </span>
@@ -144,13 +138,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent side="left" className="w-72 p-0">
           <SheetHeader className="border-b border-[var(--color-border-default)] h-14 flex-row items-center gap-3 py-0 px-4">
-            <Image
-              src="/repowise-logo.png"
-              alt="repowise"
-              width={28}
-              height={28}
-              className="shrink-0 drop-shadow-[0_0_8px_rgba(245,149,32,0.3)]"
-            />
+            <BrandLogo size={28} />
             <SheetTitle className="text-base">repowise</SheetTitle>
           </SheetHeader>
 

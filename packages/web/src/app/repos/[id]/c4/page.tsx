@@ -22,6 +22,8 @@ import {
   archNodeTypes,
   archEdgeTypes,
   SearchBar,
+  ArchBreadcrumb,
+  ArchLegend,
   PersonaSelector,
   NodeTypeCategoryFilters,
   FilterPanel,
@@ -32,6 +34,7 @@ import {
 } from "@repowise-dev/ui/c4";
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlow,
@@ -46,11 +49,17 @@ import { useRepo } from "@/lib/hooks/use-repo";
 import { getC4Mermaid } from "@/lib/api/c4";
 import { C4DetailPanelHost } from "@/components/c4/c4-detail-panel-host";
 import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
+import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
+import { OwlLoader } from "@/components/shared/owl-loader";
+import { AlertTriangle } from "lucide-react";
 
 const MODE_VALUES = ["c4", "architecture"] as const;
-const VIEW_VALUES = ["overview", "detail"] as const;
+const VIEW_VALUES = ["overview", "groups", "detail"] as const;
 const PERSONA_VALUES = ["overview", "learn", "deep-dive"] as const;
-const SYNTHETIC_NODE_TYPES = new Set(["layerCluster", "archContainer", "portal"]);
+// Unified click grammar (kg-ux plan B5): single click = select + inspect on
+// every node kind. Only true non-entities stay unselectable — portals are
+// navigation stubs, the scope frame is a pointer-events-none underlay.
+const SYNTHETIC_NODE_TYPES = new Set(["portal", "scopeFrame"]);
 
 function clampLevel(n: number | null): C4Level {
   return n === 1 ? 1 : n === 3 ? 3 : 2;
@@ -97,6 +106,7 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     parseAsStringLiteral(VIEW_VALUES).withDefault("overview"),
   );
   const [layerParam, setLayerParam] = useQueryState("layer", parseAsString);
+  const [groupParam, setGroupParam] = useQueryState("group", parseAsString);
   const [nodeParam, setNodeParam] = useQueryState("node", parseAsString);
   const [personaParam, setPersonaParam] = useQueryState(
     "persona",
@@ -106,9 +116,11 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
   const setView = useArchitectureStore((s) => s.setView);
   const navigationLevel = useArchitectureStore((s) => s.navigationLevel);
   const activeLayerId = useArchitectureStore((s) => s.activeLayerId);
+  const activeSubGroupId = useArchitectureStore((s) => s.activeSubGroupId);
   const selectedNodeId = useArchitectureStore((s) => s.selectedNodeId);
   const persona = useArchitectureStore((s) => s.persona);
   const drillIntoLayer = useArchitectureStore((s) => s.drillIntoLayer);
+  const drillIntoSubGroup = useArchitectureStore((s) => s.drillIntoSubGroup);
   const selectNode = useArchitectureStore((s) => s.selectNode);
   const setPersona = useArchitectureStore((s) => s.setPersona);
   const setReactFlowInstance = useArchitectureStore((s) => s.setReactFlowInstance);
@@ -129,26 +141,42 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     if (layerParam) {
       drillIntoLayer(layerParam);
     }
+    if (groupParam) {
+      drillIntoSubGroup(groupParam);
+    }
     if (nodeParam) {
       selectNode(nodeParam);
     }
-  }, [view, layerParam, nodeParam, personaParam, drillIntoLayer, selectNode, setPersona]);
+  }, [view, layerParam, groupParam, nodeParam, personaParam,
+      drillIntoLayer, drillIntoSubGroup, selectNode, setPersona]);
 
   const syncingRef = useRef(false);
   useEffect(() => {
+    // Until the deep-link restore above has run, the store still holds its
+    // default overview state — syncing that to the URL would null out the
+    // very params the restore is about to read, so every shared link
+    // snapped back to the overview.
+    if (!initializedRef.current) return;
     if (syncingRef.current) return;
     syncingRef.current = true;
-    void setViewParam(navigationLevel === "layer-detail" ? "detail" : "overview");
+    void setViewParam(
+      navigationLevel === "layer-detail"
+        ? "detail"
+        : navigationLevel === "layer-groups"
+          ? "groups"
+          : "overview",
+    );
     void setLayerParam(activeLayerId);
+    void setGroupParam(activeSubGroupId);
     void setNodeParam(selectedNodeId);
     void setPersonaParam(persona);
     syncingRef.current = false;
-  }, [navigationLevel, activeLayerId, selectedNodeId, persona,
-      setViewParam, setLayerParam, setNodeParam, setPersonaParam]);
+  }, [navigationLevel, activeLayerId, activeSubGroupId, selectedNodeId, persona,
+      setViewParam, setLayerParam, setGroupParam, setNodeParam, setPersonaParam]);
 
   useArchitectureNavigation();
 
-  const { nodes, edges, loading: layoutLoading } = useArchitectureLayout();
+  const { nodes, edges, loading: layoutLoading, hiddenEdgeCount } = useArchitectureLayout();
 
   const pendingFitRef = useRef(false);
   const prevNavRef = useRef({ navigationLevel, activeLayerId });
@@ -171,6 +199,24 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     return () => cancelAnimationFrame(raf);
   }, [nodes, fitView]);
 
+  // Camera ease on select (kg-ux plan B5): frame the selected node without
+  // drilling. Eases once per selection — layout refreshes (dimming etc.)
+  // never re-center a camera the user has panned away.
+  const lastEasedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedNodeId) {
+      lastEasedRef.current = null;
+      return;
+    }
+    if (lastEasedRef.current === selectedNodeId) return;
+    if (!nodes.some((n) => n.id === selectedNodeId)) return;
+    lastEasedRef.current = selectedNodeId;
+    const raf = requestAnimationFrame(() => {
+      fitView({ nodes: [{ id: selectedNodeId }], duration: 250, padding: 0.4, maxZoom: 1.15 });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [selectedNodeId, nodes, fitView]);
+
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: { id: string; type?: string }) => {
       if (SYNTHETIC_NODE_TYPES.has(node.type ?? "")) return;
@@ -179,10 +225,14 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
     [selectNode],
   );
 
+  // Double click = drill (grammar): layer → groups/detail, group → detail,
+  // folder → expand/collapse. (Drilling clears selection in the store.)
   const handleNodeDoubleClick = useCallback(
     (_: React.MouseEvent, node: { id: string; type?: string }) => {
       if (node.type === "layerCluster") {
         drillIntoLayer(node.id);
+      } else if (node.type === "subGroupCluster") {
+        useArchitectureStore.getState().drillIntoSubGroup(node.id);
       } else if (node.type === "archContainer") {
         useArchitectureStore.getState().toggleContainer(node.id);
       }
@@ -236,21 +286,39 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
             <NodeTypeCategoryFilters />
           </div>
         </div>
-        <div className="mt-2">
+        <div className="mt-2 flex items-center gap-4">
           <SearchBar />
+          <ArchBreadcrumb />
         </div>
       </div>
 
-      <style>{KEYFRAMES.accentPulse}{KEYFRAMES.edgeFlow}</style>
-      <div className="flex-1 min-h-0 relative">
+      <style>{KEYFRAMES.accentPulse}{KEYFRAMES.edgeFlow}{`
+        /* Zoom-into-tier feel: nodes glide to their next slot (plan D). */
+        @media (prefers-reduced-motion: no-preference) {
+          .react-flow__node { transition: transform 180ms ease; }
+        }
+      `}</style>
+      <div className="flex-1 min-h-0 relative bg-[var(--color-bg-canvas)]">
         {error && (
-          <div className="absolute inset-0 flex items-center justify-center text-red-300 text-sm z-10 pointer-events-none">
-            {error.message}
+          <div className="absolute inset-0 flex items-center justify-center z-10">
+            <EmptyState
+              icon={<AlertTriangle className="h-5 w-5" aria-hidden />}
+              title="Couldn't load the knowledge graph"
+              description={error.message}
+              className="max-w-md p-8"
+            />
           </div>
         )}
         {anyLoading && nodes.length === 0 && !error && (
-          <div className="absolute inset-0 flex items-center justify-center text-[var(--color-text-secondary)] text-sm z-10 pointer-events-none">
-            Loading knowledge graph…
+          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+            <OwlLoader size={120} label="Loading knowledge graph…" className="min-h-0" />
+          </div>
+        )}
+        {/* Re-layout feedback (B6): ELK stage-2 on big layers used to freeze
+            silently — a small owl chip says the canvas is thinking. */}
+        {anyLoading && nodes.length > 0 && !error && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 px-3 py-1 shadow-sm">
+            <OwlLoader size={28} label="Laying out…" className="min-h-0 flex-row gap-2 text-[10px]" />
           </div>
         )}
 
@@ -271,10 +339,31 @@ function ArchitectureViewInner({ repoId, repoName }: { repoId: string; repoName:
           nodesDraggable={false}
           nodesConnectable={false}
         >
-          <Background gap={28} size={1} color="rgba(148,163,184,0.18)" />
+          {/* Blueprint graph paper: 24px line grid on the warm canvas, matching
+              the mermaid container (kg-ux plan §2.1). */}
+          <Background variant={BackgroundVariant.Lines} gap={24} size={1} color="var(--color-diagram-grid)" />
           <Controls showInteractive={false} />
-          <MiniMap pannable zoomable maskColor="rgba(11,18,32,0.85)" />
+          {/* maskColor comes from --xy-minimap-mask-background (theme-aware). */}
+          <MiniMap pannable zoomable />
         </ReactFlow>
+
+        {/* Orientation (plan C-1) and the tour player (C-2) render in the
+            right Sidebar only — the floating left asides duplicated them
+            (user feedback 2026-06-05: one place). */}
+
+        {hiddenEdgeCount > 0 && (
+          <div
+            className="absolute bottom-4 left-14 z-10 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]/90 px-3 py-1 text-xs text-[var(--color-text-secondary)]"
+            title="Weakest aggregated connections are hidden to keep the view legible. Drill in to see them."
+          >
+            +{hiddenEdgeCount} weaker link{hiddenEdgeCount === 1 ? "" : "s"} hidden
+          </div>
+        )}
+
+        {/* Decoder ring — collapsible, every tier (B6). */}
+        <div className="absolute bottom-4 right-[224px] z-10">
+          <ArchLegend />
+        </div>
 
         <ArchDetailPanelHost repoId={repoId} />
 
@@ -350,12 +439,23 @@ function LegacyC4View({ repoId, repoName }: { repoId: string; repoName: string }
   return (
     <>
       <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-[var(--color-border-default)]">
-        <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
-          Knowledge Graph
-        </h1>
-        <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-          System context, containers, and components — drill in to navigate.
-        </p>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
+              Knowledge Graph
+            </h1>
+            <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+              System context, containers, and components — drill in to navigate.
+            </p>
+          </div>
+          {/* Legacy mode is frozen (locked decision 4) — point at the new view. */}
+          <a
+            href="?mode=architecture"
+            className="shrink-0 rounded-full border border-[var(--color-accent-primary,#f59520)]/50 bg-[var(--color-accent-primary,#f59520)]/10 px-3 py-1 text-xs text-[var(--color-accent-primary,#f59520)] hover:bg-[var(--color-accent-primary,#f59520)]/20"
+          >
+            Try the new architecture view →
+          </a>
+        </div>
       </div>
       <div className="flex-1 min-h-0">
         <C4Diagram
