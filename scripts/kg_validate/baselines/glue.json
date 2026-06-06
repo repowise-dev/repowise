@@ -30,6 +30,16 @@
   },
   "dominant_language": "r",
   "entry_points": [],
+  "modules": {
+   "count": 3,
+   "max_size": 28,
+   "min_size": 11,
+   "names": [
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "R/glue.R",

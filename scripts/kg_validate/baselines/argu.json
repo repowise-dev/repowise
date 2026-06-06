@@ -35,6 +35,16 @@
   "entry_points": [
    "src/Argu/Parsers/Cli.fs"
   ],
+  "modules": {
+   "count": 3,
+   "max_size": 28,
+   "min_size": 6,
+   "names": [
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/Argu/Parsers/Cli.fs",

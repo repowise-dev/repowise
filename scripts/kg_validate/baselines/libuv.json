@@ -63,6 +63,19 @@
   },
   "dominant_language": "c",
   "entry_points": [],
+  "modules": {
+   "count": 6,
+   "max_size": 212,
+   "min_size": 8,
+   "names": [
+    "API",
+    "Application (top-level)",
+    "Config",
+    "Test",
+    "docs",
+    "src"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "include/uv/unix.h",

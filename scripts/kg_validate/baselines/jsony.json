@@ -26,6 +26,15 @@
   },
   "dominant_language": "nim",
   "entry_points": [],
+  "modules": {
+   "count": 2,
+   "max_size": 30,
+   "min_size": 3,
+   "names": [
+    "Application",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/jsony.nim",

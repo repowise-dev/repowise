@@ -26,6 +26,16 @@
   },
   "dominant_language": "julia",
   "entry_points": [],
+  "modules": {
+   "count": 3,
+   "max_size": 16,
+   "min_size": 5,
+   "names": [
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/OrderedCollections.jl",

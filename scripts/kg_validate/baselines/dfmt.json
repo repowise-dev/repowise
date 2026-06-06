@@ -10,6 +10,11 @@
    "code": "catchall_layer",
    "message": "Test holds 93% of layered nodes",
    "severity": "WARN"
+  },
+  {
+   "code": "module_oversized",
+   "message": "Test has 247 files with subdirs (window 120)",
+   "severity": "WARN"
   }
  ],
  "stats": {
@@ -37,6 +42,15 @@
   "entry_points": [
    "src/dfmt/main.d"
   ],
+  "modules": {
+   "count": 2,
+   "max_size": 247,
+   "min_size": 17,
+   "names": [
+    "Application",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "dubhash.d",

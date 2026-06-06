@@ -35,6 +35,17 @@
   "entry_points": [
    "lib/sinatra/main.rb"
   ],
+  "modules": {
+   "count": 4,
+   "max_size": 94,
+   "min_size": 3,
+   "names": [
+    "Application",
+    "Config",
+    "Service",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "lib/sinatra/main.rb",

@@ -23,6 +23,15 @@
   "entry_points": [
    "src/compojure/core.clj"
   ],
+  "modules": {
+   "count": 2,
+   "max_size": 11,
+   "min_size": 5,
+   "names": [
+    "Application",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/compojure/core.clj",

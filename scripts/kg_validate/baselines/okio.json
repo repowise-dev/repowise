@@ -54,6 +54,26 @@
   },
   "dominant_language": "kotlin",
   "entry_points": [],
+  "modules": {
+   "count": 13,
+   "max_size": 106,
+   "min_size": 5,
+   "names": [
+    "Application (top-level)",
+    "Config",
+    "Test",
+    "commonMain",
+    "docs",
+    "jvm/jmh",
+    "jvmMain",
+    "nativeMain",
+    "nonJvmMain",
+    "okio-testing-support",
+    "okio-wasifilesystem",
+    "samples",
+    "zlibMain"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "okio-fakefilesystem/src/commonMain/kotlin/okio/fakefilesystem/FakeFileSystem.kt",

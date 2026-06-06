@@ -28,6 +28,16 @@
    "src/flask/sansio/app.py",
    "src/flask/__main__.py"
   ],
+  "modules": {
+   "count": 3,
+   "max_size": 51,
+   "min_size": 12,
+   "names": [
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/flask/app.py",

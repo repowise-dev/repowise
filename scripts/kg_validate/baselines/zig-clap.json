@@ -28,6 +28,15 @@
   "entry_points": [
    ".github/workflows/main.yml"
   ],
+  "modules": {
+   "count": 2,
+   "max_size": 14,
+   "min_size": 4,
+   "names": [
+    "Application",
+    "Config"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "build.zig",

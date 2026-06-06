@@ -28,6 +28,14 @@
   "entry_points": [
    "lib/init.lua"
   ],
+  "modules": {
+   "count": 1,
+   "max_size": 17,
+   "min_size": 17,
+   "names": [
+    "Application"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "lib/init.lua",

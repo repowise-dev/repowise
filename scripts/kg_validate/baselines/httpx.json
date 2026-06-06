@@ -24,6 +24,16 @@
    "httpx/_transports/wsgi.py",
    "httpx/_transports/asgi.py"
   ],
+  "modules": {
+   "count": 3,
+   "max_size": 52,
+   "min_size": 9,
+   "names": [
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "httpx/_transports/wsgi.py",

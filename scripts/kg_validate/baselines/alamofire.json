@@ -33,6 +33,17 @@
   },
   "dominant_language": "swift",
   "entry_points": [],
+  "modules": {
+   "count": 4,
+   "max_size": 74,
+   "min_size": 7,
+   "names": [
+    "Application",
+    "Config",
+    "Service",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "Source/Core/Session.swift",

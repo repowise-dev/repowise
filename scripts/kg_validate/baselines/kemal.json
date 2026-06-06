@@ -28,6 +28,17 @@
   "entry_points": [
    "src/kemal/cli.cr"
   ],
+  "modules": {
+   "count": 4,
+   "max_size": 48,
+   "min_size": 6,
+   "names": [
+    "Application",
+    "Config",
+    "Test",
+    "Utility"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/kemal.cr",

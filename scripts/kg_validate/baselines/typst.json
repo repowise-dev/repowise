@@ -48,6 +48,38 @@
    "crates/typst-layout/src/lib.rs",
    "crates/typst-bundle/src/lib.rs"
   ],
+  "modules": {
+   "count": 25,
+   "max_size": 55,
+   "min_size": 4,
+   "names": [
+    "CLI",
+    "Config",
+    "Test",
+    "UI",
+    "Utility",
+    "crates",
+    "docs",
+    "typst-eval",
+    "typst-html",
+    "typst-ide",
+    "typst-kit",
+    "typst-layout",
+    "typst-library/foundations",
+    "typst-library/introspection",
+    "typst-library/layout",
+    "typst-library/loading",
+    "typst-library/math",
+    "typst-library/model",
+    "typst-library/text",
+    "typst-library/visualize",
+    "typst-macros",
+    "typst-pdf",
+    "typst-svg",
+    "typst-syntax",
+    "typst-utils"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "crates/typst-kit/src/server.rs",

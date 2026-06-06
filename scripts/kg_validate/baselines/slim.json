@@ -17,6 +17,19 @@
   "entry_points": [
    "Slim/App.php"
   ],
+  "modules": {
+   "count": 6,
+   "max_size": 55,
+   "min_size": 4,
+   "names": [
+    "API",
+    "Application",
+    "Config",
+    "Middleware",
+    "Test",
+    "Types"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "Slim/App.php",

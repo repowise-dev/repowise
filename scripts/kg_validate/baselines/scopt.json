@@ -27,6 +27,17 @@
   },
   "dominant_language": "scala",
   "entry_points": [],
+  "modules": {
+   "count": 4,
+   "max_size": 24,
+   "min_size": 3,
+   "names": [
+    "Application",
+    "Config",
+    "Test",
+    "Utility"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "shared/src/main/scala/scopt/ORunner.scala",

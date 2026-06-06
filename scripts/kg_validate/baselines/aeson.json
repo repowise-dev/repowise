@@ -5,6 +5,11 @@
    "code": "catchall_layer",
    "message": "Test holds 76% of layered nodes",
    "severity": "WARN"
+  },
+  {
+   "code": "module_oversized",
+   "message": "JSONTestSuite/test_parsing has 319 files with subdirs (window 120)",
+   "severity": "WARN"
   }
  ],
  "stats": {
@@ -39,6 +44,20 @@
   },
   "dominant_language": "haskell",
   "entry_points": [],
+  "modules": {
+   "count": 7,
+   "max_size": 319,
+   "min_size": 5,
+   "names": [
+    "Application",
+    "Data",
+    "JSONTestSuite/test_parsing",
+    "Types",
+    "UnitTests",
+    "test_transform",
+    "tests"
+   ]
+  },
   "tour_paths": [
    "README.markdown",
    "src/Data/Aeson/Types/FromJSON.hs",

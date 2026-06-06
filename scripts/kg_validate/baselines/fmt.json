@@ -60,6 +60,17 @@
   },
   "dominant_language": "cpp",
   "entry_points": [],
+  "modules": {
+   "count": 4,
+   "max_size": 54,
+   "min_size": 15,
+   "names": [
+    "API",
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/fmt.cc",

@@ -32,6 +32,15 @@
   "entry_points": [
    "src/main.rs"
   ],
+  "modules": {
+   "count": 2,
+   "max_size": 36,
+   "min_size": 9,
+   "names": [
+    "Application",
+    "Config"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/main.rs",

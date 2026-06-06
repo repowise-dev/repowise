@@ -15,6 +15,16 @@
   },
   "dominant_language": "python",
   "entry_points": [],
+  "modules": {
+   "count": 3,
+   "max_size": 30,
+   "min_size": 18,
+   "names": [
+    "Application",
+    "Config",
+    "Test"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "src/requests/sessions.py",

@@ -1,6 +1,17 @@
 {
  "repo": "pydantic",
- "smells": [],
+ "smells": [
+  {
+   "code": "module_oversized",
+   "message": "pydantic-core/src has 128 files with subdirs (window 120)",
+   "severity": "WARN"
+  },
+  {
+   "code": "module_oversized",
+   "message": "pydantic-core/tests has 121 files with subdirs (window 120)",
+   "severity": "WARN"
+  }
+ ],
  "stats": {
   "by_language": {
    "javascript": {
@@ -46,6 +57,27 @@
    "pydantic/v1/main.py",
    "pydantic-core/src/lib.rs"
   ],
+  "modules": {
+   "count": 14,
+   "max_size": 128,
+   "min_size": 6,
+   "names": [
+    "API",
+    "Application (top-level)",
+    "Config",
+    "Middleware",
+    "Utility",
+    "docs",
+    "pydantic",
+    "pydantic-core",
+    "pydantic-core/src",
+    "pydantic-core/tests",
+    "tests",
+    "tests/benchmarks",
+    "tests/mypy",
+    "tests/typechecking"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "pydantic/main.py",

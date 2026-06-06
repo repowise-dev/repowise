@@ -27,6 +27,22 @@
   },
   "dominant_language": "java",
   "entry_points": [],
+  "modules": {
+   "count": 9,
+   "max_size": 87,
+   "min_size": 3,
+   "names": [
+    "Application (top-level)",
+    "Config",
+    "Middleware",
+    "gson",
+    "proto/test",
+    "test",
+    "test-shrinker",
+    "test/functional",
+    "test/internal"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "gson/src/main/java/com/google/gson/GsonBuilder.java",

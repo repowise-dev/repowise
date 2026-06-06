@@ -5,6 +5,11 @@
    "code": "catchall_layer",
    "message": "Application holds 81% of layered nodes",
    "severity": "WARN"
+  },
+  {
+   "code": "module_oversized",
+   "message": "testdata has 171 files with subdirs (window 120)",
+   "severity": "WARN"
   }
  ],
  "stats": {
@@ -52,6 +57,24 @@
    "cmd/sleepit/sleepit.go",
    "cmd/task/task.go"
   ],
+  "modules": {
+   "count": 11,
+   "max_size": 171,
+   "min_size": 3,
+   "names": [
+    "Application (top-level)",
+    "CLI",
+    "Config",
+    "Service",
+    "Test",
+    "taskfile",
+    "testdata",
+    "testdata/dotenv",
+    "testdata/includes",
+    "var_inheritance/v3",
+    "website"
+   ]
+  },
   "tour_paths": [
    "README.md",
    "cmd/release/main.go",
