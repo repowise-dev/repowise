@@ -120,6 +120,20 @@ async def test_get_context_not_found(setup_mcp):
     assert "error" in t
 
 
+@pytest.mark.asyncio
+async def test_get_context_legacy_community_id_hint(setup_mcp):
+    """Old community-ordinal module ids get a redirect to path-shaped ids."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["community-12"])
+    t = result["targets"]["community-12"]
+    assert "error" in t
+    assert "directory" in t["error"]
+    # Suggestions list the real module pages by their directory path.
+    assert "src/auth" in t["suggestions"]
+    assert "src/db" in t["suggestions"]
+
+
 def _make_big_response(n_targets: int = 5, n_symbols: int = 80, body_chars: int = 4000) -> dict:
     """Build a synthetic get_context response well over the 32 KB budget."""
     targets = {}

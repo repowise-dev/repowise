@@ -267,11 +267,6 @@ const SECTION_KEYS = {
 
 export const DOMAIN_SECTION_KEYS = Object.values(SECTION_KEYS);
 
-function parentDirOf(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i === -1 ? "" : path.slice(0, i);
-}
-
 // Layers ordered top→bottom by dependency direction, persisted on the repo
 // overview page at generation time. Used to order the Architecture section and
 // the Modules section so the tree reads as a dependency hierarchy rather than
@@ -459,14 +454,21 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
   const modulePaths = new Set(modulePages.map((p) => p.target_path));
   const claimedFileIds = new Set<string>();
 
+  // Claim each file page by its NEAREST module ancestor, not just the direct
+  // parent dir — curated modules are directory subtrees whose files can sit
+  // several levels deep (e.g. module "core/ingestion" owning
+  // "core/ingestion/resolvers/dotnet/index.py").
+  const sortedModulePaths = [...modulePaths].sort((a, b) => b.length - a.length);
+  const fileToModule = new Map<string, string>();
+  for (const p of pages) {
+    if (p.page_type !== "file_page" || !p.target_path) continue;
+    const owner = sortedModulePaths.find((mp) => p.target_path.startsWith(mp + "/"));
+    if (owner) fileToModule.set(p.id, owner);
+  }
+
   const moduleChildren: TreeNode[] = modulePages.map((mod) => {
     const files = pages
-      .filter(
-        (p) =>
-          p.page_type === "file_page" &&
-          p.target_path &&
-          parentDirOf(p.target_path) === mod.target_path,
-      )
+      .filter((p) => fileToModule.get(p.id) === mod.target_path)
       .sort((a, b) => a.target_path.localeCompare(b.target_path));
     for (const f of files) claimedFileIds.add(f.id);
     return {
@@ -475,7 +477,11 @@ function buildDomainTree(pages: DocPage[]): TreeNode[] {
       isDir: true,
       page: mod,
       children: files.map((f) => ({
-        name: f.target_path.split("/").pop() || f.target_path,
+        // Path relative to the module dir, so deep files stay unambiguous
+        // ("resolvers/dotnet/index.py", not three siblings named "index.py").
+        name: f.target_path.startsWith(mod.target_path + "/")
+          ? f.target_path.slice(mod.target_path.length + 1)
+          : f.target_path.split("/").pop() || f.target_path,
         path: f.id,
         isDir: false,
         page: f,

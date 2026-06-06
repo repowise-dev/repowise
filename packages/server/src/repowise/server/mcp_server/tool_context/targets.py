@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -207,6 +208,30 @@ async def _resolve_one_target(
                     "primary_owner": meta.primary_owner_name,
                     "is_hotspot": meta.is_hotspot,
                 }
+
+        # Fallback 2b: legacy module ids. Wiki modules used to be keyed by
+        # community ordinal ("community-12"); they are now keyed by directory
+        # path. Point old agent habits at the new vocabulary.
+        if target_type is None and re.fullmatch(r"community[-_]\d+", clean_target, re.IGNORECASE):
+            res = await session.execute(
+                select(Page.target_path)
+                .where(
+                    Page.repository_id == repo_id,
+                    Page.page_type == "module_page",
+                )
+                .order_by(Page.target_path)
+                .limit(10)
+            )
+            module_paths = filter_path_list([row[0] for row in res.all()], exclude_spec)
+            return {
+                "target": target,
+                "error": (
+                    f"Target not found: '{target}'. Module pages are no longer "
+                    "keyed by community ordinal — pass the module's directory "
+                    "path instead (see suggestions)."
+                ),
+                "suggestions": module_paths,
+            }
 
         # Fallback 3: fuzzy path suggestions — match by filename or partial path.
         # Only runs if the prior fallbacks didn't resolve the target.
