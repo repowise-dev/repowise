@@ -53,6 +53,9 @@ class FilePageContext:
     decision_records: list[dict] = field(default_factory=list)
     # KG layer context (populated when knowledge graph available)
     kg_layer_name: str = ""
+    # Stable slug id of the layer (``layer:<slug>``) — used to join a file
+    # page to its layer page; ``kg_layer_name`` is the mutable display label.
+    kg_layer_id: str = ""
     kg_layer_description: str = ""
     kg_layer_role: str = ""
     kg_neighbors: list[dict] = field(default_factory=list)
@@ -106,6 +109,9 @@ class LayerPageContext:
     layer_name: str
     layer_description: str
     file_count: int
+    # Stable slug id (``layer:<slug>``) — the layer page's target_path and
+    # page_id derive from this, never from the mutable ``layer_name``.
+    layer_id: str = ""
     key_files: list[dict] = field(default_factory=list)
     deps_out: list[dict] = field(default_factory=list)
     deps_in: list[dict] = field(default_factory=list)
