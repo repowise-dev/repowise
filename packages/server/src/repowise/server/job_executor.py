@@ -311,7 +311,7 @@ async def execute_job(
 
         # ---- Persist results -----------------------------------------------
         async with get_session(session_factory) as session:
-            await persist_pipeline_result(result, session, repo_id)
+            swept_page_ids = await persist_pipeline_result(result, session, repo_id)
 
             # Persist incrementally regenerated pages
             if incremental_pages:
@@ -325,6 +325,8 @@ async def execute_job(
         if fts is not None and all_pages:
             for page in all_pages:
                 await fts.index(page.page_id, page.title, page.content)
+        if fts is not None and swept_page_ids:
+            await fts.delete_many(swept_page_ids)
 
         # ---- Mark completed ------------------------------------------------
         # Stop progress updates before writing final status to prevent a

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,7 +14,6 @@ from repowise.core.generation.knowledge_graph import (
     build_deterministic_tour,
     enrich_knowledge_graph,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

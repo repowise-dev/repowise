@@ -88,11 +88,12 @@ async def persist_result(result: Any, repo_path: Path) -> None:
                 existing = {}
             existing["tech_stack"] = result.tech_stack
             repo.settings_json = _json.dumps(existing)
+        swept_page_ids: list[str] = []
         if index_done:
             await persist_analysis(result, session, repo.id)
             await persist_generation(result, session, repo.id)
         else:
-            await persist_pipeline_result(result, session, repo.id)
+            swept_page_ids = await persist_pipeline_result(result, session, repo.id)
 
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.
@@ -113,6 +114,8 @@ async def persist_result(result: Any, repo_path: Path) -> None:
     if fts is not None and result.generated_pages:
         for page in result.generated_pages:
             await fts.index(page.page_id, page.title, page.content)
+    if fts is not None and swept_page_ids:
+        await fts.delete_many(swept_page_ids)
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
     # they're persisted, so a future resume can skip them too.
