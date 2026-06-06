@@ -42,6 +42,21 @@ class TestParsePayload:
         assert req is not None
         assert req.command == "pytest -x"
         assert req.cwd == "/repo"
+        assert req.shell == "posix"
+
+    def test_valid_powershell_payload(self, adapter) -> None:
+        raw = json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "PowerShell",
+                "tool_input": {"command": "git status"},
+                "cwd": "C:\\repo",
+            }
+        )
+        req = adapter.parse_hook_payload(raw)
+        assert req is not None
+        assert req.command == "git status"
+        assert req.shell == "powershell"
 
     @pytest.mark.parametrize(
         "mutation",
@@ -113,7 +128,7 @@ class TestRewriteHookInstall:
         assert install_claude_code_rewrite_hook() == settings_path
         entries = _pre_hooks(settings_path)
         assert len(entries) == 1
-        assert entries[0]["matcher"] == "Bash"
+        assert entries[0]["matcher"] == "Bash|PowerShell"
         hook = entries[0]["hooks"][0]
         assert hook["command"] == "repowise-rewrite"
         assert hook["type"] == "command"
@@ -123,6 +138,42 @@ class TestRewriteHookInstall:
         install_claude_code_rewrite_hook()
         install_claude_code_rewrite_hook()
         assert len(_pre_hooks(settings_path)) == 1
+
+    def test_install_widens_legacy_bash_matcher(self, settings_path) -> None:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy = {
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "repowise-rewrite", "timeout": 5}],
+        }
+        settings_path.write_text(json.dumps({"hooks": {"PreToolUse": [legacy]}}), encoding="utf-8")
+        install_claude_code_rewrite_hook()
+        entries = _pre_hooks(settings_path)
+        assert len(entries) == 1
+        assert entries[0]["matcher"] == "Bash|PowerShell"
+
+    def test_install_leaves_user_bash_matcher_alone(self, settings_path) -> None:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        user_entry = {
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "my-validator"}],
+        }
+        settings_path.write_text(
+            json.dumps({"hooks": {"PreToolUse": [user_entry]}}), encoding="utf-8"
+        )
+        install_claude_code_rewrite_hook()
+        entries = _pre_hooks(settings_path)
+        assert entries[0]["matcher"] == "Bash"  # user entry untouched
+        assert entries[1]["matcher"] == "Bash|PowerShell"
+
+    def test_migrate_widens_legacy_rewrite_matcher(self, settings_path) -> None:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy = {
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": "repowise-rewrite", "timeout": 5}],
+        }
+        settings_path.write_text(json.dumps({"hooks": {"PreToolUse": [legacy]}}), encoding="utf-8")
+        assert migrate_claude_code_hooks() is True
+        assert _pre_hooks(settings_path)[0]["matcher"] == "Bash|PowerShell"
 
     def test_preserves_user_pretool_hooks(self, settings_path) -> None:
         settings_path.parent.mkdir(parents=True, exist_ok=True)

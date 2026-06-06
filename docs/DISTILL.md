@@ -81,12 +81,41 @@ repowise hook rewrite status
 repowise hook rewrite uninstall    # removes only the repowise entry
 ```
 
+The hook covers both Claude Code shell tools — Bash and, on Windows,
+PowerShell. Existing installs are widened automatically on the next
+`install`/`init`.
+
 The hook is deliberately conservative. It never rewrites:
 
 - pipes, redirections, compound commands (`|`, `>`, `&&`, `;`, backticks, `$()`)
 - watch/follow modes (`--watch`, `tail -f`, …)
 - anything on the trivial-command ignore-list, or already-prefixed commands
+- PowerShell-native constructs: `Verb-Noun` cmdlets, `& "path"` invocations,
+  backtick continuations — and, from PowerShell, alias tokens (`ls`, `cat`,
+  `find`, …) that don't mean what their unix namesakes mean
 - commands in repos that have not opted into repowise (no `.repowise/` upward)
+
+**The allowlist trap.** A rewrite changes the command string, so a Claude Code
+permission rule you already had — say `Bash(git diff:*)` — no longer matches
+the rewritten `repowise distill git diff …`, and the permission prompt comes
+back for commands you had already allowed. The fix is one extra allow rule
+covering the distill prefix:
+
+```jsonc
+// ~/.claude/settings.json
+"permissions": {
+  "allow": [
+    "Bash(repowise distill:*)",
+    "PowerShell(repowise distill:*)"
+  ]
+}
+```
+
+`repowise hook rewrite install` offers to add these for you (or pass
+`--allow-rule` / `--no-allow-rule` to decide non-interactively). The default
+posture stays `ask` — the rule only stops *double*-asking for commands you've
+already vetted; `repowise distill` runs the wrapped command unchanged and
+never widens what it can do.
 
 Per-repo behavior is configured under `distill.commands` in
 `.repowise/config.yaml` — see [Configuration](#configuration). Declining the

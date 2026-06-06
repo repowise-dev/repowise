@@ -404,7 +404,9 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert settings_path == tmp_path / ".claude" / "settings.json"
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [
+        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+    ]
 
 
 def test_install_claude_code_hooks_preserves_user_pretool_hooks(
@@ -439,7 +441,9 @@ def test_install_claude_code_hooks_preserves_user_pretool_hooks(
     assert saved["hooks"]["PreToolUse"][0]["matcher"] == "Read"
     assert saved["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo read"
     # PostToolUse now has the repowise hook.
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [
+        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +487,9 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [
+        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+    ]
 
 
 def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
@@ -521,7 +527,9 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [
+        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+    ]
 
 
 def test_install_claude_code_hooks_idempotent_on_current_shape(
@@ -575,17 +583,23 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
 
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [
+        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+    ]
 
     # Idempotent: a second run finds nothing to do.
     assert claude_config.migrate_claude_code_hooks() is False
 
 
-def test_migrate_claude_code_hooks_widens_grep_glob_matcher(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "legacy_matcher",
+    ["Bash|Grep|Glob", "Bash|Grep|Glob|Read|Edit|Write"],
+)
+def test_migrate_claude_code_hooks_widens_legacy_matchers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_matcher: str
 ) -> None:
-    """Pre-read-intelligence installs used matcher ``Bash|Grep|Glob``;
-    migration widens it to include Read/Edit/Write."""
+    """Pre-read-intelligence installs used ``Bash|Grep|Glob``; pre-PowerShell
+    installs lacked the PowerShell tool. Both widen to the current matcher."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
@@ -595,7 +609,7 @@ def test_migrate_claude_code_hooks_widens_grep_glob_matcher(
                 "hooks": {
                     "PostToolUse": [
                         {
-                            "matcher": "Bash|Grep|Glob",
+                            "matcher": legacy_matcher,
                             "hooks": [{"type": "command", "command": "repowise-augment"}],
                         }
                     ]
@@ -607,7 +621,9 @@ def test_migrate_claude_code_hooks_widens_grep_glob_matcher(
 
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
-    assert _post_repowise_entries(saved) == [("Bash|Grep|Glob|Read|Edit|Write", "repowise-augment")]
+    assert _post_repowise_entries(saved) == [
+        ("Bash|PowerShell|Grep|Glob|Read|Edit|Write", "repowise-augment")
+    ]
 
 
 def test_migrate_claude_code_hooks_never_widens_user_matcher(
@@ -686,7 +702,7 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
         "hooks": {
             "PostToolUse": [
                 {
-                    "matcher": "Bash|Grep|Glob|Read|Edit|Write",
+                    "matcher": "Bash|PowerShell|Grep|Glob|Read|Edit|Write",
                     "hooks": [{"type": "command", "command": "repowise-augment"}],
                 }
             ]

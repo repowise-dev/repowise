@@ -79,7 +79,8 @@ _RESCUE_TOP_N = 2
 _DIGEST_THRESHOLD = 50  # grep result lines before the full compact digest
 _DIGEST_TOP_FILES = 10
 _READ_NUDGE_MIN_LINES = 100  # Read output lines before a skeleton nudge
-_READ_NUDGE_MIN_TOKENS = 800  # full-file tokens below which a nudge is noise
+_READ_NUDGE_MIN_TOKENS = 3000  # full-file tokens below which a nudge is noise
+_READ_NUDGE_MIN_SAVINGS = 1500  # estimated tokens saved must clear this
 _READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
 
 
@@ -248,8 +249,13 @@ def _handle_search_post(
     if repo_path is None:
         return None
 
+    result_count = _search_result_count(tool_output)
+    if result_count is None:
+        # Unknown/unextractable response shape. Skipping is the only safe
+        # answer — treating it as zero results would fire a "no match"
+        # rescue under a Grep that actually succeeded.
+        return None
     output_text = _extract_output_text(tool_output)
-    result_count = _count_search_results(output_text)
 
     # A genuine flood gets a compact per-file digest regardless of what the
     # pattern looks like — it summarizes the actual results, not the concept.
@@ -270,6 +276,13 @@ def _handle_search_post(
 
     # Decision tree. The skip case is the most common — that's by design.
     if result_count == 0:
+        # Rescue relevance guards. A regex pattern loses its structure in the
+        # symbol-lookup sanitizer (`distill|savings` → `distillsavings`), so
+        # any "closest symbol" answer would be luck, not signal. And a grep
+        # scoped to one non-code file is a config-key check, not a symbol
+        # hunt — the wiki has nothing useful to add to either.
+        if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
+            return None
         mode = "rescue"
     elif result_count >= _TRIAGE_THRESHOLD:
         mode = "triage"
@@ -422,13 +435,60 @@ def _looks_like_path_lookup(pattern: str) -> bool:
     return lower.endswith(exts)
 
 
+def _looks_like_regex(pattern: str) -> bool:
+    """Heuristic: pattern uses regex syntax, not a literal symbol name.
+
+    Flags unescaped alternation/class/group openers and the common regex
+    idioms (``\\b``, ``.*``, ``.+``) that agents reach for. Escaped literals
+    (``\\[``, ``\\|``) stay eligible for rescue.
+    """
+    import re
+
+    return re.search(r"(?<!\\)[|\[(]|\\b|\.[*+]", pattern) is not None
+
+
+# Extensions where a zero-match grep is a config/doc lookup, not a missed
+# symbol — rescue would answer a question the agent isn't asking.
+_NON_CODE_SUFFIXES = (
+    ".yaml",
+    ".yml",
+    ".json",
+    ".jsonc",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".md",
+    ".rst",
+    ".txt",
+    ".lock",
+    ".env",
+)
+
+
+def _targets_single_non_code_file(tool_input: dict) -> bool:
+    """True when the Grep was scoped to one non-code file (path or glob)."""
+    if not isinstance(tool_input, dict):
+        return False
+    path = tool_input.get("path")
+    if isinstance(path, str) and path.lower().rstrip("/\\").endswith(_NON_CODE_SUFFIXES):
+        return True
+    glob = tool_input.get("glob")
+    return (
+        isinstance(glob, str)
+        and "*" not in glob
+        and "?" not in glob
+        and glob.lower().endswith(_NON_CODE_SUFFIXES)
+    )
+
+
 def _extract_output_text(tool_output: object) -> str:
     """Pull the textual portion of a Claude Code tool_output, defensively.
 
-    Claude Code's hook payload shape varies a little by tool: Bash
-    surfaces ``stdout``/``stderr``, Grep/Glob surface ``output`` or
-    ``tool_response``. We only need a string we can count newlines in,
-    so we accept any of the common shapes.
+    Claude Code's hook payload shape varies by tool: Bash/PowerShell
+    surface ``stdout``/``stderr``, Grep surfaces a structured dict
+    (``mode``/``content``/``filenames``), Glob a bare ``filenames`` list.
+    We only need a string we can count newlines in, so we accept any of
+    the shapes captured from real hook payloads.
     """
     if isinstance(tool_output, str):
         return tool_output
@@ -436,7 +496,7 @@ def _extract_output_text(tool_output: object) -> str:
         return ""
     for key in ("output", "result", "content", "stdout", "text"):
         val = tool_output.get(key)
-        if isinstance(val, str):
+        if isinstance(val, str) and val:
             return val
         if isinstance(val, list):
             # Some shapes wrap content as [{"type": "text", "text": "..."}].
@@ -450,7 +510,59 @@ def _extract_output_text(tool_output: object) -> str:
                         parts.append(t)
             if parts:
                 return "\n".join(parts)
+    # Grep files_with_matches / Glob: a list of paths, one per line.
+    filenames = tool_output.get("filenames")
+    if isinstance(filenames, list):
+        parts = [f for f in filenames if isinstance(f, str)]
+        if parts:
+            return "\n".join(parts)
     return ""
+
+
+def _search_result_count(tool_output: object) -> int | None:
+    """Result count for a Grep/Glob tool_response, or None when unknowable.
+
+    Claude Code's Grep responses are structured dicts whose shape varies by
+    output mode (all captured from real PostToolUse payloads):
+
+      content            {"mode": "content", "content": str, "numLines": int, ...}
+      files_with_matches {"mode": "files_with_matches", "filenames": [...], "numFiles": int}
+      count              {"mode": "count", "content": str, "numMatches": int, ...}
+      Glob               {"filenames": [...], "numFiles": int, "truncated": bool}
+
+    Structured counts are trusted as-is — including a genuine zero. For
+    anything else we fall back to counting extracted text lines, where a
+    zero can only come from an explicit no-match sentinel. An empty or
+    unrecognized response returns None: the caller must SKIP, never rescue,
+    on a shape we don't positively understand.
+    """
+    if isinstance(tool_output, dict):
+        mode = tool_output.get("mode")
+        filenames = tool_output.get("filenames")
+        if mode == "files_with_matches" or (
+            mode is None and isinstance(filenames, list) and "numFiles" in tool_output
+        ):
+            num_files = tool_output.get("numFiles")
+            if isinstance(num_files, int):
+                return num_files
+            return len(filenames) if isinstance(filenames, list) else None
+        if mode in ("content", "count"):
+            count_key = "numLines" if mode == "content" else "numMatches"
+            count = tool_output.get(count_key)
+            if isinstance(count, int):
+                return count
+            content = tool_output.get("content")
+            if isinstance(content, str):
+                return _count_search_results(content) if content.strip() else 0
+            return None
+        if isinstance(mode, str):
+            # A future Grep output mode we don't know — refuse to guess.
+            return None
+
+    output_text = _extract_output_text(tool_output)
+    if not output_text.strip():
+        return None
+    return _count_search_results(output_text)
 
 
 def _count_search_results(output_text: str) -> int:
@@ -888,6 +1000,10 @@ def _skeleton_nudge(repo_path: Path, rel: str, tool_output: object, state: dict)
     skeleton_tokens = estimate_skeleton_tokens(bounds, file_size_bytes=size)
     if skeleton_tokens > full_tokens * _READ_NUDGE_MAX_RATIO:
         return None
+    # A nudge is only worth the agent's attention when acting on it buys a
+    # real saving — a few hundred tokens on a mid-size file is noise.
+    if full_tokens - skeleton_tokens < _READ_NUDGE_MIN_SAVINGS:
+        return None
 
     state["nudged"].append(rel)
     return (
@@ -955,7 +1071,9 @@ def _handle_post_tool_use(
         return None
     if tool_name == "Read":
         return _handle_read_post(tool_input, tool_output, cwd, session_id)
-    if tool_name == "Bash":
+    if tool_name in ("Bash", "PowerShell"):
+        # The PowerShell tool (Windows Claude Code) surfaces the same
+        # stdout/stderr response shape as Bash — one handler covers both.
         return _handle_bash_post(tool_input, tool_output, cwd)
     if tool_name in ("Grep", "Glob"):
         return _handle_search_post(tool_name, tool_input, tool_output, cwd)
