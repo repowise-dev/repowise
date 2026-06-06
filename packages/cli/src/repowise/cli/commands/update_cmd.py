@@ -1180,6 +1180,7 @@ def update_command(
             repo_structure,
             repo_name,
             git_meta_map=git_meta_map,
+            repo_path=repo_path,
         )
     )
 

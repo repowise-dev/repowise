@@ -65,9 +65,7 @@ class PgVectorStore(VectorStore):
 
         async with self._session_factory() as session:
             await session.execute(
-                sa_text(
-                    "UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"
-                ),
+                sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"),
                 {"emb": vec_str, "pid": page_id},
             )
             await session.commit()
@@ -84,9 +82,7 @@ class PgVectorStore(VectorStore):
 
         from sqlalchemy.sql import text as sa_text
 
-        stmt = sa_text(
-            "UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"
-        )
+        stmt = sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid")
         async with self._session_factory() as session:
             # executemany: one driver round-trip batch instead of one UPDATE
             # round-trip per row.
@@ -126,9 +122,7 @@ class PgVectorStore(VectorStore):
             for r in raw
         ]
 
-    async def search_many(
-        self, queries: list[str], limit: int = 10
-    ) -> list[list[SearchResult]]:
+    async def search_many(self, queries: list[str], limit: int = 10) -> list[list[SearchResult]]:
         """One embedder call for all queries; per-query SELECTs share a session."""
         if not queries:
             return []
@@ -148,9 +142,7 @@ class PgVectorStore(VectorStore):
         async with self._session_factory() as session:
             for q_vec in q_vecs:
                 try:
-                    rows = await session.execute(
-                        stmt, {"q": _encode(q_vec), "lim": limit}
-                    )
+                    rows = await session.execute(stmt, {"q": _encode(q_vec), "lim": limit})
                     raw = rows.fetchall()
                 except Exception:
                     out.append([])
@@ -181,6 +173,20 @@ class PgVectorStore(VectorStore):
             )
             await session.commit()
 
+    async def delete_many(self, page_ids: list[str]) -> None:
+        if not page_ids:
+            return
+        from sqlalchemy import bindparam
+        from sqlalchemy.sql import text as sa_text
+
+        stmt = sa_text("UPDATE wiki_pages SET embedding = NULL WHERE id IN :ids").bindparams(
+            bindparam("ids", expanding=True)
+        )
+
+        async with self._session_factory() as session:
+            await session.execute(stmt, {"ids": list(page_ids)})
+            await session.commit()
+
     async def close(self) -> None:
         pass  # session_factory manages connection lifecycle
 
@@ -205,9 +211,7 @@ class PgVectorStore(VectorStore):
         async with self._session_factory() as session:
             rows = await session.execute(
                 sa_text(
-                    "SELECT content, metadata FROM wiki_pages "
-                    "WHERE target_path = :path "
-                    "LIMIT 1"
+                    "SELECT content, metadata FROM wiki_pages WHERE target_path = :path LIMIT 1"
                 ),
                 {"path": path},
             )
@@ -232,8 +236,7 @@ class PgVectorStore(VectorStore):
         from sqlalchemy.sql import text as sa_text
 
         stmt = sa_text(
-            "SELECT target_path, content, metadata FROM wiki_pages "
-            "WHERE target_path IN :paths"
+            "SELECT target_path, content, metadata FROM wiki_pages WHERE target_path IN :paths"
         ).bindparams(bindparam("paths", expanding=True))
 
         async with self._session_factory() as session:

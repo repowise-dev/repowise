@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,7 +14,6 @@ from repowise.core.generation.knowledge_graph import (
     build_deterministic_tour,
     enrich_knowledge_graph,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -85,8 +83,8 @@ class TestEnrichLayers:
     @pytest.mark.asyncio
     async def test_enriches_layer_names(self):
         llm = _make_llm_client(
-            '{"layers": [{"index": 0, "name": "Core Pipeline", "description": "Handles data flow"}, '
-            '{"index": 1, "name": "CLI Interface", "description": "Command line entry"}]}'
+            '{"layers": [{"id": "layer:core", "name": "Core Pipeline", "description": "Handles data flow"}, '
+            '{"id": "layer:cli", "name": "CLI Interface", "description": "Command line entry"}]}'
         )
         skeleton = _make_kg_skeleton()
         builder = _make_graph_builder({"src/core.py": 0.5, "src/main.py": 0.3})
@@ -96,6 +94,77 @@ class TestEnrichLayers:
         assert result.layers[0]["name"] == "Core Pipeline"
         assert result.layers[0]["description"] == "Handles data flow"
         assert result.layers[1]["name"] == "CLI Interface"
+
+    @pytest.mark.asyncio
+    async def test_positional_index_responses_are_ignored(self):
+        # Regression: a model answering with list positions instead of layer
+        # ids must not rename anything (positional joins once shuffled every
+        # layer name when later batches restarted their indices at 0).
+        llm = _make_llm_client(
+            '{"layers": [{"index": 0, "name": "Wrong Name", "description": "wrong"}, '
+            '{"index": 1, "name": "Also Wrong", "description": "wrong"}]}'
+        )
+        skeleton = _make_kg_skeleton()
+        builder = _make_graph_builder()
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert result.layers[0]["name"] == "src/core"  # heuristic preserved
+        assert result.layers[1]["name"] == "cli"
+
+    @pytest.mark.asyncio
+    async def test_cross_batch_ids_do_not_clobber_other_layers(self):
+        # Eight layers → two batches of five and three. Batch 2's response
+        # echoes batch 1's ids; those answers must be dropped, not applied.
+        layers = [
+            {"id": f"layer:l{i}", "name": f"heuristic-{i}", "description": "",
+             "nodeIds": [f"file:src/f{i}.py"]}
+            for i in range(8)
+        ]
+        nodes = [
+            {"id": f"file:src/f{i}.py", "type": "file", "filePath": f"src/f{i}.py", "summary": ""}
+            for i in range(8)
+        ]
+        responses = [
+            # Batch 1 (l0..l4): correct ids.
+            '{"layers": [{"id": "layer:l0", "name": "Named Zero", "description": "d0"}]}',
+            # Batch 2 (l5..l7): answers with batch-1 ids — all must be skipped.
+            '{"layers": [{"id": "layer:l0", "name": "Clobbered", "description": "x"}, '
+            '{"id": "layer:l1", "name": "Clobbered", "description": "x"}]}',
+            # Tour call.
+            '{"tour": []}',
+        ]
+        call_count = 0
+
+        async def _side_effect(*args, **kwargs):
+            nonlocal call_count
+            content = responses[min(call_count, len(responses) - 1)]
+            call_count += 1
+            return SimpleNamespace(content=content, input_tokens=10, output_tokens=10)
+
+        llm = AsyncMock()
+        llm.generate.side_effect = _side_effect
+
+        skeleton = _make_kg_skeleton(layers=layers, nodes=nodes)
+        builder = _make_graph_builder()
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert result.layers[0]["name"] == "Named Zero"
+        assert all(layer["name"] != "Clobbered" for layer in result.layers)
+        assert result.layers[5]["name"] == "heuristic-5"  # untouched by bad batch
+
+    @pytest.mark.asyncio
+    async def test_unknown_id_is_skipped(self):
+        llm = _make_llm_client(
+            '{"layers": [{"id": "layer:nonexistent", "name": "Ghost", "description": "x"}]}'
+        )
+        skeleton = _make_kg_skeleton()
+        builder = _make_graph_builder()
+        repo = _make_repo_structure()
+
+        result = await enrich_knowledge_graph(skeleton, llm, builder, repo, [])
+        assert all(layer["name"] != "Ghost" for layer in result.layers)
 
     @pytest.mark.asyncio
     async def test_falls_back_on_llm_failure(self):

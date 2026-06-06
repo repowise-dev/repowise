@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from ...analysis.knowledge_graph import _slugify
 from .. import onboarding as _onboarding
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
@@ -317,7 +318,13 @@ def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             continue
 
         layer_name = layer.get("name", "")
-        page_id = compute_page_id("layer_page", f"layer:{layer_name}")
+        # Key the page by the layer's STABLE slug id (``layer:<slug>``), not its
+        # display name: the LLM layer-name enrichment rewrites ``name`` after
+        # generation, so a name-keyed page would no longer join to its KG layer.
+        # ``id`` is derived from the deterministic heuristic name at curation
+        # time and never changes under enrichment.
+        layer_id = layer.get("id", "") or f"layer:{_slugify(layer_name)}"
+        page_id = compute_page_id("layer_page", layer_id)
         if page_id in run.completed_ids:
             continue
 
@@ -354,6 +361,7 @@ def build_level5_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
         ctx = LayerPageContext(
             layer_name=layer_name,
+            layer_id=layer_id,
             layer_description=layer.get("description", ""),
             file_count=len(file_paths),
             key_files=key_files,

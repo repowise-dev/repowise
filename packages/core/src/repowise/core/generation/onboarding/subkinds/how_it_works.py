@@ -139,11 +139,29 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     return flows
 
 
+def _normalize_tour_step(step: dict) -> dict:
+    """One template-facing shape for both tour-step generations.
+
+    Legacy steps carry ``nodeIds`` + ``description``; curated steps carry a
+    single ``target_path`` + evidence in ``reason``. The strict template
+    (``step.nodeIds`` / ``step.description``) must never see a missing key.
+    """
+    node_ids = list(step.get("nodeIds") or [])
+    if step.get("target_path"):
+        node_ids.append(f"file:{step['target_path']}")
+    return {
+        "order": step.get("order", 0),
+        "title": step.get("title", ""),
+        "description": step.get("description") or step.get("reason") or "",
+        "nodeIds": node_ids,
+    }
+
+
 def _build(signals: OnboardingSignals) -> HowItWorksContext | None:
     archetype, evidence = _classify_archetype(signals)
     flows = _collect_flows(signals)
 
-    kg_tour = list(signals.kg_tour_steps) if signals.kg_tour_steps else []
+    kg_tour = [_normalize_tour_step(s) for s in signals.kg_tour_steps or ()]
 
     # Gate: need either a real trace, tour steps, or a non-trivial archetype.
     if not flows and not kg_tour and archetype == "module":

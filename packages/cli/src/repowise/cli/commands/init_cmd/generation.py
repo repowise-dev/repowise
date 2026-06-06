@@ -109,6 +109,13 @@ def select_coverage(
     )
     from repowise.cli.coverage_select import interactive_coverage_select
 
+    # Curated modules from the in-memory index result, so the plan/cost
+    # estimate selects the same module set generation will (the artifact
+    # file is not on disk yet during a fresh init).
+    kg_modules = (
+        getattr(getattr(result, "knowledge_graph_result", None), "modules", None) or None
+    )
+
     if sys.stdin.isatty() and coverage_pct is None and not yes:
         options = compute_coverage_options(
             parsed_files=result.parsed_files,
@@ -119,6 +126,7 @@ def select_coverage(
             repo_path=repo_path,
             skip_tests=skip_tests,
             skip_infra=skip_infra,
+            kg_modules=kg_modules,
         )
         chosen = interactive_coverage_select(console, options)
         chosen_pct = chosen.pct
@@ -135,6 +143,7 @@ def select_coverage(
             gen_config_for_plan,
             skip_tests,
             skip_infra,
+            kg_modules=kg_modules,
         )
         est = estimate_cost(
             plans,
@@ -263,6 +272,22 @@ def run_repo_generation(
                 resume=resume,
                 cost_tracker=cost_tracker,
                 generation_config=gen_config,
+                # In-memory curated modules: on a fresh init the
+                # knowledge-graph.json artifact is only written during
+                # persistence, AFTER this generation pass — without this the
+                # kg_ctx file fallback is empty and module selection silently
+                # degrades to community grouping.
+                kg_modules=(
+                    getattr(
+                        getattr(result, "knowledge_graph_result", None), "modules", None
+                    )
+                    or None
+                ),
+                kg_data=(
+                    result.knowledge_graph_result.to_dict()
+                    if getattr(result, "knowledge_graph_result", None) is not None
+                    else None
+                ),
             )
         )
 

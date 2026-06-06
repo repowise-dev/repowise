@@ -216,6 +216,74 @@ async def _prune_stale_file_rows(
     await _delete_stale_by_paths(GitMetadata, GitMetadata.file_path, current_git_file_paths)
 
 
+# Generated page types keyed on run-scoped structure: module/scc pages on
+# clustering ordinals, layer pages on display names. Those keys shift between
+# runs, so re-runs mint fresh page ids and the previous rows linger as
+# duplicates unless swept against the current run's output.
+_SWEPT_GENERATED_PAGE_TYPES = ("module_page", "layer_page", "scc_page")
+
+
+async def _sweep_stale_generated_pages(
+    session: Any,
+    repo_id: str,
+    generated_pages: list[Any] | None,
+    authoritative_page_types: set[str] | None = None,
+) -> list[str]:
+    """Delete structurally-keyed generated pages this run did not produce.
+
+    Sweeps a page type when the run either produced at least one page of it OR
+    declared itself authoritative for it (``authoritative_page_types`` — set by
+    the generation layer when it fully decided the type, even if that decision
+    was "emit none"; e.g. a curated run whose modules all collapsed into their
+    layers via ``wholeLayer``). A type that is neither produced nor authoritative
+    is left untouched, so a skipped/failed/degraded level never wipes the last
+    good set. When authoritative-but-empty, the current set is empty and every
+    prior row of that type is retired. Page versions go with their page (FK
+    enforcement requires it, and a retired structural id never comes back to
+    claim its history). Returns the swept page ids so the caller can drop them
+    from FTS after the session closes (the FTS store must not be touched
+    in-session).
+    """
+    from sqlalchemy import delete, select
+
+    from repowise.core.persistence.models import Page, PageVersion
+
+    produced: dict[str, set[str]] = {}
+    for page in generated_pages or []:
+        produced.setdefault(page.page_type, set()).add(page.page_id)
+    authoritative = authoritative_page_types or set()
+
+    swept: list[str] = []
+    for page_type in _SWEPT_GENERATED_PAGE_TYPES:
+        current = produced.get(page_type)
+        if not current and page_type not in authoritative:
+            continue
+        current = current or set()
+        existing = (
+            (
+                await session.execute(
+                    select(Page.id).where(
+                        Page.repository_id == repo_id, Page.page_type == page_type
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        stale = [pid for pid in existing if pid not in current]
+        for i in range(0, len(stale), _PRUNE_CHUNK):
+            batch = stale[i : i + _PRUNE_CHUNK]
+            await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
+            await session.execute(
+                delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
+            )
+        swept.extend(stale)
+
+    if swept:
+        logger.info("stale_generated_pages_swept", repo_id=repo_id, count=len(swept))
+    return swept
+
+
 async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     """Persist ingestion-phase outputs: graph nodes/edges, external systems,
     symbols, and the per-file security scan.
@@ -479,22 +547,45 @@ async def persist_generation(result: Any, session: Any, repo_id: str) -> None:
         for page in result.generated_pages:
             await upsert_page_from_generated(session, page, repo_id)
 
-    # ---- Knowledge graph layers & tour steps --------------------------------
+    # ---- Knowledge graph layers, tour steps & curated meta ------------------
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
-        from repowise.core.persistence.crud import upsert_kg_layers, upsert_kg_tour_steps
+        from repowise.core.persistence.crud import (
+            file_node_meta_from_kg_nodes,
+            upsert_kg_layers,
+            upsert_kg_node_meta,
+            upsert_kg_project_meta,
+            upsert_kg_tour_steps,
+        )
 
         if hasattr(kg, "layers") and kg.layers:
             await upsert_kg_layers(session, repo_id, kg.layers)
         if hasattr(kg, "tour") and kg.tour:
             await upsert_kg_tour_steps(session, repo_id, kg.tour)
 
+        # Project-level curated meta (ranked entry points from the curation pass).
+        project = getattr(kg, "project", None)
+        if isinstance(project, dict) and project.get("entry_points"):
+            await upsert_kg_project_meta(
+                session,
+                repo_id,
+                entry_points=project["entry_points"],
+                entry_candidates=project.get("entry_candidates", []),
+            )
+
+        # Per-node curated meta (type/summary/tags) for file nodes, stored with
+        # the "file:" prefix stripped so the architecture view can match its
+        # node ids (plain repo-relative paths) directly.
+        file_node_meta = file_node_meta_from_kg_nodes(getattr(kg, "nodes", None) or [])
+        if file_node_meta:
+            await upsert_kg_node_meta(session, repo_id, file_node_meta)
+
 
 async def persist_pipeline_result(
     result: Any,
     session: Any,
     repo_id: str,
-) -> None:
+) -> list[str]:
     """Persist all outputs from a :class:`PipelineResult` into the database.
 
     Thin composition of the four phase-scoped persisters
@@ -511,6 +602,11 @@ async def persist_pipeline_result(
         An active SQLAlchemy ``AsyncSession`` (caller manages commit/rollback).
     repo_id:
         The repository ID to associate all records with.
+
+    Returns
+    -------
+    The page ids of stale generated pages swept by this run. Callers should
+    remove them from the FTS index after the session closes.
 
     Note
     ----
@@ -537,6 +633,17 @@ async def persist_pipeline_result(
     await persist_analysis(result, session, repo_id)
     await persist_generation(result, session, repo_id)
 
+    # Sweep structurally-keyed generated pages (module/layer/scc) that this
+    # run did not reproduce — their ids drift between runs, so without the
+    # sweep every re-index strands the previous set as duplicates. Full runs
+    # only, same rule as _prune_stale_file_rows.
+    swept_page_ids = await _sweep_stale_generated_pages(
+        session,
+        repo_id,
+        result.generated_pages,
+        getattr(result, "authoritative_page_types", None),
+    )
+
     logger.info(
         "pipeline_result_persisted",
         repo_id=repo_id,
@@ -545,3 +652,4 @@ async def persist_pipeline_result(
         symbols=symbol_count,
         git_files=len(result.git_metadata_list),
     )
+    return swept_page_ids

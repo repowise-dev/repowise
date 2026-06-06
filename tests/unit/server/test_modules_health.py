@@ -74,3 +74,23 @@ async def test_get_module_health_detail(client: AsyncClient, app) -> None:
     assert data["module_path"] == "src"
     assert data["file_count"] == 2
     assert any(o["name"] == "Alice" for o in data["owners"])
+
+
+@pytest.mark.asyncio
+async def test_get_module_health_nested_path_falls_back_to_parent(
+    client: AsyncClient, app
+) -> None:
+    """Path-shaped wiki module ids (``src/api``) roll up to the parent module.
+
+    Curated module pages key on the module's directory path; health rollups
+    aggregate by top-level dir, so a nested module path resolves through the
+    exact → single-file → parent fallback chain to its top-level aggregate.
+    """
+    repo = await create_test_repo(client)
+    await _seed(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/modules/health/{quote('src/api')}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["module_path"] == "src"
+    assert data["file_count"] == 2
