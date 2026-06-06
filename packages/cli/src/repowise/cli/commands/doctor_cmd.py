@@ -512,12 +512,19 @@ def _distill_checks(repo_path: _DoctorPath) -> list[tuple[str, str, str]]:
     # Rewrite hook (advisory: strictly opt-in).
     try:
         from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+        from repowise.cli.agent_adapters.codex import CodexAdapter
 
-        installed = ClaudeCodeAdapter().rewrite_hook_installed()
-        if installed:
+        surfaces = [("claude-code", ClaudeCodeAdapter())]
+        codex = CodexAdapter()
+        if codex.detect():
+            surfaces.append(("codex", codex))
+        installed_names = [name for name, a in surfaces if a.rewrite_hook_installed()]
+        if installed_names:
             commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else None
             opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
-            detail = "installed (this repo opted out)" if opted_out else "installed"
+            detail = ", ".join(installed_names)
+            detail += " (this repo opted out)" if opted_out else ""
+            detail = f"installed: {detail}"
         else:
             detail = "not installed (opt-in: repowise hook rewrite install)"
         checks.append(_check("Distill rewrite hook", True, detail))

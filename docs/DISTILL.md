@@ -69,7 +69,7 @@ Looks in the current repo's store first, then the user-level fallback store.
 MCP clients without a shell can resolve the same refs through
 `get_symbol("repowise#<ref>")` — see [MCP](#5-mcp-response-budget--_metaomitted).
 
-### 3. The command-rewrite hook (Claude Code)
+### 3. The command-rewrite hook (Claude Code + Codex)
 
 Opt-in. A PreToolUse hook rewrites noisy agent commands —
 `pytest -x` → `repowise distill pytest -x` — **pending your approval**: the
@@ -79,12 +79,34 @@ running it. Install:
 ```bash
 repowise hook rewrite install      # or opt in during `repowise init`
 repowise hook rewrite status
-repowise hook rewrite uninstall    # removes only the repowise entry
+repowise hook rewrite uninstall    # removes only the repowise entries
 ```
 
 The hook covers both Claude Code shell tools — Bash and, on Windows,
 PowerShell. Existing installs are widened automatically on the next
 `install`/`init`.
+
+**Codex.** When `~/.codex` exists, `install` also covers the Codex CLI, with
+two honest caveats its hook protocol imposes:
+
+- Codex applies a PreToolUse command rewrite only from **version 0.137**;
+  on older builds the hook entry is skipped (a rewrite response would error
+  on every shell call). `repowise hook rewrite status` reports what your
+  build can do.
+- Codex has **no ask-with-mutation** — a rewrite can only be auto-allowed,
+  never shown for approval. So under Codex, rewrites fire **only for command
+  families you set to `permission: allow`** in `.repowise/config.yaml`;
+  `ask` families always pass through unchanged. We never silently mutate a
+  command you didn't opt into.
+
+The hook entry lands in `~/.codex/hooks.json` (one install covers every
+repo); Codex requires new hooks to be reviewed — run `/hooks` inside Codex to
+trust it. Independently of any hook, `install` maintains a marker-managed
+**"Output Distillation" section in the repo's `AGENTS.md`** teaching the
+agent to run `repowise distill <cmd>` voluntarily and to `repowise expand`
+markers instead of re-running commands — this works on every Codex version,
+including ones with no usable rewrite hook. `uninstall` removes the section
+and restores your AGENTS.md byte-for-byte.
 
 The hook is deliberately conservative. It never rewrites:
 
@@ -243,6 +265,47 @@ stat sourced from the same local scan.
 
 ---
 
+## `repowise corrections` — recurring command fumbles
+
+The same transcript reader, pointed at a different waste: commands the agent
+got *wrong* and then fixed. The scan finds consecutive runs of the same base
+command where the first failed (the transcript records a real exit code) and
+a later variant succeeded, classifies the fumble, and aggregates the
+recurring rules:
+
+```bash
+repowise corrections                # report-only (default window: 30 days)
+repowise corrections --days 60
+repowise corrections --write        # maintain the managed guidance block
+```
+
+| Kind | Example rule |
+|---|---|
+| wrong tool | use `.venv\Scripts\python.exe` instead of bare `python` |
+| wrong path | `pytest`: use `tests/unit/cli/`, not `../../tests/unit/cli/` |
+| unknown flag | `pytest` does not support `--looponfail` |
+| missing arg | `tool` needs `--required-thing` |
+
+Classification is deliberately precision-first: apart from the structural
+wrong-tool case, a rule only forms when the error text corroborates it (the
+dropped flag or path is actually named by the error) — a red-green dev loop
+re-running tests with different selections never becomes a "correction".
+Wrong-path rules consult the symbol index when available and note where the
+corrected target actually lives.
+
+`--write` (strictly opt-in) maintains a short **"Known command corrections"**
+managed block — most-frequent rules first, at least 2 occurrences each,
+capped at 10 lines — between `REPOWISE_CORRECTIONS` markers in the repo's
+`.claude/CLAUDE.md` (and `AGENTS.md` when one exists), so the next agent
+session is told up front. Re-running `--write` refreshes the block in place;
+when no rule clears the threshold anymore, the block is removed. Content
+outside the markers is never touched.
+
+The same privacy contract as the missed scan applies: read-only, best-effort,
+entirely local.
+
+---
+
 ## Measured savings
 
 On a public OSS repository (microdot), one run per command, tokens estimated
@@ -297,7 +360,7 @@ and whether the rewrite hook is installed.
 | Risk | Mitigation |
 |---|---|
 | A filter eats a critical line | errors-first invariant + fixture tests + `expand` recovery + fallback-to-raw |
-| Silent permission escalation | rewrites default to `ask`; the user sees the modified command |
+| Silent permission escalation | rewrites default to `ask`; the user sees the modified command. Codex has no ask primitive, so only families explicitly set to `allow` rewrite there |
 | Marker with nothing behind it | content stored *before* the marker renders; store failure ⇒ raw output |
 | Compound-command semantics | pipes/redirects/`&&` are never rewritten |
 | Unindexed or stale repo | filters work index-free; index only improves ranking |

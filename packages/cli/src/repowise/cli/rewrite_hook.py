@@ -281,8 +281,14 @@ _PS_ALIAS_TOKENS = frozenset(
 )
 
 
-def decide(command: str, cwd: str, shell: str = "posix") -> RewriteResult | None:
-    """Full decision: classification + bailouts + per-repo permission config."""
+def decide(
+    command: str, cwd: str, shell: str = "posix", source: str | None = None
+) -> RewriteResult | None:
+    """Full decision: classification + bailouts + per-repo permission config.
+
+    *source* overrides the ledger tag for agents with their own surface
+    (``hook-codex``); by default it derives from the shell dialect.
+    """
     family = classify(command)
     if family is None:
         return None
@@ -309,7 +315,8 @@ def decide(command: str, cwd: str, shell: str = "posix") -> RewriteResult | None
 
     # The --source tag lands in the savings ledger so `repowise saved
     # --by source` can tell hook surfaces apart from direct CLI use.
-    source = "hook-powershell" if shell == "powershell" else "hook-bash"
+    if source is None:
+        source = "hook-powershell" if shell == "powershell" else "hook-bash"
     return RewriteResult(
         command=f"repowise distill --source {source} {command.strip()}",
         permission=permission,
@@ -320,15 +327,39 @@ def decide(command: str, cwd: str, shell: str = "posix") -> RewriteResult | None
     )
 
 
+def _select_adapter(argv: list[str]):
+    """Pick the adapter from ``--agent <name>`` argv; Claude Code by default.
+
+    Each agent's hook config registers its own flavor (Codex hooks run
+    ``repowise-rewrite --agent codex``) — the payloads are near-identical
+    JSON, so argv is the only reliable discriminator.
+    """
+    agent = ""
+    for i, arg in enumerate(argv):
+        if arg == "--agent" and i + 1 < len(argv):
+            agent = argv[i + 1]
+        elif arg.startswith("--agent="):
+            agent = arg.split("=", 1)[1]
+    if agent == "codex":
+        from repowise.cli.agent_adapters.codex import CodexAdapter
+
+        return CodexAdapter()
+    from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+
+    return ClaudeCodeAdapter()
+
+
 def main() -> None:
     try:
-        from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
-
-        adapter = ClaudeCodeAdapter()
+        adapter = _select_adapter(sys.argv[1:])
         request = adapter.parse_hook_payload(sys.stdin.read())
         if request is not None:
-            result = decide(request.command, request.cwd, request.shell)
-            if result is not None:
+            source = "hook-codex" if adapter.name == "codex" else None
+            result = decide(request.command, request.cwd, request.shell, source=source)
+            # An agent that can't honor the decided posture gets a
+            # passthrough, never a silently escalated rewrite (Codex has no
+            # ask-with-mutation — only families set to `allow` rewrite).
+            if result is not None and result.permission in adapter.rewrite_permissions:
                 sys.stdout.write(adapter.render_response(result))
                 sys.stdout.flush()
     except (SystemExit, KeyboardInterrupt):

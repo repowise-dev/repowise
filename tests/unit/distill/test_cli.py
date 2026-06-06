@@ -116,6 +116,25 @@ def test_distill_source_flag_tags_the_ledger(repo_cwd: Path) -> None:
     assert [r["group"] for r in rows] == ["hook-powershell"]
 
 
+def test_distill_expand_roundtrip_from_codex_surface(repo_cwd: Path) -> None:
+    """The omission store and `expand` are agent-agnostic — a marker produced
+    under the Codex hook's source tag restores exactly like any other."""
+    runner = CliRunner()
+    noisy = "import sys; sys.stdout.write('x.py:1:1: E501 line too long\\n' * 80)"
+    result = runner.invoke(distill_command, ["--source", "hook-codex", *_py(noisy)])
+    assert result.exit_code == 0
+    (ref,) = parse_marker_refs(result.output)
+
+    expanded = CliRunner().invoke(expand_command, [ref])
+    assert expanded.exit_code == 0
+    assert expanded.output.count("E501 line too long") == 80
+
+    store = OmissionStore(repo_cwd / ".repowise" / "omissions" / "omissions.db")
+    rows = store.savings_rollup(by="source")
+    store.close()
+    assert [r["group"] for r in rows] == ["hook-codex"]
+
+
 def test_distill_does_not_eat_the_wrapped_commands_source_flag(repo_cwd: Path) -> None:
     """--source after the command belongs to the command, not to distill."""
     result = CliRunner().invoke(

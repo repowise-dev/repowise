@@ -412,6 +412,27 @@ repowise saved --since 2026-06-01
 
 ---
 
+### `repowise corrections [PATH]`
+
+Mine local agent transcripts for recurring command fumbles — consecutive runs
+of the same base command where the first failed and a later variant succeeded
+(wrong tool, wrong path, unknown flag, missing argument). Report-only by
+default; entirely local. See [DISTILL.md](DISTILL.md#repowise-corrections--recurring-command-fumbles).
+
+| Flag | Description |
+|------|-------------|
+| `--days` | Transcript window for the scan (default 30) |
+| `--write` | Maintain the "Known command corrections" managed block in `.claude/CLAUDE.md` / `AGENTS.md` (opt-in) |
+| `--min-count` | Occurrences a rule needs before `--write` includes it (default 2) |
+
+```bash
+repowise corrections                 # report recurring fumbles
+repowise corrections --days 60
+repowise corrections --write         # seed the agent guidance block
+```
+
+---
+
 ### `repowise costs`
 
 Show LLM spend tracking.
@@ -509,26 +530,35 @@ See [Auto-Sync](AUTO_SYNC.md) for all sync methods (hooks, file watcher, webhook
 
 ### `repowise hook rewrite install|uninstall|status`
 
-Manage the Distill command-rewrite hook (Claude Code PreToolUse). When
-installed, noisy agent commands (tests, builds, git status/log/diff, searches,
-listings) are rewritten to `repowise distill <command>` — pending your
-approval by default — so the agent sees a compact, errors-first rendering.
+Manage the Distill command-rewrite hooks (Claude Code + Codex PreToolUse).
+When installed, noisy agent commands (tests, builds, git status/log/diff,
+searches, listings) are rewritten to `repowise distill <command>` — pending
+your approval by default — so the agent sees a compact, errors-first
+rendering.
 
 ```bash
 repowise hook rewrite install        # writes ~/.claude/settings.json (idempotent)
 repowise hook rewrite install -w     # also re-enable every workspace repo
 repowise hook rewrite status
-repowise hook rewrite uninstall      # removes only the repowise entry
+repowise hook rewrite uninstall      # removes only the repowise entries
 ```
 
 `install` also re-enables the target's `distill.commands` config if a prior
 `repowise init` opt-out had gated it off — the target repo by default, or
 every workspace repo with `--workspace`/`-w` (accepts an optional `PATH` and
-`--no-workspace`, like `repowise hook install`). `uninstall` is global
-(settings.json) and leaves per-repo config untouched. Per-repo posture
-(`permission: ask | allow`, per-family overrides) lives under
-`distill.commands` in `.repowise/config.yaml` — see
-[DISTILL.md](DISTILL.md#configuration).
+`--no-workspace`, like `repowise hook install`). `uninstall` removes the
+global hook entries plus the repo's AGENTS.md awareness section and leaves
+per-repo config untouched. Per-repo posture (`permission: ask | allow`,
+per-family overrides) lives under `distill.commands` in
+`.repowise/config.yaml` — see [DISTILL.md](DISTILL.md#configuration).
+
+When `~/.codex` exists, `install` also writes a Codex hook entry to
+`~/.codex/hooks.json` (Codex ≥ 0.137 only — older builds can't apply a
+rewrite) and maintains an "Output Distillation" section in the repo's
+`AGENTS.md` that works without any hook. Codex cannot show a rewritten
+command for approval, so there rewrites fire only for families set to
+`permission: allow`; `status` reports exactly what your build supports. See
+[DISTILL.md](DISTILL.md#3-the-command-rewrite-hook-claude-code--codex).
 
 ---
 

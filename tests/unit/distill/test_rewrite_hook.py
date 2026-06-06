@@ -280,11 +280,12 @@ class TestDecidePowerShell:
 # ---------------------------------------------------------------------------
 
 
-def _run_main(monkeypatch, payload) -> str:
+def _run_main(monkeypatch, payload, argv: list[str] | None = None) -> str:
     stdin = io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))
     stdout = io.StringIO()
     monkeypatch.setattr(sys, "stdin", stdin)
     monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "argv", ["repowise-rewrite", *(argv or [])])
     with pytest.raises(SystemExit) as exc:
         rewrite_hook.main()
     assert exc.value.code == 0
@@ -340,3 +341,40 @@ class TestMain:
 
     def test_empty_stdin_is_silent(self, monkeypatch) -> None:
         assert _run_main(monkeypatch, "") == ""
+
+
+class TestMainCodex:
+    """--agent codex: rewrite only what Codex's protocol can honor.
+
+    Codex PreToolUse hooks honor ``updatedInput`` only with
+    ``permissionDecision: "allow"`` — there is no ask-with-mutation. An
+    ``ask`` decision therefore passes through instead of silently escalating.
+    """
+
+    def test_ask_family_passes_through(self, monkeypatch, repo) -> None:
+        # Default posture is ask → Codex gets nothing, command runs raw.
+        out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "codex"])
+        assert out == ""
+
+    def test_allow_family_rewrites(self, monkeypatch, repo) -> None:
+        _write_config(repo, {"commands": {"families": {"test_output": "allow"}}})
+        out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "codex"])
+        hso = json.loads(out)["hookSpecificOutput"]
+        assert hso["permissionDecision"] == "allow"
+        assert hso["updatedInput"] == {"command": "repowise distill --source hook-codex pytest -x"}
+
+    def test_agent_equals_form(self, monkeypatch, repo) -> None:
+        _write_config(repo, {"commands": {"permission": "allow"}})
+        out = _run_main(monkeypatch, _payload("git status", str(repo)), argv=["--agent=codex"])
+        hso = json.loads(out)["hookSpecificOutput"]
+        assert hso["updatedInput"] == {"command": "repowise distill --source hook-codex git status"}
+
+    def test_powershell_tool_name_rejected(self, monkeypatch, repo) -> None:
+        # Codex has no PowerShell tool; a payload claiming one is malformed.
+        _write_config(repo, {"commands": {"permission": "allow"}})
+        payload = _payload("git status", str(repo), tool_name="PowerShell")
+        assert _run_main(monkeypatch, payload, argv=["--agent", "codex"]) == ""
+
+    def test_unknown_agent_falls_back_to_claude_code(self, monkeypatch, repo) -> None:
+        out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "weird"])
+        assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "ask"
