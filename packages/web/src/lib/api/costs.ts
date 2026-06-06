@@ -38,6 +38,10 @@ export interface DistillSavings {
   pricing_model: string;
   per_filter: DistillSavingsGroup[];
   per_day: DistillSavingsGroup[];
+  /** Raw (non-distilled) agent commands a filter would have caught. */
+  missed_events: number;
+  missed_tokens_est: number;
+  missed_window_days: number;
 }
 
 // ---------------------------------------------------------------------------

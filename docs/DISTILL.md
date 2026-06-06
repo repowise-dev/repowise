@@ -203,9 +203,11 @@ inside a repowise repo.
 ```bash
 repowise saved                  # per-filter rollup + totals + est. dollars
 repowise saved --by day         # daily rollup
-repowise saved --by source      # cli vs hook
+repowise saved --by source      # cli vs hook surfaces
 repowise saved --since 2026-06-01
 repowise saved --model claude-opus-4-6   # price the estimate differently
+repowise saved --missed                  # savings raw commands left on the table
+repowise saved --missed --missed-days 30
 ```
 
 Dollar estimates price saved tokens at the chosen model's *input* rate (saved
@@ -215,8 +217,29 @@ tokens are input the agent never had to read) using the same pricing table as
 The report covers the **distill command/hook path only** — MCP response
 truncation is intentionally not in the ledger (see above).
 
+### Missed savings — `repowise saved --missed`
+
+The adoption feedback loop: how many tokens did raw commands waste that a
+filter would have caught? `--missed` scans your local Claude Code transcripts
+for Bash/PowerShell tool calls in this repo that were **not** routed through
+`repowise distill`, classifies each with the same router the engine uses, and
+estimates the foregone savings using each filter's *conservative* fixture
+floor (the per-filter minimums asserted in CI, not the medians — the estimate
+undersells on purpose). The scan covers the last 7 days by default
+(`--missed-days N` for more); plain `repowise saved` appends a one-line
+summary when there is anything to report.
+
+The scan is read-only and best-effort: malformed or absent transcripts mean
+an empty report, never an error.
+
+> **Privacy:** the scan stays entirely local. Commands and outputs are read
+> from your own transcript directory (`~/.claude/projects/…`) on this
+> machine; nothing is uploaded, recorded, or sent anywhere. Codex transcripts
+> are not yet scanned.
+
 The local dashboard mirrors this: the Costs page's *Cache & savings* tab shows
-a Distill savings card with the same rollup.
+a Distill savings card with the same rollup, plus a missed-savings secondary
+stat sourced from the same local scan.
 
 ---
 

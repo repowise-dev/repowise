@@ -166,6 +166,12 @@ async def get_distill_savings(
     finally:
         conn.close()
 
+    # Missed savings: best-effort scan of local agent transcripts; the module
+    # degrades to an empty report on any failure, never raises.
+    from repowise.core.distill.missed import scan_missed_savings
+
+    missed = scan_missed_savings(Path(repo.local_path))
+
     rate = get_model_pricing(_SAVINGS_PRICING_MODEL)["input"]
     return DistillSavingsResponse(
         available=True,
@@ -177,4 +183,7 @@ async def get_distill_savings(
         pricing_model=_SAVINGS_PRICING_MODEL,
         per_filter=[DistillSavingsGroup(**row) for row in per_filter],
         per_day=[DistillSavingsGroup(**row) for row in per_day],
+        missed_events=missed["events"],
+        missed_tokens_est=missed["est_saved_tokens"],
+        missed_window_days=missed["window_days"],
     )

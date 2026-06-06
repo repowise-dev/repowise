@@ -86,3 +86,43 @@ async def test_savings_endpoint_since_filter(client: AsyncClient, tmp_path: Path
 async def test_savings_endpoint_unknown_repo_404(client: AsyncClient) -> None:
     resp = await client.get("/api/repos/nope/distill-savings")
     assert resp.status_code == 404
+
+
+async def test_savings_endpoint_reports_missed_stats(
+    client: AsyncClient, tmp_path: Path, monkeypatch
+) -> None:
+    """The missed-savings secondary stat rides on the same response."""
+    repo = await create_test_repo(client, tmp_path)
+    _seed_store(Path(repo["local_path"]))
+
+    import repowise.core.distill.missed as missed
+
+    monkeypatch.setattr(
+        missed,
+        "scan_missed_savings",
+        lambda root, **kw: {
+            "events": 3,
+            "raw_tokens": 9_000,
+            "est_saved_tokens": 4_200,
+            "per_filter": {},
+            "window_days": 7.0,
+        },
+    )
+    resp = await client.get(f"/api/repos/{repo['id']}/distill-savings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["missed_events"] == 3
+    assert data["missed_tokens_est"] == 4_200
+    assert data["missed_window_days"] == 7.0
+
+
+async def test_savings_endpoint_no_transcripts_means_zero_missed(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    _seed_store(Path(repo["local_path"]))
+    resp = await client.get(f"/api/repos/{repo['id']}/distill-savings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["missed_events"] == 0
+    assert data["missed_tokens_est"] == 0

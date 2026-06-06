@@ -60,3 +60,8 @@ class DistillSavingsResponse(BaseModel):
     pricing_model: str = ""
     per_filter: list[DistillSavingsGroup] = []
     per_day: list[DistillSavingsGroup] = []
+    # Missed savings — raw (non-distilled) agent commands a filter would have
+    # caught, scanned best-effort from local Claude Code transcripts.
+    missed_events: int = 0
+    missed_tokens_est: int = 0
+    missed_window_days: float = 0.0

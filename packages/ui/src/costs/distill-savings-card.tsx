@@ -22,6 +22,10 @@ export interface DistillSavingsData {
   pricing_model: string;
   per_filter: DistillSavingsGroup[];
   per_day: DistillSavingsGroup[];
+  /** Raw (non-distilled) agent commands a filter would have caught. */
+  missed_events?: number;
+  missed_tokens_est?: number;
+  missed_window_days?: number;
 }
 
 export interface DistillSavingsCardProps {
@@ -41,6 +45,7 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
       ? Math.round((data.saved_tokens / data.raw_tokens) * 100)
       : 0;
   const topFilters = hasData ? data.per_filter.slice(0, 3) : [];
+  const missed = data?.available && (data.missed_events ?? 0) > 0;
 
   return (
     <Card>
@@ -89,10 +94,29 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
                 );
               })}
             </div>
+            {missed && (
+              <div className="flex items-baseline gap-2 border-t border-[var(--color-border-secondary)] pt-2">
+                <span className="text-sm font-medium text-amber-500 tabular-nums">
+                  ~{formatTokens(data.missed_tokens_est ?? 0)}
+                </span>
+                <span className="text-xs text-[var(--color-text-secondary)]">
+                  missed — {(data.missed_events ?? 0).toLocaleString()} raw command
+                  {(data.missed_events ?? 0) === 1 ? "" : "s"} bypassed distill in the last{" "}
+                  {data.missed_window_days ?? 7} days
+                </span>
+              </div>
+            )}
             <p className="text-[10px] text-[var(--color-text-tertiary)] leading-snug">
               {data.events.toLocaleString()} distillation{data.events === 1 ? "" : "s"} via the{" "}
               <code>repowise distill</code> command/hook path. MCP response truncation is not
               counted. Estimate at {data.pricing_model} input rate.
+              {missed && (
+                <>
+                  {" "}
+                  Missed savings are scanned from local agent transcripts (nothing leaves this
+                  machine) — see <code>repowise saved --missed</code>.
+                </>
+              )}
             </p>
           </div>
         ) : (
