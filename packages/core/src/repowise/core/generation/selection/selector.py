@@ -213,6 +213,11 @@ def _build_curated_module_groups(
     scored: list[tuple[float, ModuleGroup]] = []
     seen_keys: set[str] = set()
     for module in inputs.kg_modules:
+        if module.get("wholeLayer"):
+            # 1:1 with a layer page (single-module layers, flat libs) — a
+            # module doc would re-document the layer. Skip the page; the
+            # module stays in the KG artifact for canvas/coverage.
+            continue
         member_paths = sorted(
             path
             for nid in module.get("nodeIds", [])

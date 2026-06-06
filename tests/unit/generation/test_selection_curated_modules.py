@@ -250,3 +250,29 @@ class TestGoldenByteIdentity:
         a, b = run(), run()
         assert a.module_groups == b.module_groups
         assert a == b
+
+
+class TestWholeLayerDedupe:
+    """Modules 1:1 with a layer never get a module page (layer_page covers them)."""
+
+    def test_whole_layer_module_skipped(self):
+        parsed, pr, comm, modules = _repo_with_modules()
+        modules = [dict(m) for m in modules]
+        modules[0]["wholeLayer"] = True  # core/ingestion now 1:1 with its layer
+        groups = _build_module_groups(
+            _inputs(parsed, pr, comm, cfg=_cfg("curated"), kg_modules=modules)
+        )
+        keys = {g.key for _, g in groups}
+        assert "packages/app/src/core/ingestion" not in keys
+        assert "packages/app/src/ui/c4" in keys
+
+    def test_all_whole_layer_yields_no_module_pages_not_community(self):
+        # Flat-lib shape: every module is 1:1 with a layer → zero module
+        # pages, and NO fallback to community grouping (vocabulary stays
+        # curated; the layer pages carry the documentation).
+        parsed, pr, comm, modules = _repo_with_modules()
+        modules = [dict(m, wholeLayer=True) for m in modules]
+        groups = _build_module_groups(
+            _inputs(parsed, pr, comm, cfg=_cfg("curated"), kg_modules=modules)
+        )
+        assert groups == []

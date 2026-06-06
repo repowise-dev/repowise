@@ -400,3 +400,21 @@ class TestMatrixSurfacedShapes:
         modules = _derive(layers, _id_map(root, pkgs, deep), target_max=20)
         names = [m["name"] for m in modules]
         assert len(names) == len(set(names)), names
+
+    def test_whole_layer_modules_flagged_for_page_dedupe(self):
+        # Single-module layers are 1:1 with their layer page; the flag lets
+        # selection skip the duplicate doc while the artifact keeps coverage.
+        flat = [f"lib/f{i}.py" for i in range(10)]
+        deep_a = [f"acme/web/a{i}.py" for i in range(10)]
+        deep_b = [f"acme/api/b{i}.py" for i in range(10)]
+        layers = [
+            _layer("Service", flat),
+            _layer("Application", deep_a + deep_b),
+        ]
+        modules = _derive(layers, _id_map(flat, deep_a, deep_b), target_max=12)
+        by_layer = {}
+        for m in modules:
+            by_layer.setdefault(m["layerId"], []).append(m)
+        assert all(m.get("wholeLayer") for m in by_layer["layer:service"])
+        assert len(by_layer["layer:application"]) > 1
+        assert not any(m.get("wholeLayer") for m in by_layer["layer:application"])

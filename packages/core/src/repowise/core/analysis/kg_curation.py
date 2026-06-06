@@ -713,6 +713,11 @@ def derive_modules(
         used_ids.add(mid)
         m["id"] = mid
 
+    # A single-module layer is 1:1 with its layer page — mark it so page
+    # generation can skip the duplicate doc (the module stays in the
+    # artifact: canvas containers and the coverage invariant need it).
+    per_layer_count: Counter[str] = Counter(m["layerId"] for m in mods)
+
     out: list[dict] = []
     for m in mods:
         module = {
@@ -722,6 +727,8 @@ def derive_modules(
             "layerId": m["layerId"],
             "nodeIds": m["nodeIds"],
         }
+        if per_layer_count[m["layerId"]] == 1:
+            module["wholeLayer"] = True
         if lang_by_id is not None:
             langs = Counter(
                 lang for nid in m["nodeIds"] if (lang := lang_by_id.get(nid, ""))
