@@ -99,3 +99,47 @@ class TestJavaImportResolution:
         ctx = _ctx(tmp_path, [a, b])
         targets = resolve_java_import_all("com.foo.A", "Main.java", ctx)
         assert targets == (a,)
+
+
+class TestJavaStdlibFiltering:
+    def test_javax_dropped(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [])
+        assert resolve_java_import_all("javax.annotation.Nullable", "Main.java", ctx) == ()
+
+    def test_jdk_dropped(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [])
+        assert resolve_java_import_all("jdk.incubator.vector.VectorSpecies", "Main.java", ctx) == ()
+
+    def test_java_util_dropped(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [])
+        assert resolve_java_import_all("java.util.List", "Main.java", ctx) == ()
+
+    def test_jakarta_is_external_not_stdlib(self, tmp_path: Path) -> None:
+        # jakarta.* is a real dependency namespace — external node wanted.
+        ctx = _ctx(tmp_path, [])
+        targets = resolve_java_import_all("jakarta.servlet.Filter", "Main.java", ctx)
+        assert targets == ("external:jakarta.servlet.Filter",)
+
+    def test_jakarta_never_stem_matches_local_file(self, tmp_path: Path) -> None:
+        # A repo-local Filter.java must not capture jakarta.servlet.Filter.
+        local = _make_java(tmp_path, "src/com/app/Filter.java", "com.app", "Filter")
+        ctx = _ctx(tmp_path, [local])
+        targets = resolve_java_import_all("jakarta.servlet.Filter", "Main.java", ctx)
+        assert targets == ("external:jakarta.servlet.Filter",)
+
+    def test_jakarta_exact_local_match_wins(self, tmp_path: Path) -> None:
+        # The repo may BE the jakarta library — exact FQN match resolves locally.
+        local = _make_java(
+            tmp_path, "api/src/jakarta/servlet/Filter.java", "jakarta.servlet", "Filter"
+        )
+        ctx = _ctx(tmp_path, [local])
+        targets = resolve_java_import_all("jakarta.servlet.Filter", "Main.java", ctx)
+        assert targets == (local,)
+
+    def test_prefix_match_is_segment_aware(self, tmp_path: Path) -> None:
+        # A local package literally named javautil must not be swallowed
+        # by the java. prefix filter.
+        local = _make_java(tmp_path, "src/javautil/Helper.java", "javautil", "Helper")
+        ctx = _ctx(tmp_path, [local])
+        result = resolve_java_import("javautil.Helper", "Main.java", ctx)
+        assert result == local

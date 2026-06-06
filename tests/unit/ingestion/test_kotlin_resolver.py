@@ -71,3 +71,38 @@ class TestKotlinIndex:
         ctx = _ctx(tmp_path, ["src/main/kotlin/com/example/Util.kt"])
         result = resolve_kotlin_import("com.example.Util", "main.kt", ctx)
         assert result == "src/main/kotlin/com/example/Util.kt"
+
+
+class TestKotlinStdlibFiltering:
+    def test_kotlin_stdlib_dropped(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [])
+        assert resolve_kotlin_import("kotlin.collections.List", "Main.kt", ctx) is None
+
+    def test_java_stdlib_dropped_for_kotlin(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path, [])
+        assert resolve_kotlin_import("java.util.UUID", "Main.kt", ctx) is None
+        assert resolve_kotlin_import("javax.inject.Inject", "Main.kt", ctx) is None
+
+    def test_kotlinx_is_external_not_stdlib(self, tmp_path: Path) -> None:
+        # kotlinx.* is a library namespace, not stdlib — external node wanted.
+        ctx = _ctx(tmp_path, [])
+        result = resolve_kotlin_import("kotlinx.coroutines.launch", "Main.kt", ctx)
+        assert result == "external:kotlinx.coroutines.launch"
+
+    def test_kotlinx_never_stem_matches_local_file(self, tmp_path: Path) -> None:
+        # A repo-local Launch.kt must not capture kotlinx.coroutines.Launch.
+        repo_file = tmp_path / "src" / "Launch.kt"
+        repo_file.parent.mkdir(parents=True)
+        repo_file.write_text("package com.app\n\nclass Launch\n")
+        ctx = _ctx(tmp_path, ["src/Launch.kt"])
+        result = resolve_kotlin_import("kotlinx.coroutines.Launch", "Main.kt", ctx)
+        assert result == "external:kotlinx.coroutines.Launch"
+
+    def test_prefix_match_is_segment_aware(self, tmp_path: Path) -> None:
+        # kotlinutil.* is not kotlin.* — segment-aware prefix matching.
+        repo_file = tmp_path / "src" / "kotlinutil" / "Helper.kt"
+        repo_file.parent.mkdir(parents=True)
+        repo_file.write_text("package kotlinutil\n\nclass Helper\n")
+        ctx = _ctx(tmp_path, ["src/kotlinutil/Helper.kt"])
+        result = resolve_kotlin_import("kotlinutil.Helper", "Main.kt", ctx)
+        assert result == "src/kotlinutil/Helper.kt"

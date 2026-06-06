@@ -90,3 +90,19 @@ class UserRepo : Repo
         names = {s.name for s in result.symbols}
         assert "Repo" in names
         assert "UserRepo" in names
+
+
+class TestKotlinWildcardImports:
+    def test_wildcard_import_keeps_star(self, parser: ASTParser) -> None:
+        # The `*` is an anonymous sibling token of the qualified identifier
+        # in the Kotlin grammar; extraction must restore it for package fan-out.
+        src = b"package x\nimport com.example.util.*\nclass App\n"
+        result = parser.parse_file(_file(), src)
+        modules = [imp.module_path for imp in result.imports]
+        assert "com.example.util.*" in modules
+
+    def test_plain_import_unchanged(self, parser: ASTParser) -> None:
+        src = b"package x\nimport com.example.Foo\nclass App\n"
+        result = parser.parse_file(_file(), src)
+        modules = [imp.module_path for imp in result.imports]
+        assert modules == ["com.example.Foo"]

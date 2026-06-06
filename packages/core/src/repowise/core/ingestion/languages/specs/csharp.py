@@ -5,6 +5,14 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="csharp",
     display_name="C#",
+    import_support="full",
+    # xUnit/NUnit conventions: FooTest(s)/FooSpec(s); sibling Foo.Tests/
+    # and BDD-style Foo.Specs/ projects (Polly's test/Polly.Specs).
+    test_camel_suffixes=("Test", "Tests", "Spec", "Specs"),
+    test_dir_suffixes=(".Tests", ".Specs"),
+    # Clean-architecture project-dir suffixes (Foo.Api/, Foo.Domain/,
+    # Foo.Infrastructure/) — not yet verified against a live .NET repo.
+    layer_dir_hints=((".Api", "API"), (".Domain", "Service"), (".Infrastructure", "Data")),
     extensions=frozenset({".cs"}),
     grammar_package="tree_sitter_c_sharp",
     scm_file="csharp.scm",

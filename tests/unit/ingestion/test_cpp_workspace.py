@@ -149,3 +149,43 @@ def test_siblings_in_targets(tmp_path):
     index = build_cpp_workspace_index(ctx)
     siblings = set(index.siblings_in_targets("a.cc"))
     assert siblings == {"b.cc", "c.cc"}
+
+
+def test_header_only_target_fans_out_to_other_headers(tmp_path):
+    # fmt-like header-only library: public headers, zero sources. One
+    # included header must pull the target's other headers along,
+    # otherwise the rest of the library is orphaned.
+    _write(tmp_path, "CMakeLists.txt", """
+        add_library(fmtish INTERFACE)
+        target_sources(fmtish INTERFACE include/fmtish/core.h include/fmtish/format.h include/fmtish/ranges.h)
+        target_include_directories(fmtish INTERFACE include)
+    """)
+    _write(tmp_path, "include/fmtish/core.h", "// core\n")
+    _write(tmp_path, "include/fmtish/format.h", "// format\n")
+    _write(tmp_path, "include/fmtish/ranges.h", "// ranges\n")
+    _write(tmp_path, "app/main.cc", '#include "fmtish/core.h"\n')
+    paths = [
+        "include/fmtish/core.h", "include/fmtish/format.h",
+        "include/fmtish/ranges.h", "app/main.cc", "CMakeLists.txt",
+    ]
+    ctx = _make_ctx(tmp_path, paths)
+    targets = resolve_cpp_import_all("fmtish/core.h", "app/main.cc", ctx)
+    assert targets[0] == "include/fmtish/core.h"
+    assert "include/fmtish/format.h" in targets
+    assert "include/fmtish/ranges.h" in targets
+
+
+def test_source_target_fanout_unchanged_by_header_pool(tmp_path):
+    # A target WITH sources keeps the TU fan-out (no header pool mixing).
+    _write(tmp_path, "CMakeLists.txt", """
+        add_library(coffee STATIC src/brew.cc src/grind.cc)
+        target_sources(coffee PUBLIC include/coffee/brew.h)
+        target_include_directories(coffee PUBLIC include)
+    """)
+    for rel in ("include/coffee/brew.h", "src/brew.cc", "src/grind.cc"):
+        _write(tmp_path, rel, "// x\n")
+    paths = ["include/coffee/brew.h", "src/brew.cc", "src/grind.cc", "CMakeLists.txt"]
+    ctx = _make_ctx(tmp_path, paths)
+    targets = resolve_cpp_import_all("coffee/brew.h", "src/brew.cc", ctx)
+    assert targets[0] == "include/coffee/brew.h"
+    assert "src/grind.cc" in targets

@@ -39,6 +39,11 @@ class DotNetProjectIndex:
     with the same simple name in different namespaces). Callers rank the
     candidates by project enclosure — see ``rank_type_candidates`` below."""
 
+    partial_types: dict[str, list[Path]] = field(default_factory=dict)
+    """Maps a fully-qualified ``partial`` type name → files carrying a
+    fragment. Co-fragments of one FQN are literally one class — the
+    graph links them bidirectionally."""
+
     project_globals: dict[Path, set[str]] = field(default_factory=dict)
     """Maps a project's directory → global+implicit using namespaces."""
 
@@ -264,8 +269,8 @@ def build_index(repo_path: Path, *, prune_nested_git: bool = True) -> DotNetProj
     ]
     index.file_to_project = _bucket_files_by_project(all_cs_files, project_dirs)
 
-    # ---- 4. Namespace + type map from cached texts ----
-    index.namespace_map, index.type_map = build_namespace_map(
+    # ---- 4. Namespace + type + partial maps from cached texts ----
+    index.namespace_map, index.type_map, index.partial_types = build_namespace_map(
         all_cs_files, texts=cs_texts
     )
 

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 Warmup = Callable[["ResolverContext"], None]
 
 
-def _warmup_jvm(ctx: "ResolverContext") -> None:
+def _warmup_jvm(ctx: ResolverContext) -> None:
     from .resolvers.jvm_workspace import get_or_build_jvm_index
 
     index = get_or_build_jvm_index(ctx)
@@ -99,7 +99,7 @@ def _warmup_jvm(ctx: "ResolverContext") -> None:
                         nd["is_never_flag"] = True
 
 
-def _warmup_cpp(ctx: "ResolverContext") -> None:
+def _warmup_cpp(ctx: ResolverContext) -> None:
     """Build the C/C++ workspace index and propagate workspace-discovered
     export macros back into the graph.
 
@@ -203,7 +203,7 @@ def _mark_cpp_entry_point_files(parsed_files: dict, graph: Any) -> None:
             if not abs_path:
                 continue
             try:
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(abs_path, encoding="utf-8", errors="replace") as f:
                     src = f.read()
             except OSError:
                 continue
@@ -214,19 +214,79 @@ def _mark_cpp_entry_point_files(parsed_files: dict, graph: Any) -> None:
             node["is_entry_point"] = True
 
 
-def _warmup_dotnet(ctx: "ResolverContext") -> None:
+_SWIFT_ENTRY_RE = None  # compiled lazily inside _warmup_swift
+
+
+def _warmup_swift(ctx: ResolverContext) -> None:
+    """Stamp ``is_entry_point`` on Swift files carrying an entry attribute.
+
+    ``@main`` / ``@UIApplicationMain`` / ``@NSApplicationMain`` mark the
+    process entry type; no call edge ever points at it, so without the
+    flag the app's actual starting point reads as unreachable.
+    """
+    import re
+
+    global _SWIFT_ENTRY_RE
+    if _SWIFT_ENTRY_RE is None:
+        _SWIFT_ENTRY_RE = re.compile(
+            r"^\s*@(?:main|UIApplicationMain|NSApplicationMain)\b", re.MULTILINE
+        )
+
+    graph = getattr(ctx, "graph", None)
+    parsed_files = getattr(ctx, "parsed_files", None) or {}
+    if graph is None:
+        return
+    for path, parsed in parsed_files.items():
+        if parsed.file_info.language != "swift":
+            continue
+        abs_path = getattr(parsed.file_info, "abs_path", None)
+        if not abs_path:
+            continue
+        try:
+            with open(abs_path, encoding="utf-8", errors="replace") as f:
+                src = f.read()
+        except OSError:
+            continue
+        if not _SWIFT_ENTRY_RE.search(src):
+            continue
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_entry_point"] = True
+
+
+def _warmup_dotnet(ctx: ResolverContext) -> None:
     from .resolvers.dotnet import get_or_build_index
 
     get_or_build_index(ctx)
 
 
-def _warmup_go(ctx: "ResolverContext") -> None:
+def _warmup_go(ctx: ResolverContext) -> None:
+    """Build the Go package index and stamp ``is_entry_point`` on every
+    ``package main`` file declaring ``func main()``. Go's entry convention
+    is semantic, not filename-based — ``cmd/task/task.go`` is as much a
+    binary entry as ``cmd/release/main.go``, so the traverser's stem
+    heuristic alone misses real binaries.
+    """
     from .resolvers.go_workspace import get_or_build_go_index
 
-    get_or_build_go_index(ctx)
+    index = get_or_build_go_index(ctx)
+    graph = getattr(ctx, "graph", None)
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for pkg in index.packages.values():
+        for path in pkg.main_files:
+            # The graph attribute feeds dead-code reachability; the parsed
+            # FileInfo flag feeds the exported KG's entry tags and the tour
+            # seeds — both surfaces must agree.
+            if graph is not None:
+                node = graph.nodes.get(path)
+                if node is not None:
+                    node["is_entry_point"] = True
+            pf = parsed.get(path)
+            if pf is not None and getattr(pf, "file_info", None) is not None:
+                pf.file_info.is_entry_point = True
 
 
-def _warmup_typescript(ctx: "ResolverContext") -> None:
+def _warmup_typescript(ctx: ResolverContext) -> None:
     """Build the TS workspace index and stamp ``is_entry_point`` on every
     source file the workspace's ``package.json`` ``exports`` map resolves
     to. Without this, files reachable only through the package boundary
@@ -286,12 +346,13 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "javascript": ("graph.ts_index", _warmup_typescript),
     "cpp": ("graph.cpp_index", _warmup_cpp),
     "c": ("graph.cpp_index", _warmup_cpp),
+    "swift": ("graph.swift_entry", _warmup_swift),
 }
 
 
 def run_warmups(
-    parsed_files: dict[str, "ParsedFile"],
-    ctx: "ResolverContext",
+    parsed_files: dict[str, ParsedFile],
+    ctx: ResolverContext,
     progress: Any | None = None,
 ) -> None:
     """Run every registered warmup whose language appears in ``parsed_files``.

@@ -5,6 +5,7 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="luau",
     display_name="Luau",
+    import_support="partial",
     # Rojo treats both .lua and .luau as Luau modules.  Luau's grammar is
     # a superset of Lua 5.1, so vanilla Lua files parse cleanly too.
     extensions=frozenset({".lua", ".luau"}),

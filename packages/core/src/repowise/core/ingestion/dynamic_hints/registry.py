@@ -83,7 +83,7 @@ class HintRegistry:
         Extractors run in a thread pool — their work is I/O-bound and
         releases the GIL during filesystem reads, so threads are the
         right tool (no per-process startup overhead, no pickling).
-        Order of edges in the returned list is not guaranteed.
+        The returned list is deterministically sorted.
         """
         edges: list[DynamicEdge] = []
         if not self._extractors:
@@ -100,6 +100,9 @@ class HintRegistry:
                     continue
                 edges.extend(got)
                 log.debug("dynamic_hints", extractor=ex.name, count=len(got))
+        # Thread-completion order varies run-to-run; sort so downstream graph
+        # construction (and therefore the exported KG) stays deterministic.
+        edges.sort(key=lambda e: (e.source, e.target, e.edge_type, e.hint_source, e.weight))
         return edges
 
     @staticmethod

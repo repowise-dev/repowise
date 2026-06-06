@@ -5,6 +5,14 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="cpp",
     display_name="C++",
+    import_support="full",
+    # GoogleTest conventions: foo_test.cc / foo_unittest.cc / test_foo.cpp.
+    test_stem_prefixes=("test_",),
+    test_stem_suffixes=("_test", "_unittest"),
+    # A top-level include/ holds a C++ library's installed public headers —
+    # its API surface (fmt, leveldb, boost layouts). Root-anchored: a
+    # vendored include/ deep in another tree must not mint the layer.
+    layer_dir_hints=(("/include", "API"),),
     extensions=frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"}),
     grammar_package="tree_sitter_cpp",
     scm_file="cpp.scm",

@@ -5,6 +5,12 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="python",
     display_name="Python",
+    import_support="full",
+    entry_stems=("manage", "wsgi", "asgi", "__main__"),
+    entry_flag_stems=("wsgi", "asgi"),
+    test_stem_prefixes=("test_",),
+    test_fixture_stems=("conftest",),
+    suite_anchor_stems=("conftest",),
     extensions=frozenset({".py", ".pyi"}),
     grammar_package="tree_sitter_python",
     scm_file="python.scm",

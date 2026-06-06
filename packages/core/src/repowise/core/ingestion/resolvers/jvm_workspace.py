@@ -29,12 +29,53 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
+# Compound kinds (``enum class`` / ``annotation class`` — Kotlin) must come
+# before their single-keyword prefixes in the alternation, otherwise the
+# bare ``enum`` / ``annotation`` branch matches first and captures the
+# literal word "class" as the type name. ``trait`` and the ``case`` /
+# ``implicit`` modifiers cover Scala's type declarations.
 _TOP_LEVEL_TYPE_RE = re.compile(
-    r"^\s*(?:public\s+|private\s+|protected\s+|internal\s+|abstract\s+|final\s+|sealed\s+|open\s+|data\s+)*"
-    r"(?:class|interface|enum|object|record|annotation)\s+(\w+)",
+    r"^\s*(?:public\s+|private\s+|protected\s+|internal\s+|abstract\s+|final\s+"
+    r"|sealed\s+|open\s+|data\s+|value\s+|inline\s+|case\s+|implicit\s+)*"
+    r"(?:annotation\s+class|enum\s+class|class|interface|trait|enum|object|record|annotation)\s+(\w+)",
     re.MULTILINE,
 )
-_JVM_EXTENSIONS = frozenset({".java", ".kt"})
+_JVM_EXTENSIONS = frozenset({".java", ".kt", ".scala"})
+
+# Chained Scala package clauses (``package org.example`` then ``package
+# tools`` → org.example.tools) are scanned line-wise from the top of the
+# file; ``package object foo`` is a definition, not a clause.
+_SCALA_PACKAGE_LINE_RE = re.compile(r"package\s+(?!object\b)([\w.]+)")
+
+# JDK / Kotlin-stdlib namespaces never resolve to repo files and produce
+# no node at all. Each prefix carries its trailing dot so matching stays
+# segment-aware (``javautil.Foo`` must not match ``java.``).
+_JAVA_STDLIB_PREFIXES = ("java.", "javax.", "jdk.")
+_KOTLIN_STDLIB_PREFIXES = ("kotlin.",)
+
+# Well-known external library namespaces: a real dependency (an external
+# node is wanted), but short-circuited before the stem/directory fallbacks
+# so e.g. ``jakarta.servlet.Filter`` can never false-match a repo-local
+# ``Filter.java``. Unlike stdlib these only apply AFTER exact workspace
+# lookup fails — a repo can legitimately contain these namespaces (the
+# library's own source tree).
+_JAVA_EXTERNAL_PREFIXES = ("jakarta.",)
+_KOTLIN_EXTERNAL_PREFIXES = ("kotlinx.",)
+
+
+def classify_jvm_import(module_path: str, *, kotlin: bool = False) -> str | None:
+    """Classify an import path as ``"stdlib"`` (drop — no node),
+    ``"external"`` (external node, skip fuzzy local fallbacks), or
+    ``None`` (may be repo-local)."""
+    if module_path.startswith(_JAVA_STDLIB_PREFIXES):
+        return "stdlib"
+    if kotlin and module_path.startswith(_KOTLIN_STDLIB_PREFIXES):
+        return "stdlib"
+    if module_path.startswith(_JAVA_EXTERNAL_PREFIXES):
+        return "external"
+    if kotlin and module_path.startswith(_KOTLIN_EXTERNAL_PREFIXES):
+        return "external"
+    return None
 
 # Standard-library packages that should never produce import edges
 _JAVA_LANG_PACKAGES = frozenset({
@@ -110,6 +151,24 @@ class JvmWorkspaceIndex:
         files = pkg.exported_top_level.get(type_name)
         return files if files else ()
 
+    def files_for_member_fqn(self, fqn: str) -> tuple[str, ...]:
+        """Resolve an import whose tail is a *member*, not a type.
+
+        Kotlin member imports (``import okio.ByteString.Companion.encodeUtf8``)
+        and Java static-member imports (``import static com.foo.Bar.CONSTANT``)
+        name a function/constant inside a type. Strip trailing segments until
+        the prefix resolves as a type FQN — ``…ByteString.Companion.encodeUtf8``
+        → ``…ByteString.Companion`` → ``…ByteString`` (hit). At least
+        ``package.Type`` (two segments) must remain.
+        """
+        parts = fqn.split(".")
+        while len(parts) > 2:
+            parts = parts[:-1]
+            files = self.files_for_fqn(".".join(parts))
+            if files:
+                return files
+        return ()
+
     def wildcard_expand(self, pkg_fqn: str) -> tuple[str, ...]:
         """Expand ``import pkg.*`` → all files in the package."""
         return self.files_for_package(pkg_fqn)
@@ -160,15 +219,39 @@ def _scan_jvm_file(abs_path: str) -> tuple[str, tuple[str, ...]]:
         return "", ()
 
     package = ""
-    pkg_match = _PACKAGE_RE.search(text)
-    if pkg_match:
-        package = pkg_match.group(1)
+    if abs_path.endswith(".scala"):
+        package = _scala_package(text)
+    else:
+        pkg_match = _PACKAGE_RE.search(text)
+        if pkg_match:
+            package = pkg_match.group(1)
 
     types: list[str] = []
     for m in _TOP_LEVEL_TYPE_RE.finditer(text):
         types.append(m.group(1))
 
     return package, tuple(types)
+
+
+def _scala_package(text: str) -> str:
+    """Join chained Scala package clauses from the top of the file.
+
+    ``package org.example`` followed by ``package tools`` nests —
+    the file's package is ``org.example.tools``. Scanning stops at the
+    first non-package code line so a ``package`` token later in the file
+    (strings, comments mid-file) cannot append junk.
+    """
+    pkgs: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("//", "/*", "*")):
+            continue
+        m = _SCALA_PACKAGE_LINE_RE.match(stripped)
+        if m:
+            pkgs.append(m.group(1))
+            continue
+        break
+    return ".".join(pkgs)
 
 
 _JPMS_PROVIDES_RE = re.compile(
@@ -315,8 +398,8 @@ def build_jvm_workspace_index(ctx: "ResolverContext") -> JvmWorkspaceIndex:
     pkg_files: dict[str, list[str]] = {}
     pkg_types: dict[str, dict[str, list[str]]] = {}
 
-    for path in ctx.path_set:
-        if not (path.endswith(".java") or path.endswith(".kt")):
+    for path in ctx.sorted_paths:
+        if not path.endswith((".java", ".kt", ".scala")):
             continue
 
         abs_path = str((repo_path / path).resolve())

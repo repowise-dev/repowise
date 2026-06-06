@@ -5,6 +5,11 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="scala",
     display_name="Scala",
+    import_support="partial",
+    # ScalaTest/munit conventions: FooSpec/FooTest/FooSuite; sbt test roots.
+    test_camel_suffixes=("Spec", "Test", "Suite"),
+    test_dir_paths=("src/test/scala", "src/it/scala"),
+    entry_point_patterns=("Main.scala", "App.scala"),
     extensions=frozenset({".scala"}),
     grammar_package="tree_sitter_scala",
     scm_file="scala.scm",

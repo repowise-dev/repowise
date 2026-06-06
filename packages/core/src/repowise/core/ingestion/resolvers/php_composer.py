@@ -89,7 +89,7 @@ def resolve_via_psr4(module_path: str, ctx: "ResolverContext") -> str | None:
         # Also tolerate paths whose first segment differs (some repos vendor
         # the root differently). Probe by suffix as a forgiving fallback.
         suffix_probe = f"/{candidate}"
-        for p in ctx.path_set:
+        for p in ctx.sorted_paths:
             if p == candidate or p.endswith(suffix_probe):
                 return p
     return None

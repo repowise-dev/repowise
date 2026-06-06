@@ -124,3 +124,51 @@ class TestBuildIndex:
         first = get_or_build_go_index(ctx)
         second = get_or_build_go_index(ctx)
         assert first is second
+
+
+class TestPackageMainEntries:
+    def test_main_files_recorded_regardless_of_filename(self, tmp_path: Path) -> None:
+        # Go's entry convention is semantic (package main + func main), not
+        # filename-based — cmd/task/task.go is as much a binary as
+        # cmd/release/main.go.
+        _write(tmp_path, "cmd/task/task.go", "package main\n\nfunc main() {}\n")
+        _write(tmp_path, "cmd/release/main.go", "package main\n\nfunc main() {}\n")
+        # package main helper WITHOUT func main: never an entry.
+        _write(tmp_path, "cmd/task/helpers.go", "package main\n\nfunc run() {}\n")
+        # Library package with a func main-looking method: never an entry.
+        _write(tmp_path, "lib/lib.go", "package lib\n\nfunc main() {}\n")
+        paths = ["cmd/task/task.go", "cmd/release/main.go", "cmd/task/helpers.go", "lib/lib.go"]
+        ctx = _ctx(tmp_path, paths, go_modules=(("", "m"),))
+        index = build_go_package_index(ctx)
+        assert index.packages["cmd/task"].main_files == ("cmd/task/task.go",)
+        assert index.packages["cmd/release"].main_files == ("cmd/release/main.go",)
+        assert index.packages["lib"].main_files == ()
+
+    def test_warmup_stamps_entry_flag_on_main_files(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.graph_warmups import _warmup_go
+
+        _write(tmp_path, "cmd/task/task.go", "package main\n\nfunc main() {}\n")
+        _write(tmp_path, "lib/lib.go", "package lib\n")
+        paths = ["cmd/task/task.go", "lib/lib.go"]
+        ctx = _ctx(tmp_path, paths, go_modules=(("", "m"),))
+        for p in paths:
+            ctx.graph.add_node(p, node_type="file")
+        _warmup_go(ctx)
+        assert ctx.graph.nodes["cmd/task/task.go"].get("is_entry_point") is True
+        assert "is_entry_point" not in ctx.graph.nodes["lib/lib.go"]
+
+
+def test_warmup_stamps_parsed_file_info(tmp_path: Path) -> None:
+    # The exported KG's entry tags read FileInfo.is_entry_point, not the
+    # graph attr — the warmup must stamp both surfaces.
+    from types import SimpleNamespace
+
+    from repowise.core.ingestion.graph_warmups import _warmup_go
+
+    _write(tmp_path, "cmd/task/task.go", "package main\n\nfunc main() {}\n")
+    ctx = _ctx(tmp_path, ["cmd/task/task.go"], go_modules=(("", "m"),))
+    fi = SimpleNamespace(is_entry_point=False)
+    ctx.parsed_files = {"cmd/task/task.go": SimpleNamespace(file_info=fi)}
+    ctx.graph.add_node("cmd/task/task.go", node_type="file")
+    _warmup_go(ctx)
+    assert fi.is_entry_point is True

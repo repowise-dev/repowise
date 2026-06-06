@@ -165,7 +165,9 @@ class TestNamespaceMap:
     def test_build_namespace_map(self, tmp_path: Path) -> None:
         (tmp_path / "user.cs").write_text("namespace Domain.Users; class User {}")
         (tmp_path / "order.cs").write_text("namespace Domain.Orders; class Order {}")
-        ns_map, type_map = build_namespace_map([tmp_path / "user.cs", tmp_path / "order.cs"])
+        ns_map, type_map, _partials = build_namespace_map(
+            [tmp_path / "user.cs", tmp_path / "order.cs"]
+        )
         assert "Domain.Users" in ns_map
         assert "Domain.Orders" in ns_map
         # The type map surfaces the unqualified type name for each declared type.

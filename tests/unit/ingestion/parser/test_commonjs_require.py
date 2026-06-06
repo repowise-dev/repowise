@@ -43,3 +43,70 @@ def test_multi_declarator_require_keeps_both(parser: ASTParser) -> None:
 def test_var_require_is_extracted(parser: ASTParser) -> None:
     result = _parse(parser, "var svc = require('./svc');\n")
     assert any(i.module_path == "./svc" for i in result.imports)
+
+
+def test_module_exports_require_is_reexport_import(parser: ASTParser) -> None:
+    # express's exact root shape: module.exports = require('./lib/express')
+    result = _parse(parser, "'use strict';\nmodule.exports = require('./lib/express');\n")
+    imp = next(i for i in result.imports if i.module_path == "./lib/express")
+    assert imp.is_reexport is True
+    assert imp.imported_names == ["*"]
+
+
+def test_exports_property_require_is_reexport(parser: ASTParser) -> None:
+    result = _parse(parser, "exports.json = require('./json');\n")
+    imp = next(i for i in result.imports if i.module_path == "./json")
+    assert imp.is_reexport is True
+
+
+def test_module_exports_property_require_is_reexport(parser: ASTParser) -> None:
+    result = _parse(parser, "module.exports.Router = require('./router');\n")
+    imp = next(i for i in result.imports if i.module_path == "./router")
+    assert imp.is_reexport is True
+
+
+def test_object_assign_hub_keeps_every_require(parser: ASTParser) -> None:
+    result = _parse(
+        parser,
+        "Object.assign(module.exports, require('./a'), require('./b'));\n",
+    )
+    modules = sorted(i.module_path for i in result.imports)
+    assert modules == ["./a", "./b"]
+    assert all(i.is_reexport for i in result.imports)
+
+
+def test_object_assign_non_exports_target_imports_without_reexport(
+    parser: ASTParser,
+) -> None:
+    # Object.assign(app.locals, require('./defaults')) is a real dependency
+    # but not a re-export.
+    result = _parse(parser, "Object.assign(app.locals, require('./defaults'));\n")
+    imp = next(i for i in result.imports if i.module_path == "./defaults")
+    assert imp.is_reexport is False
+
+
+def test_member_assignment_require_imports_without_reexport(parser: ASTParser) -> None:
+    result = _parse(parser, "cache.store = require('./store');\n")
+    imp = next(i for i in result.imports if i.module_path == "./store")
+    assert imp.is_reexport is False
+
+
+def test_const_require_unaffected_by_cjs_statement_branch(parser: ASTParser) -> None:
+    result = _parse(parser, "const svc = require('./svc');\n")
+    imp = next(i for i in result.imports if i.module_path == "./svc")
+    assert imp.is_reexport is False
+    assert any(b.is_module_alias for b in imp.bindings)
+
+
+def test_typescript_cjs_reexport(parser: ASTParser) -> None:
+    result = _parse(parser, "module.exports = require('./impl');\n", language="typescript")
+    imp = next(i for i in result.imports if i.module_path == "./impl")
+    assert imp.is_reexport is True
+
+
+def test_member_pick_require_is_extracted(parser: ASTParser) -> None:
+    # express lib/*.js shape: var x = require('./utils').normalizeType —
+    # the member_expression wraps the call, so the bare-call declarator
+    # pattern never matched it.
+    result = _parse(parser, "var normalizeType = require('./utils').normalizeType;\n")
+    assert any(i.module_path == "./utils" for i in result.imports)

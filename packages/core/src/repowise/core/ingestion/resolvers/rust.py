@@ -29,8 +29,18 @@ def _get_frozen_parsed_keys(ctx: ResolverContext) -> frozenset[str]:
     return frozen
 
 
-def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
-    """Resolve a Rust ``use`` path to a repo-relative file."""
+def resolve_rust_import(
+    module_path: str,
+    importer_path: str,
+    ctx: ResolverContext,
+    *,
+    _reexport_depth: int = 0,
+) -> str | None:
+    """Resolve a Rust ``use`` path to a repo-relative file.
+
+    ``_reexport_depth`` caps ``pub use`` hop-following at one level —
+    re-export cycles between crate roots must not recurse.
+    """
     # Strip `as <alias>` suffix from aliased imports (e.g. "typst_syntax as syntax")
     if " as " in module_path:
         module_path = module_path.split(" as ")[0].strip()
@@ -59,7 +69,13 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
     # --- crate:: — resolve from the crate root ---
     if prefix == "crate":
         crate_root = _find_rust_crate_root(importer_path, ctx)
-        return _probe_rust_path(crate_root, parts[1:], frozen_path_set)
+        resolved = _probe_rust_path(crate_root, parts[1:], frozen_path_set)
+        if resolved is None and _reexport_depth == 0:
+            # `use crate::Type` where lib.rs re-exports Type (the prelude
+            # pattern `pub use crate::module::Type`) — follow one hop
+            # through the crate root's re-exports.
+            resolved = _follow_crate_root_reexport(crate_root, parts[1:], ctx)
+        return resolved
 
     # --- self:: — resolve from the current module's directory ---
     if prefix == "self":
@@ -113,6 +129,11 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
         sibling_src = ws_index.lookup(prefix)
         if sibling_src is not None and sibling_src != crate_root:
             resolved = _probe_rust_path(sibling_src, parts[1:], frozen_path_set)
+            if resolved is None and _reexport_depth == 0:
+                # `use crate_x::ReexportedName`: the name is no module file —
+                # follow one hop through the sibling crate root's `pub use`
+                # re-exports to the defining module.
+                resolved = _follow_crate_root_reexport(sibling_src, parts[1:], ctx)
             if resolved is None:
                 # Probe the crate root itself (lib.rs / main.rs) when the
                 # import has no further path segments.
@@ -125,6 +146,58 @@ def resolve_rust_import(module_path: str, importer_path: str, ctx: ResolverConte
 
     # External crate
     return ctx.add_external_node(module_path)
+
+
+def _follow_crate_root_reexport(
+    crate_src_dir: str, remaining_parts: list[str], ctx: ResolverContext
+) -> str | None:
+    """Follow ONE ``pub use`` hop through a crate root's re-exports.
+
+    ``lib.rs`` saying ``pub use crate::module::Type`` makes
+    ``use crate_x::Type`` (and within-crate ``use crate::Type``) legal —
+    but ``Type`` is no module file, so path probing fails. Match the
+    first unresolved segment against the crate root's re-exported names
+    and resolve that ``pub use``'s own module path instead. Depth is
+    capped at one hop: a chain of re-exporting hubs resolves to the next
+    hub, whose own ``pub use`` edges keep the graph connected.
+    """
+    if not remaining_parts:
+        return None
+    parsed_files = ctx.parsed_files or {}
+    root_path = None
+    for root_file in ("lib.rs", "main.rs"):
+        candidate = f"{crate_src_dir}/{root_file}" if crate_src_dir not in (".", "") else root_file
+        if candidate in parsed_files:
+            root_path = candidate
+            break
+    if root_path is None:
+        return None
+
+    name = remaining_parts[0]
+    for imp in getattr(parsed_files[root_path], "imports", []) or []:
+        if not getattr(imp, "is_reexport", False):
+            continue
+        mp = imp.module_path.split(" as ")[0].strip()
+        segments = mp.split("::")
+        last = segments[-1]
+        names = list(getattr(imp, "imported_names", []) or [])
+        if last.startswith("{"):
+            # Brace group: `pub use crate::module::{A, B}` — the extractor
+            # carries the selected names.
+            if name not in names:
+                continue
+            target_mp = "::".join([*segments[:-1], name])
+        elif last == "*":
+            # Glob re-export: `pub use crate::module::*` — resolve the module.
+            target_mp = "::".join(segments[:-1])
+        elif last == name or name in names:
+            target_mp = mp
+        else:
+            continue
+        resolved = resolve_rust_import(target_mp, root_path, ctx, _reexport_depth=1)
+        if resolved is not None and not resolved.startswith("external:"):
+            return resolved
+    return None
 
 
 @lru_cache(maxsize=4096)

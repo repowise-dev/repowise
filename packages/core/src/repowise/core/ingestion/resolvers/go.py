@@ -71,7 +71,7 @@ def resolve_go_import(module_path: str, importer_path: str, ctx: ResolverContext
                 rel_dir = f"{module_dir}/{suffix}"
             else:
                 rel_dir = module_dir or suffix
-            for p in ctx.path_set:
+            for p in ctx.sorted_paths:
                 if p.endswith(".go"):
                     p_dir = str(Path(p).parent.as_posix())
                     if p_dir == rel_dir or (rel_dir and p_dir.endswith(f"/{rel_dir}")):
@@ -89,7 +89,7 @@ def resolve_go_import(module_path: str, importer_path: str, ctx: ResolverContext
     # ``go_modules`` was not populated (e.g. tests building a context manually).
     if not ctx.go_modules and ctx.go_module_path and module_path.startswith(ctx.go_module_path):
         suffix = module_path[len(ctx.go_module_path) :].lstrip("/")
-        for p in ctx.path_set:
+        for p in ctx.sorted_paths:
             if p.endswith(".go"):
                 p_dir = str(Path(p).parent.as_posix())
                 if p_dir == suffix or p_dir.endswith(f"/{suffix}"):

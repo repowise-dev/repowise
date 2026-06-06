@@ -5,6 +5,11 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="go",
     display_name="Go",
+    import_support="full",
+    test_stem_suffixes=("_test",),
+    # golang-standards layout: internal/ and pkg/ hold application-internal
+    # and exported library code (cmd/ → CLI is already a generic token).
+    layer_dir_hints=(("internal", "Service"), ("pkg", "Service")),
     extensions=frozenset({".go"}),
     grammar_package="tree_sitter_go",
     scm_file="go.scm",

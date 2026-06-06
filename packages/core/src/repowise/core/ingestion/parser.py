@@ -56,6 +56,7 @@ from .models import (
     TypeReference,
 )
 from .parser_helpers import (
+    TYPE_HEAD_EXTRACTORS,
     _build_qualified_name,
     _classify_param_origin,
     _collect_error_nodes,
@@ -66,7 +67,6 @@ from .parser_helpers import (
     _is_async_node,
     _qualified_cpp_parent,
     _run_query,
-    TYPE_HEAD_EXTRACTORS,
 )
 
 log = structlog.get_logger(__name__)
@@ -234,10 +234,15 @@ class ASTParser:
                     language=lang,
                     path=file_info.path,
                 )
+            # Languages without a grammar may still carry regex-tier import
+            # extraction (their specs declare import_support="partial");
+            # symbols stay empty — the regex tier claims no symbol knowledge.
+            from .lightweight_imports import extract_lightweight_imports
+
             return ParsedFile(
                 file_info=file_info,
                 symbols=[],
-                imports=[],
+                imports=extract_lightweight_imports(file_info, source),
                 exports=[],
                 docstring=None,
                 parse_errors=[],
@@ -529,6 +534,67 @@ class ASTParser:
             if not module_text:
                 continue
 
+            # Scala: the query's ``(identifier)`` capture is only the FIRST
+            # path segment (``import com.foo.Bar`` arrived as ``com``), and
+            # one declaration can hold several clauses, brace selectors,
+            # renames, and wildcards. Reconstruct full dotted paths and emit
+            # one Import per selected name.
+            if file_info.language == "scala" and stmt_node.type == "import_declaration":
+                from .extractors.bindings.scala import expand_scala_import_clauses
+                from .models import NamedBinding
+
+                for clause_path, clause_names in expand_scala_import_clauses(stmt_node, src):
+                    local = clause_names[0]
+                    exported = None if local == "*" else clause_path.rsplit(".", 1)[-1]
+                    imports.append(
+                        Import(
+                            raw_statement=raw,
+                            module_path=clause_path,
+                            imported_names=clause_names,
+                            is_relative=False,
+                            resolved_file=None,
+                            bindings=[
+                                NamedBinding(
+                                    local_name=local,
+                                    exported_name=exported,
+                                    source_file=None,
+                                )
+                            ],
+                            is_reexport=False,
+                        )
+                    )
+                continue
+
+            # CommonJS assignment / Object.assign shapes: the query captures
+            # the outer statement once; walk it for every require() it
+            # contains (a hub like Object.assign(module.exports,
+            # require('./a'), require('./b')) is several imports) and mark
+            # module.exports/exports shapes as re-exports so barrel logic
+            # treats CJS hubs like ESM barrels.
+            if file_info.language in ("javascript", "typescript") and stmt_node.type in (
+                "assignment_expression",
+                "call_expression",
+            ):
+                from .extractors.bindings.ts_js import (
+                    cjs_statement_is_reexport,
+                    collect_cjs_requires,
+                )
+
+                cjs_reexport = cjs_statement_is_reexport(stmt_node, src)
+                for cjs_module in collect_cjs_requires(stmt_node, src):
+                    imports.append(
+                        Import(
+                            raw_statement=raw,
+                            module_path=cjs_module,
+                            imported_names=["*"] if cjs_reexport else [],
+                            is_relative=cjs_module.startswith("."),
+                            resolved_file=None,
+                            bindings=[],
+                            is_reexport=cjs_reexport,
+                        )
+                    )
+                continue
+
             # Rust #[path = "..."] attribute overrides module file location.
             # In tree-sitter-rust, outer attributes are preceding siblings of
             # the item, not children.
@@ -549,6 +615,16 @@ class ASTParser:
                                 k -= 1
                             break
 
+            # JVM wildcard imports: the grammar query captures the scoped
+            # identifier only — the trailing ``*`` is a sibling node, so
+            # ``import com.foo.*`` arrives as ``com.foo`` and the resolvers'
+            # package fan-out branch can never fire. Restore it from the
+            # raw statement text.
+            if file_info.language in ("java", "kotlin") and not module_text.endswith("*"):
+                stmt_text = raw.rstrip().rstrip(";").rstrip()
+                if stmt_text.endswith(".*"):
+                    module_text += ".*"
+
             # Language-specific import name + binding extraction
             imported_names, bindings = extract_import_bindings(stmt_node, src, file_info.language)
             is_relative = (
@@ -562,6 +638,10 @@ class ASTParser:
                     if child.type == "visibility_modifier":
                         is_reexport = True
                         break
+            # Swift: ``@_exported import FooKit`` re-exports the module —
+            # importers of THIS module see FooKit's symbols too.
+            elif file_info.language == "swift" and raw.startswith("@_exported"):
+                is_reexport = True
 
             imports.append(
                 Import(

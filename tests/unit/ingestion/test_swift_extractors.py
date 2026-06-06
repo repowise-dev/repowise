@@ -79,3 +79,12 @@ extension Foo: A, B {}
         rels = {(r.child_name, r.parent_name) for r in result.heritage}
         assert ("Foo", "A") in rels
         assert ("Foo", "B") in rels
+
+
+class TestSwiftExportedImport:
+    def test_exported_import_is_reexport(self, parser: ASTParser) -> None:
+        src = b"@_exported import FooKit\nimport Foundation\n"
+        result = parser.parse_file(_file(), src)
+        by_module = {i.module_path: i for i in result.imports}
+        assert by_module["FooKit"].is_reexport is True
+        assert by_module["Foundation"].is_reexport is False

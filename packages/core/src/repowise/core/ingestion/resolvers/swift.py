@@ -25,7 +25,7 @@ def resolve_swift_import(module_path: str, importer_path: str, ctx: ResolverCont
         return result
 
     # Look for directory matching module name
-    for p in ctx.path_set:
+    for p in ctx.sorted_paths:
         if p.endswith(".swift"):
             parent_name = PurePosixPath(p).parent.name.lower()
             if parent_name == module_path.lower():

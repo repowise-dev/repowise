@@ -17,7 +17,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from .jvm_gradle import resolve_via_jvm_gradle_index
-from .jvm_workspace import get_or_build_jvm_index
+from .jvm_workspace import classify_jvm_import, get_or_build_jvm_index
 
 if TYPE_CHECKING:
     from .context import ResolverContext
@@ -49,8 +49,9 @@ def resolve_java_import_all(
 
     jvm_index = get_or_build_jvm_index(ctx)
 
-    # Filter java.lang.* builtins
-    if jvm_index.is_java_lang(module_path):
+    # Filter JDK namespaces (java./javax./jdk.) and bare java.lang types
+    namespace_class = classify_jvm_import(module_path)
+    if namespace_class == "stdlib" or jvm_index.is_java_lang(module_path):
         return ()
 
     parts = module_path.split(".")
@@ -63,16 +64,22 @@ def resolve_java_import_all(
         files = jvm_index.wildcard_expand(pkg_fqn)
         if files:
             return files
+        # ``import static com.foo.Bar.*`` — the prefix is a type, not a
+        # package: resolve the declaring file(s) of Bar.
+        files = jvm_index.files_for_fqn(pkg_fqn) or jvm_index.files_for_member_fqn(pkg_fqn)
+        if files:
+            return files
         # External package
         return (ctx.add_external_node(module_path),)
 
-    # Handle static wildcard: import static com.foo.Bar.*
-    # (parsed as "com.foo.Bar.*" by the import extractor, or
-    # the static keyword is stripped leaving "com.foo.Bar")
-    # Also handles: import static com.foo.Bar.CONSTANT → resolve Bar
-
     # Try direct FQN resolution first
     files = jvm_index.files_for_fqn(module_path)
+    if files:
+        return files
+
+    # Static member imports: ``import static com.foo.Bar.CONSTANT`` names
+    # a member inside a type — resolve the declaring type instead.
+    files = jvm_index.files_for_member_fqn(module_path)
     if files:
         return files
 
@@ -80,6 +87,12 @@ def resolve_java_import_all(
     gradle_match = resolve_via_jvm_gradle_index(module_path, ctx)
     if gradle_match is not None:
         return (gradle_match,)
+
+    # Known-external namespaces (e.g. jakarta.) — exact lookups above get
+    # first refusal (the repo may BE that library), but the fuzzy stem /
+    # directory fallbacks below must not false-match a local file.
+    if namespace_class == "external":
+        return (ctx.add_external_node(module_path),)
 
     # Try stem lookup (class name)
     local = parts[-1]
@@ -90,7 +103,7 @@ def resolve_java_import_all(
     # Try matching package path as directory structure
     if len(parts) > 1:
         dir_suffix = "/".join(parts[:-1])
-        for p in ctx.path_set:
+        for p in ctx.sorted_paths:
             if (p.endswith(".java") or p.endswith(".kt")) and dir_suffix in p:
                 stem = PurePosixPath(p).stem
                 if stem.lower() == local.lower():

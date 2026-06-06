@@ -150,13 +150,19 @@ _MANIFEST_FILES: frozenset[str] = frozenset(
     {"pyproject.toml", "package.json", "Cargo.toml", "go.mod"}
 )
 
-# Entry-point filename stems
-_ENTRY_POINT_STEMS: frozenset[str] = frozenset(
-    {"main", "index", "app", "run", "server", "start", "wsgi", "asgi"}
+# Entry-point evidence, all registry-derived: exact filenames (Main.kt,
+# config.ru), "*"-prefixed filename suffixes (OTP's <name>_app.erl), and
+# the flag-stem set. The historical
+# extra {run.py, server.py} patterns were dropped — the run/server stems
+# already cover them.
+_ENTRY_POINT_STEMS: frozenset[str] = _LANG_REGISTRY.entry_flag_stems()
+
+_ENTRY_POINT_NAMES: frozenset[str] = frozenset(
+    p for p in _LANG_REGISTRY.entry_point_names() if not p.startswith("*")
 )
 
-_ENTRY_POINT_NAMES: frozenset[str] = _LANG_REGISTRY.entry_point_names() | frozenset(
-    {"run.py", "server.py"}  # extra traverser-specific patterns not in language specs
+_ENTRY_POINT_NAME_SUFFIXES: tuple[str, ...] = tuple(
+    sorted(p[1:] for p in _LANG_REGISTRY.entry_point_names() if p.startswith("*"))
 )
 
 # Default file-size limit
@@ -466,7 +472,11 @@ class FileTraverser:
             is_test=_is_test_file(rel_str, filename),
             is_config=_is_config_file(language),
             is_api_contract=_is_api_contract(abs_path, language),
-            is_entry_point=filename in _ENTRY_POINT_NAMES or _stem_is_entry_point(abs_path),
+            is_entry_point=(
+                filename in _ENTRY_POINT_NAMES
+                or filename.endswith(_ENTRY_POINT_NAME_SUFFIXES)
+                or _stem_is_entry_point(abs_path)
+            ),
         )
 
     # ------------------------------------------------------------------

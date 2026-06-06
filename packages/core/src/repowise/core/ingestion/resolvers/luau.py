@@ -7,16 +7,16 @@ Luau's ``require(...)`` accepts four kinds of argument:
 2. Relative instance paths — ``require(script.Parent.Foo)``,
    ``require(script.Foo)``, or the Rojo-safe variant
    ``require(script.Parent:WaitForChild("Foo"))``.
-3. Absolute Roblox instance paths — ``require(game.ReplicatedStorage.Foo)``,
-   where the leading service is resolved against a Rojo project's ``tree``
-   mapping in ``default.project.json``.
+3. Absolute Roblox instance paths — ``require(game.ReplicatedStorage.Foo)``
+   (also the ``game:GetService("ReplicatedStorage")`` idiom), resolved
+   against a Rojo project's ``tree`` mapping in ``default.project.json``.
 4. ``.luaurc``-aliased requires — ``require("@dep")``, resolved by reading
-   ``.luaurc`` files along the directory hierarchy for an ``aliases`` map.
+   ``.luaurc`` files along the directory hierarchy for an ``aliases`` map
+   (nearest declaration wins, child overrides parent).
 
-This resolver handles (1) and (2).  (3) requires a Rojo ``default.project.json``
-reader layered in via ``core/ingestion/dynamic_hints/rojo.py``; (4) requires a
-``.luaurc`` reader analogous to the tsconfig resolver.  Both are deferred to
-follow-ups — see the xfail tests in ``test_luau_resolver.py``.
+All four are handled here; (3) and (4) via the readers in
+:mod:`.luau_config`. Repos without a ``default.project.json`` /
+``.luaurc`` keep the external-node fallback.
 
 Unresolved paths are intentionally *not* silently matched by filename — a
 wrong edge is worse than no edge when the downstream graph feeds docs and
@@ -47,6 +47,11 @@ _SCRIPT_RELATIVE = re.compile(r"^\s*script\s*((?:\.\s*\w+\s*)+)\s*$")
 # `game.<Service>.<Path>...` — capture the service and the remainder.
 _GAME_ABSOLUTE = re.compile(r"^\s*game\s*\.\s*(\w+)\s*((?:\.\s*\w+\s*)*)$")
 
+# `game:GetService("ReplicatedStorage")` — semantically identical to
+# `game.ReplicatedStorage` for module lookup; normalized to the dot form so
+# one regex handles both.
+_GET_SERVICE_CALL = re.compile(r'^(\s*game)\s*:\s*GetService\s*\(\s*["\'](\w+)["\']\s*\)')
+
 # Roblox name-lookup method calls: `:WaitForChild("Foo")` / `:FindFirstChild("Foo")`.
 # These are the race-safe idioms actual Rojo code uses in place of the bare
 # `.Foo` field access — on OSRPS they account for ~93% of all `require(...)`
@@ -71,6 +76,7 @@ def _normalize_instance_methods(arg: str) -> str:
     front keeps a single regex for both shapes and avoids duplicating the
     path-walking logic in ``_resolve_script_relative``.
     """
+    arg = _GET_SERVICE_CALL.sub(lambda m: f"{m.group(1)}.{m.group(2)}", arg)
     return _INSTANCE_METHOD_CALL.sub(lambda m: f".{m.group(1)}", arg)
 
 
@@ -103,14 +109,30 @@ def resolve_luau_import(
             return resolved
         return ctx.add_external_node(raw)
 
-    # Absolute instance path: game.<Service>.Path...
-    # Full Rojo-tree resolution is deferred to the Rojo follow-up; fall through
-    # to an external node so the graph still records the reference.
-    if _GAME_ABSOLUTE.match(arg):
+    # Absolute instance path: game.<Service>.Path... — resolved through the
+    # Rojo project tree (default.project.json). No project file (or an
+    # unmapped instance path) falls through to an external node so the
+    # graph still records the reference.
+    gm = _GAME_ABSOLUTE.match(arg)
+    if gm:
+        from .luau_config import resolve_game_path
+
+        segments = [gm.group(1)] + [
+            p.strip() for p in gm.group(2).split(".") if p.strip()
+        ]
+        resolved = resolve_game_path(segments, ctx)
+        if resolved is not None:
+            return resolved
         return ctx.add_external_node(raw)
 
-    # `.luaurc` alias: require("@dep").  Needs a luaurc reader; deferred.
+    # `.luaurc` alias: require("@dep/...") — nearest .luaurc declaring the
+    # alias wins, child overrides parent.
     if raw.startswith("@"):
+        from .luau_config import resolve_luaurc_alias
+
+        resolved = resolve_luaurc_alias(raw, importer_path, ctx)
+        if resolved is not None:
+            return resolved
         return ctx.add_external_node(raw)
 
     # Everything else is a string-literal path.  The parser has already
@@ -171,6 +193,14 @@ def _resolve_script_relative(
 
     remainder = parts[i:]
     if not remainder:
+        # Bare ``require(script.Parent)`` — the container itself is the
+        # module. Rojo: a directory holding ``init.luau``/``init.lua`` IS
+        # that module instance, and its children (e.g. ``init.spec.lua``)
+        # require it this way.
+        for suffix in _LUAU_SUFFIXES:
+            candidate = (here / f"init{suffix}").as_posix()
+            if candidate in ctx.path_set and candidate != importer_path:
+                return candidate
         return None
 
     base = here

@@ -108,7 +108,7 @@ def resolve_via_swift_targets(module_path: str, ctx: "ResolverContext") -> str |
         return None
     # Pick any .swift file under that dir; prefer one whose stem matches.
     target_prefix = target_dir.rstrip("/") + "/"
-    matches = [p for p in ctx.path_set if p.endswith(".swift") and p.startswith(target_prefix)]
+    matches = [p for p in ctx.sorted_paths if p.endswith(".swift") and p.startswith(target_prefix)]
     if not matches:
         # Module imported by name but no source files indexed yet (target may
         # be excluded). Treat as unresolved; caller falls back further.

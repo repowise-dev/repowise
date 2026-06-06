@@ -302,6 +302,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.kotlin import resolve_kotlin_import_all
 
                     targets = resolve_kotlin_import_all(imp.module_path, path, ctx)
+                elif _lang == "scala":
+                    from ..resolvers.scala import resolve_scala_import_all
+
+                    targets = resolve_scala_import_all(imp.module_path, path, ctx)
                 elif _lang in ("cpp", "c"):
                     # Fan-out across sibling TUs in the same CMake/Bazel
                     # target so a public header reached by one ``.cc`` is
@@ -374,6 +378,44 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # to T's defining file. Cuts the largest single bucket of C#
         # unused_export false positives (audit #23).
         self._resolve_member_reads(progress=progress)
+
+        # --- Ruby rspec directory-mirror edges ---
+        # Spec files carry no requires (rspec wires the helper + subject
+        # at runtime); the spec/ <-> lib/ mirror convention links them.
+        self._resolve_ruby_spec_mirrors(progress=progress)
+
+        # --- C/C++ header ↔ implementation pairing ---
+        # foo.h -> foo.c (same stem, same dir): consumers including the
+        # header must be able to reach the implementation.
+        self._resolve_cpp_header_pairs(progress=progress)
+
+        # --- C# partial-class co-fragments ---
+        # Fragments of one partial type across files are literally one
+        # class; link them bidirectionally so neither reads as orphaned.
+        self._resolve_csharp_partials(ctx, progress=progress)
+
+        # --- JVM same-package implicit references ---
+        # Java/Kotlin (and Scala) reference same-package types without an
+        # import statement; emit conservative sibling edges so cohesive
+        # packages don't read as disconnected files.
+        self._resolve_jvm_same_package(ctx, progress=progress)
+
+        # --- C# same-namespace + global-using implicit references ---
+        # C# references same-namespace types with no using directive, and
+        # global usings make namespaces visible project-wide; emit
+        # conservative sibling edges so neither reads as orphaned.
+        self._resolve_csharp_same_namespace(ctx, progress=progress)
+
+        # --- Swift intra-module type references ---
+        # Swift files see same-target siblings with no import statement;
+        # emit conservative type-reference edges per SPM target.
+        self._resolve_swift_same_module(ctx, progress=progress)
+
+        # --- F# fsproj compile-order spine ---
+        # fsproj <Compile Include> order is a real dependency constraint
+        # (files may only reference earlier files); adjacent pairs keep
+        # open-light projects connected.
+        self._resolve_fsharp_compile_order(ctx, progress=progress)
 
         # --- Phase 2: Resolve heritage (extends/implements) ---
         self._resolve_heritage(import_targets, progress=progress)

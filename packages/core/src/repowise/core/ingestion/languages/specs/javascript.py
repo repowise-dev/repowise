@@ -5,6 +5,8 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="javascript",
     display_name="JavaScript",
+    import_support="full",
+    test_infixes=(".test.", ".spec."),
     extensions=frozenset({".js", ".jsx", ".mjs", ".cjs"}),
     grammar_package="tree_sitter_javascript",
     scm_file="javascript.scm",

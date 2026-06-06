@@ -41,6 +41,7 @@ class GoPackage:
     files: tuple[str, ...]  # repo-relative POSIX ``.go`` paths, sorted
     build_constrained: bool = False  # any file carries //go:build or // +build
     has_init: bool = False  # any file declares a top-level ``func init``
+    main_files: tuple[str, ...] = ()  # ``package main`` files declaring ``func main``
     # name → defining file(s) within this package. Deferred to Phase 3
     # (call/type-ref resolution) — left empty here to keep the warmup pure
     # and dependency-light. See GO_PARITY_PLAN.md Phase 3.
@@ -81,17 +82,19 @@ class GoPackageIndex:
 _BUILD_TAG_PREFIXES = ("//go:build", "// +build", "//+build")
 
 
-def _scan_go_file(text: str) -> tuple[str, bool, bool, bool]:
-    """Return ``(pkg_name, is_main, build_constrained, has_init)``.
+def _scan_go_file(text: str) -> tuple[str, bool, bool, bool, bool]:
+    """Return ``(pkg_name, is_main, build_constrained, has_init, has_main_func)``.
 
     Reads only what's needed to characterise the file: the ``package``
     clause, whether a build constraint is present (must appear before the
     package clause, in the leading comment block), and whether a top-level
-    ``func init()`` is declared. Cheap line scan — no tree-sitter.
+    ``func init()`` / ``func main()`` is declared. Cheap line scan — no
+    tree-sitter.
     """
     pkg_name = ""
     build_constrained = False
     has_init = False
+    has_main_func = False
     seen_package = False
     for raw in text.splitlines():
         line = raw.strip()
@@ -107,7 +110,12 @@ def _scan_go_file(text: str) -> tuple[str, bool, bool, bool]:
         # Top-level ``func init()`` — no receiver, exact name.
         if seen_package and line.startswith("func init(") and "init()" in line.replace(" ", ""):
             has_init = True
-    return pkg_name, pkg_name == "main", build_constrained, has_init
+        # Top-level ``func main()`` — the program entry when the file is
+        # ``package main``. Filename is irrelevant to Go (cmd/task/task.go
+        # is as much an entry as cmd/release/main.go).
+        if seen_package and line.startswith("func main(") and "main()" in line.replace(" ", ""):
+            has_main_func = True
+    return pkg_name, pkg_name == "main", build_constrained, has_init, has_main_func
 
 
 def _read_text(ctx: "ResolverContext", rel_path: str) -> str:
@@ -157,7 +165,7 @@ def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
         go_modules = (("", ctx.go_module_path),)
 
     files_by_dir: dict[str, list[str]] = {}
-    for path in ctx.path_set:
+    for path in ctx.sorted_paths:
         if not path.endswith(".go"):
             continue
         parent = PurePosixPath(path).parent.as_posix()
@@ -172,8 +180,9 @@ def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
         is_main = False
         build_constrained = False
         has_init = False
+        main_files: list[str] = []
         for f in files:
-            name, file_main, file_bc, file_init = _scan_go_file(_read_text(ctx, f))
+            name, file_main, file_bc, file_init, file_main_func = _scan_go_file(_read_text(ctx, f))
             # First non-empty package name wins (sibling files agree by
             # Go rule, except for the ``_test`` external-test package).
             if name and not pkg_name:
@@ -181,6 +190,8 @@ def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
             is_main = is_main or file_main
             build_constrained = build_constrained or file_bc
             has_init = has_init or file_init
+            if file_main and file_main_func:
+                main_files.append(f)
         index.packages[pkg_dir] = GoPackage(
             dir=pkg_dir,
             pkg_name=pkg_name,
@@ -188,6 +199,7 @@ def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
             files=tuple(files),
             build_constrained=build_constrained,
             has_init=has_init,
+            main_files=tuple(main_files),
         )
         import_path = _import_path_for_dir(pkg_dir, go_modules)
         if import_path is not None:

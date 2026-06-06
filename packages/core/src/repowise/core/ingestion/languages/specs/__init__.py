@@ -11,6 +11,7 @@ extension-to-language map is built first-spec-wins, so order is significant
 from __future__ import annotations
 
 from ..spec import LanguageSpec
+from .asciidoc import SPEC as _ASCIIDOC
 from .c import SPEC as _C
 from .clojure import SPEC as _CLOJURE
 from .cpp import SPEC as _CPP
@@ -94,6 +95,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _DOCKERFILE,
     _MAKEFILE,
     _MARKDOWN,
+    _ASCIIDOC,
     _SQL,
     _OPENAPI,
     # XAML / AXAML markup for WPF, WinUI 3, UWP, MAUI, Avalonia, Uno.

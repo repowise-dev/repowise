@@ -192,7 +192,11 @@ def resolve_cpp_import_all(
         # single-header library can otherwise pull in dozens of TUs and
         # blow up the import-edge count. Cap at the target's first 32
         # sources (stable order) which is enough for the rescue effect.
-        for src in t.sources[:32]:
+        # Header-only targets (fmt-like: public headers, zero sources)
+        # fan out across the target's other headers instead — otherwise
+        # one included header leaves the rest of the library orphaned.
+        pool = t.sources or (t.public_headers + t.private_headers)
+        for src in pool[:32]:
             if src in seen:
                 continue
             seen.add(src)

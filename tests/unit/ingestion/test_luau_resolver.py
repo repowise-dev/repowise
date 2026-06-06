@@ -4,9 +4,9 @@ Covers the two resolution modes implemented in this PR:
 
 - String-literal requires (``require("relative/path")``)
 - ``script`` / ``script.Parent`` relative instance paths
-
-The ``game.<Service>.Path`` absolute form requires Rojo project JSON and is
-explicitly deferred to a follow-up (issue #52); see the xfail case.
+- ``game.<Service>.Path`` absolute instance paths via Rojo
+  ``default.project.json`` (issue #52)
+- ``@alias`` requires via ``.luaurc`` aliases (issue #52)
 
 Parser contract
 ---------------
@@ -21,7 +21,6 @@ production handoff.
 from __future__ import annotations
 
 import networkx as nx
-import pytest
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.luau import resolve_luau_import
@@ -137,48 +136,180 @@ class TestStringLiteral:
         got = resolve_luau_import("nowhere", "src/a.luau", ctx)
         assert got == "external:nowhere"
 
-    def test_luaurc_alias_is_external_until_follow_up(self) -> None:
-        # `.luaurc` `@alias` resolution is deferred — see
-        # TestLuaurcAlias.test_alias_resolves_via_luaurc_follow_up.
+    def test_alias_without_luaurc_is_external(self) -> None:
+        # No .luaurc anywhere (no repo_path at all here) → the alias keeps
+        # the external-node fallback instead of guessing a file.
         ctx = _ctx({"src/dependency.luau"})
         got = resolve_luau_import("@dep", "src/main.luau", ctx)
         assert got == "external:@dep"
 
 
+def _repo_ctx(tmp_path, paths: set[str], files: dict[str, str]) -> ResolverContext:
+    """Context with a real repo dir holding config *files* (Rojo/.luaurc)."""
+    for rel, text in files.items():
+        full = tmp_path / rel
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(text)
+    ctx = _ctx(paths)
+    ctx.repo_path = tmp_path
+    return ctx
+
+
 class TestAbsoluteInstancePath:
-    @pytest.mark.xfail(
-        reason="Rojo default.project.json-aware resolution — issue #52 follow-up.",
-        strict=True,
-    )
-    def test_game_replicated_storage_resolves_via_rojo_tree(self) -> None:
-        """Expected end state: given a Rojo project whose tree maps
-        ``ReplicatedStorage.Shared`` to ``src/shared``, a require of
-        ``game.ReplicatedStorage.Shared.Util`` resolves to
-        ``src/shared/Util.luau``.
+    def test_game_replicated_storage_resolves_via_rojo_tree(self, tmp_path) -> None:
+        """Given a Rojo project whose tree maps ``ReplicatedStorage.Shared``
+        to ``src/shared``, ``game.ReplicatedStorage.Shared.Util`` resolves to
+        ``src/shared/Util.luau`` (issue #52).
         """
-        ctx = _ctx({"src/shared/Util.luau"})
-        got = resolve_luau_import("game.ReplicatedStorage.Shared.Util", "src/client/main.luau", ctx)
+        project = """{
+  "name": "MyGame",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": { "$path": "src/shared" }
+    }
+  }
+}"""
+        ctx = _repo_ctx(
+            tmp_path, {"src/shared/Util.luau"}, {"default.project.json": project}
+        )
+        got = resolve_luau_import(
+            "game.ReplicatedStorage.Shared.Util", "src/client/main.luau", ctx
+        )
         assert got == "src/shared/Util.luau"
+
+    def test_get_service_idiom_resolves(self, tmp_path) -> None:
+        project = """{
+  "tree": {
+    "ReplicatedStorage": { "Shared": { "$path": "src/shared" } }
+  }
+}"""
+        ctx = _repo_ctx(
+            tmp_path, {"src/shared/Util.luau"}, {"default.project.json": project}
+        )
+        got = resolve_luau_import(
+            'game:GetService("ReplicatedStorage").Shared.Util',
+            "src/client/main.luau",
+            ctx,
+        )
+        assert got == "src/shared/Util.luau"
+
+    def test_nested_tree_and_module_directory(self, tmp_path) -> None:
+        # Deeper instance nesting + module-as-directory (init.luau).
+        project = """{
+  "tree": {
+    "ServerScriptService": {
+      "Server": {
+        "Systems": { "$path": "src/server/systems" }
+      }
+    }
+  }
+}"""
+        ctx = _repo_ctx(
+            tmp_path,
+            {"src/server/systems/Combat/init.luau"},
+            {"default.project.json": project},
+        )
+        got = resolve_luau_import(
+            "game.ServerScriptService.Server.Systems.Combat", "src/main.luau", ctx
+        )
+        assert got == "src/server/systems/Combat/init.luau"
+
+    def test_missing_project_file_falls_back_to_external(self, tmp_path) -> None:
+        # Current behavior preserved: no default.project.json → external node.
+        ctx = _repo_ctx(tmp_path, {"src/shared/Util.luau"}, {})
+        got = resolve_luau_import(
+            "game.ReplicatedStorage.Shared.Util", "src/client/main.luau", ctx
+        )
+        assert got == "external:game.ReplicatedStorage.Shared.Util"
+
+    def test_unmapped_instance_path_goes_external(self, tmp_path) -> None:
+        project = '{ "tree": { "ReplicatedStorage": { "$path": "src/shared" } } }'
+        ctx = _repo_ctx(
+            tmp_path, {"src/shared/Util.luau"}, {"default.project.json": project}
+        )
+        got = resolve_luau_import("game.Workspace.Thing", "src/main.luau", ctx)
+        assert got == "external:game.Workspace.Thing"
 
 
 class TestLuaurcAlias:
-    @pytest.mark.xfail(
-        reason=".luaurc alias-aware resolution — second Luau follow-up, parallel to Rojo.",
-        strict=True,
-    )
-    def test_alias_resolves_via_luaurc_follow_up(self) -> None:
-        """Expected end state: given a ``.luaurc`` alongside the importer
-        declaring ``{"aliases": {"dep": "./dependency"}}``, a require of
-        ``@dep`` resolves to ``src/dependency.luau``.
-
-        Counts from running `repowise init` against the upstream
-        luau-lang/luau repo: 24 `@alias` requires — every one of them
-        currently lands on the external-node fallback.  Implementing this
-        needs a ``.luaurc`` reader layered in via
-        ``core/ingestion/dynamic_hints/luaurc.py`` (analogous to the Rojo
-        reader), with lookup walking parent directories and child
-        ``.luaurc`` files overriding parent aliases.
+    def test_alias_resolves_via_luaurc(self, tmp_path) -> None:
+        """A ``.luaurc`` above the importer declaring
+        ``{"aliases": {"dep": "./dependency"}}`` makes ``@dep`` resolve to
+        ``src/dependency.luau`` (issue #52's second half — on
+        luau-lang/luau, 24 ``@alias`` requires previously all landed on the
+        external-node fallback).
         """
-        ctx = _ctx({"src/dependency.luau"})
+        ctx = _repo_ctx(
+            tmp_path,
+            {"src/dependency.luau"},
+            {"src/.luaurc": '{"aliases": {"dep": "./dependency"}}'},
+        )
         got = resolve_luau_import("@dep", "src/main.luau", ctx)
         assert got == "src/dependency.luau"
+
+    def test_alias_subpath_and_comments(self, tmp_path) -> None:
+        luaurc = """{
+  // shared code lives here
+  "aliases": { "shared": "./shared" }
+}"""
+        ctx = _repo_ctx(
+            tmp_path,
+            {"src/shared/util/Signal.luau"},
+            {"src/.luaurc": luaurc},
+        )
+        got = resolve_luau_import("@shared/util/Signal", "src/client/main.luau", ctx)
+        assert got == "src/shared/util/Signal.luau"
+
+    def test_child_luaurc_overrides_parent(self, tmp_path) -> None:
+        # Parent maps @dep to ./a, the importer's own dir remaps it to ./b —
+        # the nearest declaration wins.
+        ctx = _repo_ctx(
+            tmp_path,
+            {"a.luau", "src/b.luau"},
+            {
+                ".luaurc": '{"aliases": {"dep": "./a"}}',
+                "src/.luaurc": '{"aliases": {"dep": "./b"}}',
+            },
+        )
+        got = resolve_luau_import("@dep", "src/main.luau", ctx)
+        assert got == "src/b.luau"
+
+    def test_parent_alias_visible_from_subdir(self, tmp_path) -> None:
+        ctx = _repo_ctx(
+            tmp_path,
+            {"libs/dep/init.luau"},
+            {".luaurc": '{"aliases": {"dep": "./libs/dep"}}'},
+        )
+        got = resolve_luau_import("@dep", "src/deeply/nested/main.luau", ctx)
+        assert got == "libs/dep/init.luau"
+
+    def test_unknown_alias_goes_external(self, tmp_path) -> None:
+        ctx = _repo_ctx(
+            tmp_path,
+            {"src/dependency.luau"},
+            {"src/.luaurc": '{"aliases": {"dep": "./dependency"}}'},
+        )
+        got = resolve_luau_import("@nope", "src/main.luau", ctx)
+        assert got == "external:@nope"
+
+
+class TestBareScriptParent:
+    def test_spec_requires_sibling_init_module(self, tmp_path) -> None:
+        # Roblox idiom: lib/init.spec.lua tests its own module with
+        # ``require(script.Parent)`` — the container directory IS the
+        # module (backed by its init.lua).
+        ctx = _ctx({"lib/init.lua", "lib/init.spec.lua"})
+        resolved = resolve_luau_import("script.Parent", "lib/init.spec.lua", ctx)
+        assert resolved == "lib/init.lua"
+
+    def test_bare_parent_without_init_goes_external(self, tmp_path) -> None:
+        ctx = _ctx({"lib/foo.lua", "lib/foo.spec.lua"})
+        resolved = resolve_luau_import("script.Parent", "lib/foo.spec.lua", ctx)
+        assert resolved is None or resolved.startswith("external:")
+
+    def test_bare_parent_never_resolves_to_importer(self, tmp_path) -> None:
+        # init.lua itself saying require(script.Parent) must not self-link.
+        ctx = _ctx({"lib/init.lua"})
+        resolved = resolve_luau_import("script.Parent", "lib/init.lua", ctx)
+        assert resolved != "lib/init.lua"

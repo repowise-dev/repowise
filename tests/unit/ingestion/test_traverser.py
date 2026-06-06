@@ -649,3 +649,47 @@ class TestNestedGitRepoHandling:
 
         assert any("ok.py" in p for p in paths)
         assert not any("vendored" in p for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# Entry-point flag (registry-derived conventions)
+# ---------------------------------------------------------------------------
+
+
+class TestEntryPointFlag:
+    def _flagged(self, tmp_path: Path) -> set[str]:
+        return {f.path for f in FileTraverser(tmp_path).traverse() if f.is_entry_point}
+
+    def test_new_language_conventions_flag_entry_points(self, tmp_path: Path) -> None:
+        files = {
+            "src/Application.kt": "fun main() {}",
+            "config.ru": "run App",
+            "myapp/src/myapp_app.erl": "-module(myapp_app).",
+            "lib/shop/application.ex": "defmodule Shop.Application do\nend",
+            "shop/core.clj": "(defn -main [])",
+            "cli/Program.fs": "[<EntryPoint>]\nlet main argv = 0",
+            "artisan": "#!/usr/bin/env php\n<?php",
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        flagged = self._flagged(tmp_path)
+        assert flagged == set(files), flagged
+
+    def test_historical_stem_parity_and_non_entries(self, tmp_path: Path) -> None:
+        files = {
+            "run.py": "print('x')",  # covered by the run stem (dropped pattern)
+            "server.py": "print('x')",
+            "pkg/helper.py": "x = 1",
+            "latest_app.py": "x = 1",  # _app suffix is Erlang-only (*_app.erl)
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        flagged = self._flagged(tmp_path)
+        assert "run.py" in flagged
+        assert "server.py" in flagged
+        assert "pkg/helper.py" not in flagged
+        assert "latest_app.py" not in flagged

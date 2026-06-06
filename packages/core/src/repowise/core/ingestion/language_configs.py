@@ -57,8 +57,6 @@ class LanguageConfig:
     # Node types that indicate a class context (used with "nesting" mode)
     parent_class_types: frozenset[str] = field(default_factory=frozenset)
 
-    # Entry-point filename patterns for this language
-    entry_point_patterns: list[str] = field(default_factory=list)
 
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
@@ -72,7 +70,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=py_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_definition"}),
-        entry_point_patterns=["main.py", "app.py", "__main__.py", "manage.py", "wsgi.py"],
     ),
     "typescript": LanguageConfig(
         symbol_node_types={
@@ -92,7 +89,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=ts_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "abstract_class_declaration"}),
-        entry_point_patterns=["index.ts", "main.ts", "app.ts", "server.ts"],
     ),
     "javascript": LanguageConfig(
         symbol_node_types={
@@ -108,7 +104,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration"}),
-        entry_point_patterns=["index.js", "main.js", "app.js", "server.js"],
     ),
     "go": LanguageConfig(
         symbol_node_types={
@@ -123,7 +118,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=go_visibility,
         parent_extraction="receiver",
         parent_class_types=frozenset(),
-        entry_point_patterns=["main.go", "cmd/main.go"],
     ),
     "rust": LanguageConfig(
         symbol_node_types={
@@ -146,7 +140,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=rust_visibility,
         parent_extraction="impl",
         parent_class_types=frozenset({"impl_item", "mod_item"}),
-        entry_point_patterns=["main.rs", "lib.rs"],
     ),
     "java": LanguageConfig(
         symbol_node_types={
@@ -164,7 +157,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(
             {"class_declaration", "interface_declaration", "enum_declaration", "record_declaration"}
         ),
-        entry_point_patterns=["Main.java", "Application.java"],
     ),
     "cpp": LanguageConfig(
         symbol_node_types={
@@ -185,7 +177,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_specifier", "struct_specifier"}),
-        entry_point_patterns=["main.cpp", "main.cc"],
     ),
     "c": LanguageConfig(
         symbol_node_types={
@@ -202,7 +193,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="none",
         parent_class_types=frozenset(),
-        entry_point_patterns=["main.c"],
     ),
     "kotlin": LanguageConfig(
         symbol_node_types={
@@ -217,7 +207,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=kotlin_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "object_declaration"}),
-        entry_point_patterns=["Main.kt", "Application.kt"],
     ),
     "ruby": LanguageConfig(
         symbol_node_types={
@@ -232,7 +221,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class", "module"}),
-        entry_point_patterns=["main.rb", "app.rb", "config.ru"],
     ),
     "csharp": LanguageConfig(
         symbol_node_types={
@@ -267,7 +255,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
                 "file_scoped_namespace_declaration",
             }
         ),
-        entry_point_patterns=["Program.cs", "Startup.cs"],
     ),
     "swift": LanguageConfig(
         symbol_node_types={
@@ -283,7 +270,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=swift_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_declaration", "protocol_declaration"}),
-        entry_point_patterns=["main.swift", "App.swift"],
     ),
     "scala": LanguageConfig(
         symbol_node_types={
@@ -302,7 +288,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=scala_visibility,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_definition", "trait_definition", "object_definition"}),
-        entry_point_patterns=["Main.scala", "App.scala"],
     ),
     "php": LanguageConfig(
         symbol_node_types={
@@ -322,7 +307,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(
             {"class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"}
         ),
-        entry_point_patterns=["index.php", "public/index.php"],
     ),
     "luau": LanguageConfig(
         symbol_node_types={
@@ -334,6 +318,5 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="none",
         parent_class_types=frozenset(),
-        entry_point_patterns=["init.luau", "init.lua"],
     ),
 }

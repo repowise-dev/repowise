@@ -47,6 +47,22 @@ class ResolverContext:
     # mirrors the dotnet/index.py pattern and keeps language-specific bloat
     # off the dataclass.
 
+    # Cached sorted view of ``path_set``. Resolvers that scan for a *first*
+    # match MUST iterate this, never the raw set: set iteration order varies
+    # run-to-run (parallel parse insertion order + hash seeding), which made
+    # import targets — and everything downstream (PageRank, communities, the
+    # tour order) — nondeterministic across identical runs.
+    _sorted_paths_cache: tuple[str, ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    @property
+    def sorted_paths(self) -> tuple[str, ...]:
+        """Deterministically ordered view of ``path_set`` (cached)."""
+        if self._sorted_paths_cache is None:
+            self._sorted_paths_cache = tuple(sorted(self.path_set))
+        return self._sorted_paths_cache
+
     def stem_lookup(self, stem: str) -> str | None:
         """Return the highest-priority path for *stem*, or None."""
         candidates = self.stem_map.get(stem)

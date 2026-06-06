@@ -221,6 +221,7 @@ class CallResolver:
             def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
                 self.repo_path = Path(rp)
                 self.path_set = set(pf.keys())
+                self.sorted_paths = tuple(sorted(self.path_set))
                 self.parsed_files = pf
                 self.go_modules: tuple[tuple[str, str], ...] = ()
                 self.go_module_path: str | None = None
@@ -255,6 +256,7 @@ class CallResolver:
             def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
                 self.repo_path = Path(rp)
                 self.path_set = set(pf.keys())
+                self.sorted_paths = tuple(sorted(self.path_set))
                 self.parsed_files = pf
                 self.stem_map: dict[str, list[str]] = {}
 
@@ -299,6 +301,7 @@ class CallResolver:
             def __init__(self, rp: str, pf: dict[str, ParsedFile]) -> None:
                 self.repo_path = Path(rp)
                 self.path_set = set(pf.keys())
+                self.sorted_paths = tuple(sorted(self.path_set))
                 self.parsed_files = pf
 
         self._jvm_index = build_jvm_workspace_index(_Ctx(self._repo_path, self._parsed_files))

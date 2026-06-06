@@ -5,6 +5,13 @@ from ..spec import LanguageSpec
 SPEC = LanguageSpec(
     tag="kotlin",
     display_name="Kotlin",
+    import_support="full",
+    # JUnit/Kotest conventions: FooTest/FooTests/FooSpec; Gradle sourceset
+    # roots — the "src/*Test" wildcard covers multiplatform/custom test
+    # sourcesets (src/commonTest, src/jvmTest, src/integrationTest, …).
+    test_camel_suffixes=("Test", "Tests", "Spec"),
+    test_dir_paths=("src/test/kotlin", "src/*Test"),
+    entry_point_patterns=("Main.kt", "Application.kt"),
     extensions=frozenset({".kt", ".kts"}),
     grammar_package="tree_sitter_kotlin",
     scm_file="kotlin.scm",

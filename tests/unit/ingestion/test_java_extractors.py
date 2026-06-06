@@ -68,3 +68,26 @@ class TestJavaModuleDocstring:
         result = parser.parse_file(_file(), src)
         assert result.docstring is not None
         assert "Module-level summary" in result.docstring
+
+
+class TestJavaWildcardImports:
+    def test_wildcard_import_keeps_star(self, parser: ASTParser) -> None:
+        # The grammar query captures only the scoped identifier — the `*`
+        # is a sibling node. Extraction must restore it or the resolver's
+        # package fan-out branch can never fire.
+        src = b"package x;\nimport com.example.util.*;\npublic class App {}\n"
+        result = parser.parse_file(_file(), src)
+        modules = [imp.module_path for imp in result.imports]
+        assert "com.example.util.*" in modules
+
+    def test_static_wildcard_import_keeps_star(self, parser: ASTParser) -> None:
+        src = b"package x;\nimport static com.example.Assertions.*;\npublic class App {}\n"
+        result = parser.parse_file(_file(), src)
+        modules = [imp.module_path for imp in result.imports]
+        assert "com.example.Assertions.*" in modules
+
+    def test_plain_import_unchanged(self, parser: ASTParser) -> None:
+        src = b"package x;\nimport com.example.Foo;\npublic class App {}\n"
+        result = parser.parse_file(_file(), src)
+        modules = [imp.module_path for imp in result.imports]
+        assert modules == ["com.example.Foo"]
