@@ -332,6 +332,89 @@ async def test_community_slice_member_signals(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_community_slice_excludes_non_member_edges(client: AsyncClient, app) -> None:
+    """The SQL membership filter must drop edges that touch no member.
+
+    Seeds an extra node ``src/d.py`` in community 1 and an edge c->d that
+    touches neither community-0 member. That edge must not appear in the slice,
+    and the slice result must otherwise match the baseline expectations.
+    """
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await crud.batch_upsert_graph_nodes(
+            session,
+            repo["id"],
+            [
+                {
+                    "node_id": "src/a.py",
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 3,
+                    "pagerank": 0.8,
+                    "community_id": 0,
+                },
+                {
+                    "node_id": "src/b.py",
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 2,
+                    "pagerank": 0.4,
+                    "community_id": 0,
+                },
+                {
+                    "node_id": "src/c.py",
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 1,
+                    "pagerank": 0.2,
+                    "community_id": 1,
+                },
+                {
+                    "node_id": "src/d.py",
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 1,
+                    "pagerank": 0.1,
+                    "community_id": 1,
+                },
+            ],
+        )
+        await crud.batch_upsert_graph_edges(
+            session,
+            repo["id"],
+            [
+                # Intra-community 0 (touches members)
+                {"source_node_id": "src/a.py", "target_node_id": "src/b.py"},
+                # Cross 0->1 (touches a member -> boundary stub c.py)
+                {"source_node_id": "src/b.py", "target_node_id": "src/c.py"},
+                # Touches NO community-0 member: must be excluded entirely
+                {"source_node_id": "src/c.py", "target_node_id": "src/d.py"},
+            ],
+        )
+
+    resp = await client.get(f"/api/graph/{repo['id']}/communities/0/slice")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["community_id"] == 0
+    assert data["member_count"] == 2
+    assert data["truncated"] is False
+
+    by_id = {n["node_id"]: n for n in data["nodes"]}
+    assert by_id["src/a.py"]["is_boundary"] is False
+    assert by_id["src/b.py"]["is_boundary"] is False
+    assert by_id["src/c.py"]["is_boundary"] is True
+    # d.py is only reachable via the excluded edge — it must not be pulled in.
+    assert "src/d.py" not in by_id
+
+    pairs = {(link["source"], link["target"]) for link in data["links"]}
+    assert ("src/a.py", "src/b.py") in pairs
+    assert ("src/b.py", "src/c.py") in pairs
+    # The non-member-touching edge is excluded.
+    assert ("src/c.py", "src/d.py") not in pairs
+
+
+@pytest.mark.asyncio
 async def test_community_slice_empty_community(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _populate_two_communities(app.state.session_factory, repo["id"])

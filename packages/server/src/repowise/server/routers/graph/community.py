@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
@@ -35,6 +35,10 @@ _SLICE_MEMBER_CAP = 300
 # Boundary stubs per slice: only the most-connected outside neighbors survive,
 # so a blossom shows its strongest cross-cluster ties instead of a dust cloud.
 _SLICE_BOUNDARY_CAP = 40
+# Chunk size for member-id IN lists. The slice edge filter ORs two IN clauses
+# (source + target) in one statement, so we cap each chunk well under SQLite's
+# 999-parameter limit to leave room for both lists plus the repo_id bind.
+_SLICE_IN_CHUNK = 400
 
 router = APIRouter()
 
@@ -165,10 +169,32 @@ async def community_slice(
 
     # Edges touching any member: among-members stay; member<->outside become
     # cross-cluster links that pull in a boundary stub for the outside endpoint.
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    # The membership filter is pushed into SQL (source OR target in members) so
+    # we never load the whole repo's edge table into Python; the IN lists are
+    # chunked under SQLite's parameter limit. The Python filter below is kept
+    # as-is for correctness — the SQL only bounds the rows fetched (a
+    # superset-or-equal of what the Python filter keeps).
+    member_id_list = list(member_ids)
+    edge_rows: dict[str, GraphEdge] = {}
+    for start in range(0, len(member_id_list), _SLICE_IN_CHUNK):
+        chunk = member_id_list[start : start + _SLICE_IN_CHUNK]
+        chunk_result = await session.execute(
+            select(GraphEdge).where(
+                GraphEdge.repository_id == repo_id,
+                or_(
+                    GraphEdge.source_node_id.in_(chunk),
+                    GraphEdge.target_node_id.in_(chunk),
+                ),
+            )
+        )
+        # Dedup across chunks: an edge whose endpoints fall in different chunks
+        # matches twice. The PK keeps each edge once.
+        for e in chunk_result.scalars():
+            edge_rows[e.id] = e
+
     kept_edges: list[GraphEdge] = []
     boundary_degree: dict[str, int] = {}
-    for e in edge_result.scalars():
+    for e in edge_rows.values():
         src_in = e.source_node_id in member_ids
         tgt_in = e.target_node_id in member_ids
         if not src_in and not tgt_in:

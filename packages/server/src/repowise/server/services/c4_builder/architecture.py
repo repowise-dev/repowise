@@ -8,7 +8,8 @@ from bisect import bisect_left
 from collections import defaultdict
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.persistence import (
     ExternalSystem,
@@ -40,29 +41,52 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-_ENTRY_POINT_NAMES = frozenset({
-    "main.py", "app.py", "cli.py", "index.ts", "index.js",
-    "index.tsx", "index.jsx", "server.py", "server.ts",
-    "__main__.py", "manage.py",
-})
+_ENTRY_POINT_NAMES = frozenset(
+    {
+        "main.py",
+        "app.py",
+        "cli.py",
+        "index.ts",
+        "index.js",
+        "index.tsx",
+        "index.jsx",
+        "server.py",
+        "server.ts",
+        "__main__.py",
+        "manage.py",
+    }
+)
 
-_SYMBOL_EDGE_TYPES = frozenset({
-    "contains", "defines", "has_method",
-})
+_SYMBOL_EDGE_TYPES = frozenset(
+    {
+        "contains",
+        "defines",
+        "has_method",
+    }
+)
 
 _EXT_MAP = {
-    ".py": "python", ".pyx": "python",
-    ".ts": "typescript", ".tsx": "typescript",
-    ".js": "javascript", ".jsx": "javascript",
-    ".go": "go", ".rs": "rust",
-    ".java": "java", ".kt": "kotlin",
-    ".cs": "csharp", ".rb": "ruby",
-    ".swift": "swift", ".cpp": "cpp", ".c": "c",
+    ".py": "python",
+    ".pyx": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".cs": "csharp",
+    ".rb": "ruby",
+    ".swift": "swift",
+    ".cpp": "cpp",
+    ".c": "c",
 }
 
 
 async def _external_views(
-    session: AsyncSession, repo_id: str,
+    session: AsyncSession,
+    repo_id: str,
 ) -> list[ExternalSystemView]:
     result = await session.execute(
         select(ExternalSystem).where(ExternalSystem.repository_id == repo_id)
@@ -141,36 +165,38 @@ def _sub_groups_from_raw(raw_sub_groups: list[dict] | None, node_ids: set[str]) 
     """Map curated subGroups to plain dicts, dropping ids absent from the graph."""
     groups: list[dict] = []
     for sg in raw_sub_groups or []:
-        mapped = [
-            nid.removeprefix("file:")
-            for nid in sg.get("nodeIds", sg.get("node_ids", []))
-        ]
+        mapped = [nid.removeprefix("file:") for nid in sg.get("nodeIds", sg.get("node_ids", []))]
         matched = [nid for nid in mapped if nid in node_ids]
         if matched:
-            groups.append({
-                "id": sg.get("id", ""),
-                "name": sg.get("name", ""),
-                "node_ids": matched,
-            })
+            groups.append(
+                {
+                    "id": sg.get("id", ""),
+                    "name": sg.get("name", ""),
+                    "node_ids": matched,
+                }
+            )
     return groups
 
 
 def _layers_from_knowledge_graph(
-    kg: dict, node_ids: set[str],
+    kg: dict,
+    node_ids: set[str],
 ) -> list[dict]:
     layers = []
     for i, layer in enumerate(kg.get("layers", [])):
         raw_ids = layer.get("nodeIds", [])
         mapped = [nid.removeprefix("file:") for nid in raw_ids]
         matched = [nid for nid in mapped if nid in node_ids]
-        layers.append({
-            "id": layer.get("id", ""),
-            "name": layer.get("name", ""),
-            "description": layer.get("description", ""),
-            "node_ids": matched,
-            "display_order": layer.get("display_order", i),
-            "sub_groups": _sub_groups_from_raw(layer.get("subGroups"), node_ids),
-        })
+        layers.append(
+            {
+                "id": layer.get("id", ""),
+                "name": layer.get("name", ""),
+                "description": layer.get("description", ""),
+                "node_ids": matched,
+                "display_order": layer.get("display_order", i),
+                "sub_groups": _sub_groups_from_raw(layer.get("subGroups"), node_ids),
+            }
+        )
     return layers
 
 
@@ -191,12 +217,14 @@ def _layers_from_communities(
         if cid in meta:
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 cm = json.loads(meta[cid])
-        layers.append({
-            "id": f"layer:community-{cid}",
-            "name": cm.get("name", f"Community {cid}"),
-            "description": cm.get("description", ""),
-            "node_ids": groups[cid],
-        })
+        layers.append(
+            {
+                "id": f"layer:community-{cid}",
+                "name": cm.get("name", f"Community {cid}"),
+                "description": cm.get("description", ""),
+                "node_ids": groups[cid],
+            }
+        )
     return layers
 
 
@@ -250,14 +278,16 @@ def _layers_from_db(db_layers: list, node_ids: set[str]) -> list[dict]:
         matched = [nid for nid in mapped if nid in node_ids]
         raw_sub_groups_json = getattr(row, "sub_groups_json", None)
         raw_sub_groups = json.loads(raw_sub_groups_json) if raw_sub_groups_json else []
-        layers.append({
-            "id": row.layer_id,
-            "name": row.name,
-            "description": row.description or "",
-            "node_ids": matched,
-            "display_order": getattr(row, "display_order", i),
-            "sub_groups": _sub_groups_from_raw(raw_sub_groups, node_ids),
-        })
+        layers.append(
+            {
+                "id": row.layer_id,
+                "name": row.name,
+                "description": row.description or "",
+                "node_ids": matched,
+                "display_order": getattr(row, "display_order", i),
+                "sub_groups": _sub_groups_from_raw(raw_sub_groups, node_ids),
+            }
+        )
     return layers
 
 
@@ -287,25 +317,49 @@ def _tour_from_db(db_steps: list) -> list[ArchTourStep]:
 
 
 async def _migrate_kg_file_to_db(
-    session: AsyncSession, repo_id: str, kg: dict,
+    caller_session: AsyncSession,
+    repo_id: str,
+    kg: dict,
 ) -> None:
-    layers = kg.get("layers", [])
-    if layers:
-        await upsert_kg_layers(session, repo_id, layers)
-    tour = kg.get("tour", [])
-    if tour:
-        await upsert_kg_tour_steps(session, repo_id, tour)
-    project = kg.get("project") or {}
-    if project.get("entry_points"):
-        await upsert_kg_project_meta(
-            session,
-            repo_id,
-            entry_points=project["entry_points"],
-            entry_candidates=project.get("entry_candidates", []),
-        )
-    node_meta = file_node_meta_from_kg_nodes(kg.get("nodes", []))
-    if node_meta:
-        await upsert_kg_node_meta(session, repo_id, node_meta)
+    """Auto-migrate a file-based KG into the DB on first read.
+
+    Runs in its OWN session (a fresh sessionmaker bound to the caller's
+    engine) so a rollback here can never clobber writes that share the
+    request-scoped caller session. The migration is delete-then-insert and
+    carries no concurrency guard, so two concurrent first-readers can race to
+    the unique constraints; we treat an ``IntegrityError`` as "another request
+    migrated first" — the DB now holds the curated rows either way, so we
+    swallow it and let the caller fall back to reading those rows. Any other
+    failure propagates to the caller, which degrades to the file-based KG.
+    """
+    # ``caller_session.bind`` is the AsyncEngine; ``get_bind()`` would hand back
+    # the sync engine, which ``async_sessionmaker`` rejects.
+    migration_factory = async_sessionmaker(
+        caller_session.bind, expire_on_commit=False, class_=AsyncSession
+    )
+    async with migration_factory() as session:
+        try:
+            layers = kg.get("layers", [])
+            if layers:
+                await upsert_kg_layers(session, repo_id, layers)
+            tour = kg.get("tour", [])
+            if tour:
+                await upsert_kg_tour_steps(session, repo_id, tour)
+            project = kg.get("project") or {}
+            if project.get("entry_points"):
+                await upsert_kg_project_meta(
+                    session,
+                    repo_id,
+                    entry_points=project["entry_points"],
+                    entry_candidates=project.get("entry_candidates", []),
+                )
+            node_meta = file_node_meta_from_kg_nodes(kg.get("nodes", []))
+            if node_meta:
+                await upsert_kg_node_meta(session, repo_id, node_meta)
+            await session.commit()
+        except IntegrityError:
+            # Concurrent first-reader already migrated; their rows win.
+            await session.rollback()
 
 
 async def build_architecture_view(
@@ -314,14 +368,22 @@ async def build_architecture_view(
     include_symbols: bool = False,
 ) -> ArchitectureView:
     from . import load_repo
+
     repo = await load_repo(session, repo_id)
 
     empty = ArchitectureView(
         project_name=repo.name if repo else repo_id,
         project_description="",
-        layers=[], nodes=[], edges=[], tour=[],
-        total_files=0, total_symbols=0, total_edges=0,
-        languages=[], frameworks=[], external_systems=[],
+        layers=[],
+        nodes=[],
+        edges=[],
+        tour=[],
+        total_files=0,
+        total_symbols=0,
+        total_edges=0,
+        languages=[],
+        frameworks=[],
+        external_systems=[],
     )
     if repo is None:
         return empty
@@ -339,9 +401,7 @@ async def build_architecture_view(
     file_nodes = [n for n in all_nodes if n.node_type == "file"]
 
     # -- Load edges --
-    edge_result = await session.execute(
-        select(GraphEdge).where(GraphEdge.repository_id == repo_id)
-    )
+    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     all_edges: list[GraphEdge] = list(edge_result.scalars())
 
     in_degree: dict[str, int] = defaultdict(int)
@@ -357,9 +417,7 @@ async def build_architecture_view(
     git_result = await session.execute(
         select(GitMetadata).where(GitMetadata.repository_id == repo_id)
     )
-    git_by_path: dict[str, GitMetadata] = {
-        gm.file_path: gm for gm in git_result.scalars()
-    }
+    git_by_path: dict[str, GitMetadata] = {gm.file_path: gm for gm in git_result.scalars()}
 
     # -- Enrichment: dead code --
     dead_result = await session.execute(
@@ -410,12 +468,13 @@ async def build_architecture_view(
                     kg = _load_knowledge_graph(candidate)
                     break
         if kg and kg.get("layers"):
+            # Migration runs in its own session and commits there; a failure
+            # cannot roll back the caller's session. On failure we degrade to
+            # serving this read from the already-loaded file-based KG.
             try:
                 await _migrate_kg_file_to_db(session, repo_id, kg)
-                await session.flush()
             except Exception:
                 logger.warning("kg_file_to_db_migration_failed", exc_info=True)
-                await session.rollback()
             raw_layers = _layers_from_knowledge_graph(kg, node_id_set)
         elif any(n.community_id and n.community_id > 0 for n in file_nodes):
             raw_layers = _layers_from_communities(file_nodes)
@@ -459,7 +518,9 @@ async def build_architecture_view(
                 file_path=file_path,
                 line_range=line_range,
                 summary=summary,
-                complexity=_classify_complexity(n.symbol_count, (n.end_line or 0) - (n.start_line or 0)),
+                complexity=_classify_complexity(
+                    n.symbol_count, (n.end_line or 0) - (n.start_line or 0)
+                ),
                 tags=curated_tags or _tags_for(n.node_id, n.node_type, n.language),
                 language=n.language or None,
                 pagerank=n.pagerank,

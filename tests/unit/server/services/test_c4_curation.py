@@ -12,6 +12,8 @@ import json
 import os
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.persistence import (
     batch_upsert_graph_nodes,
     upsert_repository,
@@ -19,6 +21,7 @@ from repowise.core.persistence import (
 from repowise.server.services.c4_builder.architecture import (
     _layers_from_db,
     _layers_from_knowledge_graph,
+    _migrate_kg_file_to_db,
     _tour_from_knowledge_graph,
     build_architecture_view,
 )
@@ -284,6 +287,49 @@ async def test_round_trip_zero_curated_field_loss(async_session, tmp_path):
     os.remove(tmp_path / ".repowise" / "knowledge-graph.json")
     view_from_db = await build_architecture_view(async_session, repo.id)
     _assert_curated_view(view_from_db)
+
+
+async def test_migration_twice_is_idempotent(async_session, tmp_path):
+    """Two first-readers racing into the migration must be idempotent.
+
+    The delete-then-insert migration carries no concurrency guard, so a
+    concurrent first-reader can hit the unique constraints. Running it twice in
+    a row (the serialized analogue of that race) must raise nothing and leave
+    the DB holding exactly one curated set."""
+    repo = await _seed_curated_repo(async_session, tmp_path)
+
+    # Both calls open their own sessions and commit; neither raises.
+    await _migrate_kg_file_to_db(async_session, repo.id, _CURATED_KG)
+    await _migrate_kg_file_to_db(async_session, repo.id, _CURATED_KG)
+
+    # The view (served from the migrated DB rows) carries every curated field.
+    os.remove(tmp_path / ".repowise" / "knowledge-graph.json")
+    view = await build_architecture_view(async_session, repo.id)
+    _assert_curated_view(view)
+
+
+async def test_failed_migration_does_not_roll_back_caller_writes(async_session, tmp_path):
+    """A failed migration runs in its own session, so the caller's pending
+    writes survive — the old broad ``except: session.rollback()`` would have
+    discarded them."""
+    repo = await _seed_curated_repo(async_session, tmp_path)
+
+    # An unrelated write pending on the CALLER's session.
+    sentinel = await upsert_repository(
+        session=async_session, name="caller-sentinel", local_path=str(tmp_path / "x")
+    )
+
+    # A KG whose layer is missing the required "id" key makes upsert_kg_layers
+    # raise inside the migration's own session.
+    broken_kg = {"layers": [{"name": "no id key"}]}
+    with pytest.raises(KeyError):
+        await _migrate_kg_file_to_db(async_session, repo.id, broken_kg)
+
+    # The caller's session was never touched by the migration's rollback.
+    await async_session.flush()
+    found = await async_session.get(type(sentinel), sentinel.id)
+    assert found is not None
+    assert found.name == "caller-sentinel"
 
 
 async def test_uncurated_repo_unchanged(async_session, tmp_path):
