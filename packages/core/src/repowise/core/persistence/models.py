@@ -1008,6 +1008,8 @@ class KnowledgeGraphLayer(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     node_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Curated sub-groups within the layer: [{"id", "name", "nodeIds"}].
+    sub_groups_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1026,11 +1028,66 @@ class KnowledgeGraphTourStep(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     node_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # Curated, layer-aware tour fields (empty/None for legacy LLM tours).
+    target_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    layer_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    page_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
     __table_args__ = (UniqueConstraint("repository_id", "step_order", name="uq_kg_tour_step"),)
+
+
+class KnowledgeGraphProjectMeta(Base):
+    """Project-level curated KG metadata — one row per repository.
+
+    Holds the ranked entry points surfaced by the curation pass so the server
+    never has to read workspace files at request time. JSON columns leave room
+    for future project-level curated metadata.
+    """
+
+    __tablename__ = "kg_project_meta"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    entry_points_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    entry_candidates_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (UniqueConstraint("repository_id", name="uq_kg_project_meta"),)
+
+
+class KnowledgeGraphNodeMeta(Base):
+    """Per-node curated KG metadata (presentation view only).
+
+    Stores the curated ``type``/``summary``/``tags`` for file nodes so the
+    architecture view can prefer them over heuristics after the one-time
+    file → DB migration. The AST graph's ``graph_nodes`` rows are untouched.
+    """
+
+    __tablename__ = "kg_node_meta"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    node_id: Mapped[str] = mapped_column(Text, nullable=False)
+    node_type: Mapped[str] = mapped_column(Text, nullable=False, default="file")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = (UniqueConstraint("repository_id", "node_id", name="uq_kg_node_meta"),)
 
 
 class PipelineJob(Base):
