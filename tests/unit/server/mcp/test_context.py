@@ -7,8 +7,107 @@ test data, mirroring the conftest pattern from the REST API tests.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
+
+from repowise.core.persistence.models import GitMetadata, Page
+from repowise.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.providers.embedding.base import MockEmbedder
+
+_NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+async def multi_module_db(session, populated_db):
+    """populated_db + extra module pages that trigger partial-match collisions.
+
+    Adds path-shaped module ids that share the "api" segment so a bare "api"
+    target hits more than one module path (the MultipleResultsFound trigger),
+    plus a git-only file whose name substring-matches a module path.
+    """
+    rid = populated_db
+
+    def _module(path: str, title: str) -> Page:
+        return Page(
+            id=f"module_page:{path}",
+            repository_id=rid,
+            page_type="module_page",
+            title=title,
+            content=f"# {title}\n\nmodule body.",
+            target_path=path,
+            source_hash=f"mod-{path}",
+            model_name="mock",
+            provider_name="mock",
+            generation_level=4,
+            confidence=0.9,
+            freshness_status="fresh",
+            metadata_json="{}",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+    # "api" appears as a segment in two distinct module paths -> would raise
+    # MultipleResultsFound under the old substring + scalar_one_or_none rung.
+    session.add(_module("src/api", "API Module"))
+    session.add(_module("pkg/api", "Pkg API Module"))
+    # A different segment that must NOT match a bare "api" target.
+    session.add(_module("src/rapid", "Rapid Module"))
+    # A module path containing a literal "_" so LIKE-metachar escaping matters.
+    session.add(_module("src/a_b", "Underscore Module"))
+
+    # A real file present in git_metadata, with NO file_page, whose path
+    # substring-matches the "src/api" module path. Must resolve via the git
+    # fallback (target_type file/git), not as the module.
+    session.add(
+        GitMetadata(
+            id="gm-apiclient",
+            repository_id=rid,
+            file_path="src/api/client.py",
+            commit_count_total=3,
+            commit_count_90d=1,
+            commit_count_30d=0,
+            first_commit_at=datetime(2025, 6, 1, tzinfo=UTC),
+            last_commit_at=datetime(2026, 1, 2, tzinfo=UTC),
+            primary_owner_name="Carol",
+            primary_owner_email="carol@example.com",
+            primary_owner_commit_pct=1.0,
+            top_authors_json=json.dumps([{"name": "Carol", "count": 3}]),
+            significant_commits_json=json.dumps([]),
+            co_change_partners_json=json.dumps([]),
+            is_hotspot=False,
+            is_stable=True,
+            churn_percentile=0.1,
+            age_days=200,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+    )
+    await session.flush()
+    return rid
+
+
+@pytest.fixture
+async def setup_mcp_multi(factory, fts, vector_store, multi_module_db):
+    """Wire MCP globals to the multi-module database."""
+    import repowise.server.mcp_server as mcp_mod
+
+    mcp_mod._session_factory = factory
+    mcp_mod._fts = fts
+    mcp_mod._vector_store = vector_store
+    mcp_mod._decision_store = InMemoryVectorStore(embedder=MockEmbedder())
+    mcp_mod._repo_path = "/tmp/test-repo"
+
+    yield multi_module_db
+
+    mcp_mod._session_factory = None
+    mcp_mod._fts = None
+    mcp_mod._vector_store = None
+    mcp_mod._decision_store = None
+    mcp_mod._repo_path = None
+    mcp_mod._registry = None
+    mcp_mod._workspace_root = None
+    mcp_mod._embedder_status = None
 
 
 @pytest.mark.asyncio
@@ -120,6 +219,20 @@ async def test_get_context_not_found(setup_mcp):
     assert "error" in t
 
 
+@pytest.mark.asyncio
+async def test_get_context_legacy_community_id_hint(setup_mcp):
+    """Old community-ordinal module ids get a redirect to path-shaped ids."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["community-12"])
+    t = result["targets"]["community-12"]
+    assert "error" in t
+    assert "directory" in t["error"]
+    # Suggestions list the real module pages by their directory path.
+    assert "src/auth" in t["suggestions"]
+    assert "src/db" in t["suggestions"]
+
+
 def _make_big_response(n_targets: int = 5, n_symbols: int = 80, body_chars: int = 4000) -> dict:
     """Build a synthetic get_context response well over the 32 KB budget."""
     targets = {}
@@ -204,3 +317,121 @@ def test_truncate_noop_when_under_budget():
     assert out["dropped_targets"] == []
     assert out["dropped_symbols"] == {}
     assert "content_md" not in out["targets"]["a.py"]["docs"]  # wasn't there anyway
+
+
+# --- Partial-module-match hardening (segment boundary + LIKE escaping) -------
+
+
+@pytest.mark.asyncio
+async def test_partial_module_multi_match_does_not_raise(setup_mcp_multi):
+    """A target matching 2+ module paths resolves deterministically, no raise."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["api"])
+    t = result["targets"]["api"]
+    # Old code raised MultipleResultsFound here. Now it picks the shortest,
+    # lexicographically-first matching module path: "pkg/api" vs "src/api"
+    # both len 7 -> lexicographic -> "pkg/api".
+    assert t.get("type") == "module"
+    assert t["docs"]["title"] == "Pkg API Module"
+
+
+@pytest.mark.asyncio
+async def test_partial_module_segment_boundary(setup_mcp_multi):
+    """Substrings that aren't whole path segments must not match a module."""
+    from repowise.server.mcp_server import get_context
+
+    # "apiclient" / "pi" are substrings of "src/api" but not path segments.
+    result = await get_context(["apiclient", "pi", "rapid"])
+    targets = result["targets"]
+    # apiclient: not a module, not a file -> error
+    assert "error" in targets["apiclient"]
+    assert targets["apiclient"].get("type") != "module"
+    # pi: substring of "rapid"/"api" but not a segment -> not a module
+    assert targets["pi"].get("type") != "module"
+    # rapid: a full segment of "src/rapid" -> resolves as that module, and a
+    # bare "api" must NOT have matched it.
+    assert targets["rapid"].get("type") == "module"
+    assert targets["rapid"]["docs"]["title"] == "Rapid Module"
+
+
+@pytest.mark.asyncio
+async def test_partial_module_api_matches_only_api_segment(setup_mcp_multi):
+    """'api' resolves to an api module, never to 'src/rapid'."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["api"])
+    t = result["targets"]["api"]
+    assert t["type"] == "module"
+    assert "Rapid" not in t["docs"]["title"]
+
+
+@pytest.mark.asyncio
+async def test_partial_module_like_metachars_not_wildcards(setup_mcp_multi):
+    """A target with '_' / '%' must match literally, not as a SQL wildcard."""
+    from repowise.server.mcp_server import get_context
+
+    # "a%b" would wildcard-match "a_b" if % were treated as a metachar.
+    # "axb" would match "a_b" if _ were treated as a single-char wildcard.
+    result = await get_context(["a%b", "axb"])
+    targets = result["targets"]
+    assert targets["a%b"].get("type") != "module"
+    assert "error" in targets["a%b"]
+    assert targets["axb"].get("type") != "module"
+    assert "error" in targets["axb"]
+    # Sanity: the literal "a_b" segment DOES resolve as the module.
+    result2 = await get_context(["a_b"])
+    assert result2["targets"]["a_b"]["type"] == "module"
+
+
+@pytest.mark.asyncio
+async def test_file_on_git_preferred_over_partial_module(setup_mcp_multi):
+    """A git-only file substring-matching a module resolves via git, not module."""
+    from repowise.server.mcp_server import get_context
+
+    # "src/api/client.py" is in git_metadata, has no file_page, and contains
+    # the "src/api" module path as a prefix segment. It must resolve via the
+    # git fallback rung, not be captured as the "src/api" module.
+    result = await get_context(["src/api/client.py"])
+    t = result["targets"]["src/api/client.py"]
+    assert t.get("type") != "module"
+    assert t.get("exists_in_git") is True
+    assert t["primary_owner"] == "Carol"
+    assert "error" in t  # "exists but has no wiki page" shape
+
+
+@pytest.mark.asyncio
+async def test_legacy_community_hint_unaffected_by_multi_module(setup_mcp_multi):
+    """Extra module pages don't break the legacy community-N redirect rung."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["community-12"])
+    t = result["targets"]["community-12"]
+    assert "error" in t
+    assert "directory" in t["error"]
+    assert "src/auth" in t["suggestions"]
+
+
+@pytest.mark.asyncio
+async def test_batch_isolation_one_target_errors(setup_mcp, monkeypatch):
+    """One target raising internally yields an error entry; siblings resolve."""
+    import repowise.server.mcp_server.tool_context.context as ctx_mod
+    from repowise.server.mcp_server import get_context
+
+    real_resolver = ctx_mod._resolve_one_target
+
+    async def flaky(session, repository, target, *args, **kwargs):
+        if target == "boom":
+            raise RuntimeError("synthetic resolver failure")
+        return await real_resolver(session, repository, target, *args, **kwargs)
+
+    monkeypatch.setattr(ctx_mod, "_resolve_one_target", flaky)
+
+    result = await get_context(["src/auth/service.py", "boom"])
+    targets = result["targets"]
+    # Sibling still resolves normally.
+    assert targets["src/auth/service.py"]["type"] == "file"
+    # Failing target carries a per-target error entry (keyed on its target).
+    assert "boom" in targets
+    assert "error" in targets["boom"]
+    assert targets["boom"]["target"] == "boom"

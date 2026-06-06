@@ -25,6 +25,7 @@ This module is the orchestrator; single-target resolution lives in
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from repowise.core.persistence.database import get_session
@@ -40,6 +41,8 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
+
+_log = logging.getLogger("repowise.mcp.context")
 
 
 @mcp.tool()
@@ -102,7 +105,12 @@ async def get_context(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
-        results = await asyncio.gather(
+        # return_exceptions=True isolates a single target's failure: one
+        # target raising (e.g. a malformed lookup) must not sink the whole
+        # batch. Any exception is converted below into a per-target error
+        # entry that carries "target", so the comprehension keyed on target
+        # below never KeyErrors.
+        raw_results = await asyncio.gather(
             *[
                 _resolve_one_target(
                     session,
@@ -114,8 +122,27 @@ async def get_context(
                     repo_root=ctx.path,
                 )
                 for t in targets
-            ]
+            ],
+            return_exceptions=True,
         )
+
+    results: list[dict[str, Any]] = []
+    for t, r in zip(targets, raw_results, strict=True):
+        if isinstance(r, BaseException) and not isinstance(r, Exception):
+            # CancelledError / KeyboardInterrupt / SystemExit must propagate:
+            # converting them to per-target errors would break cooperative
+            # cancellation (a cancelled request would run to completion).
+            raise r
+        if isinstance(r, BaseException):
+            _log.exception("get_context: resolving target %r failed", t, exc_info=r)
+            results.append(
+                {
+                    "target": t,
+                    "error": f"Internal error resolving '{t}': {type(r).__name__}",
+                }
+            )
+        else:
+            results.append(r)
 
     response: dict[str, Any] = {
         "targets": {r["target"]: r for r in results},
