@@ -311,7 +311,7 @@ async def execute_job(
 
         # ---- Persist results -----------------------------------------------
         async with get_session(session_factory) as session:
-            await persist_pipeline_result(result, session, repo_id)
+            swept_page_ids = await persist_pipeline_result(result, session, repo_id)
 
             # Persist incrementally regenerated pages
             if incremental_pages:
@@ -320,8 +320,22 @@ async def execute_job(
                 for page in incremental_pages:
                     await upsert_page_from_generated(session, page, repo_id)
 
-        # FTS indexing runs after session closes to avoid SQLite write conflicts
+            # Drop swept pages from the vector store *before* the SQL session
+            # commits. The vector store is a separate engine/file (pgvector DB,
+            # LanceDB dir, or in-memory), so there is no SQLite write-lock
+            # conflict and the idempotent delete leaves the durable SQL commit
+            # last: an interrupted run self-heals (embedding already gone, SQL
+            # rows follow on commit).
+            if swept_page_ids and vector_store is not None:
+                await vector_store.delete_many(swept_page_ids)
+
+        # FTS deletes/indexing run after the session closes: the FTS index can
+        # share the SQLite file with the session, so writing it while the
+        # session holds a write lock raises "database is locked". The swept-id
+        # delete is idempotent (orphan FTS rows only) and must stay here.
         all_pages = (result.generated_pages or []) + incremental_pages
+        if fts is not None and swept_page_ids:
+            await fts.delete_many(swept_page_ids)
         if fts is not None and all_pages:
             for page in all_pages:
                 await fts.index(page.page_id, page.title, page.content)
@@ -528,6 +542,7 @@ async def _incremental_page_regen(
             result.repo_structure,
             result.repo_name,
             git_meta_map=result.git_meta_map,
+            repo_path=repo_path,
         )
 
         logger.info("incremental_page_regen_done", pages=len(pages))
