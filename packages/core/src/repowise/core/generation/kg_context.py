@@ -37,6 +37,7 @@ class KnowledgeGraphContext:
         self._file_to_tour: dict[str, dict] = {}
         self._file_to_node: dict[str, dict] = {}
         self._layers: list[dict] = []
+        self._modules: list[dict] = []
         self._tour: list[dict] = []
         self._project: dict = {}
         self._edges_by_source: dict[str, list[dict]] = {}
@@ -74,6 +75,8 @@ class KnowledgeGraphContext:
                         self._file_to_layer[fp] = layer
 
         self._project = kg.get("project") or {}
+        # Curated wiki modules (additive key; absent on uncurated artifacts).
+        self._modules = kg.get("modules", [])
         self._tour: list[dict] = kg.get("tour", [])
         for step in self._tour:
             # Curated tour steps carry a single target_path; the older shape
@@ -154,6 +157,10 @@ class KnowledgeGraphContext:
 
     def get_layers(self) -> list[dict]:
         return self._layers if self._loaded else []
+
+    def get_modules(self) -> list[dict]:
+        """Curated wiki modules from the KG artifact (empty when uncurated)."""
+        return self._modules if self._loaded else []
 
     def get_tour(self) -> list[dict]:
         return self._tour if self._loaded else []

@@ -214,6 +214,10 @@ class _GenerationRun:
                 git_meta_map=self.git_meta_map,
                 config=self.config,
                 kg_file_scores=kg_scores or None,
+                # Curated wiki modules from the KG artifact (pipeline order:
+                # curation runs before generation, so the artifact is fresh).
+                # Inert unless module_grouping == "curated".
+                kg_modules=self.kg_ctx.get_modules() or None,
             )
         )
 
