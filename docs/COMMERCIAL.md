@@ -121,11 +121,13 @@ the items that matter most to you can be prioritized.
 | Auto-generated CLAUDE.md | ✅ | ✅ |
 | Graph-aware enhanced security scanning | — | ✅ *(dev)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
-| CVE-aware dependency analysis | — | ✅ *(planned)* |
-| Reachability-aware CVE triage | — | ✅ *(planned)* |
-| SBOM generation (CycloneDX) | — | ✅ *(planned)* |
+| CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |
+| Usage-aware CVE triage (imports × dead code) | — | ✅ *(GA on hosted)* |
+| Function-level reachability triage | — | ✅ *(planned)* |
+| Secret detection across full git history | — | ✅ *(GA on hosted)* |
+| SBOM generation (CycloneDX) + diffs | — | ✅ *(GA on hosted)* |
 | Compliance reporting (PCI-DSS / SOC 2) | — | ✅ *(planned)* |
-| Audit trail (in-product + JSON / CSV export) | — | ✅ *(dev)* |
+| Audit trail (in-product + JSON / CSV export) | — | ✅ *(GA on hosted — security surface)* |
 | Jira / Confluence integration | — | ✅ *(rolling out)* |
 | GitHub Enterprise / Azure DevOps / GitLab / Bitbucket | — | ✅ *(rolling out)* |
 | Slack / Teams alerting | — | ✅ *(rolling out)* |
@@ -157,29 +159,42 @@ the items that matter most to you can be prioritized.
   `IConfiguration` secret leakage, EF Core raw-SQL risk, `HttpClient` lifetime
   issues, and `AllowAnonymous` on sensitive routes. Each language's ruleset ships as
   a focused subset, then expands on customer feedback.
-- **CVE-aware dependency analysis** *(planned)* — dependency manifests
-  (`*.csproj`, `packages.lock.json`, `package.json`, `pyproject.toml`, `go.mod`)
-  matched against NVD / GitHub Advisory / OSV feeds, with severity, fix availability,
-  and transitive-impact scoring.
-- **Reachability-aware CVE triage** *(planned)* — because Repowise holds a resolved
-  call graph, CVEs can be classified by whether the vulnerable function is actually
-  reachable from your code, reducing SCA noise. Precision is language- and
-  pattern-dependent; we report it honestly per language rather than quoting one
-  global number.
-- **SBOM generation** *(planned)* — CycloneDX output per commit with per-dependency
-  license detection and SBOM diffs between releases. SPDX and cross-format conversion
-  on the extended roadmap.
+- **CVE-aware dependency analysis** *(available on the hosted platform, Pro+)* —
+  full dependency inventory from manifests and lock files (all major ecosystems,
+  transitive deps included) matched against the OSV.dev database (which aggregates
+  GitHub Advisory and NVD-derived data), enriched with CISA KEV listing, EPSS
+  exploitation probability, and fix availability, then ranked by a composed
+  priority score. A nightly refresh re-matches stored inventories so new
+  advisories surface without re-indexing, with in-product notifications.
+- **Usage-aware CVE triage** *(available on the hosted platform, Pro+)* — every
+  CVE is labeled by whether your code actually imports the vulnerable package,
+  imports it only from dead code, or doesn't import it at all (with the import
+  sites as clickable evidence), cross-referencing the existing parse and
+  dead-code layers. Unmappable packages are labeled `unknown` honestly — never
+  guessed.
+- **Function-level reachability triage** *(planned)* — the next precision step:
+  classifying CVEs by whether the vulnerable *function* is reachable through the
+  resolved call graph. Precision is language- and pattern-dependent; we report it
+  honestly per language rather than quoting one global number.
+- **SBOM generation** *(available on the hosted platform, Pro+)* — CycloneDX 1.6
+  output per snapshot with per-dependency license detection and license-risk
+  classification, downloadable in-product, plus dependency diffs between any two
+  snapshots. SPDX and cross-format conversion on the extended roadmap.
 - **Compliance reporting** *(planned)* — framework-mapping reports tying findings
   back to specific files, owners, and decisions. Initial scope: **PCI-DSS** and
   **SOC 2** control coverage. ISO 27001 Annex A and GDPR / data-residency mappings on
   the extended roadmap — we'd rather ship two solid mappings than four shallow ones.
-- **Audit trail** *(dev)* — every decision, override, security-finding action, and
-  false-positive resolution logged with user, timestamp, and rationale. Queryable
-  in-product and exportable to JSON / CSV; streaming export to SIEM (Splunk / Datadog
-  / Elastic / syslog) on the roadmap.
-- **Secret-in-code detection** *(planned)* — gitleaks-style scanning across full git
-  history (not just `HEAD`), integrated with the graph so leaked secrets surface
-  which services / modules referenced them.
+- **Audit trail** *(available on the hosted platform for the security surface,
+  Teams+)* — security reads and actions (scans triggered, vulnerability and
+  secret views, SBOM exports, finding-status changes) logged insert-only with
+  user, IP, and timestamp, queryable in-product and exportable to JSON / CSV.
+  Coverage beyond the security surface (decisions, overrides) is in development;
+  streaming export to SIEM (Splunk / Datadog / Elastic / syslog) on the roadmap.
+- **Secret-in-code detection** *(available on the hosted platform, Pro+)* —
+  scanning across full git history (not just `HEAD`), with live-at-`HEAD`
+  flagging and incremental re-scans. Only a fingerprint and a redacted preview
+  are ever stored — never the secret value. Graph integration (which services /
+  modules referenced a leaked secret) is on the roadmap.
 
 ### 5.2 Workflow Integrations *(rolling out)*
 
