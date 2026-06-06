@@ -52,6 +52,7 @@ def compute_coverage_options(
     repo_path: Path | str | None = None,
     skip_tests: bool = False,
     skip_infra: bool = False,
+    kg_modules: list[dict] | None = None,
     percentages: tuple[float, ...] = DEFAULT_COVERAGE_OPTIONS,
     recommended: float = RECOMMENDED_COVERAGE,
 ) -> list[CoverageOption]:
@@ -66,7 +67,8 @@ def compute_coverage_options(
     for pct in percentages:
         cfg = replace(base_config, coverage_pct=pct, max_pages_pct=pct)
         plans = build_generation_plan(
-            parsed_files, graph_builder, cfg, skip_tests, skip_infra
+            parsed_files, graph_builder, cfg, skip_tests, skip_infra,
+            kg_modules=kg_modules,
         )
         est = estimate_cost(
             plans,

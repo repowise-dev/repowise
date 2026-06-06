@@ -545,6 +545,17 @@ def _run_index_for_repo(
             await persist_pipeline_result(result, session, repo.id)
 
         await engine.dispose()
+
+        # Save the curated KG artifact so doc generation can load curated
+        # module grouping (matches the `repowise init` idiom in
+        # init_cmd/command.py). Without it, generation falls back to raw
+        # community grouping and emits wrong module pages.
+        from repowise.cli.state_persistence import save_knowledge_graph_json
+
+        kg = getattr(result, "knowledge_graph_result", None)
+        if kg is not None:
+            save_knowledge_graph_json(repo_path, kg)
+
         return result.file_count, result.symbol_count, page_count
 
     try:
@@ -697,6 +708,7 @@ def _generate_docs_for_added_repo(
             graph_builder,
             repo_structure,
             repo_path.name,
+            repo_path=repo_path,
         )
 
         url = get_db_url_for_repo(repo_path)

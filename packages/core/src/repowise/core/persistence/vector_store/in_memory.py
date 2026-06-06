@@ -64,9 +64,7 @@ class InMemoryVectorStore(VectorStore):
         q_vecs = await self._embedder.embed([query])
         return self._search_by_vector(q_vecs[0], limit)
 
-    async def search_many(
-        self, queries: list[str], limit: int = 10
-    ) -> list[list[SearchResult]]:
+    async def search_many(self, queries: list[str], limit: int = 10) -> list[list[SearchResult]]:
         """One embedder call for all queries, then local scoring per query."""
         if not queries:
             return []
@@ -77,6 +75,10 @@ class InMemoryVectorStore(VectorStore):
 
     async def delete(self, page_id: str) -> None:
         self._store.pop(page_id, None)
+
+    async def delete_many(self, page_ids: list[str]) -> None:
+        for page_id in page_ids:
+            self._store.pop(page_id, None)
 
     async def close(self) -> None:
         self._store.clear()

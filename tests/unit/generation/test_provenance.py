@@ -31,6 +31,7 @@ def _ctx(**over):
     base = dict(
         file_path="pkg/foo.py",
         kg_layer_name="",
+        kg_layer_id="",
         kg_layer_role="",
         dependencies=[],
         decision_records=[],
@@ -41,17 +42,28 @@ def _ctx(**over):
 
 def test_layer_metadata_attached():
     page = _page()
-    _attach_file_provenance(page, _ctx(kg_layer_name="Domain", kg_layer_role="entry_point"))
+    _attach_file_provenance(
+        page,
+        _ctx(
+            kg_layer_name="Domain",
+            kg_layer_id="layer:domain",
+            kg_layer_role="entry_point",
+        ),
+    )
     assert page.metadata["layer_name"] == "Domain"
+    # Stable slug id is attached so the UI joins file -> layer page by id.
+    assert page.metadata["layer_id"] == "layer:domain"
     assert page.metadata["layer_role"] == "entry_point"
 
 
 def test_no_kg_layer_falls_back_to_inferred_layer():
     # Every file page must carry a layer_name so the Architecture tree can
-    # group it; with no KG layer it is inferred from the path.
+    # group it; with no KG layer it is inferred from the path, and the
+    # layer_id is the slug of that inferred name.
     page = _page()
     _attach_file_provenance(page, _ctx(file_path="src/api/users.py"))
     assert page.metadata["layer_name"] == "API"
+    assert page.metadata["layer_id"] == "layer:api"
     # No KG role is invented for the fallback path.
     assert "layer_role" not in page.metadata
 

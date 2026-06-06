@@ -201,6 +201,7 @@ class ContextAssembler:
             community_cohesion=community_cohesion,
             decision_records=decision_records or [],
             kg_layer_name=kg_context.layer_name if kg_context else "",
+            kg_layer_id=kg_context.layer_id if kg_context else "",
             kg_layer_description=kg_context.layer_description if kg_context else "",
             kg_layer_role=kg_context.role if kg_context else "",
             kg_neighbors=kg_context.neighbors if kg_context else [],

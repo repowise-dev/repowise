@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import pytest
 
-from repowise.core.persistence.vector_store.lancedb_store import _paths_in_filter
+from repowise.core.persistence.vector_store.in_memory import InMemoryVectorStore
+from repowise.core.persistence.vector_store.lancedb_store import (
+    _page_ids_in_filter,
+    _paths_in_filter,
+)
 from repowise.core.persistence.vector_store.pgvector_store import (
     PgVectorStore,
     _summary_payload,
@@ -66,9 +70,7 @@ async def test_pg_embed_batch_single_executemany() -> None:
     session = _FakeSession()
     store = PgVectorStore(_factory(session), MockEmbedder())
 
-    await store.embed_batch(
-        [("p1", "alpha", {}), ("p2", "beta", {}), ("p3", "gamma", {})]
-    )
+    await store.embed_batch([("p1", "alpha", {}), ("p2", "beta", {}), ("p3", "gamma", {})])
 
     assert len(session.executed) == 1  # one statement, list-of-params
     stmt, params = session.executed[0]
@@ -153,11 +155,80 @@ async def test_lancedb_batch_summaries_roundtrip(tmp_path) -> None:
             ]
         )
         batch = await store.get_page_summaries_by_paths(["a.py", "c.py", "missing.py"])
-        singles = {
-            p: await store.get_page_summary_by_path(p) for p in ("a.py", "c.py")
-        }
+        singles = {p: await store.get_page_summary_by_path(p) for p in ("a.py", "c.py")}
         assert set(batch) == {"a.py", "c.py"}
         for p in ("a.py", "c.py"):
             assert batch[p]["summary"] == singles[p]["summary"]
+    finally:
+        await store.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_many — bulk removal of swept page embeddings
+# ---------------------------------------------------------------------------
+
+
+async def test_in_memory_delete_many_removes_only_listed_ids() -> None:
+    store = InMemoryVectorStore(MockEmbedder())
+    await store.embed_batch([("p1", "a", {}), ("p2", "b", {}), ("p3", "c", {})])
+
+    await store.delete_many(["p1", "p3"])
+
+    assert await store.list_page_ids() == {"p2"}
+
+
+async def test_in_memory_delete_many_empty_is_noop() -> None:
+    store = InMemoryVectorStore(MockEmbedder())
+    await store.embed_batch([("p1", "a", {})])
+    await store.delete_many([])
+    assert await store.list_page_ids() == {"p1"}
+
+
+async def test_pg_delete_many_single_update_with_in_params() -> None:
+    session = _FakeSession()
+    store = PgVectorStore(_factory(session), MockEmbedder())
+
+    await store.delete_many(["p1", "p2", "p3"])
+
+    assert len(session.executed) == 1
+    stmt, params = session.executed[0]
+    assert "UPDATE wiki_pages SET embedding = NULL" in stmt
+    assert "id IN" in stmt
+    assert params == {"ids": ["p1", "p2", "p3"]}
+    assert session.commits == 1
+
+
+async def test_pg_delete_many_empty_is_noop() -> None:
+    session = _FakeSession()
+    store = PgVectorStore(_factory(session), MockEmbedder())
+    await store.delete_many([])
+    assert session.executed == []
+    assert session.commits == 0
+
+
+def test_lancedb_page_ids_filter_escapes_quotes() -> None:
+    flt = _page_ids_in_filter(["module_page:c-1", "weird'id"])
+    assert flt == "page_id IN ('module_page:c-1', 'weird''id')"
+
+
+@pytest.mark.asyncio
+async def test_lancedb_delete_many_roundtrip(tmp_path) -> None:
+    pytest.importorskip("lancedb")
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    store = LanceDBVectorStore(str(tmp_path / "lance"), MockEmbedder())
+    try:
+        await store.embed_batch(
+            [
+                ("p1", "module a", {"target_path": "a.py"}),
+                ("p2", "module b", {"target_path": "b.py"}),
+                ("p3", "module c", {"target_path": "c.py"}),
+            ]
+        )
+        await store.delete_many(["p1", "p3"])
+        assert await store.list_page_ids() == {"p2"}
+        # empty list is a no-op
+        await store.delete_many([])
+        assert await store.list_page_ids() == {"p2"}
     finally:
         await store.close()

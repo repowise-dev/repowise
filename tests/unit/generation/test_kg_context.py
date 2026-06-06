@@ -212,3 +212,57 @@ class TestInterLayerEdges:
         deps_out, deps_in = ctx.get_inter_layer_edges(ctx.get_layers()[0])
         assert deps_out == []
         assert deps_in == []
+
+
+class TestCuratedTourShape:
+    """The curated export's tour steps carry target_path + reason (no nodeIds)."""
+
+    @pytest.fixture
+    def curated_kg_json(self, tmp_path):
+        kg = {
+            "version": "1.0.0",
+            "project": {"name": "test", "graph_mode": "flow"},
+            "nodes": [
+                {"id": "file:src/main.py", "type": "file", "filePath": "src/main.py"},
+            ],
+            "edges": [],
+            "layers": [
+                {"id": "layer:app", "name": "Application",
+                 "nodeIds": ["file:src/main.py"]},
+            ],
+            "tour": [
+                {"order": 1, "target_path": "src/main.py", "page_type": "file_page",
+                 "title": "main.py", "depth": 1, "kind": "code",
+                 "reason": "An entry point — execution and imports fan out from here.",
+                 "layer_id": "layer:app"},
+            ],
+        }
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").touch()
+        kg_path = tmp_path / ".repowise" / "knowledge-graph.json"
+        kg_path.parent.mkdir()
+        kg_path.write_text(json.dumps(kg))
+        return kg_path
+
+    def test_target_path_steps_map_to_files(self, curated_kg_json):
+        ctx = KnowledgeGraphContext(curated_kg_json)
+        fc = ctx.get_file_context("src/main.py")
+        assert fc is not None and fc.tour_step is not None
+        assert fc.tour_step["order"] == 1
+
+    def test_tour_step_description_falls_back_to_reason(self, curated_kg_json):
+        ctx = KnowledgeGraphContext(curated_kg_json)
+        fc = ctx.get_file_context("src/main.py")
+        assert fc.tour_step["description"].startswith("An entry point")
+
+    def test_get_graph_mode(self, curated_kg_json):
+        ctx = KnowledgeGraphContext(curated_kg_json)
+        assert ctx.get_graph_mode() == "flow"
+
+    def test_graph_mode_absent_on_uncurated(self, sample_kg_json):
+        ctx = KnowledgeGraphContext(sample_kg_json)
+        assert ctx.get_graph_mode() is None
+
+    def test_graph_mode_unavailable(self):
+        ctx = KnowledgeGraphContext(None)
+        assert ctx.get_graph_mode() is None
