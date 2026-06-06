@@ -101,6 +101,18 @@ class TestClassify:
             "pytest --looponfail",
             "tail -f app.log",
             "kubectl logs --follow pod",
+            # PowerShell: compound/continuation/substitution/call operator
+            "git status; git log --oneline -5",
+            "git log --oneline `\n  -20",
+            "git diff $(git merge-base main HEAD)",
+            '& "C:\\Program Files\\Git\\bin\\git.exe" status',
+            "$env:FOO='1'; pytest -x",
+            # PowerShell: Verb-Noun cmdlets
+            "Get-ChildItem -Recurse",
+            "Get-Content app.log -Tail 100",
+            "Select-Object -First 5",
+            "ForEach-Object name",
+            "Test-Path .repowise",
             # already repowise
             "repowise distill pytest -x",
             "repowise update",
@@ -216,6 +228,43 @@ class TestDecide:
         assert result is not None and result.permission == "ask"
 
 
+class TestDecidePowerShell:
+    """shell="powershell" — PS aliases never rewritten, neutral commands are."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls",  # Get-ChildItem alias; not the unix binary
+            "cat server.log",  # Get-Content alias
+            "tail -n 100 app.log",
+            "find . -name '*.py'",  # Windows find.exe differs
+            "tree src",  # tree.com differs
+            "grep -rn auth .",
+        ],
+    )
+    def test_ps_alias_tokens_pass_through(self, repo, command) -> None:
+        assert decide(command, str(repo), shell="powershell") is None
+        # The same command from a POSIX shell still rewrites.
+        assert decide(command, str(repo), shell="posix") is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git status",
+            "git log --oneline -20",
+            "pytest tests/unit -q",
+            r".venv\Scripts\pytest.exe -q",
+            "npm run build",
+            "cargo test",
+        ],
+    )
+    def test_shell_neutral_commands_rewrite(self, repo, command) -> None:
+        result = decide(command, str(repo), shell="powershell")
+        assert result is not None
+        assert result.command == f"repowise distill {command}"
+        assert result.permission == "ask"
+
+
 # ---------------------------------------------------------------------------
 # End-to-end: PreToolUse payload in, hookSpecificOutput JSON out
 # ---------------------------------------------------------------------------
@@ -258,8 +307,17 @@ class TestMain:
     def test_passthrough_emits_nothing(self, monkeypatch, repo) -> None:
         assert _run_main(monkeypatch, _payload("cd src", str(repo))) == ""
 
-    def test_non_bash_tool_ignored(self, monkeypatch, repo) -> None:
+    def test_non_shell_tool_ignored(self, monkeypatch, repo) -> None:
         assert _run_main(monkeypatch, _payload("pytest", str(repo), tool_name="Grep")) == ""
+
+    def test_powershell_tool_rewrites(self, monkeypatch, repo) -> None:
+        out = _run_main(monkeypatch, _payload("git status", str(repo), tool_name="PowerShell"))
+        hso = json.loads(out)["hookSpecificOutput"]
+        assert hso["updatedInput"] == {"command": "repowise distill git status"}
+        assert hso["permissionDecision"] == "ask"
+
+    def test_powershell_alias_passes_through(self, monkeypatch, repo) -> None:
+        assert _run_main(monkeypatch, _payload("ls -la", str(repo), tool_name="PowerShell")) == ""
 
     def test_post_tool_use_ignored(self, monkeypatch, repo) -> None:
         payload = _payload("pytest", str(repo), hook_event_name="PostToolUse")

@@ -18,11 +18,16 @@ if TYPE_CHECKING:
 class RewriteRequest:
     """Agent-agnostic view of one shell command an agent is about to run."""
 
-    __slots__ = ("command", "cwd")
+    __slots__ = ("command", "cwd", "shell")
 
-    def __init__(self, command: str, cwd: str) -> None:
+    def __init__(self, command: str, cwd: str, shell: str = "posix") -> None:
         self.command = command
         self.cwd = cwd
+        #: ``"posix"`` or ``"powershell"`` — which shell dialect the agent
+        #: will run the command under. PowerShell commands get extra
+        #: classifier bailouts (PS aliases like ``ls`` don't survive a
+        #: subprocess wrap through the system shell).
+        self.shell = shell
 
 
 class RewriteResult:

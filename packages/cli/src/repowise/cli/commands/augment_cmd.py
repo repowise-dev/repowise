@@ -1066,7 +1066,9 @@ def _handle_post_tool_use(
         return None
     if tool_name == "Read":
         return _handle_read_post(tool_input, tool_output, cwd, session_id)
-    if tool_name == "Bash":
+    if tool_name in ("Bash", "PowerShell"):
+        # The PowerShell tool (Windows Claude Code) surfaces the same
+        # stdout/stderr response shape as Bash — one handler covers both.
         return _handle_bash_post(tool_input, tool_output, cwd)
     if tool_name in ("Grep", "Glob"):
         return _handle_search_post(tool_name, tool_input, tool_output, cwd)

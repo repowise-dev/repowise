@@ -98,9 +98,15 @@ def register_with_claude_code(repo_path: Path) -> Path | None:
 
 # Current augment PostToolUse matcher. Read/Edit/Write power the distill
 # read-intelligence layer (skeleton nudges + per-file stale-read notices);
-# legacy installs with the narrower matchers below are widened in place.
-_AUGMENT_MATCHER = "Bash|Grep|Glob|Read|Edit|Write"
-_LEGACY_AUGMENT_MATCHERS = ("Bash", "Bash|Grep|Glob")
+# PowerShell is the Windows Claude Code shell tool (same payload shape as
+# Bash); legacy installs with the narrower matchers below are widened in
+# place.
+_AUGMENT_MATCHER = "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
+_LEGACY_AUGMENT_MATCHERS = (
+    "Bash",
+    "Bash|Grep|Glob",
+    "Bash|Grep|Glob|Read|Edit|Write",
+)
 
 
 def install_claude_code_hooks() -> Path | None:
@@ -155,16 +161,21 @@ def install_claude_code_hooks() -> Path | None:
 
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
 
+# Current rewrite PreToolUse matcher; PowerShell is the Windows Claude Code
+# shell tool. Legacy Bash-only installs are widened in place.
+_REWRITE_MATCHER = "Bash|PowerShell"
+_LEGACY_REWRITE_MATCHERS = ("Bash",)
+
 
 def install_claude_code_rewrite_hook() -> Path | None:
-    """Register the opt-in distill PreToolUse rewrite hook (Bash matcher).
+    """Register the opt-in distill PreToolUse rewrite hook (shell matcher).
 
     Idempotent; preserves user hooks and the augment PostToolUse entry.
     Returns the settings path on success, None on failure.
     """
     settings_path = _claude_code_settings_path()
     pre_hook_entry = {
-        "matcher": "Bash",
+        "matcher": _REWRITE_MATCHER,
         "hooks": [
             {
                 "type": "command",
@@ -184,12 +195,26 @@ def install_claude_code_rewrite_hook() -> Path | None:
 
         hooks = existing.setdefault("hooks", {})
         pre_hooks = hooks.setdefault("PreToolUse", [])
+        changed = _migrate_legacy_rewrite_matcher(pre_hooks)
         if not _has_rewrite_hook(pre_hooks):
             pre_hooks.append(pre_hook_entry)
+            changed = True
+        if changed:
             settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return settings_path
     except OSError:
         return None
+
+
+def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
+    """Widen legacy rewrite-hook matchers in place (``Bash`` → current)."""
+    changed = False
+    for entry in hook_list:
+        only_rewrite = entry.get("hooks") and all(_is_rewrite_hook(h) for h in entry["hooks"])
+        if only_rewrite and entry.get("matcher", "") in _LEGACY_REWRITE_MATCHERS:
+            entry["matcher"] = _REWRITE_MATCHER
+            changed = True
+    return changed
 
 
 def uninstall_claude_code_rewrite_hook() -> bool:
@@ -319,10 +344,13 @@ def migrate_claude_code_hooks() -> bool:
     changed = False
 
     pre = hooks.get("PreToolUse")
-    if isinstance(pre, list) and _strip_repowise_pretool(pre):
-        changed = True
-        if not pre:
-            hooks.pop("PreToolUse", None)
+    if isinstance(pre, list):
+        if _strip_repowise_pretool(pre):
+            changed = True
+            if not pre:
+                hooks.pop("PreToolUse", None)
+        if _migrate_legacy_rewrite_matcher(pre):
+            changed = True
 
     post = hooks.get("PostToolUse")
     if isinstance(post, list) and _migrate_legacy_hook(post):

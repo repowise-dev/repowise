@@ -159,10 +159,19 @@ IGNORED_FIRST_TOKENS = frozenset(
 
 # Shell syntax that changes meaning if the command is wrapped: pipes,
 # redirections, chaining, backgrounding, substitution, heredocs, newlines.
+# The same characters cover PowerShell's equivalents: `;` separators,
+# backtick line-continuation/escapes, `$(...)` subexpressions, pipelines,
+# and `& "path\to.exe"` call-operator invocations.
 _SHELL_SYNTAX_RE = re.compile(r"[|&;<>`\n]|\$\(")
 
 # Watch/follow modes are long-running; wrapping them buffers forever.
 _WATCH_RE = re.compile(r"--watch(?:all)?\b|--looponfail\b|(?:^|\s)-f\b.*\.log\b|--follow\b")
+
+# PowerShell cmdlets all follow the Verb-Noun shape (Get-ChildItem,
+# Select-Object, ForEach-Object, …). None of the distill families start
+# with a dashed token, so a Verb-Noun first token is a safe fast bail —
+# PS-native pipelines and object output don't survive wrapping anyway.
+_PS_CMDLET_RE = re.compile(r"^[a-z]+-[a-z]")
 
 
 def classify(command: str) -> str | None:
@@ -173,7 +182,7 @@ def classify(command: str) -> str | None:
     if not normalized or normalized.startswith("repowise"):
         return None
     first = normalized.split(None, 1)[0]
-    if first in IGNORED_FIRST_TOKENS:
+    if first in IGNORED_FIRST_TOKENS or _PS_CMDLET_RE.match(first):
         return None
     if _WATCH_RE.search(normalized):
         return None
@@ -251,11 +260,26 @@ def _load_commands_config(repo_root: str) -> tuple[bool, str, dict]:
     return enabled, permission, families
 
 
-def decide(command: str, cwd: str) -> RewriteResult | None:
+# First tokens that are PowerShell aliases or unix-flavored lookalikes
+# (``ls`` → Get-ChildItem, ``cat`` → Get-Content, Windows ``find``/``tree``
+# differ from their unix namesakes). Wrapping them through ``repowise
+# distill``'s system-shell subprocess would change — or break — what runs,
+# so PowerShell-sourced commands starting with these always pass through.
+_PS_ALIAS_TOKENS = frozenset(
+    {"ls", "dir", "cat", "type", "find", "fd", "tail", "head", "tree", "grep", "egrep", "fgrep"}
+)
+
+
+def decide(command: str, cwd: str, shell: str = "posix") -> RewriteResult | None:
     """Full decision: classification + bailouts + per-repo permission config."""
     family = classify(command)
     if family is None:
         return None
+
+    if shell == "powershell":
+        first = _normalize(command).split(None, 1)[0]
+        if first in _PS_ALIAS_TOKENS:
+            return None
 
     # Only act inside repos that opted into repowise; the hook is installed
     # globally, but a repo without .repowise/ gets untouched commands.
@@ -289,7 +313,7 @@ def main() -> None:
         adapter = ClaudeCodeAdapter()
         request = adapter.parse_hook_payload(sys.stdin.read())
         if request is not None:
-            result = decide(request.command, request.cwd)
+            result = decide(request.command, request.cwd, request.shell)
             if result is not None:
                 sys.stdout.write(adapter.render_response(result))
                 sys.stdout.flush()

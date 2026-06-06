@@ -35,14 +35,19 @@ class ClaudeCodeAdapter(AgentAdapter):
             return None
         if payload.get("hook_event_name") != "PreToolUse":
             return None
-        if payload.get("tool_name") != "Bash":
+        tool_name = payload.get("tool_name")
+        if tool_name not in ("Bash", "PowerShell"):
             return None
         tool_input = payload.get("tool_input")
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
         if not isinstance(command, str) or not command.strip():
             return None
         cwd = payload.get("cwd")
-        return RewriteRequest(command=command, cwd=cwd if isinstance(cwd, str) else "")
+        return RewriteRequest(
+            command=command,
+            cwd=cwd if isinstance(cwd, str) else "",
+            shell="powershell" if tool_name == "PowerShell" else "posix",
+        )
 
     def render_response(self, result: RewriteResult) -> str:
         return json.dumps(
