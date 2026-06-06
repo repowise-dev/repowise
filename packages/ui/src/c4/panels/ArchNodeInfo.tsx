@@ -74,6 +74,58 @@ export function ArchNodeInfo(props: ArchNodeInfoProps) {
         );
       }
     }
+
+    // Folder containers (dir:<path>) — the boxes the detail canvas groups
+    // files into. They aren't ArchNodes, so without this branch selecting
+    // one left the inspector blank.
+    if (selectedNodeId.startsWith("dir:")) {
+      const path = selectedNodeId.slice(4);
+      const memberCount = view.nodes.filter((n) => n.id.startsWith(`${path}/`)).length;
+      return (
+        <ScopeInfo
+          kind="folder"
+          name={path.split("/").pop() ?? path}
+          description={path}
+          fileCount={memberCount}
+          onClose={() => selectNode(null)}
+          onOpen={() => useArchitectureStore.getState().toggleContainer(selectedNodeId)}
+        />
+      );
+    }
+
+    // The "+N more" card that absorbs files beyond the visible-box budget.
+    if (selectedNodeId === "container:__overflow") {
+      return (
+        <ScopeInfo
+          kind="folder"
+          name="More files"
+          description="Files beyond the visible-box budget for this scope. Expand the card to lay them out."
+          onClose={() => selectNode(null)}
+          onOpen={() => useArchitectureStore.getState().toggleContainer(selectedNodeId)}
+        />
+      );
+    }
+
+    // Portal chips (portal:layer:A→layer:B) — wayfinding to a neighbouring
+    // layer this scope exchanges imports with.
+    if (selectedNodeId.startsWith("portal:")) {
+      const targetLayerId = selectedNodeId.split("→")[1];
+      const targetLayer = targetLayerId
+        ? view.layers.find((l) => l.id === targetLayerId)
+        : undefined;
+      if (targetLayer) {
+        return (
+          <ScopeInfo
+            kind="portal"
+            name={targetLayer.name}
+            description={`Files in this scope exchange imports with the ${targetLayer.name} layer. Open it to follow them.`}
+            fileCount={targetLayer.file_count}
+            onClose={() => selectNode(null)}
+            onOpen={() => drillIntoLayer(targetLayer.id)}
+          />
+        );
+      }
+    }
   }
 
   if (!node) return null;
@@ -426,17 +478,17 @@ function ScopeInfo({
   onClose,
   onOpen,
 }: {
-  kind: "layer" | "group";
+  kind: "layer" | "group" | "folder" | "portal";
   name: string;
   description?: string | undefined;
-  fileCount: number;
+  fileCount?: number | undefined;
   groupCount?: number | undefined;
   healthScore?: number | null | undefined;
   onClose: () => void;
   onOpen: () => void;
 }) {
-  const Icon = kind === "layer" ? Layers : Folder;
-  const rows: [string, string][] = [["Files", String(fileCount)]];
+  const Icon = kind === "layer" ? Layers : kind === "portal" ? ExternalLink : Folder;
+  const rows: [string, string][] = fileCount != null ? [["Files", String(fileCount)]] : [];
   if (kind === "layer" && groupCount && groupCount > 0) {
     rows.push(["Groups", String(groupCount)]);
   }
@@ -451,7 +503,15 @@ function ScopeInfo({
           <Icon size={16} style={{ flexShrink: 0, marginTop: 2, color: "var(--color-accent-primary)" }} aria-hidden />
           <div style={{ flex: 1, minWidth: 0 }}>
             <Title>{name}</Title>
-            <Sub style={{ marginTop: 2 }}>{kind === "layer" ? "Layer" : "Group"}</Sub>
+            <Sub style={{ marginTop: 2 }}>
+              {kind === "layer"
+                ? "Layer"
+                : kind === "folder"
+                  ? "Folder"
+                  : kind === "portal"
+                    ? "Connected layer"
+                    : "Group"}
+            </Sub>
           </div>
           <button
             type="button"
@@ -471,14 +531,20 @@ function ScopeInfo({
         {description && <Sub style={{ marginTop: 6 }}>{description}</Sub>}
       </Section>
 
-      <Section>
-        <KVList rows={rows} />
-      </Section>
+      {rows.length > 0 && (
+        <Section>
+          <KVList rows={rows} />
+        </Section>
+      )}
 
       <Section>
         <ActionRow>
           <ActionButton onClick={onOpen} icon={CornerDownRight} variant="primary">
-            {kind === "layer" ? "Open layer" : "Open group"}
+            {kind === "layer" || kind === "portal"
+              ? "Open layer"
+              : kind === "folder"
+                ? "Expand on canvas"
+                : "Open group"}
           </ActionButton>
         </ActionRow>
         <Sub style={{ marginTop: 6, fontSize: 10 }}>

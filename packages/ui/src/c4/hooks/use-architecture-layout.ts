@@ -544,6 +544,7 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
       portalSpecs,
       stage1Edges,
       containerSizeMemory,
+      expandedContainers,
     );
 
     const allNodes: Node[] = [];
@@ -706,11 +707,13 @@ export function useArchitectureLayout(): ArchitectureLayoutResult {
           targetLayerId: portal.targetLayerId,
           targetLayerName: portal.targetLayerName,
           edgeCount: portal.edgeCount,
+          // Portals never appear in aggregated edges (nodeToBox has no portal
+          // mapping), so testing aggregated here dimmed every portal whenever
+          // anything was selected. A portal is related when the selection's
+          // neighbourhood reaches into its target layer.
           dimmed: selectedBox
-            ? !aggregated.some(
-                (a) =>
-                  (a.source === portal.id && a.target === selectedBox) ||
-                  (a.target === portal.id && a.source === selectedBox),
+            ? ![...selectedConnectedNodes].some(
+                (id) => nodeIdToLayerId.get(id) === portal.targetLayerId,
               )
             : false,
         },
