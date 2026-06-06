@@ -248,8 +248,13 @@ def _handle_search_post(
     if repo_path is None:
         return None
 
+    result_count = _search_result_count(tool_output)
+    if result_count is None:
+        # Unknown/unextractable response shape. Skipping is the only safe
+        # answer — treating it as zero results would fire a "no match"
+        # rescue under a Grep that actually succeeded.
+        return None
     output_text = _extract_output_text(tool_output)
-    result_count = _count_search_results(output_text)
 
     # A genuine flood gets a compact per-file digest regardless of what the
     # pattern looks like — it summarizes the actual results, not the concept.
@@ -425,10 +430,11 @@ def _looks_like_path_lookup(pattern: str) -> bool:
 def _extract_output_text(tool_output: object) -> str:
     """Pull the textual portion of a Claude Code tool_output, defensively.
 
-    Claude Code's hook payload shape varies a little by tool: Bash
-    surfaces ``stdout``/``stderr``, Grep/Glob surface ``output`` or
-    ``tool_response``. We only need a string we can count newlines in,
-    so we accept any of the common shapes.
+    Claude Code's hook payload shape varies by tool: Bash/PowerShell
+    surface ``stdout``/``stderr``, Grep surfaces a structured dict
+    (``mode``/``content``/``filenames``), Glob a bare ``filenames`` list.
+    We only need a string we can count newlines in, so we accept any of
+    the shapes captured from real hook payloads.
     """
     if isinstance(tool_output, str):
         return tool_output
@@ -436,7 +442,7 @@ def _extract_output_text(tool_output: object) -> str:
         return ""
     for key in ("output", "result", "content", "stdout", "text"):
         val = tool_output.get(key)
-        if isinstance(val, str):
+        if isinstance(val, str) and val:
             return val
         if isinstance(val, list):
             # Some shapes wrap content as [{"type": "text", "text": "..."}].
@@ -450,7 +456,59 @@ def _extract_output_text(tool_output: object) -> str:
                         parts.append(t)
             if parts:
                 return "\n".join(parts)
+    # Grep files_with_matches / Glob: a list of paths, one per line.
+    filenames = tool_output.get("filenames")
+    if isinstance(filenames, list):
+        parts = [f for f in filenames if isinstance(f, str)]
+        if parts:
+            return "\n".join(parts)
     return ""
+
+
+def _search_result_count(tool_output: object) -> int | None:
+    """Result count for a Grep/Glob tool_response, or None when unknowable.
+
+    Claude Code's Grep responses are structured dicts whose shape varies by
+    output mode (all captured from real PostToolUse payloads):
+
+      content            {"mode": "content", "content": str, "numLines": int, ...}
+      files_with_matches {"mode": "files_with_matches", "filenames": [...], "numFiles": int}
+      count              {"mode": "count", "content": str, "numMatches": int, ...}
+      Glob               {"filenames": [...], "numFiles": int, "truncated": bool}
+
+    Structured counts are trusted as-is — including a genuine zero. For
+    anything else we fall back to counting extracted text lines, where a
+    zero can only come from an explicit no-match sentinel. An empty or
+    unrecognized response returns None: the caller must SKIP, never rescue,
+    on a shape we don't positively understand.
+    """
+    if isinstance(tool_output, dict):
+        mode = tool_output.get("mode")
+        filenames = tool_output.get("filenames")
+        if mode == "files_with_matches" or (
+            mode is None and isinstance(filenames, list) and "numFiles" in tool_output
+        ):
+            num_files = tool_output.get("numFiles")
+            if isinstance(num_files, int):
+                return num_files
+            return len(filenames) if isinstance(filenames, list) else None
+        if mode in ("content", "count"):
+            count_key = "numLines" if mode == "content" else "numMatches"
+            count = tool_output.get(count_key)
+            if isinstance(count, int):
+                return count
+            content = tool_output.get("content")
+            if isinstance(content, str):
+                return _count_search_results(content) if content.strip() else 0
+            return None
+        if isinstance(mode, str):
+            # A future Grep output mode we don't know — refuse to guess.
+            return None
+
+    output_text = _extract_output_text(tool_output)
+    if not output_text.strip():
+        return None
+    return _count_search_results(output_text)
 
 
 def _count_search_results(output_text: str) -> int:

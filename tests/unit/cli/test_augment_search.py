@@ -21,7 +21,65 @@ from repowise.cli.commands.augment_cmd import (
     _handle_search_post,
     _looks_like_path_lookup,
     _name_variants,
+    _search_result_count,
 )
+
+# ---------------------------------------------------------------------------
+# Grep/Glob tool_response fixtures — captured from real Claude Code
+# PostToolUse payloads (transcript toolUseResult entries), trimmed to the
+# fields the tool emits. The dict *shapes* are the contract under test.
+# ---------------------------------------------------------------------------
+
+GREP_FILES_MODE = {
+    "mode": "files_with_matches",
+    "filenames": [
+        "packages\\web\\src\\lib\\api\\costs.ts",
+        "packages\\web\\src\\app\\repos\\[id]\\costs\\page.tsx",
+    ],
+    "numFiles": 2,
+}
+
+GREP_FILES_MODE_ZERO = {"mode": "files_with_matches", "filenames": [], "numFiles": 0}
+
+GREP_CONTENT_MODE = {
+    "mode": "content",
+    "numFiles": 0,
+    "filenames": [],
+    "content": "src/a.py:10:def parse_yaml():\nsrc/b.py:42:parse_yaml()",
+    "numLines": 2,
+}
+
+GREP_CONTENT_MODE_ZERO = {
+    "mode": "content",
+    "numFiles": 0,
+    "filenames": [],
+    "content": "",
+    "numLines": 0,
+}
+
+GREP_COUNT_MODE = {
+    "mode": "count",
+    "numFiles": 5,
+    "filenames": [],
+    "content": (
+        "app\\services\\dodo_service.py:5\n"
+        "app\\services\\admin_notifications.py:6\n"
+        "app\\services\\embedding_service.py:13\n"
+        "app\\services\\account_export_service.py:12\n"
+        "app\\services\\github_app_service.py:9"
+    ),
+    "numMatches": 45,
+    "appliedLimit": 5,
+}
+
+GLOB_RESPONSE = {
+    "filenames": ["src\\a.py", "src\\b.py"],
+    "durationMs": 12,
+    "numFiles": 2,
+    "truncated": False,
+}
+
+GLOB_RESPONSE_ZERO = {"filenames": [], "durationMs": 9769, "numFiles": 0, "truncated": False}
 
 # ---------------------------------------------------------------------------
 # Pure helpers
@@ -81,6 +139,55 @@ class TestExtractOutputText:
         assert _extract_output_text(None) == ""
         assert _extract_output_text(42) == ""
         assert _extract_output_text({"unrelated": "value"}) == ""
+
+    def test_files_mode_joins_filenames(self) -> None:
+        text = _extract_output_text(GREP_FILES_MODE)
+        assert text.splitlines() == GREP_FILES_MODE["filenames"]
+
+    def test_content_mode_returns_content(self) -> None:
+        assert _extract_output_text(GREP_CONTENT_MODE) == GREP_CONTENT_MODE["content"]
+
+    def test_glob_response_joins_filenames(self) -> None:
+        assert _extract_output_text(GLOB_RESPONSE) == "src\\a.py\nsrc\\b.py"
+
+
+class TestSearchResultCount:
+    """Counting against the captured tool_response shapes, mode by mode."""
+
+    def test_files_mode_counts_files(self) -> None:
+        assert _search_result_count(GREP_FILES_MODE) == 2
+
+    def test_files_mode_zero_is_a_true_zero(self) -> None:
+        assert _search_result_count(GREP_FILES_MODE_ZERO) == 0
+
+    def test_content_mode_counts_lines(self) -> None:
+        assert _search_result_count(GREP_CONTENT_MODE) == 2
+
+    def test_content_mode_zero_is_a_true_zero(self) -> None:
+        assert _search_result_count(GREP_CONTENT_MODE_ZERO) == 0
+
+    def test_count_mode_counts_matches(self) -> None:
+        assert _search_result_count(GREP_COUNT_MODE) == 45
+
+    def test_glob_counts_files(self) -> None:
+        assert _search_result_count(GLOB_RESPONSE) == 2
+        assert _search_result_count(GLOB_RESPONSE_ZERO) == 0
+
+    def test_unknown_future_mode_is_unknown(self) -> None:
+        assert _search_result_count({"mode": "summary", "summary": "3 hits"}) is None
+
+    def test_unknown_shape_is_unknown_not_zero(self) -> None:
+        assert _search_result_count({"unrelated": "value"}) is None
+        assert _search_result_count(None) is None
+        assert _search_result_count("") is None
+        assert _search_result_count("   \n") is None
+
+    def test_plain_text_counts_lines(self) -> None:
+        assert _search_result_count("src/a.py:1: hit\nsrc/b.py:2: hit") == 2
+
+    def test_text_zero_requires_a_sentinel(self) -> None:
+        assert _search_result_count({"output": "No matches found"}) == 0
+        assert _search_result_count("Found 0 files") == 0
 
 
 class TestCountSearchResults:
@@ -182,19 +289,62 @@ class TestDecisionTree:
             assert _call("Grep", "auth", output, repowise_cwd) is None
             enrich.assert_not_called()
 
-    def test_rescue_mode_on_zero_results(self, repowise_cwd) -> None:
-        """0 lines + concept query → rescue mode."""
+    @pytest.mark.parametrize(
+        "tool_output",
+        [
+            GREP_FILES_MODE_ZERO,
+            GREP_CONTENT_MODE_ZERO,
+            {"output": "No matches found"},
+        ],
+    )
+    def test_rescue_mode_on_true_zero_results(self, repowise_cwd, tool_output) -> None:
+        """A positively-identified zero + concept query → rescue mode."""
         sentinel = object()
-        with patch.object(
-            augment_cmd, "_search_enrich", return_value=sentinel
-        ) as enrich:
+        with patch.object(augment_cmd, "_search_enrich", return_value=sentinel) as enrich:
             with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
-                _call("Grep", "parse_yaml", "", repowise_cwd)
+                _handle_search_post(
+                    tool_name="Grep",
+                    tool_input={"pattern": "parse_yaml"},
+                    tool_output=tool_output,
+                    cwd=str(repowise_cwd),
+                )
             (call_args,) = enrich.call_args_list
             kwargs = call_args.kwargs or {}
             args = call_args.args
             mode = kwargs.get("mode") if "mode" in kwargs else args[2]
             assert mode == "rescue"
+
+    def test_no_rescue_for_successful_files_mode_grep(self, repowise_cwd) -> None:
+        """The live bug: files_with_matches results must never read as zero."""
+        with patch.object(augment_cmd, "_search_enrich") as enrich:
+            result = _handle_search_post(
+                tool_name="Grep",
+                tool_input={"pattern": "distill_savings"},
+                tool_output=GREP_FILES_MODE,
+                cwd=str(repowise_cwd),
+            )
+            assert result is None
+            enrich.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "tool_output",
+        [
+            {"mode": "summary", "summary": "3 hits"},  # future Grep mode
+            {"unrelated": "value"},
+            {"output": ""},  # empty extraction is NOT a zero signal
+            "",
+        ],
+    )
+    def test_unknown_shape_skips_never_rescues(self, repowise_cwd, tool_output) -> None:
+        with patch.object(augment_cmd, "_search_enrich") as enrich:
+            result = _handle_search_post(
+                tool_name="Grep",
+                tool_input={"pattern": "parse_yaml"},
+                tool_output=tool_output,
+                cwd=str(repowise_cwd),
+            )
+            assert result is None
+            enrich.assert_not_called()
 
     def test_triage_mode_on_flood(self, repowise_cwd) -> None:
         """>= _TRIAGE_THRESHOLD lines → triage mode."""
@@ -202,9 +352,7 @@ class TestDecisionTree:
 
         big = "\n".join(f"src/file{i}.py:1: hit" for i in range(_TRIAGE_THRESHOLD + 5))
         sentinel = object()
-        with patch.object(
-            augment_cmd, "_search_enrich", return_value=sentinel
-        ) as enrich:
+        with patch.object(augment_cmd, "_search_enrich", return_value=sentinel) as enrich:
             with patch("asyncio.run", side_effect=lambda coro: (coro.close(), sentinel)[1]):
                 _call("Grep", "auth", big, repowise_cwd)
             call_args = enrich.call_args_list[0]
