@@ -23,6 +23,10 @@ class KGFileContext:
     layer_name: str
     layer_description: str
     role: str  # "entry_point" | "internal" | "edge_connector"
+    # Stable slug identity of the layer (``layer:<slug>``), distinct from the
+    # mutable ``layer_name`` the LLM enrichment may rewrite. Page keys and
+    # joins use this so they survive layer renames.
+    layer_id: str = ""
     neighbors: list[dict] = field(default_factory=list)
     tour_step: dict | None = None
     tags: list[str] = field(default_factory=list)
@@ -160,6 +164,7 @@ class KnowledgeGraphContext:
 
         return KGFileContext(
             layer_name=layer.get("name", ""),
+            layer_id=layer.get("id", ""),
             layer_description=layer.get("description", ""),
             role=role,
             neighbors=neighbors[:10],

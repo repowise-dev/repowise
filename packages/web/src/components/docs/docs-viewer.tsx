@@ -387,20 +387,36 @@ function DocsViewerBody({
     return out;
   }, [wikiLinks, pages, page.id]);
 
-  // KG layer this file belongs to (P1.4 "layer Y" chip). Links to the layer
+  // KG layer this file belongs to (the "layer Y" chip). Links to the layer
   // page when one was generated, otherwise renders as a static chip.
   const layerName =
     typeof page.metadata?.layer_name === "string" ? page.metadata.layer_name : "";
+  // Layer pages are keyed by the layer's STABLE slug id (`layer:<slug>`), which
+  // survives the LLM rename of the display name. Join by that id; fall back to
+  // the legacy name-keyed target_path for pages generated before the slug fix.
+  const layerId =
+    typeof page.metadata?.layer_id === "string" ? page.metadata.layer_id : "";
   const layerPage = useMemo(
     () =>
-      layerName
+      layerId
         ? pages.find(
-            (p) =>
-              p.page_type === "layer_page" &&
-              p.target_path === `layer:${layerName}`,
-          )
-        : undefined,
-    [pages, layerName],
+            (p) => p.page_type === "layer_page" && p.target_path === layerId,
+          ) ??
+          (layerName
+            ? pages.find(
+                (p) =>
+                  p.page_type === "layer_page" &&
+                  p.target_path === `layer:${layerName}`,
+              )
+            : undefined)
+        : layerName
+          ? pages.find(
+              (p) =>
+                p.page_type === "layer_page" &&
+                p.target_path === `layer:${layerName}`,
+            )
+          : undefined,
+    [pages, layerId, layerName],
   );
 
   // Provenance: the inputs this page was synthesised from (metadata.sources).

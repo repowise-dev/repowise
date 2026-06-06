@@ -60,17 +60,23 @@ def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
     """
     if ctx.kg_layer_name:
         page.metadata["layer_name"] = ctx.kg_layer_name
+        # Stable slug id of the layer page this file links to. The layer page
+        # is keyed by slug (``layer:<slug>``) so the join survives the LLM
+        # layer-name enrichment that mutates ``layer_name`` after generation.
+        if ctx.kg_layer_id:
+            page.metadata["layer_id"] = ctx.kg_layer_id
         if ctx.kg_layer_role:
             page.metadata["layer_role"] = ctx.kg_layer_role
     else:
         # Guarantee every file page carries a layer so the Architecture tree
         # can group it. When the knowledge graph has no layer, fall back to
         # path-based inference.
+        from ...analysis.knowledge_graph import _slugify
         from ..layers import infer_layer
 
-        page.metadata["layer_name"] = infer_layer(
-            ctx.file_path, getattr(ctx, "language", None)
-        )
+        inferred = infer_layer(ctx.file_path, getattr(ctx, "language", None))
+        page.metadata["layer_name"] = inferred
+        page.metadata["layer_id"] = f"layer:{_slugify(inferred)}"
 
     sources: list[dict[str, str]] = []
     seen: set[str] = set()
