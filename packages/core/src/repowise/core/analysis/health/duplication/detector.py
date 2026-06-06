@@ -469,26 +469,51 @@ def _aggregate(
     final: list[ClonePair],
     per_file_nloc: dict[str, int],
 ) -> tuple[dict[str, list[ClonePair]], dict[str, float]]:
-    """Build the per-file pair index and duplication percentages."""
+    """Build the per-file pair index and duplication percentages.
+
+    The percentage is the *union* of the line ranges involved in clone
+    pairs, not the sum of per-pair line counts — the same physical lines
+    often appear in many pairs (repeated handler blocks), and summing
+    would overstate duplication well past 100% (#377).
+    """
     pairs_by_file: dict[str, list[ClonePair]] = defaultdict(list)
-    dup_lines: dict[str, int] = defaultdict(int)
+    dup_ranges: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for p in final:
         pairs_by_file[p.file_a].append(p)
-        dup_lines[p.file_a] += p.a_line_count
-        if not p.is_intra_file:
+        dup_ranges[p.file_a].append((p.a_start_line, p.a_end_line))
+        if p.is_intra_file:
+            # Both regions live in the same file; the b-side is
+            # duplicated coverage too.
+            dup_ranges[p.file_a].append((p.b_start_line, p.b_end_line))
+        else:
             pairs_by_file[p.file_b].append(p)
-            dup_lines[p.file_b] += p.b_line_count
+            dup_ranges[p.file_b].append((p.b_start_line, p.b_end_line))
 
     duplication_pct: dict[str, float] = {}
-    for path, dup in dup_lines.items():
+    for path, ranges in dup_ranges.items():
         nloc = per_file_nloc.get(path, 0)
         if nloc <= 0:
             continue
-        # Cap at 100% — overlapping clones can otherwise double-count
-        # the same physical lines.
-        duplication_pct[path] = round(min(100.0, 100.0 * dup / nloc), 2)
+        # Cap at 100% — covered ranges count physical lines (blanks and
+        # comments included) while the denominator is NLOC, so dense
+        # clone coverage can still nudge past 100.
+        pct = 100.0 * _union_line_count(ranges) / nloc
+        duplication_pct[path] = round(min(100.0, pct), 2)
 
     return dict(pairs_by_file), duplication_pct
+
+
+def _union_line_count(ranges: list[tuple[int, int]]) -> int:
+    """Total number of distinct lines covered by inclusive ``ranges``."""
+    merged_total = 0
+    cur_start, cur_end = -1, -2  # empty sentinel
+    for start, end in sorted(ranges):
+        if start > cur_end + 1:
+            merged_total += cur_end - cur_start + 1
+            cur_start, cur_end = start, end
+        elif end > cur_end:
+            cur_end = end
+    return merged_total + (cur_end - cur_start + 1)
 
 
 def _nloc(source: bytes) -> int:

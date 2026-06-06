@@ -48,8 +48,9 @@ report = detect_clones(parsed_files, git_meta_map)
 
 - `DuplicationReport`:
   - `pairs`: every verified, merged clone region.
-  - `duplication_pct`: per-file duplicate-line percentage, capped at
-    100% to handle overlapping clones.
+  - `duplication_pct`: per-file duplicate-line percentage — the union
+    of clone-pair line ranges over file NLOC, so overlapping pairs
+    don't double-count the same physical lines.
   - `pairs_by_file`: lookup map used by the `dry_violation` biomarker.
 
 ## Extension points

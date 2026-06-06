@@ -16,6 +16,11 @@ from repowise.core.analysis.health.duplication import (
     looks_minified,
     tokenize_file,
 )
+from repowise.core.analysis.health.duplication.detector import (
+    ClonePair,
+    _aggregate,
+    _union_line_count,
+)
 from repowise.core.analysis.health.duplication.rabin_karp import (
     index_by_hash,
     rolling_hashes,
@@ -262,3 +267,83 @@ def test_detect_clones_reports_diagnostics_on_normal_run(tmp_path: Path):
     assert report.diagnostics["files_considered"] == 1
     assert report.diagnostics["degenerate_buckets"] == 0
     assert report.diagnostics["timed_out"] is False
+
+
+# --- duplication_pct aggregation (union, not sum — #377) ----------------
+
+
+def _pair(
+    file_a: str,
+    a_start: int,
+    a_end: int,
+    file_b: str,
+    b_start: int,
+    b_end: int,
+) -> ClonePair:
+    return ClonePair(
+        file_a=file_a,
+        file_b=file_b,
+        a_start_line=a_start,
+        a_end_line=a_end,
+        b_start_line=b_start,
+        b_end_line=b_end,
+        token_count=50,
+    )
+
+
+@pytest.mark.parametrize(
+    ("ranges", "expected"),
+    [
+        ([(1, 5)], 5),
+        ([(1, 5), (10, 12)], 8),  # disjoint
+        ([(1, 10), (5, 15)], 15),  # overlapping
+        ([(1, 20), (5, 8)], 20),  # nested
+        ([(1, 5), (6, 10)], 10),  # adjacent
+        ([(10, 12), (1, 5)], 8),  # unsorted input
+        ([(1, 10), (1, 10), (1, 10)], 10),  # identical repeats
+    ],
+)
+def test_union_line_count(ranges: list[tuple[int, int]], expected: int):
+    assert _union_line_count(ranges) == expected
+
+
+def test_aggregate_overlapping_pairs_do_not_double_count():
+    # The #377 shape: many clone pairs over the SAME physical lines.
+    # Summing per-pair counts gives 10 * 20 = 200 lines over nloc 100
+    # (200% → capped 100%); the union is just 20 lines → 20%.
+    pairs = [_pair("a.py", 1, 20, f"other{i}.py", 1, 20) for i in range(10)]
+    nloc = {"a.py": 100, **{f"other{i}.py": 100 for i in range(10)}}
+    _, pct = _aggregate(pairs, nloc)
+    assert pct["a.py"] == 20.0
+
+
+def test_aggregate_intra_file_pair_counts_both_regions():
+    # Both regions of an intra-file clone are duplicated coverage.
+    pairs = [_pair("a.py", 1, 10, "a.py", 21, 30)]
+    _, pct = _aggregate(pairs, {"a.py": 100})
+    assert pct["a.py"] == 20.0
+
+
+def test_aggregate_distinct_regions_still_add_up():
+    pairs = [
+        _pair("a.py", 1, 10, "b.py", 1, 10),
+        _pair("a.py", 31, 40, "c.py", 1, 10),
+    ]
+    _, pct = _aggregate(pairs, {"a.py": 50, "b.py": 50, "c.py": 50})
+    assert pct["a.py"] == 40.0
+    assert pct["b.py"] == 20.0
+    assert pct["c.py"] == 20.0
+
+
+def test_aggregate_caps_at_100_when_ranges_exceed_nloc():
+    # Covered ranges count physical lines while nloc excludes blanks, so
+    # the ratio can still exceed 100 — the cap stays as a safety net.
+    pairs = [_pair("a.py", 1, 60, "b.py", 1, 60)]
+    _, pct = _aggregate(pairs, {"a.py": 40, "b.py": 40})
+    assert pct["a.py"] == 100.0
+
+
+def test_aggregate_skips_files_without_nloc():
+    pairs = [_pair("a.py", 1, 10, "b.py", 1, 10)]
+    _, pct = _aggregate(pairs, {"a.py": 50})
+    assert "b.py" not in pct
