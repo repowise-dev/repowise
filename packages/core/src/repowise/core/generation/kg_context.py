@@ -23,6 +23,10 @@ class KGFileContext:
     layer_name: str
     layer_description: str
     role: str  # "entry_point" | "internal" | "edge_connector"
+    # Stable slug identity of the layer (``layer:<slug>``), distinct from the
+    # mutable ``layer_name`` the LLM enrichment may rewrite. Page keys and
+    # joins use this so they survive layer renames.
+    layer_id: str = ""
     neighbors: list[dict] = field(default_factory=list)
     tour_step: dict | None = None
     tags: list[str] = field(default_factory=list)
@@ -32,16 +36,32 @@ class KGFileContext:
 class KnowledgeGraphContext:
     """Index a knowledge-graph.json for fast per-file lookups during generation."""
 
-    def __init__(self, kg_path: Path | None, repo_root: Path | None = None):
+    def __init__(
+        self,
+        kg_path: Path | None,
+        repo_root: Path | None = None,
+        *,
+        data: dict | None = None,
+    ):
         self._file_to_layer: dict[str, dict] = {}
         self._file_to_tour: dict[str, dict] = {}
         self._file_to_node: dict[str, dict] = {}
         self._layers: list[dict] = []
+        self._modules: list[dict] = []
         self._tour: list[dict] = []
+        self._project: dict = {}
         self._edges_by_source: dict[str, list[dict]] = {}
         self._edges_by_target: dict[str, list[dict]] = {}
         self._loaded = False
-        if kg_path and kg_path.exists():
+        if data is not None:
+            # In-memory KG (the pipeline result's export dict). The artifact
+            # file is only written during persistence — AFTER generation — so
+            # a fresh init has no file to read and silently lost every
+            # kg_ctx-derived page (layer pages, tour context, file layers).
+            if repo_root is None and kg_path is not None:
+                repo_root = kg_path.parent.parent
+            self._index(data, repo_root or Path())
+        elif kg_path and kg_path.exists():
             self._load(kg_path, repo_root)
 
     @property
@@ -58,7 +78,9 @@ class KnowledgeGraphContext:
 
         if repo_root is None:
             repo_root = path.parent.parent
+        self._index(kg, repo_root)
 
+    def _index(self, kg: dict, repo_root: Path) -> None:
         for node in kg.get("nodes", []):
             fp = node.get("filePath", "")
             if fp:
@@ -72,13 +94,23 @@ class KnowledgeGraphContext:
                     if fp not in self._file_to_layer:
                         self._file_to_layer[fp] = layer
 
+        self._project = kg.get("project") or {}
+        # Curated wiki modules (additive key; absent on uncurated artifacts).
+        self._modules = kg.get("modules", [])
         self._tour: list[dict] = kg.get("tour", [])
         for step in self._tour:
-            for node_id in step.get("nodeIds", []):
-                if node_id.startswith("file:"):
-                    fp = node_id[5:]
-                    if (repo_root / fp).exists():
-                        self._file_to_tour[fp] = step
+            # Curated tour steps carry a single target_path; the older shape
+            # listed nodeIds. Accept both.
+            paths = [
+                node_id[5:]
+                for node_id in step.get("nodeIds", [])
+                if node_id.startswith("file:")
+            ]
+            if step.get("target_path"):
+                paths.append(step["target_path"])
+            for fp in paths:
+                if (repo_root / fp).exists():
+                    self._file_to_tour[fp] = step
 
         for edge in kg.get("edges", []):
             src = edge.get("source", "")
@@ -132,11 +164,14 @@ class KnowledgeGraphContext:
 
         return KGFileContext(
             layer_name=layer.get("name", ""),
+            layer_id=layer.get("id", ""),
             layer_description=layer.get("description", ""),
             role=role,
             neighbors=neighbors[:10],
             tour_step={"order": tour["order"], "title": tour["title"],
-                       "description": tour["description"][:300]} if tour else None,
+                       # Curated steps state their evidence in "reason".
+                       "description": (tour.get("description") or tour.get("reason") or "")[:300]}
+            if tour else None,
             tags=node.get("tags", []),
             node_summary=node.get("summary", ""),
         )
@@ -144,8 +179,20 @@ class KnowledgeGraphContext:
     def get_layers(self) -> list[dict]:
         return self._layers if self._loaded else []
 
+    def get_modules(self) -> list[dict]:
+        """Curated wiki modules from the KG artifact (empty when uncurated)."""
+        return self._modules if self._loaded else []
+
     def get_tour(self) -> list[dict]:
         return self._tour if self._loaded else []
+
+    def get_graph_mode(self) -> str | None:
+        """The curation pass's honesty mode (flow/sparse/structural).
+
+        Only the curated export writes ``project.graph_mode`` — its presence
+        is the marker that the KG (and its tour) went through curation.
+        """
+        return self._project.get("graph_mode") if self._loaded else None
 
     def get_inter_layer_edges(self, layer: dict) -> tuple[list[dict], list[dict]]:
         """Return (deps_out, deps_in) aggregated by target/source layer."""
