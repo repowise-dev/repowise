@@ -5,7 +5,10 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "files": ["src", "styles"],
+  "files": [
+    "src",
+    "styles"
+  ],
   "sideEffects": [
     "./styles/globals.css",
     "**/*.css"
@@ -90,6 +93,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@lottiefiles/dotlottie-react": "^0.19.4",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-hover-card": "^1.1.15",
     "@radix-ui/react-label": "^2.1.8",
@@ -108,8 +112,8 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "d3-force": "^3.0.0",
-    "elkjs": "^0.11.1",
     "d3-hierarchy": "^3.1.2",
+    "elkjs": "^0.11.1",
     "framer-motion": "^11.11.0",
     "fuse.js": "^7.0.0",
     "graphology": "^0.26.0",

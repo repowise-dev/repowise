@@ -50,7 +50,7 @@ import { getC4Mermaid } from "@/lib/api/c4";
 import { C4DetailPanelHost } from "@/components/c4/c4-detail-panel-host";
 import { ArchDetailPanelHost } from "@/components/c4/arch-detail-panel-host";
 import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
-import { OwlLoader } from "@/components/shared/owl-loader";
+import { OwlLoader } from "@repowise-dev/ui/shared/owl-loader";
 import { AlertTriangle } from "lucide-react";
 
 const MODE_VALUES = ["c4", "architecture"] as const;

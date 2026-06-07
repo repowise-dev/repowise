@@ -2,6 +2,7 @@ export * from "./api-error";
 export { BrandMark, type BrandMarkProps } from "./brand-mark";
 export * from "./breadcrumb";
 export * from "./empty-state";
+export { OwlLoader, type OwlLoaderProps } from "./owl-loader";
 export * from "./stat-card";
 export * from "./results-footer";
 export { RowActions, type RowAction } from "./row-actions";
