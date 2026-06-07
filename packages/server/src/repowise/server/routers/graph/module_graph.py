@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import APIRouter, Depends
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.deps import get_db_session
 from repowise.server.routers.graph._common import with_repo
-from repowise.server.routers.graph.signals import _EMPTY_SIGNALS, _collect_node_signals
 from repowise.server.schemas import (
     ModuleEdgeResponse,
     ModuleGraphResponse,
     ModuleNodeResponse,
+)
+from repowise.server.services.node_signals import (
+    EMPTY_SIGNALS,
+    collect_node_signals,
 )
 
 router = APIRouter()
@@ -65,7 +68,7 @@ async def module_graph(
 
     # Collect signals once for all file nodes; aggregate per module below.
     all_node_ids = [n.node_id for n in nodes]
-    signals = await _collect_node_signals(session, repo_id, all_node_ids)
+    signals = await collect_node_signals(session, repo_id, all_node_ids)
 
     node_to_module: dict[str, str] = {}
     module_nodes: list[ModuleNodeResponse] = []
@@ -81,7 +84,7 @@ async def module_graph(
         has_decision = False
         owner_tally: dict[str, int] = {}
         for n in module_file_nodes:
-            sig = signals.get(n.node_id, _EMPTY_SIGNALS)
+            sig = signals.get(n.node_id, EMPTY_SIGNALS)
             if sig.is_hotspot:
                 hotspot_count += 1
             if sig.is_dead:

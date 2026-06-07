@@ -19,7 +19,7 @@ class GraphNodeResponse(BaseModel):
     is_test: bool = False
     is_entry_point: bool = False
     has_doc: bool = False
-    # Cross-link signals (populated by _collect_node_signals)
+    # Cross-link signals (populated by services.node_signals.collect_node_signals)
     is_hotspot: bool = False
     churn_percentile: float | None = None
     is_dead: bool = False

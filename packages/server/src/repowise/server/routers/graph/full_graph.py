@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import APIRouter, Depends, Query
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.server.deps import get_db_session
-from repowise.server.routers.graph._common import _edge_response, _escape_like, with_repo
-from repowise.server.routers.graph.signals import (
-    _EMPTY_SIGNALS,
-    _collect_node_signals,
-    _to_graph_node,
-)
+from repowise.server.routers.graph._common import _escape_like, with_repo
 from repowise.server.schemas import GraphExportResponse, NodeSearchResult
+from repowise.server.services.graph_views import edge_response
+from repowise.server.services.node_signals import (
+    EMPTY_SIGNALS,
+    collect_node_signals,
+    to_graph_node,
+)
 
 # Cap on full-graph export; above this we return top-N by PageRank with truncated=True.
 # Sized to keep the client-side force layout responsive; clients can step the
@@ -80,12 +81,12 @@ async def export_graph(
     edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     edges = edge_result.scalars().all()
 
-    signals = await _collect_node_signals(session, repo_id, list(kept_ids) if truncated else None)
+    signals = await collect_node_signals(session, repo_id, list(kept_ids) if truncated else None)
 
-    node_responses = [_to_graph_node(n, signals.get(n.node_id, _EMPTY_SIGNALS)) for n in nodes]
+    node_responses = [to_graph_node(n, signals.get(n.node_id, EMPTY_SIGNALS)) for n in nodes]
 
     link_responses = [
-        _edge_response(e)
+        edge_response(e)
         for e in edges
         if e.source_node_id in kept_ids and e.target_node_id in kept_ids
     ]

@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import json
-
 from fastapi import Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import GraphEdge, Page, Repository
+from repowise.core.persistence.models import Page, Repository
 from repowise.server.deps import get_db_session
-from repowise.server.schemas import GraphEdgeResponse
 
 
 async def with_repo(
@@ -34,25 +31,6 @@ async def with_repo(
 def _escape_like(s: str) -> str:
     """Escape special characters for SQL LIKE patterns."""
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def _parse_imported_names(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    try:
-        result = json.loads(raw)
-        return result if isinstance(result, list) else []
-    except (json.JSONDecodeError, ValueError):
-        return []
-
-
-def _edge_response(e: GraphEdge) -> GraphEdgeResponse:
-    """Build a GraphEdgeResponse from a GraphEdge ORM row."""
-    return GraphEdgeResponse(
-        source=e.source_node_id,
-        target=e.target_node_id,
-        imported_names=_parse_imported_names(e.imported_names_json),
-    )
 
 
 async def _get_documented_paths(session: AsyncSession, repo_id: str) -> set[str]:

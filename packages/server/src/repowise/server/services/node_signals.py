@@ -3,6 +3,9 @@
 Joins git metadata, dead-code findings, decisions, and docs into one map so
 the graph endpoints can annotate nodes without N round-trips, and converts a
 ``GraphNode`` + its signals into the various node response models.
+
+Lives in the service layer (no FastAPI imports) so non-HTTP consumers — e.g.
+an indexer precomputing graph artifacts — can reuse the same join logic.
 """
 
 from __future__ import annotations
@@ -46,10 +49,10 @@ class NodeSignals:
         self.has_doc: bool = False
 
 
-_EMPTY_SIGNALS = NodeSignals()
+EMPTY_SIGNALS = NodeSignals()
 
 
-async def _collect_node_signals(
+async def collect_node_signals(
     session: AsyncSession,
     repo_id: str,
     node_ids: list[str] | None = None,
@@ -128,7 +131,7 @@ async def _collect_node_signals(
 _NodeResponseT = TypeVar("_NodeResponseT")
 
 
-def _node_to_response(
+def node_to_response(
     n: GraphNode,
     sig: NodeSignals,
     response_cls: type[_NodeResponseT],
@@ -160,6 +163,6 @@ def _node_to_response(
     )
 
 
-def _to_graph_node(n: GraphNode, signals: NodeSignals) -> GraphNodeResponse:
+def to_graph_node(n: GraphNode, signals: NodeSignals) -> GraphNodeResponse:
     """Build a GraphNodeResponse from a GraphNode + its collected signals."""
-    return _node_to_response(n, signals, GraphNodeResponse)
+    return node_to_response(n, signals, GraphNodeResponse)

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
@@ -13,13 +13,7 @@ from repowise.core.persistence.models import (
     GraphNode,
 )
 from repowise.server.deps import get_db_session
-from repowise.server.routers.graph._common import _edge_response, with_repo
-from repowise.server.routers.graph.signals import (
-    _EMPTY_SIGNALS,
-    _collect_node_signals,
-    _node_to_response,
-    _to_graph_node,
-)
+from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import (
     DeadCodeGraphNodeResponse,
     DeadCodeGraphResponse,
@@ -29,6 +23,13 @@ from repowise.server.schemas import (
     GraphExportResponse,
     HotFilesGraphResponse,
     HotFilesNodeResponse,
+)
+from repowise.server.services.graph_views import edge_response
+from repowise.server.services.node_signals import (
+    EMPTY_SIGNALS,
+    collect_node_signals,
+    node_to_response,
+    to_graph_node,
 )
 
 router = APIRouter()
@@ -80,8 +81,8 @@ async def ego_graph(
     )
     node_rows = node_result.scalars().all()
 
-    ego_edge_responses = [
-        _edge_response(e)
+    egoedge_responses = [
+        edge_response(e)
         for e in edges
         if e.source_node_id in ego_node_ids and e.target_node_id in ego_node_ids
     ]
@@ -95,13 +96,13 @@ async def ego_graph(
     git_row = git_result.scalar_one_or_none()
     git_meta = GitMetadataResponse.from_orm(git_row) if git_row else None
 
-    signals = await _collect_node_signals(session, repo_id, list(ego_node_ids))
+    signals = await collect_node_signals(session, repo_id, list(ego_node_ids))
 
-    node_responses = [_to_graph_node(n, signals.get(n.node_id, _EMPTY_SIGNALS)) for n in node_rows]
+    node_responses = [to_graph_node(n, signals.get(n.node_id, EMPTY_SIGNALS)) for n in node_rows]
 
     return EgoGraphResponse(
         nodes=node_responses,
-        links=ego_edge_responses,
+        links=egoedge_responses,
         center_node_id=node_id,
         center_git_meta=git_meta,
         inbound_count=inbound_count,
@@ -154,12 +155,12 @@ async def entry_points_graph(
     )
     nodes = node_result.scalars().all()
 
-    signals = await _collect_node_signals(session, repo_id, list(reachable))
+    signals = await collect_node_signals(session, repo_id, list(reachable))
 
-    node_responses = [_to_graph_node(n, signals.get(n.node_id, _EMPTY_SIGNALS)) for n in nodes]
+    node_responses = [to_graph_node(n, signals.get(n.node_id, EMPTY_SIGNALS)) for n in nodes]
 
     link_responses = [
-        _edge_response(e)
+        edge_response(e)
         for e in edges
         if e.source_node_id in reachable and e.target_node_id in reachable
     ]
@@ -265,12 +266,12 @@ async def dead_code_graph(
         neighbor_nodes = []
 
     all_node_ids = dead_node_ids | neighbor_ids
-    signals = await _collect_node_signals(session, repo_id, list(all_node_ids))
+    signals = await collect_node_signals(session, repo_id, list(all_node_ids))
 
     def _to_dead_node(n: GraphNode, confidence_group: str) -> DeadCodeGraphNodeResponse:
-        return _node_to_response(
+        return node_to_response(
             n,
-            signals.get(n.node_id, _EMPTY_SIGNALS),
+            signals.get(n.node_id, EMPTY_SIGNALS),
             DeadCodeGraphNodeResponse,
             confidence_group=confidence_group,
         )
@@ -293,7 +294,7 @@ async def dead_code_graph(
             and e.target_node_id in all_node_ids
         ):
             seen.add(key)
-            link_responses.append(_edge_response(e))
+            link_responses.append(edge_response(e))
 
     return DeadCodeGraphResponse(nodes=node_responses, links=link_responses)
 
@@ -356,12 +357,12 @@ async def hot_files_graph(
         neighbor_nodes = []
 
     all_node_ids = hot_node_ids | neighbor_ids
-    signals = await _collect_node_signals(session, repo_id, list(all_node_ids))
+    signals = await collect_node_signals(session, repo_id, list(all_node_ids))
 
     def _to_hot_node(n: GraphNode, commit_count: int) -> HotFilesNodeResponse:
-        return _node_to_response(
+        return node_to_response(
             n,
-            signals.get(n.node_id, _EMPTY_SIGNALS),
+            signals.get(n.node_id, EMPTY_SIGNALS),
             HotFilesNodeResponse,
             commit_count=commit_count,
         )
@@ -370,6 +371,6 @@ async def hot_files_graph(
         _to_hot_node(n, 0) for n in neighbor_nodes
     ]
 
-    link_responses = [_edge_response(e) for e in out_edges if e.target_node_id in all_node_ids]
+    link_responses = [edge_response(e) for e in out_edges if e.target_node_id in all_node_ids]
 
     return HotFilesGraphResponse(nodes=node_responses, links=link_responses)
