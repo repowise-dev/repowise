@@ -93,10 +93,26 @@ async def get_all_git_metadata(session: AsyncSession, repository_id: str) -> dic
     return {gm.file_path: gm for gm in result.scalars().all()}
 
 
+# Repo-wide-walk signals (co-change pairs, Hassan entropy). A pass that did
+# not run the walk — ESSENTIAL tier, or an incremental update without the
+# tracked-file set — reports the empty default for these; overwriting blindly
+# wiped the init-computed values for exactly the files that change most.
+_WALK_FIELD_EMPTIES: dict[str, tuple] = {
+    "co_change_partners_json": ("[]", "", None),
+    "change_entropy": (0, 0.0, None),
+}
+
+
 def _update_git_metadata(existing: GitMetadata, meta: dict) -> None:
     for key, val in meta.items():
-        if key not in ("id", "repository_id") and hasattr(existing, key):
-            setattr(existing, key, val)
+        if key in ("id", "repository_id") or not hasattr(existing, key):
+            continue
+        empties = _WALK_FIELD_EMPTIES.get(key)
+        if empties is not None and val in empties:
+            current = getattr(existing, key, None)
+            if current is not None and current not in empties:
+                continue  # keep the previously computed signal
+        setattr(existing, key, val)
     existing.updated_at = _now_utc()
 
 

@@ -199,7 +199,11 @@ async def rebuild_graph_and_git(
             tier=tier,
         )
         changed_paths = build_filtered_changed_paths(file_diffs, exclude_patterns)
-        updated_meta = await git_indexer.index_changed_files(changed_paths)
+        # The full tracked-file set lets the indexer re-run the repo-wide
+        # co-change walk so partners aren't wiped to "[]" for changed files.
+        updated_meta = await git_indexer.index_changed_files(
+            changed_paths, all_files=set(source_map.keys())
+        )
         git_meta_map = {m["file_path"]: m for m in updated_meta}
         graph_builder.update_co_change_edges(git_meta_map)
     except Exception as exc:

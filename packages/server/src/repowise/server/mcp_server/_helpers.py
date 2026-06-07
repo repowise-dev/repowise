@@ -431,12 +431,30 @@ def _compute_alignment(
 
 
 def _get_exclude_spec(repo_path: "Path | str") -> "Any":
-    """Compile the repo's ``exclude_patterns`` into a PathSpec, or None."""
+    """Compile the repo's exclusion rules into a PathSpec, or None.
+
+    Unions ``.repowise/config.yaml`` ``exclude_patterns`` with the repo's
+    gitignore stack (``.gitignore`` + ``.git/info/exclude``). Indexes built
+    before the traverser honoured ``info/exclude`` still contain rows for
+    local-only scratch dirs; filtering them at query time keeps those paths
+    out of tool responses without forcing a reindex.
+    """
+    from pathlib import Path
+
     import pathspec
 
     from repowise.core.repo_config import load_repo_config
 
-    patterns = load_repo_config(repo_path).get("exclude_patterns") or []
+    patterns = list(load_repo_config(repo_path).get("exclude_patterns") or [])
+    root = Path(repo_path)
+    for ignore_file in (root / ".gitignore", root / ".git" / "info" / "exclude"):
+        try:
+            if ignore_file.exists():
+                patterns.extend(
+                    ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+                )
+        except OSError:
+            continue
     if not patterns:
         return None
     return pathspec.PathSpec.from_lines("gitwildmatch", patterns)

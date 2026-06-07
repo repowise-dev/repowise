@@ -108,6 +108,53 @@ async def test_update_path_classifies_agent_provenance(tmp_path) -> None:
     assert meta["agent_tier_counts_json"] != "{}"
 
 
+def _build_repo_with_cochange(tmp_path):
+    """Repo where a.py and b.py change together three times (recent)."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+
+    for i in range(3):
+        (tmp_path / "a.py").write_text(f"x = {i}\n")
+        (tmp_path / "b.py").write_text(f"y = {i}\n")
+        repo.index.add(["a.py", "b.py"])
+        repo.index.commit(f"feat: joint change {i} touching both modules")
+    repo.close()
+
+
+async def test_update_path_recomputes_co_change_partners(tmp_path) -> None:
+    """Regression: index_changed_files left co_change_partners_json at its
+    empty default, and the field-by-field upsert then wiped the partners
+    computed at init for every file an update touched — i.e. the hotspots."""
+    import json
+
+    _build_repo_with_cochange(tmp_path)
+
+    upd = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+    upd_meta = await upd.index_changed_files(["a.py"], all_files={"a.py", "b.py"})
+    (meta,) = upd_meta
+
+    partners = json.loads(meta["co_change_partners_json"])
+    assert partners, "co-change walk must repopulate partners on update"
+    assert partners[0]["file_path"] == "b.py"
+    assert meta["change_entropy"] > 0.0
+
+
+async def test_update_path_essential_tier_skips_co_change_walk(tmp_path) -> None:
+    _build_repo_with_cochange(tmp_path)
+
+    upd = GitIndexer(tmp_path, tier=GitIndexTier.ESSENTIAL)
+    upd_meta = await upd.index_changed_files(["a.py"], all_files={"a.py", "b.py"})
+    (meta,) = upd_meta
+
+    # ESSENTIAL defers the walk; the upsert guard preserves any existing DB
+    # value, so the metadata dict itself stays at the empty default.
+    assert meta["co_change_partners_json"] == "[]"
+
+
 def test_thread_repo_pool_reuses_per_thread_and_closes(tmp_path) -> None:
     _build_repo(tmp_path)
     indexer = GitIndexer(tmp_path)

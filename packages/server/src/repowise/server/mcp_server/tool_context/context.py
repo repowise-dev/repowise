@@ -76,6 +76,11 @@ async def get_context(
                       bodies of the highest-PageRank symbols inlined under a
                       token budget. A fraction of the cost of Read for
                       structure-level questions (file targets only).
+                      DEFAULT for file targets above ~80 lines: the skeleton
+                      replaces the bare symbol list (strictly better per
+                      token). Pass compact=False for the symbol-list card.
+                      A ``mostly_full`` flag marks files where a direct Read
+                      costs little more.
 
     Example: get_context(["src/auth/service.py", "src/auth/middleware.py"])
     Example: get_context(["src/auth/service.py::verify_token"], include=["callers"])
@@ -83,7 +88,8 @@ async def get_context(
     Args:
         targets: file paths, module paths, or qualified symbol IDs.
         include: list of optional data blocks (defaults are always returned).
-        compact: default True (signatures only). False adds structure+imports+docstrings.
+        compact: default True (signatures only; large file targets auto-upgrade
+            to skeleton). False adds structure+imports+docstrings instead.
         repo: usually omitted.
     """
     if repo == "all":

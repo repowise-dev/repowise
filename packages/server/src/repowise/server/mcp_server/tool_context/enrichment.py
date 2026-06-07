@@ -431,3 +431,12 @@ async def _resolve_skeleton(
         result_data["skeleton"]["note"] = (
             "No usable symbol bounds for this file — returned source as-is."
         )
+    elif result.pct_of_full > 40.0:
+        # Small files skeletonize poorly: when the skeleton is already a
+        # large fraction of the source, tell the agent a Read costs little
+        # more and carries everything.
+        result_data["skeleton"]["mostly_full"] = True
+        result_data["skeleton"]["note"] = (
+            f"Skeleton is {round(result.pct_of_full, 1)}% of the full file — "
+            "a direct Read costs little more."
+        )

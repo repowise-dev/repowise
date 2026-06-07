@@ -294,6 +294,65 @@ def test_git_diff_unrecognized_raises() -> None:
         f.distill("random text\n" * 50, command="git diff")
 
 
+# -- git_diff_stat ------------------------------------------------------------------
+
+
+def _stat_output(n_files: int = 100) -> str:
+    lines = []
+    for i in range(n_files):
+        churn = (i * 7) % 250 + 1
+        bars = "+" * min(churn, 20)
+        lines.append(f" pkg/module_{i:03d}.py | {churn:4d} {bars}")
+    lines.append(" img/logo.png | Bin 1024 -> 2048 bytes")
+    lines.append(f" {n_files + 1} files changed, 12345 insertions(+), 6789 deletions(-)")
+    return "\n".join(lines) + "\n"
+
+
+def test_git_diff_stat_keeps_top_by_churn() -> None:
+    f = filter_registry.get("git_diff_stat")
+    assert f is not None
+    raw = _stat_output(100)
+    distilled = f.distill(raw, command="git diff --stat HEAD~50..HEAD")
+    head = distilled.splitlines()
+    assert head[0].startswith("diff --stat: 101 files changed")
+    assert "81 more files omitted" in head[1]  # 101 rows - 20 kept
+    # The highest-churn row survives; a tiny row does not.
+    max_line = max(
+        (ln for ln in raw.splitlines() if "|" in ln and "Bin" not in ln and "changed" not in ln),
+        key=lambda ln: int(ln.split("|")[1].strip().split()[0]),
+    )
+    assert max_line in distilled
+    assert _pct(raw, distilled) >= 50.0
+
+
+def test_git_diff_stat_command_routing() -> None:
+    stat = filter_registry.get("git_diff_stat")
+    hunks = filter_registry.get("git_diff")
+    assert stat.matches_command("git diff --stat HEAD~5")
+    assert not stat.matches_command("git diff HEAD~5")
+    assert not hunks.matches_command("git diff --stat HEAD~5")
+
+
+def test_git_diff_stat_content_sniff() -> None:
+    stat = filter_registry.get("git_diff_stat")
+    assert stat.matches_content(_stat_output(50))
+    assert not stat.matches_content("random text\n" * 50)
+
+
+def test_git_diff_stat_mixed_with_hunks_raises() -> None:
+    f = filter_registry.get("git_diff_stat")
+    mixed = _stat_output(60) + "diff --git a/x.py b/x.py\n+++ b/x.py\n+new line\n"
+    with pytest.raises(ValueError):
+        f.distill(mixed, command="git diff --stat -p")
+
+
+def test_git_diff_stat_small_diff_raises() -> None:
+    # <= KEEP_STAT_FILES rows: nothing to save, fall back to raw.
+    f = filter_registry.get("git_diff_stat")
+    with pytest.raises(ValueError):
+        f.distill(_stat_output(10), command="git diff --stat")
+
+
 # -- file_listing -------------------------------------------------------------------
 
 

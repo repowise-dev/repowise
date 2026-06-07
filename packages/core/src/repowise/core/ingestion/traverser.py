@@ -709,10 +709,20 @@ def _parse_gitmodules(repo_root: Path) -> frozenset[str]:
 
 
 def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
-    gitignore = repo_root / ".gitignore"
+    """Root ignore spec: ``.gitignore`` merged with ``.git/info/exclude``.
+
+    ``info/exclude`` is git's local-only ignore file — paths excluded there
+    (scratch dirs, private checkouts) are invisible to ``git status`` and
+    must be equally invisible to the index, or local-only files leak into
+    the graph, blast-radius lists, and generated docs.
+    """
     lines: list[str] = []
-    if gitignore.exists():
-        lines = gitignore.read_text(encoding="utf-8", errors="ignore").splitlines()
+    for ignore_file in (
+        repo_root / ".gitignore",
+        repo_root / ".git" / "info" / "exclude",
+    ):
+        if ignore_file.exists():
+            lines.extend(ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines())
     return pathspec.PathSpec.from_lines("gitwildmatch", lines)
 
 

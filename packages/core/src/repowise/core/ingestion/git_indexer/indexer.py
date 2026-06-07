@@ -285,7 +285,9 @@ class GitIndexer:
         )
         return summary, results
 
-    async def index_changed_files(self, changed_file_paths: list[str]) -> list[dict]:
+    async def index_changed_files(
+        self, changed_file_paths: list[str], all_files: set[str] | None = None
+    ) -> list[dict]:
         """Incremental update: re-index only changed files.
 
         Mirrors ``index_repo``'s batched shape: one repo-wide commit-index
@@ -293,6 +295,12 @@ class GitIndexer:
         subprocess per changed file), so the metadata an update produces is
         identical to what a fresh full index would produce — including the
         agent-provenance rollup, which the old per-file path never classified.
+
+        ``all_files`` is the repo's full tracked-file set. When provided (and
+        the tier includes co-change), the repo-wide co-change/entropy walk
+        re-runs so the changed files' partners stay fresh — without it,
+        ``index_file``'s empty defaults overwrite the init-computed partners
+        on every update, blanking exactly the files that change most.
         """
         repo = self._get_repo()
         if repo is None:
@@ -374,6 +382,34 @@ class GitIndexer:
                     meta["prior_defect_count"] = prior_defects[meta["file_path"]]
         except Exception as exc:
             logger.debug("prior_defect_pass_failed", error=str(exc))
+
+        # Co-change partners + change entropy ride a repo-wide walk the
+        # per-file pass cannot produce. ``index_file`` resets both fields to
+        # empty defaults and the upsert overwrites rows field-by-field, so
+        # skipping this walk wiped the init-computed partners for every file
+        # an update touched. One ``git log --name-only`` subprocess, same as
+        # the full-index path.
+        if self.tier.includes_co_change and all_files:
+            try:
+                co_changes, change_entropy = await loop.run_in_executor(
+                    None,
+                    compute_co_changes_and_entropy,
+                    repo,
+                    set(all_files),
+                    max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
+                    _DEFAULT_CO_CHANGE_MIN_COUNT,
+                    None,
+                    None,
+                    as_of_ts,
+                )
+                for meta in results:
+                    fp = meta["file_path"]
+                    if fp in co_changes:
+                        meta["co_change_partners_json"] = json.dumps(co_changes[fp])
+                    if fp in change_entropy:
+                        meta["change_entropy"] = change_entropy[fp]
+            except Exception as exc:
+                logger.debug("co_change_pass_failed", error=str(exc))
 
         repo.close()
         return results

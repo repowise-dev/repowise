@@ -42,6 +42,7 @@ RATIO_FLOOR: dict[str, float] = {
     "git_status": 0.15,
     "git_log": 0.80,
     "git_diff": 0.50,
+    "git_diff_stat": 0.50,
     "search_results": 0.40,
     "file_listing": 0.60,
     "logs": 0.50,

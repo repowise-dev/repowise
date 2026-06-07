@@ -15,6 +15,7 @@ co_change_partners_json field stored in git_metadata rows.
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections import defaultdict
 from typing import Any
@@ -281,7 +282,20 @@ class PRBlastRadiusAnalyzer:
         direct_risks: list[dict],
         transitive_affected: list[dict],
     ) -> float:
-        """Compute overall risk score on 0-10 scale."""
+        """Compute overall risk score on 0-10 scale.
+
+        Per-file risk is ``pagerank * (1 + temporal_hotspot)`` — unbounded
+        and pagerank-scaled (typically 0-0.3). The old ``min(raw * 100, 10)``
+        normalisation clipped *everything*: the 0-1 breadth bonus alone
+        scaled to 0-20 points, so any PR with >=20 transitive dependents —
+        i.e. any PR touching a hotspot — reported exactly 10.0 and the score
+        carried no information.
+
+        Instead, squash the pagerank-scale file term through an exponential
+        CDF onto 0-8 points (saturating only asymptotically) and let breadth
+        add up to 2 points. Reference points for the file term:
+        combined 0.01 -> ~0.8, 0.05 -> ~3.1, 0.1 -> ~5.1, 0.3 -> ~7.6.
+        """
         if not direct_risks:
             return 0.0
 
@@ -289,8 +303,7 @@ class PRBlastRadiusAnalyzer:
         max_direct = max(r["risk_score"] for r in direct_risks)
         breadth_bonus = min(len(transitive_affected) / 20.0, 1.0)  # 0-1
 
-        # Weighted: 40% avg, 40% max, 20% breadth — scaled to 10
-        raw = (0.4 * avg_direct + 0.4 * max_direct + 0.2 * breadth_bonus)
-        # Normalise pagerank-based scores (typically << 1) to 0-10
-        score = min(raw * 100.0, 10.0)
+        combined = 0.5 * avg_direct + 0.5 * max_direct
+        file_term = 8.0 * (1.0 - math.exp(-10.0 * combined))  # 0-8, asymptotic
+        score = min(file_term + 2.0 * breadth_bonus, 10.0)
         return round(score, 2)

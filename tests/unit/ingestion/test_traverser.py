@@ -121,6 +121,23 @@ class TestFileTraverser:
         assert not any("debug.log" in p for p in paths)
         assert not any("secret" in p for p in paths)
 
+    def test_respects_git_info_exclude(self, tmp_path: Path) -> None:
+        # .git/info/exclude is git's local-only ignore file — scratch dirs
+        # excluded there are invisible to git status and must be equally
+        # invisible to the index (they leaked into blast-radius lists).
+        info = tmp_path / ".git" / "info"
+        info.mkdir(parents=True)
+        (info / "exclude").write_text("local-stash/\n*.scratch\n")
+        (tmp_path / "app.py").write_text("pass")
+        (tmp_path / "notes.scratch").write_text("pass")
+        (tmp_path / "local-stash").mkdir()
+        (tmp_path / "local-stash" / "probe.py").write_text("pass")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("app.py" in p for p in paths)
+        assert not any("local-stash" in p for p in paths)
+        assert not any("notes.scratch" in p for p in paths)
+
     def test_skips_oversized_files(self, tmp_path: Path) -> None:
         big = tmp_path / "big.py"
         big.write_bytes(b"x = 1\n" * 200_000)  # ~1.2 MB

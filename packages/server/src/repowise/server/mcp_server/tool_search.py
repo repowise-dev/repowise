@@ -46,6 +46,49 @@ def _looks_like_exact_token(query: str) -> bool:
     return bool(_IDENT_QUERY_RE.match(stripped))
 
 
+# Decision records are short, dense title-statements; they win cosine
+# similarity against long file-page embeddings on any query containing
+# design nouns ("store", "SQLite", "cap", "prune") and crowd file pages
+# out of the top ranks entirely. Down-weight them unless the query is
+# why-shaped — rationale questions are get_why's territory, but a caller
+# who phrases one here clearly wants the decision pages ranked honestly.
+_DECISION_DOWNWEIGHT = 0.6
+
+_WHY_SHAPED_RE = re.compile(
+    r"^\s*(why|when\s+did|when\s+was|who\s+decided|who\s+chose|what\s+was\s+the\s+(reason|rationale))\b"
+    r"|\b(decision|decided|rationale|adr)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_why_shaped(query: str) -> bool:
+    """True when the query asks for rationale, so decision records should rank naturally."""
+    return bool(_WHY_SHAPED_RE.search(query))
+
+
+def _downweight_decisions(output: list[dict], query: str) -> None:
+    """Scale decision_record relevance in place unless the query is why-shaped."""
+    if _is_why_shaped(query):
+        return
+    for item in output:
+        if item.get("page_type") == "decision_record" and item.get("relevance_score"):
+            item["relevance_score"] = round(
+                item["relevance_score"] * _DECISION_DOWNWEIGHT, 4
+            )
+
+
+def _fetch_limit_for(limit: int, kind: str | None) -> int:
+    """Over-fetch headroom for post-filters and decision down-weighting.
+
+    Always over-fetch at least 3x: without headroom the down-weighting can
+    only reorder a window that decision records may already fill, so file
+    pages never surface. ``kind`` trims hardest (decision/module/overview
+    pages all classify as "doc"), so it gets 6x — 3x was measured to leave
+    zero implementation pages in the window on decision-heavy queries.
+    """
+    return limit * (6 if kind else 3)
+
+
 # Path-prefix heuristics for the ``kind`` filter. We classify a hit's
 # target_path against these prefixes; if none match, the hit falls into
 # ``other`` and is dropped only when the caller asked for a specific kind.
@@ -79,7 +122,7 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
 
 
 async def _search_single_repo(
-    ctx, query: str, limit: int, page_type: str | None
+    ctx, query: str, limit: int, page_type: str | None, kind: str | None = None
 ) -> tuple[list[dict], str]:
     """Run search against a single repo context.
 
@@ -88,13 +131,17 @@ async def _search_single_repo(
     the list — embedding misses fall through to FTS silently in the existing
     code, and the agent has no way to distinguish a strong embedding hit
     from a fallback BM25 hit otherwise.
+
+    The ``kind`` filter runs here, on the over-fetched list and BEFORE the
+    limit cut — filtering after per-repo truncation returned fewer than
+    ``limit`` results (frequently zero) in the federated path.
     """
     # Wait for vector store readiness
     if ctx.vector_store_ready is not None:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(ctx.vector_store_ready.wait(), timeout=30.0)
 
-    fetch_limit = limit * 3 if page_type else limit
+    fetch_limit = _fetch_limit_for(limit, kind)
     results = []
     method = "embedding"
     with contextlib.suppress(TimeoutError, Exception):
@@ -121,10 +168,12 @@ async def _search_single_repo(
             "relevance_score": r.score,
         })
 
-    output = output[:limit]
+    _downweight_decisions(output, query)
+    output.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
 
     # Attach target_path and drop excluded hits per repo (so federated search
-    # honours each repo's own exclude_patterns) before aggregation.
+    # honours each repo's own exclude_patterns) before aggregation. Runs on
+    # the over-fetched list so the kind filter below has real headroom.
     if output:
         page_ids = [item["page_id"] for item in output]
         async with get_session(ctx.session_factory) as session:
@@ -136,16 +185,24 @@ async def _search_single_repo(
             item["target_path"] = page_info.get(item["page_id"], "")
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
-    return output, method
+    if kind:
+        output = [
+            item for item in output
+            if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == kind
+        ]
+
+    return output[:limit], method
 
 
-async def _federated_search(query: str, limit: int, page_type: str | None) -> dict:
+async def _federated_search(
+    query: str, limit: int, page_type: str | None, kind: str | None = None
+) -> dict:
     """Search across all repos using Reciprocal Rank Fusion."""
     contexts = await _resolve_all_contexts()
     all_results = []
 
     for ctx in contexts:
-        repo_results, repo_method = await _search_single_repo(ctx, query, limit, page_type)
+        repo_results, repo_method = await _search_single_repo(ctx, query, limit, page_type, kind)
         for rank, item in enumerate(repo_results):
             item["repo"] = ctx.alias
             item["rrf_score"] = 1.0 / (rank + 60)  # RRF constant k=60
@@ -205,12 +262,9 @@ async def search_codebase(
         )
 
     if repo == "all":
-        federated = await _federated_search(query, limit, page_type)
-        if kind:
-            federated["results"] = [
-                r for r in federated["results"]
-                if _classify_hit_kind(r.get("target_path", ""), r.get("page_type", "")) == kind
-            ]
+        # kind is filtered per-repo inside _search_single_repo, before each
+        # repo's limit cut, so the fused list is already kind-pure and full.
+        federated = await _federated_search(query, limit, page_type, kind)
         if grep_hint:
             federated["grep_hint"] = grep_hint
         return federated
@@ -229,10 +283,9 @@ async def search_codebase(
     # Try semantic search, fall back to FTS. Track which backend supplied the
     # hits so the response can surface it per-result — silent fallback hides
     # a quality cliff that the agent should weigh into its trust budget.
-    # Over-fetch whenever a post-filter (page_type or kind) will trim hits;
-    # without the head-room a kind filter applied to an already-truncated
-    # list returned fewer than ``limit`` results — frequently zero.
-    fetch_limit = limit * 3 if (page_type or kind) else limit
+    # Always over-fetch (see _fetch_limit_for): post-filters trim hits, and
+    # decision down-weighting needs file pages inside the window to promote.
+    fetch_limit = _fetch_limit_for(limit, kind)
     results = []
     search_method = "embedding"
     with contextlib.suppress(TimeoutError, Exception):
@@ -261,6 +314,8 @@ async def search_codebase(
                 "search_method": search_method,
             }
         )
+
+    _downweight_decisions(output, query)
 
     # Batch-lookup page target paths for the kind filter + git freshness boost
     if output:

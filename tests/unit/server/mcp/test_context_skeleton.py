@@ -64,10 +64,59 @@ async def test_skeleton_missing_source_file(setup_mcp, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skeleton_not_included_by_default(setup_mcp, tmp_path, monkeypatch):
+async def test_skeleton_is_default_for_large_file_targets(setup_mcp, tmp_path, monkeypatch):
+    # service.py spans 100 lines (> the 80-line threshold): the default card
+    # auto-upgrades to the skeleton and drops the redundant symbol list.
     from repowise.server.mcp_server import _state, get_context
 
     _write_source(tmp_path)
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
     result = await get_context(["src/auth/service.py"])
-    assert "skeleton" not in result["targets"]["src/auth/service.py"]
+    card = result["targets"]["src/auth/service.py"]
+    sk = card["skeleton"]
+    assert sk["auto"] is True
+    assert "compact=False" in sk["opt_out_hint"]
+    assert "class AuthService:" in sk["text"]
+    assert "symbols" not in card["docs"]
+    # Summary and freshness still ride along.
+    assert card["docs"].get("summary") is not None
+    assert "freshness" in card
+
+
+@pytest.mark.asyncio
+async def test_small_file_keeps_symbol_card(setup_mcp, tmp_path, monkeypatch):
+    # models.py's symbols end at line 30 — below the threshold, no skeleton.
+    from repowise.server.mcp_server import _state, get_context
+
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    result = await get_context(["src/db/models.py"])
+    card = result["targets"]["src/db/models.py"]
+    assert "skeleton" not in card
+    assert card["docs"]["symbols"]
+
+
+@pytest.mark.asyncio
+async def test_compact_false_opts_out_of_auto_skeleton(setup_mcp, tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _state, get_context
+
+    _write_source(tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    result = await get_context(["src/auth/service.py"], compact=False)
+    card = result["targets"]["src/auth/service.py"]
+    assert "skeleton" not in card
+    assert card["docs"]["symbols"]
+
+
+@pytest.mark.asyncio
+async def test_auto_skeleton_falls_back_to_card_when_source_missing(
+    setup_mcp, tmp_path, monkeypatch
+):
+    # Nothing on disk: the auto-upgrade must degrade to the symbol card, not
+    # to an error-only response (explicit include=["skeleton"] still errors).
+    from repowise.server.mcp_server import _state, get_context
+
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    result = await get_context(["src/auth/service.py"])
+    card = result["targets"]["src/auth/service.py"]
+    assert "skeleton" not in card
+    assert card["docs"]["symbols"]
