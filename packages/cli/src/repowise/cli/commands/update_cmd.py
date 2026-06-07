@@ -1165,10 +1165,19 @@ def update_command(
     except Exception:
         prior_pages = {}
 
-    # Generate affected pages
+    # Generate affected pages. The vector store (shared with the decision
+    # pass above) must ride along: without it regenerated pages are never
+    # re-embedded, so every update silently evicted its pages from semantic
+    # search — on long-lived repos the LanceDB corpus ended up holding
+    # decisions and structural pages but zero current file pages.
     assembler = ContextAssembler(config)
     generator = PageGenerator(
-        provider, assembler, config, language=config.language, prior_pages=prior_pages
+        provider,
+        assembler,
+        config,
+        vector_store=decision_vector_store,
+        language=config.language,
+        prior_pages=prior_pages,
     )
     repo_name = repo_path.name
 
