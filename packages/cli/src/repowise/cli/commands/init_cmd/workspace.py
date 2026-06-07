@@ -400,7 +400,7 @@ def _workspace_init(
     index_only: bool = False,
     skip_tests: bool = False,
     skip_infra: bool = False,
-    concurrency: int = 5,
+    concurrency: int = 10,
     test_run: bool = False,
     reasoning: str | None = None,
     yes: bool = False,

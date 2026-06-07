@@ -228,7 +228,7 @@ def _run_generation_phase(
 @click.option(
     "--force", is_flag=True, default=False, help="Regenerate all pages, ignoring existing."
 )
-@click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
+@click.option("--concurrency", type=int, default=10, help="Max concurrent LLM calls.")
 @click.option(
     "--reasoning",
     type=click.Choice(REASONING_MODES),

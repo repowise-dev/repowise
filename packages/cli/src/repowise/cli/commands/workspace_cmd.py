@@ -236,7 +236,7 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
 )
 @click.option("--provider", "provider_name", default=None, help="LLM provider name (overrides primary's).")
 @click.option("--model", default=None, help="Model identifier (overrides primary's).")
-@click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls during doc generation.")
+@click.option("--concurrency", type=int, default=10, help="Max concurrent LLM calls during doc generation.")
 def workspace_add(
     path: str,
     alias: str | None,
@@ -453,7 +453,7 @@ def _run_index_for_repo(
     generate_docs: bool = False,
     provider_name: str | None = None,
     model: str | None = None,
-    concurrency: int = 5,
+    concurrency: int = 10,
     docs_skip_reason: str | None = None,
 ) -> None:
     """Run the ingestion pipeline on a single repo, optionally with LLM docs.

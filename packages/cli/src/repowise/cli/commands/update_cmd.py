@@ -634,7 +634,7 @@ def _run_full_health_rescore(
 @click.option("--provider", "provider_name", default=None, help="LLM provider name.")
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--since", default=None, help="Base git ref to diff from (overrides state).")
-@click.option("--concurrency", type=int, default=5, help="Max concurrent LLM calls.")
+@click.option("--concurrency", type=int, default=10, help="Max concurrent LLM calls.")
 @click.option(
     "--reasoning",
     type=click.Choice(REASONING_MODES),
@@ -739,7 +739,7 @@ def update_command(
     docs_flag: bool | None = None,
     full: bool = False,
     agents_md: bool | None = None,
-    concurrency: int = 5,
+    concurrency: int = 10,
     no_cost_tracking: bool = False,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync.

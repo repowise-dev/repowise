@@ -250,6 +250,12 @@ def run_repo_generation(
     cost_tracker = build_cost_tracker(repo_path, result.repo_name)
     provider._cost_tracker = cost_tracker
 
+    if verbose:
+        console.print(
+            "  [dim](each generated page is saved as it completes — safe to Ctrl-C, "
+            "then run 'repowise init --resume' to pick up where it stopped)[/dim]"
+        )
+
     with Progress(
         SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),

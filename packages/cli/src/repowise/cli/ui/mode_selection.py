@@ -241,11 +241,11 @@ def _prompt_generation(
     console.print()
 
     # Smart concurrency default
-    default_concurrency = 5
+    default_concurrency = 10
     if scan and scan.total_files < 200:
-        default_concurrency = 8
+        default_concurrency = 12
     elif scan and scan.total_files > 5000:
-        default_concurrency = 3
+        default_concurrency = 5
 
     result["concurrency"] = click.prompt(
         "  Max concurrent LLM calls",
