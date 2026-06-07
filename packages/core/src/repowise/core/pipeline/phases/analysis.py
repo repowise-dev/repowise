@@ -82,8 +82,11 @@ async def _run_health_analysis(
         from repowise.core.analysis.health.config import HealthConfig
 
         if progress:
-            # Per-file determinate progress: one tick per parsed file.
-            progress.on_phase_start("health", len(parsed_files))
+            # Two ticks per parsed file: one when its AST walk completes,
+            # one when its biomarker evaluation completes. Without the
+            # walk tick the bar sits at 0 through the duplication scan and
+            # the entire pre-walk — most of the phase's wall-clock.
+            progress.on_phase_start("health", 2 * len(parsed_files))
 
         # Build a {file_path → community label} map so per-file metrics
         # carry a real module name, not None. Community detection is

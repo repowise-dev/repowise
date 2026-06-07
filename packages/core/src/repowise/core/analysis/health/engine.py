@@ -340,6 +340,10 @@ class HealthAnalyzer:
                 log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
                 fcx = FileComplexity(functions=[], classes=[])
             walked.append((pf, fcx))
+            # Walk tick — the phase total counts each file twice (walk +
+            # evaluate); see analyze_async.
+            if on_step:
+                on_step(pf.file_info.path)
 
         repo_fn_mod_p80 = _compute_repo_function_mod_p80(walked, self.git_meta_map)
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
@@ -422,20 +426,20 @@ class HealthAnalyzer:
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
-        if "dry_violation" in disabled:
-            dup_report = DuplicationReport()
-        else:
-            try:
-                dup_report = await asyncio.to_thread(
+        # Duplication is only consumed by the biomarker stage, so it can
+        # overlap with the pre-walk instead of blocking it — on large
+        # repos the scan takes seconds during which the progress bar
+        # would otherwise sit at zero.
+        dup_task: asyncio.Task | None = None
+        if "dry_violation" not in disabled:
+            dup_task = asyncio.ensure_future(
+                asyncio.to_thread(
                     detect_clones,
                     self.parsed_files,
                     self.git_meta_map,
                     cache_dir=self.duplication_cache_dir,
                 )
-                _log_duplication_diagnostics(dup_report)
-            except Exception as exc:
-                log.debug("health_duplication_failed", error=str(exc))
-                dup_report = DuplicationReport()
+            )
 
         target_files = [
             pf
@@ -443,6 +447,8 @@ class HealthAnalyzer:
             if changed_set is None or pf.file_info.path in changed_set
         ]
         if not target_files:
+            if dup_task is not None:
+                dup_task.cancel()
             return HealthReport(
                 repo_id="",
                 analyzed_at=datetime.now(UTC),
@@ -464,9 +470,23 @@ class HealthAnalyzer:
                 except Exception as exc:
                     log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
                     fcx = FileComplexity(functions=[], classes=[])
+            # Walk tick — the phase total counts each file twice (walk +
+            # evaluate) so the bar moves from the very first completed walk.
+            if on_step:
+                on_step(pf.file_info.path)
             return pf, fcx
 
         walked = await asyncio.gather(*[_one(pf) for pf in target_files])
+
+        if dup_task is None:
+            dup_report = DuplicationReport()
+        else:
+            try:
+                dup_report = await dup_task
+                _log_duplication_diagnostics(dup_report)
+            except Exception as exc:
+                log.debug("health_duplication_failed", error=str(exc))
+                dup_report = DuplicationReport()
         repo_fn_mod_p80 = _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
