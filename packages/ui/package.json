@@ -17,6 +17,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./styles.css": "./styles/globals.css",
+    "./brand": "./src/brand.ts",
     "./graph": "./src/graph/index.ts",
     "./graph/context": "./src/graph/context.ts",
     "./graph/elk-layout": "./src/graph/elk-layout.ts",

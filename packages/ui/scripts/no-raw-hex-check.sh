@@ -29,6 +29,7 @@ ROOT="$PKG_DIR/src"
 
 # Files/dirs allowed to contain raw hex (regex, matched against the path).
 ALLOW='(__tests__|\.test\.)'                              # test fixtures
+ALLOW+='|src/brand\.ts'                                   # BRAND: canonical constants for var()-less surfaces (OG/email/badge)
 ALLOW+='|lib/confidence\.ts'                              # BRAND: LANGUAGE/EDGE color hex (canvas)
 ALLOW+='|costs/provider-comparison\.tsx'                  # BRAND: provider identity colors
 ALLOW+='|workspace/workspace-graph-node\.tsx'            # dynamic langColor hex-alpha concat
