@@ -9,6 +9,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.17.1] — 2026-06-07
+
+### Added
+- **Official MCP Registry listing.** repowise is published to the
+  [MCP Registry](https://registry.modelcontextprotocol.io) as
+  `dev.repowise/repowise` (PyPI package, stdio transport), so MCP clients can
+  discover and install the server from the registry directly.
+- **Distill: stat-only diff filter.** `git diff --stat` output gets its own
+  filter — the roll-up line plus the top-20 rows by churn — instead of
+  slipping past the hunk-based diff filter raw (#414).
+
+### Changed
+- **Skeleton is the default context card for files.** `get_context` on file
+  targets above ~80 lines now returns the smart skeleton (every signature,
+  central bodies inlined) instead of the bare symbol list — measured strictly
+  better per token. `compact=False` opts out; a `mostly_full` flag marks small
+  files where a direct `Read` costs little more (#414).
+- **`repowise init` defaults tuned.** LLM concurrency defaults to 10 (tiny
+  repos 12, huge repos 5) across `init`, `update`, and `workspace add`; the
+  LLM cost-gate confirm defaults to yes (the cost was already shown beside the
+  coverage tier); page generation prints a hint that runs are resumable with
+  `init --resume` (#412).
+
+### Fixed
+- **Semantic search lost embeddings on mid-size repos.** A whole generation
+  level was embedded in one API request; file pages routinely blew the
+  provider's per-request token cap, failed 400, and the failure was swallowed
+  at debug level — fresh inits silently lost all file-page embeddings.
+  `embed_batch` now chunks requests with failure isolation per chunk, and the
+  loss (if any) surfaces as a warning with a `repowise reindex` repair hint
+  (#414).
+- **`repowise update` evicted pages from semantic search.** Regenerated pages
+  were persisted to SQLite but never re-embedded, so every update drifted the
+  vector corpus away from file pages. Updates now embed regenerated pages into
+  the vector store; existing repos repair with `repowise reindex` (#414).
+- **`search_codebase` ranking.** Decision records (short title-statements)
+  no longer dominate design-noun queries — they're down-weighted unless the
+  query is why-shaped; retrieval over-fetches before re-ranking; the `kind`
+  filter runs before the limit cut so `kind="implementation"` can't return an
+  empty list; pages without a backing file classify as `"doc"` (#413, #414).
+- **`get_risk` calibration.** The 0–10 score no longer pins at 10.0 from
+  transitive-dependent breadth alone (exponential file term + capped breadth
+  term); co-change partners survive incremental updates instead of being
+  wiped; files excluded via `.git/info/exclude` no longer leak into
+  `will_break`; `directive.missing_tests` is scoped to the PR's changed files
+  (#413, #414).
+- **`get_context` contract.** Docs + freshness defaults are always returned —
+  `include=["skeleton"]` no longer drops the summary and freshness card;
+  signatures collapse onto one line (no leaked `\r\n` from CRLF files); module
+  cards describe child files with their indexed summaries (#413).
+- **Generated CLAUDE.md quality.** Word-boundary truncation in tables (no more
+  mid-word chops), prose-only sentence extraction (list items and table rows
+  no longer jam onto the architecture paragraph), guided-tour steps carry file
+  paths again, the Owner column drops when no module has owner data, and tech
+  stack detection ignores test fixtures / vendored repos and finds
+  `tsconfig.json` in workspace packages (#413).
+- **`repowise init` health-phase progress bar** moved from the first completed
+  AST walk instead of sitting at 0/N through the pre-walk, and the duplication
+  scan overlaps the pre-walk (#412).
+- **Distill on Windows:** `cmd /c` wrappers are stripped during command
+  normalization so native listings route to the file-listing filter, which now
+  also accepts absolute Windows paths (#413).
+
 ## [0.17.0] — 2026-06-06
 
 ### Added

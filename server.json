@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "dev.repowise/repowise",
+  "title": "Repowise",
+  "description": "Codebase intelligence for AI coding agents — graph, git history, docs, decisions, code health.",
+  "repository": {
+    "url": "https://github.com/repowise-dev/repowise",
+    "source": "github"
+  },
+  "websiteUrl": "https://www.repowise.dev",
+  "version": "0.17.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "repowise",
+      "version": "0.17.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp",
+          "description": "The repowise CLI subcommand that starts the MCP server"
+        },
+        {
+          "type": "positional",
+          "valueHint": "repo_path",
+          "description": "Absolute path to the repository to serve (must be indexed first with `repowise init`)",
+          "isRequired": true,
+          "format": "filepath"
+        },
+        {
+          "type": "named",
+          "name": "--transport",
+          "value": "stdio",
+          "description": "Transport protocol"
+        }
+      ]
+    }
+  ]
+}

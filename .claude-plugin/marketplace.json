@@ -14,7 +14,7 @@
       "name": "repowise",
       "source": "./plugins/claude-code",
       "description": "Codebase intelligence for Claude Code. Indexes your repo into five layers (Graph, Git, Docs, Decisions, Code Health) and gives Claude deep understanding of architecture, ownership, hotspots, decisions, and defect risk — fewer greps, fewer file reads, lower cost per query.",
-      "version": "0.17.0",
+      "version": "0.17.1",
       "category": "productivity",
       "keywords": [
         "codebase",

@@ -1,3 +1,5 @@
+<!-- mcp-name: dev.repowise/repowise -->
+
 <div align="center">
 
 <a href="https://www.repowise.dev"><img src=".github/assets/banner.png" alt="repowise — the codebase intelligence layer for your AI coding agent" width="100%" /></a>
