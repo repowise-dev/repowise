@@ -77,6 +77,16 @@ def _synthesize_structural_summary(file_path: str, classes: list[str], functions
     return f"{name}: " + "; ".join(parts) + "."
 
 
+def _clean_signature(signature: str | None) -> str:
+    """Collapse a stored signature onto one line.
+
+    Signatures indexed from CRLF files carry literal ``\\r\\n`` plus the
+    original indentation — pure token waste in a triage card. Whitespace
+    runs collapse to single spaces; the text is unchanged otherwise.
+    """
+    return " ".join((signature or "").split())
+
+
 async def _resolve_one_target(
     session: AsyncSession,
     repository: Repository,
@@ -333,7 +343,14 @@ async def _resolve_one_target(
             symbols = res.scalars().all()
             classes = [s.name for s in symbols if s.kind == "class"]
             functions = [s.name for s in symbols if s.kind in ("function", "method")]
-            if compact:
+            if include and "skeleton" in include:
+                # The skeleton block already renders every signature with
+                # line bounds — repeating the symbol list in docs would
+                # roughly double the response for zero information. Keep
+                # the cheap title/summary card only.
+                if not docs.get("summary"):
+                    docs["summary"] = _synthesize_structural_summary(target, classes, functions)
+            elif compact:
                 # Compact mode: name+kind+signature+line+symbol_id only. Drops
                 # docstrings, line ranges, structure, and imported_by — those
                 # live behind compact=False or include= flags. The symbol_id
@@ -351,7 +368,7 @@ async def _resolve_one_target(
                     {
                         "name": s.name,
                         "kind": s.kind,
-                        "signature": s.signature,
+                        "signature": _clean_signature(s.signature),
                         "line": s.start_line,
                         "symbol_id": s.symbol_id,
                     }
@@ -370,7 +387,7 @@ async def _resolve_one_target(
                     {
                         "name": s.name,
                         "kind": s.kind,
-                        "signature": s.signature,
+                        "signature": _clean_signature(s.signature),
                         "start_line": s.start_line,
                         "end_line": s.end_line,
                         "docstring": (s.docstring or "")[:400],
@@ -440,7 +457,10 @@ async def _resolve_one_target(
                 [
                     {
                         "path": f.target_path,
-                        "description": f.title,
+                        # Page titles are "File: <path>" — pure redundancy
+                        # next to the path field. Use the indexed one-line
+                        # summary when there is one.
+                        "description": (f.summary or "").strip()[:160],
                         "confidence_score": f.confidence,
                     }
                     for f in file_pages
@@ -454,7 +474,7 @@ async def _resolve_one_target(
             docs["name"] = sym.name
             docs["qualified_name"] = sym.qualified_name
             docs["kind"] = sym.kind
-            docs["signature"] = sym.signature
+            docs["signature"] = _clean_signature(sym.signature)
             docs["file_path"] = sym.file_path
             docs["docstring"] = sym.docstring or ""
             # File page summary (full content gated behind include=["full_doc"])

@@ -15,8 +15,11 @@ from repowise.core.distill.registry import filter_registry
 
 _COMMAND_RE = re.compile(r"^(ls\b|dir\b|tree\b|find\b|fd\b|get-childitem\b|gci\b|git ls-files\b)")
 
-# A bare path: no spaces (or escaped ones), with directory separators or an extension.
-_PATH_LINE_RE = re.compile(r"^[\w.@~-]+(?:[\\/][\w.@\[\]-]+)*[\\/]?$")
+# A bare path: no spaces (or escaped ones), with directory separators or an
+# extension. The optional drive prefix covers absolute Windows paths
+# (``C:\Users\...`` from ``dir /s /b``), which the sniff used to reject
+# wholesale because of the colon.
+_PATH_LINE_RE = re.compile(r"^(?:[A-Za-z]:[\\/])?[\w.@~-]+(?:[\\/][\w.@\[\]-]+)*[\\/]?$")
 
 # ls -l style: permission bits then columns ending in the name.
 _LS_LONG_RE = re.compile(r"^[-dlbcps][-rwxsStT]{9}[\s+@]")

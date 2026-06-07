@@ -106,6 +106,42 @@ class TestClaudeMdKGSection:
         assert "**Entry Point**" in rendered
         assert "`src/main.py`" in rendered
 
+    def test_key_modules_owner_column_dropped_when_no_owners(self, jinja_env):
+        from repowise.core.generation.editor_files.data import KeyModule
+
+        tmpl = jinja_env.get_template("claude_md.j2")
+        data = EditorFileData(
+            repo_name="test",
+            indexed_at="2026-05-25",
+            indexed_commit="abc123",
+            architecture_summary="",
+            key_modules=[
+                KeyModule(name="src/api", purpose="API layer", file_count=4, owner=None),
+                KeyModule(name="src/core", purpose="Core logic", file_count=9, owner=None),
+            ],
+        )
+        rendered = tmpl.render(data=data)
+        assert "| Module | Purpose |" in rendered
+        assert "Owner" not in rendered
+
+    def test_key_modules_owner_column_kept_when_any_owner(self, jinja_env):
+        from repowise.core.generation.editor_files.data import KeyModule
+
+        tmpl = jinja_env.get_template("claude_md.j2")
+        data = EditorFileData(
+            repo_name="test",
+            indexed_at="2026-05-25",
+            indexed_commit="abc123",
+            architecture_summary="",
+            key_modules=[
+                KeyModule(name="src/api", purpose="API layer", file_count=4, owner="Alice"),
+                KeyModule(name="src/core", purpose="Core logic", file_count=9, owner=None),
+            ],
+        )
+        rendered = tmpl.render(data=data)
+        assert "| Module | Purpose | Owner |" in rendered
+        assert "Alice" in rendered
+
     def test_no_tour_section_without_data(self, jinja_env):
         tmpl = jinja_env.get_template("claude_md.j2")
         data = EditorFileData(

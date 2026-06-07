@@ -90,12 +90,15 @@ async def get_context(
         return _unsupported_repo_all("get_context")
     ctx = await _resolve_repo_context(repo)
 
-    # Default to docs + freshness when include is omitted. Freshness is
-    # critical for the agent to detect stale index data.  The other blocks
-    # (ownership/last_change/decisions) are 200-500 bytes each and bloat
-    # every subsequent agent turn via cache replay. Callers that want them
-    # must pass include explicitly.
-    include_set = set(include) if include else {"docs", "freshness"}
+    # docs + freshness are ALWAYS returned (the tool contract says
+    # "defaults are always returned"); ``include`` only adds blocks on top.
+    # Freshness is critical for the agent to detect stale index data. The
+    # other blocks (ownership/last_change/decisions) are 200-500 bytes each
+    # and bloat every subsequent agent turn via cache replay. Callers that
+    # want them must pass include explicitly. Building the set this way
+    # also fixes include=["skeleton"] silently dropping the file summary
+    # and freshness card that every other call shape carries.
+    include_set = {"docs", "freshness"} | (set(include) if include else set())
 
     exclude_spec = _get_exclude_spec(ctx.path)
 

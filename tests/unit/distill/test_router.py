@@ -20,6 +20,9 @@ from repowise.core.distill.router import normalize_command, select_filter
         ("/usr/bin/git diff", "git diff"),
         ("FOO=bar npm test", "npm test"),
         ("npx vitest run", "vitest run"),
+        ('cmd /c "dir /s /b packages"', "dir /s /b packages"),
+        ("cmd.exe /c dir /s", "dir /s"),
+        ("CMD /C tree src", "tree src"),
     ],
 )
 def test_normalize_command(raw: str, expected: str) -> None:
@@ -56,6 +59,7 @@ def test_normalize_command(raw: str, expected: str) -> None:
         ("find . -name *.py", "file_listing"),
         ("ls -la", "file_listing"),
         ("tree packages", "file_listing"),
+        ('cmd /c "dir /s /b packages"', "file_listing"),
         ("tail -200 app.log", "logs"),
         ("docker logs api", "logs"),
         ("kubectl logs pod-1", "logs"),

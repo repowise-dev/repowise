@@ -716,8 +716,21 @@ async def get_risk(
             [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
             exclude_spec,
         )[:3]
+        # Scope to the PR: the directive answers "what should I do about
+        # THIS diff", so only changed files belong here. Repo-wide test
+        # gaps stay available in pr_blast_radius.test_gaps for deeper
+        # review — surfacing them in the directive made unrelated files
+        # ("alembic/env.py has no tests") read as failings of the PR.
+        # Read from the untrimmed analyzer payload: the trimmed list is
+        # capped at 10 repo-wide entries and may have already dropped the
+        # changed files we're looking for.
+        changed_set = set(changed_files)
         missing_tests = filter_path_list(
-            [p for p in (_as_path(e) for e in trimmed_blast.get("test_gaps", [])) if p],
+            [
+                p
+                for p in (_as_path(e) for e in pr_blast_radius.get("test_gaps", []))
+                if p and p in changed_set
+            ],
             exclude_spec,
         )[:3]
 

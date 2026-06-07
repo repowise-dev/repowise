@@ -158,6 +158,8 @@ class TestClassify:
             "npx jest --ci",
             "git status",
             "LS_COLORS=1 ls -la",
+            'cmd /c "dir /s /b packages"',
+            "cmd.exe /c dir /s",
         ],
     )
     def test_normalize_mirrors_core_router(self, command: str) -> None:

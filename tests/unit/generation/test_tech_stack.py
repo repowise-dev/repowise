@@ -64,6 +64,77 @@ def test_detects_typescript_from_tsconfig(tmp_path):
     assert "TypeScript" in names
 
 
+def test_detects_typescript_from_workspace_package_tsconfig(tmp_path):
+    # Monorepos often keep tsconfig.json only inside workspace packages.
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "app", "dependencies": {}}), encoding="utf-8"
+    )
+    pkg_dir = tmp_path / "packages" / "ui"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "tsconfig.json").write_text("{}", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "TypeScript" in names
+
+
+def test_node_modules_tsconfig_is_not_typescript_evidence(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "app", "dependencies": {}}), encoding="utf-8"
+    )
+    dep_dir = tmp_path / "node_modules" / "some-dep"
+    dep_dir.mkdir(parents=True)
+    (dep_dir / "tsconfig.json").write_text("{}", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "TypeScript" not in names
+
+
+def test_fixture_csproj_does_not_make_repo_csharp(tmp_path):
+    # A Python repo with .NET solutions under tests/fixtures and vendored
+    # sample repos must not be labelled a C# codebase by its own test data.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    for parent in ("tests/fixtures/dotnet_solution/src/Api", "test-repos/eShop/src/Api"):
+        d = tmp_path / parent
+        d.mkdir(parents=True)
+        (d / "Api.csproj").write_text("<Project></Project>", encoding="utf-8")
+    (tmp_path / "test-repos" / "eShop" / "eShop.sln").write_text("", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "C#" not in names
+    assert ".NET" not in names
+    assert "Python" in names
+
+
+def test_nested_git_repo_csproj_is_not_stack_evidence(tmp_path):
+    # Vendored checkouts (benchmark repos, sibling clones) are separate git
+    # repos — their project files must not define this repo's tech stack.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    nested = tmp_path / "bench-repos" / "nethermind"
+    (nested / ".git").mkdir(parents=True)
+    proj = nested / "tools" / "Evm"
+    proj.mkdir(parents=True)
+    (proj / "Evm.csproj").write_text("<Project></Project>", encoding="utf-8")
+    (nested / "Nethermind.sln").write_text("", encoding="utf-8")
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "C#" not in names
+    assert ".NET" not in names
+
+
+def test_real_dotnet_repo_still_detected(tmp_path):
+    d = tmp_path / "src" / "Web"
+    d.mkdir(parents=True)
+    (d / "Web.csproj").write_text(
+        "<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework>"
+        "</PropertyGroup></Project>",
+        encoding="utf-8",
+    )
+    items = detect_tech_stack(tmp_path)
+    names = [i.name for i in items]
+    assert "C#" in names
+    assert ".NET" in names
+
+
 def test_detects_rust_from_cargo_toml(tmp_path):
     (tmp_path / "Cargo.toml").write_text(
         '[package]\nname = "myapp"\nversion = "0.1.0"\n', encoding="utf-8"

@@ -98,7 +98,7 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "exclude": (),
         "commit_limit": 500,
         "follow_renames": False,
-        "concurrency": 5,
+        "concurrency": 10,
         "reasoning": "auto",
         "embedder": "mock",
         "test_run": False,
@@ -113,4 +113,4 @@ def test_advanced_config_allow_fast_small_repo(monkeypatch: pytest.MonkeyPatch) 
     assert result["run_mode"] == "standard"
     assert result["tier1_top_n"] is None
     assert result["commit_limit"] == 1000  # <500 files -> deeper history default
-    assert result["concurrency"] == 8  # <200 files -> higher concurrency default
+    assert result["concurrency"] == 12  # <200 files -> higher concurrency default

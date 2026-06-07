@@ -203,11 +203,28 @@ async def test_get_context_include_filter(setup_mcp):
 
     result = await get_context(["src/auth/service.py"], include=["docs"])
     t = result["targets"]["src/auth/service.py"]
+    # docs + freshness are the always-on defaults (the tool contract says
+    # "defaults are always returned"); include only ADDS blocks.
     assert "docs" in t
+    assert "freshness" in t
     assert "ownership" not in t
     assert "last_change" not in t
     assert "decisions" not in t
-    assert "freshness" not in t
+
+
+@pytest.mark.asyncio
+async def test_get_context_skeleton_keeps_default_card(setup_mcp):
+    """include=["skeleton"] must not silently drop the summary/freshness card."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/auth/service.py"], include=["skeleton"])
+    t = result["targets"]["src/auth/service.py"]
+    assert "freshness" in t
+    assert "docs" in t
+    assert t["docs"].get("summary")
+    # ...but the symbol list is suppressed: the skeleton already carries
+    # every signature, so repeating it in docs would double the response.
+    assert "symbols" not in t["docs"]
 
 
 @pytest.mark.asyncio

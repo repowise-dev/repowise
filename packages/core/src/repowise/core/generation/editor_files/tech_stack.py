@@ -68,10 +68,15 @@ _DOTNET_MAX_PROJECTS = 200
 
 # Directory names to prune from the scan. These never host real
 # project source and bloat the walk on Windows where `bin/obj`
-# contains thousands of intermediate files per project.
+# contains thousands of intermediate files per project. Test fixtures
+# and vendored sample repos are pruned too: a Python/TS repo that keeps
+# .NET solutions under tests/fixtures/ or test-repos/ must not be
+# labelled a C# codebase by its own test data.
 _DOTNET_PRUNE = frozenset({
     "bin", "obj", ".vs", "node_modules", ".git", "packages",
     ".idea", "artifacts", ".build", "TestResults",
+    "tests", "test", "fixtures", "test-repos", "testdata", "samples",
+    "local-stash",
 })
 
 
@@ -98,6 +103,11 @@ def _find_dotnet_projects(repo_path: Path) -> list[Path]:
                 return
             if entry.is_dir():
                 if entry.name in _DOTNET_PRUNE or entry.name.startswith("."):
+                    continue
+                # A nested git repo is a separate project (vendored
+                # benchmark checkout, sibling clone) — its project files
+                # must not define THIS repo's tech stack.
+                if (entry / ".git").exists():
                     continue
                 _walk(entry, depth + 1)
             elif entry.is_file() and entry.suffix == ".csproj":
@@ -160,7 +170,26 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
                     add(display, raw or None, cat)
         # TypeScript can be added independently — many monorepos only use
         # TS via tsconfig.json without depending on a Node.js runtime.
-        if "typescript" in all_deps or (repo_path / "tsconfig.json").exists():
+        # Monorepos frequently keep tsconfig.json only inside workspace
+        # packages (packages/*/tsconfig.json), so look two levels deep.
+        def _is_project_dir(p: Path) -> bool:
+            rel_parts = p.relative_to(repo_path).parts[:-1]
+            if any(part == "node_modules" or part.startswith(".") for part in rel_parts):
+                return False
+            # Skip nested git repos (sibling clones, vendored checkouts).
+            probe = repo_path
+            for part in rel_parts:
+                probe = probe / part
+                if (probe / ".git").exists():
+                    return False
+            return True
+
+        has_tsconfig = (
+            (repo_path / "tsconfig.json").exists()
+            or any(_is_project_dir(p) for p in repo_path.glob("*/tsconfig.json"))
+            or any(_is_project_dir(p) for p in repo_path.glob("*/*/tsconfig.json"))
+        )
+        if "typescript" in all_deps or has_tsconfig:
             ts_ver = all_deps.get("typescript", "").lstrip("^~>=") or None
             add("TypeScript", ts_ver, "language")
 
@@ -227,7 +256,15 @@ def detect_tech_stack(repo_path: Path) -> list[TechStackItem]:
     # still register. A shallow glob misses every real-world .NET
     # monorepo layout — eShop, Aspire samples, PowerToys, Roslyn etc.
     csproj_files = _find_dotnet_projects(repo_path)
-    sln_files = list(repo_path.glob("*.sln")) + list(repo_path.glob("*/*.sln"))
+    sln_files = [
+        sln
+        for sln in list(repo_path.glob("*.sln")) + list(repo_path.glob("*/*.sln"))
+        if sln.parent == repo_path
+        or (
+            sln.parent.name not in _DOTNET_PRUNE
+            and not (sln.parent / ".git").exists()
+        )
+    ]
     has_directory_build = (repo_path / "Directory.Build.props").exists() or (
         repo_path / "Directory.Packages.props"
     ).exists()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -45,6 +46,28 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+
+# Leading markdown-header boilerplate on module page content ("## Overview").
+_MD_HEADER_RE = re.compile(r"^\s*#{1,6}\s+.*$", re.MULTILINE)
+
+
+def _truncate_at_word(text: str, limit: int) -> str:
+    """Truncate at a word boundary with an ellipsis — never mid-word.
+
+    Hard slices ("request/response ha") read as rendering bugs to the
+    caller; same budget, honest cut.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "…"
+
+
+def _module_description(content: str, limit: int = 200) -> str:
+    """First prose of a module page, minus the "## Overview" boilerplate."""
+    prose = _MD_HEADER_RE.sub("", content or "").strip()
+    return _truncate_at_word(prose, limit)
+
 
 # ---------------------------------------------------------------------------
 # repo="all" — workspace-level summary
@@ -435,7 +458,7 @@ async def get_overview(repo: str | None = None) -> dict:
             architecture["layers"] = [
                 {
                     "name": layer.name,
-                    "description": (layer.description or "")[:120],
+                    "description": _truncate_at_word(layer.description or "", 120),
                     "file_count": len(
                         json.loads(layer.node_ids_json) if layer.node_ids_json else []
                     ),
@@ -480,11 +503,14 @@ async def get_overview(repo: str | None = None) -> dict:
         # Older indexes persisted titles like "Repository Overview: repo" because
         # repo_name was not passed through to generate_repo_overview. Substitute
         # the actual repo name back in so the response is useful without reindex.
+        # Exact match only: a prefix replace would corrupt any repo whose name
+        # starts with "repo" ("Repository Overview: repowise" → "...repowisewise").
         if overview_page:
             persisted_title = overview_page.title or ""
-            title = persisted_title.replace(
-                "Repository Overview: repo", f"Repository Overview: {repository.name}"
-            )
+            if persisted_title.strip() == "Repository Overview: repo":
+                title = f"Repository Overview: {repository.name}"
+            else:
+                title = persisted_title
         else:
             title = repository.name
         # Code-health KPIs — three headline numbers for the architecture
@@ -591,11 +617,7 @@ async def get_overview(repo: str | None = None) -> dict:
                 {
                     "name": p.title,
                     "path": p.target_path,
-                    "description": (
-                        p.content[:200].rsplit(" ", 1)[0] + "..."
-                        if len(p.content) > 200
-                        else p.content
-                    ),
+                    "description": _module_description(p.content),
                 }
                 for p in module_pages
             ],

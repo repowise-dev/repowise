@@ -127,7 +127,7 @@ class EditorFileDataFetcher:
         modules: list[KeyModule] = []
         for page, _pagerank, symbol_count in rows:
             purpose = _extract_sentences(page.content or "", max_sentences=1)
-            purpose = purpose[:80].rstrip(".") if purpose else ""
+            purpose = _truncate_at_word(purpose, 80).rstrip(".") if purpose else ""
             modules.append(
                 KeyModule(
                     name=page.target_path,
@@ -311,33 +311,54 @@ class EditorFileDataFetcher:
         import json
 
         db_layers = await crud.get_kg_layers(self._session, self._repo_id)
-        db_tour = await crud.get_kg_tour_steps(self._session, self._repo_id)
 
         layers = [
             KGLayerSummary(
                 name=l.name,
                 file_count=len(json.loads(l.node_ids_json) if l.node_ids_json else []),
-                description=(l.description or "")[:80],
+                description=_truncate_at_word(l.description or "", 80),
             )
             for l in db_layers
         ]
 
-        tour = []
-        for s in db_tour:
-            node_ids = json.loads(s.node_ids_json) if s.node_ids_json else []
-            primary = ""
-            for nid in node_ids:
-                fp = nid.removeprefix("file:")
-                if fp != nid or not nid.startswith("file:"):
-                    primary = fp
-                    break
-            tour.append(
-                KGTourStepSummary(
-                    order=s.step_order,
-                    title=s.title,
-                    primary_file=primary,
+        # Guided tour: the overview page's metadata_json carries the
+        # authoritative tour (order/title/target_path) — the same source
+        # the MCP get_overview tool renders. The KG tour-step rows often
+        # persist empty node_ids_json, which used to leave every CLAUDE.md
+        # tour step path-less ("3. **index.ts**" with no way to tell which
+        # of the five index.ts re-export hubs it meant).
+        tour: list[KGTourStepSummary] = []
+        pages = await crud.list_pages(
+            self._session,
+            self._repo_id,
+            page_type="repo_overview",
+            limit=1,
+        )
+        if pages:
+            try:
+                ov_meta = json.loads(pages[0].metadata_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                ov_meta = {}
+            for s in ov_meta.get("guided_tour") or []:
+                tour.append(
+                    KGTourStepSummary(
+                        order=s.get("order") or len(tour) + 1,
+                        title=s.get("title") or "",
+                        primary_file=s.get("target_path") or "",
+                    )
                 )
-            )
+        if not tour:
+            db_tour = await crud.get_kg_tour_steps(self._session, self._repo_id)
+            for s in db_tour:
+                node_ids = json.loads(s.node_ids_json) if s.node_ids_json else []
+                primary = node_ids[0].removeprefix("file:") if node_ids else ""
+                tour.append(
+                    KGTourStepSummary(
+                        order=s.step_order,
+                        title=s.title,
+                        primary_file=primary,
+                    )
+                )
 
         return layers, tour
 
@@ -376,18 +397,39 @@ def _get_head_short_sha(repo_path: Path) -> str:
 
 
 def _extract_sentences(text: str, max_sentences: int) -> str:
-    """Return up to *max_sentences* sentences from the start of *text*.
+    """Return up to *max_sentences* prose sentences from the start of *text*.
 
-    Strips markdown headers/code fences so only prose remains.
+    Strips markdown headers/code fences AND list/table lines so only prose
+    remains. List items rarely end with sentence punctuation, so keeping
+    them used to jam bullets onto the tail of the last real sentence
+    ("...rendered in a web UI. - **Languages**") and leave orphaned
+    fragments like "1. **Inputs**" in the rendered CLAUDE.md.
     """
     # Remove markdown headers and code fences
     text = re.sub(r"^#{1,6}\s+.*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    # Drop list items, table rows, and blockquotes — prose only.
+    # Both "1." and "1)" enumeration styles count as list items.
+    text = re.sub(r"^\s*(?:[-*+]\s|\d+[.)]\s|\||>).*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"`([^`]+)`", r"\1", text)  # strip backticks, keep text
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # links → text
-    text = text.strip()
+    text = re.sub(r"\n{2,}", "\n", text).strip()
 
     # Split on sentence boundaries
     sentences = re.split(r"(?<=[.!?])\s+", text)
     sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
     return " ".join(sentences[:max_sentences])
+
+
+def _truncate_at_word(text: str, limit: int) -> str:
+    """Truncate *text* to at most *limit* chars without splitting a word.
+
+    Hard ``[:80]`` slices cut mid-word ("classificat", "repowi") which reads
+    as a rendering bug in every generated table. Cutting at the last word
+    boundary and appending an ellipsis keeps the same budget honestly.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(".,;:")
+    return f"{cut}…"

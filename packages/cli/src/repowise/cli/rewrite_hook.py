@@ -50,11 +50,13 @@ from repowise.cli.agent_adapters.base import RewriteResult
 _WRAPPER_RE = re.compile(
     r"^(?:"
     r"uv run|uvx|npx|pnpm exec|pnpm dlx|yarn dlx|poetry run|pipenv run|hatch run|"
-    r"python3? -m|py -m"
+    r"python3? -m|py -m|"
+    r"cmd(?:\.exe)? /c"
     r")\s+",
     re.IGNORECASE,
 )
 _ENV_ASSIGN_RE = re.compile(r"^\w+=\S+\s+")
+_WHOLE_QUOTED_RE = re.compile(r'^"([^"]*)"$')
 _EXE_PATH_RE = re.compile(r'^(?:"[^"]*[\\/]|\S*[\\/])(?P<exe>[\w.-]+?)(?:\.exe)?(?:")?(?=\s|$)')
 
 
@@ -64,6 +66,9 @@ def _normalize(command: str) -> str:
         previous = cmd
         cmd = _ENV_ASSIGN_RE.sub("", cmd)
         cmd = _WRAPPER_RE.sub("", cmd)
+        quoted = _WHOLE_QUOTED_RE.match(cmd)
+        if quoted:
+            cmd = quoted.group(1).strip()
         if cmd == previous:
             break
     cmd = _EXE_PATH_RE.sub(lambda m: m.group("exe"), cmd)

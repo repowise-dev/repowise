@@ -58,9 +58,18 @@ _CONFIG_PATH_TOKENS = (
 
 
 def _classify_hit_kind(target_path: str, page_type: str) -> str:
-    """Bucket a hit into implementation / test / config / doc."""
+    """Bucket a hit into implementation / test / config / doc.
+
+    Pages without a file behind them (decision records, repo overviews,
+    onboarding pages — all have empty ``target_path``) are docs: letting
+    them fall through to the path heuristics classified every decision
+    record as "implementation", so ``kind="implementation"`` returned
+    decision pages instead of filtering them out.
+    """
     tp = (target_path or "").lower()
-    if page_type == "module_page" or page_type == "symbol_spotlight" or tp.endswith(".md"):
+    if page_type in ("module_page", "symbol_spotlight") or tp.endswith(".md"):
+        return "doc"
+    if not tp or page_type not in ("file_page",):
         return "doc"
     if any(tok in tp for tok in _TEST_PATH_TOKENS):
         return "test"
@@ -220,7 +229,10 @@ async def search_codebase(
     # Try semantic search, fall back to FTS. Track which backend supplied the
     # hits so the response can surface it per-result — silent fallback hides
     # a quality cliff that the agent should weigh into its trust budget.
-    fetch_limit = limit * 3 if page_type else limit
+    # Over-fetch whenever a post-filter (page_type or kind) will trim hits;
+    # without the head-room a kind filter applied to an already-truncated
+    # list returned fewer than ``limit`` results — frequently zero.
+    fetch_limit = limit * 3 if (page_type or kind) else limit
     results = []
     search_method = "embedding"
     with contextlib.suppress(TimeoutError, Exception):
@@ -250,9 +262,7 @@ async def search_codebase(
             }
         )
 
-    output = output[:limit]
-
-    # Batch-lookup page target paths for git freshness boost
+    # Batch-lookup page target paths for the kind filter + git freshness boost
     if output:
         page_ids = [item["page_id"] for item in output]
         async with get_session(ctx.session_factory) as session:
@@ -260,12 +270,9 @@ async def search_codebase(
                 select(Page.id, Page.target_path).where(Page.id.in_(page_ids))
             )
             page_info = {row[0]: row[1] for row in res.all()}
-        # Attach target_path to each item so the kind filter (path-prefix
-        # heuristic) and downstream get_context callers can act on it.
-        for item in output:
-            item["target_path"] = page_info.get(item["page_id"], "")
 
-            # Build git freshness map for result file paths
+            # Build git freshness map for result file paths — once for the
+            # whole batch, not per item.
             target_paths = [tp for tp in page_info.values() if tp]
             git_map: dict[str, GitMetadata] = {}
             if target_paths:
@@ -273,6 +280,11 @@ async def search_codebase(
                     select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
                 )
                 git_map = {g.file_path: g for g in git_res.scalars().all()}
+
+        # Attach target_path to each item so the kind filter (path-prefix
+        # heuristic) and downstream get_context callers can act on it.
+        for item in output:
+            item["target_path"] = page_info.get(item["page_id"], "")
 
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
@@ -294,18 +306,22 @@ async def search_codebase(
         # Re-sort by boosted relevance
         output.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
 
+    # Kind filter runs on the over-fetched list BEFORE the limit cut so the
+    # caller still gets up to ``limit`` results of the requested kind.
+    if kind:
+        output = [
+            item for item in output
+            if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == kind
+        ]
+
+    output = output[:limit]
+
     # Derive confidence_score from relative position in the result set.
     if output:
         max_score = max((item.get("relevance_score") or 0) for item in output)
         for item in output:
             raw = item.get("relevance_score") or 0
             item["confidence_score"] = round(raw / max_score, 2) if max_score > 0 else 0.0
-
-    if kind:
-        output = [
-            item for item in output
-            if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == kind
-        ]
 
     response: dict = {"results": output, "_meta": _build_meta(repository=repository)}
     if grep_hint:
