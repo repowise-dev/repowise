@@ -22,20 +22,25 @@ ERR = "bold red"
 # ---------------------------------------------------------------------------
 
 # Breathing room required beyond the rendered banner width before we pick the
-# full variant; below that we fall back to compact (same design, 1-char strokes).
+# long tagline; below that we use the short one.
 _BANNER_WIDTH_MARGIN = 4
 
 
 def print_banner(console: Console, repo_name: str | None = None) -> None:
-    """Print the repowise owl banner, tagline, and optional repo name."""
+    """Print the repowise owl banner, tagline, and optional repo name.
+
+    Always renders the compact art (1-char strokes — about two thirds the
+    width of the full variant) so the banner stays understated; only the
+    tagline grows on wide terminals.
+    """
     from repowise.cli import __version__
     from repowise.cli.ui import mascot
 
-    compact = console.width < mascot.banner_width() + _BANNER_WIDTH_MARGIN
+    narrow = console.width < mascot.banner_width() + _BANNER_WIDTH_MARGIN
     console.print()
-    console.print(mascot.banner_text(repo_name, compact=compact))
+    console.print(mascot.banner_text(repo_name, compact=True))
     console.print()
-    if compact:
+    if narrow:
         console.print(f" [dim]codebase intelligence · v{__version__}[/dim]", highlight=False)
     else:
         console.print(
