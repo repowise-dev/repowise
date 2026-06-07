@@ -418,13 +418,21 @@ class _GenerationRun:
         results = await asyncio.gather(*tasks)
         # Embed the whole level in one batch before declaring it done — the
         # next level's RAG search depends on these landing in the store.
-        # Embedding is a RAG enhancement, not load-bearing, so failures are
-        # swallowed at debug level.
+        # Embedding is a RAG enhancement, not load-bearing, so a failure must
+        # not abort generation — but it MUST be visible: a debug-level
+        # swallow here hid a 300k-token request rejection that silently lost
+        # every file-page embedding on init (`repowise reindex` repairs).
         if embed_items and self.vector_store is not None:
             try:
                 await self.vector_store.embed_batch(embed_items)
             except Exception as e:
-                log.debug("rag.embed_batch_failed", count=len(embed_items), error=str(e))
+                log.warning(
+                    "rag.embed_batch_failed",
+                    level=level,
+                    count=len(embed_items),
+                    error=str(e),
+                    hint="semantic search will miss these pages; run `repowise reindex` to repair",
+                )
         pages = [r for r in results if isinstance(r, GeneratedPage)]
         if self.job_system is not None and self.job_id is not None:
             for r in pages:

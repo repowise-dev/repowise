@@ -10,10 +10,39 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 
 from ..search import SearchResult
 
-__all__ = ["VectorStore", "cosine_similarity"]
+__all__ = [
+    "EMBED_BATCH_MAX_ITEMS",
+    "EMBED_TEXT_MAX_CHARS",
+    "VectorStore",
+    "cosine_similarity",
+    "iter_embed_chunks",
+]
+
+# One embedder call per chunk of this many items. OpenAI rejects embedding
+# requests past 300k total tokens — a generation level of 275 full wiki
+# pages (~560k tokens) failed in one giant request and silently lost the
+# whole level's embeddings (measured live: 400 max_tokens_per_request).
+# 16 items x EMBED_TEXT_MAX_CHARS worst-case is ~120k tokens, comfortably
+# under the cap and inside the embedder adapters' request timeouts
+# (a 16-page chunk measured at 0.6s against OpenAI).
+EMBED_BATCH_MAX_ITEMS = 16
+
+# Per-input cap (~7.5k tokens): embedding models reject a single input past
+# ~8,192 tokens, and one oversized page must not sink its whole chunk.
+EMBED_TEXT_MAX_CHARS = 30_000
+
+
+def iter_embed_chunks(
+    items: list[tuple[str, str, dict]],
+) -> Iterator[tuple[list[tuple[str, str, dict]], list[str]]]:
+    """Yield ``(chunk, capped_texts)`` slices sized for one embedder request."""
+    for start in range(0, len(items), EMBED_BATCH_MAX_ITEMS):
+        chunk = items[start : start + EMBED_BATCH_MAX_ITEMS]
+        yield chunk, [text[:EMBED_TEXT_MAX_CHARS] for _, text, _ in chunk]
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

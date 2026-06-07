@@ -407,3 +407,75 @@ async def test_lancedb_reindex_recreates_table_on_dimension_change(tmp_path, moc
         assert {r.page_id for r in results} == {"p2"}
     finally:
         await store.close()
+
+
+# ---------------------------------------------------------------------------
+# embed_batch chunking (regression: one giant request lost a whole level)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingEmbedder:
+    """Mock-dim embedder that records every embed() call's batch shape."""
+
+    dimensions = 8
+
+    def __init__(self, fail_on_call: int | None = None) -> None:
+        self.calls: list[list[str]] = []
+        self._fail_on_call = fail_on_call
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        if self._fail_on_call is not None and len(self.calls) == self._fail_on_call:
+            raise RuntimeError("simulated 400 max_tokens_per_request")
+        return [[1.0] + [0.0] * 7 for _ in texts]
+
+
+def _items(n: int, text: str = "content") -> list[tuple[str, str, dict]]:
+    return [(f"p{i}", text, {"target_path": f"f{i}.py"}) for i in range(n)]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_embed_batch_chunks_requests():
+    # Regression: a generation level of 275 full pages went out as ONE
+    # embedder request (~560k tokens) and failed OpenAI's 300k cap, silently
+    # losing every file-page embedding. Batches must be chunked.
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.persistence.vector_store._base import EMBED_BATCH_MAX_ITEMS
+
+    emb = _RecordingEmbedder()
+    store = InMemoryVectorStore(emb)
+    await store.embed_batch(_items(EMBED_BATCH_MAX_ITEMS * 2 + 3))
+    assert len(emb.calls) == 3
+    assert all(len(c) <= EMBED_BATCH_MAX_ITEMS for c in emb.calls)
+    assert len(await store.list_page_ids()) == EMBED_BATCH_MAX_ITEMS * 2 + 3
+
+
+@pytest.mark.asyncio
+async def test_in_memory_embed_batch_caps_text_length():
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.persistence.vector_store._base import EMBED_TEXT_MAX_CHARS
+
+    emb = _RecordingEmbedder()
+    store = InMemoryVectorStore(emb)
+    await store.embed_batch(_items(1, text="x" * (EMBED_TEXT_MAX_CHARS + 5_000)))
+    assert len(emb.calls[0][0]) == EMBED_TEXT_MAX_CHARS
+
+
+@pytest.mark.asyncio
+async def test_lancedb_embed_batch_isolates_failed_chunk(tmp_path):
+    # One failing chunk must not sink the rest of the level, but the loss
+    # must surface as an error (the old code swallowed it entirely).
+    pytest.importorskip("lancedb")
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.persistence.vector_store._base import EMBED_BATCH_MAX_ITEMS
+
+    emb = _RecordingEmbedder(fail_on_call=2)
+    store = LanceDBVectorStore(str(tmp_path / "lance"), emb)
+    try:
+        with pytest.raises(RuntimeError, match="failed to embed"):
+            await store.embed_batch(_items(EMBED_BATCH_MAX_ITEMS * 3))
+        ids = await store.list_page_ids()
+        # Chunks 1 and 3 persisted; only chunk 2 was lost.
+        assert len(ids) == EMBED_BATCH_MAX_ITEMS * 2
+    finally:
+        await store.close()

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import SearchResult
-from ._base import VectorStore
+from ._base import VectorStore, iter_embed_chunks
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -73,21 +73,22 @@ class PgVectorStore(VectorStore):
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
         if not items:
             return
-        texts = [text for _, text, _ in items]
-        vectors = await self._embedder.embed(texts)
-        params = [
-            {"emb": _encode(vector), "pid": page_id}
-            for (page_id, _text, _meta), vector in zip(items, vectors, strict=True)
-        ]
 
         from sqlalchemy.sql import text as sa_text
 
         stmt = sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid")
-        async with self._session_factory() as session:
-            # executemany: one driver round-trip batch instead of one UPDATE
-            # round-trip per row.
-            await session.execute(stmt, params)
-            await session.commit()
+        # Chunked: one embedder request per slice (a whole generation level
+        # in one request blew OpenAI's 300k-token cap), then one executemany
+        # round-trip per slice.
+        for chunk, texts in iter_embed_chunks(items):
+            vectors = await self._embedder.embed(texts)
+            params = [
+                {"emb": _encode(vector), "pid": page_id}
+                for (page_id, _text, _meta), vector in zip(chunk, vectors, strict=True)
+            ]
+            async with self._session_factory() as session:
+                await session.execute(stmt, params)
+                await session.commit()
 
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         q_vecs = await self._embedder.embed([query])

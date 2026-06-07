@@ -5,7 +5,7 @@ from __future__ import annotations
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import SearchResult
-from ._base import VectorStore
+from ._base import VectorStore, iter_embed_chunks
 
 __all__ = ["LanceDBVectorStore"]
 
@@ -163,17 +163,35 @@ class LanceDBVectorStore(VectorStore):
         await self._upsert_rows([self._row(page_id, vector, meta)])
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
+        """Embed and upsert in request-sized chunks with failure isolation.
+
+        One embedder call per :data:`EMBED_BATCH_MAX_ITEMS` items — a whole
+        generation level in a single request blew OpenAI's 300k-token cap
+        and silently lost every file-page embedding. A failed chunk no
+        longer sinks the rest; the summary error is raised at the end so
+        callers still see the loss.
+        """
         if not items:
             return
         await self._ensure_connected()
-        texts = [text for _, text, _ in items]
-        vectors = await self._embedder.embed(texts)
-        await self._ensure_table(vectors[0])
-        rows = [
-            self._row(page_id, vector, {"content": text, **metadata})
-            for (page_id, text, metadata), vector in zip(items, vectors, strict=True)
-        ]
-        await self._upsert_rows(rows)
+        failed = 0
+        last_exc: Exception | None = None
+        for chunk, texts in iter_embed_chunks(items):
+            try:
+                vectors = await self._embedder.embed(texts)
+                await self._ensure_table(vectors[0])
+                rows = [
+                    self._row(page_id, vector, {"content": text, **metadata})
+                    for (page_id, text, metadata), vector in zip(chunk, vectors, strict=True)
+                ]
+                await self._upsert_rows(rows)
+            except Exception as exc:  # isolate per chunk
+                failed += len(chunk)
+                last_exc = exc
+        if failed:
+            raise RuntimeError(
+                f"embed_batch: {failed}/{len(items)} items failed to embed"
+            ) from last_exc
 
     async def _search_by_vector(self, q_vec: list[float], limit: int) -> list[SearchResult]:
         # Query with explicit cosine distance so ``_distance`` is a cosine

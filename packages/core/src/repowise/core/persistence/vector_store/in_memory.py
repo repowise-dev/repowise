@@ -5,7 +5,7 @@ from __future__ import annotations
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import SearchResult
-from ._base import VectorStore, cosine_similarity
+from ._base import VectorStore, cosine_similarity, iter_embed_chunks
 
 __all__ = ["InMemoryVectorStore"]
 
@@ -27,12 +27,15 @@ class InMemoryVectorStore(VectorStore):
         self._store[page_id] = (vectors[0], dict(metadata))
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
+        # Chunked like the persistent stores: this store is also the runtime
+        # fallback when LanceDB isn't installed, so it can sit in front of a
+        # real embedder with real request limits.
         if not items:
             return
-        texts = [text for _, text, _ in items]
-        vectors = await self._embedder.embed(texts)
-        for (page_id, _text, metadata), vector in zip(items, vectors, strict=True):
-            self._store[page_id] = (vector, dict(metadata))
+        for chunk, texts in iter_embed_chunks(items):
+            vectors = await self._embedder.embed(texts)
+            for (page_id, _text, metadata), vector in zip(chunk, vectors, strict=True):
+                self._store[page_id] = (vector, dict(metadata))
 
     def _search_by_vector(self, q_vec: list[float], limit: int) -> list[SearchResult]:
         scored: list[tuple[float, str, dict]] = []
