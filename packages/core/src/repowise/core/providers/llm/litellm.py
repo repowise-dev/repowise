@@ -25,13 +25,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
+from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
@@ -43,6 +37,10 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    parse_retry_after,
+    provider_retry_stop,
+    provider_retry_wait,
+    provider_should_retry,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -52,9 +50,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_MAX_RETRIES = 3
-_MIN_WAIT = 1.0
-_MAX_WAIT = 4.0
 _LITELLM_REASONING_MODES: tuple[ReasoningMode, ...] = ("low", "medium", "high")
 
 
@@ -210,13 +205,13 @@ class LiteLLMProvider(BaseProvider):
         except RetryError as exc:
             raise ProviderError(
                 "litellm",
-                f"All {_MAX_RETRIES} retries exhausted: {exc}",
+                f"All retries exhausted: {exc}",
             ) from exc
 
     @retry(
-        retry=retry_if_exception_type(ProviderError),
-        stop=stop_after_attempt(_MAX_RETRIES),
-        wait=wait_exponential_jitter(initial=_MIN_WAIT, max=_MAX_WAIT),
+        retry=provider_should_retry,
+        stop=provider_retry_stop,
+        wait=provider_retry_wait,
         reraise=True,
     )
     async def _generate_with_retry(
@@ -253,7 +248,14 @@ class LiteLLMProvider(BaseProvider):
         try:
             response = await litellm.acompletion(**call_kwargs)
         except litellm.RateLimitError as exc:
-            raise RateLimitError("litellm", str(exc), status_code=429) from exc
+            raise RateLimitError(
+                "litellm",
+                str(exc),
+                status_code=429,
+                retry_after=parse_retry_after(
+                    getattr(getattr(exc, "response", None), "headers", None)
+                ),
+            ) from exc
         except litellm.APIError as exc:
             raise ProviderError("litellm", str(exc)) from exc
         except Exception as exc:
@@ -330,7 +332,14 @@ class LiteLLMProvider(BaseProvider):
         try:
             stream = await litellm.acompletion(**call_kwargs)
         except litellm.RateLimitError as exc:
-            raise RateLimitError("litellm", str(exc), status_code=429) from exc
+            raise RateLimitError(
+                "litellm",
+                str(exc),
+                status_code=429,
+                retry_after=parse_retry_after(
+                    getattr(getattr(exc, "response", None), "headers", None)
+                ),
+            ) from exc
         except litellm.APIError as exc:
             raise ProviderError("litellm", str(exc)) from exc
 
@@ -382,6 +391,13 @@ class LiteLLMProvider(BaseProvider):
                     stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
                     yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
         except litellm.RateLimitError as exc:
-            raise RateLimitError("litellm", str(exc), status_code=429) from exc
+            raise RateLimitError(
+                "litellm",
+                str(exc),
+                status_code=429,
+                retry_after=parse_retry_after(
+                    getattr(getattr(exc, "response", None), "headers", None)
+                ),
+            ) from exc
         except Exception as exc:
             raise ProviderError("litellm", f"{type(exc).__name__}: {exc}") from exc

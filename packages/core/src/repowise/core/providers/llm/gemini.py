@@ -18,13 +18,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
+from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
@@ -36,6 +30,9 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    provider_retry_stop,
+    provider_retry_wait,
+    provider_should_retry,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -49,9 +46,6 @@ logging.getLogger("google_genai._api_client").setLevel(logging.ERROR)
 
 log = structlog.get_logger(__name__)
 
-_MAX_RETRIES = 3
-_MIN_WAIT = 1.0
-_MAX_WAIT = 4.0
 _DEFAULT_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 _GEMINI_THINKING_MODES: tuple[ReasoningMode, ...] = (
     "minimal",
@@ -60,6 +54,24 @@ _GEMINI_THINKING_MODES: tuple[ReasoningMode, ...] = (
     "high",
 )
 _GEMINI_THINKING_MODELS_BY_BASE: dict[str, set[str]] = {}
+
+
+def _gemini_retry_delay(exc_str: str) -> float | None:
+    """Extract the ``retryDelay`` hint from a google-genai 429 error string.
+
+    Quota errors embed RetryInfo like ``'retryDelay': '21s'`` in the error
+    details. Best-effort: returns ``None`` when absent.
+    """
+    import re
+
+    match = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", exc_str)
+    if match:
+        try:
+            seconds = float(match.group(1))
+            return seconds if 0 < seconds <= 600 else None
+        except ValueError:
+            return None
+    return None
 
 
 def _gemini_cache_key(base_url: str | None) -> str:
@@ -281,13 +293,13 @@ class GeminiProvider(BaseProvider):
         except RetryError as exc:
             raise ProviderError(
                 "gemini",
-                f"All {_MAX_RETRIES} retries exhausted: {exc}",
+                f"All retries exhausted: {exc}",
             ) from exc
 
     @retry(
-        retry=retry_if_exception_type(ProviderError),
-        stop=stop_after_attempt(_MAX_RETRIES),
-        wait=wait_exponential_jitter(initial=_MIN_WAIT, max=_MAX_WAIT),
+        retry=provider_should_retry,
+        stop=provider_retry_stop,
+        wait=provider_retry_wait,
         reraise=True,
     )
     async def _generate_with_retry(
@@ -354,7 +366,12 @@ class GeminiProvider(BaseProvider):
                 exc_str = str(exc)
                 status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
                 if status_code == 429 or "429" in exc_str or "quota" in exc_str.lower():
-                    raise RateLimitError("gemini", exc_str, status_code=429) from exc
+                    raise RateLimitError(
+                        "gemini",
+                        exc_str,
+                        status_code=429,
+                        retry_after=_gemini_retry_delay(exc_str),
+                    ) from exc
                 raise ProviderError("gemini", f"{type(exc).__name__}: {exc_str}") from exc
 
             usage = response.usage_metadata
@@ -450,7 +467,12 @@ class GeminiProvider(BaseProvider):
                 exc_str = str(exc)
                 status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
                 if status_code == 429 or "429" in exc_str or "quota" in exc_str.lower():
-                    raise RateLimitError("gemini", exc_str, status_code=429) from exc
+                    raise RateLimitError(
+                        "gemini",
+                        exc_str,
+                        status_code=429,
+                        retry_after=_gemini_retry_delay(exc_str),
+                    ) from exc
                 raise ProviderError("gemini", f"{type(exc).__name__}: {exc_str}") from exc
             return response
 

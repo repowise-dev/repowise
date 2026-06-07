@@ -41,16 +41,31 @@ class RateLimitConfig:
 
 
 # Default rate limit configs for known providers.
-# These are conservative defaults; operators can override via config.
+#
+# Philosophy: these are FLOOD GUARDS, not throttles. The provider's own 429
+# responses are the authoritative throttle signal, and every provider retries
+# them patiently (retry-after aware, up to 8 attempts — see providers/llm/
+# base.py). Throttling client-side below the provider's real limits just
+# leaves the API idle: the old openai default (150k TPM ÷ 20k reserved per
+# request) capped doc generation at 7.5 requests/min while Tier-1 already
+# allows 500 RPM. Low-tier accounts degrade gracefully via 429 backoff
+# instead of being pre-emptively slowed for everyone.
+#
+# Values sit near each provider's published upper tiers (2026):
+#   - OpenAI Tier 4/5: 30k RPM, 40M+ TPM (mini/nano are 5-10x full models)
+#   - Gemini paid Tier 1+: 300+ RPM, 1M+ TPM on flash
+#   - Anthropic Tier 4: 4k RPM, 2M ITPM (cached reads don't count)
+#   - DeepSeek: no published limits (dynamic, load-based)
+#   - OpenRouter: no published RPM/TPM for paid models
 PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
-    "anthropic": RateLimitConfig(requests_per_minute=50, tokens_per_minute=100_000),
-    "openai": RateLimitConfig(requests_per_minute=60, tokens_per_minute=150_000),
-    "openrouter": RateLimitConfig(requests_per_minute=60, tokens_per_minute=200_000),
-    "gemini": RateLimitConfig(requests_per_minute=60, tokens_per_minute=1_000_000),
+    "anthropic": RateLimitConfig(requests_per_minute=2_000, tokens_per_minute=1_600_000),
+    "openai": RateLimitConfig(requests_per_minute=5_000, tokens_per_minute=4_000_000),
+    "openrouter": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
+    "gemini": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=4_000_000),
     # Ollama runs locally — effectively unlimited, but we cap to avoid OOM
     "ollama": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
-    "litellm": RateLimitConfig(requests_per_minute=60, tokens_per_minute=150_000),
-    "deepseek": RateLimitConfig(requests_per_minute=60, tokens_per_minute=200_000),
+    "litellm": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
+    "deepseek": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
 }
 
 

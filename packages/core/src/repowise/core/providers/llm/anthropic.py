@@ -21,13 +21,7 @@ import structlog
 from anthropic import APIStatusError as _AnthropicAPIStatusError
 from anthropic import AsyncAnthropic
 from anthropic import RateLimitError as _AnthropicRateLimitError
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
+from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
@@ -40,6 +34,10 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    parse_retry_after,
+    provider_retry_stop,
+    provider_retry_wait,
+    provider_should_retry,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
@@ -49,9 +47,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_MAX_RETRIES = 3
-_MIN_WAIT = 1.0
-_MAX_WAIT = 4.0
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 
@@ -182,13 +177,13 @@ class AnthropicProvider(BaseProvider):
         except RetryError as exc:
             raise ProviderError(
                 "anthropic",
-                f"All {_MAX_RETRIES} retries exhausted: {exc}",
+                f"All retries exhausted: {exc}",
             ) from exc
 
     @retry(
-        retry=retry_if_exception_type(ProviderError),
-        stop=stop_after_attempt(_MAX_RETRIES),
-        wait=wait_exponential_jitter(initial=_MIN_WAIT, max=_MAX_WAIT),
+        retry=provider_should_retry,
+        stop=provider_retry_stop,
+        wait=provider_retry_wait,
         reraise=True,
     )
     async def _generate_with_retry(
@@ -212,7 +207,14 @@ class AnthropicProvider(BaseProvider):
                 messages=messages_param,
             )
         except _AnthropicRateLimitError as exc:
-            raise RateLimitError("anthropic", str(exc), status_code=429) from exc
+            raise RateLimitError(
+                "anthropic",
+                str(exc),
+                status_code=429,
+                retry_after=parse_retry_after(
+                    getattr(getattr(exc, "response", None), "headers", None)
+                ),
+            ) from exc
         except _AnthropicAPIStatusError as exc:
             raise ProviderError("anthropic", str(exc), status_code=exc.status_code) from exc
 
@@ -352,7 +354,14 @@ class AnthropicProvider(BaseProvider):
                     elif event.type == "message_stop":
                         pass  # Final cleanup; stop already yielded via message_delta
         except _AnthropicRateLimitError as exc:
-            raise RateLimitError("anthropic", str(exc), status_code=429) from exc
+            raise RateLimitError(
+                "anthropic",
+                str(exc),
+                status_code=429,
+                retry_after=parse_retry_after(
+                    getattr(getattr(exc, "response", None), "headers", None)
+                ),
+            ) from exc
         except _AnthropicAPIStatusError as exc:
             raise ProviderError("anthropic", str(exc), status_code=exc.status_code) from exc
 
