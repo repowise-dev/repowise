@@ -14,7 +14,17 @@
 # node_modules so both products enforce the same canonical token rules.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve through the npm .bin symlink so the sibling gate scripts are
+# found when invoked as `repowise-ui-gates` from a consumer repo.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  target="$(readlink "$SELF")"
+  case "$target" in
+    /*) SELF="$target" ;;
+    *) SELF="$(dirname "$SELF")/$target" ;;
+  esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 hex_args=()
 contrast_args=()
