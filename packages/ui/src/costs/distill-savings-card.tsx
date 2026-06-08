@@ -16,6 +16,8 @@ export interface McpDropGroup {
   tool: string;
   events: number;
   tokens: number;
+  /** "counterfactual" (answer replaced raw exploration) or "truncation" (budget drop). */
+  kind?: string;
 }
 
 export interface DistillSavingsData {
@@ -32,6 +34,8 @@ export interface DistillSavingsData {
   per_day: DistillSavingsGroup[];
   mcp_events?: number;
   mcp_tokens?: number;
+  /** Count of counterfactual MCP queries answered ("N MCP queries answered"). */
+  mcp_queries?: number;
   mcp_per_tool?: McpDropGroup[];
   /** Raw (non-distilled) agent commands a filter would have caught. */
   missed_events?: number;
@@ -56,8 +60,8 @@ function agentLabel(agent: string | undefined): string {
 /**
  * Hero results card for the Costs page: every token & dollar repowise saved the
  * coding agent, across the `repowise distill` ledger (CLI + hook) and the MCP
- * tools whose oversized responses were trimmed. Priced at the agent's *real*
- * model — saved tokens are input the agent never had to read.
+ * tools — each curated answer replacing raw file exploration. Priced at the
+ * agent's *real* model — saved tokens are input the agent never had to read.
  */
 export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
   const distillSaved = data?.saved_tokens ?? 0;
@@ -105,6 +109,15 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
   const detected = data.pricing_source && data.pricing_source !== "default";
   const missed = (data.missed_tokens_est ?? 0) > 0;
 
+  // Prefer the counterfactual framing ("N queries answered") when any MCP call
+  // recorded a real saving; fall back to the truncation-drop count otherwise.
+  const mcpQueries = data.mcp_queries ?? 0;
+  const mcpEvents = data.mcp_events ?? 0;
+  const mcpCaption =
+    mcpQueries > 0
+      ? `MCP · ${mcpQueries.toLocaleString()} quer${mcpQueries === 1 ? "y" : "ies"} answered`
+      : `MCP · ${mcpEvents.toLocaleString()} drop${mcpEvents === 1 ? "" : "s"}`;
+
   return (
     <Card>
       <CardContent className="py-6">
@@ -148,10 +161,7 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
               <div className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">
                 {formatTokens(mcpSaved)}
               </div>
-              <div className="text-[11px] text-[var(--color-text-tertiary)]">
-                MCP · {(data.mcp_events ?? 0).toLocaleString()} drop
-                {(data.mcp_events ?? 0) === 1 ? "" : "s"}
-              </div>
+              <div className="text-[11px] text-[var(--color-text-tertiary)]">{mcpCaption}</div>
             </div>
           </div>
         </div>
@@ -226,9 +236,10 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
         )}
 
         <p className="mt-3 text-[10px] leading-snug text-[var(--color-text-tertiary)]">
-          Distill counts <code>repowise distill</code> command/hook savings; MCP counts tokens
-          trimmed from oversized tool responses already on disk. Saved tokens are agent input,
-          priced at the agent&apos;s input rate. Transcript scans stay on this machine.
+          Distill counts <code>repowise distill</code> command/hook savings; MCP counts the raw
+          file exploration each tool answer replaced (plus any over-budget content trimmed). Saved
+          tokens are agent input, priced at the agent&apos;s input rate. Everything stays on this
+          machine.
         </p>
       </CardContent>
     </Card>

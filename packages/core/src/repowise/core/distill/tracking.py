@@ -69,6 +69,114 @@ def savings_summary(
     }
 
 
+def distill_summary(
+    conn: sqlite3.Connection, *, since: float | None = None
+) -> dict[str, Any]:
+    """Ledger totals for the **distill** surface only (excludes ``mcp:*``).
+
+    Identical in shape to :func:`savings_summary` but scoped to non-MCP
+    sources, so the hero card can report a clean ``repowise distill`` figure now
+    that Phase 2 also writes counterfactual ``mcp:<tool>`` rows into the same
+    ``savings`` ledger. Per-filter buckets likewise drop MCP tool rows.
+
+    *since* is a Unix timestamp lower bound on ``created_at``.
+    """
+    where = "source NOT LIKE 'mcp:%'"
+    params: tuple[float, ...] = ()
+    if since is not None:
+        where += " AND created_at >= ?"
+        params = (since,)
+    total_raw, total_distilled, events = conn.execute(
+        "SELECT COALESCE(SUM(raw_tokens),0), COALESCE(SUM(distilled_tokens),0),"
+        f" COUNT(*) FROM savings WHERE {where}",
+        params,
+    ).fetchone()
+    per_filter = {
+        row[0]: {
+            "events": row[1],
+            "raw_tokens": row[2],
+            "distilled_tokens": row[3],
+            "saved_tokens": row[2] - row[3],
+        }
+        for row in conn.execute(
+            "SELECT filter, COUNT(*), SUM(raw_tokens), SUM(distilled_tokens)"
+            f" FROM savings WHERE {where} GROUP BY filter ORDER BY SUM(raw_tokens) DESC",
+            params,
+        )
+    }
+    return {
+        "events": events,
+        "raw_tokens": total_raw,
+        "distilled_tokens": total_distilled,
+        "saved_tokens": total_raw - total_distilled,
+        "per_filter": per_filter,
+    }
+
+
+def mcp_savings_summary(
+    conn: sqlite3.Connection, *, since: float | None = None
+) -> dict[str, Any]:
+    """Unified MCP savings view — counterfactual ledger, truncation as fallback.
+
+    Two MCP signals live in the sidecar:
+
+    * **Counterfactual** rows in the ``savings`` ledger (``source='mcp:<tool>'``)
+      written by the Phase 2 instrumentation: ``saved = replaced - delivered``.
+      Because ``delivered`` is measured *after* response-budget truncation, the
+      truncation saving is already folded into this delta.
+    * **Truncation drops** in the ``omissions`` table (also ``source='mcp:<tool>'``)
+      from :func:`mcp_drops_summary` — the only signal for tools that have no
+      counterfactual estimator yet.
+
+    Merging per tool with **counterfactual precedence** avoids double counting:
+    a tool with counterfactual rows reports its ledger ``saved_tokens`` (which
+    subsumes truncation); a tool with only drops reports its dropped tokens.
+    Each ``per_tool`` row is tagged ``kind`` = ``"counterfactual"`` | ``"truncation"``.
+
+    Returns ``{events, tokens, queries, per_tool}`` where ``tokens`` is total
+    saved, ``queries`` counts counterfactual tool calls (the "N MCP queries
+    answered" headline), and ``events`` counts every contributing event.
+    """
+    ledger = {
+        _strip_mcp_prefix(row["group"]): row
+        for row in savings_rollup(conn, by="source", since=since)
+        if row["group"].startswith("mcp:")
+    }
+    drops = mcp_drops_summary(conn, since=since)["per_tool"]
+
+    per_tool: list[dict[str, Any]] = []
+    queries = 0
+    for tool, row in ledger.items():
+        per_tool.append(
+            {
+                "tool": tool,
+                "events": row["events"],
+                "tokens": row["saved_tokens"],
+                "kind": "counterfactual",
+            }
+        )
+        queries += row["events"]
+    for tool, stats in drops.items():
+        if tool in ledger:
+            continue  # counterfactual already subsumes this tool's truncation
+        per_tool.append(
+            {
+                "tool": tool,
+                "events": stats["events"],
+                "tokens": stats["tokens"],
+                "kind": "truncation",
+            }
+        )
+
+    per_tool.sort(key=lambda r: r["tokens"], reverse=True)
+    return {
+        "events": sum(r["events"] for r in per_tool),
+        "tokens": sum(r["tokens"] for r in per_tool),
+        "queries": queries,
+        "per_tool": per_tool,
+    }
+
+
 def mcp_drops_summary(
     conn: sqlite3.Connection, *, since: float | None = None
 ) -> dict[str, Any]:

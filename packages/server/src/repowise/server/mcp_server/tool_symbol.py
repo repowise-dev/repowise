@@ -326,12 +326,17 @@ async def _resolve_symbol(
 
 def _slice_source(
     repo_path: Path, file_path: str, start_line: int, end_line: int, context_lines: int
-) -> tuple[str, int, int, int | None]:
-    """Read the file and return (source, actual_start, actual_end, total_lines).
+) -> tuple[str, int, int, int | None, int]:
+    """Read the file and return (source, actual_start, actual_end, total_lines, full_tokens).
 
-    Returns ("", start, end, None) on read failure. Lines are 1-indexed in the
-    inputs and outputs to match WikiSymbol storage. Honors _MAX_SOURCE_LINES.
+    ``full_tokens`` is the token cost of the *whole* file — the counterfactual
+    a single-symbol slice replaces (the agent would have Read the file to find
+    it). Returns ("", start, end, None, 0) on read failure. Lines are 1-indexed
+    in the inputs and outputs to match WikiSymbol storage. Honors
+    _MAX_SOURCE_LINES.
     """
+    from repowise.core.distill.budget import estimate_tokens
+
     abs_path = (repo_path / file_path).resolve()
     # Defense in depth: never read outside the repo root, even if the
     # WikiSymbol.file_path was somehow tampered with.
@@ -339,13 +344,14 @@ def _slice_source(
         abs_path.relative_to(repo_path.resolve())
     except ValueError:
         _log.warning("get_symbol path escape attempt: %s", file_path)
-        return "", start_line, end_line, None
+        return "", start_line, end_line, None, 0
     try:
         text = abs_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         _log.warning("get_symbol read failed for %s: %s", abs_path, exc)
-        return "", start_line, end_line, None
+        return "", start_line, end_line, None, 0
 
+    full_tokens = estimate_tokens(text)
     lines = text.splitlines()
     total = len(lines)
 
@@ -364,7 +370,7 @@ def _slice_source(
         span = _MAX_SOURCE_LINES
 
     sliced = "\n".join(lines[s - 1 : e])
-    return sliced, s, e, total
+    return sliced, s, e, total, full_tokens
 
 
 @mcp.tool()
@@ -445,7 +451,7 @@ async def get_symbol(
         }
 
     repo_root = Path(str(ctx.path))
-    source, start, end, _total = _slice_source(
+    source, start, end, _total, full_tokens = _slice_source(
         repo_root, row.file_path, row.start_line, row.end_line, context_lines
     )
 
@@ -470,7 +476,7 @@ async def get_symbol(
         row.end_line - row.start_line + 1 + 2 * context_lines
     ) > _MAX_SOURCE_LINES
 
-    return {
+    response = {
         "symbol_id": row.symbol_id,
         "file": row.file_path,
         "name": row.name,
@@ -490,3 +496,9 @@ async def get_symbol(
             repository=repository,
         ),
     }
+    # Declare the exact counterfactual: serving one symbol replaced Reading the
+    # whole file. The savings instrumentation prefers this over its estimator.
+    from repowise.server.mcp_server._savings import declare_replaced
+
+    declare_replaced(response, full_tokens)
+    return response

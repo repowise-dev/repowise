@@ -198,9 +198,11 @@ was silent. Now every drop goes through the same omission store:
 the optional `query` parameter searches within the stored content. Tool count
 stays at nine. See [MCP_TOOLS.md](MCP_TOOLS.md).
 
-> **Note:** MCP truncation is *not* counted in the savings ledger — those
-> responses were always capped, so nothing was "saved" relative to before.
-> `repowise saved` covers the distill command/hook path only.
+> **Note:** MCP tool calls now record a *counterfactual* saving — what raw file
+> exploration the curated answer replaced — as `mcp:<tool>` rows in the same
+> ledger (see [`repowise saved`](#repowise-saved--the-savings-report)). Response
+> truncation is folded into that delta (the delivered size is measured after the
+> budget cap), so it is never double-counted.
 
 ---
 
@@ -226,7 +228,7 @@ inside a repowise repo.
 ```bash
 repowise saved                  # per-filter rollup + totals + est. dollars
 repowise saved --by day         # daily rollup
-repowise saved --by source      # cli vs hook-bash vs hook-powershell
+repowise saved --by source      # cli vs hook-* vs mcp:<tool>
 repowise saved --since 2026-06-01
 repowise saved --model claude-opus-4-6   # price the estimate differently
 repowise saved --missed                  # savings raw commands left on the table
@@ -237,8 +239,10 @@ Dollar estimates price saved tokens at the chosen model's *input* rate (saved
 tokens are input the agent never had to read) using the same pricing table as
 `repowise costs`. Token counts are chars/4 estimates.
 
-The report covers the **distill command/hook path only** — MCP response
-truncation is intentionally not in the ledger (see above).
+The report covers both surfaces of the ledger: the **distill command/hook
+path** (`cli` / `hook-*` sources) and **MCP counterfactual savings** (`mcp:<tool>`
+sources — each tool answer priced against the raw exploration it replaced).
+`repowise saved --by source` separates them.
 
 ### Missed savings — `repowise saved --missed`
 
@@ -264,9 +268,12 @@ The local dashboard goes further. The Costs page leads with a **savings hero
 card** that combines two surfaces into one honest number:
 
 - **Distill** — the `repowise distill` command/hook ledger above.
-- **MCP tool savings** — tokens trimmed from oversized MCP tool responses,
-  read straight from the omission store (`source='mcp:*'`). These were always
-  saved but never showed up in the ledger before.
+- **MCP tool savings** — what each tool answer replaced: the raw file
+  exploration the agent would have done without it (`source='mcp:*'`).
+  `get_symbol` stands in for reading the whole file, `get_context` for the files
+  its skeletons summarise, `search_codebase` for opening each cited file; the
+  estimate undersells. Tools without a counterfactual estimator still contribute
+  their response-budget truncation drops.
 
 The dollar figure is **priced at the coding agent's actual model**, not a flat
 guess: saved tokens are *input* the agent never read, so they are worth that

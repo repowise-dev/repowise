@@ -155,14 +155,21 @@ async def get_distill_savings(
     except sqlite3.Error:
         return DistillSavingsResponse(available=False)
     try:
-        summary = tracking.savings_summary(conn, since=since_ts)
-        per_filter = tracking.savings_rollup(conn, by="filter", since=since_ts)
+        # Distill figures exclude the ``mcp:*`` counterfactual rows Phase 2 now
+        # writes into the same ledger; the MCP block reports those separately.
+        summary = tracking.distill_summary(conn, since=since_ts)
         per_day = tracking.savings_rollup(conn, by="day", since=since_ts)
-        mcp = tracking.mcp_drops_summary(conn, since=since_ts)
+        # Unified MCP view: counterfactual ledger merged with truncation drops,
+        # counterfactual taking precedence per tool (no double counting).
+        mcp = tracking.mcp_savings_summary(conn, since=since_ts)
     except sqlite3.Error:
         return DistillSavingsResponse(available=False)
     finally:
         conn.close()
+
+    per_filter = [
+        {"group": name, **stats} for name, stats in summary["per_filter"].items()
+    ]
 
     # Missed savings: best-effort scan of local agent transcripts; the module
     # degrades to an empty report on any failure, never raises.
@@ -189,9 +196,15 @@ async def get_distill_savings(
         per_day=[DistillSavingsGroup(**row) for row in per_day],
         mcp_events=mcp["events"],
         mcp_tokens=mcp["tokens"],
+        mcp_queries=mcp["queries"],
         mcp_per_tool=[
-            McpDropGroup(tool=tool, events=stats["events"], tokens=stats["tokens"])
-            for tool, stats in mcp["per_tool"].items()
+            McpDropGroup(
+                tool=row["tool"],
+                events=row["events"],
+                tokens=row["tokens"],
+                kind=row["kind"],
+            )
+            for row in mcp["per_tool"]
         ],
         missed_events=missed["events"],
         missed_tokens_est=missed["est_saved_tokens"],

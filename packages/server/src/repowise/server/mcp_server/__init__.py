@@ -14,6 +14,11 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+# Attach every tool that registered itself through the shared registry to
+# the FastMCP instance. Idempotent per server, so a second call (e.g. when
+# tests build an isolated mcp) is a no-op against the original mcp.
+from repowise.core.registry import mcp_tool_registry as _mcp_tool_registry
+
 # --- Import submodules in dependency order (triggers tool registration) ---
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._graph_utils import (  # used by routers/graph.py
@@ -25,6 +30,7 @@ from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_path,
 )
+from repowise.server.mcp_server._savings import instrument as _savings_instrument
 from repowise.server.mcp_server._server import (
     create_mcp_server,
     mcp,
@@ -40,12 +46,10 @@ from repowise.server.mcp_server.tool_search import search_codebase
 from repowise.server.mcp_server.tool_symbol import get_symbol
 from repowise.server.mcp_server.tool_why import get_why
 
-# Attach every tool that registered itself through the shared registry to
-# the FastMCP instance. Idempotent per server, so a second call (e.g. when
-# tests build an isolated mcp) is a no-op against the original mcp.
-from repowise.core.registry import mcp_tool_registry as _mcp_tool_registry  # noqa: E402
-
-_mcp_tool_registry.apply(mcp)
+# ``middleware`` wraps each tool with savings instrumentation: every call records
+# the counterfactual raw-exploration tokens its answer replaced into the unified
+# ledger. The wrapper is signature-preserving, so tool schemas are unchanged.
+_mcp_tool_registry.apply(mcp, middleware=_savings_instrument)
 
 # ---------------------------------------------------------------------------
 # Backward-compatible access to _state globals.
