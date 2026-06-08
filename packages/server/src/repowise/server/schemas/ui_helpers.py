@@ -44,11 +44,18 @@ class DistillSavingsGroup(BaseModel):
 
 
 class McpDropGroup(BaseModel):
-    """Per-tool MCP truncation drops (``tool`` with the ``mcp:`` prefix stripped)."""
+    """Per-tool MCP savings (``tool`` with the ``mcp:`` prefix stripped).
+
+    ``kind`` distinguishes a ``"counterfactual"`` saving (the answer replaced raw
+    file exploration — recorded in the savings ledger) from a ``"truncation"``
+    drop (content trimmed past the response budget — the only signal for tools
+    without a counterfactual estimator yet).
+    """
 
     tool: str
     events: int
     tokens: int
+    kind: str = "truncation"
 
 
 class DistillSavingsResponse(BaseModel):
@@ -75,10 +82,13 @@ class DistillSavingsResponse(BaseModel):
     pricing_source: str = "default"
     per_filter: list[DistillSavingsGroup] = []
     per_day: list[DistillSavingsGroup] = []
-    # MCP truncation drops already on disk (omissions store, source='mcp:*'),
-    # never recorded in the distill ledger.
+    # Unified MCP savings: counterfactual ledger rows (each answer replaced raw
+    # file exploration) merged with truncation drops for tools that have no
+    # counterfactual estimator. ``mcp_queries`` counts counterfactual tool calls
+    # ("N MCP queries answered"); ``mcp_tokens`` is total saved.
     mcp_events: int = 0
     mcp_tokens: int = 0
+    mcp_queries: int = 0
     mcp_per_tool: list[McpDropGroup] = []
     # Missed savings — raw (non-distilled) agent commands a filter would have
     # caught, scanned best-effort from local Claude Code transcripts.

@@ -2,9 +2,10 @@
 
 Reads the savings ledger in the omissions sidecar
 (``.repowise/omissions/omissions.db``). The ledger covers the
-``repowise distill`` path only — both direct invocations and hook rewrites.
-MCP response truncation is deliberately not recorded: those responses were
-always budget-capped, so nothing was "saved" relative to before.
+``repowise distill`` path (direct invocations and hook rewrites) plus MCP
+counterfactual savings — each tool answer priced against the raw file
+exploration it replaced, recorded under ``source='mcp:<tool>'``. Group by
+source to split the two surfaces.
 
 Named ``saved`` rather than ``distill --stats`` because ``repowise distill``
 captures everything after it as the command to run (``ignore_unknown_options``)
@@ -77,8 +78,8 @@ def saved_command(
 
     PATH defaults to the current directory; the report covers that repo's
     omission store (or the user-level fallback store when the repo has no
-    ``.repowise/``). Covers the distill command/hook path only — MCP response
-    truncation is not part of this ledger.
+    ``.repowise/``). Covers the distill command/hook path plus MCP
+    counterfactual savings (``source='mcp:<tool>'``); ``--by source`` splits them.
     """
     from repowise.core.distill.store import OmissionStore, default_store_path
 
@@ -122,8 +123,8 @@ def saved_command(
         border_style="dim",
         show_footer=True,
         caption=(
-            "Covers the 'repowise distill' command/hook path only; "
-            "MCP response truncation is not counted."
+            "Covers the 'repowise distill' command/hook path plus MCP "
+            "counterfactual savings (mcp:<tool>); group by source to split them."
         ),
     )
     table.add_column(group_by.capitalize(), style="cyan", footer="[bold]TOTAL[/bold]")

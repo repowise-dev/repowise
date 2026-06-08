@@ -73,18 +73,29 @@ class MCPToolRegistry:
     # with no other changes — the ``@mcp.tool()`` call still works.
     tool = register
 
-    def apply(self, mcp: Any) -> None:
+    def apply(
+        self,
+        mcp: Any,
+        middleware: Callable[[Callable[..., Any]], Callable[..., Any]] | None = None,
+    ) -> None:
         """Attach every registered tool to *mcp* via ``mcp.tool()``.
 
         Calling :meth:`apply` multiple times with the same server is a
         no-op on subsequent calls; calling it with a different server
         registers everything against that server too (useful for tests
         that spin up isolated :class:`FastMCP` instances).
+
+        *middleware*, when given, wraps each tool function before
+        registration — the server passes its savings instrumentation in
+        this way so the registry stays decoupled from it. A signature-
+        preserving wrapper is the caller's responsibility (FastMCP reads
+        each tool's signature to build its schema). Defaults to identity.
         """
         if mcp in self._applied_to:
             return
         for fn in self._tools:
-            mcp.tool()(fn)
+            wrapped = middleware(fn) if middleware is not None else fn
+            mcp.tool()(wrapped)
         self._applied_to.append(mcp)
 
     def reset(self) -> None:

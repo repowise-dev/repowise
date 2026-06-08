@@ -59,6 +59,26 @@ describe("DistillSavingsCard", () => {
     expect(link).toHaveAttribute("href", expect.stringContaining("DISTILL.md"));
   });
 
+  it("frames MCP savings as queries answered when counterfactuals exist", () => {
+    render(
+      <DistillSavingsCard
+        data={makeData({
+          mcp_queries: 8,
+          mcp_per_tool: [
+            { tool: "get_context", events: 6, tokens: 30_000, kind: "counterfactual" },
+            { tool: "get_risk", events: 2, tokens: 9_000, kind: "truncation" },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText(/8 queries answered/)).toBeInTheDocument();
+  });
+
+  it("falls back to the drop count when no counterfactual queries exist", () => {
+    render(<DistillSavingsCard data={makeData({ mcp_queries: 0 })} />);
+    expect(screen.getByText(/5 drops/)).toBeInTheDocument();
+  });
+
   it("shows the empty state when nothing is saved", () => {
     render(<DistillSavingsCard data={makeData({ available: false, saved_tokens: 0, mcp_tokens: 0 })} />);
     expect(screen.getByText(/No agent token savings recorded yet/)).toBeInTheDocument();

@@ -32,6 +32,8 @@ export interface McpDropGroup {
   tool: string;
   events: number;
   tokens: number;
+  /** "counterfactual" (answer replaced raw exploration) or "truncation" (budget drop). */
+  kind?: string;
 }
 
 export interface DistillSavings {
@@ -47,9 +49,11 @@ export interface DistillSavings {
   pricing_source: string;
   per_filter: DistillSavingsGroup[];
   per_day: DistillSavingsGroup[];
-  /** MCP truncation drops already on disk (omissions store, source mcp:*). */
+  /** Unified MCP savings — counterfactual ledger + truncation drops. */
   mcp_events: number;
   mcp_tokens: number;
+  /** Count of counterfactual MCP queries answered ("N MCP queries answered"). */
+  mcp_queries: number;
   mcp_per_tool: McpDropGroup[];
   /** Raw (non-distilled) agent commands a filter would have caught. */
   missed_events: number;

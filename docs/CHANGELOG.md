@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **MCP counterfactual token savings.** Every MCP tool call now records what its
+  curated answer *replaced* — the raw file exploration the agent would have done
+  otherwise — into the unified savings ledger as a `mcp:<tool>` row. `get_symbol`
+  reports the whole file it sliced one symbol from, `get_context` the full files
+  its skeletons stood in for, `search_codebase` a conservative floor per cited
+  file; estimates undersell by design. The Costs hero now reads "N MCP queries
+  answered" and grows per call, and `repowise saved --by source` surfaces the
+  per-tool `mcp:*` breakdown. Recording is best-effort and never alters a tool's
+  user-facing response.
 - **Costs page savings hero.** The Costs page now leads with a results card
   showing every token and dollar repowise saved your coding agent, combining
   the `repowise distill` ledger with MCP tool-response savings that were

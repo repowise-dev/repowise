@@ -121,10 +121,10 @@ def test_saved_reports_totals_and_per_filter(repo_cwd: Path) -> None:
     assert "TOTAL" in result.output
     assert "13,800" in result.output  # total saved tokens
     assert "Estimated saved" in result.output
-    # The scope caveat must be visible in the report itself (normalize
+    # The scope caption must be visible in the report itself (normalize
     # whitespace — rich wraps the caption at terminal width).
     flat = " ".join(result.output.split())
-    assert "MCP response truncation is not counted" in flat
+    assert "MCP counterfactual savings (mcp:<tool>)" in flat
 
 
 def test_saved_by_day(repo_cwd: Path) -> None:

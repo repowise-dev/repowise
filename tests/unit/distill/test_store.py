@@ -144,6 +144,85 @@ def test_mcp_drops_summary_empty(store: OmissionStore) -> None:
     assert summary == {"events": 0, "tokens": 0, "per_tool": {}}
 
 
+def test_distill_summary_excludes_mcp_rows(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import distill_summary
+
+    # Distill surface rows…
+    store.record_saving(
+        filter_name="test_output", source="cli", command="pytest",
+        raw_tokens=1000, distilled_tokens=100,
+    )
+    store.record_saving(
+        filter_name="git_log", source="hook-bash", command="git log",
+        raw_tokens=500, distilled_tokens=50,
+    )
+    # …and an MCP counterfactual row in the same ledger, which distill must skip.
+    store.record_saving(
+        filter_name="get_context", source="mcp:get_context", command=None,
+        raw_tokens=4000, distilled_tokens=400,
+    )
+
+    summary = distill_summary(store._conn)
+    assert summary["events"] == 2
+    assert summary["raw_tokens"] == 1500
+    assert summary["saved_tokens"] == 1350
+    assert set(summary["per_filter"]) == {"test_output", "git_log"}
+    assert "get_context" not in summary["per_filter"]
+
+
+def test_mcp_savings_summary_counterfactual_precedence(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import mcp_savings_summary
+
+    # Counterfactual ledger rows for two tools (these subsume their own
+    # truncation, since delivered is measured post-truncation).
+    store.record_saving(
+        filter_name="get_symbol", source="mcp:get_symbol", command=None,
+        raw_tokens=3000, distilled_tokens=300,
+    )
+    store.record_saving(
+        filter_name="get_symbol", source="mcp:get_symbol", command=None,
+        raw_tokens=1000, distilled_tokens=200,
+    )
+    store.record_saving(
+        filter_name="get_context", source="mcp:get_context", command=None,
+        raw_tokens=2000, distilled_tokens=500,
+    )
+    # Truncation drops: get_symbol also has drops (must NOT be added on top —
+    # counterfactual wins); get_risk has ONLY drops (its sole signal).
+    store.put("x" * 400, source="mcp:get_symbol", original_tokens=900, kept_tokens=0)
+    store.put("y" * 400, source="mcp:get_risk", original_tokens=700, kept_tokens=0)
+    # A distill omission must never leak into the MCP view.
+    store.put("z" * 400, source="cli:logs", original_tokens=999, kept_tokens=0)
+
+    summary = mcp_savings_summary(store._conn)
+    by_tool = {row["tool"]: row for row in summary["per_tool"]}
+
+    # get_symbol → counterfactual saved 2700+800=3500, drops ignored.
+    assert by_tool["get_symbol"] == {
+        "tool": "get_symbol", "events": 2, "tokens": 3500, "kind": "counterfactual",
+    }
+    # get_context → counterfactual saved 1500.
+    assert by_tool["get_context"]["tokens"] == 1500
+    assert by_tool["get_context"]["kind"] == "counterfactual"
+    # get_risk → truncation only.
+    assert by_tool["get_risk"] == {
+        "tool": "get_risk", "events": 1, "tokens": 700, "kind": "truncation",
+    }
+    # queries counts counterfactual events only; tokens is the merged total.
+    assert summary["queries"] == 3
+    assert summary["tokens"] == 3500 + 1500 + 700
+    assert summary["events"] == 2 + 1 + 1
+    # Ordered by tokens desc.
+    assert [r["tool"] for r in summary["per_tool"]] == ["get_symbol", "get_context", "get_risk"]
+
+
+def test_mcp_savings_summary_empty(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import mcp_savings_summary
+
+    summary = mcp_savings_summary(store._conn)
+    assert summary == {"events": 0, "tokens": 0, "queries": 0, "per_tool": []}
+
+
 def test_default_store_path_finds_repowise_dir(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     nested = repo / "src" / "deep"

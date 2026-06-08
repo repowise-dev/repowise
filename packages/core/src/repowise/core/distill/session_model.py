@@ -33,6 +33,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from repowise.core.fs_walk import iter_glob
+
 #: Pricing fallback when no agent transcript is detectable.
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
@@ -178,7 +180,7 @@ def _codex_sighting(repo_root: Path, sessions_root: Path | None) -> _Sighting | 
         return None
     repo_prefix = str(repo_root).lower().rstrip("\\/")
     best: _Sighting | None = None
-    for path in _by_mtime_desc(root.rglob("*.jsonl")):
+    for path in _by_mtime_desc(iter_glob(root, "*.jsonl")):
         try:
             mtime = path.stat().st_mtime
         except OSError:
