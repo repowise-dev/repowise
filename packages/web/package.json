@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start --port 3000",
     "lint": "next lint",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@lottiefiles/dotlottie-react": "^0.19.4",
@@ -43,7 +44,8 @@
     "eslint": "^9",
     "eslint-config-next": "^15.2.4",
     "tailwindcss": "^4.0.0",
-    "typescript": "^5.7"
+    "typescript": "^5.7",
+    "vitest": "^4.1.5"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -7,8 +7,10 @@ import type {
   WorkspaceSyncResponse,
 } from "./types";
 
-export async function getWorkspace(): Promise<WorkspaceResponse> {
-  return apiGet<WorkspaceResponse>("/api/workspace");
+export async function getWorkspace(
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceResponse> {
+  return apiGet<WorkspaceResponse>("/api/workspace", undefined, fetchOptions);
 }
 
 export async function getWorkspaceContracts(opts?: {

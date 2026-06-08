@@ -32,7 +32,7 @@ export default async function DashboardPage() {
   const [repos, jobs, ws] = await Promise.allSettled([
     listRepos(),
     listJobs({ limit: 10 }),
-    getWorkspace(),
+    getWorkspace({ cache: "no-store" }),
   ]);
 
   const repoList = repos.status === "fulfilled" ? repos.value : [];
