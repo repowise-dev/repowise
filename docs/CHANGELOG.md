@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.18.0] — 2026-06-08
 
 ### Added
 - **MCP counterfactual token savings.** Every MCP tool call now records what its
@@ -30,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on-machine), falling back to a default rate when undetectable — because saved
   tokens are input the agent never had to read. Missed savings now read as an
   "unlock more" prompt rather than a footnote.
+
+### Changed
+- **`repowise init` always renders the compact banner.** The init splash now
+  uses the compact owl variant (~60% of the old full-art width) on every
+  terminal, so narrow shells no longer wrap it. (#423)
+
+### Internal
+- Shared UI/server building blocks consolidated so the web UI and downstream
+  consumers stop duplicating code: `OwlLoader` and the design-token gate
+  scripts move into the `@repowise-dev/ui` package, a dependency-free
+  `@repowise-dev/ui/brand` constants export is added, and the community/
+  architecture view builders are extracted from the server routers into
+  FastAPI-free `services/` functions. No change to the install/serve UX or any
+  endpoint's response shape. (#423)
 
 ---
 
