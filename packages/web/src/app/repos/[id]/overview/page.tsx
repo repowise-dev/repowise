@@ -7,6 +7,7 @@ import { getDeadCodeSummary, listDeadCode } from "@/lib/api/dead-code";
 import { listDecisions, getDecisionHealth } from "@/lib/api/decisions";
 import { getGraph, getModuleGraph, getCommunities, getExecutionFlows } from "@/lib/api/graph";
 import { getProviders } from "@/lib/api/providers";
+import { getDistillSavings } from "@/lib/api/costs";
 import { listJobs } from "@/lib/api/jobs";
 import { getKnowledgeMap } from "@/lib/api/knowledge-map";
 import { Badge } from "@repowise-dev/ui/ui/badge";
@@ -14,7 +15,7 @@ import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { HealthScoreRing } from "@repowise-dev/ui/dashboard/health-score-ring";
 import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
 import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
-import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
+import { SavingsMini } from "@repowise-dev/ui/dashboard/savings-mini";
 import { computeHealthScore, buildAttentionItems, aggregateLanguages } from "@/lib/utils/health-score";
 import { HotspotsMini } from "@repowise-dev/ui/dashboard/hotspots-mini";
 import { DecisionsTimeline } from "@repowise-dev/ui/dashboard/decisions-timeline";
@@ -62,7 +63,7 @@ export default async function OverviewPage({ params }: Props) {
   if (!repo) notFound();
 
   // Fetch all data in parallel — each independently failable
-  const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs, knowledgeMap, communities, executionFlows] =
+  const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs, knowledgeMap, communities, executionFlows, distillSavings] =
     await Promise.all([
       safeFetch(() => getRepoStats(id)),
       safeFetch(() => getGitSummary(id)),
@@ -79,6 +80,7 @@ export default async function OverviewPage({ params }: Props) {
       safeFetch(() => getKnowledgeMap(id)),
       safeFetch(() => getCommunities(id)),
       safeFetch(() => getExecutionFlows(id, { top_n: 5, max_depth: 5 })),
+      safeFetch(() => getDistillSavings(id)),
     ]);
 
   // Find timestamps for last sync and last full re-index from completed jobs
@@ -207,9 +209,11 @@ export default async function OverviewPage({ params }: Props) {
           <AttentionPanel items={attentionItems} repoId={id} />
         </div>
         <div>
-          <LanguageDonut
-            distribution={langDistribution}
-            viewAllHref={`/repos/${id}/graph?colorMode=language`}
+          <SavingsMini
+            data={distillSavings}
+            repoId={id}
+            langDistribution={langDistribution}
+            langHref={`/repos/${id}/graph?colorMode=language`}
           />
         </div>
       </div>
