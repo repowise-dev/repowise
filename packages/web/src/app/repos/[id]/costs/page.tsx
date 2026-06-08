@@ -74,6 +74,10 @@ export default function CostsPage() {
         </p>
       </div>
 
+      {/* Hero: the honest results surface — all tokens & dollars saved for the
+          coding agent, across distill (CLI + hook) and MCP tool responses. */}
+      <DistillSavingsCard data={distillSavings} />
+
       {loadingSummary ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
@@ -109,7 +113,7 @@ export default function CostsPage() {
       <Tabs value={tab} onValueChange={setTab} className="w-full">
         <TabsList>
           <TabsTrigger value="daily">Daily</TabsTrigger>
-          <TabsTrigger value="cache">Cache & savings</TabsTrigger>
+          <TabsTrigger value="cache">Cache</TabsTrigger>
           <TabsTrigger value="hotspots">Hotspots</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="operations">Operations</TabsTrigger>
@@ -173,7 +177,6 @@ export default function CostsPage() {
 
         <TabsContent value="cache" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <DistillSavingsCard data={distillSavings} />
             <CacheHitRatioCard />
             <Card>
               <CardHeader className="pb-2">

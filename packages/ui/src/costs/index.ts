@@ -11,4 +11,5 @@ export type {
   DistillSavingsCardProps,
   DistillSavingsData,
   DistillSavingsGroup,
+  McpDropGroup,
 } from "./distill-savings-card";

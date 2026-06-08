@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Costs page savings hero.** The Costs page now leads with a results card
+  showing every token and dollar repowise saved your coding agent, combining
+  the `repowise distill` ledger with MCP tool-response savings that were
+  already on disk but previously invisible (`source='mcp:*'` in the omission
+  store). The dollar estimate is **priced at the agent's actual model** —
+  detected from your local Claude Code / Codex transcripts (read-only,
+  on-machine), falling back to a default rate when undetectable — because saved
+  tokens are input the agent never had to read. Missed savings now read as an
+  "unlock more" prompt rather than a footnote.
+
+---
+
 ## [0.17.1] — 2026-06-07
 
 ### Added

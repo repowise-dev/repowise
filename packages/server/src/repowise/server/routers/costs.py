@@ -18,6 +18,7 @@ from repowise.server.schemas import (
     CostSummaryResponse,
     DistillSavingsGroup,
     DistillSavingsResponse,
+    McpDropGroup,
 )
 
 router = APIRouter(
@@ -118,22 +119,17 @@ async def list_costs(
     ]
 
 
-#: Pricing model for the savings dollar estimate — saved tokens are
-#: input-side tokens the coding agent never had to read.
-_SAVINGS_PRICING_MODEL = "claude-sonnet-4-6"
-
-
 @router.get("/{repo_id}/distill-savings", response_model=DistillSavingsResponse)
 async def get_distill_savings(
     repo_id: str,
     since: str | None = Query(None, description="ISO date filter, e.g. 2025-01-01"),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DistillSavingsResponse:
-    """Savings-ledger rollup from the repo's omission store sidecar.
+    """Savings rollup from the repo's omission store sidecar.
 
-    Covers the ``repowise distill`` command/hook path only; MCP response
-    truncation is not recorded in the ledger. Returns ``available=False``
-    when the repo has no omission store on disk.
+    Combines the ``repowise distill`` ledger with the MCP truncation drops
+    already on disk (``source='mcp:*'``), priced at the coding agent's detected
+    model. Returns ``available=False`` when the repo has no omission store.
     """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
@@ -149,6 +145,7 @@ async def get_distill_savings(
     since_ts = since_dt.timestamp() if since_dt is not None else None
 
     from repowise.core.distill import tracking
+    from repowise.core.distill.session_model import resolve_session_model
     from repowise.core.generation.cost_tracker import get_model_pricing
 
     # Read-only stdlib sqlite3 on the sidecar: tiny aggregate queries, and a
@@ -161,6 +158,7 @@ async def get_distill_savings(
         summary = tracking.savings_summary(conn, since=since_ts)
         per_filter = tracking.savings_rollup(conn, by="filter", since=since_ts)
         per_day = tracking.savings_rollup(conn, by="day", since=since_ts)
+        mcp = tracking.mcp_drops_summary(conn, since=since_ts)
     except sqlite3.Error:
         return DistillSavingsResponse(available=False)
     finally:
@@ -172,17 +170,29 @@ async def get_distill_savings(
 
     missed = scan_missed_savings(Path(repo.local_path))
 
-    rate = get_model_pricing(_SAVINGS_PRICING_MODEL)["input"]
+    # Price at the coding agent's actual model — saved tokens are input tokens
+    # that agent never had to read. Detection is best-effort (sonnet default).
+    resolved = resolve_session_model(Path(repo.local_path))
+    rate = get_model_pricing(resolved.model)["input"]
+    total_saved = summary["saved_tokens"] + mcp["tokens"]
     return DistillSavingsResponse(
         available=True,
         events=summary["events"],
         raw_tokens=summary["raw_tokens"],
         distilled_tokens=summary["distilled_tokens"],
         saved_tokens=summary["saved_tokens"],
-        estimated_usd_saved=summary["saved_tokens"] * rate / 1_000_000,
-        pricing_model=_SAVINGS_PRICING_MODEL,
+        estimated_usd_saved=total_saved * rate / 1_000_000,
+        pricing_model=resolved.model,
+        pricing_agent=resolved.agent,
+        pricing_source=resolved.source,
         per_filter=[DistillSavingsGroup(**row) for row in per_filter],
         per_day=[DistillSavingsGroup(**row) for row in per_day],
+        mcp_events=mcp["events"],
+        mcp_tokens=mcp["tokens"],
+        mcp_per_tool=[
+            McpDropGroup(tool=tool, events=stats["events"], tokens=stats["tokens"])
+            for tool, stats in mcp["per_tool"].items()
+        ],
         missed_events=missed["events"],
         missed_tokens_est=missed["est_saved_tokens"],
         missed_window_days=missed["window_days"],

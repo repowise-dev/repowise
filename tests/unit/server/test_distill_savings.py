@@ -48,6 +48,34 @@ async def test_savings_endpoint_returns_rollups(client: AsyncClient, tmp_path: P
     assert len(data["per_day"]) == 1  # both events landed today
 
 
+async def test_savings_endpoint_surfaces_mcp_drops_and_pricing(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    """MCP truncation drops (omissions store) ride on the response, and the
+    dollar estimate covers distill + MCP priced at the resolved agent model."""
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = Path(repo["local_path"])
+    _seed_store(repo_dir)  # 10_800 distill saved tokens
+    store = OmissionStore(repo_dir / ".repowise" / "omissions" / "omissions.db")
+    store.put("x" * 400, source="mcp:get_risk", original_tokens=5_000, kept_tokens=0)
+    store.put("y" * 400, source="mcp:get_overview", original_tokens=1_000, kept_tokens=0)
+    store.close()
+
+    resp = await client.get(f"/api/repos/{repo['id']}/distill-savings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mcp_events"] == 2
+    assert data["mcp_tokens"] == 6_000
+    tools = {row["tool"]: row for row in data["mcp_per_tool"]}
+    assert tools["get_risk"]["tokens"] == 5_000
+    # Distill saved_tokens stays distill-only; the dollar figure is the union
+    # of distill (10_800) + MCP (6_000) priced at the resolved agent model.
+    assert data["saved_tokens"] == 10_800
+    assert data["pricing_agent"] == "unknown"  # no transcripts in a tmp repo
+    assert data["pricing_source"] == "default"
+    assert data["estimated_usd_saved"] > 0
+
+
 async def test_savings_endpoint_no_store_is_unavailable(
     client: AsyncClient, tmp_path: Path
 ) -> None:

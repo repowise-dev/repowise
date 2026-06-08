@@ -1,7 +1,7 @@
 "use client";
 
-import { Scissors } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Scissors, Sparkles, Zap } from "lucide-react";
+import { Card, CardContent } from "../ui/card";
 import { formatCost, formatTokens } from "../lib/format";
 
 export interface DistillSavingsGroup {
@@ -12,6 +12,12 @@ export interface DistillSavingsGroup {
   saved_tokens: number;
 }
 
+export interface McpDropGroup {
+  tool: string;
+  events: number;
+  tokens: number;
+}
+
 export interface DistillSavingsData {
   available: boolean;
   events: number;
@@ -20,8 +26,13 @@ export interface DistillSavingsData {
   saved_tokens: number;
   estimated_usd_saved: number;
   pricing_model: string;
+  pricing_agent?: string;
+  pricing_source?: string;
   per_filter: DistillSavingsGroup[];
   per_day: DistillSavingsGroup[];
+  mcp_events?: number;
+  mcp_tokens?: number;
+  mcp_per_tool?: McpDropGroup[];
   /** Raw (non-distilled) agent commands a filter would have caught. */
   missed_events?: number;
   missed_tokens_est?: number;
@@ -33,100 +44,234 @@ export interface DistillSavingsCardProps {
   data?: DistillSavingsData;
 }
 
+const DISTILL_DOCS = "https://github.com/repowise-dev/repowise/blob/main/docs/DISTILL.md";
+
+/** Humanize the resolved pricing agent for the "priced at" caption. */
+function agentLabel(agent: string | undefined): string {
+  if (agent === "claude_code") return "Claude Code";
+  if (agent === "codex") return "Codex";
+  return "";
+}
+
 /**
- * Tokens saved by `repowise distill` (command + hook path). MCP response
- * truncation is not part of this ledger, and the card says so — the number
- * shown is real avoided agent input, not budget-capped responses.
+ * Hero results card for the Costs page: every token & dollar repowise saved the
+ * coding agent, across the `repowise distill` ledger (CLI + hook) and the MCP
+ * tools whose oversized responses were trimmed. Priced at the agent's *real*
+ * model — saved tokens are input the agent never had to read.
  */
 export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
-  const hasData = data?.available && data.events > 0;
-  const pct =
-    hasData && data.raw_tokens > 0
-      ? Math.round((data.saved_tokens / data.raw_tokens) * 100)
-      : 0;
-  const topFilters = hasData ? data.per_filter.slice(0, 3) : [];
-  const missed = data?.available && (data.missed_events ?? 0) > 0;
+  const distillSaved = data?.saved_tokens ?? 0;
+  const mcpSaved = data?.mcp_tokens ?? 0;
+  const total = distillSaved + mcpSaved;
+  const hasData = !!data?.available && total > 0;
+
+  if (!data) {
+    return (
+      <Card>
+        <CardContent className="py-10">
+          <div className="h-24 w-full animate-pulse rounded-lg bg-[var(--color-bg-inset)]" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!hasData) {
+    return (
+      <Card>
+        <CardContent className="py-8">
+          <div className="flex items-center gap-3">
+            <Scissors className="h-5 w-5 shrink-0 text-cyan-500" />
+            <div>
+              <p className="text-sm font-medium text-[var(--color-text-primary)]">
+                No agent token savings recorded yet
+              </p>
+              <p className="mt-1 text-xs text-[var(--color-text-secondary)] max-w-[420px]">
+                Route noisy commands through <code>repowise distill &lt;cmd&gt;</code> or install the
+                rewrite hook (<code>repowise hook rewrite install</code>) to start trimming agent
+                context — savings show up here automatically.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const distillPct = total > 0 ? Math.round((distillSaved / total) * 100) : 0;
+  const mcpPct = 100 - distillPct;
+  const topFilters = data.per_filter.slice(0, 3);
+  const topTools = (data.mcp_per_tool ?? []).slice(0, 3);
+  const priced = agentLabel(data.pricing_agent) || data.pricing_model;
+  const detected = data.pricing_source && data.pricing_source !== "default";
+  const missed = (data.missed_tokens_est ?? 0) > 0;
 
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <Scissors className="h-4 w-4 text-cyan-500" />
-          Distill savings
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="pt-0">
-        {hasData ? (
-          <div className="space-y-3">
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-semibold text-[var(--color-text-primary)] tabular-nums">
-                {formatTokens(data.saved_tokens)}
+      <CardContent className="py-6">
+        {/* Headline */}
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
+              <Sparkles className="h-3.5 w-3.5 text-cyan-500" />
+              Tokens saved for your agent
+            </div>
+            <div className="mt-1 flex items-baseline gap-3">
+              <span className="text-4xl font-semibold tabular-nums text-[var(--color-text-primary)]">
+                {formatTokens(total)}
               </span>
-              <span className="text-xs text-[var(--color-text-secondary)]">
-                tokens saved ({pct}%) ·{" "}
-                <span className="font-medium text-green-500">
-                  {formatCost(data.estimated_usd_saved)}
-                </span>{" "}
-                est.
+              <span className="text-2xl font-semibold tabular-nums text-green-500">
+                {formatCost(data.estimated_usd_saved)}
               </span>
             </div>
-            <div className="space-y-1">
-              {topFilters.map((f) => {
-                const width =
-                  data.saved_tokens > 0
-                    ? Math.max(4, Math.round((f.saved_tokens / data.saved_tokens) * 100))
-                    : 0;
-                return (
-                  <div key={f.group} className="flex items-center gap-2 text-xs">
-                    <span className="w-24 shrink-0 truncate text-[var(--color-text-secondary)]">
-                      {f.group}
-                    </span>
-                    <div className="flex-1 h-1.5 rounded bg-[var(--color-bg-inset)] overflow-hidden">
-                      <div
-                        className="h-full rounded bg-[var(--color-accent-primary)]"
-                        style={{ width: `${width}%` }}
-                      />
-                    </div>
-                    <span className="w-14 shrink-0 text-right tabular-nums text-[var(--color-text-primary)]">
-                      {formatTokens(f.saved_tokens)}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            {missed && (
-              <div className="flex items-baseline gap-2 border-t border-[var(--color-border-secondary)] pt-2">
-                <span className="text-sm font-medium text-amber-500 tabular-nums">
-                  ~{formatTokens(data.missed_tokens_est ?? 0)}
-                </span>
-                <span className="text-xs text-[var(--color-text-secondary)]">
-                  missed — {(data.missed_events ?? 0).toLocaleString()} raw command
-                  {(data.missed_events ?? 0) === 1 ? "" : "s"} bypassed distill in the last{" "}
-                  {data.missed_window_days ?? 7} days
-                </span>
-              </div>
-            )}
-            <p className="text-[10px] text-[var(--color-text-tertiary)] leading-snug">
-              {data.events.toLocaleString()} distillation{data.events === 1 ? "" : "s"} via the{" "}
-              <code>repowise distill</code> command/hook path. MCP response truncation is not
-              counted. Estimate at {data.pricing_model} input rate.
-              {missed && (
-                <>
+            <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+              priced at {priced}
+              {detected ? (
+                <span className="text-[var(--color-text-tertiary)]"> · {data.pricing_source}</span>
+              ) : (
+                <span className="text-[var(--color-text-tertiary)]">
                   {" "}
-                  Missed savings are scanned from local agent transcripts (nothing leaves this
-                  machine) — see <code>repowise saved --missed</code>.
-                </>
+                  · no agent session detected, default rate
+                </span>
               )}
             </p>
           </div>
-        ) : (
-          <p className="text-xs text-[var(--color-text-tertiary)] leading-snug max-w-[300px]">
-            No distillation savings recorded yet. Run noisy commands through{" "}
-            <code>repowise distill &lt;cmd&gt;</code> or install the rewrite hook (
-            <code>repowise hook rewrite install</code>) to start trimming agent context.
-          </p>
+          <div className="flex gap-6 text-right">
+            <div>
+              <div className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">
+                {formatTokens(distillSaved)}
+              </div>
+              <div className="text-[11px] text-[var(--color-text-tertiary)]">
+                distill · {data.events.toLocaleString()} event{data.events === 1 ? "" : "s"}
+              </div>
+            </div>
+            <div>
+              <div className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">
+                {formatTokens(mcpSaved)}
+              </div>
+              <div className="text-[11px] text-[var(--color-text-tertiary)]">
+                MCP · {(data.mcp_events ?? 0).toLocaleString()} drop
+                {(data.mcp_events ?? 0) === 1 ? "" : "s"}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Two-segment breakdown bar */}
+        <div className="mt-4 flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
+          {distillSaved > 0 && (
+            <div
+              className="h-full bg-cyan-500"
+              style={{ width: `${distillPct}%` }}
+              title={`Distill — ${formatTokens(distillSaved)} (${distillPct}%)`}
+            />
+          )}
+          {mcpSaved > 0 && (
+            <div
+              className="h-full bg-violet-500"
+              style={{ width: `${mcpPct}%` }}
+              title={`MCP tools — ${formatTokens(mcpSaved)} (${mcpPct}%)`}
+            />
+          )}
+        </div>
+        <div className="mt-1.5 flex items-center gap-4 text-[11px] text-[var(--color-text-secondary)]">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-cyan-500" /> Distill {distillPct}%
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-violet-500" /> MCP tools {mcpPct}%
+          </span>
+        </div>
+
+        {/* Per-surface detail */}
+        <div className="mt-4 grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
+          {topFilters.length > 0 && (
+            <SurfaceDetail
+              title="Distill — by filter"
+              rows={topFilters.map((f) => ({
+                label: f.group,
+                tokens: f.saved_tokens,
+              }))}
+              max={distillSaved}
+              barClass="bg-cyan-500"
+            />
+          )}
+          {topTools.length > 0 && (
+            <SurfaceDetail
+              title="MCP — by tool"
+              rows={topTools.map((t) => ({ label: t.tool, tokens: t.tokens }))}
+              max={mcpSaved}
+              barClass="bg-violet-500"
+            />
+          )}
+        </div>
+
+        {/* Missed → opportunity CTA */}
+        {missed && (
+          <a
+            href={DISTILL_DOCS}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-5 flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 transition-colors hover:bg-amber-500/10"
+          >
+            <Zap className="h-4 w-4 shrink-0 text-amber-500" />
+            <div className="text-xs text-[var(--color-text-secondary)]">
+              <span className="font-medium text-amber-500">
+                Unlock ~{formatTokens(data.missed_tokens_est ?? 0)} more
+              </span>{" "}
+              — {(data.missed_events ?? 0).toLocaleString()} raw command
+              {(data.missed_events ?? 0) === 1 ? "" : "s"} bypassed distill in the last{" "}
+              {data.missed_window_days ?? 7} days. Enable auto-capture →
+            </div>
+          </a>
         )}
+
+        <p className="mt-3 text-[10px] leading-snug text-[var(--color-text-tertiary)]">
+          Distill counts <code>repowise distill</code> command/hook savings; MCP counts tokens
+          trimmed from oversized tool responses already on disk. Saved tokens are agent input,
+          priced at the agent&apos;s input rate. Transcript scans stay on this machine.
+        </p>
       </CardContent>
     </Card>
+  );
+}
+
+interface SurfaceDetailRow {
+  label: string;
+  tokens: number;
+}
+
+function SurfaceDetail({
+  title,
+  rows,
+  max,
+  barClass,
+}: {
+  title: string;
+  rows: SurfaceDetailRow[];
+  max: number;
+  barClass: string;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
+        {title}
+      </div>
+      {rows.map((row) => {
+        const width = max > 0 ? Math.max(4, Math.round((row.tokens / max) * 100)) : 0;
+        return (
+          <div key={row.label} className="flex items-center gap-2 text-xs">
+            <span className="w-28 shrink-0 truncate text-[var(--color-text-secondary)]">
+              {row.label}
+            </span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded bg-[var(--color-bg-inset)]">
+              <div className={`h-full rounded ${barClass}`} style={{ width: `${width}%` }} />
+            </div>
+            <span className="w-14 shrink-0 text-right tabular-nums text-[var(--color-text-primary)]">
+              {formatTokens(row.tokens)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
   );
 }

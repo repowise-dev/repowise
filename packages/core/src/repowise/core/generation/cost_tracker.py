@@ -18,12 +18,21 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _PRICING: dict[str, dict[str, float]] = {
-    # Anthropic
+    # Anthropic — Opus tier $15/$75, Sonnet $3/$15, Haiku $0.8/$4 per 1M.
+    # 4-7/4-8 added for savings pricing: these are the models the session
+    # detector surfaces from current Claude Code transcripts.
+    "claude-opus-4-8": {"input": 15.0, "output": 75.0},
+    "claude-opus-4-7": {"input": 15.0, "output": 75.0},
     "claude-opus-4-6": {"input": 15.0, "output": 75.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-haiku-4-5": {"input": 0.8, "output": 4.0},
     "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
-    # OpenAI
+    # OpenAI — GPT-5 family (the models Codex sessions report). Rates per 1M
+    # input/output; verify against current OpenAI pricing before relying on
+    # the dollar figure for billing.
+    "gpt-5": {"input": 1.25, "output": 10.0},
+    "gpt-5-codex": {"input": 1.25, "output": 10.0},
+    "gpt-5-mini": {"input": 0.25, "output": 2.0},
     "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6},
     # Google Gemini
