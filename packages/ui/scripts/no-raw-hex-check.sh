@@ -24,7 +24,17 @@
 # must route color through the design tokens. New raw hex there fails CI.
 set -euo pipefail
 
-PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve through the npm .bin symlink so the default scan root points at the
+# package's own src/ even when invoked as `repowise-ui-no-raw-hex`.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  target="$(readlink "$SELF")"
+  case "$target" in
+    /*) SELF="$target" ;;
+    *) SELF="$(dirname "$SELF")/$target" ;;
+  esac
+done
+PKG_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
 ROOT="$PKG_DIR/src"
 
 # Files/dirs allowed to contain raw hex (regex, matched against the path).

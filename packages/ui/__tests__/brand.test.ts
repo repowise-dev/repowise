@@ -9,28 +9,50 @@ import { BRAND, LIGHT, DARK, GRADIENTS } from "../src/brand.js";
 // OG/email/badge values.
 const css = readFileSync(join(__dirname, "../styles/globals.css"), "utf8");
 
+// Whitespace-insensitive view of the stylesheet so a gradient reformat
+// (line breaks, spacing after commas) doesn't break the drift guard.
+const cssNormalized = css.toLowerCase().replace(/\s+/g, " ");
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// A hex literal must appear bounded: #f59520 should not match inside
+// #f59520ab (a longer, different color).
+function expectHex(value: string): void {
+  const re = new RegExp(escapeRegExp(value) + "(?![0-9a-f])", "i");
+  expect(css).toMatch(re);
+}
+
+// Gradient strings are compared whitespace-insensitively against the
+// stylesheet so only the colors/structure are pinned, not CSS formatting.
+function expectGradient(value: string): void {
+  const needle = value.toLowerCase().replace(/\s+/g, " ").trim();
+  expect(cssNormalized).toContain(needle);
+}
+
 describe("brand constants stay in sync with styles/globals.css", () => {
   it("brand identity values appear in the stylesheet", () => {
     for (const value of Object.values(BRAND)) {
-      expect(css.toLowerCase()).toContain(value.toLowerCase());
+      expectHex(value);
     }
   });
 
   it("light surface/text values appear in the stylesheet", () => {
     for (const value of Object.values(LIGHT)) {
-      expect(css.toLowerCase()).toContain(value.toLowerCase());
+      expectHex(value);
     }
   });
 
   it("dark surface/text values appear in the stylesheet", () => {
     for (const value of Object.values(DARK)) {
-      expect(css.toLowerCase()).toContain(value.toLowerCase());
+      expectHex(value);
     }
   });
 
   it("gradients match the stylesheet definitions", () => {
     for (const value of Object.values(GRADIENTS)) {
-      expect(css.toLowerCase()).toContain(value.toLowerCase());
+      expectGradient(value);
     }
   });
 });

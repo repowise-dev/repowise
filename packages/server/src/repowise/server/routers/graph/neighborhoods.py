@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
@@ -81,7 +81,7 @@ async def ego_graph(
     )
     node_rows = node_result.scalars().all()
 
-    egoedge_responses = [
+    ego_edge_responses = [
         edge_response(e)
         for e in edges
         if e.source_node_id in ego_node_ids and e.target_node_id in ego_node_ids
@@ -102,7 +102,7 @@ async def ego_graph(
 
     return EgoGraphResponse(
         nodes=node_responses,
-        links=egoedge_responses,
+        links=ego_edge_responses,
         center_node_id=node_id,
         center_git_meta=git_meta,
         inbound_count=inbound_count,
