@@ -1078,6 +1078,26 @@ def _anchor_fanout_rank(graph_builder: Any) -> dict[str, int]:
     }
 
 
+def _drop_extra_barrels(paths: list[str], barrels: set[str], keep: int = 1) -> list[str]:
+    """Return *paths* with all but the first *keep* re-export barrels removed.
+
+    A barrel (``index.ts`` / ``__init__.py``) re-exports a package's public
+    surface; one such stop orients a reader, but five identical "re-export hub"
+    stops are noise that crowds out real code. *paths* is in execution/BFS-depth
+    order, so the first barrel kept is the shallowest. Dropping the rest before
+    the budget truncation lets real code files beyond the budget slide up.
+    """
+    out: list[str] = []
+    kept = 0
+    for p in paths:
+        if p in barrels:
+            if kept >= keep:
+                continue
+            kept += 1
+        out.append(p)
+    return out
+
+
 def _curate_tour(
     kg: KnowledgeGraphResult, parsed_files: list[Any], graph_builder: Any
 ) -> list[dict] | None:
@@ -1272,7 +1292,7 @@ def _curate_tour(
         # The walk = build_tour's execution order minus adjacent-layer stops
         # and example programs (documentation-by-code, not the system),
         # truncated up front so later swaps land inside the kept window.
-        walk = [
+        walk_all = [
             s.target_path
             for s in base
             if s.kind == "code"
@@ -1280,7 +1300,9 @@ def _curate_tour(
             and file_layers.get(s.target_path) not in ADJACENT_LAYERS
             and not is_support_path(s.target_path)
         ]
-        walk = walk[:budget]
+        # One re-export barrel earns a stop; the rest are demoted so real code
+        # fills the budget instead of a run of identical "public surface" hubs.
+        walk = _drop_extra_barrels(walk_all, barrels)[:budget]
 
         # --- Diversify for layer coverage (swap slots, never re-sort) -----
         seen_layers: set[str] = set()
@@ -1308,6 +1330,7 @@ def _curate_tour(
                 if p not in walk
                 and p != overview_target
                 and not is_support_path(p)
+                and p not in barrels  # a re-export shell is never a layer's face
                 and not PurePosixPath(p).parts[0].startswith(".")  # never a layer face
                 and PurePosixPath(p).name not in manifest_names
             ]

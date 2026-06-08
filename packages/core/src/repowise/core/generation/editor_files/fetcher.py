@@ -6,6 +6,7 @@ Uses the existing CRUD layer where possible; raw selects for aggregate queries.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from datetime import UTC, datetime
@@ -139,7 +140,23 @@ class EditorFileDataFetcher:
         return modules
 
     async def _get_entry_points(self) -> list[str]:
-        """Files tagged as entry points, sorted by PageRank desc."""
+        """Curated orientation entry points (re-export barrels and sinks demoted).
+
+        Prefers the curated ``kg_project_meta`` list. The raw ``is_entry_point``
+        flag also tags every package-export file (cn.ts, types/*.ts) — high
+        fan-in sinks that are the opposite of where a reader starts, and ordering
+        them by PageRank floats those sinks to the top. Falls back to the
+        flag (PageRank-ordered) only for indexes built before the curation pass.
+        """
+        meta = await crud.get_kg_project_meta(self._session, self._repo_id)
+        if meta is not None:
+            try:
+                curated = json.loads(meta.entry_points_json or "[]")
+            except (json.JSONDecodeError, TypeError):
+                curated = []
+            if curated:
+                return curated[:_MAX_ENTRY_POINTS]
+
         result = await self._session.execute(
             select(GraphNode.node_id)
             .where(

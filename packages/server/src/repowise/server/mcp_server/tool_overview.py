@@ -24,6 +24,9 @@ from repowise.core.persistence.crud import (
     get_kg_layers as _get_kg_layers,
 )
 from repowise.core.persistence.crud import (
+    get_kg_project_meta as _get_kg_project_meta,
+)
+from repowise.core.persistence.crud import (
     get_kg_tour_steps as _get_kg_tour_steps,
 )
 from repowise.core.persistence.database import get_session
@@ -44,6 +47,7 @@ from repowise.server.mcp_server._helpers import (
     _resolve_repo_context,
     filter_graph_nodes,
     filter_rows_by_attr,
+    is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
@@ -272,25 +276,53 @@ async def get_overview(repo: str | None = None) -> dict:
                 "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[20:]),
             )
 
-        # Get entry point files from graph nodes (exclude tests & fixtures)
-        result = await session.execute(
-            select(GraphNode).where(
-                GraphNode.repository_id == repository.id,
-                GraphNode.is_entry_point == True,  # noqa: E712
-                GraphNode.is_test == False,  # noqa: E712
-            )
-        )
-        entry_nodes = filter_graph_nodes(
-            [
-                n
-                for n in result.scalars().all()
-                if not any(
-                    seg in n.node_id.lower()
+        # Entry points: prefer the curated orientation list — re-export barrels
+        # and package-export sinks demoted, survivors ranked by execution
+        # centrality. The raw ``is_entry_point`` flag also tags every npm-exported
+        # file (cn.ts, types/*.ts): high fan-in sinks that are the opposite of
+        # where a reader starts. Fall back to the flag only for indexes built
+        # before the curation pass (no ``kg_project_meta`` row).
+        def _drop_fixtures(ids: list[str]) -> list[str]:
+            return [
+                nid
+                for nid in ids
+                if not is_excluded(nid, exclude_spec)
+                and not any(
+                    seg in nid.lower()
                     for seg in ("fixture", "test_data", "testdata", "sample_repo")
                 )
-            ],
-            exclude_spec,
-        )
+            ]
+
+        proj_meta = await _get_kg_project_meta(session, repository.id)
+        curated_ids: list[str] = []
+        if proj_meta is not None:
+            try:
+                curated_ids = json.loads(proj_meta.entry_points_json or "[]")
+            except (json.JSONDecodeError, TypeError):
+                curated_ids = []
+
+        if curated_ids:
+            entry_point_ids = _drop_fixtures(curated_ids)
+        else:
+            result = await session.execute(
+                select(GraphNode).where(
+                    GraphNode.repository_id == repository.id,
+                    GraphNode.is_entry_point == True,  # noqa: E712
+                    GraphNode.is_test == False,  # noqa: E712
+                )
+            )
+            entry_nodes = filter_graph_nodes(
+                [
+                    n
+                    for n in result.scalars().all()
+                    if not any(
+                        seg in n.node_id.lower()
+                        for seg in ("fixture", "test_data", "testdata", "sample_repo")
+                    )
+                ],
+                exclude_spec,
+            )
+            entry_point_ids = [n.node_id for n in entry_nodes]
 
         # Phase 4: repo-wide git health summary
         git_res = await session.execute(
@@ -621,7 +653,7 @@ async def get_overview(repo: str | None = None) -> dict:
                 }
                 for p in module_pages
             ],
-            "entry_points": _capped_entry_points(entry_nodes, collector),
+            "entry_points": _capped_entry_points(entry_point_ids, collector),
             "git_health": git_health,
             "knowledge_map": knowledge_map,
             "community_summary": community_summary,
@@ -685,11 +717,11 @@ async def get_overview(repo: str | None = None) -> dict:
         return result
 
 
-def _capped_entry_points(entry_nodes: list, collector: OmissionCollector) -> list[str]:
+def _capped_entry_points(entry_ids: list[str], collector: OmissionCollector) -> list[str]:
     """First 15 entry-point ids; the remainder goes to the omission store."""
-    if len(entry_nodes) > 15:
+    if len(entry_ids) > 15:
         collector.add(
-            f"entry points beyond cap=15 ({len(entry_nodes) - 15} dropped)",
-            "\n".join(n.node_id for n in entry_nodes[15:]),
+            f"entry points beyond cap=15 ({len(entry_ids) - 15} dropped)",
+            "\n".join(entry_ids[15:]),
         )
-    return [n.node_id for n in entry_nodes[:15]]
+    return entry_ids[:15]

@@ -637,6 +637,24 @@ class TestCuratedTour:
             assert "An entry point" not in s["reason"]
             assert "re-export hub" in s["reason"]
 
+    def test_tour_keeps_at_most_one_barrel(self):
+        # Five package barrels would otherwise each take a walk slot with the
+        # same "re-export hub" reason. Only one earns a stop; real code beyond
+        # the budget slides up to fill the freed slots.
+        barrels = {f"packages/pkg{i}/src/index.ts" for i in range(5)}
+        code = ["src/cli/main.py"] + [f"src/services/svc{i}.py" for i in range(5)]
+        repo = build_repo(
+            sorted(barrels) + code,
+            entries={"src/cli/main.py", *barrels},
+            barrels=barrels,
+            edges=[("src/cli/main.py", p) for p in code[1:]],
+        )
+        kg = _curate(repo, enabled=True)
+        barrel_steps = [s for s in kg.tour if s["target_path"] in barrels]
+        assert len(barrel_steps) <= 1, [s["target_path"] for s in kg.tour]
+        # Demoting the barrels did not empty the walk of real code.
+        assert any(s["target_path"] in code for s in kg.tour)
+
 
 class TestEntryPointFallback:
     def test_filename_scorers_fill_in_when_nothing_is_flagged(self):

@@ -196,6 +196,31 @@ async def test_fetch_entry_points_sorted_by_pagerank(session, repo, tmp_path):
     assert data.entry_points[0] == "src/high.py"
 
 
+async def test_fetch_entry_points_prefers_curated_list(session, repo, tmp_path):
+    # The raw is_entry_point flag tags package-export sinks (a high-pagerank
+    # cn.ts-style leaf). When the curation pass has run, its orientation list
+    # wins over the flag — the sink must not surface as an entry point.
+    import json
+
+    from repowise.core.persistence.models import KnowledgeGraphProjectMeta
+
+    await _add_graph_node(session, repo.id, "src/ui/cn.ts", is_entry_point=True, pagerank=0.99)
+    session.add(
+        KnowledgeGraphProjectMeta(
+            repository_id=repo.id,
+            entry_points_json=json.dumps(["src/cli/main.py"]),
+            entry_candidates_json=json.dumps(["src/cli/main.py"]),
+        )
+    )
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.entry_points == ["src/cli/main.py"]
+    assert "src/ui/cn.ts" not in data.entry_points
+
+
 async def test_fetch_hotspots(session, repo, tmp_path):
     await _add_git_meta(
         session, repo.id, "src/billing.py", is_hotspot=True, churn_pct=0.95, owner="@alice"
