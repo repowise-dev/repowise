@@ -134,14 +134,18 @@ repositories (same model, same harness, with vs without repowise's MCP tools):
 
 <div align="center">
 
-**−70% tool calls&nbsp;&nbsp;·&nbsp;&nbsp;−89% file reads&nbsp;&nbsp;·&nbsp;&nbsp;−36% cost per query&nbsp;&nbsp;·&nbsp;&nbsp;answer quality at parity**
+**up to −96% tokens to load context&nbsp;&nbsp;·&nbsp;&nbsp;−89% file reads&nbsp;&nbsp;·&nbsp;&nbsp;−70% fewer tool calls&nbsp;&nbsp;·&nbsp;&nbsp;answer quality at parity**
 
 </div>
 
-Best case shown; across the two benchmarks the range is −49% to −70% tool calls,
-−69% to −89% file reads, and −29% to −36% cost. Bonus: feeding an agent a commit
-via `get_context` costs **2,391 tokens vs 64,039** for the raw changed files —
-**~27× fewer**. Reports: [flask48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK48.md) · [sklearn48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_SKLEARN48.md)
+The win is *context*: repowise hands the agent a curated answer instead of a
+pile of files to read. Loading a commit's context via `get_context` costs
+**2,391 tokens vs 64,039** raw — **~27× fewer (−96%)**. Across the two
+benchmarks, agents read **−69% to −89% fewer files** and make **−49% to −70%
+fewer tool calls** at answer quality on par with raw exploration; on a long,
+multi-step investigation that compounds to **−41% of the context re-read across
+the whole session**. Saved tokens are tokens you don't pay for — dollar cost
+drops too, though agent-side prompt caching now mutes the cost delta. Reports: [flask48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK48.md) · [flask v3](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK_V3.md) · [sklearn48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_SKLEARN48.md)
 
 ### 2 · Distill — index-aware output distillation
 
