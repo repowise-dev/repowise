@@ -164,6 +164,11 @@ from distilled output as from raw. Opt-in Claude Code hook rewrites noisy
 commands automatically (shown for approval); `repowise saved` tracks tokens
 and dollars saved. Full guide: **[docs/DISTILL.md →](docs/DISTILL.md)**
 
+<div align="center">
+<img src=".github/assets/savings.png" alt="repowise Costs dashboard — tokens and dollars saved across distill and MCP tools" width="100%" />
+<p align="center"><sub>The <strong>Costs</strong> dashboard tallies both savings surfaces — <code>repowise distill</code> (command output) and the MCP tools (each curated answer replacing the raw file reads it stood in for) — priced at your coding agent's own model. Example shown from a week of heavy local use.</sub></p>
+</div>
+
 ### 3 · Code health predicts real defects
 
 Health scores are collected at a historical commit (T0); bug-fixing commits are

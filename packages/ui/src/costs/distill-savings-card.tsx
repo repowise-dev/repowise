@@ -103,8 +103,10 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
 
   const distillPct = total > 0 ? Math.round((distillSaved / total) * 100) : 0;
   const mcpPct = 100 - distillPct;
-  const topFilters = data.per_filter.slice(0, 3);
-  const topTools = (data.mcp_per_tool ?? []).slice(0, 3);
+  const topFilters = [...data.per_filter]
+    .sort((a, b) => b.saved_tokens - a.saved_tokens)
+    .slice(0, 5);
+  const topTools = (data.mcp_per_tool ?? []).slice(0, 5);
   const priced = agentLabel(data.pricing_agent) || data.pricing_model;
   const detected = data.pricing_source && data.pricing_source !== "default";
   const missed = (data.missed_tokens_est ?? 0) > 0;

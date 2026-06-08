@@ -33,6 +33,11 @@ _PRICING: dict[str, dict[str, float]] = {
     "gpt-5": {"input": 1.25, "output": 10.0},
     "gpt-5-codex": {"input": 1.25, "output": 10.0},
     "gpt-5-mini": {"input": 0.25, "output": 2.0},
+    # Nano tier — $0.05/$0.40 per 1M. Without these keys the model name falls
+    # through to ``_FALLBACK_PRICING`` (Sonnet $3/$15) and overstates a nano
+    # indexing run ~40×.
+    "gpt-5-nano": {"input": 0.05, "output": 0.40},
+    "gpt-5.4-nano": {"input": 0.05, "output": 0.40},
     "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6},
     # Google Gemini

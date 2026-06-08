@@ -30,7 +30,7 @@ import { formatCost, formatNumber, formatTokens } from "@repowise-dev/ui/lib/for
 export default function CostsPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
-  const [tab, setTab] = useState("daily");
+  const [tab, setTab] = useState("operations");
 
   const { data: summary, isLoading: loadingSummary } = useSWR<CostSummary>(
     `costs-summary:${id}`,
@@ -70,7 +70,7 @@ export default function CostsPage() {
           Cost Tracking
         </h1>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          LLM token usage and spend across all generation runs.
+          What repowise saved your coding agent — and what generating the docs cost.
         </p>
       </div>
 
@@ -78,45 +78,13 @@ export default function CostsPage() {
           coding agent, across distill (CLI + hook) and MCP tool responses. */}
       <DistillSavingsCard data={distillSavings} />
 
-      {loadingSummary ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 w-full rounded-lg" />
-          ))}
-        </div>
-      ) : summary ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard
-            label="Total Cost"
-            value={formatCost(summary.total_cost_usd)}
-            description="all time"
-            icon={<DollarSign className="h-4 w-4 text-green-500" />}
-          />
-          <StatCard
-            label="Total Calls"
-            value={formatNumber(summary.total_calls)}
-            description="LLM API calls"
-          />
-          <StatCard
-            label="Input Tokens"
-            value={formatTokens(summary.total_input_tokens)}
-            description="prompt tokens"
-          />
-          <StatCard
-            label="Output Tokens"
-            value={formatTokens(summary.total_output_tokens)}
-            description="completion tokens"
-          />
-        </div>
-      ) : null}
-
       <Tabs value={tab} onValueChange={setTab} className="w-full">
         <TabsList>
+          <TabsTrigger value="operations">Spend by operation</TabsTrigger>
           <TabsTrigger value="daily">Daily</TabsTrigger>
-          <TabsTrigger value="cache">Cache</TabsTrigger>
-          <TabsTrigger value="hotspots">Hotspots</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="operations">Operations</TabsTrigger>
+          <TabsTrigger value="hotspots">Hotspots</TabsTrigger>
+          <TabsTrigger value="cache">Cache</TabsTrigger>
         </TabsList>
 
         <TabsContent value="daily" className="mt-4">
@@ -253,6 +221,45 @@ export default function CostsPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Indexing / generation cost — deliberately secondary to the savings
+          hero above. */}
+      <div className="space-y-2">
+        <p className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          Indexing &amp; generation cost
+        </p>
+        {loadingSummary ? (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-24 w-full rounded-lg" />
+            ))}
+          </div>
+        ) : summary ? (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard
+              label="Indexing cost"
+              value={formatCost(summary.total_cost_usd)}
+              description="across all generation runs"
+              icon={<DollarSign className="h-4 w-4 text-green-500" />}
+            />
+            <StatCard
+              label="Total Calls"
+              value={formatNumber(summary.total_calls)}
+              description="LLM API calls"
+            />
+            <StatCard
+              label="Input Tokens"
+              value={formatTokens(summary.total_input_tokens)}
+              description="prompt tokens"
+            />
+            <StatCard
+              label="Output Tokens"
+              value={formatTokens(summary.total_output_tokens)}
+              description="completion tokens"
+            />
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
