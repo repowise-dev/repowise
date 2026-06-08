@@ -260,9 +260,22 @@ an empty report, never an error.
 > machine; nothing is uploaded, recorded, or sent anywhere. Codex transcripts
 > are not yet scanned.
 
-The local dashboard mirrors this: the Costs page's *Cache & savings* tab shows
-a Distill savings card with the same rollup, plus a missed-savings secondary
-stat sourced from the same local scan.
+The local dashboard goes further. The Costs page leads with a **savings hero
+card** that combines two surfaces into one honest number:
+
+- **Distill** — the `repowise distill` command/hook ledger above.
+- **MCP tool savings** — tokens trimmed from oversized MCP tool responses,
+  read straight from the omission store (`source='mcp:*'`). These were always
+  saved but never showed up in the ledger before.
+
+The dollar figure is **priced at the coding agent's actual model**, not a flat
+guess: saved tokens are *input* the agent never read, so they are worth that
+agent's input rate. The dashboard detects the model from your local agent
+transcripts — the most-recent model that touched the repo across Claude Code
+(`~/.claude/projects/…`) and Codex (`~/.codex/sessions/…`) — and falls back to
+a sensible default when nothing is detectable. Detection is read-only and stays
+on this machine. The missed-savings scan rides along as an "unlock more"
+prompt.
 
 ---
 

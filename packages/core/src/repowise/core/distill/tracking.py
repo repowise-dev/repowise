@@ -69,6 +69,47 @@ def savings_summary(
     }
 
 
+def mcp_drops_summary(
+    conn: sqlite3.Connection, *, since: float | None = None
+) -> dict[str, Any]:
+    """Truncation savings the MCP server already wrote to the omissions store.
+
+    MCP tools drop content past their response budget into the ``omissions``
+    table under ``source='mcp:<tool>'`` but never call
+    :func:`record_saving`, so these savings are invisible to
+    :func:`savings_summary`. This reads them straight from ``omissions``:
+    total dropped tokens plus a per-tool rollup (with the ``mcp:`` prefix
+    stripped). It is the *truncation-only* view — Phase 2 additionally records
+    counterfactual ``mcp:*`` rows into the ``savings`` ledger.
+
+    *since* is a Unix timestamp lower bound on ``created_at``.
+    """
+    where = "source LIKE 'mcp:%'"
+    params: tuple[float, ...] = ()
+    if since is not None:
+        where += " AND created_at >= ?"
+        params = (since,)
+    events, tokens = conn.execute(
+        f"SELECT COUNT(*), COALESCE(SUM(original_tokens), 0) FROM omissions WHERE {where}",
+        params,
+    ).fetchone()
+    per_tool = {
+        _strip_mcp_prefix(row[0]): {"events": row[1], "tokens": row[2]}
+        for row in conn.execute(
+            "SELECT source, COUNT(*), COALESCE(SUM(original_tokens), 0)"
+            f" FROM omissions WHERE {where} GROUP BY source ORDER BY SUM(original_tokens) DESC",
+            params,
+        )
+    }
+    return {"events": events, "tokens": tokens, "per_tool": per_tool}
+
+
+def _strip_mcp_prefix(source: str) -> str:
+    """``mcp:get_risk`` → ``get_risk`` (passthrough for anything else)."""
+    prefix = "mcp:"
+    return source[len(prefix):] if source.startswith(prefix) else source
+
+
 #: Grouping dimensions accepted by :func:`savings_rollup`. ``day`` buckets by
 #: the event's local calendar date; ``filter``/``source`` group on the raw
 #: ledger columns.

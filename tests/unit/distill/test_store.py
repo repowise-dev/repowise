@@ -117,6 +117,33 @@ def test_savings_ledger_roundtrip(store: OmissionStore) -> None:
     assert summary["per_filter"]["test_output"]["saved_tokens"] == 900
 
 
+def test_mcp_drops_summary_reads_omissions(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import mcp_drops_summary
+
+    # MCP truncation drops land in the omissions table (kept_tokens=0), never
+    # in the savings ledger.
+    store.put("a" * 400, source="mcp:get_risk", original_tokens=300, kept_tokens=0)
+    store.put("b" * 400, source="mcp:get_risk", original_tokens=200, kept_tokens=0)
+    store.put("c" * 400, source="mcp:get_overview", original_tokens=100, kept_tokens=0)
+    # Distill omissions must not leak into the MCP view.
+    store.put("d" * 400, source="cli:test_output", original_tokens=999, kept_tokens=50)
+
+    summary = mcp_drops_summary(store._conn)
+    assert summary["events"] == 3
+    assert summary["tokens"] == 600
+    assert summary["per_tool"]["get_risk"] == {"events": 2, "tokens": 500}
+    assert summary["per_tool"]["get_overview"] == {"events": 1, "tokens": 100}
+    # Ordered by tokens desc — biggest tool first.
+    assert list(summary["per_tool"]) == ["get_risk", "get_overview"]
+
+
+def test_mcp_drops_summary_empty(store: OmissionStore) -> None:
+    from repowise.core.distill.tracking import mcp_drops_summary
+
+    summary = mcp_drops_summary(store._conn)
+    assert summary == {"events": 0, "tokens": 0, "per_tool": {}}
+
+
 def test_default_store_path_finds_repowise_dir(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     nested = repo / "src" / "deep"

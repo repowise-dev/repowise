@@ -28,6 +28,12 @@ export interface DistillSavingsGroup {
   saved_tokens: number;
 }
 
+export interface McpDropGroup {
+  tool: string;
+  events: number;
+  tokens: number;
+}
+
 export interface DistillSavings {
   available: boolean;
   events: number;
@@ -36,8 +42,15 @@ export interface DistillSavings {
   saved_tokens: number;
   estimated_usd_saved: number;
   pricing_model: string;
+  /** How the pricing model was resolved (Phase 1 model-aware pricing). */
+  pricing_agent: string;
+  pricing_source: string;
   per_filter: DistillSavingsGroup[];
   per_day: DistillSavingsGroup[];
+  /** MCP truncation drops already on disk (omissions store, source mcp:*). */
+  mcp_events: number;
+  mcp_tokens: number;
+  mcp_per_tool: McpDropGroup[];
   /** Raw (non-distilled) agent commands a filter would have caught. */
   missed_events: number;
   missed_tokens_est: number;
