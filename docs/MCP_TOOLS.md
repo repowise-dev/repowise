@@ -6,7 +6,8 @@ repowise exposes 9 tools via the [Model Context Protocol](https://modelcontextpr
 
 ```bash
 repowise mcp --transport stdio           # for Claude Code, Codex, Cursor, etc.
-repowise mcp --transport sse --port 7338 # for web clients
+repowise mcp --transport streamable-http # for HTTP clients on port 7338
+repowise mcp --transport sse --port 7338 # legacy SSE transport
 ```
 
 **Auto-setup:** `repowise init` automatically registers the MCP server and installs proactive hooks for Claude Code. `repowise init --codex` writes project-local Codex MCP config and hooks.

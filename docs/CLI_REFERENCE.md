@@ -574,12 +574,13 @@ If `PATH` is omitted, `repowise mcp` first walks upward from the current directo
 
 | Flag | Description |
 |------|-------------|
-| `--transport` | `stdio` (default, for editors) or `sse` (for web clients) |
-| `--port` | Port for SSE transport (default: 7338) |
+| `--transport` | `stdio` (default, for editors), `streamable-http` (for HTTP clients), or `sse` (legacy) |
+| `--port` | Port for HTTP/SSE transports (default: 7338) |
 
 ```bash
 repowise mcp --transport stdio           # for Claude Code, Codex, Cursor, etc.
-repowise mcp --transport sse --port 7338 # for web clients
+repowise mcp --transport streamable-http # for HTTP clients
+repowise mcp --transport sse --port 7338 # legacy SSE
 ```
 
 See [MCP Tools](MCP_TOOLS.md) for all 9 exposed tools.

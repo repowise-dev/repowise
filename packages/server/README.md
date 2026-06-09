@@ -236,7 +236,8 @@ repowise exposes 16 MCP tools for AI coding assistants. Start the MCP server via
 
 ```bash
 repowise mcp                          # stdio transport (Claude Code, Cursor, Cline)
-repowise mcp --transport sse          # SSE transport on port 7338
+repowise mcp --transport streamable-http  # HTTP transport on port 7338
+repowise mcp --transport sse          # legacy SSE transport on port 7338
 ```
 
 | Tool | What It Answers | When to Call |

@@ -372,8 +372,8 @@ This is how you connect repowise to Claude Code, Cursor, Cline, Windsurf, and ot
 
 | Flag | Description |
 |------|-------------|
-| `--transport` | Protocol: `stdio` (default, for editors) or `sse` (for web clients) |
-| `--port` | Port for SSE transport (default: 7338) |
+| `--transport` | Protocol: `stdio` (default, for editors), `streamable-http` (for HTTP clients), or `sse` (legacy) |
+| `--port` | Port for HTTP/SSE transports (default: 7338) |
 
 **MCP tools exposed (9 tools):**
 
@@ -846,13 +846,13 @@ Add an MCP server entry pointing to:
 }
 ```
 
-### Web-based MCP clients
+### HTTP MCP clients
 
 ```bash
-repowise mcp /path/to/your-repo --transport sse --port 7338
+repowise mcp /path/to/your-repo --transport streamable-http --port 7338
 ```
 
-Connect to `http://localhost:7338/sse`.
+Connect to `http://localhost:7338/mcp`.
 
 ### What AI editors can do with MCP
 

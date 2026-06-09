@@ -465,6 +465,7 @@ Cline (cline_mcp_settings.json):
 
 Or run directly:
   repowise mcp {abs_path}
+  repowise mcp {abs_path} --transport streamable-http --port 7338
   repowise mcp {abs_path} --transport sse --port 7338
 
 Config saved to: {repo_path / ".repowise" / "mcp.json"}

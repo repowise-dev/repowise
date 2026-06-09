@@ -411,6 +411,9 @@ def run_mcp(
     if transport == "sse":
         mcp.settings.port = port
         mcp.run(transport="sse")
+    elif transport == "streamable-http":
+        mcp.settings.port = port
+        mcp.run(transport="streamable-http")
     else:
         # stdio servers are spawned per-session by the MCP client; when the
         # client dies abnormally the stdio loop doesn't exit (and Windows

@@ -146,16 +146,27 @@ repowise mcp /path/to/repo           # stdio, specific repo
 repowise mcp --transport stdio       # explicit
 ```
 
-### SSE (Server-Sent Events)
+### Streamable HTTP
 
-For web-based MCP clients or headless setups where a persistent HTTP server is preferable.
+For HTTP-based MCP clients or headless setups where a persistent local server is preferable.
+
+```bash
+repowise mcp --transport streamable-http              # HTTP on port 7338
+repowise mcp --transport streamable-http --port 8080  # Custom port
+```
+
+Clients connect to `http://localhost:7338/mcp`.
+
+### SSE (Server-Sent Events, legacy)
+
+For clients that still require the older SSE transport.
 
 ```bash
 repowise mcp --transport sse              # SSE on port 7338
 repowise mcp --transport sse --port 8080  # Custom port
 ```
 
-Clients connect to `http://localhost:7338/sse` and receive server-sent events. Configure with `REPOWISE_MCP_PORT` env var or `mcp.settings.port` in `.repowise/mcp.json`.
+Clients connect to `http://localhost:7338/sse` and receive server-sent events.
 
 ---
 

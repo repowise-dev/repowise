@@ -322,8 +322,8 @@ repowise mcp [PATH] [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--transport` | `stdio` | Transport protocol: `stdio` (editors) or `sse` (web clients) |
-| `--port` | `7338` | Port for SSE transport |
+| `--transport` | `stdio` | Transport protocol: `stdio` (editors), `streamable-http` (HTTP clients), or `sse` (legacy) |
+| `--port` | `7338` | Port for HTTP/SSE transports |
 
 ```bash
 # stdio transport, current directory (typical editor integration)
@@ -332,7 +332,10 @@ repowise mcp
 # Specific repository path
 repowise mcp /path/to/repo
 
-# SSE transport for web clients
+# Streamable HTTP transport for HTTP clients
+repowise mcp --transport streamable-http
+
+# Legacy SSE transport
 repowise mcp --transport sse
 ```
 

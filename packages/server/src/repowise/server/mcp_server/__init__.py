@@ -1,12 +1,13 @@
 """repowise MCP Server — 9 tools for AI coding assistants.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
-Supports both stdio transport (Claude Code, Cursor, Cline) and SSE transport
-(web-based MCP clients).
+Supports stdio transport (Claude Code, Cursor, Cline), streamable HTTP, and
+legacy SSE transport.
 
 Usage:
     repowise mcp --transport stdio  # for Claude Code / Cursor / Cline
-    repowise mcp --transport sse    # for web-based clients
+    repowise mcp --transport streamable-http  # for HTTP clients
+    repowise mcp --transport sse    # for legacy SSE clients
 """
 
 from __future__ import annotations

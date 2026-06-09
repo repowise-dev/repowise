@@ -186,14 +186,15 @@ repowise mcp [PATH] [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--transport` | choice | stdio | `stdio` (for editors) or `sse` (for web clients) |
-| `--port` | int | 7338 | Port for SSE transport |
+| `--transport` | choice | stdio | `stdio` (for editors), `streamable-http` (for HTTP clients), or `sse` (legacy) |
+| `--port` | int | 7338 | Port for HTTP/SSE transports |
 
 ### Examples
 
 ```bash
 repowise mcp                              # stdio (Claude Code, Cursor, Cline)
-repowise mcp --transport sse --port 7338  # SSE for web clients
+repowise mcp --transport streamable-http  # HTTP on port 7338
+repowise mcp --transport sse --port 7338  # legacy SSE
 ```
 
 See [MCP Server →](mcp-server) for editor-specific configuration.
