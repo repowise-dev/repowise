@@ -505,6 +505,7 @@ def save_config(
     model: str,
     embedder: str,
     *,
+    embedding_model: str | None = None,
     exclude_patterns: list[str] | None = None,
     commit_limit: int | None = None,
     reasoning: str | None = None,
@@ -512,6 +513,11 @@ def save_config(
     """Write provider/model/embedder (and optionally exclude_patterns) to ``.repowise/config.yaml``.
 
     Performs a round-trip load so existing keys are preserved.
+
+    ``embedding_model`` is persisted so ``repowise serve`` can rebuild the same
+    embedder used at init time — without it the server silently falls back to a
+    provider default (e.g. ``text-embedding-3-small``), which mismatches the
+    indexed vectors and breaks chat/search retrieval (issue #426).
     """
     ensure_repowise_dir(repo_path)
     config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
@@ -521,6 +527,8 @@ def save_config(
     existing["provider"] = provider
     existing["model"] = model
     existing["embedder"] = embedder
+    if embedding_model:
+        existing["embedding_model"] = embedding_model
     if exclude_patterns is not None:
         existing["exclude_patterns"] = exclude_patterns
     if commit_limit is not None:
@@ -538,6 +546,8 @@ def save_config(
     except ImportError:
         # Fallback: write simple key-value format (lists not supported)
         lines = [f"provider: {provider}", f"model: {model}", f"embedder: {embedder}"]
+        if embedding_model:
+            lines.append(f"embedding_model: {embedding_model}")
         if reasoning is not None:
             lines.append(f"reasoning: {resolve_reasoning(reasoning)}")
         config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -265,11 +265,14 @@ def save_full_state_and_config(
     if kg is not None:
         save_knowledge_graph_json(repo_path, kg)
 
+    from repowise.cli.providers.embedders import resolve_embedding_model
+
     save_config(
         repo_path,
         provider.provider_name,
         provider.model_name,
         embedder_name_resolved,
+        embedding_model=resolve_embedding_model(embedder_name_resolved),
         exclude_patterns=exclude_patterns if exclude_patterns else None,
         commit_limit=resolved_commit_limit if commit_limit is not None else None,
         reasoning=resolved_reasoning,

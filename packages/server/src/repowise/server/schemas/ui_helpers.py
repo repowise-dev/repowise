@@ -13,6 +13,9 @@ class WebhookResponse(BaseModel):
 class SetActiveProviderRequest(BaseModel):
     provider: str
     model: str | None = None
+    # When set, the selection is scoped to this repo (so picking a model for
+    # one repo never shadows another in a workspace). Omit for the global default.
+    repo_id: str | None = None
 
 
 class SetApiKeyRequest(BaseModel):

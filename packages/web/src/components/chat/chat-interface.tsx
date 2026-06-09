@@ -30,7 +30,7 @@ export function ChatInterface({ repoId, repoName }: ChatInterfaceProps) {
       error={error}
       onSend={(text) => sendMessage(text)}
       onCancel={reset}
-      modelSelectorSlot={<ModelSelector />}
+      modelSelectorSlot={<ModelSelector repoId={repoId} />}
       historySlot={
         <ConversationHistory
           repoId={repoId}

@@ -9,10 +9,10 @@ import {
 } from "@/lib/api/providers";
 import type { ProvidersResponse } from "@/lib/api/types";
 
-export function useProviders() {
+export function useProviders(repoId?: string) {
   const { data, mutate, isLoading } = useSWR<ProvidersResponse>(
-    "/api/providers",
-    getProviders,
+    repoId ? ["/api/providers", repoId] : "/api/providers",
+    () => getProviders(repoId),
     { revalidateOnFocus: false },
   );
 
@@ -20,7 +20,7 @@ export function useProviders() {
   const activeModel = data?.active.model ?? null;
 
   async function activate(providerId: string, model?: string) {
-    await setActiveProvider(providerId, model);
+    await setActiveProvider(providerId, model, repoId);
     await mutate();
   }
 

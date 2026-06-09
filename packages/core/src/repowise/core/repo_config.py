@@ -46,3 +46,56 @@ def _read_flat_scalar(text: str, key: str) -> str | None:
         if separator and current_key.strip() == key:
             return value.split("#", 1)[0].strip().strip("'\"")
     return None
+
+
+def load_repo_env(repo_path: Path | str) -> dict[str, str]:
+    """Parse ``.repowise/.env`` into a dict **without** mutating ``os.environ``.
+
+    The CLI's ``load_dotenv`` merges the file into the live process
+    environment, which is correct for ``repowise update`` (one repo per
+    process) but unsafe for a long-lived ``repowise serve`` that fields
+    requests for many repos in a workspace — one repo's keys would leak into
+    every other repo's resolution. This pure reader lets the server resolve a
+    provider per-repo from that repo's own ``.env`` instead.
+
+    Accepts the same syntax as ``load_dotenv``: ``export KEY=value``, quoted
+    values, and whitespace-delimited inline comments.
+    """
+    env_file = get_repowise_dir(repo_path) / ".env"
+    if not env_file.exists():
+        return {}
+
+    result: dict[str, str] = {}
+    try:
+        text = env_file.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        key, _, raw_value = line.partition("=")
+        key = key.strip()
+        raw_value = raw_value.strip()
+        # Strip whitespace-delimited inline comments (keep '#' inside URLs).
+        hash_idx = raw_value.find(" #")
+        if hash_idx == -1:
+            hash_idx = raw_value.find("\t#")
+        if hash_idx >= 0:
+            raw_value = raw_value[:hash_idx].rstrip()
+        value = _strip_quotes(raw_value)
+        if key and value:
+            result[key] = value
+    return result
+
+
+def _strip_quotes(value: str) -> str:
+    """Strip one pair of matching surrounding single or double quotes."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value

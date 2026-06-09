@@ -278,7 +278,10 @@ async def execute_job(
         try:
             from repowise.server.provider_config import get_chat_provider_instance
 
-            llm_client = get_chat_provider_instance()
+            # Pass the repo path so the job reuses the provider/model/key the
+            # repo was configured with (``.repowise/config.yaml`` + ``.env``)
+            # rather than the server-global default.
+            llm_client = get_chat_provider_instance(repo_path=repo_path)
         except Exception as exc:
             logger.warning("no_provider_configured", error=str(exc))
             # Continue without LLM — ingestion + analysis still work

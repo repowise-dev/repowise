@@ -75,6 +75,11 @@ def _build_embedder():
         from repowise.core.providers.embedding.gemini import GeminiEmbedder
 
         dims = int(os.environ.get("REPOWISE_EMBEDDING_DIMS", "768"))
+        # Honour the indexed embedding model so serve doesn't silently rebuild
+        # the embedder with a different default than init used (issue #426).
+        model = os.environ.get("REPOWISE_EMBEDDING_MODEL")
+        if model:
+            return GeminiEmbedder(model=model, output_dimensionality=dims)
         return GeminiEmbedder(output_dimensionality=dims)
     if name == "openai":
         from repowise.core.providers.embedding.openai import OpenAIEmbedder
@@ -184,12 +189,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.workspace_config = None
     app.state.workspace_root = None
     app.state.cross_repo_enricher = None
-    app.state.workspace_sessions = {}   # repo_id → session_factory
-    app.state.workspace_engines = []    # engines to dispose on shutdown
+    app.state.workspace_sessions = {}  # repo_id → session_factory
+    app.state.workspace_engines = []  # engines to dispose on shutdown
     # Per-repo FTS instances keyed by repo_id, used by the search router
     # to fan out across every workspace repo (single-repo FTS lives on
     # app.state.fts and stays as the primary).
-    app.state.workspace_fts = {}        # repo_id → FullTextSearch
+    app.state.workspace_fts = {}  # repo_id → FullTextSearch
     # repo_id → vector store (LanceDB-backed) for per-repo semantic search.
     # Populated lazily by the search router on first use, then cached.
     app.state.workspace_vector_stores = {}  # repo_id → VectorStore

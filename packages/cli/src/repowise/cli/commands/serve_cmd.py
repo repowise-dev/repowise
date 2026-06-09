@@ -189,6 +189,13 @@ def _load_local_provider_config() -> None:
     if embedder and embedder != "mock" and not os.environ.get("REPOWISE_EMBEDDER"):
         os.environ["REPOWISE_EMBEDDER"] = str(embedder)
 
+    # 4) Embedding model from config — without this the server rebuilds the
+    # embedder with a provider default (e.g. text-embedding-3-small) that
+    # mismatches the indexed vectors, degrading chat/search retrieval (#426).
+    embedding_model = cfg.get("embedding_model")
+    if embedding_model and not os.environ.get("REPOWISE_EMBEDDING_MODEL"):
+        os.environ["REPOWISE_EMBEDDING_MODEL"] = str(embedding_model)
+
 
 def _is_port_free(host: str, port: int) -> bool:
     """Return True if *port* can be bound on *host* right now."""

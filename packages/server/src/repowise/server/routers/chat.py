@@ -6,9 +6,9 @@ import json
 import logging
 from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import StreamingResponse
 
-from fastapi import APIRouter, Depends, HTTPException, Request
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.providers.llm.base import ChatProvider, ProviderError
@@ -22,7 +22,7 @@ from repowise.server.deps import (
     resolve_request_session_factory,
     verify_api_key,
 )
-from repowise.server.provider_config import get_chat_provider_instance, set_active_provider
+from repowise.server.provider_config import get_chat_provider_instance
 from repowise.server.schemas import (
     ChatMessageResponse,
     ChatRequest,
@@ -84,15 +84,22 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     # Resolve repo
     repo_name, repo_path = await _get_repo_info(factory, repo_id)
 
-    # Resolve provider (optional per-request override)
-    if body.provider:
-        try:
-            set_active_provider(body.provider, body.model)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
+    # Resolve provider. A per-request override (the UI model picker) applies to
+    # THIS request only and is not persisted — an explicit selection is
+    # persisted separately via PATCH /api/providers/active (scoped per-repo).
+    # Absent an override, the provider/model/key/base_url are taken from the
+    # repo's own ``.repowise/config.yaml`` + ``.env`` (what ``repowise init``
+    # configured), so chat matches ``repowise update`` seamlessly.
     try:
-        provider = get_chat_provider_instance()
+        provider = get_chat_provider_instance(
+            repo_path=repo_path,
+            repo_id=repo_id,
+            provider_override=body.provider,
+            model_override=body.model,
+        )
+    except ValueError as exc:
+        # Unknown provider override, or no provider resolvable at all.
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(422, f"No chat provider available: {exc}") from exc
 
