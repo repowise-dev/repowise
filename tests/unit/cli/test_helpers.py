@@ -506,6 +506,70 @@ class TestResolveProviderBaseUrl:
 
 
 # ---------------------------------------------------------------------------
+# Provider model resolution from config.yaml (issue #416)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProviderConfigModel:
+    """The config.yaml ``model`` must be honored whenever no model is passed
+    explicitly, regardless of how the *provider* was resolved. Otherwise the
+    provider constructor falls back to its hardcoded default (issue #416)."""
+
+    @staticmethod
+    def _capture(monkeypatch, tmp_path, cfg: dict[str, Any]) -> dict[str, Any]:
+        import yaml  # type: ignore[import-untyped]
+
+        (ensure_repowise_dir(tmp_path) / CONFIG_FILENAME).write_text(
+            yaml.dump(cfg, default_flow_style=False, sort_keys=False), encoding="utf-8"
+        )
+        captured: dict[str, Any] = {}
+
+        def fake_get_provider(name: str, **kwargs: Any):
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            return "provider"
+
+        monkeypatch.setattr("repowise.core.providers.get_provider", fake_get_provider)
+        monkeypatch.setattr(
+            "repowise.cli.helpers.validate_provider_config", lambda *_args, **_kw: []
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        return captured
+
+    def test_config_model_used_when_provider_from_env(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openrouter")
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["name"] == "openrouter"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_config_model_used_when_provider_from_flag(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+
+        assert resolve_provider("openrouter", None, repo_path=tmp_path) == "provider"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_config_model_used_on_api_key_auto_detect(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+        for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+        assert resolve_provider(None, None, repo_path=tmp_path) == "provider"
+        assert captured["name"] == "openrouter"
+        assert captured["kwargs"].get("model") == "google/gemini-3.1"
+
+    def test_explicit_model_overrides_config(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path, {"model": "google/gemini-3.1"})
+        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+
+        assert resolve_provider("openrouter", "anthropic/claude-opus-4", repo_path=tmp_path)
+        assert captured["kwargs"].get("model") == "anthropic/claude-opus-4"
+
+
+# ---------------------------------------------------------------------------
 # Update queued / pending markers — coalescing primitives that prevent the
 # post-commit hook from spawning N concurrent updates on rapid-fire commits.
 # ---------------------------------------------------------------------------

@@ -663,8 +663,10 @@ def resolve_provider(
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
-        if model is None and cfg.get("model"):
-            model = cfg["model"]
+
+    # Honor the config model regardless of how the provider was resolved (#416).
+    if model is None and cfg.get("model"):
+        model = cfg["model"]
 
     def _resolve_base_url(name: str) -> str | None:
         """Return base_url from env or repo config for the provider."""
