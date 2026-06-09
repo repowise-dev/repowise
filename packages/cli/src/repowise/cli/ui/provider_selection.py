@@ -209,7 +209,7 @@ def _interactive_provider_name(
             console.print()
             console.print(
                 f"  To use a specific model: [{BRAND}]repowise init --provider opencode "
-                "--model opencode/deepseek-v4-pro[/]"
+                "--model opencode/deepseek/deepseek-v4-pro[/]"
             )
             console.print()
             console.print(

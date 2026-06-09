@@ -5,8 +5,9 @@ It uses the user's existing OpenCode installation and authentication (``opencode
 without requiring a separate API key.
 
 Security: uses ``asyncio.create_subprocess_exec`` (no shell), validates model names
-against a safe character set, and resolves all paths before passing them to the
-subprocess.
+against a safe character set, resolves all paths before passing them to the
+subprocess, and enforces a read-only permission profile via ``OPENCODE_CONFIG_CONTENT``
+(highest-precedence config that a project-local ``opencode.json`` cannot loosen).
 """
 
 from __future__ import annotations
@@ -14,8 +15,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 import shutil
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +39,21 @@ log = structlog.get_logger(__name__)
 
 _DEFAULT_MODEL_LABEL = "opencode/default"
 _EXEC_TIMEOUT_SECONDS = 600
+_CATALOG_TIMEOUT_SECONDS = 10
 _MAX_STDERR_CHARS = 1_000
 
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/\-]*$")
+
+_OPENCODE_READONLY_CONFIG = json.dumps(
+    {
+        "permission": {
+            "edit": "deny",
+            "bash": "deny",
+            "external_directory": "deny",
+            "doom_loop": "deny",
+        }
+    }
+)
 
 
 def _resolve_opencode_executable() -> str | None:
@@ -102,7 +118,17 @@ def _parse_jsonl(stdout: str) -> tuple[str, dict[str, Any]]:
             part = event.get("part") or {}
             tokens = part.get("tokens")
             if isinstance(tokens, dict):
-                usage = tokens
+                for key, value in tokens.items():
+                    if isinstance(value, dict):
+                        existing = usage.get(key, {})
+                        if not isinstance(existing, dict):
+                            existing = {}
+                        for sub_key, sub_value in value.items():
+                            if isinstance(sub_value, (int, float)):
+                                existing[sub_key] = existing.get(sub_key, 0) + int(sub_value)
+                        usage[key] = existing
+                    elif isinstance(value, (int, float)):
+                        usage[key] = usage.get(key, 0) + int(value)
 
     return "\n".join(content_parts), usage
 
@@ -133,10 +159,87 @@ def _error_message(stderr: str, stdout: str, returncode: int) -> str:
                 msg = err.get("data", {}).get("message") or err.get("name", "")
                 if msg:
                     return str(msg)
-    except (json.JSONDecodeError, Exception):
+    except Exception:
         pass
 
     return f"opencode run exited with {returncode}"
+
+
+_MODEL_LINE_RE = re.compile(
+    r"^\s*([a-zA-Z0-9][a-zA-Z0-9._\-]*)/([a-zA-Z0-9][a-zA-Z0-9._/\-]*)\s*$"
+)
+
+
+def _parse_models_output(output: str) -> list[str]:
+    models: list[str] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _MODEL_LINE_RE.match(line)
+        if match:
+            provider, model = match.group(1), match.group(2)
+            models.append(f"{provider}/{model}")
+    return models
+
+
+@lru_cache(maxsize=4)
+def _load_opencode_model_catalog(opencode_cmd: str) -> list[str] | None:
+    try:
+        completed = subprocess.run(
+            [opencode_cmd, "models"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=_CATALOG_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if completed.returncode != 0:
+        return None
+
+    return _parse_models_output(completed.stdout) or None
+
+
+def _opencode_model_options(
+    opencode_cmd: str,
+) -> tuple[ProviderModelOption, ...]:
+    catalog = _load_opencode_model_catalog(opencode_cmd)
+    if catalog is None:
+        return (
+            ProviderModelOption(
+                model=_DEFAULT_MODEL_LABEL,
+                label="OpenCode default",
+                reasoning_modes=("auto",),
+                recommended=True,
+                source="fallback",
+                notes="uses opencode config",
+            ),
+        )
+
+    options: list[ProviderModelOption] = [
+        ProviderModelOption(
+            model=_DEFAULT_MODEL_LABEL,
+            label="OpenCode default",
+            reasoning_modes=("auto",),
+            recommended=True,
+            source="local",
+            notes="uses opencode config",
+        )
+    ]
+    for model in sorted(catalog):
+        options.append(
+            ProviderModelOption(
+                model=_model_label(model),
+                label=model,
+                reasoning_modes=("auto",),
+                recommended=False,
+                source="local",
+                notes="",
+            )
+        )
+    return tuple(options)
 
 
 class OpenCodeProvider(BaseProvider):
@@ -146,9 +249,9 @@ class OpenCodeProvider(BaseProvider):
     opencode manages its own authentication via ``opencode providers``.
 
     Args:
-        model:     Optional model identifier. If omitted, opencode uses its
-                   default.  Accepts ``opencode/big-pickle``-style labels as
-                   well as bare model slugs.
+        model:     Optional model identifier in ``provider/model`` format
+                   (e.g. ``deepseek/deepseek-v4-pro``). If omitted or
+                   ``opencode/default``, opencode uses its configured default.
         repo_path: Working directory passed to opencode via ``--dir``.
         rate_limiter: Serializes subprocess calls by default.
     """
@@ -171,7 +274,7 @@ class OpenCodeProvider(BaseProvider):
                 "handles all authentication.\n\n"
                 "To choose a model:\n"
                 "  opencode models                 # list available models\n"
-                "  repowise init --provider opencode --model opencode/deepseek-v4-pro\n\n"
+                "  repowise init --provider opencode --model opencode/deepseek/deepseek-v4-pro\n\n"
                 "More info: https://opencode.ai",
             )
         self._opencode_cmd = opencode_cmd
@@ -198,16 +301,7 @@ class OpenCodeProvider(BaseProvider):
         return ("auto",)
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
-        return (
-            ProviderModelOption(
-                model=_DEFAULT_MODEL_LABEL,
-                label="OpenCode default",
-                reasoning_modes=("auto",),
-                recommended=True,
-                source="local",
-                notes="uses opencode config",
-            ),
-        )
+        return _opencode_model_options(self._opencode_cmd)
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
@@ -222,7 +316,6 @@ class OpenCodeProvider(BaseProvider):
             "run",
             "--format",
             "json",
-            "--dangerously-skip-permissions",
             "--dir",
             str(self._repo_path),
         ]
@@ -259,11 +352,16 @@ class OpenCodeProvider(BaseProvider):
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env={
+                        **os.environ,
+                        "OPENCODE_CONFIG_CONTENT": _OPENCODE_READONLY_CONFIG,
+                    },
                 )
             except FileNotFoundError as exc:
                 raise ProviderError(
                     "opencode",
-                    "OpenCode CLI not found. Install it with: npm install -g @anthropicai/opencode",
+                    "OpenCode CLI not found. Install it with: "
+                    "curl -fsSL https://opencode.ai/install | bash",
                 ) from exc
 
             try:

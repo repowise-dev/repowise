@@ -836,7 +836,7 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
                     "  Setup:    run 'opencode' once to configure your provider\n"
                     "  Models:   opencode models (list available models)\n"
                     "  More:     https://opencode.ai\n"
-                    "  Usage:    repowise init --provider opencode --model opencode/<model-name>"
+                    "  Usage:    repowise init --provider opencode --model opencode/openai/gpt-5"
                 )
             return warnings
 

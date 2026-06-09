@@ -14,6 +14,7 @@ import pytest
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError
 from repowise.core.providers.llm.opencode import (
     OpenCodeProvider,
+    _parse_models_output,
     _validate_model_name,
 )
 
@@ -110,6 +111,37 @@ def test_validate_model_name_rejects_leading_space():
         _validate_model_name(" model")
 
 
+def test_parse_models_output_extracts_provider_model_pairs():
+    output = """
+deepseek/deepseek-v4-pro
+openai/gpt-5
+anthropic/claude-sonnet-4-6
+"""
+    models = _parse_models_output(output)
+    assert models == [
+        "deepseek/deepseek-v4-pro",
+        "openai/gpt-5",
+        "anthropic/claude-sonnet-4-6",
+    ]
+
+
+def test_parse_models_output_ignores_invalid_lines():
+    output = """
+deepseek/deepseek-v4-pro
+some random text
+openai/gpt-5
+
+another invalid line
+"""
+    models = _parse_models_output(output)
+    assert models == ["deepseek/deepseek-v4-pro", "openai/gpt-5"]
+
+
+def test_parse_models_output_empty():
+    assert _parse_models_output("") == []
+    assert _parse_models_output("   \n  \n") == []
+
+
 # ---------------------------------------------------------------------------
 # Provider metadata
 # ---------------------------------------------------------------------------
@@ -128,12 +160,10 @@ def test_custom_model_is_normalized(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
 
     assert (
-        OpenCodeProvider(model="deepseek-v4-pro", repo_path=tmp_path).model_name
-        == "opencode/deepseek-v4-pro"
-    )
-    assert (
-        OpenCodeProvider(model="opencode/deepseek-v4-pro", repo_path=tmp_path).model_name
-        == "opencode/deepseek-v4-pro"
+        OpenCodeProvider(
+            model="opencode/deepseek/deepseek-v4-pro", repo_path=tmp_path
+        ).model_name
+        == "opencode/deepseek/deepseek-v4-pro"
     )
     assert (
         OpenCodeProvider(model="opencode/default", repo_path=tmp_path).model_name
@@ -173,7 +203,9 @@ async def test_generate_invokes_opencode_with_stdin(monkeypatch, tmp_path):
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
-    provider = OpenCodeProvider(model="deepseek-v4-pro", repo_path=tmp_path)
+    provider = OpenCodeProvider(
+        model="opencode/deepseek/deepseek-v4-pro", repo_path=tmp_path
+    )
     result = await provider.generate("system rules", "user context")
 
     assert isinstance(result, GeneratedResponse)
@@ -183,10 +215,16 @@ async def test_generate_invokes_opencode_with_stdin(monkeypatch, tmp_path):
     assert "system rules" in prompt
     assert "user context" in prompt
     args = list(captured["args"])
-    assert args[:5] == [opencode_cmd, "run", "--format", "json", "--dangerously-skip-permissions"]
+    assert args[:5] == [opencode_cmd, "run", "--format", "json", "--dir"]
+    assert "--dangerously-skip-permissions" not in args
     assert args[args.index("--dir") + 1] == str(tmp_path.resolve())
-    assert args[args.index("--model") + 1] == "deepseek-v4-pro"
+    assert args[args.index("--model") + 1] == "deepseek/deepseek-v4-pro"
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
+    env = captured["kwargs"].get("env", {})
+    assert "OPENCODE_CONFIG_CONTENT" in env
+    config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+    assert config["permission"]["edit"] == "deny"
+    assert config["permission"]["bash"] == "deny"
 
 
 async def test_generate_default_model_omits_model_flag(monkeypatch, tmp_path):
@@ -389,16 +427,40 @@ async def test_generate_handles_file_not_found(monkeypatch, tmp_path):
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
-    with pytest.raises(ProviderError, match="OpenCode CLI not found"):
+    with pytest.raises(ProviderError, match="curl -fsSL"):
         await OpenCodeProvider(repo_path=tmp_path).generate("sys", "user")
 
 
-async def test_available_model_options(monkeypatch, tmp_path):
+async def test_available_model_options_with_catalog(monkeypatch, tmp_path):
     monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.opencode._load_opencode_model_catalog",
+        lambda _cmd: ["deepseek/deepseek-v4-pro", "openai/gpt-5"],
+    )
+
+    options = OpenCodeProvider(repo_path=tmp_path).available_model_options()
+
+    assert len(options) == 3
+    assert options[0].model == "opencode/default"
+    assert options[0].recommended is True
+    assert options[0].source == "local"
+    assert options[1].model == "opencode/deepseek/deepseek-v4-pro"
+    assert options[1].label == "deepseek/deepseek-v4-pro"
+    assert options[1].source == "local"
+    assert options[2].model == "opencode/openai/gpt-5"
+    assert options[2].label == "openai/gpt-5"
+
+
+async def test_available_model_options_fallback(monkeypatch, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda _cmd: "opencode")
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.opencode._load_opencode_model_catalog",
+        lambda _cmd: None,
+    )
 
     options = OpenCodeProvider(repo_path=tmp_path).available_model_options()
 
     assert len(options) == 1
     assert options[0].model == "opencode/default"
     assert options[0].recommended is True
-    assert options[0].source == "local"
+    assert options[0].source == "fallback"

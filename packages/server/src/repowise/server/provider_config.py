@@ -88,7 +88,7 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "id": "opencode",
         "name": "OpenCode (Local CLI)",
         "default_model": "opencode/default",
-        "models": ["opencode/default", "opencode/big-pickle"],
+        "models": ["opencode/default", "opencode/openai/gpt-5", "opencode/deepseek/deepseek-v4-pro"],
         "env_keys": [],
         "requires_key": False,
     },
