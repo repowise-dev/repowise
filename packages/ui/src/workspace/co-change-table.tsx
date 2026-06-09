@@ -53,11 +53,11 @@ export function CoChangeTable({ coChanges, compact }: CoChangeTableProps) {
                   <div className="h-1.5 flex-1 rounded-full bg-[var(--color-bg-inset)] overflow-hidden">
                     <div
                       className="h-full rounded-full bg-[var(--color-accent-primary)] transition-all"
-                      style={{ width: `${Math.round(cc.strength * 100)}%` }}
+                      style={{ width: `${Math.min(Math.round(cc.strength * 10), 100)}%` }}
                     />
                   </div>
                   <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8 text-right">
-                    {Math.round(cc.strength * 100)}%
+                    {Math.round(cc.strength * 10) / 10}
                   </span>
                 </div>
               </td>
