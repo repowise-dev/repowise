@@ -349,11 +349,14 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
 
     # Persist provider/model config per-repo when doing full generation
     if not index_only and provider is not None:
+        from repowise.cli.providers.embedders import resolve_embedding_model
+
         save_config(
             repo.path,
             provider.provider_name,
             provider.model_name,
             ctx.embedder_name_resolved,
+            embedding_model=resolve_embedding_model(ctx.embedder_name_resolved),
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,

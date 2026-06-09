@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from repowise.server.deps import verify_api_key
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from repowise.core.persistence import crud
+from repowise.core.persistence.database import get_session
+from repowise.server.deps import resolve_request_session_factory, verify_api_key
 from repowise.server.provider_config import (
     list_provider_status,
     set_active_provider,
@@ -18,20 +21,46 @@ router = APIRouter(
 )
 
 
+async def _repo_path_for(request: Request, repo_id: str | None) -> str | None:
+    """Best-effort lookup of a repo's on-disk path from its id.
+
+    Lets the providers endpoint report the active provider/model that *this*
+    repo's chat will actually use. Returns ``None`` (server-global resolution)
+    when no ``repo_id`` is given or the repo can't be found.
+    """
+    if not repo_id:
+        return None
+    try:
+        factory = resolve_request_session_factory(request)
+        async with get_session(factory) as session:
+            repo = await crud.get_repository(session, repo_id)
+            return repo.local_path if repo else None
+    except Exception:
+        # Best-effort: fall back to server-global resolution rather than 500.
+        return None
+
+
 @router.get("")
-async def get_providers():
-    """List all providers with their status and active selection."""
-    return list_provider_status()
+async def get_providers(request: Request, repo_id: str | None = None):
+    """List all providers with their status and active selection.
+
+    Pass ``?repo_id=`` so the active selection reflects that repo's own
+    ``.repowise/config.yaml`` (and any per-repo UI override) instead of the
+    server-global default.
+    """
+    repo_path = await _repo_path_for(request, repo_id)
+    return list_provider_status(repo_id=repo_id, repo_path=repo_path)
 
 
 @router.patch("/active")
-async def set_active(body: SetActiveProviderRequest):
-    """Set the active provider and model."""
+async def set_active(body: SetActiveProviderRequest, request: Request):
+    """Set the active provider and model (per-repo when ``repo_id`` is given)."""
     try:
-        set_active_provider(body.provider, body.model)
+        set_active_provider(body.provider, body.model, repo_id=body.repo_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return list_provider_status()
+    repo_path = await _repo_path_for(request, body.repo_id)
+    return list_provider_status(repo_id=body.repo_id, repo_path=repo_path)
 
 
 @router.post("/{provider_id}/key", status_code=204)

@@ -28,6 +28,21 @@ def _embedder_kwargs(embedder_name: str) -> dict[str, Any]:
     return kwargs
 
 
+def resolve_embedding_model(embedder_name: str) -> str | None:
+    """Return the configured embedding model for *embedder_name*, if any.
+
+    Mirrors the precedence in :func:`_embedder_kwargs` so the value persisted
+    to ``config.yaml`` at init time is exactly what the embedder would build
+    with. Returns ``None`` when no model is configured (the embedder then uses
+    its own default), which keeps ``config.yaml`` free of empty keys.
+    """
+    if embedder_name == "ollama":
+        return os.environ.get("OLLAMA_EMBEDDING_MODEL") or os.environ.get(
+            "REPOWISE_EMBEDDING_MODEL"
+        )
+    return os.environ.get("REPOWISE_EMBEDDING_MODEL")
+
+
 def resolve_embedder(embedder_flag: str | None) -> str:
     """Auto-detect embedder from env vars, or use the flag value."""
     if embedder_flag:
