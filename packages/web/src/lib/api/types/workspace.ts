@@ -108,6 +108,7 @@ export interface WorkspaceGraphNode {
   file_count: number;
   coverage_pct: number;
   health_score: number;
+  health_score_source: "canonical" | "derived";
   top_language: string;
 }
 

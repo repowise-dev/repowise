@@ -12,14 +12,15 @@ arbitrarily deep.
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from statistics import median
 
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from sqlalchemy import func as sa_func
 
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -99,7 +100,7 @@ def _score(acc: _ModuleAccumulator) -> dict:
         primary_owner = name
         primary_pct = cnt / file_count if file_count else 0.0
 
-    # Composite health (0–100). Higher is better. Weighted:
+    # Composite health (0-100). Higher is better. Weighted:
     #  -25 if siloed (>80% one owner)
     #  -20 * (hotspot_count / file_count)
     #  -25 * dead_pct
@@ -250,6 +251,38 @@ def detail_extras(acc: _ModuleAccumulator) -> dict:
         "governing_decisions": acc.decision_ids,
         "contributor_count": len(acc.contributors),
     }
+
+
+def read_repo_health_score(db_path: Path) -> float | None:
+    """Return the canonical repo health score from a repo-local wiki.db."""
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT score, COALESCE(nloc, 1) FROM health_file_metrics"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    except Exception:
+        return None
+
+    if not row:
+        return None
+
+    weights = [max(int(nloc or 0), 1) for _, nloc in row]
+    total_weight = sum(weights)
+    if total_weight:
+        average = (
+            sum(
+                float(score) * weight
+                for (score, _), weight in zip(row, weights, strict=True)
+            )
+            / total_weight
+        )
+    else:
+        average = sum(float(score) for score, _ in row) / len(row)
+    return max(0.0, min(100.0, round(average * 10.0, 1)))
 
 
 async def build_single_file_health(

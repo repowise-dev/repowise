@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -14,7 +15,6 @@ from httpx import ASGITransport, AsyncClient
 
 from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 from repowise.server.routers import workspace
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -153,6 +153,50 @@ def _make_enricher(tmp_path: Path) -> CrossRepoEnricher:
     })
 
     return CrossRepoEnricher(cross_repo_path, contracts_path=contracts_path)
+
+
+def _create_workspace_repo_db(
+    workspace_root: Path,
+    repo_alias: str,
+    *,
+    health_rows: list[tuple[float, int]] | None = None,
+) -> None:
+    repo_dir = workspace_root / repo_alias / ".repowise"
+    repo_dir.mkdir(parents=True)
+    db_path = repo_dir / "wiki.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE repositories (id TEXT PRIMARY KEY);
+            CREATE TABLE graph_nodes (
+                id TEXT PRIMARY KEY,
+                language TEXT,
+                symbol_count INTEGER DEFAULT 0
+            );
+            CREATE TABLE wiki_pages (id TEXT PRIMARY KEY, confidence REAL);
+            CREATE TABLE git_metadata (id TEXT PRIMARY KEY, churn_percentile REAL);
+            CREATE TABLE health_file_metrics (
+                id TEXT PRIMARY KEY,
+                score REAL NOT NULL,
+                nloc INTEGER NOT NULL
+            );
+            INSERT INTO repositories (id) VALUES ('repo-backend');
+            INSERT INTO graph_nodes (id, language, symbol_count) VALUES
+                ('src/a.py', 'python', 2),
+                ('src/b.py', 'python', 3);
+            INSERT INTO wiki_pages (id, confidence) VALUES
+                ('page-a', 0.8),
+                ('page-b', 0.6);
+            INSERT INTO git_metadata (id, churn_percentile) VALUES
+                ('src/a.py', 95.0),
+                ('src/b.py', 10.0);
+            """
+        )
+        for idx, (score, nloc) in enumerate(health_rows or []):
+            conn.execute(
+                "INSERT INTO health_file_metrics (id, score, nloc) VALUES (?, ?, ?)",
+                (f"metric-{idx}", score, nloc),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +437,7 @@ class TestGetCoChanges:
 
     @pytest.mark.asyncio
     async def test_no_enricher(self) -> None:
-        """Workspace mode but no enricher → empty."""
+        """Workspace mode but no enricher -> empty."""
         ws_config = _make_ws_config()
         app = _make_workspace_app(ws_config=ws_config)
         transport = ASGITransport(app=app)
@@ -402,3 +446,51 @@ class TestGetCoChanges:
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests — GET /api/workspace/graph
+# ---------------------------------------------------------------------------
+
+
+class TestGetWorkspaceGraph:
+    @pytest.mark.asyncio
+    async def test_uses_canonical_health_score_from_repo_metrics(self, tmp_path: Path) -> None:
+        ws_config = _make_ws_config()
+        _create_workspace_repo_db(
+            tmp_path,
+            "backend",
+            health_rows=[(2.0, 10), (9.0, 30)],
+        )
+        app = _make_workspace_app(
+            ws_config=ws_config,
+            workspace_root=str(tmp_path),
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/graph")
+
+        assert resp.status_code == 200
+        backend = next(n for n in resp.json()["nodes"] if n["name"] == "backend")
+        assert backend["health_score"] == 72.5
+        assert backend["health_score_source"] == "canonical"
+
+    @pytest.mark.asyncio
+    async def test_marks_derived_health_score_when_repo_metrics_are_missing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        ws_config = _make_ws_config()
+        _create_workspace_repo_db(tmp_path, "backend")
+        app = _make_workspace_app(
+            ws_config=ws_config,
+            workspace_root=str(tmp_path),
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/graph")
+
+        assert resp.status_code == 200
+        backend = next(n for n in resp.json()["nodes"] if n["name"] == "backend")
+        assert backend["health_score"] == 62.0
+        assert backend["health_score_source"] == "derived"

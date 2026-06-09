@@ -123,7 +123,8 @@ class WorkspaceGraphNode(BaseModel):
     name: str
     file_count: int = 0
     coverage_pct: float = 0.0
-    health_score: int = 0
+    health_score: float = 0.0
+    health_score_source: str = "derived"
     top_language: str = "unknown"
 
 

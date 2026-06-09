@@ -27,6 +27,7 @@ export interface WorkspaceGraphData {
     file_count: number;
     coverage_pct: number;
     health_score: number;
+    health_score_source?: "canonical" | "derived";
     top_language: string;
   }>;
   edges: Array<{
@@ -90,6 +91,7 @@ function computeLayout(data: WorkspaceGraphData): { nodes: Node[]; edges: Edge[]
         fileCount: apiNode.file_count,
         coveragePct: apiNode.coverage_pct,
         healthScore: apiNode.health_score,
+        healthScoreSource: apiNode.health_score_source ?? "derived",
         topLanguage: apiNode.top_language,
       } satisfies WorkspaceGraphNodeData,
     };

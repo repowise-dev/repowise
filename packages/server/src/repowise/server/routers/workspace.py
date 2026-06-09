@@ -7,7 +7,6 @@ startup from ``.repowise-workspace/`` JSON files) — no DB access needed.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sqlite3
 from pathlib import Path
@@ -16,7 +15,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from repowise.server.deps import (
     get_cross_repo_enricher,
-    get_db_session,
     get_workspace_config,
     resolve_session_factory,
     verify_api_key,
@@ -35,6 +33,7 @@ from repowise.server.schemas import (
     WorkspaceRepoEntry,
     WorkspaceResponse,
 )
+from repowise.server.services.module_health import read_repo_health_score
 
 router = APIRouter(
     prefix="/api/workspace",
@@ -76,6 +75,22 @@ def _compute_health_score(file_count: int, doc_coverage_pct: float, hotspot_coun
     hotspot_ratio = min(hotspot_count / max(file_count, 1), 1.0)
     hotspot_component = (1.0 - hotspot_ratio) * 100 * 0.4
     return max(0, min(100, round(coverage_component + hotspot_component)))
+
+
+def _resolve_graph_health_score(db_path: Path, stats: dict) -> tuple[float, str]:
+    canonical = read_repo_health_score(db_path)
+    if canonical is not None:
+        return canonical, "canonical"
+    return (
+        float(
+            _compute_health_score(
+                stats.get("file_count", 0),
+                stats.get("doc_coverage_pct", 0.0),
+                stats.get("hotspot_count", 0),
+            )
+        ),
+        "derived",
+    )
 
 
 def _query_repo_stats(db_path: Path) -> dict:
@@ -380,6 +395,10 @@ async def get_workspace_graph(
             db_path = repo_path / ".repowise" / "wiki.db"
             stats = _query_repo_stats(db_path)
             top_language = _query_top_language(db_path)
+            health_score, health_score_source = _resolve_graph_health_score(db_path, stats)
+        else:
+            health_score = 0.0
+            health_score_source = "derived"
         rid = stats.get("repo_id") or r.alias
         repo_id_map[r.alias] = rid
         nodes.append(
@@ -388,11 +407,8 @@ async def get_workspace_graph(
                 name=r.alias,
                 file_count=stats.get("file_count", 0),
                 coverage_pct=stats.get("doc_coverage_pct", 0.0),
-                health_score=_compute_health_score(
-                    stats.get("file_count", 0),
-                    stats.get("doc_coverage_pct", 0.0),
-                    stats.get("hotspot_count", 0),
-                ),
+                health_score=health_score,
+                health_score_source=health_score_source,
                 top_language=top_language,
             )
         )
@@ -489,11 +505,12 @@ async def sync_workspace(
 
     _require_workspace(ws_config)
 
+    from sqlalchemy import select
+
     from repowise.core.persistence import crud
     from repowise.core.persistence.database import get_session
     from repowise.core.persistence.models import GenerationJob
     from repowise.server.routers.repos import _launch_job_task
-    from sqlalchemy import select
 
     ws_root = getattr(request.app.state, "workspace_root", None)
     if ws_root is None:
@@ -584,7 +601,7 @@ async def sync_workspace(
                     )
                     await session.commit()
                     return job.id, None
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return None, str(exc)
 
         job_id, err = await _create_job()
