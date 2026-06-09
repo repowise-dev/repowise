@@ -14,6 +14,7 @@ import {
   HotFunctionsPanel,
   HiddenCouplingList,
   RecalibrationBanner,
+  DefectAccuracyCard,
   type FileSortField,
   type Severity,
 } from "@repowise-dev/ui/health";
@@ -175,6 +176,10 @@ export default function HealthPage() {
             averageDelta={trend?.summary?.average_delta ?? undefined}
             hotspotDelta={trend?.summary?.hotspot_delta ?? undefined}
           />
+
+          {overview.defect_accuracy ? (
+            <DefectAccuracyCard data={overview.defect_accuracy} />
+          ) : null}
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-3">

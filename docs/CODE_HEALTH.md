@@ -66,6 +66,31 @@ The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 - **Average Health** — NLOC-weighted average over all files.
 - **Worst Performer** — single lowest-scoring file.
 
+## Does the score find the bugs?
+
+The score is only worth anything if the files it flags are the files that
+actually break. After an index, repowise checks that against the repo's own
+history and prints a one-line callout:
+
+```
+Does the score find the bugs? 16/20 lowest-health files had a bug fix in the
+last 6 months, 3.3x the 24% baseline (80% vs 24%).
+```
+
+It ranks every file by health score, takes the 20 lowest, and counts how many
+were touched by a `fix:` commit in the trailing ~180-day window (the same
+signal the `prior_defect` biomarker uses). That precision is contrasted with
+the repo-wide base rate — the fraction of *all* files with a recent fix — to
+give the lift. The same number appears on the web `health` and `overview`
+dashboards, where it expands into a per-K table (worst 10/20/30), a
+concentration stat (what share of recently-fixed files fall in the
+least-healthy 20%), and the exact flagged files.
+
+It stays silent on repos without enough history to be honest (fewer than 25
+scored files, or fewer than 5 recently-fixed files). One caveat it discloses:
+`prior_defect` is itself one (down-weighted) input to the score, so this is an
+association on the indexed history, not a leakage-free forward prediction.
+
 ## The biomarkers
 
 **brain_method** — A single function that is simultaneously long, deeply

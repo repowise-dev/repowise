@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.models import Severity
 from repowise.core.analysis.health.scoring import (
     CATEGORY_CAPS,
@@ -161,8 +162,17 @@ async def health_overview(
         "severity_breakdown": _severity_breakdown(findings),
     }
 
+    # "Does the score find the bugs?" self-validation, derived from the same
+    # metrics + findings (prior_defect biomarker) already loaded above. ``None``
+    # when the repo lacks enough files / defect history to be honest.
+    defect_accuracy = compute_defect_accuracy(
+        [_metric_to_dict(m) for m in metrics],
+        [_finding_to_dict(f) for f in findings],
+    )
+
     return {
         "summary": summary,
+        "defect_accuracy": defect_accuracy,
         "files": [_metric_to_dict(m) for m in metrics[:limit]],
         "top_findings": [_finding_to_dict(f) for f in findings[:limit]],
         "modules": _module_rollups(metrics),

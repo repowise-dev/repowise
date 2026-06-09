@@ -26,3 +26,4 @@ export * from "./ai-prompt-modal";
 export * from "./hot-functions-panel";
 export * from "./hidden-coupling-list";
 export * from "./recalibration-banner";
+export * from "./defect-accuracy-card";

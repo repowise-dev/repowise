@@ -1,4 +1,7 @@
+import type { DefectAccuracy } from "@repowise-dev/ui/health";
 import { apiGet, apiPatch } from "./client";
+
+export type { DefectAccuracy } from "@repowise-dev/ui/health";
 
 export interface HealthFileMetric {
   file_path: string;
@@ -54,6 +57,7 @@ export interface HealthOverviewResponse {
     open_findings: number;
     severity_breakdown?: { critical: number; high: number; medium: number; low: number };
   };
+  defect_accuracy?: DefectAccuracy | null;
   files: HealthFileMetric[];
   top_findings: HealthFinding[];
   modules?: HealthModuleRow[];

@@ -102,6 +102,12 @@ repowise health --refactoring-targets # ranked by impact / effort
 repowise health --trend               # snapshots + declining / predicted-decline alerts
 ```
 
+And it proves itself on *your* repo, not just a benchmark: after every index,
+repowise checks its own flags against your git history and reports the hit rate
+in the terminal and on the dashboard — *"16/20 lowest-health files had a bug fix
+in the last 6 months, 3.3x the 24% baseline"*. See
+[Does the score find the bugs?](docs/CODE_HEALTH.md#does-the-score-find-the-bugs).
+
 **Does the score actually find bugs? Yes — and it out-ranks the leading
 commercial code-health tool.** On the **same 2,770 files across 9 languages**,
 scored at the same leakage-free commit against the same defect labels:

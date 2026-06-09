@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.table import Table
@@ -338,6 +339,8 @@ def health_command(
         f"({kpis.get('worst_performer_path', 'n/a')})\n"
     )
 
+    _render_defect_accuracy_line(report)
+
     table = Table(title=f"Lowest-scoring files ({min(len(metrics_sorted), 20)})")
     table.add_column("File", style="cyan")
     table.add_column("Score", justify="right")
@@ -374,6 +377,40 @@ def health_command(
                 f"-{f.health_impact:.2f}",
             )
         console.print(f_table)
+
+
+def _render_defect_accuracy_line(report: Any) -> None:
+    """One-line "does the score find the bugs?" validation, or nothing.
+
+    Silent when there isn't enough history for an honest number (the core
+    compute returns ``None``).
+    """
+    try:
+        from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+
+        stat = compute_defect_accuracy(report.metrics, report.findings)
+    except Exception:
+        return
+    if not stat:
+        return
+
+    months = max(1, round(stat["window_days"] / 30))
+    window = "month" if months == 1 else f"{months} months"
+    line = (
+        f"[dim]Does the score find the bugs? [/dim]"
+        f"[bold]{stat['hits']}/{stat['k']}[/bold]"
+        f"[dim] lowest-health files had a bug fix in the last {window}[/dim]"
+    )
+    if stat.get("lift") is not None:
+        base_pct = round(stat["base_rate"] * 100)
+        prec_pct = round(stat["precision"] * 100)
+        line += (
+            f"[dim], [/dim][bold]{stat['lift']}x[/bold]"
+            f"[dim] the {base_pct}% baseline ({prec_pct}% vs {base_pct}%).[/dim]"
+        )
+    else:
+        line += "[dim].[/dim]"
+    console.print(line + "\n")
 
 
 def _effort_bucket(nloc: int) -> tuple[str, int]:

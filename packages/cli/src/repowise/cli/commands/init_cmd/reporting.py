@@ -73,6 +73,41 @@ def show_analysis_summary(result: Any) -> None:
     )
 
 
+def _render_defect_accuracy(result: Any) -> None:
+    """Print a one-line "does the score find the bugs?" validation callout.
+
+    Stays silent unless the health analysis ran and the repo has enough files
+    and recent bug-fix history for an honest number (the core compute returns
+    ``None`` otherwise).
+    """
+    report = getattr(result, "health_report", None)
+    if report is None:
+        return
+    try:
+        from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+
+        stat = compute_defect_accuracy(report.metrics, report.findings)
+    except Exception:
+        return
+    if not stat:
+        return
+
+    months = max(1, round(stat["window_days"] / 30))
+    window = "month" if months == 1 else f"{months} months"
+    line = (
+        f"  [dim]Health check: [/dim]"
+        f"[bold]{stat['hits']}/{stat['k']}[/bold]"
+        f"[dim] lowest-health files had a bug fix in the last {window}[/dim]"
+    )
+    if stat.get("lift") is not None:
+        base_pct = round(stat["base_rate"] * 100)
+        line += f"[dim], [/dim][bold]{stat['lift']}x[/bold][dim] the {base_pct}% baseline.[/dim]"
+    else:
+        line += "[dim].[/dim]"
+    console.print(line)
+    console.print()
+
+
 def show_completion(
     *,
     repo_path: Any,
@@ -163,6 +198,7 @@ def show_completion(
             build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
         )
         console.print()
+        _render_defect_accuracy(result)
     else:
         total_tokens = sum(p.total_tokens for p in (result.generated_pages or []))
         metrics = [
@@ -198,6 +234,7 @@ def show_completion(
             build_completion_panel("repowise init complete", metrics, next_steps=next_steps)
         )
         console.print()
+        _render_defect_accuracy(result)
         console.print(format_setup_instructions(repo_path))
         console.print()
 
