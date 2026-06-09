@@ -190,6 +190,28 @@ class TestHttpExtractor:
         assert len(consumers) == 1
         assert consumers[0].contract_id == "http::POST::/api/data"
 
+    def test_fetch_consumer_strips_leading_base_expr(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/api.ts", """
+            const users = await fetch(`${API_BASE}/api/users`);
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "frontend")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert len(consumers) == 1
+        # The unresolved base placeholder is stripped, not turned into {param}.
+        assert consumers[0].contract_id == "http::GET::/api/users"
+        assert consumers[0].meta.get("base_stripped") is True
+
+    def test_fetch_consumer_keeps_interior_param(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "src/api.ts", """
+            const u = await fetch(`/users/${id}`);
+        """)
+        contracts = HttpExtractor().extract(tmp_path, "frontend")
+        consumers = [c for c in contracts if c.role == "consumer"]
+        assert len(consumers) == 1
+        # Interior expressions are genuine path params and must remain.
+        assert consumers[0].contract_id == "http::GET::/users/{param}"
+        assert "base_stripped" not in consumers[0].meta
+
     def test_empty_file(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "empty.py", "")
         contracts = HttpExtractor().extract(tmp_path, "svc")
@@ -590,6 +612,131 @@ class TestMatchContracts:
         ]
         links = match_contracts(contracts)
         assert len(links) == 2
+
+
+# ---------------------------------------------------------------------------
+# Candidate matching (mount / version / base-prefix tolerant)
+# ---------------------------------------------------------------------------
+
+
+class TestCandidateMatching:
+    def _c(self, **kwargs) -> Contract:
+        defaults = {
+            "repo": "a",
+            "contract_id": "http::GET::/api",
+            "contract_type": "http",
+            "role": "provider",
+            "file_path": "f.py",
+            "symbol_name": "handler",
+            "confidence": 0.85,
+            "service": None,
+            "meta": {},
+        }
+        defaults.update(kwargs)
+        return Contract(**defaults)
+
+    def test_mount_prefix_creates_candidate_link(self) -> None:
+        # Consumer hits /api/resource/search; provider mounts /resource/search.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource/search"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/api/resource/search",
+                    file_path="c.ts", confidence=0.75),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].match_type == "candidate"
+        # Candidate confidence is strictly lower than an exact min() would give.
+        assert links[0].confidence < 0.75
+
+    def test_version_prefix_with_base_param(self) -> None:
+        # Provider /v1/resource; consumer base resolved to a leading {param}.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::POST::/v1/resource"),
+            self._c(repo="frontend", role="consumer", contract_id="http::POST::/{param}/resource",
+                    file_path="c.ts"),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].match_type == "candidate"
+
+    def test_base_stripped_consumer_is_candidate_not_exact(self) -> None:
+        # Even when the suffix matches exactly, a stripped base means we can't
+        # be certain of the mount point — so it is a candidate, not exact.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/resource"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c.ts", meta={"base_stripped": True}),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].match_type == "candidate"
+
+    def test_exact_match_takes_precedence_over_candidate(self) -> None:
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/api/users"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/api/users", file_path="c.ts"),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].match_type == "exact"
+
+    def test_static_asset_excluded_from_candidate(self) -> None:
+        # /api/app.js reduces to the same core as /app.js, but static assets
+        # must never produce contract links.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/app.js"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/api/app.js", file_path="c.ts"),
+        ]
+        links = match_contracts(contracts)
+        assert links == []
+
+    def test_method_mismatch_no_candidate(self) -> None:
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::POST::/v1/resource"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/resource",
+                    file_path="c.ts", meta={"base_stripped": True}),
+        ]
+        links = match_contracts(contracts)
+        assert links == []
+
+    def test_wildcard_provider_method_candidate(self) -> None:
+        # Go HandleFunc providers carry method "*" — compatible with any method.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::*::/v1/orders"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/api/orders", file_path="c.ts"),
+        ]
+        links = match_contracts(contracts)
+        assert len(links) == 1
+        assert links[0].match_type == "candidate"
+
+    def test_does_not_overcollapse_to_root(self) -> None:
+        # Both sides reduce to "/" once prefixes are stripped — too generic to
+        # link safely.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/api/v1"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/api", file_path="c.ts"),
+        ]
+        links = match_contracts(contracts)
+        assert links == []
+
+    def test_non_mount_segment_not_stripped(self) -> None:
+        # `internal` is a legitimate resource name, not a mount prefix — it must
+        # not be stripped, so /internal/users and /api/users stay distinct.
+        contracts = [
+            self._c(repo="backend", role="provider", contract_id="http::GET::/internal/users"),
+            self._c(repo="frontend", role="consumer", contract_id="http::GET::/api/users", file_path="c.ts"),
+        ]
+        links = match_contracts(contracts)
+        assert links == []
+
+    def test_same_repo_same_service_filtered_in_candidate(self) -> None:
+        contracts = [
+            self._c(repo="mono", role="provider", contract_id="http::GET::/v1/resource", service="svc-a"),
+            self._c(repo="mono", role="consumer", contract_id="http::GET::/api/resource",
+                    file_path="c.py", service="svc-a"),
+        ]
+        links = match_contracts(contracts)
+        assert links == []
 
 
 # ---------------------------------------------------------------------------

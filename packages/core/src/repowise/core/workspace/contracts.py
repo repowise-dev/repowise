@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -81,7 +82,7 @@ class ContractLink:
 
     contract_id: str
     contract_type: str  # "http" | "grpc" | "topic"
-    match_type: str  # always "exact" in Phase 4
+    match_type: str  # "exact" | "candidate" | "manual"
     confidence: float
     provider_repo: str
     provider_file: str
@@ -192,6 +193,32 @@ def normalize_contract_id(contract_id: str) -> str:
 # Matching engine
 # ---------------------------------------------------------------------------
 
+# Common API mount / version path prefixes. When exact matching fails, the
+# candidate pass strips these leading segments (plus unresolved base ``{param}``
+# segments) from both provider and consumer paths so a consumer that hits
+# ``/api/v1/users`` can still link to a provider mounted at ``/users`` (or vice
+# versa). Such links are emitted as lower-confidence ``candidate`` matches.
+#
+# Kept deliberately small: only segments that are almost never real resource
+# names. Words like ``internal``/``public``/``gateway`` are excluded because
+# they double as legitimate route segments and would conflate unrelated routes.
+_MOUNT_PREFIX_SEGMENTS = frozenset({"api", "rest"})
+_VERSION_SEGMENT_RE = re.compile(r"^v\d+$")
+
+# Confidence multiplier applied to candidate (non-exact) links.
+_CANDIDATE_CONFIDENCE_FACTOR = 0.6
+
+# Request paths ending in these suffixes are static assets, never API contracts.
+# They are excluded from the candidate pass so a ``fetch('/static/app.js')``
+# can't spuriously link to a provider route that shares a suffix. ``.json`` and
+# ``.xml`` are intentionally absent — real APIs serve those.
+_STATIC_ASSET_SUFFIXES = (
+    ".js", ".mjs", ".cjs", ".css", ".map", ".html", ".htm",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ".pdf", ".txt", ".wasm",
+)
+
 
 def _find_matching_keys(
     consumer_id: str,
@@ -227,12 +254,119 @@ def _find_matching_keys(
     return []
 
 
-def match_contracts(contracts: list[Contract]) -> list[ContractLink]:
-    """Match providers to consumers using exact normalized ID comparison.
+def _split_http_id(normalized_id: str) -> tuple[str, str] | None:
+    """Return ``(method, path)`` for a normalized ``http::`` id, else ``None``."""
+    parts = normalized_id.split("::", 2)
+    if len(parts) != 3 or parts[0] != "http":
+        return None
+    return parts[1], parts[2]
 
-    - HTTP wildcard: ``http::*::/path`` matches any method on that path.
-    - gRPC wildcard: ``grpc::Service/*`` matches any method on that service.
-    - Same-repo same-service calls are filtered out.
+
+def _candidate_http_path(path: str) -> str:
+    """Reduce an HTTP path to its mount-agnostic core for candidate matching.
+
+    Strips leading unresolved base ``{param}`` segments and known mount/version
+    prefixes so routes that differ only by an API mount or version prefix
+    collapse to the same key:
+
+    - ``/api/v1/users`` → ``/users``
+    - ``/{param}/resource`` → ``/resource``
+    - ``/v1/resource`` → ``/resource``
+    """
+    segments = [s for s in path.split("/") if s]
+    while segments and (
+        segments[0] == "{param}"
+        or segments[0] in _MOUNT_PREFIX_SEGMENTS
+        or _VERSION_SEGMENT_RE.match(segments[0])
+    ):
+        segments.pop(0)
+    return "/" + "/".join(segments)
+
+
+def _is_static_asset_path(path: str) -> bool:
+    """True when *path*'s final segment looks like a static asset file."""
+    last = path.rsplit("/", 1)[-1].split("?")[0].lower()
+    return last.endswith(_STATIC_ASSET_SUFFIXES)
+
+
+def _methods_compatible(consumer_method: str, provider_method: str) -> bool:
+    """HTTP methods match if equal or either side is the ``*`` wildcard."""
+    return (
+        consumer_method == provider_method
+        or consumer_method == "*"
+        or provider_method == "*"
+    )
+
+
+def _same_repo_same_service(provider: Contract, consumer: Contract) -> bool:
+    """Skip internal calls: same repo and same service boundary (or both None)."""
+    return provider.repo == consumer.repo and provider.service == consumer.service
+
+
+def _make_link(
+    consumer: Contract,
+    provider: Contract,
+    match_type: str,
+    confidence: float,
+    seen: set[tuple[str, str, str, str, str]],
+) -> ContractLink | None:
+    """Build a deduplicated ContractLink, or ``None`` if already emitted."""
+    dedup_key = (
+        normalize_contract_id(consumer.contract_id),
+        consumer.repo,
+        consumer.file_path,
+        provider.repo,
+        provider.file_path,
+    )
+    if dedup_key in seen:
+        return None
+    seen.add(dedup_key)
+
+    return ContractLink(
+        contract_id=consumer.contract_id,
+        contract_type=consumer.contract_type,
+        match_type=match_type,
+        confidence=confidence,
+        provider_repo=provider.repo,
+        provider_file=provider.file_path,
+        provider_symbol=provider.symbol_name,
+        provider_service=provider.service,
+        consumer_repo=consumer.repo,
+        consumer_file=consumer.file_path,
+        consumer_symbol=consumer.symbol_name,
+        consumer_service=consumer.service,
+    )
+
+
+def _build_candidate_index(
+    provider_index: dict[str, list[Contract]],
+) -> dict[str, list[Contract]]:
+    """Index HTTP providers by their mount-agnostic candidate path."""
+    candidate_index: dict[str, list[Contract]] = defaultdict(list)
+    for key, providers in provider_index.items():
+        split = _split_http_id(key)
+        if split is None:
+            continue
+        core = _candidate_http_path(split[1])
+        if core in ("", "/"):
+            continue  # nothing concrete left to match on
+        candidate_index[core].extend(providers)
+    return candidate_index
+
+
+def match_contracts(contracts: list[Contract]) -> list[ContractLink]:
+    """Match providers to consumers across repos.
+
+    Two passes:
+
+    1. **Exact** — normalized contract IDs must be equal, with HTTP/gRPC
+       wildcard handling (``http::*::/path``, ``grpc::Service/*``).
+    2. **Candidate** — for HTTP consumers left unmatched (including those whose
+       URL had an unresolved base prefix stripped during extraction), retry
+       after collapsing known mount/version/base prefixes on both sides. These
+       links are tagged ``match_type="candidate"`` with reduced confidence.
+
+    Same-repo same-service calls are filtered out of both passes.
     """
     provider_index: dict[str, list[Contract]] = defaultdict(list)
     consumers: list[Contract] = []
@@ -246,44 +380,60 @@ def match_contracts(contracts: list[Contract]) -> list[ContractLink]:
 
     links: list[ContractLink] = []
     seen: set[tuple[str, str, str, str, str]] = set()
+    matched_consumers: set[int] = set()
 
+    # --- Pass 1: exact / wildcard ---
     for consumer in consumers:
-        matching_keys = _find_matching_keys(consumer.contract_id, provider_index)
+        # Consumers with an unresolved base prefix can't be matched exactly —
+        # defer them entirely to the candidate pass.
+        if consumer.meta.get("base_stripped"):
+            continue
 
+        matching_keys = _find_matching_keys(consumer.contract_id, provider_index)
         for key in matching_keys:
             for provider in provider_index[key]:
-                # Same-repo same-service filter: skip internal calls
-                if provider.repo == consumer.repo:
-                    if (
-                        provider.service == consumer.service  # includes both-None case
-                    ):
-                        continue
-
-                dedup_key = (
-                    normalize_contract_id(consumer.contract_id),
-                    consumer.repo,
-                    consumer.file_path,
-                    provider.repo,
-                    provider.file_path,
-                )
-                if dedup_key in seen:
+                if _same_repo_same_service(provider, consumer):
                     continue
-                seen.add(dedup_key)
+                link = _make_link(
+                    consumer,
+                    provider,
+                    "exact",
+                    min(provider.confidence, consumer.confidence),
+                    seen,
+                )
+                if link is not None:
+                    links.append(link)
+                    matched_consumers.add(id(consumer))
 
-                links.append(ContractLink(
-                    contract_id=consumer.contract_id,
-                    contract_type=consumer.contract_type,
-                    match_type="exact",
-                    confidence=min(provider.confidence, consumer.confidence),
-                    provider_repo=provider.repo,
-                    provider_file=provider.file_path,
-                    provider_symbol=provider.symbol_name,
-                    provider_service=provider.service,
-                    consumer_repo=consumer.repo,
-                    consumer_file=consumer.file_path,
-                    consumer_symbol=consumer.symbol_name,
-                    consumer_service=consumer.service,
-                ))
+    # --- Pass 2: candidate (mount/version/base prefix) for unmatched HTTP ---
+    candidate_index = _build_candidate_index(provider_index)
+    for consumer in consumers:
+        if id(consumer) in matched_consumers:
+            continue
+
+        split = _split_http_id(normalize_contract_id(consumer.contract_id))
+        if split is None:
+            continue  # candidate matching is HTTP-only
+        method, path = split
+        if _is_static_asset_path(path):
+            continue
+        core = _candidate_http_path(path)
+        if core in ("", "/"):
+            continue
+
+        for provider in candidate_index.get(core, []):
+            if _same_repo_same_service(provider, consumer):
+                continue
+            psplit = _split_http_id(normalize_contract_id(provider.contract_id))
+            if psplit is None or not _methods_compatible(method, psplit[0]):
+                continue
+            confidence = round(
+                min(provider.confidence, consumer.confidence) * _CANDIDATE_CONFIDENCE_FACTOR,
+                3,
+            )
+            link = _make_link(consumer, provider, "candidate", confidence, seen)
+            if link is not None:
+                links.append(link)
 
     return links
 

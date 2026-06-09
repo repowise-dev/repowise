@@ -225,6 +225,44 @@ def _extract_path_from_url(url: str) -> str:
     return url
 
 
+# A leading base/host placeholder in a consumer URL, e.g. ``${API_BASE}/users``
+# or ``${apiUrl}/v1/users``. The value is unresolved at extraction time, so the
+# only thing we can match on is the concrete suffix. Anchored at the start so
+# interior expressions (real path params like ``/users/${id}``) are untouched.
+_LEADING_BASE_EXPR_RE = re.compile(r"^\s*\$\{[^}]+\}")
+
+
+def _strip_leading_base_expr(path: str) -> tuple[str, bool]:
+    """Strip a leading base/host placeholder from a consumer URL path.
+
+    Returns ``(path, stripped)``. ``${API_BASE}/users`` becomes ``/users`` with
+    ``stripped=True``. Treating the placeholder as an ordinary ``{param}`` path
+    segment (which is what :func:`normalize_http_path` would otherwise do)
+    prevents the route from ever lining up with a concrete provider path, so we
+    drop it and let the matcher link on the suffix as a lower-confidence
+    candidate instead.
+    """
+    new_path = _LEADING_BASE_EXPR_RE.sub("", path, count=1)
+    if new_path == path:
+        return path, False
+    if not new_path.startswith("/"):
+        new_path = "/" + new_path
+    return new_path, True
+
+
+def _consumer_meta(method: str, norm_path: str, client: str, base_stripped: bool) -> dict:
+    """Build a consumer contract's ``meta`` dict.
+
+    ``base_stripped`` is recorded only when True so the matcher knows the path
+    had an unresolved base prefix removed and should be linked as a candidate
+    rather than an exact match.
+    """
+    meta = {"method": method, "path": norm_path, "client": client}
+    if base_stripped:
+        meta["base_stripped"] = True
+    return meta
+
+
 class HttpExtractor:
     """Extract HTTP route contracts from source files."""
 
@@ -381,6 +419,7 @@ class HttpExtractor:
                         url = match.group(1)
                         method = match.group(2).upper()
                         path = _extract_path_from_url(url)
+                        path, base_stripped = _strip_leading_base_expr(path)
                         norm_path = normalize_http_path(path)
                         contract_id = f"http::{method}::{norm_path}"
                         contracts.append(
@@ -393,7 +432,7 @@ class HttpExtractor:
                                 symbol_name=f"fetch:{method} {url}",
                                 confidence=0.75,
                                 service=None,
-                                meta={"method": method, "path": norm_path, "client": "fetch"},
+                                meta=_consumer_meta(method, norm_path, "fetch", base_stripped),
                             )
                         )
 
@@ -404,6 +443,7 @@ class HttpExtractor:
                         if url in fetch_method_urls:
                             continue
                         path = _extract_path_from_url(url)
+                        path, base_stripped = _strip_leading_base_expr(path)
                         norm_path = normalize_http_path(path)
                         contract_id = f"http::GET::{norm_path}"
                         contracts.append(
@@ -416,7 +456,7 @@ class HttpExtractor:
                                 symbol_name=f"fetch:GET {url}",
                                 confidence=0.75,
                                 service=None,
-                                meta={"method": "GET", "path": norm_path, "client": "fetch"},
+                                meta=_consumer_meta("GET", norm_path, "fetch", base_stripped),
                             )
                         )
 
@@ -425,6 +465,7 @@ class HttpExtractor:
                         method = match.group(1).upper()
                         url = match.group(2)
                         path = _extract_path_from_url(url)
+                        path, base_stripped = _strip_leading_base_expr(path)
                         norm_path = normalize_http_path(path)
                         contract_id = f"http::{method}::{norm_path}"
                         contracts.append(
@@ -437,7 +478,7 @@ class HttpExtractor:
                                 symbol_name=f"axios:{method} {url}",
                                 confidence=0.75,
                                 service=None,
-                                meta={"method": method, "path": norm_path, "client": "axios"},
+                                meta=_consumer_meta(method, norm_path, "axios", base_stripped),
                             )
                         )
 
@@ -450,6 +491,7 @@ class HttpExtractor:
                             if "/" not in url:
                                 continue  # Avoid matching non-URL strings.
                             path = _extract_path_from_url(url)
+                            path, base_stripped = _strip_leading_base_expr(path)
                             norm_path = normalize_http_path(path)
                             contract_id = f"http::{method}::{norm_path}"
                             contracts.append(
@@ -462,11 +504,7 @@ class HttpExtractor:
                                     symbol_name=f"httpclient:{method} {url}",
                                     confidence=0.70,
                                     service=None,
-                                    meta={
-                                        "method": method,
-                                        "path": norm_path,
-                                        "client": "httpclient",
-                                    },
+                                    meta=_consumer_meta(method, norm_path, "httpclient", base_stripped),
                                 )
                             )
 
@@ -475,6 +513,7 @@ class HttpExtractor:
                         method = match.group(1).upper()
                         url = match.group(2)
                         path = _extract_path_from_url(url)
+                        path, base_stripped = _strip_leading_base_expr(path)
                         norm_path = normalize_http_path(path)
                         contract_id = f"http::{method}::{norm_path}"
                         contracts.append(
@@ -487,7 +526,7 @@ class HttpExtractor:
                                 symbol_name=f"requests:{method} {url}",
                                 confidence=0.75,
                                 service=None,
-                                meta={"method": method, "path": norm_path, "client": "requests"},
+                                meta=_consumer_meta(method, norm_path, "requests", base_stripped),
                             )
                         )
 
