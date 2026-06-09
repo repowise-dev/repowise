@@ -160,11 +160,9 @@ class RepoRegistry:
         from sqlalchemy.ext.asyncio import (
             async_sessionmaker as _async_sessionmaker,
         )
-        from sqlalchemy.ext.asyncio import (
-            create_async_engine,
-        )
 
         from repowise.core.persistence.database import (
+            create_engine,
             get_db_url,
             init_db,
         )
@@ -174,10 +172,7 @@ class RepoRegistry:
 
         db_url = get_db_url(f"sqlite:///{db_path.as_posix()}")
 
-        engine = create_async_engine(
-            db_url,
-            connect_args={"check_same_thread": False},
-        )
+        engine = create_engine(db_url)
         await init_db(engine)
 
         session_factory = _async_sessionmaker(

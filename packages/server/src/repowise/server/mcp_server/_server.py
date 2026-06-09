@@ -9,9 +9,10 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.persistence.database import (
+    create_engine,
     get_configured_db_url,
     get_repo_db_path,
     init_db,
@@ -334,12 +335,8 @@ async def _lifespan(server: FastMCP):
 
     db_url = resolve_db_url(_state._repo_path)
 
-    connect_args: dict = {}
-    if db_url.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
-
     _log.info("repowise MCP: initialising database…")
-    engine = create_async_engine(db_url, connect_args=connect_args)
+    engine = create_engine(db_url)
     await init_db(engine)
 
     _state._session_factory = async_sessionmaker(
