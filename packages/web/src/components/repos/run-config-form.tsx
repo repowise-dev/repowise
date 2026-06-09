@@ -27,7 +27,7 @@ interface Props {
   onChange: (v: RunConfig) => void;
 }
 
-const PROVIDERS = ["litellm", "openai", "anthropic", "gemini", "deepseek", "ollama", "mock"] as const;
+const PROVIDERS = ["litellm", "openai", "anthropic", "gemini", "deepseek", "opencode", "ollama", "mock"] as const;
 
 export function RunConfigForm({ value, onChange }: Props) {
   // Seed from saved settings on mount

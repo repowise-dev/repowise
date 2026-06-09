@@ -200,6 +200,22 @@ Use `repowise init --codex` to write `.codex/config.toml` and `.codex/hooks.json
 
 ---
 
+### OpenCode CLI
+
+Use your local OpenCode CLI instead of an API key:
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+opencode       # first-run setup
+repowise init --provider opencode --yes
+```
+
+`opencode/default` uses the OpenCode CLI's configured default model. `opencode/deepseek-v4-pro` passes `--model deepseek-v4-pro` to `opencode run`. Repowise records token usage from OpenCode JSONL output and treats `opencode/*` cost as `$0.00` because billing is handled by OpenCode's own auth/subscription.
+
+OpenCode is detected automatically when installed — no auth setup needed from repowise. Use `opencode providers` to manage authentication and `opencode models` to list available models.
+
+---
+
 ### Provider auto-detection
 
 If you don't pass `--provider`, repowise detects your provider by checking:
@@ -208,7 +224,7 @@ If you don't pass `--provider`, repowise detects your provider by checking:
 2. `provider` in `.repowise/config.yaml`
 3. API key environment variables, in order: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY`
 
-Codex CLI is intentionally explicit: pass `--provider codex_cli` or set `REPOWISE_PROVIDER=codex_cli`.
+Codex CLI is intentionally explicit: pass `--provider codex_cli` or set `REPOWISE_PROVIDER=codex_cli`. Similarly, OpenCode is detected automatically when on `PATH` but can be explicitly selected with `--provider opencode` or `REPOWISE_PROVIDER=opencode`.
 
 ---
 

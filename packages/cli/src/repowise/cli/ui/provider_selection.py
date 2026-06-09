@@ -26,6 +26,7 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "anthropic": "claude-sonnet-4-6",
     "deepseek": "deepseek-v4-flash",
     "codex_cli": "codex_cli/default",
+    "opencode": "opencode/default",
     "ollama": "llama3.2",
     "openrouter": "anthropic/claude-sonnet-4.6",
     "litellm": "groq/llama-3.1-70b-versatile",
@@ -37,6 +38,7 @@ _PROVIDER_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "codex_cli": "__CODEX_CLI__",
+    "opencode": "__OPENCODE_CLI__",
     "ollama": "OLLAMA_BASE_URL",
     "openrouter": "OPENROUTER_API_KEY",
 }
@@ -47,6 +49,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "anthropic": "https://console.anthropic.com/settings/keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
     "codex_cli": "https://developers.openai.com/codex/cli",
+    "opencode": "https://opencode.ai",
     "ollama": "https://ollama.com/download",
     "openrouter": "https://openrouter.ai/keys",
 }
@@ -69,6 +72,13 @@ def _detect_codex_cli_status() -> tuple[bool, bool]:
     return installed, is_codex_logged_in() if installed else False
 
 
+def _detect_opencode_status() -> bool:
+    """Return ``True`` if the opencode CLI is installed on PATH."""
+    import shutil
+
+    return shutil.which("opencode") is not None
+
+
 def _detect_provider_status() -> dict[str, str]:
     """Return {provider: env_var_name} for providers whose key is set."""
     status: dict[str, str] = {}
@@ -80,6 +90,9 @@ def _detect_provider_status() -> dict[str, str]:
             installed, logged_in = _detect_codex_cli_status()
             if installed and logged_in:
                 status[prov] = "codex CLI"
+        elif prov == "opencode":
+            if _detect_opencode_status():
+                status[prov] = "opencode CLI"
         elif os.environ.get(env_var):
             status[prov] = env_var
     return status
@@ -120,6 +133,11 @@ def _interactive_provider_name(
                 status_text = "[yellow]✗ codex login required[/yellow]"
             else:
                 status_text = "[dim]✗ codex CLI not found[/dim]"
+        elif prov == "opencode":
+            if _detect_opencode_status():
+                status_text = f"[{OK}]✓ opencode CLI available[/]"
+            else:
+                status_text = "[dim]✗ opencode CLI not found[/dim]"
         else:
             status_text = f"[{OK}]✓ API key set[/]" if prov in detected else "[dim]✗ no key[/dim]"
         default_model = _PROVIDER_DEFAULTS.get(prov, "")
@@ -129,6 +147,8 @@ def _interactive_provider_name(
             label = f"{prov} [dim](recommended)[/dim]"
         elif prov == "codex_cli":
             label = f"{prov} [dim](uses Codex CLI auth)[/dim]"
+        elif prov == "opencode":
+            label = f"{prov} [dim](uses opencode CLI auth)[/dim]"
         table.add_row(f"[{idx}]", label, status_text, default_model)
 
     console.print()
@@ -174,6 +194,28 @@ def _interactive_provider_name(
                     f"  [{WARN}]Codex CLI is not logged in. Run 'codex login' and retry, "
                     "or select another provider.[/]"
                 )
+            return _interactive_provider_name(console, model_flag, repo_path=repo_path)
+        if chosen == "opencode":
+            console.print()
+            console.print(
+                "  [bold]opencode[/bold] is a local AI coding CLI that manages its own "
+                "models and authentication."
+            )
+            console.print()
+            console.print(f"  Install:   [{BRAND}]curl -fsSL https://opencode.ai/install | bash[/]")
+            console.print(f"  Setup:     [{BRAND}]opencode[/]  (first run sets up your provider)")
+            console.print(f"  Models:    [{BRAND}]opencode models[/]  (list available models)")
+            console.print(f"  More info: [{BRAND}]https://opencode.ai[/]")
+            console.print()
+            console.print(
+                f"  To use a specific model: [{BRAND}]repowise init --provider opencode "
+                "--model opencode/deepseek-v4-pro[/]"
+            )
+            console.print()
+            console.print(
+                f"  [{WARN}]opencode CLI not detected. Install it and retry, "
+                "or select another provider.[/]"
+            )
             return _interactive_provider_name(console, model_flag, repo_path=repo_path)
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")

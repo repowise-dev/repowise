@@ -694,6 +694,8 @@ def resolve_provider(
             kwargs["base_url"] = base_url
         if provider_name == "codex_cli" and repo_path is not None:
             kwargs["repo_path"] = repo_path
+        if provider_name == "opencode" and repo_path is not None:
+            kwargs["repo_path"] = repo_path
 
         # Pass API key from environment if available
         if provider_name == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
@@ -775,7 +777,7 @@ def resolve_provider(
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
         "LITELLM_API_KEY. Use REPOWISE_PROVIDER=codex_cli to use an authenticated "
-        "Codex CLI subscription."
+        "Codex CLI subscription, or REPOWISE_PROVIDER=opencode to use opencode."
     )
 
 
@@ -822,6 +824,19 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
                 warnings.append(
                     "Provider 'codex_cli' requires the Codex CLI. "
                     "Install it with: npm install -g @openai/codex"
+                )
+            return warnings
+
+        if provider_name == "opencode":
+            import shutil
+            if not shutil.which("opencode"):
+                warnings.append(
+                    "Provider 'opencode' requires the opencode CLI.\n"
+                    "  Install:  curl -fsSL https://opencode.ai/install | bash\n"
+                    "  Setup:    run 'opencode' once to configure your provider\n"
+                    "  Models:   opencode models (list available models)\n"
+                    "  More:     https://opencode.ai\n"
+                    "  Usage:    repowise init --provider opencode --model opencode/<model-name>"
                 )
             return warnings
 

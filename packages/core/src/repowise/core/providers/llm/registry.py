@@ -12,6 +12,7 @@ Built-in providers:
     - ollama      → OllamaProvider
     - litellm     → LiteLLMProvider
     - codex_cli   → CodexCliProvider
+    - opencode    → OpenCodeProvider
     - mock        → MockProvider (testing only)
 
 Custom provider registration:
@@ -46,6 +47,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
     "deepseek": ("repowise.core.providers.llm.deepseek", "DeepSeekProvider"),
     "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
+    "opencode": ("repowise.core.providers.llm.opencode", "OpenCodeProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
 }
 
@@ -123,7 +125,7 @@ def get_provider(
         raise ValueError(f"Unknown provider: {name!r}. Available providers: {available}")
 
     # Attach rate limiter (skip for mock — tests should run without limits)
-    if with_rate_limiter and name not in ("mock", "codex_cli"):
+    if with_rate_limiter and name not in ("mock", "codex_cli", "opencode"):
         config = rate_limit_config or PROVIDER_DEFAULTS.get(name)
         if config and "rate_limiter" not in kwargs:
             kwargs["rate_limiter"] = RateLimiter(config)
@@ -142,6 +144,7 @@ def get_provider(
             "deepseek": "openai",  # deepseek uses the openai package
             "litellm": "litellm",
             "codex_cli": "@openai/codex",
+            "opencode": "opencode",
         }
         package = _missing.get(name, name)
         raise ImportError(

@@ -44,7 +44,7 @@ repowise init [PATH] [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `mock` |
+| `--provider` | string | auto | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | string | — | Model override (e.g., `claude-sonnet-4-6`, `gpt-4.1`) |
 | `--embedder` | choice | auto | Embedding provider: `gemini`, `openai`, `mock` |
 | `--index-only` | flag | false | Skip LLM generation — parse, graph, git, dead code only |
@@ -76,6 +76,7 @@ repowise init --provider anthropic --yes
 
 # Use the authenticated local Codex CLI
 repowise init --provider codex_cli --codex --yes
+repowise init --provider opencode --yes
 
 # OpenAI-compatible Qwen3 endpoint with thinking disabled
 repowise init --provider openai --model qwen3 --reasoning off

@@ -84,6 +84,14 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "env_keys": [],
         "requires_key": True,
     },
+    {
+        "id": "opencode",
+        "name": "OpenCode (Local CLI)",
+        "default_model": "opencode/default",
+        "models": ["opencode/default", "opencode/big-pickle"],
+        "env_keys": [],
+        "requires_key": False,
+    },
 ]
 
 _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}

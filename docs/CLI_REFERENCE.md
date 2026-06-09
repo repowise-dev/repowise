@@ -50,7 +50,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 
 | Flag | Description |
 |------|-------------|
-| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `mock` |
+| `--provider` | LLM provider: `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `ollama`, `litellm`, `codex_cli`, `opencode`, `mock` |
 | `--model` | Model name override (e.g., `claude-sonnet-4-6`) |
 | `--embedder` | Embedder for semantic search: `gemini`, `openai`, `mock` |
 | `--index-only` | Skip LLM generation. Only parse, build graph, and index git. Free. |
@@ -79,6 +79,7 @@ In workspace mode, adds: repo scanning, per-repo indexing, cross-repo analysis (
 repowise init                                         # interactive
 repowise init --provider anthropic --yes              # automated
 repowise init --provider codex_cli --codex --yes       # use authenticated Codex CLI
+repowise init --provider opencode --yes               # use local OpenCode CLI
 repowise init --index-only                            # free, no LLM
 repowise init --dry-run                               # preview cost
 repowise init --test-run                              # quick test (10 files)

@@ -66,6 +66,8 @@ PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     "ollama": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
     "litellm": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
     "deepseek": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
+    # opencode runs locally via subprocess — serialized by an asyncio semaphore
+    "opencode": RateLimitConfig(requests_per_minute=20, tokens_per_minute=2_000_000),
 }
 
 

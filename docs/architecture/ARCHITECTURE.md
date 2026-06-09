@@ -1618,7 +1618,7 @@ Key files:
 Full configuration with defaults (`.repowise/config.yaml`):
 
 ```yaml
-provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | ollama | litellm | mock
+provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | ollama | litellm | codex_cli | opencode | mock
 model: claude-sonnet-4-5    # passed through to the provider
 embedding_provider: anthropic
 embedding_model: voyage-3

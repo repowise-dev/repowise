@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@repowise-dev/ui/ui/select";
 
-const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "ollama", "litellm", "mock"] as const;
+const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "opencode", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
@@ -22,6 +22,7 @@ const MODEL_PLACEHOLDERS: Record<string, string> = {
   openai: "gpt-5.4-nano",
   anthropic: "claude-sonnet-4-6",
   deepseek: "deepseek-v4-flash",
+  opencode: "opencode/default",
   ollama: "llama3.2",
   litellm: "groq/llama-3.1-70b-versatile",
   mock: "mock",
@@ -34,6 +35,7 @@ const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }>
   ollama: { vars: ["OLLAMA_BASE_URL"], installHint: "https://ollama.ai" },
   deepseek: { vars: ["DEEPSEEK_API_KEY"], installHint: "pip install openai" },
   litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
+  opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
   mock: { vars: [], installHint: "No key needed" },
 };
 

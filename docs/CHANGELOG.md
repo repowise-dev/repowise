@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **OpenCode CLI provider.** A new local OpenCode LLM provider runs documentation generation through the local OpenCode CLI via `opencode run --format json`. Uses `asyncio.create_subprocess_exec` (no shell), parses JSONL output, validates model names against a safe character set, and treats `opencode/*` cost as `$0.00`. No API keys are stored — OpenCode manages its own auth and model selection through its provider system. Interactive selection detects the OpenCode CLI on `PATH` and shows helpful install/setup instructions when it's missing.
+
+---
+
 ## [0.18.0] — 2026-06-08
 
 ### Added
