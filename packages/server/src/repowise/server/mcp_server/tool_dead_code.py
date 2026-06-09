@@ -7,6 +7,10 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.dead_code.risk_factors import (
+    effective_safe_to_delete,
+    path_risk_factors,
+)
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -75,7 +79,9 @@ async def get_dead_code(
         kind: Filter by kind (unreachable_file, unused_export, unused_internal, zombie_package).
         min_confidence: Minimum confidence threshold (default 0.5). Use 0.7 for high-confidence
             cleanups only.
-        safe_only: Only return findings marked safe_to_delete (default false).
+        safe_only: Only return deletion-ready findings — high confidence with no runtime-load
+            risk factors (config/bootstrap/database/environment/script files are excluded even
+            when persisted as safe). Default false.
         limit: Maximum findings per tier (default 20). Clamped to 25 because larger
             payloads exceed MCP transport token caps; paginate by tier/directory/owner
             for deeper exploration.
@@ -148,7 +154,7 @@ async def get_dead_code(
             elif _excluded_kinds:
                 repo_filtered = [f for f in repo_filtered if f.kind not in _excluded_kinds]
             if safe_only:
-                repo_filtered = [f for f in repo_filtered if f.safe_to_delete]
+                repo_filtered = [f for f in repo_filtered if _effective_safe(f)]
             if min_confidence > 0:
                 repo_filtered = [f for f in repo_filtered if f.confidence >= min_confidence]
             if directory:
@@ -169,8 +175,8 @@ async def get_dead_code(
 
             # Accumulate summary stats from unfiltered findings
             total_all += len(repo_findings)
-            total_deletable += sum(f.lines for f in repo_findings if f.safe_to_delete)
-            total_safe += sum(1 for f in repo_findings if f.safe_to_delete)
+            total_deletable += sum(f.lines for f in repo_findings if _effective_safe(f))
+            total_safe += sum(1 for f in repo_findings if _effective_safe(f))
             for f in repo_findings:
                 merged_by_kind[f.kind] = merged_by_kind.get(f.kind, 0) + 1
 
@@ -204,7 +210,8 @@ async def get_dead_code(
         if tier is None or tier == "high":
             tiers["high"] = _tier_from_dicts(
                 high,
-                "High confidence (>=0.8): Zero references in the codebase. Safe to delete.",
+                "High confidence (>=0.8): No references found in the codebase. "
+                "Strong cleanup candidates — review (especially runtime-loaded files) before deleting.",
             )
         if tier is None or tier == "medium":
             tiers["medium"] = _tier_from_dicts(
@@ -281,7 +288,7 @@ async def get_dead_code(
     elif _excluded_kinds:
         filtered = [f for f in filtered if f.kind not in _excluded_kinds]
     if safe_only:
-        filtered = [f for f in filtered if f.safe_to_delete]
+        filtered = [f for f in filtered if _effective_safe(f)]
     if min_confidence > 0:
         filtered = [f for f in filtered if f.confidence >= min_confidence]
     if directory:
@@ -304,8 +311,8 @@ async def get_dead_code(
     summary = {
         "total_findings": len(all_findings),
         "filtered_findings": len(filtered),
-        "deletable_lines": sum(f.lines for f in all_findings if f.safe_to_delete),
-        "safe_to_delete_count": sum(1 for f in all_findings if f.safe_to_delete),
+        "deletable_lines": sum(f.lines for f in all_findings if _effective_safe(f)),
+        "safe_to_delete_count": sum(1 for f in all_findings if _effective_safe(f)),
         "by_kind": by_kind,
     }
 
@@ -389,6 +396,16 @@ def _find_last_meaningful_change(gm: Any) -> str | None:
     return None
 
 
+def _effective_safe(f: Any) -> bool:
+    """Re-derive deletion-readiness for a DeadCodeFinding ORM row.
+
+    Mirrors the API/CLI: the persisted boolean is only ever downgraded, never
+    trusted blindly, so config/bootstrap/database/environment/script files (and
+    findings written before risk factors existed) never read as safe-to-delete.
+    """
+    return effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
+
+
 def _serialize_finding(f: Any, git_meta_map: dict | None = None) -> dict:
     """Serialize a single DeadCodeFinding to dict."""
     result = {
@@ -397,7 +414,8 @@ def _serialize_finding(f: Any, git_meta_map: dict | None = None) -> dict:
         "symbol_name": f.symbol_name,
         "confidence": f.confidence,
         "reason": f.reason,
-        "safe_to_delete": f.safe_to_delete,
+        "safe_to_delete": _effective_safe(f),
+        "risk_factors": list(path_risk_factors(f.file_path)),
         "lines": f.lines,
         "last_commit_at": f.last_commit_at.isoformat() if f.last_commit_at else None,
         "primary_owner": f.primary_owner,
@@ -451,7 +469,7 @@ def _build_tiers(
             "description": description,
             "count": len(items),
             "lines": sum(f.lines for f in items),
-            "safe_count": sum(1 for f in items if f.safe_to_delete),
+            "safe_count": sum(1 for f in items if _effective_safe(f)),
             "findings": [_serialize_finding(f, git_meta_map) for f in items[:limit]],
             "truncated": len(items) > limit,
         }
@@ -461,7 +479,8 @@ def _build_tiers(
         tiers["high"] = _tier_block(
             "high",
             high,
-            "High confidence (>=0.8): Zero references in the codebase. Safe to delete.",
+            "High confidence (>=0.8): No references found in the codebase. "
+            "Strong cleanup candidates — review (especially runtime-loaded files) before deleting.",
         )
     if tier_filter is None or tier_filter == "medium":
         tiers["medium"] = _tier_block(
@@ -489,7 +508,7 @@ def _rollup_by_directory(findings: list) -> list[dict]:
             dirs[dir_key] = {"directory": dir_key, "count": 0, "lines": 0, "safe_count": 0}
         dirs[dir_key]["count"] += 1
         dirs[dir_key]["lines"] += f.lines
-        if f.safe_to_delete:
+        if _effective_safe(f):
             dirs[dir_key]["safe_count"] += 1
 
     return sorted(dirs.values(), key=lambda d: -d["lines"])
@@ -504,7 +523,7 @@ def _rollup_by_owner(findings: list) -> list[dict]:
             owners[name] = {"owner": name, "count": 0, "lines": 0, "safe_count": 0}
         owners[name]["count"] += 1
         owners[name]["lines"] += f.lines
-        if f.safe_to_delete:
+        if _effective_safe(f):
             owners[name]["safe_count"] += 1
 
     return sorted(owners.values(), key=lambda o: -o["lines"])
@@ -525,8 +544,9 @@ def _compute_impact(tiers: dict) -> dict:
         "total_lines_reclaimable": total_lines,
         "safe_lines_reclaimable": safe_lines,
         "recommendation": (
-            "Start with the 'high' tier — these have zero references and are safe to remove. "
-            "Then review 'medium' tier findings with your team."
+            "Start with the 'high' tier — these have no references in the graph and are the "
+            "strongest cleanup candidates. Confirm each (runtime-loaded config/bootstrap/database "
+            "files are flagged but never auto-marked safe), then review 'medium' tier with your team."
             if total_lines > 0
             else "No dead code found matching your filters."
         ),

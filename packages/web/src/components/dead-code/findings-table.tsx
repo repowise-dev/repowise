@@ -138,7 +138,7 @@ export function FindingsTable({ repoId }: FindingsTableProps) {
             onChange={(e) => setSafeOnly(e.target.checked)}
             className="rounded border-[var(--color-border-default)]"
           />
-          Safe to delete only
+          Cleanup-ready only
         </label>
 
         {selected.size > 0 && (

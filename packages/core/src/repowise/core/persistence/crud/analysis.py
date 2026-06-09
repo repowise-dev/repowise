@@ -13,6 +13,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
+
 from ..models import (
     CoverageFile,
     DeadCodeFinding,
@@ -199,10 +201,20 @@ async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> di
         total_lines += f.lines
         by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
 
+    # Re-derive effective safety from confidence + path risk factors rather
+    # than trusting the persisted boolean alone, so findings written before the
+    # risk-factor logic existed (or in a config/bootstrap/database/environment
+    # file the allowlist missed) are not counted as deletion-ready.
+    deletable_lines = sum(
+        f.lines
+        for f in findings
+        if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
+    )
+
     return {
         "total_findings": len(findings),
         "confidence_summary": summary,
-        "deletable_lines": sum(f.lines for f in findings if f.safe_to_delete),
+        "deletable_lines": deletable_lines,
         "total_lines": total_lines,
         "by_kind": by_kind,
     }

@@ -19,7 +19,11 @@ from repowise.cli.helpers import (
 @click.command("dead-code")
 @click.argument("path", required=False, type=click.Path(exists=True))
 @click.option("--min-confidence", default=0.4, type=float, help="Minimum confidence threshold.")
-@click.option("--safe-only", is_flag=True, help="Only show safe_to_delete=True findings.")
+@click.option(
+    "--safe-only",
+    is_flag=True,
+    help="Only show deletion-ready findings (high confidence, no runtime-load risk factors).",
+)
 @click.option(
     "--kind",
     type=click.Choice(["unreachable_file", "unused_export", "unused_internal", "zombie_package"]),
@@ -206,6 +210,7 @@ def dead_code_command(
                     "confidence": f.confidence,
                     "reason": f.reason,
                     "safe_to_delete": f.safe_to_delete,
+                    "risk_factors": f.risk_factors,
                     "lines": f.lines,
                     "primary_owner": f.primary_owner,
                 }
@@ -216,9 +221,9 @@ def dead_code_command(
     if fmt == "md":
         click.echo("# Dead Code Report\n")
         click.echo(f"**Total findings:** {len(findings)}")
-        click.echo(f"**Deletable lines:** {report.deletable_lines}\n")
+        click.echo(f"**Cleanup-candidate lines:** {report.deletable_lines}\n")
         for f in findings:
-            safe = " (safe to remove)" if f.safe_to_delete else ""
+            safe = " (cleanup-ready)" if f.safe_to_delete else ""
             name = f"`{f.symbol_name}`" if f.symbol_name else f"`{f.file_path}`"
             click.echo(f"- [{f.kind.value}] {name} — {f.reason} ({f.confidence:.0%}){safe}")
         return
@@ -228,7 +233,7 @@ def dead_code_command(
     table.add_column("Kind", style="cyan")
     table.add_column("File / Symbol")
     table.add_column("Confidence", justify="right")
-    table.add_column("Safe?", justify="center")
+    table.add_column("Ready?", justify="center")
     table.add_column("Lines", justify="right")
     table.add_column("Reason")
 
@@ -246,6 +251,6 @@ def dead_code_command(
 
     console.print(table)
     console.print(
-        f"\nDeletable lines: [bold]{report.deletable_lines:,}[/bold] "
+        f"\nCleanup-candidate lines: [bold]{report.deletable_lines:,}[/bold] "
         f"(confidence: {report.confidence_summary})"
     )

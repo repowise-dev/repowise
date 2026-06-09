@@ -38,6 +38,7 @@ from .cpp_reachability import (
 )
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
+from .risk_factors import RISK_CAP_CONFIDENCE, path_risk_factors, risk_evidence
 
 # Symbol kinds that cannot be independently imported by name in any
 # supported language. Flagging them as "unused exports" is a guaranteed
@@ -569,6 +570,16 @@ class DeadCodeAnalyzer:
                     confidence = min(confidence, 0.4)
                     break
 
+        # Runtime-load risk factors (config / bootstrap / database /
+        # environment / script). These are files the never-flag allowlist
+        # didn't catch but that are commonly referenced outside static
+        # imports, so "in_degree=0" is weak evidence. Cap confidence below the
+        # deletion-ready threshold and surface the factors as evidence — the
+        # finding still shows up as a review candidate.
+        risk_factors = path_risk_factors(node)
+        if risk_factors:
+            confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
         safe = confidence >= 0.7
         if safe and self._matches_dynamic_patterns(node, dynamic_patterns):
             safe = False
@@ -578,6 +589,9 @@ class DeadCodeAnalyzer:
             evidence.append("No commits in last 90 days")
         if self._dynamic_import_files and confidence <= 0.4:
             evidence.append("Package uses dynamic imports or runtime-resolved edges")
+        risk_line = risk_evidence(risk_factors)
+        if risk_line:
+            evidence.append(risk_line)
 
         return DeadCodeFindingData(
             kind=DeadCodeKind.UNREACHABLE_FILE,
@@ -594,6 +608,7 @@ class DeadCodeAnalyzer:
             safe_to_delete=safe,
             primary_owner=primary_owner,
             age_days=age_days,
+            risk_factors=list(risk_factors),
         )
 
     def _detect_unused_exports(
@@ -882,9 +897,22 @@ class DeadCodeAnalyzer:
                 ):
                     confidence = min(confidence, 0.4)
 
+                # Runtime-load risk factors for the defining file (config /
+                # bootstrap / database / environment / script): symbols in
+                # such files are often wired up reflectively, so cap below the
+                # deletion-ready threshold and tag the finding for review.
+                risk_factors = path_risk_factors(str(node))
+                if risk_factors:
+                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
                 safe = confidence >= 0.7
 
                 git_meta = self.git_meta_map.get(str(node), {})
+
+                evidence = [f"No imports of '{sym_name}' found in graph"]
+                risk_line = risk_evidence(risk_factors)
+                if risk_line:
+                    evidence.append(risk_line)
 
                 findings.append(
                     DeadCodeFindingData(
@@ -900,10 +928,11 @@ class DeadCodeAnalyzer:
                         commit_count_90d=git_meta.get("commit_count_90d", 0),
                         lines=sym.get("end_line", 0) - sym.get("start_line", 0),
                         package=self._get_package(str(node)),
-                        evidence=[f"No imports of '{sym_name}' found in graph"],
+                        evidence=evidence,
                         safe_to_delete=safe,
                         primary_owner=git_meta.get("primary_owner_name"),
                         age_days=git_meta.get("age_days"),
+                        risk_factors=list(risk_factors),
                     )
                 )
 
@@ -1039,6 +1068,7 @@ class DeadCodeAnalyzer:
                     safe_to_delete=False,
                     primary_owner=git_meta.get("primary_owner_name"),
                     age_days=git_meta.get("age_days"),
+                    risk_factors=list(path_risk_factors(file_path)),
                 )
             )
 
@@ -1142,6 +1172,7 @@ class DeadCodeAnalyzer:
                         safe_to_delete=False,
                         primary_owner=pkg_owner,
                         age_days=pkg_age_days,
+                        risk_factors=list(path_risk_factors(pkg)),
                     )
                 )
 

@@ -133,9 +133,18 @@ export function FindingRow({ finding, repoId, selected, onToggle, onUpdate }: Fi
       </td>
       <td className="px-4 py-2.5 hidden sm:table-cell">
         {finding.safe_to_delete ? (
-          <Badge variant="fresh">Safe</Badge>
+          <Badge variant="fresh">Candidate</Badge>
         ) : (
-          <Badge variant="default">Review</Badge>
+          <Badge
+            variant="default"
+            title={
+              finding.risk_factors && finding.risk_factors.length > 0
+                ? `Runtime-load risk (${finding.risk_factors.join(", ")}) — verify it isn't loaded outside static imports before deleting`
+                : "Lower confidence — verify before deleting"
+            }
+          >
+            Review
+          </Badge>
         )}
       </td>
       <td className="px-4 py-2.5 hidden sm:table-cell">

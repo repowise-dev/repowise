@@ -26,10 +26,22 @@ from __future__ import annotations
 
 from .analyzer import DeadCodeAnalyzer
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
+from .risk_factors import (
+    RISK_CAP_CONFIDENCE,
+    SAFE_CONFIDENCE_THRESHOLD,
+    effective_safe_to_delete,
+    path_risk_factors,
+    risk_evidence,
+)
 
 __all__ = [
+    "RISK_CAP_CONFIDENCE",
+    "SAFE_CONFIDENCE_THRESHOLD",
     "DeadCodeAnalyzer",
     "DeadCodeFindingData",
     "DeadCodeKind",
     "DeadCodeReport",
+    "effective_safe_to_delete",
+    "path_risk_factors",
+    "risk_evidence",
 ]

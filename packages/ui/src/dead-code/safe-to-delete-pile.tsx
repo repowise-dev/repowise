@@ -93,11 +93,12 @@ export function SafeToDeletePile({
             <span className="text-3xl font-semibold tabular-nums text-[var(--color-text-primary)]">
               {lines.toLocaleString()}
             </span>
-            <span className="text-sm text-[var(--color-text-secondary)]">lines safe to delete</span>
+            <span className="text-sm text-[var(--color-text-secondary)]">lines in cleanup candidates</span>
           </div>
           <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            High-confidence findings across <span className="font-medium">{files}</span> file
-            {files === 1 ? "" : "s"} ({findings.length} finding{findings.length === 1 ? "" : "s"}).
+            High-confidence candidates across <span className="font-medium">{files}</span> file
+            {files === 1 ? "" : "s"} ({findings.length} finding{findings.length === 1 ? "" : "s"}) —
+            {" "}review before deleting.
           </p>
         </div>
         {onPropose && findings.length > 0 && (

@@ -222,7 +222,7 @@ Use these as the source of truth for the "why" when explaining design choices be
 ## Potentially unused code
 {% for finding in ctx.dead_code_findings %}
 - `{{ finding.symbol_name }}` — {{ finding.reason }}
-  (confidence: {{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, safe to remove{% endif %})
+  (confidence: {{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, cleanup-ready{% endif %})
 {% endfor %}
 {% endif %}
 

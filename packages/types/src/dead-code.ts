@@ -18,7 +18,16 @@ export interface DeadCodeFinding {
   confidence: number;
   reason: string;
   lines: number;
+  /**
+   * Effective deletion-readiness — high confidence AND no runtime-load risk
+   * factors. Re-derived server-side, not the raw persisted boolean.
+   */
   safe_to_delete: boolean;
+  /**
+   * Runtime-load risk factors (config / bootstrap / database / environment /
+   * script). Non-empty means a review candidate, never deletion-ready.
+   */
+  risk_factors?: string[];
   primary_owner: string | null;
   status: DeadCodeStatus;
   note: string | null;

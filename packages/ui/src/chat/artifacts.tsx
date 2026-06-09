@@ -429,7 +429,7 @@ export function DeadCodeRenderer({ data }: { data: DeadCodeArtifactData }) {
           value={data.total_findings.toLocaleString()}
         />
         <StatRow
-          label="Deletable lines"
+          label="Candidate lines"
           value={data.deletable_lines.toLocaleString()}
         />
       </div>
@@ -489,7 +489,7 @@ function DeadCodeRow({
         {showLines && typeof finding.lines === "number" && (
           <> · {finding.lines} lines</>
         )}
-        {finding.safe_to_delete && <> · safe to delete</>}
+        {finding.safe_to_delete && <> · cleanup-ready</>}
       </div>
       <p className="text-[11px] text-[var(--color-text-secondary)] mt-1 line-clamp-2">
         {finding.reason}

@@ -20,9 +20,9 @@ export function SummaryBar({ summary }: SummaryBarProps) {
 
       <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4">
         <p className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-1">
-          Deletable Lines
+          Candidate Lines
         </p>
-        <p className="text-2xl font-bold text-red-500 tabular-nums">
+        <p className="text-2xl font-bold text-amber-500 tabular-nums">
           {formatNumber(summary.deletable_lines)}
         </p>
       </div>

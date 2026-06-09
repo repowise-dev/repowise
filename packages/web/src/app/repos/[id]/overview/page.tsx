@@ -193,7 +193,7 @@ export default async function OverviewPage({ params }: Props) {
               value={stats ? formatNumber(stats.dead_export_count) : "–"}
               description={
                 deadCodeSummary
-                  ? `${formatNumber(deadCodeSummary.deletable_lines)} deletable lines`
+                  ? `${formatNumber(deadCodeSummary.deletable_lines)} cleanup-candidate lines`
                   : undefined
               }
               href={`/repos/${id}/dead-code`}

@@ -78,7 +78,7 @@ Use these to explain *why* the module is shaped the way it is. Do not invent rat
 {% if ctx.dead_code_findings %}
 ## Potentially unused code in this module
 {% for finding in ctx.dead_code_findings[:10] %}
-- `{{ finding.symbol_name or '?' }}` — {{ finding.reason }} ({{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, safe to remove{% endif %})
+- `{{ finding.symbol_name or '?' }}` — {{ finding.reason }} ({{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, cleanup-ready{% endif %})
 {% endfor %}
 {% endif %}
 

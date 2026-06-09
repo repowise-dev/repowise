@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
@@ -41,7 +42,11 @@ async def list_dead_code(
         status=status,
     )
     if safe_only:
-        findings = [f for f in findings if f.safe_to_delete]
+        findings = [
+            f
+            for f in findings
+            if effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
+        ]
     return [DeadCodeFindingResponse.from_orm(f) for f in findings[:limit]]
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
@@ -30,6 +30,10 @@ class DeadCodeFindingData:
     safe_to_delete: bool
     primary_owner: str | None
     age_days: int | None
+    # Runtime-load risk factors (config / bootstrap / database / environment /
+    # script). Non-empty means the finding is a review candidate, never
+    # deletion-ready, regardless of confidence. See :mod:`risk_factors`.
+    risk_factors: list[str] = field(default_factory=list)
 
 
 @dataclass
