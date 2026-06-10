@@ -75,13 +75,13 @@ async def test_mcp_lifespan_uses_cli_database_env_var(monkeypatch):
     async def fake_load_vector_stores(repo_path: str | None) -> None:
         return None
 
-    def fake_create_async_engine(url: str, connect_args: dict | None = None) -> DummyEngine:
+    def fake_create_engine(url: str) -> DummyEngine:
         captured["url"] = url
         return DummyEngine()
 
     monkeypatch.setenv("REPOWISE_DB_URL", "sqlite+aiosqlite:///tmp/from-cli.db")
     monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
-    monkeypatch.setattr(mcp_server, "create_async_engine", fake_create_async_engine)
+    monkeypatch.setattr(mcp_server, "create_engine", fake_create_engine)
     monkeypatch.setattr(mcp_server, "init_db", fake_init_db)
     monkeypatch.setattr(mcp_server, "FullTextSearch", DummyFts)
     monkeypatch.setattr(mcp_server, "InMemoryVectorStore", DummyVectorStore)
