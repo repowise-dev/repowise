@@ -25,7 +25,7 @@ from repowise.core.persistence.models import (
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
 from repowise.core.providers.embedding.base import MockEmbedder
-from repowise.core.workspace.registry import RepoContext, RepoRegistry
+from repowise.core.workspace.registry import RepoContext
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -601,3 +601,45 @@ async def test_overview_all_includes_cross_repo_topology(workspace_mcp_with_enri
     result = await get_overview(repo="all")
     assert "cross_repo_topology" in result
     assert result["cross_repo_topology"]["co_change_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_repos_discovers_workspace_aliases(workspace_mcp):
+    from repowise.server.mcp_server import list_repos
+
+    result = await list_repos()
+
+    assert result["workspace"] is True
+    assert result["workspace_root"] == "/tmp/workspace"
+    assert result["default_repo"] == "backend"
+    assert [repo["alias"] for repo in result["repos"]] == ["backend", "frontend"]
+    assert result["repos"][0]["is_default"] is True
+    assert "repo='<alias>'" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_list_repos_single_repo_mode():
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import list_repos
+
+    original_registry = mcp_mod._registry
+    original_repo_path = mcp_mod._repo_path
+    mcp_mod._registry = None
+    mcp_mod._repo_path = "/tmp/solo"
+
+    try:
+        result = await list_repos()
+    finally:
+        mcp_mod._registry = original_registry
+        mcp_mod._repo_path = original_repo_path
+
+    assert result["workspace"] is False
+    assert result["default_repo"] == "default"
+    assert result["repos"] == [
+        {
+            "alias": "default",
+            "path": "/tmp/solo",
+            "absolute_path": "/tmp/solo",
+            "is_default": True,
+        }
+    ]
