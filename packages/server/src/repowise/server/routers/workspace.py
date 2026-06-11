@@ -153,10 +153,13 @@ def _query_repo_stats(db_path: Path) -> dict:
         row = c.execute("SELECT AVG(confidence) FROM wiki_pages").fetchone()
         result["doc_coverage_pct"] = round(float(row[0] or 0.0) * 100, 1)
 
-        # hotspot count (git_metadata with churn_percentile >= 90)
+        # hotspot count — use the canonical is_hotspot flag, matching the rest
+        # of the codebase (module_health, extract-demo-data). The earlier
+        # churn_percentile >= 90 predicate never matched: churn_percentile is
+        # stored on a 0.0-1.0 scale and only scaled to 0-100 at the API layer.
         try:
             row = c.execute(
-                "SELECT COUNT(*) FROM git_metadata WHERE churn_percentile >= 90"
+                "SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1"
             ).fetchone()
             result["hotspot_count"] = row[0] if row else 0
         except sqlite3.OperationalError:

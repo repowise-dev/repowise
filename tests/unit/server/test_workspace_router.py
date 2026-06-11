@@ -174,7 +174,11 @@ def _create_workspace_repo_db(
                 symbol_count INTEGER DEFAULT 0
             );
             CREATE TABLE wiki_pages (id TEXT PRIMARY KEY, confidence REAL);
-            CREATE TABLE git_metadata (id TEXT PRIMARY KEY, churn_percentile REAL);
+            CREATE TABLE git_metadata (
+                id TEXT PRIMARY KEY,
+                churn_percentile REAL,
+                is_hotspot INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE health_file_metrics (
                 id TEXT PRIMARY KEY,
                 score REAL NOT NULL,
@@ -187,9 +191,9 @@ def _create_workspace_repo_db(
             INSERT INTO wiki_pages (id, confidence) VALUES
                 ('page-a', 0.8),
                 ('page-b', 0.6);
-            INSERT INTO git_metadata (id, churn_percentile) VALUES
-                ('src/a.py', 95.0),
-                ('src/b.py', 10.0);
+            INSERT INTO git_metadata (id, churn_percentile, is_hotspot) VALUES
+                ('src/a.py', 0.95, 1),
+                ('src/b.py', 0.10, 0);
             """
         )
         for idx, (score, nloc) in enumerate(health_rows or []):
@@ -494,3 +498,69 @@ class TestGetWorkspaceGraph:
         backend = next(n for n in resp.json()["nodes"] if n["name"] == "backend")
         assert backend["health_score"] == 62.0
         assert backend["health_score_source"] == "derived"
+
+
+# ---------------------------------------------------------------------------
+# Tests — _query_repo_stats
+# ---------------------------------------------------------------------------
+
+
+class TestQueryRepoStats:
+    def _make_wiki_db(self, db_path: Path, rows: list[tuple[int, float]]) -> None:
+        """Create a minimal wiki.db with a git_metadata table.
+
+        ``rows`` is a list of ``(is_hotspot, churn_percentile)`` tuples.
+        churn_percentile is stored on the real 0.0-1.0 scale.
+        """
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(db_path)) as conn:
+            # _query_repo_stats reads several tables before the hotspot count;
+            # a missing table aborts the whole block, so create the minimal set.
+            conn.executescript(
+                """
+                CREATE TABLE repositories (id TEXT PRIMARY KEY);
+                CREATE TABLE graph_nodes (
+                    id TEXT PRIMARY KEY,
+                    symbol_count INTEGER DEFAULT 0
+                );
+                CREATE TABLE wiki_pages (id TEXT PRIMARY KEY, confidence REAL);
+                CREATE TABLE git_metadata (
+                    id TEXT PRIMARY KEY,
+                    is_hotspot INTEGER NOT NULL DEFAULT 0,
+                    churn_percentile REAL NOT NULL DEFAULT 0.0
+                );
+                INSERT INTO repositories (id) VALUES ('repo-1');
+                """
+            )
+            for idx, (is_hotspot, churn) in enumerate(rows):
+                conn.execute(
+                    "INSERT INTO git_metadata (id, is_hotspot, churn_percentile) "
+                    "VALUES (?, ?, ?)",
+                    (f"src/f{idx}.py", is_hotspot, churn),
+                )
+
+    def test_hotspot_count_uses_is_hotspot_flag(self, tmp_path: Path) -> None:
+        """hotspot_count reflects the canonical is_hotspot column.
+
+        Regression for #440: the old ``churn_percentile >= 90`` predicate
+        never matched because churn_percentile is stored on a 0.0-1.0 scale,
+        so every repo reported 0 hotspots. The high churn values here would
+        all read as < 1.0, proving the count comes from is_hotspot.
+        """
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(
+            db_path,
+            rows=[(1, 0.99), (1, 0.95), (0, 0.10)],
+        )
+
+        stats = workspace._query_repo_stats(db_path)
+
+        assert stats["hotspot_count"] == 2
+
+    def test_hotspot_count_zero_when_no_hotspots(self, tmp_path: Path) -> None:
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(db_path, rows=[(0, 0.99), (0, 0.80)])
+
+        stats = workspace._query_repo_stats(db_path)
+
+        assert stats["hotspot_count"] == 0
