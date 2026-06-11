@@ -64,6 +64,37 @@ log = structlog.get_logger(__name__)
 # only matters for downstream weighting (PageRank, blast-radius).
 _TYPE_USE_CONFIDENCE = 0.8
 
+_EMPTY_NAMES: frozenset[str] = frozenset()
+
+
+def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
+    """Map each node to the set of symbol names among its direct successors.
+
+    Replaces the per-candidate ``graph.successors`` scans the find helpers
+    below used to run for every type reference, which cost O(refs x
+    candidates x symbols_per_file) on package-fan-out languages like Go.
+    Built once per ``resolve_type_refs`` pass.
+
+    Building it upfront is equivalent to scanning live: strategies only add
+    file -> file ``type_use`` edges and the ``local_type_uses`` node
+    attribute while they run, never symbol nodes or edges to symbols, so a
+    candidate's symbol-successor set cannot change mid-pass. Falsy symbol
+    names are excluded, matching the callers, which all skip falsy type
+    names before lookup.
+    """
+    sym_name: dict[str, str] = {}
+    for node, data in graph.nodes(data=True):
+        if data.get("node_type") == "symbol":
+            name = data.get("name")
+            if name:
+                sym_name[node] = name
+    index: dict[str, set[str]] = {}
+    for src, dst in graph.edges():
+        name = sym_name.get(dst)
+        if name is not None:
+            index.setdefault(src, set()).add(name)
+    return index
+
 
 # ---------------------------------------------------------------------------
 # Strategy: C# / .NET
@@ -73,6 +104,7 @@ def _resolve_csharp_type_refs(
     parsed: ParsedFile,
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve C# ``@param.type`` captures via ``DotNetProjectIndex``.
 
@@ -143,6 +175,7 @@ def _resolve_rust_type_refs(
     parsed: ParsedFile,
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Rust ``@param.type`` captures via stem map + import graph."""
     if not parsed.type_refs:
@@ -155,6 +188,8 @@ def _resolve_rust_type_refs(
     for imp in parsed.imports:
         if imp.resolved_file and not imp.resolved_file.startswith("external:"):
             import_targets.add(imp.resolved_file)
+    # Sorted once: import_targets is a set; first-match must be deterministic.
+    sorted_imports = sorted(import_targets)
 
     for ref in parsed.type_refs:
         type_name = ref.type_name
@@ -164,7 +199,9 @@ def _resolve_rust_type_refs(
         if bare in _RUST_BUILTIN_TYPES:
             continue
 
-        target = _find_rust_type_file(bare, from_path, import_targets, ctx, graph)
+        target = _find_rust_type_file(
+            bare, from_path, sorted_imports, ctx, graph, defined_names
+        )
         if target is None:
             continue
         _add_or_merge_type_use_edge(graph, src=from_path, dst=target,
@@ -176,19 +213,15 @@ def _resolve_rust_type_refs(
 def _find_rust_type_file(
     type_name: str,
     from_path: str,
-    import_targets: set[str],
+    sorted_imports: list[str],
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> str | None:
     """Find the file defining *type_name*, preferring imported files."""
-    # Sorted: import_targets is a set; first-match must be deterministic.
-    for imp_file in sorted(import_targets):
-        if not graph.has_node(imp_file):
-            continue
-        for succ in graph.successors(imp_file):
-            nd = graph.nodes.get(succ, {})
-            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
-                return imp_file
+    for imp_file in sorted_imports:
+        if type_name in defined_names.get(imp_file, _EMPTY_NAMES):
+            return imp_file
 
     candidates = ctx.stem_map.get(type_name.lower(), [])
     if len(candidates) == 1 and candidates[0] != from_path:
@@ -206,6 +239,7 @@ def _resolve_go_type_refs(
     parsed: ParsedFile,
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Go ``@param.type`` captures via the Go package index.
 
@@ -242,6 +276,8 @@ def _resolve_go_type_refs(
     candidates.discard(from_path)
     if not candidates:
         return 0
+    # Sorted once: set iteration; first-match must be deterministic.
+    sorted_candidates = sorted(candidates)
 
     emitted = 0
     seen_targets: set[tuple[str, str]] = set()
@@ -249,7 +285,7 @@ def _resolve_go_type_refs(
         name = ref.type_name
         if not name or name in _GO_BUILTIN_TYPES:
             continue
-        target = _find_go_type_file(name, candidates, graph)
+        target = _find_go_type_file(name, sorted_candidates, defined_names)
         if target is None or target == from_path:
             continue
         if (name, target) in seen_targets:
@@ -263,18 +299,13 @@ def _resolve_go_type_refs(
 
 def _find_go_type_file(
     type_name: str,
-    candidate_files: set[str],
-    graph: "nx.DiGraph",
+    sorted_candidates: list[str],
+    defined_names: dict[str, set[str]],
 ) -> str | None:
-    """Return a candidate file that defines a type named *type_name*."""
-    # Sorted: set iteration; first-match must be deterministic.
-    for cand in sorted(candidate_files):
-        if not graph.has_node(cand):
-            continue
-        for succ in graph.successors(cand):
-            nd = graph.nodes.get(succ, {})
-            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
-                return cand
+    """Return the first sorted candidate file defining a type named *type_name*."""
+    for cand in sorted_candidates:
+        if type_name in defined_names.get(cand, _EMPTY_NAMES):
+            return cand
     return None
 
 
@@ -313,6 +344,7 @@ def _resolve_c_type_refs(
     parsed: ParsedFile,
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve C / C++ ``@param.type`` captures via ``#include`` + stem map.
 
@@ -360,6 +392,10 @@ def _resolve_c_type_refs(
         except Exception:
             sibling_files = set()
 
+    # Sorted once: set iteration; first-match must be deterministic.
+    sorted_imports = sorted(import_targets)
+    sorted_siblings = sorted(sibling_files)
+
     emitted = 0
     seen_targets: set[tuple[str, str]] = set()
     for ref in parsed.type_refs:
@@ -369,7 +405,8 @@ def _resolve_c_type_refs(
         if is_cpp and name in _CPP_STL_HEAD_NAMES:
             continue
         target = _find_c_type_file(
-            name, from_path, import_targets, sibling_files, ctx, graph
+            name, from_path, sorted_imports, sorted_siblings, ctx, graph,
+            defined_names,
         )
         if target is None or target == from_path:
             continue
@@ -385,34 +422,27 @@ def _resolve_c_type_refs(
 def _find_c_type_file(
     type_name: str,
     from_path: str,
-    import_targets: set[str],
-    sibling_files: set[str],
+    sorted_imports: list[str],
+    sorted_siblings: list[str],
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> str | None:
     """Find the file defining *type_name*, preferring ``#include``d headers.
 
-    Falls back to *sibling_files* (same workspace target — usually a
+    Falls back to *sorted_siblings* (same workspace target, usually a
     sibling ``.cc`` declaring an internal class that another ``.cc`` in
     the same target uses by value), then the global stem map.
     """
-    # Sorted: import_targets is a set; first-match must be deterministic.
-    for imp_file in sorted(import_targets):
-        if not graph.has_node(imp_file):
-            continue
-        for succ in graph.successors(imp_file):
-            nd = graph.nodes.get(succ, {})
-            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
-                return imp_file
+    for imp_file in sorted_imports:
+        if type_name in defined_names.get(imp_file, _EMPTY_NAMES):
+            return imp_file
 
-    # Sorted: set iteration; first-match must be deterministic.
-    for sib in sorted(sibling_files):
-        if sib == from_path or not graph.has_node(sib):
+    for sib in sorted_siblings:
+        if sib == from_path:
             continue
-        for succ in graph.successors(sib):
-            nd = graph.nodes.get(succ, {})
-            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
-                return sib
+        if type_name in defined_names.get(sib, _EMPTY_NAMES):
+            return sib
 
     candidates = ctx.stem_map.get(type_name.lower(), [])
     if len(candidates) == 1 and candidates[0] != from_path:
@@ -430,6 +460,7 @@ def _resolve_ts_type_refs(
     parsed: ParsedFile,
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve TS/JS ``@param.type`` captures via import bindings + stem map.
 
@@ -494,7 +525,9 @@ def _resolve_ts_type_refs(
             continue
         target = name_to_source.get(name) or namespace_to_source.get(name)
         if target is None:
-            target = _find_ts_type_in_stem_map(name, from_path, ctx, graph)
+            target = _find_ts_type_in_stem_map(
+                name, from_path, ctx, graph, defined_names
+            )
         if target is None or target == from_path:
             continue
         if (name, target) in seen:
@@ -522,6 +555,7 @@ def _find_ts_type_in_stem_map(
     from_path: str,
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> str | None:
     """Locate ``type_name`` via the global stem map.
 
@@ -535,14 +569,12 @@ def _find_ts_type_in_stem_map(
     if len(candidates) != 1:
         return None
     candidate = candidates[0]
-    if candidate == from_path or not graph.has_node(candidate):
+    if candidate == from_path:
         return None
     # Verify the candidate file actually exports a symbol matching name —
     # avoids accidentally matching ``utils.ts`` to a type called ``Utils``.
-    for succ in graph.successors(candidate):
-        nd = graph.nodes.get(succ, {})
-        if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
-            return candidate
+    if type_name in defined_names.get(candidate, _EMPTY_NAMES):
+        return candidate
     return None
 
 
@@ -554,6 +586,7 @@ def _resolve_jvm_type_refs(
     parsed: ParsedFile,
     ctx: "ResolverContext",
     graph: "nx.DiGraph",
+    defined_names: dict[str, set[str]],
 ) -> int:
     """Resolve Java / Kotlin ``@param.type`` captures via ``JvmWorkspaceIndex``.
 
@@ -596,6 +629,8 @@ def _resolve_jvm_type_refs(
     candidates.discard(from_path)
     if not candidates:
         return 0
+    # Sorted once: set iteration; first-match must be deterministic.
+    sorted_candidates = sorted(candidates)
 
     emitted = 0
     seen_targets: set[tuple[str, str]] = set()
@@ -603,7 +638,7 @@ def _resolve_jvm_type_refs(
         name = ref.type_name
         if not name:
             continue
-        target = _find_jvm_type_file(name, candidates, graph)
+        target = _find_jvm_type_file(name, sorted_candidates, defined_names)
         if target is None or target == from_path:
             continue
         if (name, target) in seen_targets:
@@ -620,18 +655,13 @@ def _resolve_jvm_type_refs(
 
 def _find_jvm_type_file(
     type_name: str,
-    candidate_files: set[str],
-    graph: "nx.DiGraph",
+    sorted_candidates: list[str],
+    defined_names: dict[str, set[str]],
 ) -> str | None:
-    """Return a candidate file that defines a top-level type named *type_name*."""
-    # Sorted: set iteration; first-match must be deterministic.
-    for cand in sorted(candidate_files):
-        if not graph.has_node(cand):
-            continue
-        for succ in graph.successors(cand):
-            nd = graph.nodes.get(succ, {})
-            if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
-                return cand
+    """Return the first sorted candidate file defining a top-level type named *type_name*."""
+    for cand in sorted_candidates:
+        if type_name in defined_names.get(cand, _EMPTY_NAMES):
+            return cand
     return None
 
 
@@ -639,7 +669,9 @@ def _find_jvm_type_file(
 # Strategy registry
 # ---------------------------------------------------------------------------
 
-Strategy = Callable[[ParsedFile, "ResolverContext", "nx.DiGraph"], int]
+Strategy = Callable[
+    [ParsedFile, "ResolverContext", "nx.DiGraph", dict[str, set[str]]], int
+]
 
 # Add new languages here — see module docstring. Keep the entries
 # tightly scoped: each strategy must only touch its own language's
@@ -667,12 +699,13 @@ def resolve_type_refs(
     Returns a per-language emitted-edge count for logging.
     """
     counts: dict[str, int] = {}
+    defined_names = _build_defined_name_index(graph)
     for parsed in parsed_files.values():
         lang = parsed.file_info.language
         strategy = _STRATEGIES.get(lang)
         if strategy is None:
             continue
-        emitted = strategy(parsed, ctx, graph)
+        emitted = strategy(parsed, ctx, graph, defined_names)
         if emitted:
             counts[lang] = counts.get(lang, 0) + emitted
     if counts:
