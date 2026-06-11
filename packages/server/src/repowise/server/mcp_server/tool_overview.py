@@ -330,9 +330,7 @@ async def get_overview(repo: str | None = None) -> dict:
                 GitMetadata.repository_id == repository.id,
             )
         )
-        all_git = filter_rows_by_attr(
-            list(git_res.scalars().all()), "file_path", exclude_spec
-        )
+        all_git = filter_rows_by_attr(list(git_res.scalars().all()), "file_path", exclude_spec)
 
         git_health: dict[str, Any] = {}
         if all_git:
@@ -469,9 +467,7 @@ async def get_overview(repo: str | None = None) -> dict:
                         if p.lower() not in generic_labels and p not in ("src",):
                             dir_counts[p] += 1
                             break
-                display_label = (
-                    dir_counts.most_common(1)[0][0] if dir_counts else f"cluster_{cid}"
-                )
+                display_label = dir_counts.most_common(1)[0][0] if dir_counts else f"cluster_{cid}"
 
             community_summary.append(
                 {
@@ -711,6 +707,25 @@ async def get_overview(repo: str | None = None) -> dict:
         ws_footer = _build_workspace_footer()
         if ws_footer:
             result["workspace"] = ws_footer
+
+        # Composition recipes live HERE (one overview call per session) so
+        # the per-tool docstrings — paid on every fresh agent — stay terse.
+        result["tool_guide"] = {
+            "first_call": "get_answer for any how/where/why question; trust "
+            "confidence=high directly (it is content-grounded).",
+            "reading_code": "get_context skeleton (≈37% of a full Read) → "
+            "get_symbol for bodies (verified: true = no re-read needed). "
+            "Raw Read only for files marked mostly_full or unservable.",
+            "recipes": [
+                "get_answer low confidence → Read best_guesses[0].file",
+                "get_context hotspot: true → get_risk before editing",
+                "get_context decision_records → get_why(targets=[...]) for rationale",
+                "PR review → get_risk(targets, changed_files) and read directive first",
+                "search_codebase grep_hint present → prefer Grep for those identifiers",
+            ],
+            "reread_triggers": "Only re-read source on bounds: approximate, "
+            "stale_warning in _meta, or search_method: bm25.",
+        }
 
         result["_meta"] = _build_meta(repository=repository)
         collector.attach(result)

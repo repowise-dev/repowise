@@ -372,28 +372,19 @@ async def get_symbol(
     repo: str | None = None,
     query: str | None = None,
 ) -> dict:
-    """Read one function/class with exact line bounds — cheaper and safer than Read+math.
+    """Read one function/class/constant with live-verified line bounds.
 
-    The only tool that returns the raw source bytes of a single indexed symbol
-    without the agent having to compute offsets or guess at file structure.
-    Bounded to ~400 lines (hard cap) so a misconfigured row can never blow up
-    the context window. Pass the canonical ``"path/to/file.py::Name"`` that
-    appears in ``get_context``'s symbol list. Also resolves omission refs:
-    pass ``"repowise#<12-hex>"`` from a ``[repowise#...]`` truncation marker
-    to retrieve the omitted content (``query`` filters it to matching lines).
-
-    Returns {file, name, kind, signature, start_line, end_line, source,
-    truncated, verified}. ``verified: true`` means the bounds were checked
-    (or corrected) against the live file — no follow-up Read needed;
-    ``bounds: "approximate"`` means the symbol moved and could not be
-    re-located. On miss returns {error: "Symbol not found …"}.
+    Raw source of a single indexed symbol, bounded (~400 lines) — cheaper
+    than Read+offset math. ``verified: true`` means bounds were checked (or
+    corrected) against the live file: no follow-up Read needed.
+    ``bounds: "approximate"`` means the symbol moved and re-location failed.
+    Also resolves omission refs ("repowise#<12-hex>" from truncation markers).
 
     Args:
-        symbol_id: "path/to/file.py::SymbolName" (canonical id from get_context),
-            or "repowise#<12-hex>" from an omission marker.
-        context_lines: extra source lines before/after (0-50, default 0).
+        symbol_id: "path/to/file.py::Name" (from get_context), or an omission ref.
+        context_lines: extra lines before/after (0-50).
         repo: usually omitted.
-        query: omission refs only — regex (or substring) returning matching lines.
+        query: omission refs only — regex/substring filter on lines.
     """
     if repo == "all":
         return _unsupported_repo_all("get_symbol")

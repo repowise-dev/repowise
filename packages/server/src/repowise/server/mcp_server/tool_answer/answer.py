@@ -130,24 +130,18 @@ async def get_answer(
     scope: str | None = None,
     repo: str | None = None,
 ) -> dict:
-    """Synthesised answer to a code question with verified citations and a calibrated trust signal.
+    """Synthesised answer with citations and a calibrated trust signal.
 
-    The only tool that pairs RAG retrieval over the wiki with an LLM-written
-    answer plus a separately-reported retrieval_quality. Use it as the first
-    call on "how does X work" / "where is Y" / "why is Z structured this way"
-    questions — it eliminates the search → context → read loop when retrieval
-    is dominant. On low confidence it returns a structured ``best_guesses``
-    list (one-line justifications per candidate) instead of an empty answer,
-    so the caller always has somewhere concrete to Read next.
-
-    Returns ``{answer, citations, confidence, retrieval_quality,
-    fallback_targets, best_guesses?, next_action_hint?}``. Always verify cited
-    paths exist if you intend to act on them.
+    First call for "how does X work" / "where is Y" / "why is Z" questions.
+    confidence=high is content-grounded (value + citation-source gates):
+    cite it directly, no verification Read needed. Low confidence returns
+    best_guesses with one-line justifications instead of an empty answer.
+    retrieval_quality separately rates the retrieval that fed synthesis.
 
     Args:
         question: developer question.
-        scope: optional path prefix to restrict retrieval (e.g. "src/pkg/").
-        repo: repository identifier; usually omitted.
+        scope: optional path-prefix filter (e.g. "src/pkg/").
+        repo: usually omitted.
     """
     if repo == "all":
         return _unsupported_repo_all("get_answer")

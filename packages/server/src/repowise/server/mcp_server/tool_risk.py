@@ -452,34 +452,18 @@ async def get_risk(
     repo: str | None = None,
     changed_files: list[str] | None = None,
 ) -> dict:
-    """What history says about touching these files — hotspot, churn, owners, blast radius.
+    """What history says about touching these files — churn, owners, blast radius.
 
-    The only tool that fuses git temporal signals (churn percentile, trend,
-    bus factor) with graph topology (dependents, co-changes, impact surface)
-    and security findings into one decision-shaped payload. Consult before
-    editing any file in the 95th+ churn percentile or before merging a
-    multi-file PR.
-
-    Per-file fields: ``hotspot_score``, ``trend``, ``risk_type``,
-    ``impact_surface`` (top 3), ``dependents_count``, ``co_change_partners``,
-    ``primary_owner``, ``bus_factor``, ``test_gap``, ``security_signals``.
-
-    Pass ``changed_files`` for PR-blast-radius mode. The response then carries
-    a ``directive`` block — three short lists the caller can read in one
-    glance (``will_break``, ``missing_cochanges``, ``missing_tests``) — plus
-    the trimmed full ``pr_blast_radius`` dossier for deeper review. Global
-    hotspots are omitted in PR mode (irrelevant to the diff) and re-included
-    when ``changed_files`` is absent.
-
-    In workspace mode, cross-repo consumers and API contract links bump the
-    dependents count and appear in ``cross_repo_impact``.
-
-    Example: get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    Fuses git temporal signals (churn percentile, trend, bus factor) with
+    graph topology (dependents, co-changes, impact surface) and security
+    findings. Consult before editing 95th+ churn-percentile files. Pass
+    changed_files for PR mode: the response leads with a directive block
+    (will_break, missing_cochanges, missing_tests) — read it first.
 
     Args:
-        targets: List of file paths to assess (standard per-file risk).
-        repo: Repository path, name, or ID.
-        changed_files: Optional list of files changed in a PR for blast-radius analysis.
+        targets: file paths to assess.
+        repo: usually omitted.
+        changed_files: PR-changed files for blast-radius mode.
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")

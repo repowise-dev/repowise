@@ -38,29 +38,18 @@ async def get_why(
     targets: list[str] | None = None,
     repo: str | None = None,
 ) -> dict:
-    """Why this code looks the way it does — decision archaeology git log cannot answer.
+    """Why this code is shaped this way — decision records + evidence commits.
 
-    The only tool that surfaces architectural decision records, their status
-    (active / proposed / deprecated / superseded), and the commits that are
-    evidence for them. ``git log`` tells you *what* changed; this tells you
-    *why we chose this design* — call it before any architectural change,
-    refactor of an owned module, or pattern divergence in a community.
-
-    Four modes:
-    1. ``get_why("why is auth using JWT?")`` — keyword + semantic decision search.
-    2. ``get_why("src/auth/service.py")`` — decisions governing the file plus
-       origin story and an alignment score (does this file follow its own ADRs?).
-    3. ``get_why("why was caching added?", targets=["src/auth/cache.py"])`` —
-       target-anchored search; decisions touching the targets get boosted.
-    4. ``get_why()`` — health dashboard (stale, proposed, ungoverned hotspots).
-
-    When no decisions exist for a path, falls back to git archaeology
-    (significant commits + cross-file references) so the call is never empty.
+    Call before refactors or pattern divergences. Query modes: a question
+    ("why is auth using JWT?"), a file path (governing decisions + origin
+    story + alignment score), a question anchored to targets, or no query
+    (decision health dashboard). Falls back to git archaeology when no
+    decisions exist for a path — never empty.
 
     Args:
-        query: Natural language question, file/module path, or omit for health dashboard.
-        targets: Optional file paths to anchor the search.
-        repo: Repository path, name, or ID.
+        query: question, file/module path, or omit for the dashboard.
+        targets: optional file paths to anchor the search.
+        repo: usually omitted.
     """
     # --- repo="all": search decisions across ALL repos ---
     if repo == "all":

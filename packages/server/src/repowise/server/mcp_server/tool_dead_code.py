@@ -46,55 +46,26 @@ async def get_dead_code(
     no_unreachable: bool = False,
     no_unused_exports: bool = False,
 ) -> dict:
-    """Unused exports, unreachable files, zombie packages — what grep cannot tell you.
+    """Unused exports, unreachable files, zombie packages — tiered by confidence.
 
-    Static reachability analysis the agent cannot derive from imports alone.
-    Returns findings tiered by confidence (high = zero refs; medium = likely
-    unused; low = check first) with per-directory and per-owner rollups so a
-    cleanup sprint can prioritise. In workspace mode, cross-repo consumer
-    detection lowers confidence on findings that other repos import.
-
-    Use group_by="directory" for a directory-level overview, or
-    group_by="owner" to see who owns the most dead code. Use tier
-    to focus on a single confidence band.
-
-    Scan scope flags (mirror the DeadCodeAnalyzer.analyze config):
-    - Use ``min_confidence=0.7`` for high-confidence cleanups — filters out
-      speculative findings and surfaces only code with zero references that
-      hasn't been touched in months. Ideal before a release or refactor sprint.
-    - Use ``include_internals=True`` for aggressive scans of private symbols
-      (functions/variables prefixed with _ or declared without exports). This
-      has a higher false-positive rate and is off by default; enable it when
-      doing a thorough dead-code purge of a stable, well-tested module.
-    - Use ``no_unreachable=True`` to skip file-level reachability checks and
-      focus only on symbol-level findings (unused exports/internals).
-    - Use ``no_unused_exports=True`` to skip public-export checks, e.g. when
-      you know the repo exposes a public API consumed externally.
-    - Use ``include_zombie_packages=False`` to suppress monorepo package
-      findings, useful in repos where cross-package imports are intentionally
-      absent during development.
+    Run before a cleanup sprint, not a targeted fix. Findings tier
+    high/medium/low with per-directory and per-owner rollups; workspace
+    mode lowers confidence on findings other repos import.
 
     Args:
-        repo: Repository path, name, or ID.
-        kind: Filter by kind (unreachable_file, unused_export, unused_internal, zombie_package).
-        min_confidence: Minimum confidence threshold (default 0.5). Use 0.7 for high-confidence
-            cleanups only.
-        safe_only: Only return deletion-ready findings — high confidence with no runtime-load
-            risk factors (config/bootstrap/database/environment/script files are excluded even
-            when persisted as safe). Default false.
-        limit: Maximum findings per tier (default 20). Clamped to 25 because larger
-            payloads exceed MCP transport token caps; paginate by tier/directory/owner
-            for deeper exploration.
-        tier: Focus on a single tier: "high" (>=0.8), "medium" (0.5-0.8), or "low" (<0.5).
-        directory: Filter findings to a specific directory prefix.
-        owner: Filter findings by primary owner name.
-        group_by: "directory" for per-directory rollup, "owner" for ownership hotspots.
-        include_internals: Include unused private/internal symbol findings (default false).
-            Enable for aggressive scans of private symbols.
-        include_zombie_packages: Include zombie-package findings for monorepo packages with
-            no external importers (default true).
-        no_unreachable: Suppress unreachable-file findings (default false).
-        no_unused_exports: Suppress unused-export findings (default false).
+        repo: usually omitted.
+        kind: unreachable_file | unused_export | unused_internal | zombie_package.
+        min_confidence: floor, default 0.5 (0.7 = cleanup-ready only).
+        safe_only: deletion-ready findings only (no runtime-load risk).
+        limit: max findings per tier (clamped to 25).
+        tier: "high" (>=0.8) | "medium" | "low".
+        directory: path-prefix filter.
+        owner: primary-owner filter.
+        group_by: "directory" | "owner" rollup.
+        include_internals: also scan private symbols (more false positives).
+        include_zombie_packages: monorepo package findings (default true).
+        no_unreachable: skip file-level reachability findings.
+        no_unused_exports: skip public-export findings.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized
     # finding is ~400 chars, so 3 tiers x ~25 findings keeps us under budget

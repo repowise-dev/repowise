@@ -54,42 +54,18 @@ async def get_context(
 ) -> dict:
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
-    Returns a compact card the agent can use to decide its next move: title,
-    summary, signatures, hotspot bit, top callers, and pointers (decision_record
-    titles, symbol_ids) into the deeper tools. For the actual source body of a
-    symbol, call ``get_symbol("path/to/file.py::Name")`` — it is cheaper than
-    Read and returns bounded bytes with exact line numbers.
-
-    Batch multiple targets in one call. In workspace mode responses are
-    auto-enriched with cross-repo co-change partners and API contract links.
-
-    Include options (everything outside defaults is opt-in):
-      - "full_doc":   full wiki markdown content for the target
-      - "ownership":  primary owner, bus factor, contributor count
-      - "last_change":last commit date and author
-      - "callers":    who calls this symbol (symbol targets only)
-      - "callees":    what this symbol calls (symbol targets only)
-      - "metrics":    PageRank, betweenness centrality, percentile ranks
-      - "community":  architectural community membership + neighbors
-      - "decisions":  full decision records (default returns titles only)
-      - "skeleton":   the file with bodies elided — every signature kept, the
-                      bodies of the highest-PageRank symbols inlined under a
-                      token budget. A fraction of the cost of Read for
-                      structure-level questions (file targets only).
-                      DEFAULT for file targets above ~80 lines: the skeleton
-                      replaces the bare symbol list (strictly better per
-                      token). Pass compact=False for the symbol-list card.
-                      A ``mostly_full`` flag marks files where a direct Read
-                      costs little more.
-
-    Example: get_context(["src/auth/service.py", "src/auth/middleware.py"])
-    Example: get_context(["src/auth/service.py::verify_token"], include=["callers"])
+    Returns title, summary, signatures, hotspot bit, decision_record titles,
+    and symbol_ids to pipe into get_symbol (cheaper than Read for bodies).
+    Batch targets in one call. File targets above ~80 lines default to a
+    skeleton (every signature + top-PageRank bodies, with a verified flag —
+    a fraction of Read cost); ``mostly_full`` marks files where a direct
+    Read costs little more.
 
     Args:
-        targets: file paths, module paths, or qualified symbol IDs.
-        include: list of optional data blocks (defaults are always returned).
-        compact: default True (signatures only; large file targets auto-upgrade
-            to skeleton). False adds structure+imports+docstrings instead.
+        targets: file paths, module paths, or "path::Symbol" ids.
+        include: opt-in blocks: full_doc | ownership | last_change | callers
+            | callees | metrics | community | decisions | skeleton.
+        compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
     """
     if repo == "all":
