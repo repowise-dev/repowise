@@ -55,6 +55,48 @@ _FUNC_DEF_RE = re.compile(
     re.MULTILINE,
 )
 
+# Statement / block delimiters. No component of _FUNC_DEF_RE can match
+# across a ``;``, ``{`` or ``}``: the prefix class, the ``[^;{}]*`` arg
+# span, the whitespace runs and the trailing-return class all exclude
+# them. The single exception is the ``noexcept\(([^)]*)\)`` argument
+# span, handled by the fallback below.
+_DELIM_RE = re.compile(r"[;{}]")
+
+# A _FUNC_DEF_RE match can only cross a delimiter through noexcept
+# arguments that themselves contain ``;``/``{``/``}``. Files containing
+# that (pathological, never seen in real code) take the full-text scan.
+_NOEXCEPT_HOLE_RE = re.compile(r"noexcept\s*\([^)]*[;{}]")
+
+
+def _iter_func_defs(text: str):
+    """Yield ``_FUNC_DEF_RE`` matches via delimiter-windowed search.
+
+    Equivalent to ``_FUNC_DEF_RE.finditer(text)`` but immune to the
+    pattern's catastrophic backtracking on long runs of prefix-class
+    characters (large initializer lists, expression-template headers),
+    which cost tens of seconds per file at WinUI-monorepo scale.
+
+    Every match ends at a ``{`` and, delimiter-crossing being impossible
+    (see ``_DELIM_RE``), lies entirely between the previous delimiter
+    and that brace. Searching the original pattern window-by-window with
+    ``pattern.search(text, pos, endpos)`` preserves ``^``/anchor
+    semantics against the full string, so each windowed hit is a
+    verbatim full-text match, at most one per window (one ``{``).
+    Windows without a ``(`` cannot satisfy the mandatory arg span and
+    are skipped outright.
+    """
+    if _NOEXCEPT_HOLE_RE.search(text):
+        yield from _FUNC_DEF_RE.finditer(text)
+        return
+    pos = 0
+    for dm in _DELIM_RE.finditer(text):
+        d = dm.start()
+        if text[d] == "{" and text.find("(", pos, d) != -1:
+            m = _FUNC_DEF_RE.search(text, pos, d + 1)
+            if m is not None:
+                yield m
+        pos = d + 1
+
 
 class CppDynamicHints(DynamicHintExtractor):
     """Discover C++ function-pointer assignments, dlopen/dlsym, Qt connect."""
@@ -81,7 +123,7 @@ class CppDynamicHints(DynamicHintExtractor):
                     continue
                 rel = rel_path.as_posix()
                 sources.append((src, text, rel))
-                for match in _FUNC_DEF_RE.finditer(text):
+                for match in _iter_func_defs(text):
                     func_to_files.setdefault(match.group(1), []).append(rel)
 
         for _src, text, rel in sources:
