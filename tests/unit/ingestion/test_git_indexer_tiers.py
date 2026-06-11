@@ -77,12 +77,29 @@ def test_index_file_essential_skips_blame(tmp_path) -> None:
 
 
 def test_index_file_full_consults_blame(tmp_path) -> None:
-    """With include_blame=True, blame ownership overrides the commit author."""
+    """With include_blame=True, blame ownership overrides the commit author.
+
+    Ownership derives from the single ``git blame --line-porcelain``
+    invocation (``repo.git.blame``); gitpython's ``repo.blame`` object parse
+    is never consulted anymore, even for files below the commit floor.
+    """
     repo = MagicMock()
-    blame_commit = MagicMock()
-    blame_commit.author.name = "Carol"
-    blame_commit.author.email = "c@x.io"
-    repo.blame.return_value = [(blame_commit, ["line1", "line2", "line3"])]
+    sha = "c" * 40
+
+    def _porcelain_block(line_no: int) -> str:
+        return (
+            f"{sha} {line_no} {line_no} 1\n"
+            "author Carol\n"
+            "author-mail <c@x.io>\n"
+            "author-time 1700000000\n"
+            "author-tz +0000\n"
+            "summary feat: carol wrote this\n"
+            "filename a.py\n"
+            f"\tline{line_no}\n"
+        )
+
+    repo.git.blame.return_value = "".join(_porcelain_block(i) for i in (1, 2, 3))
+    repo.blame.side_effect = AssertionError("gitpython repo.blame must not run")
     (tmp_path / "a.py").write_text("x = 1\n")
 
     meta = index_file(
@@ -95,7 +112,9 @@ def test_index_file_full_consults_blame(tmp_path) -> None:
         precomputed_commits=_commits(),
     )
     assert meta["primary_owner_name"] == "Carol"  # blame wins
-    repo.blame.assert_called_once()
+    assert meta["primary_owner_email"] == "c@x.io"
+    repo.git.blame.assert_called_once()
+    repo.blame.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

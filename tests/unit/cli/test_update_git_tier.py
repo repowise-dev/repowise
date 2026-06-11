@@ -79,11 +79,10 @@ async def test_essential_tier_update_never_blames(tmp_path, monkeypatch):
         calls.append("blame")
         raise AssertionError("blame must not run on ESSENTIAL updates")
 
+    # build_blame_index is the single blame entry point now (ownership
+    # derives from its porcelain parse; the gitpython fallback is gone).
     monkeypatch.setattr(
         "repowise.core.ingestion.git_indexer.file_history.build_blame_index", _no_blame
-    )
-    monkeypatch.setattr(
-        "repowise.core.ingestion.git_indexer.file_history.get_blame_ownership", _no_blame
     )
 
     indexer = GitIndexer(tmp_path, tier=GitIndexTier.ESSENTIAL)
