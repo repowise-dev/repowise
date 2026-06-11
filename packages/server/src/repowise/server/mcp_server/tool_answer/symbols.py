@@ -139,6 +139,45 @@ def _read_signature_from_source(
     return " ".join(sig_lines)
 
 
+def _extract_value_answer(hits: list[dict], question_ids: set[str]) -> dict | None:
+    """Verbatim-assignment answer for value-shaped questions (the C1 fast path).
+
+    When a question names an identifier and the hydrator matched a
+    constant/variable symbol in the top hits, the symbol's signature IS the
+    answer — the verbatim assignment line read from live source. No LLM
+    call, nothing to hedge, nothing to invent. Exact name matches win over
+    substring matches.
+    """
+    qids_lower = {q.lower() for q in question_ids}
+    candidates: list[dict] = []
+    for h in hits[:_ENRICH_TOP_N_HITS]:
+        path = h.get("target_path")
+        if not path:
+            continue
+        for s in h.get("symbols") or []:
+            if not s.get("_matched") or s.get("kind") not in ("constant", "variable"):
+                continue
+            sig = s.get("signature") or ""
+            if "=" not in sig:
+                continue
+            entry = {
+                "name": s.get("name"),
+                "signature": sig,
+                "file": path,
+                "line": s.get("start_line"),
+                "answer": f"{sig}  ({path}:{s.get('start_line')})",
+            }
+            # Multi-line values (dicts/arrays): the hydrator attached the
+            # live body — include it so the agent never needs a follow-up.
+            excerpt = s.get("source_excerpt")
+            if excerpt and excerpt.strip() != sig.strip():
+                entry["value_source"] = excerpt
+            if (s.get("name") or "").lower() in qids_lower:
+                return entry
+            candidates.append(entry)
+    return candidates[0] if candidates else None
+
+
 async def _hydrate_symbols_for_hits(
     session,
     repo_id: str,

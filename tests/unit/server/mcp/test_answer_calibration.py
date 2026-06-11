@@ -103,8 +103,20 @@ _SYMBOL = {
     "_matched": True,
 }
 
+# Function-kind variant: matched, but not extractable by the C1 fast path —
+# used by tests that must reach the synthesis gates on value questions.
+_FN_SYMBOL = {
+    "name": "min_count_policy",
+    "kind": "function",
+    "signature": "def min_count_policy() -> int",
+    "docstring": "Returns the default minimum count, 2.",
+    "start_line": 10,
+    "end_line": 14,
+    "_matched": True,
+}
 
-def _patch_pipeline(monkeypatch, answer_mod, *, with_symbols: bool):
+
+def _patch_pipeline(monkeypatch, answer_mod, *, with_symbols: bool, symbol: dict | None = None):
     async def _fake_retrieve(question, ctx):
         return [
             {"page_id": "file_page:pkg/alpha/one.py", "score": 5.0},
@@ -119,7 +131,7 @@ def _patch_pipeline(monkeypatch, answer_mod, *, with_symbols: bool):
             h["snippet"] = ""
             h["page_type"] = "file_page"
             if with_symbols and i == 0:
-                h["symbols"] = [dict(_SYMBOL)]
+                h["symbols"] = [dict(symbol or _SYMBOL)]
         return hits
 
     monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
@@ -142,14 +154,14 @@ async def test_ungrounded_value_caps_confidence_low(setup_mcp, monkeypatch):
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
-    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The default of MIN_COUNT is 3 (pkg/alpha/one.py).",
+        "The default of min_count_policy is 3 (pkg/alpha/one.py).",
     )
 
-    result = await get_answer("What is the default value of MIN_COUNT?")
+    result = await get_answer("What is the default value of min_count_policy?")
     assert result["confidence"] == "low"
     assert "3" in result["note"]
     assert "next_action_hint" in result
@@ -160,14 +172,14 @@ async def test_grounded_value_keeps_high_confidence(setup_mcp, monkeypatch):
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
-    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The default of MIN_COUNT is 2 (pkg/alpha/one.py).",
+        "The default of min_count_policy is 2 (pkg/alpha/one.py).",
     )
 
-    result = await get_answer("What is the default value of MIN_COUNT?")
+    result = await get_answer("What is the default value of min_count_policy?")
     assert result["confidence"] == "high"
     assert "High confidence" in result["note"]
 
@@ -194,13 +206,64 @@ async def test_expanded_hedge_marker_downgrades_through_pipeline(setup_mcp, monk
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
-    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The provided excerpts do not include the body of MIN_COUNT.",
+        "The provided excerpts do not include the body of min_count_policy.",
     )
 
-    result = await get_answer("What is the default value of MIN_COUNT?")
+    result = await get_answer("What is the default value of min_count_policy?")
     assert result["confidence"] == "low"
     assert result["retrieval"] == []
+
+
+@pytest.mark.asyncio
+async def test_value_question_uses_extraction_fast_path(setup_mcp, monkeypatch):
+    """C1: matched constant + value question → verbatim line, no LLM call."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+
+    def _no_provider(_p):
+        raise AssertionError("fast path must not resolve a provider")
+
+    monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", _no_provider)
+
+    result = await get_answer("What is the default value of MIN_COUNT?")
+    assert result["grounding"] == "extracted"
+    assert result["confidence"] == "high"
+    assert "MIN_COUNT = 2" in result["answer"]
+    assert "pkg/alpha/one.py:10" in result["answer"]
+    assert result["citations"] == ["pkg/alpha/one.py"]
+    assert result["retrieval"] == []
+
+
+@pytest.mark.asyncio
+async def test_mechanism_question_skips_fast_path(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(monkeypatch, answer_mod, "MIN_COUNT gates retries (pkg/alpha/one.py).")
+
+    result = await get_answer("How does MIN_COUNT influence the retry loop?")
+    assert "grounding" not in result
+
+
+@pytest.mark.asyncio
+async def test_synthesized_answer_carries_grounded_quotes(setup_mcp, monkeypatch):
+    """C2: symbols named in the answer attach {path, lines, quote}."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
+    _patch_provider(monkeypatch, answer_mod, "Retries are gated by MIN_COUNT (pkg/alpha/one.py).")
+
+    result = await get_answer("How does the retry gating mechanism work here?")
+    assert result.get("quotes"), "answer naming MIN_COUNT must carry a quote"
+    [q] = result["quotes"]
+    assert q["path"] == "pkg/alpha/one.py"
+    assert q["lines"][0] == 10
+    assert "MIN_COUNT = 2" in q["quote"]

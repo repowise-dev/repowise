@@ -92,6 +92,7 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
 )
 from repowise.server.mcp_server.tool_answer.symbols import (
     _extract_question_identifiers,
+    _extract_value_answer,
     _hydrate_symbols_for_hits,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
@@ -401,6 +402,42 @@ async def get_answer(
     # dominant relational questions and pushes cost back onto the agent's
     # own reasoning loop.
 
+    # --- Value-extraction fast path ----------------------------------------
+    # Value-shaped question + a question-matched constant in the top hits →
+    # the verbatim assignment line (read live by the hydrator) IS the
+    # answer. Today this class of question costs a multi-call drill-down
+    # chain and synthesis sometimes invents the number; the fast path is one
+    # call, zero LLM cost, and cannot hallucinate. Not cached: extraction is
+    # cheap and must always reflect the current source.
+    if _is_value_question(question) and question_ids:
+        extraction = _extract_value_answer(hits, question_ids)
+        if extraction is not None:
+            top_score_fp = hits[0].get("score", 0.0) if hits else 0.0
+            answer_text = extraction["answer"]
+            if extraction.get("value_source"):
+                answer_text += "\n\n" + extraction["value_source"]
+            return {
+                "answer": answer_text,
+                "citations": [extraction["file"]],
+                "confidence": "high",
+                "retrieval_quality": (
+                    "high" if top_score_fp >= _HIGH_CONFIDENCE_SCORE_FLOOR else "partial"
+                ),
+                "grounding": "extracted",
+                "fallback_targets": fallback_targets,
+                "retrieval": [],
+                "note": (
+                    "Extracted verbatim from the live source line — no LLM "
+                    "synthesis involved. Cite directly; no verification "
+                    "Read needed."
+                ),
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("high", len(hits)),
+                    repository=repository,
+                ),
+            }
+
     # --- Synthesis (LLM) ---------------------------------------------------
     provider = _resolve_provider_for_answer(getattr(ctx, "path", None))
     if provider is None:
@@ -476,6 +513,33 @@ async def get_answer(
     if not citations:
         # Fall back to top-2 retrieval paths so the agent always has something to verify.
         citations = fallback_targets[:2]
+
+    # Line-grounded quotes: for symbols the answer actually names, attach the
+    # verbatim source line(s) the hydrator read live from disk. An agent can
+    # publish a cited claim backed by a quote without any verification Read —
+    # the quote IS the verification.
+    quotes: list[dict] = []
+    for h in hits[:_ENRICH_TOP_N_HITS]:
+        for s in h.get("symbols") or []:
+            name = s.get("name")
+            if not name or name not in answer_text:
+                continue
+            src = s.get("source_excerpt") or s.get("signature") or ""
+            if not src:
+                continue
+            quote_lines = src.splitlines()[:3]
+            start = s.get("start_line") or 0
+            quotes.append(
+                {
+                    "path": h.get("target_path"),
+                    "lines": [start, start + len(quote_lines) - 1],
+                    "quote": "\n".join(quote_lines),
+                }
+            )
+            if len(quotes) >= 5:
+                break
+        if len(quotes) >= 5:
+            break
 
     # Compute confidence from the dominance ratio (top hit vs second hit).
     # The dominance ratio is a more reliable separator than absolute BM25
@@ -594,6 +658,8 @@ async def get_answer(
             "fallback_targets": fallback_targets,
             "retrieval": retrieval_view,
         }
+        if quotes:
+            payload["quotes"] = quotes
         if ungrounded_values:
             payload["note"] = (
                 f"Value-grounding gate: the answer asserts {ungrounded_values} "
