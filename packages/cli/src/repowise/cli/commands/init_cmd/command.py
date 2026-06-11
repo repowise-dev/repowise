@@ -795,6 +795,15 @@ def init_command(
     )
     register_editor_clients(console, repo_path)
 
+    # Inherit the workspace's distill rewrite-hook verdict NOW, before the
+    # config fingerprint below is computed. `repowise update` runs the same
+    # backfill at its start; if init leaves the verdict unwritten, the first
+    # update writes it, sees a fingerprint mismatch, and silently replaces
+    # the incremental path with a full health re-score of every file.
+    from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
+
+    inherit_workspace_distill_verdict(repo_path)
+
     # ---- State (always) ----
     # Even in index-only mode we persist `last_sync_commit` so that a
     # subsequent `repowise update` (e.g. fired by the post-commit hook) has
