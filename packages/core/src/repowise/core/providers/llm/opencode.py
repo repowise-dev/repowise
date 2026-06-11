@@ -45,14 +45,8 @@ _MAX_STDERR_CHARS = 1_000
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/\-]*$")
 
 _OPENCODE_READONLY_CONFIG = json.dumps(
-    {
-        "permission": {
-            "edit": "deny",
-            "bash": "deny",
-            "external_directory": "deny",
-            "doom_loop": "deny",
-        }
-    }
+    {"permission": {k: "deny" for k in
+     ("edit", "bash", "webfetch", "websearch", "external_directory", "doom_loop", "task")}}
 )
 
 
