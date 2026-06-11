@@ -7,6 +7,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from repowise.cli.main import cli
+from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 
 
 def test_mcp_help_lists_streamable_http_transport() -> None:
@@ -47,6 +48,56 @@ def test_mcp_cli_accepts_streamable_http_transport(
         "transport": "streamable-http",
         "repo_path": str(tmp_path.resolve()),
         "port": 7339,
+    }
+
+
+def test_mcp_cli_streamable_http_prints_workspace_summary(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    api = workspace / "services" / "api"
+    web = workspace / "apps" / "web"
+    api.mkdir(parents=True)
+    web.mkdir(parents=True)
+    WorkspaceConfig(
+        repos=[
+            RepoEntry(path="services/api", alias="api", is_primary=True),
+            RepoEntry(path="apps/web", alias="web"),
+        ],
+        default_repo="api",
+    ).save(workspace)
+
+    captured: dict[str, object] = {}
+
+    def fake_run_mcp(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", fake_run_mcp)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "mcp",
+            str(workspace),
+            "--transport",
+            "streamable-http",
+            "--port",
+            "7341",
+        ],
+    )
+
+    assert result.exit_code == 0
+    output = result.output.replace("\n", "")
+    assert "URL: http://127.0.0.1:7341/mcp" in result.output
+    assert f"Workspace: {workspace.resolve()}" in output
+    assert "Default repo: api" in result.output
+    assert "Repos: api, web" in result.output
+    assert "Warning: No .repowise directory" not in result.output
+    assert captured == {
+        "transport": "streamable-http",
+        "repo_path": str(workspace.resolve()),
+        "port": 7341,
     }
 
 

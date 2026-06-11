@@ -8,6 +8,63 @@ import click
 
 from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_path
 from repowise.cli.ui import load_dotenv
+from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+
+
+def _workspace_summary(path: Path) -> dict[str, object] | None:
+    workspace_root = find_workspace_root(path)
+    if workspace_root is None:
+        return None
+
+    try:
+        ws_config = WorkspaceConfig.load(workspace_root)
+    except Exception:
+        return None
+
+    aliases = ws_config.repo_aliases()
+    default = ws_config.get_primary()
+    default_alias = default.alias if default else (aliases[0] if aliases else None)
+    resolved_path = path.resolve()
+
+    for entry in ws_config.repos:
+        entry_path = (workspace_root / entry.path).resolve()
+        try:
+            resolved_path.relative_to(entry_path)
+        except ValueError:
+            continue
+        default_alias = entry.alias
+        break
+
+    return {
+        "workspace_root": workspace_root,
+        "default_repo": default_alias,
+        "aliases": aliases,
+    }
+
+
+def _print_network_startup(
+    transport: str,
+    repo_path: Path,
+    port: int,
+    workspace: dict[str, object] | None,
+) -> None:
+    label = "streamable HTTP" if transport == "streamable-http" else "SSE"
+    endpoint = "mcp" if transport == "streamable-http" else "sse"
+    console.print(
+        f"[bold green]Starting repowise MCP server ({label})[/bold green]\n"
+        f"URL: http://127.0.0.1:{port}/{endpoint}"
+    )
+
+    if workspace is not None:
+        aliases = workspace["aliases"]
+        repo_list = ", ".join(aliases) if isinstance(aliases, list) else ""
+        console.print(
+            f"Workspace: {workspace['workspace_root']}\n"
+            f"Default repo: {workspace['default_repo'] or 'none'}\n"
+            f"Repos: {repo_list or 'none'}"
+        )
+    else:
+        console.print(f"Repo: {repo_path}")
 
 
 @click.command("mcp")
@@ -30,7 +87,7 @@ from repowise.cli.ui import load_dotenv
 def mcp_command(path: str | None, transport: str, port: int) -> None:
     """Start the MCP server for editor integration.
 
-    Exposes 16 tools for querying the repowise wiki via the MCP protocol.
+    Exposes 17 tools for querying the repowise wiki via the MCP protocol.
     Supports stdio (for Claude Code, Codex, Cursor, Cline), streamable HTTP,
     and legacy SSE transports.
 
@@ -51,22 +108,16 @@ def mcp_command(path: str | None, transport: str, port: int) -> None:
         repo_path = resolve_repo_path(path)
     load_dotenv(repo_path)
 
+    workspace = _workspace_summary(repo_path)
     repowise_dir = repo_path / ".repowise"
-    if not repowise_dir.exists():
+    if workspace is None and not repowise_dir.exists():
         console.print(
             f"[yellow]Warning: No .repowise directory found at {repo_path}.[/yellow]\n"
             "Run 'repowise init' first to generate documentation."
         )
 
-    if transport == "sse":
-        console.print(
-            f"[bold green]Starting repowise MCP server (SSE) on port {port}...[/bold green]"
-        )
-    elif transport == "streamable-http":
-        console.print(
-            "[bold green]Starting repowise MCP server (streamable HTTP) "
-            f"at http://127.0.0.1:{port}/mcp...[/bold green]"
-        )
+    if transport in {"sse", "streamable-http"}:
+        _print_network_startup(transport, repo_path, port, workspace)
     else:
         # stdio mode — no console output (it would corrupt the protocol)
         pass
