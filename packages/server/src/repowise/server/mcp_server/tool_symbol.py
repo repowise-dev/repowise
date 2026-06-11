@@ -1,4 +1,4 @@
-﻿"""MCP Tool: get_symbol — byte-precise source retrieval for a single symbol.
+"""MCP Tool: get_symbol — byte-precise source retrieval for a single symbol.
 
 This is the structural counterpart to get_context. Where get_context returns
 file-level narrative (summary, symbol list, importers), get_symbol returns
@@ -11,8 +11,10 @@ Why a separate tool instead of "include source" on get_context?
     cached prompt prefix by ~10x when the agent only needs one symbol.
   * Predictability: response size is bounded by the symbol size, never the
     file size — no surprise 50 KB payloads.
-  * No reparsing: the bytes come straight from disk via the persisted line
-    range. Tree-sitter never runs at retrieval time.
+  * Verified bounds: the persisted line range is checked against the live
+    file before serving (name-on-definition-line gate); on mismatch the
+    file is re-parsed once, the bounds corrected and healed in the DB. A
+    ``verified: true`` response never needs a follow-up Read.
 
 The tool is intentionally additive — get_context remains the right call for
 "explain this file" or "what's the relationship between A and B" questions.
@@ -56,6 +58,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import symbol_hint as _symbol_hint
+from repowise.server.mcp_server._verify import check_symbol_bounds, heal_symbol_row
 
 _log = __import__("logging").getLogger("repowise.mcp.symbol")
 
@@ -224,9 +227,7 @@ def _bare_name(name: str) -> str:
     return tail
 
 
-def _pick_canonical(
-    rows: list[WikiSymbol], queried_file_path: str | None
-) -> WikiSymbol | None:
+def _pick_canonical(rows: list[WikiSymbol], queried_file_path: str | None) -> WikiSymbol | None:
     """Deterministically select one row from a candidate list.
 
     Priority:
@@ -243,7 +244,7 @@ def _pick_canonical(
             rows = matching
     # Deterministic: lowest id wins. (No confidence column today; leaving
     # room to add one without changing the fallback.)
-    rows_sorted = sorted(rows, key=lambda r: (r.id or ""))
+    rows_sorted = sorted(rows, key=lambda r: r.id or "")
     if len(rows) > 1:
         _log.warning(
             "get_symbol: %d duplicate rows for lookup (file=%s); picked id=%s",
@@ -254,9 +255,7 @@ def _pick_canonical(
     return rows_sorted[0]
 
 
-async def _resolve_symbol(
-    session, repo_id: str, symbol_id: str
-) -> WikiSymbol | None:
+async def _resolve_symbol(session, repo_id: str, symbol_id: str) -> WikiSymbol | None:
     """Look up a symbol by id, qualified_name, or bare name. None if absent.
 
     Language-agnostic: the qualified-name portion of the symbol_id is
@@ -324,19 +323,8 @@ async def _resolve_symbol(
     return None
 
 
-def _slice_source(
-    repo_path: Path, file_path: str, start_line: int, end_line: int, context_lines: int
-) -> tuple[str, int, int, int | None, int]:
-    """Read the file and return (source, actual_start, actual_end, total_lines, full_tokens).
-
-    ``full_tokens`` is the token cost of the *whole* file — the counterfactual
-    a single-symbol slice replaces (the agent would have Read the file to find
-    it). Returns ("", start, end, None, 0) on read failure. Lines are 1-indexed
-    in the inputs and outputs to match WikiSymbol storage. Honors
-    _MAX_SOURCE_LINES.
-    """
-    from repowise.core.distill.budget import estimate_tokens
-
+def _read_file_text(repo_path: Path, file_path: str) -> str | None:
+    """Read a repo file's live text, or None when unreadable/outside the root."""
     abs_path = (repo_path / file_path).resolve()
     # Defense in depth: never read outside the repo root, even if the
     # WikiSymbol.file_path was somehow tampered with.
@@ -344,33 +332,37 @@ def _slice_source(
         abs_path.relative_to(repo_path.resolve())
     except ValueError:
         _log.warning("get_symbol path escape attempt: %s", file_path)
-        return "", start_line, end_line, None, 0
+        return None
     try:
-        text = abs_path.read_text(encoding="utf-8", errors="replace")
+        return abs_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         _log.warning("get_symbol read failed for %s: %s", abs_path, exc)
-        return "", start_line, end_line, None, 0
+        return None
 
-    full_tokens = estimate_tokens(text)
+
+def _slice_text(
+    text: str, start_line: int, end_line: int, context_lines: int
+) -> tuple[str, int, int, int]:
+    """Slice ``text`` to (source, actual_start, actual_end, total_lines).
+
+    Lines are 1-indexed inclusive to match WikiSymbol storage; the range is
+    expanded by ``context_lines`` on both sides and capped at
+    _MAX_SOURCE_LINES (truncating from the tail — the head carries the
+    signature, which is what the agent needs to ground itself).
+    """
     lines = text.splitlines()
     total = len(lines)
 
-    # 1-indexed inclusive range, then expand by context_lines on both sides.
     s = max(1, min(start_line, total))
     e = max(s, min(end_line, total))
     if context_lines > 0:
         s = max(1, s - context_lines)
         e = min(total, e + context_lines)
 
-    span = e - s + 1
-    if span > _MAX_SOURCE_LINES:
-        # Truncate from the tail; the head usually has the signature
-        # which is what the agent needs to ground itself.
+    if (e - s + 1) > _MAX_SOURCE_LINES:
         e = s + _MAX_SOURCE_LINES - 1
-        span = _MAX_SOURCE_LINES
 
-    sliced = "\n".join(lines[s - 1 : e])
-    return sliced, s, e, total, full_tokens
+    return "\n".join(lines[s - 1 : e]), s, e, total
 
 
 @mcp.tool()
@@ -391,7 +383,10 @@ async def get_symbol(
     to retrieve the omitted content (``query`` filters it to matching lines).
 
     Returns {file, name, kind, signature, start_line, end_line, source,
-    truncated}. On miss returns {error: "Symbol not found …"}.
+    truncated, verified}. ``verified: true`` means the bounds were checked
+    (or corrected) against the live file — no follow-up Read needed;
+    ``bounds: "approximate"`` means the symbol moved and could not be
+    re-located. On miss returns {error: "Symbol not found …"}.
 
     Args:
         symbol_id: "path/to/file.py::SymbolName" (canonical id from get_context),
@@ -451,11 +446,9 @@ async def get_symbol(
         }
 
     repo_root = Path(str(ctx.path))
-    source, start, end, _total, full_tokens = _slice_source(
-        repo_root, row.file_path, row.start_line, row.end_line, context_lines
-    )
+    text = _read_file_text(repo_root, row.file_path)
 
-    if not source:
+    if text is None:
         return {
             "symbol_id": symbol_id,
             "file": row.file_path,
@@ -472,8 +465,22 @@ async def get_symbol(
             ),
         }
 
+    from repowise.core.distill.budget import estimate_tokens
+
+    full_tokens = estimate_tokens(text)
+
+    # Trust contract: verify the stored bounds against the live file before
+    # serving a single byte. Stale bounds get corrected via a one-file
+    # re-parse (and healed in the DB); un-relocatable symbols are served as
+    # the indexed guess, explicitly tagged approximate.
+    check = check_symbol_bounds(row, text)
+    if check.corrected:
+        await heal_symbol_row(ctx.session_factory, row, check.start_line, check.end_line)
+
+    source, start, end, _total = _slice_text(text, check.start_line, check.end_line, context_lines)
+
     truncated = (end - start + 1) >= _MAX_SOURCE_LINES and (
-        row.end_line - row.start_line + 1 + 2 * context_lines
+        check.end_line - check.start_line + 1 + 2 * context_lines
     ) > _MAX_SOURCE_LINES
 
     response = {
@@ -486,16 +493,26 @@ async def get_symbol(
         "language": row.language,
         "start_line": start,
         "end_line": end,
-        "symbol_start_line": row.start_line,
-        "symbol_end_line": row.end_line,
+        "symbol_start_line": check.start_line,
+        "symbol_end_line": check.end_line,
         "source": source,
         "truncated": truncated,
+        "verified": check.verified,
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
-            hint=_symbol_hint(row.symbol_id, row.end_line, row.start_line),
+            hint=_symbol_hint(row.symbol_id, check.end_line, check.start_line),
             repository=repository,
         ),
     }
+    if check.approximate:
+        response["bounds"] = "approximate"
+        response["note"] = (
+            "The live file no longer contains this symbol at its indexed "
+            "location and it could not be re-located by name — it may have "
+            "been renamed or removed since indexing. The served slice is "
+            "the indexed line range from the current file contents; verify "
+            "before citing."
+        )
     # Declare the exact counterfactual: serving one symbol replaced Reading the
     # whole file. The savings instrumentation prefers this over its estimator.
     from repowise.server.mcp_server._savings import declare_replaced

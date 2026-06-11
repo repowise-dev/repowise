@@ -426,6 +426,10 @@ async def _resolve_skeleton(
         "pct_of_full": round(result.pct_of_full, 1),
         "bodies_kept": list(result.bodies_kept),
         "text": result.text,
+        # The skeleton is rendered from the live source file read above —
+        # its text is fresh by construction. Part of the trust contract:
+        # a verified response never needs a follow-up Read.
+        "verified": True,
     }
     if result.mode == "raw":
         result_data["skeleton"]["note"] = (
