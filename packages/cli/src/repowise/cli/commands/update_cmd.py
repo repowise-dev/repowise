@@ -396,6 +396,7 @@ def _persist_index_only_update(
     head: str | None,
     start: float,
     changed_paths: list[str],
+    file_diffs: list | None = None,
 ) -> None:
     """Persist the index-only update (graph + git + dead-code + health), save
     state, and print the completion line. No LLM regeneration.
@@ -413,6 +414,7 @@ def _persist_index_only_update(
             dead_code_report,
             partial_health_report,
             changed_paths,
+            file_diffs=file_diffs,
             log=console.print,
         )
     )
@@ -527,9 +529,7 @@ def _run_full_health_rescore(
         pass  # metrics fall back to lazy computation
 
     exclude_spec = (
-        pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
-        if exclude_patterns
-        else None
+        pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns) if exclude_patterns else None
     )
 
     async def _rescore() -> None:
@@ -555,9 +555,7 @@ def _run_full_health_rescore(
         sf = create_session_factory(engine)
 
         async with get_session(sf) as session:
-            repo = await upsert_repository(
-                session, name=repo_path.name, local_path=str(repo_path)
-            )
+            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             repo_id = repo.id
 
             gm_result = await session.execute(
@@ -619,9 +617,7 @@ def _run_full_health_rescore(
         {**state, "last_sync_commit": head, "config_fingerprint": curr_fingerprint},
     )
     elapsed = time.monotonic() - start
-    console.print(
-        f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s"
-    )
+    console.print(f"[green]Config-triggered health re-score complete[/green] in {elapsed:.1f}s")
 
 
 # ---------------------------------------------------------------------------
@@ -923,9 +919,7 @@ def update_command(
         # new rules/excludes instead of being left stale.
         console.print("[yellow]Config files changed — re-running health analysis.[/yellow]")
         if dry_run:
-            console.print(
-                "[yellow]Dry run — health would be re-scored. No changes made.[/yellow]"
-            )
+            console.print("[yellow]Dry run — health would be re-scored. No changes made.[/yellow]")
             return
         cfg = load_config(repo_path)
         exclude_patterns = list(cfg.get("exclude_patterns") or [])
@@ -996,6 +990,7 @@ def update_command(
             head,
             start,
             [fd.path for fd in file_diffs],
+            file_diffs=file_diffs,
         )
         return
 
@@ -1025,9 +1020,7 @@ def update_command(
     # all subsequent updates.
     from repowise.cli.providers import build_cost_tracker
 
-    cost_tracker = build_cost_tracker(
-        repo_path, repo_path.name, no_cost_tracking=no_cost_tracking
-    )
+    cost_tracker = build_cost_tracker(repo_path, repo_path.name, no_cost_tracking=no_cost_tracking)
     provider._cost_tracker = cost_tracker
 
     # (dead_code_report computed above, before the index-only branch)
@@ -1222,6 +1215,17 @@ def update_command(
             repo_id = repo.id
             for page in generated_pages:
                 await upsert_page_from_generated(session, page, repo_id)
+            # Tombstone pages for deleted/renamed files — regeneration only
+            # rewrites pages for files that still exist.
+            try:
+                from repowise.core.pipeline.persist import (
+                    mark_tombstone_pages,
+                    tombstone_candidates,
+                )
+
+                await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
+            except Exception as exc:
+                console.print(f"[yellow]Tombstone marking skipped: {exc}[/yellow]")
 
         # Persist updated git metadata + recompute percentiles
         if git_meta_map:

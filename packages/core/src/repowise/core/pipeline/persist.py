@@ -15,6 +15,61 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+def tombstone_candidates(file_diffs: list[Any]) -> list[tuple[str, list[str]]]:
+    """(dead_path, successor_paths) pairs from deleted/renamed file diffs.
+
+    A renamed file's old path gets its new path as the successor; a deleted
+    file has no successor. Diffs of other statuses contribute nothing.
+    """
+    out: list[tuple[str, list[str]]] = []
+    for fd in file_diffs or []:
+        status = getattr(fd, "status", None)
+        if status == "deleted" and fd.path:
+            out.append((fd.path, []))
+        elif status == "renamed" and fd.old_path:
+            out.append((fd.old_path, [fd.path] if fd.path else []))
+    return out
+
+
+async def mark_tombstone_pages(
+    session: Any, repo_id: str, candidates: list[tuple[str, list[str]]]
+) -> int:
+    """Mark file pages for deleted/renamed files as tombstones.
+
+    A ``freshness_status="fresh"`` page for a file that no longer exists is
+    an active trap: retrieval serves it, agents cite it, and the index-age
+    metadata says nothing is wrong. Tombstoned pages keep their content
+    (the prose may still orient a reader) but carry status=tombstone and
+    ``successor_paths`` in metadata so serving layers can skip or redirect.
+
+    Returns the number of pages marked.
+    """
+    if not candidates:
+        return 0
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    page_ids = {f"file_page:{path}": (path, successors) for path, successors in candidates}
+    res = await session.execute(
+        select(Page).where(Page.repository_id == repo_id, Page.id.in_(page_ids))
+    )
+    marked = 0
+    for page in res.scalars().all():
+        _, successors = page_ids[page.id]
+        page.freshness_status = "tombstone"
+        try:
+            meta = json.loads(page.metadata_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        meta["successor_paths"] = successors
+        page.metadata_json = json.dumps(meta)
+        marked += 1
+    if marked:
+        logger.info("pages_tombstoned", repo_id=repo_id, count=marked)
+    return marked
+
+
 async def persist_graph_nodes(
     session: Any,
     repo_id: str,

@@ -329,6 +329,24 @@ async def _resolve_one_target(
     result_data["target"] = target
     result_data["type"] = target_type
 
+    # Tombstone redirect: the page documents a file deleted or renamed since
+    # indexing. A "fresh" card here is an active trap — return the redirect
+    # instead of the card.
+    if page is not None and getattr(page, "freshness_status", "") == "tombstone":
+        import json as _json_ts
+
+        try:
+            successors = _json_ts.loads(page.metadata_json or "{}").get("successor_paths") or []
+        except (ValueError, TypeError):
+            successors = []
+        result_data["error"] = (
+            f"'{target}' was deleted or renamed after indexing — this page is a tombstone."
+        )
+        if successors:
+            result_data["successor_paths"] = successors
+            result_data["hint"] = f"Content moved; call get_context on {successors[0]!r} instead."
+        return result_data
+
     want_skeleton = bool(include and "skeleton" in include)
     auto_skeleton = False
 

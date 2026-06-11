@@ -192,15 +192,16 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
     page_ids = [h["page_id"] for h in hits]
     async with get_session(ctx.session_factory) as session:
         res = await session.execute(
-            select(Page.id, Page.target_path, Page.summary, Page.page_type).where(
-                Page.id.in_(page_ids)
-            )
+            select(
+                Page.id, Page.target_path, Page.summary, Page.page_type, Page.freshness_status
+            ).where(Page.id.in_(page_ids))
         )
         meta_by_id = {
             row[0]: {
                 "target_path": row[1] or "",
                 "summary": row[2] or "",
                 "page_type": row[3] or "",
+                "freshness": row[4] or "",
             }
             for row in res.all()
         }
@@ -208,6 +209,10 @@ async def hydrate_hits(hits: list[dict], ctx: Any, *, scope: str | None = None) 
     out: list[dict] = []
     for h in hits:
         meta = meta_by_id.get(h["page_id"], {})
+        # Tombstoned pages document deleted/renamed files — serving them as
+        # answer material would cite code that no longer exists.
+        if meta.get("freshness") == "tombstone":
+            continue
         target_path = meta.get("target_path", "")
         if scope and target_path and not target_path.startswith(scope):
             continue
@@ -288,9 +293,7 @@ async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
     """
     if not hits:
         return hits
-    seed_paths = [
-        h.get("target_path") for h in hits[:_GRAPH_EXPAND_TOP_N] if h.get("target_path")
-    ]
+    seed_paths = [h.get("target_path") for h in hits[:_GRAPH_EXPAND_TOP_N] if h.get("target_path")]
     if not seed_paths:
         return hits
     existing = {h.get("target_path") for h in hits}
@@ -349,18 +352,20 @@ async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
     parent_score = max((h.get("score", 0.0) for h in hits[:_GRAPH_EXPAND_TOP_N]), default=0.0)
     candidates: list[dict] = []
     for path, summary, page_type in page_rows:
-        candidates.append({
-            "page_id": f"file_page:{path}",
-            "target_path": path,
-            "title": f"File: {path}",
-            "summary": summary or "",
-            "snippet": (summary or "")[:200],
-            "page_type": page_type or "file_page",
-            "score": parent_score * _GRAPH_EXPAND_DAMPING,
-            "_sources": {"graph_expand"},
-            "_expanded_from": "graph",
-            "_pagerank": pr_by_path.get(path, 0.0),
-        })
+        candidates.append(
+            {
+                "page_id": f"file_page:{path}",
+                "target_path": path,
+                "title": f"File: {path}",
+                "summary": summary or "",
+                "snippet": (summary or "")[:200],
+                "page_type": page_type or "file_page",
+                "score": parent_score * _GRAPH_EXPAND_DAMPING,
+                "_sources": {"graph_expand"},
+                "_expanded_from": "graph",
+                "_pagerank": pr_by_path.get(path, 0.0),
+            }
+        )
 
     # Rank candidates by PageRank within the expansion set so we pick the
     # most central neighbor first when we have multiple plausible ones.

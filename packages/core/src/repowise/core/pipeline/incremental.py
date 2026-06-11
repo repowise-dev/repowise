@@ -362,6 +362,7 @@ async def persist_incremental_index(
     partial_health_report: Any,
     changed_paths: list[str],
     *,
+    file_diffs: list[Any] | None = None,
     log: LogFn | None = None,
 ) -> None:
     """Persist an incremental index refresh (graph + git + dead-code + health).
@@ -390,6 +391,20 @@ async def persist_incremental_index(
         async with get_session(sf) as session:
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             repo_id = repo.id
+
+            # Tombstone pages for deleted/renamed files FIRST — a fresh page
+            # for a file that no longer exists misleads every retrieval
+            # consumer until the next full regeneration.
+            if file_diffs:
+                try:
+                    from repowise.core.pipeline.persist import (
+                        mark_tombstone_pages,
+                        tombstone_candidates,
+                    )
+
+                    await mark_tombstone_pages(session, repo_id, tombstone_candidates(file_diffs))
+                except Exception as exc:
+                    log(f"[yellow]Tombstone marking skipped: {exc}[/yellow]")
 
             if git_meta_map:
                 try:
