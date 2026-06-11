@@ -105,22 +105,27 @@ This repo has the Repowise MCP server configured. The tools below answer questio
 
 | Tool | What only this tool answers |
 |------|------------------------------|
-| `get_answer(question)` | Synthesised answer with verified citations and a calibrated `retrieval_quality`. First call for "how does X work" / "why is Y like this". On low confidence returns `best_guesses` with one-line justifications instead of an empty answer. |
-| `get_context(targets=[...])` | Triage card for files/modules/symbols — title, summary, signatures, `hotspot` bit, `decision_records` titles, and `symbol_id`s to pipe into `get_symbol`. Use `include=["callers","ownership",...]` to widen. NOT for source bytes. |
-| `get_symbol("path/to/file.py::Name")` | Raw source bytes for one indexed symbol with exact line bounds. Cheaper and safer than `Read` + offset math. Use the `symbol_id` returned by `get_context`. |
-| `search_codebase(query, kind?)` | Find pages by concept when you don't know the file. Each result carries `search_method` (`embedding` vs `bm25` fallback). For exact identifiers use Grep — the tool will hint when it sees one. |
+| `get_answer(question)` | Synthesised answer with citations and a content-grounded `confidence`. First call for "how does X work" / "where is Y" / "why is Z". Value questions may return `grounding: "extracted"` — the verbatim source line, no synthesis involved. On low confidence returns `best_guesses` with one-line justifications. |
+| `get_context(targets=[...])` | Triage card for files/modules/symbols — title, summary, signatures, `hotspot` bit, `decision_records` titles, `symbol_id`s. File targets auto-upgrade to a `verified` skeleton (every signature, ~37% of a full Read). `include=["callers"]` works on file targets too (import + call rollup). |
+| `get_symbol(...)` | Source bytes with live-verified bounds. Three forms: `"path.py::Name"` (indexed symbol), `"path.py:140-180"` (live range read, ≤200 lines), `"repowise#<hex>"` (omission ref). Index misses return `fallback_lines` from a live grep instead of a dead end. |
+| `search_codebase(query, kind?)` | Find pages by concept when you don't know the file. Results carry `search_method` (`embedding` vs `bm25` fallback). Decision records rank below file pages unless the query is why-shaped. Identifier-bearing queries get a `grep_hint` — prefer Grep for those tokens. |
 | `get_why(query, targets?)` | Architectural decision archaeology — *why* the code is shaped this way. Call before refactors or pattern divergences. Falls back to git archaeology when no ADRs exist for a file. |
 | `get_risk(targets, changed_files?)` | What history says about touching these files: churn, owners, blast radius. Pass `changed_files` for PR mode → returns a `directive` (`will_break`, `missing_cochanges`, `missing_tests`). |
 | `get_dead_code(...)` | Tiered unreachable / unused-export / zombie-package findings. Run before a cleanup sprint, not before a targeted fix. |
-| `get_overview(repo?)` | Architecture map for an unfamiliar repo. One-time orientation; skip on subsequent calls in the same session. |
+| `get_overview(repo?)` | Architecture map + `tool_guide` recipes. One-time orientation; skip on subsequent calls in the same session. |
+
+**Trust protocol — when a response replaces reading the source:**
+- `verified: true` on any response means the served content was checked against the live working tree. **Never follow a verified response with a Read of the same lines** — you would be paying twice for identical bytes.
+- `get_answer` with `confidence: "high"` or `grounding: "extracted"` is content-grounded (asserted values were verified against retrieved source; ≥1 citation is source-backed). Cite it directly. `quotes` entries `{path, lines, quote}` are verbatim live source — quote them instead of re-reading.
+- Reading code: `get_context` skeleton first (~37% of a full Read), then `get_symbol` for bodies, `"path.py:a-b"` range reads for anything between symbols. Raw `Read` is for files the index marks `mostly_full` or cannot serve.
+- The **only** re-read triggers: `bounds: "approximate"`, `_meta.stale_warning`, `search_method: "bm25"`, or `confidence: "low"`/`retrieval_quality: "weak"`.
+- Disallowed rationalizations for extra reads: "just to be safe", "to double-check the tool", "to see the full context" (use the skeleton / a range read), "the file might have changed" (that is what `verified` already checked).
 
 **Composition tips:**
-- `get_answer` → if `confidence` is `medium`/`low`, follow the `best_guesses[0].file` or `fallback_targets[0]` into `get_context`, then `get_symbol` for bytes.
-- `get_context` returns `decision_records` titles → call `get_why(targets=[...])` for the rationale.
-- `get_context` returns `hotspot: true` → call `get_risk` before editing.
+- `get_answer` → if `confidence` is `medium`/`low`, follow `best_guesses[0].file` or `fallback_targets[0]` into `get_context`, then `get_symbol` for bytes.
+- `get_context` returns `decision_records` titles → `get_why(targets=[...])` for the rationale; `hotspot: true` → `get_risk` before editing.
 - PR review → `get_risk(targets=[...], changed_files=[...])`; read the `directive` block first.
-
-**Verify when:** `_meta.stale_warning` is present, or `retrieval_quality` is `partial`/`weak`, or `search_method` is `bm25`. Otherwise trust the response and act on it.
+- A `tombstone` error means the file was deleted/renamed since indexing — follow `successor_paths`.
 
 ### Output Distillation
 
