@@ -286,7 +286,10 @@ class GitIndexer:
         return summary, results
 
     async def index_changed_files(
-        self, changed_file_paths: list[str], all_files: set[str] | None = None
+        self,
+        changed_file_paths: list[str],
+        all_files: set[str] | None = None,
+        co_change_sink: dict[str, list[dict]] | None = None,
     ) -> list[dict]:
         """Incremental update: re-index only changed files.
 
@@ -301,6 +304,12 @@ class GitIndexer:
         re-runs so the changed files' partners stay fresh — without it,
         ``index_file``'s empty defaults overwrite the init-computed partners
         on every update, blanking exactly the files that change most.
+
+        ``co_change_sink``, when provided, receives the FULL per-file partner
+        map that walk produces (every tracked file, not just the changed
+        ones). The update path uses it to rebuild the graph's ``co_changes``
+        edges for the whole repo so the update-built graph converges with the
+        init-built one.
         """
         repo = self._get_repo()
         if repo is None:
@@ -408,6 +417,8 @@ class GitIndexer:
                         meta["co_change_partners_json"] = json.dumps(co_changes[fp])
                     if fp in change_entropy:
                         meta["change_entropy"] = change_entropy[fp]
+                if co_change_sink is not None:
+                    co_change_sink.update(co_changes)
             except Exception as exc:
                 logger.debug("co_change_pass_failed", error=str(exc))
 

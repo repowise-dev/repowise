@@ -137,6 +137,20 @@ def build_repo_graph(
     except Exception:
         pass  # framework edge detection is best-effort
 
+    # Add dynamic-hint edges, mirroring the init pipeline's ingestion phase.
+    # Without this the update-built graph was missing every dynamic edge the
+    # init graph had: metrics computed on update diverged from init's, and
+    # the first post-init update could never hit the centrality cache.
+    try:
+        from repowise.core.ingestion.dynamic_hints import HintRegistry
+
+        dynamic_edges = HintRegistry().extract_all(Path(repo_path))
+        graph_builder.add_dynamic_edges(dynamic_edges)
+        if dynamic_edges:
+            log(f"Dynamic hint edges added: [cyan]{len(dynamic_edges)}[/cyan]")
+    except Exception:
+        pass  # dynamic hints are best-effort, same as the init phase
+
     return parsed_files, source_map, graph_builder, repo_structure, len(file_infos)
 
 
@@ -201,11 +215,26 @@ async def rebuild_graph_and_git(
         changed_paths = build_filtered_changed_paths(file_diffs, exclude_patterns)
         # The full tracked-file set lets the indexer re-run the repo-wide
         # co-change walk so partners aren't wiped to "[]" for changed files.
+        # The sink captures that walk's FULL per-file partner map: the graph
+        # was just rebuilt from scratch, so co_changes edges must be re-added
+        # for every file (not only the changed ones) or the update graph
+        # diverges from the init graph and the centrality cache can't hit.
+        co_change_full: dict[str, list[dict]] = {}
         updated_meta = await git_indexer.index_changed_files(
-            changed_paths, all_files=set(source_map.keys())
+            changed_paths,
+            all_files=set(source_map.keys()),
+            co_change_sink=co_change_full,
         )
         git_meta_map = {m["file_path"]: m for m in updated_meta}
-        graph_builder.update_co_change_edges(git_meta_map)
+        if co_change_full:
+            graph_builder.update_co_change_edges(
+                {
+                    fp: {"co_change_partners_json": partners}
+                    for fp, partners in co_change_full.items()
+                }
+            )
+        else:
+            graph_builder.update_co_change_edges(git_meta_map)
     except Exception as exc:
         log(f"[yellow]Git re-index skipped: {exc}[/yellow]")
 
