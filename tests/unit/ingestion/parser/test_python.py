@@ -232,3 +232,71 @@ class TestPythonParser:
         # Public top-level symbols should be in exports
         assert "add" in result.exports
         assert "Calculator" in result.exports
+
+
+PYTHON_CONSTANTS_SOURCE = b'''"""Module with constants."""
+
+import os
+
+_DEFAULT_CO_CHANGE_MIN_COUNT = 2
+MAX_RETRIES: int = 5
+app = create_app()
+_TABLE = {
+    "a": 1,
+}
+
+
+def f(x):
+    local_var = 3
+    return x
+
+
+class C:
+    class_attr = 7
+
+    def m(self):
+        inner = 1
+        return inner
+'''
+
+
+class TestPythonModuleConstants:
+    """Module-level assignments are indexed as constant/variable symbols."""
+
+    def _symbols(self, parser: ASTParser):
+        fi = _make_file_info("pkg/consts.py", "python")
+        return parser.parse_file(fi, PYTHON_CONSTANTS_SOURCE).symbols
+
+    def test_screaming_case_assignment_is_constant(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        const = next(s for s in syms if s.name == "_DEFAULT_CO_CHANGE_MIN_COUNT")
+        assert const.kind == "constant"
+        assert const.signature == "_DEFAULT_CO_CHANGE_MIN_COUNT = 2"
+
+    def test_typed_assignment_keeps_annotation_in_signature(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        const = next(s for s in syms if s.name == "MAX_RETRIES")
+        assert const.kind == "constant"
+        assert const.signature == "MAX_RETRIES: int = 5"
+
+    def test_lowercase_assignment_is_variable(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        var = next(s for s in syms if s.name == "app")
+        assert var.kind == "variable"
+        assert var.signature == "app = create_app()"
+
+    def test_multiline_value_signature_is_first_line(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        table = next(s for s in syms if s.name == "_TABLE")
+        assert table.kind == "constant"
+        assert table.signature == "_TABLE = {"
+        assert table.end_line > table.start_line
+
+    def test_function_local_assignment_not_extracted(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        assert not any(s.name == "local_var" for s in syms)
+        assert not any(s.name == "inner" for s in syms)
+
+    def test_class_attribute_not_extracted(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        assert not any(s.name == "class_attr" for s in syms)

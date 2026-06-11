@@ -27,6 +27,17 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; Module-level assignment — constants and module config values. Anchored at
+; (module …) so function-local and class-body assignments never match; the
+; parser refines the kind (SCREAMING_CASE → constant, otherwise variable).
+(module
+  (expression_statement
+    (assignment
+      left: (identifier) @symbol.name
+    ) @symbol.def
+  )
+)
+
 ; Decorated function or class — captures the decorator as a modifier
 (decorated_definition
   (decorator) @symbol.modifiers

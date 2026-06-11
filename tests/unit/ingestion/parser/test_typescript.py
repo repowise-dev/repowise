@@ -219,3 +219,56 @@ def test_cts_file_uses_typescript_parser(parser: ASTParser) -> None:
     fi = _make_file_info("src/module.cts", "typescript")
     parsed = parser.parse_file(fi, b"export function load(): number { return 1; }\n")
     assert any(s.name == "load" for s in parsed.symbols)
+
+
+class TestTypeScriptModuleConstants:
+    """Top-level const/let with literal values are indexed as constants."""
+
+    TS_CONST_SOURCE = b"""
+import { x } from "./x";
+export const MAX_ITEMS = 100;
+const apiBase = "https://api.example.com";
+export const CONFIG = {
+  retries: 3,
+};
+export const handler = () => {
+  const inner = 1;
+  return inner;
+};
+function g() {
+  const localConst = 2;
+  return localConst;
+}
+"""
+
+    def _symbols(self, parser: ASTParser):
+        fi = _make_file_info("pkg/consts.ts", "typescript")
+        return parser.parse_file(fi, self.TS_CONST_SOURCE).symbols
+
+    def test_exported_screaming_const_is_constant(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        const = next(s for s in syms if s.name == "MAX_ITEMS")
+        assert const.kind == "constant"
+        assert const.signature == "MAX_ITEMS = 100"
+
+    def test_camel_case_const_is_variable(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        var = next(s for s in syms if s.name == "apiBase")
+        assert var.kind == "variable"
+
+    def test_object_const_signature_is_first_line(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        config = next(s for s in syms if s.name == "CONFIG")
+        assert config.kind == "constant"
+        assert config.signature == "CONFIG = {"
+
+    def test_arrow_function_const_stays_function(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        handler = next(s for s in syms if s.name == "handler")
+        assert handler.kind == "function"
+
+    def test_function_local_const_not_extracted(self, parser: ASTParser) -> None:
+        syms = self._symbols(parser)
+        names = {s.name for s in syms}
+        assert "localConst" not in names
+        assert "inner" not in names

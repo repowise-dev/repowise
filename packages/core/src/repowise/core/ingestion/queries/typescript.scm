@@ -66,6 +66,39 @@
   name: (property_identifier) @symbol.name
 ) @symbol.def
 
+; Top-level const/let with a non-function value — module constants. The
+; declarator (not the lexical_declaration) is @symbol.def so the kind map
+; can distinguish it from the arrow-function pattern above. Anchored at
+; (program …) — directly or under an export_statement — so function-local
+; declarations never match.
+(program
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name
+      value: [
+        (string) (template_string) (number) (true) (false) (null) (undefined)
+        (array) (object) (unary_expression) (binary_expression)
+        (new_expression) (member_expression) (as_expression) (satisfies_expression)
+      ]
+    ) @symbol.def
+  )
+)
+
+(program
+  (export_statement
+    (lexical_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name
+        value: [
+          (string) (template_string) (number) (true) (false) (null) (undefined)
+          (array) (object) (unary_expression) (binary_expression)
+          (new_expression) (member_expression) (as_expression) (satisfies_expression)
+        ]
+      ) @symbol.def
+    )
+  )
+)
+
 ; ---------------------------------------------------------------------------
 ; Imports
 ; ---------------------------------------------------------------------------

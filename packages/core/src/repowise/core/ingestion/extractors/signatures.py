@@ -58,5 +58,15 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"impl {name}"
     if node_type in ("class_specifier",):
         return f"class {name}"
+    if node_type in ("assignment", "variable_declarator"):
+        # Module-level constant/variable: the signature IS the assignment —
+        # the verbatim line answers "what is the default value of X" without
+        # a follow-up source read. First line only, bounded; multi-line
+        # values (dicts, arrays) stay reachable via get_symbol.
+        text = node_text(def_node, src)
+        first_line = text.splitlines()[0].strip() if text else name
+        if len(first_line) > 160:
+            first_line = first_line[:157] + "..."
+        return first_line
     # Fallback
     return f"{name}{params_text}"

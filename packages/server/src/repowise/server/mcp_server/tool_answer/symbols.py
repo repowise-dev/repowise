@@ -188,7 +188,13 @@ async def _hydrate_symbols_for_hits(
     by_file: dict[str, list[dict]] = {}
     repo_root = Path(str(ctx.path)) if ctx and ctx.path else None
     for row in res.scalars().all():
-        rich_sig = _read_signature_from_source(repo_root, row.file_path, row.start_line)
+        # Constants/variables: the stored signature IS the verbatim assignment
+        # line. The disk re-read below walks forward looking for a ":"-closed
+        # def line and would join unrelated following lines for assignments.
+        if row.kind in ("constant", "variable"):
+            rich_sig = None
+        else:
+            rich_sig = _read_signature_from_source(repo_root, row.file_path, row.start_line)
         # Does the symbol name match any identifier from the question?
         name_lower = (row.name or "").lower()
         qname_lower = (row.qualified_name or "").lower()

@@ -110,3 +110,20 @@ def test_member_pick_require_is_extracted(parser: ASTParser) -> None:
     # pattern never matched it.
     result = _parse(parser, "var normalizeType = require('./utils').normalizeType;\n")
     assert any(i.module_path == "./utils" for i in result.imports)
+
+
+def test_top_level_js_constants_extracted_but_requires_are_not(parser: ASTParser) -> None:
+    result = _parse(
+        parser,
+        "const svc = require('./svc');\n"
+        "const TIMEOUT_MS = 5000;\n"
+        "let counter = 0;\n"
+        "function h() { const local = 1; return local; }\n",
+    )
+    by_name = {s.name: s for s in result.symbols}
+    assert by_name["TIMEOUT_MS"].kind == "constant"
+    assert by_name["TIMEOUT_MS"].signature == "TIMEOUT_MS = 5000"
+    assert by_name["counter"].kind == "variable"
+    # require() declarators are imports, not symbols
+    assert "svc" not in by_name
+    assert "local" not in by_name

@@ -80,6 +80,12 @@ _SYMBOL_COUNT_WARN_THRESHOLD = 500
 
 QUERIES_DIR = Path(__file__).parent / "queries"
 
+# Node types whose .scm patterns are anchored at module/program level
+# (constants and module variables). They can never be function-local, so
+# the callable-ancestor filter must not apply — and for TS/JS declarators
+# it would misfire on the parent lexical_declaration kind mapping.
+_MODULE_ANCHORED_NODE_TYPES = frozenset({"assignment", "variable_declarator"})
+
 
 @lru_cache(maxsize=None)
 def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | None:
@@ -363,8 +369,13 @@ class ASTParser:
             # exports. Filtering by callable ancestor restricts extraction
             # to module-top-level + class-body members. Class bodies don't
             # match (``class_definition`` is not callable), so methods are
-            # preserved.
-            if _has_callable_ancestor(def_node, config.symbol_node_types):
+            # preserved. Module-anchored node types skip the check: their
+            # .scm patterns only match at module/program level, and a TS
+            # variable_declarator's parent (lexical_declaration → "function")
+            # would otherwise read as a callable ancestor.
+            if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
+                def_node, config.symbol_node_types
+            ):
                 continue
 
             # Refine "struct" kind for Go type_spec (check if struct or interface body)
@@ -378,6 +389,12 @@ class ASTParser:
                 and def_node.type == "class_declaration"
             ):
                 kind = refine_kotlin_class_kind(def_node)
+
+            # Refine module-level assignments: SCREAMING_CASE names are
+            # constants by convention; the rest are module variables
+            # (singletons like ``app = FastAPI()``, registries, caches).
+            if node_type in _MODULE_ANCHORED_NODE_TYPES:
+                kind = "constant" if name == name.upper() else "variable"
 
             # Params signature text
             params_text = _node_text(params_nodes[0], src) if params_nodes else ""
