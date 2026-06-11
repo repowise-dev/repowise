@@ -182,6 +182,12 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # upgrade actually reaches callers without waiting for cache expiry.
 _ANSWER_SCHEMA_VERSION = 3
 
+# Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
+# stamped ``_indexed_commit`` vs the repo's current head) is the primary
+# freshness gate, but rows written before commit stamping existed — or for
+# repos without git metadata — need a backstop so they can't serve forever.
+_ANSWER_CACHE_TTL_DAYS = 14
+
 # Intersection-retrieval connectives. If a question contains any of these
 # (case-insensitive whole-word), it's likely a relational/multi-entity
 # question. We split the question on the connective, run two FTS passes,

@@ -30,7 +30,7 @@ import json as _json
 import logging
 import time
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import AnswerCache
@@ -67,6 +67,7 @@ from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_answer.confidence import _answer_is_hedged
 from repowise.server.mcp_server.tool_answer.config import (
+    _ANSWER_CACHE_TTL_DAYS,
     _ANSWER_SCHEMA_VERSION,
     _DOMINANCE_RATIO,
     _ENRICH_TOP_N_HITS,
@@ -92,6 +93,28 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
 )
 
 _log = logging.getLogger("repowise.mcp.answer")
+
+
+def _json_default(obj):
+    """Serialize the non-JSON types retrieval hits carry (``_sources`` sets).
+
+    Before this fallback existed, EVERY cache write failed on the sets the
+    hybrid retriever attaches to hits — silently, under the old blanket
+    suppress. The cache never stored a single post-hybrid-pipeline answer.
+    """
+    if isinstance(obj, (set, frozenset)):
+        return sorted(obj)
+    return str(obj)
+
+
+def _cache_entry_expired(created_at) -> bool:
+    """True when an answer-cache row is older than the hard TTL."""
+    if created_at is None:
+        return False
+    from datetime import UTC, datetime, timedelta
+
+    ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - ts) > timedelta(days=_ANSWER_CACHE_TTL_DAYS)
 
 
 @mcp.tool()
@@ -179,6 +202,17 @@ async def get_answer(
                 *(g.get("file") for g in (payload.get("best_guesses") or [])),
             ]
             excluded_cache = any(is_excluded(p, exclude_spec) for p in cached_paths)
+            # Freshness: a row synthesised against a previous index may cite
+            # moved code or stale values. The write path stamps the repo's
+            # head commit into the persisted payload; a mismatch (or a row
+            # past the hard TTL, for pre-stamping rows and gitless repos)
+            # forces re-synthesis.
+            current_commit = getattr(repository, "head_commit", None)
+            cached_commit = payload.get("_indexed_commit")
+            stale_commit = bool(
+                cached_commit and current_commit and cached_commit != current_commit
+            )
+            expired = _cache_entry_expired(cached.created_at)
             if schema_stale:
                 _log.info(
                     "Bypassing cache entry at schema v%s (current v%s)",
@@ -189,7 +223,16 @@ async def get_answer(
                 _log.info("Bypassing hedged cache entry for re-synthesis")
             elif excluded_cache:
                 _log.info("Bypassing cache entry referencing a now-excluded path")
+            elif stale_commit:
+                _log.info(
+                    "Bypassing cache entry from commit %s (repo now at %s)",
+                    cached_commit,
+                    current_commit,
+                )
+            elif expired:
+                _log.info("Bypassing cache entry past the %d-day TTL", _ANSWER_CACHE_TTL_DAYS)
             else:
+                payload.pop("_indexed_commit", None)
                 payload["_meta"] = _build_meta(
                     timing_ms=(time.perf_counter() - t0) * 1000,
                     cached=True,
@@ -520,21 +563,38 @@ async def get_answer(
                 "is missing."
             )
 
-    # Persist to cache. Best-effort: cache failures must NEVER block the
-    # response (we already have the answer in hand).
+    # Persist to cache (upsert). Best-effort: cache failures must never block
+    # the response — but they must be LOGGED, not suppressed. A plain INSERT
+    # under a blanket suppress violated uq_answer_cache_q on every
+    # bypass-and-resynthesize round and failed silently, so hedged/stale rows
+    # were never upgraded. Delete-then-insert in one transaction is the
+    # dialect-agnostic upsert; the stamped _indexed_commit drives the
+    # read-side freshness check.
     if answer_text:
-        with contextlib.suppress(Exception):
+        cache_payload = dict(payload)
+        commit_now = getattr(repository, "head_commit", None)
+        if commit_now:
+            cache_payload["_indexed_commit"] = commit_now
+        try:
             async with get_session(ctx.session_factory) as session:
+                await session.execute(
+                    delete(AnswerCache).where(
+                        AnswerCache.repository_id == repo_id,
+                        AnswerCache.question_hash == qhash,
+                    )
+                )
                 row = AnswerCache(
                     repository_id=repo_id,
                     question_hash=qhash,
                     question=question.strip(),
-                    payload_json=_json.dumps(payload),
+                    payload_json=_json.dumps(cache_payload, default=_json_default),
                     provider_name=getattr(provider, "provider_name", "") or "",
                     model_name=getattr(provider, "model_name", "") or "",
                 )
                 session.add(row)
                 await session.commit()
+        except Exception as exc:
+            _log.warning("get_answer cache write failed: %s", exc)
 
     payload["_meta"] = _build_meta(
         timing_ms=(time.perf_counter() - t0) * 1000,
