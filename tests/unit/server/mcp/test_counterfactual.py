@@ -42,7 +42,7 @@ def test_search_codebase_no_results_returns_zero() -> None:
 
 
 def test_unknown_tool_returns_zero() -> None:
-    assert cf.replaced_tokens_for("get_risk", {"anything": 1}) == 0
+    assert cf.replaced_tokens_for("list_repos", {"anything": 1}) == 0
 
 
 def test_non_dict_result_returns_zero() -> None:
@@ -59,3 +59,56 @@ def test_malformed_skeleton_does_not_raise() -> None:
         }
     }
     assert cf.replaced_tokens_for("get_context", result) == 0
+
+
+def test_get_answer_counts_search_plus_cited_reads() -> None:
+    result = {
+        "answer": "The default is 2 (pkg/a.py).",
+        "citations": ["pkg/a.py"],
+        "fallback_targets": ["pkg/a.py", "pkg/b.py"],
+    }
+    expected = cf.ANSWER_SEARCH_FLOOR + 2 * cf.ANSWER_READ_FLOOR_PER_FILE
+    assert cf.replaced_tokens_for("get_answer", result) == expected
+
+
+def test_get_answer_empty_answer_claims_nothing() -> None:
+    # Gated/low responses tell the agent to go read — those reads still
+    # happen, so claiming them as saved repeats the E11 miscalibration.
+    result = {"answer": "", "best_guesses": [{"file": "pkg/a.py"}]}
+    assert cf.replaced_tokens_for("get_answer", result) == 0
+
+
+def test_fixed_floor_tools_credit_successful_calls_only() -> None:
+    assert cf.replaced_tokens_for("get_risk", {"targets": ["a.py"]}) == cf.RISK_FLOOR
+    assert cf.replaced_tokens_for("get_risk", {"error": "nope"}) == 0
+    assert cf.replaced_tokens_for("get_why", {"decisions": []}) == cf.WHY_FLOOR
+    assert cf.replaced_tokens_for("get_overview", {"architecture": {}}) == cf.OVERVIEW_FLOOR
+    assert cf.replaced_tokens_for("get_health", {"summary": {}}) == cf.HEALTH_FLOOR
+
+
+def test_dead_end_records_debit_row(tmp_path, monkeypatch) -> None:
+    """An error response writes raw=0/distilled=N — a negative net at
+    aggregation, so the ledger stops only ever crediting (E11)."""
+    from repowise.core.distill.store import (
+        OMISSIONS_DB_FILENAME,
+        OMISSIONS_DIRNAME,
+        OmissionStore,
+    )
+    from repowise.server.mcp_server._savings.recorder import record_mcp_dead_end
+
+    db_dir = tmp_path / ".repowise" / OMISSIONS_DIRNAME
+    db_dir.mkdir(parents=True)
+    db_path = db_dir / OMISSIONS_DB_FILENAME
+    OmissionStore(db_path).close()  # create the sidecar
+
+    assert record_mcp_dead_end(tmp_path, "get_symbol", 350) is True
+
+    store = OmissionStore(db_path)
+    try:
+        summary = store.savings_summary()
+        per = summary["per_filter"]["get_symbol"]
+        assert per["raw_tokens"] == 0
+        assert per["distilled_tokens"] == 350
+        assert per["saved_tokens"] == -350
+    finally:
+        store.close()

@@ -37,7 +37,7 @@ from typing import Any
 from repowise.core.distill.budget import estimate_tokens
 
 from . import counterfactual
-from .recorder import record_mcp_saving
+from .recorder import record_mcp_dead_end, record_mcp_saving
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +85,18 @@ def _delivered_tokens(result: Any) -> int:
 def _record(tool: str, result: Any) -> None:
     """Measure, derive the counterfactual, and record — all best-effort."""
     declared = _declared_tokens(result)
-    replaced = declared if declared is not None else counterfactual.replaced_tokens_for(tool, result)
+    replaced = (
+        declared if declared is not None else counterfactual.replaced_tokens_for(tool, result)
+    )
     if replaced <= 0:
+        # Dead-end debit: an error response delivered tokens and replaced
+        # nothing — net negative for the session, and the ledger must say so.
+        if isinstance(result, dict) and result.get("error"):
+            from repowise.server.mcp_server import _state
+
+            record_mcp_dead_end(
+                getattr(_state, "_repo_path", None), tool, _delivered_tokens(result)
+            )
         return
 
     delivered = _delivered_tokens(result)

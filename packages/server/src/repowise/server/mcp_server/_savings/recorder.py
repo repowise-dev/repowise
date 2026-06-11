@@ -48,6 +48,34 @@ def record_mcp_saving(
     """
     if replaced_tokens <= delivered_tokens or not repo_root:
         return False
+    return _write_row(repo_root, tool, f"mcp:{tool}", replaced_tokens, delivered_tokens)
+
+
+def record_mcp_dead_end(
+    repo_root: str | Path | None,
+    tool: str,
+    delivered_tokens: int,
+) -> bool:
+    """Debit a dead-end call: tokens delivered, nothing replaced.
+
+    An error response costs the agent its full delivered size and saves
+    nothing. Recording raw=0 / distilled=delivered makes the row a negative
+    contribution at aggregation (saved = raw - distilled) — without these
+    debits the ledger only ever credits and overstates net savings (the E11
+    sign-flip: +138.7k claimed while the session net-spent).
+    """
+    if delivered_tokens <= 0 or not repo_root:
+        return False
+    return _write_row(repo_root, tool, f"mcp:{tool}:dead_end", 0, delivered_tokens)
+
+
+def _write_row(
+    repo_root: str | Path,
+    tool: str,
+    source: str,
+    raw_tokens: int,
+    distilled_tokens: int,
+) -> bool:
     db_path = Path(repo_root) / ".repowise" / OMISSIONS_DIRNAME / OMISSIONS_DB_FILENAME
     if not db_path.is_file():
         # No repo-local sidecar → repo never opted in via `repowise init`.
@@ -60,10 +88,10 @@ def record_mcp_saving(
     try:
         store.record_saving(
             filter_name=tool,
-            source=f"mcp:{tool}",
+            source=source,
             command=None,
-            raw_tokens=replaced_tokens,
-            distilled_tokens=delivered_tokens,
+            raw_tokens=raw_tokens,
+            distilled_tokens=distilled_tokens,
         )
         return True
     except Exception:
