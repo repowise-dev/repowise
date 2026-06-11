@@ -452,3 +452,18 @@ async def test_batch_isolation_one_target_errors(setup_mcp, monkeypatch):
     assert "boom" in targets
     assert "error" in targets["boom"]
     assert targets["boom"]["target"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_file_target_callers_rolls_up_importers(setup_mcp):
+    """B5: include=["callers"] on a FILE target returns the import rollup
+    instead of an empty list (which forced a second round-trip)."""
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["src/auth/service.py"], include=["callers"], compact=False)
+    t = result["targets"]["src/auth/service.py"]
+    callers = t.get("callers")
+    assert callers, "file-level callers must not be empty when importers exist"
+    [middleware] = [c for c in callers if c["file"] == "src/auth/middleware.py"]
+    assert middleware.get("imports") is True
+    assert "rollup" in t.get("_call_graph_note", "")

@@ -69,7 +69,14 @@ async def _resolve_call_graph(
             node = next((r for r in rows if r.file_path == file_hint), rows[0])
 
     if node is None or node.node_type != "symbol":
-        # For file targets, return empty with explanation — callers/callees is symbol-only
+        # File targets get the rolled-up view instead of an empty block —
+        # an empty callers list forced a second round-trip per orientation
+        # pass for no reason; the graph has the answer at file granularity.
+        if node is not None and node.node_type == "file" and want_callers:
+            await _resolve_file_level_callers(session, repo_id, node, result_data, exclude_spec)
+            if want_callees:
+                result_data["callees"] = []
+            return
         if want_callers:
             result_data["callers"] = []
         if want_callees:
@@ -142,6 +149,80 @@ async def _resolve_call_graph(
         result_data["callers"] = callers
     if want_callees:
         result_data["callees"] = callees
+
+
+async def _resolve_file_level_callers(
+    session: AsyncSession,
+    repo_id: str,
+    node: GraphNode,
+    result_data: dict[str, Any],
+    exclude_spec: Any = None,
+) -> None:
+    """File-target callers: importing files + inbound symbol-call rollup.
+
+    Two granularities merged per caller file: ``imports: true`` when the
+    file imports this one, ``inbound_calls`` counting cross-file call edges
+    into any symbol defined here.
+    """
+    from repowise.core.persistence.models import GraphEdge
+
+    # Who imports this file (file-node inbound import edges).
+    import_edges = await get_graph_edges_for_node(
+        session, repo_id, node.node_id, direction="callers", edge_types=["imports"], limit=50
+    )
+    importer_ids = [e.source_node_id for e in import_edges if e.target_node_id == node.node_id]
+    importer_nodes = await get_graph_nodes_by_ids(session, repo_id, importer_ids)
+    # For file nodes the node_id IS the path; file_path may be unset.
+    importer_files = {
+        (n.file_path or n.node_id)
+        for n in importer_nodes.values()
+        if n is not None and (n.file_path or n.node_id)
+    }
+
+    # Cross-file calls into any symbol defined in this file, rolled up by
+    # the calling file.
+    target_file = node.file_path or node.node_id
+    sym_res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "symbol",
+            GraphNode.file_path == target_file,
+        )
+    )
+    sym_ids = [row[0] for row in sym_res.all()]
+    calls_by_file: dict[str, int] = {}
+    if sym_ids:
+        edge_res = await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.confidence).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.target_node_id.in_(sym_ids),
+                GraphEdge.edge_type == "calls",
+            )
+        )
+        for src_id, confidence in edge_res.all():
+            if (confidence or 0) < _MIN_CALL_CONFIDENCE:
+                continue
+            src_file = src_id.split("::")[0] if "::" in src_id else src_id
+            if src_file == target_file:
+                continue  # intra-file calls are not "callers" of the file
+            calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1
+
+    entries: list[dict[str, Any]] = []
+    for f in sorted(importer_files | set(calls_by_file)):
+        entry: dict[str, Any] = {"file": f}
+        if f in importer_files:
+            entry["imports"] = True
+        if calls_by_file.get(f):
+            entry["inbound_calls"] = calls_by_file[f]
+        entries.append(entry)
+    entries = filter_dicts_by_key(entries, "file", exclude_spec)
+    entries.sort(key=lambda x: -(x.get("inbound_calls") or 0))
+
+    result_data["callers"] = entries[:20]
+    result_data["_call_graph_note"] = (
+        "File-level rollup: importing files plus inbound cross-file call "
+        "counts. For symbol-precise callers pass 'file.py::Symbol'."
+    )
 
 
 async def _resolve_metrics(
