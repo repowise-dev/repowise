@@ -219,11 +219,24 @@ def _build_repo_commit_counts(git_meta_map: dict[str, dict]) -> dict[str, int]:
     return out
 
 
-def _has_paired_test_file(rel_path: str, all_paths: set[str]) -> bool:
+def _path_basenames(all_paths: set[str]) -> set[str]:
+    """Final path components of *all_paths*, split on ``/`` only.
+
+    A path matches ``other.endswith("/" + c) or other == c`` for a
+    slash-free candidate filename ``c`` exactly when its ``/``-basename
+    equals ``c``, so one precomputed basename set answers every
+    ``_has_paired_test_file`` lookup. Splitting on ``/`` only (not ``\\``)
+    preserves that equivalence for any non-POSIX path that slips in.
+    """
+    return {p.rsplit("/", 1)[-1] for p in all_paths}
+
+
+def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     """Heuristic: does any other file look like a test for *rel_path*?
 
     Cheap and conservative — looks for common test-file naming
-    conventions paired with the same basename.
+    conventions paired with the same basename. *path_basenames* is the
+    precomputed ``_path_basenames`` set for the analyzed file list.
     """
     p = Path(rel_path)
     stem = p.stem
@@ -241,9 +254,7 @@ def _has_paired_test_file(rel_path: str, all_paths: set[str]) -> bool:
         f"{stem}.spec.cts",
         f"{stem}_test.go",
     }
-    return any(
-        any(other.endswith("/" + c) or other == c for c in candidates) for other in all_paths
-    )
+    return not candidates.isdisjoint(path_basenames)
 
 
 class HealthAnalyzer:
@@ -301,7 +312,7 @@ class HealthAnalyzer:
         # PageRank is optional — graph_builder.symbol_pagerank exists but
         # is symbol-level; we use file-level in-degree as the dependents
         # signal (cheap, deterministic, conservative).
-        all_paths = {pf.file_info.path for pf in self.parsed_files}
+        path_basenames = _path_basenames({pf.file_info.path for pf in self.parsed_files})
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -364,7 +375,7 @@ class HealthAnalyzer:
             file_metric, file_findings = self._evaluate_file(
                 pf,
                 fcx,
-                all_paths,
+                path_basenames,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
@@ -422,7 +433,7 @@ class HealthAnalyzer:
         per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
         changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
 
-        all_paths = {pf.file_info.path for pf in self.parsed_files}
+        path_basenames = _path_basenames({pf.file_info.path for pf in self.parsed_files})
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -504,7 +515,7 @@ class HealthAnalyzer:
             file_metric, file_findings = self._evaluate_file(
                 pf,
                 fcx,
-                all_paths,
+                path_basenames,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
@@ -581,7 +592,7 @@ class HealthAnalyzer:
         self,
         pf: Any,
         fcx: FileComplexity,
-        all_paths: set[str],
+        path_basenames: set[str],
         *,
         disabled: list[str],
         dup_report: DuplicationReport,
@@ -627,7 +638,7 @@ class HealthAnalyzer:
             file_path=file_path,
             language=pf.file_info.language,
             nloc=nloc,
-            has_test_file=_has_paired_test_file(file_path, all_paths)
+            has_test_file=_has_paired_test_file(file_path, path_basenames)
             or _is_test_file(file_path)
             or _coverage_is_test_file(file_path),
             module=module,

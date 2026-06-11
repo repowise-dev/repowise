@@ -11,6 +11,9 @@ from repowise.core.analysis.health.biomarkers.hidden_coupling import (
 from repowise.core.analysis.health.coverage import is_test_file, paired_test_file
 from repowise.core.analysis.health.engine import (
     _has_paired_test_file,
+    _path_basenames,
+)
+from repowise.core.analysis.health.engine import (
     _is_test_file as _engine_is_test_file,
 )
 
@@ -41,5 +44,9 @@ def test_paired_test_file_finds_mts_cts() -> None:
 
 
 def test_engine_has_paired_test_file_for_mts_source() -> None:
-    assert _has_paired_test_file("src/foo.mts", {"src/foo.mts", "src/foo.test.mts"})
-    assert _has_paired_test_file("src/bar.cts", {"src/bar.cts", "src/bar.spec.cts"})
+    assert _has_paired_test_file(
+        "src/foo.mts", _path_basenames({"src/foo.mts", "src/foo.test.mts"})
+    )
+    assert _has_paired_test_file(
+        "src/bar.cts", _path_basenames({"src/bar.cts", "src/bar.spec.cts"})
+    )
