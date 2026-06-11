@@ -70,6 +70,21 @@ _MAX_SOURCE_LINES = 400
 # "{path}::{name}" symbol_id. Also tolerates a pasted whole marker.
 _OMISSION_REF_RE = re.compile(r"^repowise#([0-9a-f]{12})$")
 
+# Range-read dispatch: "path/to/file.py:140-180". A single colon followed by
+# a numeric range never collides with "{path}::{name}" (double colon) or an
+# omission ref. The escape hatch for everything not indexed as a symbol —
+# imports, module docstrings, decorators between symbols — without falling
+# back to a whole-file Read.
+_RANGE_ID_RE = re.compile(r"^(?P<path>.+?):(?P<start>\d+)-(?P<end>\d+)$")
+
+# Range reads are bounded tighter than symbol reads: the caller names exact
+# lines, so a large range is a deliberate choice to cap.
+_MAX_RANGE_LINES = 200
+
+# Dead-end recovery: max grep matches returned when a symbol lookup misses
+# but the file exists on disk.
+_MAX_FALLBACK_MATCHES = 8
+
 
 def _extract_omission_ref(symbol_id: str) -> str | None:
     """Return the 12-hex omission ref when *symbol_id* is ref-shaped, else None."""
@@ -145,6 +160,92 @@ def _resolve_omission_ref(
         if not record.get("content"):
             response["note"] = "No lines matched the query; omit query for the full content."
     return response
+
+
+async def _resolve_range_read(
+    symbol_id: str, path: str, start: int, end: int, context_lines: int, ctx: Any, t0: float
+) -> dict:
+    """Serve a live, bounded line-range read: "path/to/file.py:140-180".
+
+    Always ``verified: true`` — the bytes come straight from the live file
+    at the requested lines. Bounded to _MAX_RANGE_LINES; the full-file token
+    count is declared as the counterfactual (the Read this call replaced).
+    """
+    repository = None
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+
+    def _err(msg: str) -> dict:
+        return {
+            "symbol_id": symbol_id,
+            "error": msg,
+            "_meta": _build_meta(
+                timing_ms=(time.perf_counter() - t0) * 1000, repository=repository
+            ),
+        }
+
+    if is_excluded(path, _get_exclude_spec(ctx.path)):
+        return _err(f"'{path}' is excluded from indexing.")
+    if not ctx.path:
+        return _err("MCP server has no repo path configured")
+
+    text = _read_file_text(Path(str(ctx.path)), path)
+    if text is None:
+        return _err(f"File could not be read: {path!r}")
+
+    from repowise.core.distill.budget import estimate_tokens
+
+    full_tokens = estimate_tokens(text)
+
+    if end < start:
+        start, end = end, start
+    range_truncated = (end - start + 1) > _MAX_RANGE_LINES
+    if range_truncated:
+        end = start + _MAX_RANGE_LINES - 1
+
+    source, s, e, total = _slice_text(text, start, end, context_lines)
+
+    response = {
+        "symbol_id": symbol_id,
+        "file": path,
+        "kind": "range",
+        "start_line": s,
+        "end_line": e,
+        "total_lines": total,
+        "source": source,
+        "truncated": range_truncated,
+        "verified": True,
+        "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000, repository=repository),
+    }
+    from repowise.server.mcp_server._savings import declare_replaced
+
+    declare_replaced(response, full_tokens)
+    return response
+
+
+def _live_grep_fallback(repo_root: Path, file_path: str, name: str) -> list[dict]:
+    """Find ``name`` in the live file when the symbol index misses.
+
+    Turns a dead-end call (pure cost) into an answer: constants, imports,
+    aliases, and decorators live between indexed symbols, and the line that
+    defines them is usually all the agent needs. ±2 lines of context per
+    match, capped at _MAX_FALLBACK_MATCHES.
+    """
+    text = _read_file_text(repo_root, file_path)
+    if text is None:
+        return []
+    bare = _bare_name(name)
+    if not bare:
+        return []
+    lines = text.splitlines()
+    matches: list[dict] = []
+    for i, line in enumerate(lines, 1):
+        if bare in line:
+            lo, hi = max(1, i - 2), min(len(lines), i + 2)
+            matches.append({"line": i, "context": "\n".join(lines[lo - 1 : hi])})
+            if len(matches) >= _MAX_FALLBACK_MATCHES:
+                break
+    return matches
 
 
 def _parse_symbol_id(symbol_id: str) -> tuple[str | None, str | None]:
@@ -374,14 +475,17 @@ async def get_symbol(
 ) -> dict:
     """Read one function/class/constant with live-verified line bounds.
 
-    Raw source of a single indexed symbol, bounded (~400 lines) — cheaper
-    than Read+offset math. ``verified: true`` means bounds were checked (or
-    corrected) against the live file: no follow-up Read needed.
-    ``bounds: "approximate"`` means the symbol moved and re-location failed.
-    Also resolves omission refs ("repowise#<12-hex>" from truncation markers).
+    Raw source of one indexed symbol, bounded (~400 lines) — cheaper than
+    Read+offset math. ``verified: true`` = bounds checked (or corrected)
+    against the live file: no follow-up Read needed. ``bounds:
+    "approximate"`` = the symbol moved and re-location failed. Also serves
+    live range reads ("path.py:140-180", ≤200 lines, always verified) and
+    omission refs ("repowise#<12-hex>"). Index misses grep the live file
+    and return fallback_lines instead of a dead end.
 
     Args:
-        symbol_id: "path/to/file.py::Name" (from get_context), or an omission ref.
+        symbol_id: "path/to/file.py::Name" (from get_context),
+            "path/to/file.py:140-180" for a live range, or an omission ref.
         context_lines: extra lines before/after (0-50).
         repo: usually omitted.
         query: omission refs only — regex/substring filter on lines.
@@ -402,6 +506,20 @@ async def get_symbol(
     if omission_ref is not None:
         return _resolve_omission_ref(symbol_id, omission_ref, query, ctx.path, t0)
 
+    # Range read: "path/to/file.py:140-180" (single colon + numeric range —
+    # never collides with "{path}::{name}").
+    range_match = _RANGE_ID_RE.match(symbol_id.strip())
+    if range_match and "::" not in symbol_id:
+        return await _resolve_range_read(
+            symbol_id,
+            range_match.group("path"),
+            int(range_match.group("start")),
+            int(range_match.group("end")),
+            max(0, min(50, context_lines)),
+            ctx,
+            t0,
+        )
+
     repository = None
     if context_lines < 0 or context_lines > 50:
         # Bound context_lines to a sane range — runaway values would
@@ -412,7 +530,33 @@ async def get_symbol(
         repository = await _get_repo(session)
         row = await _resolve_symbol(session, repository.id, symbol_id)
 
-    if row is None or is_excluded(getattr(row, "file_path", None), _get_exclude_spec(ctx.path)):
+    exclude_spec = _get_exclude_spec(ctx.path)
+    if row is None or is_excluded(getattr(row, "file_path", None), exclude_spec):
+        # Dead-end recovery: constants/imports/aliases between indexed
+        # symbols miss the index but live in the file — grep the live file
+        # for the name and serve the matching lines instead of a pure error.
+        if row is None and ctx.path:
+            file_part, name_part = _parse_symbol_id(symbol_id)
+            if file_part and name_part and not is_excluded(file_part, exclude_spec):
+                matches = _live_grep_fallback(Path(str(ctx.path)), file_part, name_part)
+                if matches:
+                    return {
+                        "symbol_id": symbol_id,
+                        "file": file_part,
+                        "resolution": "live_grep",
+                        "fallback_lines": matches,
+                        "verified": True,
+                        "note": (
+                            "Not an indexed symbol, but the name matches these "
+                            "live-file lines (likely a constant, import, or "
+                            "alias). For surrounding source use a range read: "
+                            f'"{file_part}:<start>-<end>".'
+                        ),
+                        "_meta": _build_meta(
+                            timing_ms=(time.perf_counter() - t0) * 1000,
+                            repository=repository,
+                        ),
+                    }
         return {
             "symbol_id": symbol_id,
             "error": (
