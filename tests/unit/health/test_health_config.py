@@ -75,6 +75,24 @@ def test_to_analyzer_config_shape(tmp_path: Path):
     assert "test/bar.py" not in pfd
 
 
+def test_glob_and_path_glob_aliases_accepted(tmp_path: Path):
+    """``glob`` (shown in older docs) and ``path_glob`` work like ``path``."""
+    _write(
+        tmp_path,
+        {
+            "rules": [
+                {"glob": "tests/**", "disabled_biomarkers": ["large_method"]},
+                {"path_glob": "src/legacy/*", "disabled_biomarkers": ["dry_violation"]},
+            ]
+        },
+    )
+    cfg = HealthConfig.load(tmp_path)
+    assert [r.path_glob for r in cfg.rules] == ["tests/**", "src/legacy/*"]
+    pfd = cfg.per_file_disabled(["tests/unit/test_x.py", "src/legacy/old.py"])
+    assert pfd["tests/unit/test_x.py"] == {"large_method"}
+    assert pfd["src/legacy/old.py"] == {"dry_violation"}
+
+
 def test_malformed_file_falls_back_silently(tmp_path: Path):
     repowise = tmp_path / ".repowise"
     repowise.mkdir()

@@ -1,9 +1,9 @@
 # Code Health analysis layer
 
 Fifth intelligence layer alongside Graph, Git, Docs, and Decisions. Computes a
-per-file health score (1.0–10.0) from twelve deterministic biomarkers, ingests
-test-coverage data, tracks repo-level KPIs over time, and surfaces refactoring
-targets ranked by impact-per-effort.
+per-file health score (1.0–10.0) from twenty-six deterministic biomarkers,
+ingests test-coverage data, tracks repo-level KPIs over time, and surfaces
+refactoring targets ranked by impact-per-effort.
 
 **Zero LLM calls.** Pure Python over tree-sitter + git data. Designed to finish
 in under 30 s on a 3 000-file repo (see `tests/integration/test_health_perf_benchmark.py`).
@@ -87,7 +87,9 @@ expose NLOC-weighted module aggregates and accept `module:foo` targets.
 - `duplication/` — Rabin–Karp over tree-sitter tokens. Co-change correlation
   via `git_meta_map[path]["co_change_partners_json"]`.
 - `biomarkers/` — one detector per file. Implements the `Biomarker`
-  Protocol from `biomarkers/base.py`. Twelve total in v1.
+  Protocol from `biomarkers/base.py`. Twenty-six registered (see
+  `biomarkers/registry.py` and `biomarkers/README.md` for the full list),
+  plus three governance findings written by a separate additive pass.
 
 Each sub-package has its own `README.md` covering inputs, outputs, and
 extension points.

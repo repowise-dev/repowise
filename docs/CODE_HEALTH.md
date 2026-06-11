@@ -63,7 +63,9 @@ reproduced by `local-stash/calibrate_health_weights.py` and documented in
 
 The final score is clamped to `[1.0, 10.0]`. The three repo-level KPIs:
 
-- **Hotspot Health** — NLOC-weighted average over the top-25 % hotspot files.
+- **Hotspot Health** — NLOC-weighted average over the files classified as
+  hotspots by the git layer (high churn percentile plus minimum-activity
+  floors), not a fixed top-N slice.
 - **Average Health** — NLOC-weighted average over all files.
 - **Worst Performer** — single lowest-scoring file.
 
@@ -318,16 +320,19 @@ Per-file overrides live in `.repowise/health-rules.json`:
   "disabled_biomarkers": ["primitive_obsession"],
   "rules": [
     {
-      "glob": "tests/**/*.py",
+      "path": "tests/**/*.py",
       "disabled_biomarkers": ["large_method", "complex_method"]
     },
     {
-      "glob": "src/legacy/**",
+      "path": "src/legacy/**",
       "disabled_biomarkers": ["dry_violation"]
     }
   ]
 }
 ```
+
+`path` holds an fnmatch-style glob over the repo-relative POSIX path
+(`path_glob` and `glob` are accepted aliases).
 
 ## Incremental updates
 
