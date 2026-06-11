@@ -161,6 +161,13 @@ _TEMPLATES: dict[str, str] = {
         "places and usually isn't. Extract the shared assertions into a "
         "helper or parametrize the cases over the varying inputs."
     ),
+    "error_handling": (
+        "Handle or propagate the error. A swallowed exception, catch-all "
+        "except, unguarded unwrap, or discarded Go error turns failures "
+        "into silent misbehavior — log and re-raise, narrow the caught "
+        "type, replace unwrap with the ? operator or a match, or check "
+        "the error you are currently discarding."
+    ),
     "knowledge_loss": (
         "Document the surviving knowledge. The primary author(s) of "
         "this file are no longer active — pair-program with someone "

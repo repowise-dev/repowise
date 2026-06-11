@@ -9,7 +9,7 @@ class Biomarker(Protocol):
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]: ...
 ```
 
-## Registered detectors (24)
+## Registered detectors (26)
 
 Structural complexity (cap −2.5):
 - `brain_method` — symbols simultaneously long, complex, and central. The
@@ -83,6 +83,20 @@ Test quality (cap −0.5, test files only):
 - `duplicated_assertion_block` — copy-pasted assertion runs across tests,
   found by intersecting the clone detector with assertion spans.
 
+Error handling (cap −0.5, own category `error_handling`):
+- `error_handling` — swallowed-exception / unsafe-unwrap anti-patterns: an
+  empty or trivial `catch`/`except` body (Python/JS/TS/Java/Kotlin/C#/C++), a
+  Python catch-all `except:` / `except Exception:`, Rust `.unwrap()` /
+  `.expect()` / panic-family macros, and Go's empty `if err != nil {}` or
+  blank-identifier discard of a call's error. One LOW finding per occurrence
+  (0.15 after the floored 0.5 weight), bounded at 0.5/file by the category
+  cap. **A maintainability flag, not a defect predictor** — AUC-neutral on
+  the 21-repo T0 benchmark and deliberately excluded from the defect
+  calibration roster; it ships because developers expect a health tool to
+  flag `except: pass`. Detection is precision-first (unambiguous shapes only;
+  unsupported language / parse failure ⇒ no signal) and runs as a whole-tree
+  pass in the complexity walker, so module-level code is covered too.
+
 Caps were recalibrated to lift `organizational` (was −1.0) and de-rate
 `size_and_complexity` / `duplication` per plan §3.1. A per-biomarker
 weight multiplier in `scoring._BIOMARKER_WEIGHT_MULTIPLIER` lets the
@@ -110,6 +124,8 @@ table alone would allow.
   graph; `None` on test fixtures that didn't construct a graph.
 - `repo_commit_counts` — `dict[path, commit_count_total]` populated once
   per `analyze` call so co-change detectors can look up partner totals.
+- `error_handling_hits` — `list[ErrorHandlingHit]` (kind + line) from the
+  walker's whole-tree anti-pattern pass; empty means "no signal".
 
 ## Outputs
 

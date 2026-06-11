@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ....ingestion.git_indexer.function_blame import BlameIndex
-from ..complexity import ClassComplexity, FunctionComplexity
+from ..complexity import ClassComplexity, ErrorHandlingHit, FunctionComplexity
 from ..duplication import ClonePair
 from ..models import Severity
 
@@ -95,6 +95,12 @@ class FileContext:
     # ownership findings are downgraded to informational severity unless
     # corroborated (issue #361).
     repo_active_contributors_90d: int | None = None
+    # Error-handling anti-pattern occurrences (swallowed catch, bare
+    # except, unsafe unwrap, discarded Go error) collected by the
+    # complexity walker's whole-tree pass. Empty when the language is
+    # unsupported or parsing failed — the documented "no signal" outcome.
+    # Consumed by the ``error_handling`` biomarker.
+    error_handling_hits: list[ErrorHandlingHit] = field(default_factory=list)
 
 
 # A repo whose trailing-90-day window has at most this many active human

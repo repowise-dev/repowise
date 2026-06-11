@@ -648,6 +648,7 @@ class HealthAnalyzer:
             blame_index=blame_index,
             repo_function_mod_p80=repo_function_mod_p80,
             repo_active_contributors_90d=repo_active_contributors_90d,
+            error_handling_hits=fcx.error_handling_hits,
         )
 
         biomarker_results = detect_all(ctx, disabled=disabled)

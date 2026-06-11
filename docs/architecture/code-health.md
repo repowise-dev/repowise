@@ -110,7 +110,8 @@ analysis/health/
     ├── ownership_risk.py
     ├── churn_risk.py
     ├── change_entropy.py
-    └── co_change_scatter.py
+    ├── co_change_scatter.py
+    └── error_handling.py
 ```
 
 ### Persistence
@@ -317,7 +318,7 @@ higher than dormant ones.
 
 ---
 
-## 5. The 25 biomarkers and their categories
+## 5. The 26 biomarkers and their categories
 
 Each biomarker is a stateless class implementing the `Biomarker` Protocol
 from `biomarkers/base.py`:
@@ -338,6 +339,7 @@ class Biomarker(Protocol):
 | Size & complexity      | −1.5 | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0 | dry_violation |
 | Test quality           | −0.5 | large_assertion_block, duplicated_assertion_block |
+| Error handling         | −0.5 | error_handling |
 
 `large_assertion_block` and `duplicated_assertion_block` are the two
 **test-quality** smells (see §5.3). They fire only on test files and sit in
@@ -430,6 +432,23 @@ references (a static utility, or an unmapped language) reports `lcom4 = 1`
 ("no signal") rather than `len(methods)`, so adding a language can only
 turn signal on — never produce a false-positive flood. See
 `complexity/README.md` for the full heuristic and its limits.
+
+`error_handling` is the **advisory maintainability** biomarker: swallowed
+catches (an empty/comment-only `catch` / `except: pass` body), Python
+catch-all `except:` / `except Exception:`, Rust `.unwrap()` / `.expect()` /
+panic-family macros, and Go's empty `if err != nil {}` or blank-identifier
+discard of a call's error. The walker collects each occurrence (with its
+line) in a whole-tree pass — module-level code included — reusing the
+`LanguageNodeMap` catch kinds for the seven catch-shaped languages and
+dedicated recognizers for Rust/Go; an unsupported language or parse failure
+yields no hits ("no signal", never a guess). The biomarker emits one LOW
+finding per occurrence (0.15 after its floored 0.5 weight) in its own
+`error_handling` category capped at −0.5, mirroring `test_quality`'s
+advisory framing. It is deliberately **excluded from the defect-weight
+calibration**: on the 21-repo / 9-language T0 benchmark it is AUC-neutral
+(OOF delta ≈ 0, CI crosses zero) but size-orthogonal and the least redundant
+signal tested, and it ships because users expect `except: pass` flagged —
+bounded so it can never move a file by more than half a point.
 
 ### 5.3 Assertion-block walker metrics (test-quality)
 

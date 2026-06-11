@@ -43,6 +43,13 @@ CATEGORY_CAPS: dict[str, float] = {
     # Test-quality smells are mild, advisory signals - a small cap keeps a
     # noisy test file from dominating its own health score.
     "test_quality": 0.5,
+    # Error-handling anti-patterns (swallowed catch / bare except / unsafe
+    # unwrap / discarded Go error) are an advisory maintainability signal,
+    # not a calibrated defect predictor (AUC-neutral on the 21-repo T0
+    # benchmark; size-orthogonal, least redundant signal tested). Own
+    # capped category so the bounded deduction can never squeeze - or be
+    # squeezed by - the predictive categories.
+    "error_handling": 0.5,
 }
 
 # Per-biomarker deduction by severity. The scorer caps the per-category
@@ -113,6 +120,12 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
+    # Error-handling anti-patterns: maintainability flag, NOT a fitted
+    # predictor - deliberately excluded from the calibration roster (same
+    # treatment as governance biomarkers). Floored weight + LOW severity
+    # (0.3 x 0.5 = 0.15/finding) + the 0.5 category cap keep the impact
+    # bounded at half a point per file regardless of hit count.
+    "error_handling": 0.5,
     # (coverage_gap, hidden_coupling, large_assertion_block,
     #  duplicated_assertion_block default to 1.0 - kept at prior)
     # Governance - additive pass, weights are informational
@@ -150,6 +163,7 @@ _BIOMARKER_CATEGORY: dict[str, str] = {
     "prior_defect": "organizational",
     "large_assertion_block": "test_quality",
     "duplicated_assertion_block": "test_quality",
+    "error_handling": "error_handling",
     # Governance biomarkers - written by the additive governance pass
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",

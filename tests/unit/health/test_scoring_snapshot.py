@@ -32,6 +32,9 @@ _EXPECTED_CATEGORY_CAPS = {
     "size_and_complexity": 1.5,
     "duplication": 1.0,
     "test_quality": 0.5,
+    # Error-handling anti-patterns - advisory maintainability signal in its
+    # own bounded category (AUC-neutral on the T0 benchmark by design).
+    "error_handling": 0.5,
 }
 
 _EXPECTED_SEVERITY_DEDUCTION = {
@@ -72,6 +75,9 @@ _EXPECTED_BIOMARKER_WEIGHT_MULTIPLIER = {
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,
+    # Error-handling anti-patterns - maintainability flag excluded from the
+    # calibration roster; floored weight keeps LOW findings at 0.15 each.
+    "error_handling": 0.5,
     # Governance biomarkers (informational - surfaced as findings, not fed back
     # into the score pass, which has already run upstream).
     "contradictory_decision": 1.0,
@@ -105,6 +111,7 @@ _EXPECTED_BIOMARKER_CATEGORY = {
     "prior_defect": "organizational",
     "large_assertion_block": "test_quality",
     "duplicated_assertion_block": "test_quality",
+    "error_handling": "error_handling",
     # Phase 4B governance biomarkers.
     "ungoverned_hotspot": "organizational",
     "stale_governance": "organizational",
@@ -202,6 +209,19 @@ def test_continuous_deduction_override_is_used_and_capped():
     score2, ded2 = score_file([deep])
     assert score2 == 8.0  # 10 - 2.0 (cap)
     assert ded2 == [2.0]
+
+
+def test_error_handling_cap_bounds_stream():
+    """error_handling findings deduct 0.15 each (LOW 0.3 x 0.5 weight) in
+    their own advisory category, capped at 0.5/file regardless of count."""
+    two = [_result("error_handling", Severity.LOW) for _ in range(2)]
+    score, deductions = score_file(two)
+    assert score == 9.7  # 10 - 2 * 0.15
+    assert deductions == [0.15, 0.15]
+
+    many = [_result("error_handling", Severity.LOW) for _ in range(10)]
+    score2, _ = score_file(many)
+    assert score2 == 9.5  # 10 * 0.15 = 1.5 raw -> clamped to the 0.5 cap
 
 
 def test_organizational_cap_bounds_stream():

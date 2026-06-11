@@ -5,6 +5,7 @@ from __future__ import annotations
 from .walker import (
     ClassComplexity,
     ConditionComplexity,
+    ErrorHandlingHit,
     FileComplexity,
     FunctionComplexity,
     walk_file,
@@ -14,6 +15,7 @@ from .walker import (
 __all__ = [
     "ClassComplexity",
     "ConditionComplexity",
+    "ErrorHandlingHit",
     "FileComplexity",
     "FunctionComplexity",
     "walk_file",

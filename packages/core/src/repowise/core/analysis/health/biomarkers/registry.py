@@ -25,6 +25,7 @@ from .coverage_gradient import CoverageGradientDetector
 from .developer_congestion import DeveloperCongestionDetector
 from .dry_violation import DryViolationDetector
 from .duplicated_assertion_block import DuplicatedAssertionBlockDetector
+from .error_handling import ErrorHandlingDetector
 from .function_hotspot import FunctionHotspotDetector
 from .god_class import GodClassDetector
 from .hidden_coupling import HiddenCouplingDetector
@@ -64,6 +65,7 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
     PriorDefectDetector,  # type: ignore[list-item]
     LargeAssertionBlockDetector,  # type: ignore[list-item]
     DuplicatedAssertionBlockDetector,  # type: ignore[list-item]
+    ErrorHandlingDetector,  # type: ignore[list-item]
 ]
 
 

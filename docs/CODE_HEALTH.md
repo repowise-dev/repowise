@@ -35,8 +35,9 @@ most:
 | Size & complexity      | −1.5  | complex_method, large_method, primitive_obsession |
 | Duplication            | −1.0  | dry_violation |
 | Test quality           | −0.5  | large_assertion_block, duplicated_assertion_block |
+| Error handling         | −0.5  | error_handling |
 
-Twenty-five biomarkers across the categories above. `function_hotspot` and
+Twenty-six biomarkers across the categories above. `function_hotspot` and
 `code_age_volatility` are blame-based and sit in the organizational bucket —
 both are tier-aware and stay silent on ESSENTIAL-tier repos until the per-line
 blame index is built.
@@ -227,6 +228,19 @@ that overlap an assertion block on a test file. A change to the asserted
 behaviour then has to be edited in several places — and usually isn't, so the
 copies drift.
 
+**error_handling** — Swallowed-exception and unsafe-unwrap anti-patterns: an
+empty or comment-only `catch`/`except` body, a Python catch-all `except:` /
+`except Exception:`, Rust `.unwrap()` / `.expect()` / `panic!`-family macros,
+and Go's empty `if err != nil {}` or blank-identifier discard of a call's
+error. Detection is precision-first — only the unambiguous shapes fire, and an
+unsupported language or parse failure yields no signal rather than a guess.
+Each occurrence is a LOW finding anchored to its line, and the whole category
+is capped at −0.5 per file: this is an advisory maintainability flag (every
+linter is expected to surface `except: pass`), deliberately not a calibrated
+defect predictor — on the 21-repo benchmark it is AUC-neutral, so it is
+excluded from the weight calibration and bounded so it can never move a file's
+score by more than half a point.
+
 ## Test coverage
 
 Pass coverage reports straight into the analyzer:
@@ -332,7 +346,7 @@ Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: payments/processor.ts)
 
 | Feature                          | Repowise | CodeScene | DeepSource | Sourcery |
 |----------------------------------|:--:|:--:|:--:|:--:|
-| Code health score (1–10)         | ✅ 25 biomarkers | ✅ 25–30 | ❌ | ❌ |
+| Code health score (1–10)         | ✅ 26 biomarkers | ✅ 25–30 | ❌ | ❌ |
 | Brain Method detection           | ✅ | ✅ | ❌ | ❌ |
 | Low cohesion (LCOM4) / god class  | ✅ | ✅ | ❌ | ❌ |
 | Test coverage intelligence       | ✅ LCOV/Cobertura/Clover/JSON | ❌ | ❌ | ❌ |
