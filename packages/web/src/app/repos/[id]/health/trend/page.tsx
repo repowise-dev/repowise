@@ -94,7 +94,7 @@ export default function HealthTrendPage() {
 
           <section className="space-y-2">
             <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-              Files that moved most since last index
+              Largest score changes since last index
             </h2>
             {data.file_deltas.length === 0 ? (
               <p className="text-sm text-[var(--color-text-tertiary)]">
