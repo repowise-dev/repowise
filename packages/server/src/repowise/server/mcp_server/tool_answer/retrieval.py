@@ -29,6 +29,50 @@ from repowise.server.mcp_server.tool_answer.config import (
 )
 
 
+def serialize_hits(
+    hits: list[dict],
+    *,
+    limit: int | None = None,
+    summary_chars: int | None = None,
+    symbols_for_expanded: bool = True,
+) -> list[dict]:
+    """Agent-facing view of retrieval hits — content only, no plumbing.
+
+    Internal scoring fields (``_coverage``, ``_raw_score``, ``_sources``,
+    ``_pagerank``, …) and ``page_id`` are ranking debug an agent can do
+    nothing with; they were ~70% of a get_answer response by volume. Zero
+    information loss for the consumer: path, title, summary, snippet,
+    excerpt, score, and hydrated symbols all survive.
+
+    ``summary_chars`` truncates summaries (medium-confidence diet);
+    ``symbols_for_expanded=False`` drops symbol enrichment from hits that
+    only entered via 1-hop graph expansion (they are routing material, not
+    answer material).
+    """
+    out: list[dict] = []
+    for h in hits[: limit if limit is not None else len(hits)]:
+        entry: dict[str, Any] = {"path": h.get("target_path")}
+        if h.get("title"):
+            entry["title"] = h["title"]
+        summary = h.get("summary") or ""
+        if summary_chars is not None and len(summary) > summary_chars:
+            summary = summary[: summary_chars - 1].rstrip() + "…"
+        if summary:
+            entry["summary"] = summary
+        for key in ("snippet", "excerpt"):
+            if h.get(key):
+                entry[key] = h[key]
+        if h.get("score") is not None:
+            entry["score"] = round(h["score"], 3)
+        expanded = "graph_expand" in (h.get("_sources") or ())
+        if h.get("symbols") and (symbols_for_expanded or not expanded):
+            entry["key_symbols"] = [
+                {k: v for k, v in s.items() if not k.startswith("_")} for s in h["symbols"]
+            ]
+        out.append(entry)
+    return out
+
+
 def _question_terms(question: str) -> list[str]:
     """Extract content terms from a question. Lowercase, alnum-tokenized,
     stopwords + length<3 dropped. Used by the term-coverage re-ranker."""

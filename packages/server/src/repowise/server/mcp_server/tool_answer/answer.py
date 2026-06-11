@@ -87,6 +87,9 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _intersection_boost,
     _rerank_by_coverage,
 )
+from repowise.server.mcp_server.tool_answer.retrieval import (
+    serialize_hits as _serialize_hits,
+)
 from repowise.server.mcp_server.tool_answer.symbols import (
     _extract_question_identifiers,
     _hydrate_symbols_for_hits,
@@ -202,7 +205,9 @@ async def get_answer(
             cached_paths = [
                 *(payload.get("citations") or []),
                 *(payload.get("fallback_targets") or []),
-                *(h.get("target_path") for h in (payload.get("retrieval") or [])),
+                # "path" is the serialized key; "target_path" survives in
+                # rows cached before the clean retrieval view existed.
+                *(h.get("path") or h.get("target_path") for h in (payload.get("retrieval") or [])),
                 *(g.get("file") for g in (payload.get("best_guesses") or [])),
             ]
             excluded_cache = any(is_excluded(p, exclude_spec) for p in cached_paths)
@@ -236,7 +241,10 @@ async def get_answer(
             elif expired:
                 _log.info("Bypassing cache entry past the %d-day TTL", _ANSWER_CACHE_TTL_DAYS)
             else:
+                # Cache-internal fields never reach the consumer (response
+                # keys must not start with "_" except _meta).
                 payload.pop("_indexed_commit", None)
+                payload.pop("_schema_version", None)
                 payload["_meta"] = _build_meta(
                     timing_ms=(time.perf_counter() - t0) * 1000,
                     cached=True,
@@ -377,7 +385,7 @@ async def get_answer(
                     else "Fall back to search_codebase or Grep."
                 ),
                 "fallback_targets": fallback_targets,
-                "retrieval": hits[:_GATED_RETURN_HITS],
+                "retrieval": _serialize_hits(hits, limit=_GATED_RETURN_HITS),
                 "note": (
                     "Multiple plausible candidates — synthesis skipped to "
                     "avoid anchoring on a wrong frame. Each best_guess entry "
@@ -409,7 +417,7 @@ async def get_answer(
             "citations": [],
             "confidence": "low",
             "fallback_targets": fallback_targets,
-            "retrieval": hits,
+            "retrieval": _serialize_hits(hits),
             "note": (
                 "No LLM provider configured (set REPOWISE_PROVIDER + API key). "
                 "Returning retrieval hits only — Read the listed files to answer."
@@ -459,7 +467,7 @@ async def get_answer(
             "citations": [],
             "confidence": "low",
             "fallback_targets": fallback_targets,
-            "retrieval": hits,
+            "retrieval": _serialize_hits(hits),
             "note": f"LLM synthesis failed ({type(exc).__name__}). Read the listed files to answer.",
             "_meta": _build_meta(
                 timing_ms=(time.perf_counter() - t0) * 1000,
@@ -557,7 +565,6 @@ async def get_answer(
         # synthesis doesn't help them, and keeping it in the response bloats
         # every follow-up turn's prompt cache.
         payload = {
-            "_schema_version": _ANSWER_SCHEMA_VERSION,
             "answer": answer_text,
             "citations": citations,
             "confidence": "low",
@@ -570,14 +577,28 @@ async def get_answer(
             ),
         }
     else:
+        # Confidence-conditional retrieval block: the block exists so the
+        # agent can ground when the answer alone isn't trustworthy. At high
+        # confidence the citations + answer suffice — carrying five enriched
+        # hits through the conversation cache buys nothing. At medium the
+        # agent verifies the top candidates: two truncated hits, no symbol
+        # enrichment for graph-expansion neighbors. Low keeps the full
+        # block — that's when routing material earns its bytes.
+        if confidence == "high":
+            retrieval_view: list[dict] = []
+        elif confidence == "medium":
+            retrieval_view = _serialize_hits(
+                hits, limit=2, summary_chars=160, symbols_for_expanded=False
+            )
+        else:
+            retrieval_view = _serialize_hits(hits)
         payload = {
-            "_schema_version": _ANSWER_SCHEMA_VERSION,
             "answer": answer_text,
             "citations": citations,
             "confidence": confidence,
             "retrieval_quality": retrieval_quality,
             "fallback_targets": fallback_targets,
-            "retrieval": hits,
+            "retrieval": retrieval_view,
         }
         if ungrounded_values:
             payload["note"] = (
@@ -610,6 +631,7 @@ async def get_answer(
     # read-side freshness check.
     if answer_text:
         cache_payload = dict(payload)
+        cache_payload["_schema_version"] = _ANSWER_SCHEMA_VERSION
         commit_now = getattr(repository, "head_commit", None)
         if commit_now:
             cache_payload["_indexed_commit"] = commit_now
