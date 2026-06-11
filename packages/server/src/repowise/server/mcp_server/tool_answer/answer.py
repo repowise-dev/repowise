@@ -65,7 +65,11 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server.tool_answer.confidence import _answer_is_hedged
+from repowise.server.mcp_server.tool_answer.confidence import (
+    _answer_is_hedged,
+    _is_value_question,
+    _ungrounded_numbers,
+)
 from repowise.server.mcp_server.tool_answer.config import (
     _ANSWER_CACHE_TTL_DAYS,
     _ANSWER_SCHEMA_VERSION,
@@ -514,6 +518,27 @@ async def get_answer(
         if not has_match:
             confidence = "medium"
 
+    # Fourth gate — value grounding: on value-shaped questions (default /
+    # threshold / limit / how many), every number the answer asserts must
+    # appear somewhere in the material retrieval actually contained. A
+    # number synthesis produced from thin air is a factual error delivered
+    # with authority — the single worst calibration failure, because the
+    # consumer was told not to verify. Cap at low and say why.
+    ungrounded_values: list[str] = []
+    if not hedged and _is_value_question(question):
+        ungrounded_values = _ungrounded_numbers(answer_text, hits)
+        if ungrounded_values:
+            confidence = "low"
+
+    # Fifth gate — citation-source gate: a high-confidence answer must cite
+    # at least one page that contributed actual source material (hydrated
+    # symbols with signatures/bodies), not just file summaries. Summary-only
+    # grounding is how plausible-but-wrong syntheses get through.
+    if confidence == "high":
+        cited = set(citations)
+        if not any(h.get("symbols") for h in hits if h.get("target_path") in cited):
+            confidence = "medium"
+
     # retrieval_quality is a separate signal from confidence. Where confidence
     # says "how much should you trust the synthesised text", retrieval_quality
     # says "how good was the retrieval that fed it". The agent uses confidence
@@ -554,7 +579,20 @@ async def get_answer(
             "fallback_targets": fallback_targets,
             "retrieval": hits,
         }
-        if confidence == "high":
+        if ungrounded_values:
+            payload["note"] = (
+                f"Value-grounding gate: the answer asserts {ungrounded_values} "
+                "but none of these appear in any retrieved excerpt — the "
+                "value(s) may be synthesised. Read "
+                f"{fallback_targets[0] if fallback_targets else 'the cited file'} "
+                "to confirm before citing a number."
+            )
+            if fallback_targets:
+                payload["next_action_hint"] = (
+                    f"Read {fallback_targets[0]} and verify the asserted value(s) "
+                    f"{ungrounded_values} against the live source."
+                )
+        elif confidence == "high":
             payload["note"] = (
                 "High confidence: top retrieval result clearly dominates "
                 f"(dominance ratio {_ratio:.2f}x, top score {_top_score:.2f}) "

@@ -58,6 +58,19 @@ _HEDGE_MARKERS = (
     "does not contain",
     "is not contained",
     "are not contained",
+    "do not include",
+    "does not include",
+    "not included in the",
+    "can't enumerate",
+    "cannot enumerate",
+    "can't determine",
+    "i can't",
+    "i cannot",
+    "not shown in",
+    "not shown here",
+    "material shown",
+    "not visible in",
+    "unable to determine",
     "not contain sufficient",
     "not contain enough",
     "is not covered",
@@ -180,7 +193,10 @@ _HIGH_CONFIDENCE_SCORE_FLOOR = 1.5
 # expansion, structured prelude, decision fusion). Cached v2 payloads were
 # synthesised over weaker retrieval — bumping forces re-synthesis so the
 # upgrade actually reaches callers without waiting for cache expiry.
-_ANSWER_SCHEMA_VERSION = 3
+# v4: confidence calibration gates (value-grounding, citation-source,
+# expanded hedge markers). Cached v3 confidence values predate the gates
+# and can carry confidently-asserted ungrounded values.
+_ANSWER_SCHEMA_VERSION = 4
 
 # Hard TTL on answer-cache rows. Commit-based invalidation (the payload's
 # stamped ``_indexed_commit`` vs the repo's current head) is the primary
