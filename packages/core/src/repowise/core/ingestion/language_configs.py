@@ -58,7 +58,6 @@ class LanguageConfig:
     parent_class_types: frozenset[str] = field(default_factory=frozenset)
 
 
-
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
         symbol_node_types={

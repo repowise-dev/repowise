@@ -1,4 +1,4 @@
-﻿"""MCP Tool 7: get_dead_code — tiered refactor plan for unused code."""
+"""MCP Tool 7: get_dead_code — tiered refactor plan for unused code."""
 
 from __future__ import annotations
 

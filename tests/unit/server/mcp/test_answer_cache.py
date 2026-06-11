@@ -106,9 +106,7 @@ async def test_hedged_row_is_upgraded_on_resynthesis(setup_mcp, factory, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_cache_bypassed_when_indexed_commit_changes(
-    setup_mcp, factory, session, monkeypatch
-):
+async def test_cache_bypassed_when_indexed_commit_changes(setup_mcp, factory, session, monkeypatch):
     """A row stamped at commit A is bypassed once the repo is indexed at B."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
@@ -171,17 +169,13 @@ async def test_cache_row_past_ttl_is_bypassed(setup_mcp, factory, session, monke
 
 
 @pytest.mark.asyncio
-async def test_cache_write_failure_logs_instead_of_silencing(
-    setup_mcp, monkeypatch, caplog
-):
+async def test_cache_write_failure_logs_instead_of_silencing(setup_mcp, monkeypatch, caplog):
     """A failing cache write must not block the response — and must be logged."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
     _patch_retrieval(monkeypatch, answer_mod)
-    _patch_provider(
-        monkeypatch, answer_mod, _Provider("Answer text (src/auth/service.py).")
-    )
+    _patch_provider(monkeypatch, answer_mod, _Provider("Answer text (src/auth/service.py)."))
 
     real_dumps = answer_mod._json.dumps
 

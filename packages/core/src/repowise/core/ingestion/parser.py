@@ -645,7 +645,8 @@ class ASTParser:
             # Language-specific import name + binding extraction
             imported_names, bindings = extract_import_bindings(stmt_node, src, file_info.language)
             is_relative = (
-                module_text.startswith(".") or module_text.startswith("./")
+                module_text.startswith(".")
+                or module_text.startswith("./")
                 or module_text.startswith(("self::", "super::", "crate::"))
             )
 
