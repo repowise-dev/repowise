@@ -89,17 +89,38 @@ class HintRegistry:
         if not self._extractors:
             return edges
 
-        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
-            futures = {pool.submit(self._run_one, ex, repo_root): ex for ex in self._extractors}
-            for future in as_completed(futures):
-                ex = futures[future]
-                try:
-                    got = future.result()
-                except Exception as e:
-                    log.warning("dynamic_hints_failed", extractor=ex.name, error=str(e))
-                    continue
-                edges.extend(got)
-                log.debug("dynamic_hints", extractor=ex.name, count=len(got))
+        # One pruned walk shared by every extractor: the fleet issues ~40
+        # _rglob queries, and each used to re-walk the tree. Snapshot
+        # construction failure falls back to per-extractor live walks.
+        snapshot = None
+        try:
+            from repowise.core.fs_walk import WalkSnapshot
+
+            from ._walk import PRUNED_DIRS
+
+            snapshot = WalkSnapshot(repo_root, prune_dirs=PRUNED_DIRS)
+        except Exception as e:  # pragma: no cover - snapshot is best-effort
+            log.warning("dynamic_hints_snapshot_failed", error=str(e))
+        for ex in self._extractors:
+            ex._walk_snapshot = snapshot
+
+        try:
+            with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+                futures = {
+                    pool.submit(self._run_one, ex, repo_root): ex for ex in self._extractors
+                }
+                for future in as_completed(futures):
+                    ex = futures[future]
+                    try:
+                        got = future.result()
+                    except Exception as e:
+                        log.warning("dynamic_hints_failed", extractor=ex.name, error=str(e))
+                        continue
+                    edges.extend(got)
+                    log.debug("dynamic_hints", extractor=ex.name, count=len(got))
+        finally:
+            for ex in self._extractors:
+                ex._walk_snapshot = None
         # Thread-completion order varies run-to-run; sort so downstream graph
         # construction (and therefore the exported KG) stays deterministic.
         edges.sort(key=lambda e: (e.source, e.target, e.edge_type, e.hint_source, e.weight))

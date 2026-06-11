@@ -95,7 +95,7 @@ class XamlDynamicHints(DynamicHintExtractor):
 
     def extract(self, repo_root: Path) -> list[DynamicEdge]:
         # Cheap pre-flight: any XAML in the tree at all?
-        xaml_files = list(_iter_xaml_files(repo_root))
+        xaml_files = list(_iter_xaml_files(repo_root, rglob=self._rglob))
         if not xaml_files:
             return []
 
@@ -172,10 +172,13 @@ class XamlDynamicHints(DynamicHintExtractor):
 # Helpers (module-level so they're easy to unit-test in isolation)
 # ---------------------------------------------------------------------------
 
-def _iter_xaml_files(repo_root: Path):
-    from ._walk import iter_glob as _iter_glob
+def _iter_xaml_files(repo_root: Path, rglob=None):
+    if rglob is None:
+        from ._walk import iter_glob as _iter_glob
+
+        rglob = _iter_glob
     for ext in _XAML_EXTS:
-        for path in _iter_glob(repo_root, f"*{ext}"):
+        for path in rglob(repo_root, f"*{ext}"):
             try:
                 rel = path.resolve().relative_to(repo_root.resolve())
             except ValueError:

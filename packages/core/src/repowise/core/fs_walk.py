@@ -41,7 +41,7 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-__all__ = ["PRUNED_DIRS", "PRUNED_DIRS_DERIVED", "iter_glob", "walk_repo"]
+__all__ = ["PRUNED_DIRS", "PRUNED_DIRS_DERIVED", "WalkSnapshot", "iter_glob", "walk_repo"]
 
 # Directory basenames that can NEVER hold first-party source or manifests:
 # VCS metadata, package/venv caches, and tool caches. Pruned at every level
@@ -194,6 +194,83 @@ def _matches(rel_posix: str, basename: str, pattern: str) -> bool:
     if "/" not in pattern:
         return fnmatch.fnmatch(basename, pattern)
     return fnmatch.fnmatch(rel_posix, pattern) or fnmatch.fnmatch(rel_posix, "*/" + pattern)
+
+
+class WalkSnapshot:
+    """One pruned walk, replayed for many :func:`iter_glob`-style queries.
+
+    Callers that issue several ``iter_glob`` queries against the same tree
+    (the dynamic-hint extractors run ~40 of them) pay one filesystem walk
+    here and answer every query from memory. Replay preserves
+    :func:`iter_glob` semantics and yield order exactly: entries are stored
+    in walk order, files before directories per directory, and ``/``-tail
+    patterns match against paths relative to the *query* root.
+
+    Queries rooted below the snapshot root are served from the snapshot's
+    subtree (os.walk pre-order keeps a subtree's entries in the same
+    relative order a direct walk of that subtree would produce). A query
+    root outside the snapshot tree falls back to a live walk.
+    """
+
+    __slots__ = ("_entries", "_prune_dirs", "_prune_nested_git", "root")
+
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        prune_dirs: frozenset[str] = PRUNED_DIRS,
+        prune_nested_git: bool = True,
+    ) -> None:
+        self.root = Path(root)
+        self._prune_dirs = prune_dirs
+        self._prune_nested_git = prune_nested_git
+        # (dirpath, root-relative posix dir ('' for the root), dirnames, filenames)
+        self._entries: list[tuple[Path, str, list[str], list[str]]] = []
+        for dirpath, dirnames, filenames in walk_repo(
+            self.root, prune_dirs=prune_dirs, prune_nested_git=prune_nested_git
+        ):
+            rel = dirpath.relative_to(self.root).as_posix()
+            self._entries.append(
+                (dirpath, "" if rel == "." else rel, list(dirnames), list(filenames))
+            )
+
+    def iter_glob(self, root: Path | str, patterns: str | Iterable[str]) -> Iterator[Path]:
+        """Replay of ``iter_glob(root, patterns)`` against the snapshot."""
+        query_root = Path(root)
+        pats = (patterns,) if isinstance(patterns, str) else tuple(patterns)
+
+        sub_rel: str | None
+        if query_root == self.root:
+            sub_rel = None
+        else:
+            try:
+                sub_rel = query_root.relative_to(self.root).as_posix()
+            except ValueError:
+                # Outside the snapshot tree: serve live with the same pruning.
+                yield from iter_glob(
+                    query_root,
+                    pats,
+                    prune_dirs=self._prune_dirs,
+                    prune_nested_git=self._prune_nested_git,
+                )
+                return
+
+        for dirpath, rel_dir, dirnames, filenames in self._entries:
+            if sub_rel is None:
+                q_rel = rel_dir
+            elif rel_dir == sub_rel:
+                q_rel = ""
+            elif rel_dir.startswith(sub_rel + "/"):
+                q_rel = rel_dir[len(sub_rel) + 1 :]
+            else:
+                continue
+            prefix = "" if q_rel == "" else q_rel + "/"
+            for name in filenames:
+                if any(_matches(prefix + name, name, p) for p in pats):
+                    yield dirpath / name
+            for name in dirnames:
+                if any(_matches(prefix + name, name, p) for p in pats):
+                    yield dirpath / name
 
 
 def iter_glob(
