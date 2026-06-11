@@ -76,8 +76,11 @@ class TestDecisionDownweight:
             return [
                 _mk_result("decision:d1", "Use repo-local SQLite", "decision_record", "", 0.57),
                 _mk_result(
-                    "file_page:src/auth/service.py", "Auth Service", "file_page",
-                    "src/auth/service.py", 0.42,
+                    "file_page:src/auth/service.py",
+                    "Auth Service",
+                    "file_page",
+                    "src/auth/service.py",
+                    0.42,
                 ),
             ]
 
@@ -97,8 +100,11 @@ class TestDecisionDownweight:
             return [
                 _mk_result("decision:d1", "Use repo-local SQLite", "decision_record", "", 0.57),
                 _mk_result(
-                    "file_page:src/auth/service.py", "Auth Service", "file_page",
-                    "src/auth/service.py", 0.42,
+                    "file_page:src/auth/service.py",
+                    "Auth Service",
+                    "file_page",
+                    "src/auth/service.py",
+                    0.42,
                 ),
             ]
 
@@ -120,8 +126,11 @@ class TestDecisionDownweight:
         ]
         flood.append(
             _mk_result(
-                "file_page:src/auth/service.py", "Auth Service", "file_page",
-                "src/auth/service.py", 0.35,
+                "file_page:src/auth/service.py",
+                "Auth Service",
+                "file_page",
+                "src/auth/service.py",
+                0.35,
             )
         )
 
@@ -148,8 +157,11 @@ class TestDecisionDownweight:
         ]
         flood.append(
             _mk_result(
-                "file_page:src/auth/service.py", "Auth Service", "file_page",
-                "src/auth/service.py", 0.35,
+                "file_page:src/auth/service.py",
+                "Auth Service",
+                "file_page",
+                "src/auth/service.py",
+                0.35,
             )
         )
 
@@ -199,3 +211,109 @@ class TestClassifyHitKind:
         from repowise.server.mcp_server.tool_search import _classify_hit_kind
 
         assert _classify_hit_kind("src/auth", "module_page") == "doc"
+
+
+class TestDecisionDemotionAndRescue:
+    """B4: absolute demotion of decisions on non-why queries + window rescue."""
+
+    @pytest.mark.asyncio
+    async def test_decision_outscoring_file_page_still_ranks_below(self, setup_mcp):
+        # The 0.6 down-weight alone is washed out when the decision score
+        # margin exceeds it (0.9 * 0.6 = 0.54 > 0.42). Demotion must be
+        # absolute for non-why queries.
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result("decision:d1", "Cache prompts as SWR", "decision_record", "", 0.9),
+                _mk_result(
+                    "file_page:src/auth/service.py",
+                    "Auth Service",
+                    "file_page",
+                    "src/auth/service.py",
+                    0.42,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("answer cache invalidation schema version")
+        types = [r["page_type"] for r in result["results"]]
+        assert types[0] == "file_page"
+
+    @pytest.mark.asyncio
+    async def test_all_decision_window_is_rescued_with_file_pages(self, setup_mcp):
+        # E6 live failure: 5/5 decision records, zero file pages. The wider
+        # re-fetch must surface non-decision pages.
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        decisions = [
+            _mk_result(f"decision:d{i}", f"Decision {i}", "decision_record", "", 0.8 - i * 0.01)
+            for i in range(20)
+        ]
+        wide = decisions + [
+            _mk_result(
+                "file_page:src/auth/service.py",
+                "Auth Service",
+                "file_page",
+                "src/auth/service.py",
+                0.3,
+            )
+        ]
+
+        async def fake_search(query, limit=10):
+            # Narrow window: only decisions. Wide window: includes the file.
+            return decisions[:limit] if limit <= 20 else wide[:limit]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("answer cache invalidation schema version", limit=5)
+        types = [r["page_type"] for r in result["results"]]
+        assert "file_page" in types, "rescue must inject non-decision pages"
+        assert types[0] == "file_page", "rescued file page ranks above demoted decisions"
+
+    @pytest.mark.asyncio
+    async def test_why_query_skips_rescue_and_demotion(self, setup_mcp):
+        import repowise.server.mcp_server as mcp_mod
+        from repowise.server.mcp_server import search_codebase
+
+        async def fake_search(query, limit=10):
+            return [
+                _mk_result("decision:d1", "Use SQLite", "decision_record", "", 0.9),
+                _mk_result(
+                    "file_page:src/auth/service.py",
+                    "Auth Service",
+                    "file_page",
+                    "src/auth/service.py",
+                    0.42,
+                ),
+            ]
+
+        mcp_mod._vector_store.search = fake_search
+        result = await search_codebase("why did we choose SQLite?")
+        assert result["results"][0]["page_type"] == "decision_record"
+
+
+class TestIdentifierGrepHint:
+    @pytest.mark.asyncio
+    async def test_multiword_query_with_identifier_gets_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("where is _DEFAULT_CO_CHANGE_MIN_COUNT defined")
+        assert "grep_hint" in result
+        assert "_DEFAULT_CO_CHANGE_MIN_COUNT" in result["grep_hint"]
+
+    @pytest.mark.asyncio
+    async def test_camelcase_identifier_gets_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("how does LanguageRegistry resolve specs")
+        assert "grep_hint" in result
+        assert "LanguageRegistry" in result["grep_hint"]
+
+    @pytest.mark.asyncio
+    async def test_plain_english_query_gets_no_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication flow for the service")
+        assert "grep_hint" not in result

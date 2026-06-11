@@ -1,4 +1,4 @@
-﻿"""MCP Tool 5: search_codebase — semantic search over the wiki."""
+"""MCP Tool 5: search_codebase — semantic search over the wiki."""
 
 from __future__ import annotations
 
@@ -46,6 +46,19 @@ def _looks_like_exact_token(query: str) -> bool:
     return bool(_IDENT_QUERY_RE.match(stripped))
 
 
+# Identifier-shaped tokens inside a longer query: snake_case of any casing
+# (≥1 underscore, incl. _UPPER_SNAKE constants) or CamelCase (≥2 humps).
+# Plain English words never match.
+_IDENT_TOKEN_RE = re.compile(
+    r"\b(?:_*[A-Za-z0-9]+_[A-Za-z0-9_]+|[A-Z][a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+)\b"
+)
+
+
+def _embedded_identifiers(query: str) -> list[str]:
+    """Identifier-shaped tokens carried inside a natural-language query."""
+    return _IDENT_TOKEN_RE.findall(query)
+
+
 # Decision records are short, dense title-statements; they win cosine
 # similarity against long file-page embeddings on any query containing
 # design nouns ("store", "SQLite", "cap", "prune") and crowd file pages
@@ -72,9 +85,81 @@ def _downweight_decisions(output: list[dict], query: str) -> None:
         return
     for item in output:
         if item.get("page_type") == "decision_record" and item.get("relevance_score"):
-            item["relevance_score"] = round(
-                item["relevance_score"] * _DECISION_DOWNWEIGHT, 4
-            )
+            item["relevance_score"] = round(item["relevance_score"] * _DECISION_DOWNWEIGHT, 4)
+
+
+def _sort_demoting_decisions(output: list[dict], query: str) -> None:
+    """Sort by relevance, ranking decision records below every file-backed
+    page on non-why queries.
+
+    The multiplicative down-weight alone is washed out when decision scores
+    dominate (short dense titles win cosine similarity by a margin > the
+    0.6 factor) — observed live as 5/5 irrelevant decisions for a plain
+    implementation query. For non-why queries a decision record is never a
+    better first Read than a file page, so the demotion is absolute; the
+    down-weighted score still orders decisions among themselves.
+    """
+    why = _is_why_shaped(query)
+
+    def key(item: dict) -> tuple:
+        demoted = (not why) and item.get("page_type") == "decision_record"
+        return (1 if demoted else 0, -(item.get("relevance_score") or 0.0))
+
+    output.sort(key=key)
+
+
+async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict]:
+    """Wider re-fetch keeping only non-decision pages.
+
+    Guard for the window-saturation failure: when the entire over-fetched
+    window is decision records, demotion has nothing to promote and a
+    non-why query returns zero implementation pages. Fetch 4x wider, drop
+    decisions, and let the caller merge the survivors.
+    """
+    results = []
+    with contextlib.suppress(TimeoutError, Exception):
+        results = await asyncio.wait_for(
+            ctx.vector_store.search(query, limit=fetch_limit * 4),
+            timeout=8.0,
+        )
+    if not results:
+        with contextlib.suppress(Exception):
+            results = await ctx.fts.search(query, limit=fetch_limit * 4)
+
+    out = []
+    for r in results:
+        if r.page_type == "decision_record":
+            continue
+        if r.score < _MIN_RELEVANCE_SCORE:
+            continue
+        out.append(
+            {
+                "page_id": r.page_id,
+                "title": r.title,
+                "page_type": r.page_type,
+                "snippet": r.snippet,
+                "relevance_score": r.score,
+            }
+        )
+    return out
+
+
+async def _rescue_all_decision_window(
+    ctx, output: list[dict], query: str, fetch_limit: int
+) -> list[dict]:
+    """Merge non-decision pages into an all-decision result window.
+
+    No-op unless the query is non-why AND every current hit is a decision
+    record. Deduplicates by page_id.
+    """
+    if not output or _is_why_shaped(query):
+        return output
+    if not all(item.get("page_type") == "decision_record" for item in output):
+        return output
+    fallback = await _non_decision_fallback(ctx, query, fetch_limit)
+    seen = {item["page_id"] for item in output}
+    output.extend(item for item in fallback if item["page_id"] not in seen)
+    return output
 
 
 def _fetch_limit_for(limit: int, kind: str | None) -> int:
@@ -94,9 +179,22 @@ def _fetch_limit_for(limit: int, kind: str | None) -> int:
 # ``other`` and is dropped only when the caller asked for a specific kind.
 _TEST_PATH_TOKENS = ("/test/", "/tests/", "/__tests__/", "test_", "_test.", ".spec.", ".test.")
 _CONFIG_PATH_TOKENS = (
-    "pyproject.toml", "package.json", "tsconfig", "setup.py", "setup.cfg",
-    "/.github/", "dockerfile", ".yml", ".yaml", ".toml", ".ini", ".cfg",
-    "lockfile", "package-lock", "uv.lock", "poetry.lock",
+    "pyproject.toml",
+    "package.json",
+    "tsconfig",
+    "setup.py",
+    "setup.cfg",
+    "/.github/",
+    "dockerfile",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    "lockfile",
+    "package-lock",
+    "uv.lock",
+    "poetry.lock",
 )
 
 
@@ -160,16 +258,19 @@ async def _search_single_repo(
             continue
         if r.score < _MIN_RELEVANCE_SCORE:
             continue
-        output.append({
-            "page_id": r.page_id,
-            "title": r.title,
-            "page_type": r.page_type,
-            "snippet": r.snippet,
-            "relevance_score": r.score,
-        })
+        output.append(
+            {
+                "page_id": r.page_id,
+                "title": r.title,
+                "page_type": r.page_type,
+                "snippet": r.snippet,
+                "relevance_score": r.score,
+            }
+        )
 
     _downweight_decisions(output, query)
-    output.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
+    _sort_demoting_decisions(output, query)
 
     # Attach target_path and drop excluded hits per repo (so federated search
     # honours each repo's own exclude_patterns) before aggregation. Runs on
@@ -178,16 +279,22 @@ async def _search_single_repo(
         page_ids = [item["page_id"] for item in output]
         async with get_session(ctx.session_factory) as session:
             res = await session.execute(
-                select(Page.id, Page.target_path).where(Page.id.in_(page_ids))
+                select(Page.id, Page.target_path, Page.freshness_status).where(
+                    Page.id.in_(page_ids)
+                )
             )
-            page_info = {row[0]: row[1] for row in res.all()}
+            rows = res.all()
+            page_info = {row[0]: row[1] for row in rows}
+            tombstoned = {row[0] for row in rows if row[2] == "tombstone"}
+        output = [item for item in output if item["page_id"] not in tombstoned]
         for item in output:
             item["target_path"] = page_info.get(item["page_id"], "")
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
     if kind:
         output = [
-            item for item in output
+            item
+            for item in output
             if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == kind
         ]
 
@@ -233,25 +340,18 @@ async def search_codebase(
 ) -> dict:
     """Find pages by concept — semantic search across the wiki.
 
-    The right tool when ``get_answer`` punted and you need candidate files for
-    a conceptual query ("authentication flow", "rate limiting", "where do we
-    handle webhooks"). For exact identifiers or token matches, use Grep — it
-    is faster and never drifts thematically. This tool will surface a Grep
-    hint when the query looks like a bare identifier.
-
-    Each result carries ``search_method`` (``"embedding"`` or ``"bm25"``) so
-    the caller can tell whether semantic retrieval succeeded or fell back to
-    keyword scoring; BM25 hits warrant more verification than embedding hits.
+    For conceptual queries ("rate limiting", "where do we handle webhooks")
+    when you don't know the file. For exact identifiers use Grep —
+    identifier-bearing queries get a grep_hint. Results carry search_method
+    ("embedding", or "bm25" fallback: verify those). Decision records rank
+    below file pages unless the query is why-shaped.
 
     Args:
-        query: natural-language search query.
-        limit: maximum number of results to return (default 5).
-        page_type: filter on page kind (``file_page``, ``module_page``,
-            ``symbol_spotlight``).
-        kind: filter by file role: ``"implementation"`` | ``"test"`` |
-            ``"config"`` | ``"doc"``. Path-prefix heuristic; trims the result
-            list rather than rewriting the query.
-        repo: repository alias, or ``"all"`` for workspace-wide search.
+        query: natural-language query.
+        limit: max results (default 5).
+        page_type: file_page | module_page | symbol_spotlight.
+        kind: implementation | test | config | doc.
+        repo: alias, or "all" for workspace-wide.
     """
     grep_hint: str | None = None
     if _looks_like_exact_token(query):
@@ -259,6 +359,13 @@ async def search_codebase(
             f"Query {query!r} looks like an exact identifier. Grep will find "
             "literal usages faster and without thematic drift. This tool ran "
             "the search anyway — verify before relying on the results."
+        )
+    elif idents := _embedded_identifiers(query):
+        shown = ", ".join(repr(t) for t in idents[:3])
+        grep_hint = (
+            f"Query names identifier(s) {shown} — for their exact "
+            "definition/usages, Grep is faster and never drifts "
+            "thematically. Semantic results below are concept-level."
         )
 
     if repo == "all":
@@ -316,15 +423,28 @@ async def search_codebase(
         )
 
     _downweight_decisions(output, query)
+    rescued = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
+    if len(rescued) > len(output):
+        # Fallback entries enter after the method was determined; they came
+        # from the same backend.
+        for item in rescued:
+            item.setdefault("search_method", search_method)
+        output = rescued
 
     # Batch-lookup page target paths for the kind filter + git freshness boost
     if output:
         page_ids = [item["page_id"] for item in output]
         async with get_session(ctx.session_factory) as session:
             res = await session.execute(
-                select(Page.id, Page.target_path).where(Page.id.in_(page_ids))
+                select(Page.id, Page.target_path, Page.freshness_status).where(
+                    Page.id.in_(page_ids)
+                )
             )
-            page_info = {row[0]: row[1] for row in res.all()}
+            rows = res.all()
+            page_info = {row[0]: row[1] for row in rows}
+            tombstoned = {row[0] for row in rows if row[2] == "tombstone"}
+            # Tombstoned pages document deleted/renamed files — never results.
+            output = [item for item in output if item["page_id"] not in tombstoned]
 
             # Build git freshness map for result file paths — once for the
             # whole batch, not per item.
@@ -358,14 +478,15 @@ async def search_codebase(
                     recency = 0.0
                 item["relevance_score"] = round(item["relevance_score"] * (1 + 0.2 * recency), 4)
 
-        # Re-sort by boosted relevance
-        output.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+        # Re-sort by boosted relevance, decisions hard-demoted on non-why queries
+        _sort_demoting_decisions(output, query)
 
     # Kind filter runs on the over-fetched list BEFORE the limit cut so the
     # caller still gets up to ``limit`` results of the requested kind.
     if kind:
         output = [
-            item for item in output
+            item
+            for item in output
             if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == kind
         ]
 
