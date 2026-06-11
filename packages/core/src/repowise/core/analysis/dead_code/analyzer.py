@@ -339,6 +339,19 @@ def _never_flag_regex(patterns: tuple[str, ...]) -> re.Pattern[str]:
     return re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in patterns))
 
 
+@lru_cache(maxsize=131072)
+def _never_flag_regex_match(path: str) -> bool:
+    """Memoized ``_never_flag_regex`` match for the default pattern set.
+
+    The alternation has ~540 branches, so one match costs tens of
+    microseconds, and the detector passes ask about the same node ids
+    repeatedly (every graph node is checked by both the unreachable-files
+    and unused-exports passes). Pure function of *path*: the pattern set is
+    a module constant, so process-wide memoization is sound.
+    """
+    return _never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)) is not None
+
+
 class DeadCodeAnalyzer:
     """Detects unreachable files, unused exports, unused internals, and
     zombie packages using the dependency graph and git metadata.
@@ -1186,7 +1199,7 @@ class DeadCodeAnalyzer:
         """Return True if path should never be flagged as dead."""
         if path in whitelist:
             return True
-        if _never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)):
+        if _never_flag_regex_match(path):
             return True
         # Workspace-driven never-flag — set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo

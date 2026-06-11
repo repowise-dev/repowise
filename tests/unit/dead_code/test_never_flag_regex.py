@@ -73,6 +73,24 @@ class TestRegexEquivalence:
             assert bool(regex.match(os.path.normcase(concrete))) == _fnmatch_any(concrete), pat
 
 
+class TestMemoizedMatch:
+    """The lru_cached match wrapper must equal the direct regex match,
+    including for symbol-node ids (``path::Name``), which the detector
+    passes feed it alongside file paths."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [*_PROBE_PATHS, "pkg/a.go::Handler", "cmd/main_test.go::TestX", "app/page.tsx::Page"],
+    )
+    def test_memoized_equals_direct(self, path):
+        from repowise.core.analysis.dead_code.analyzer import _never_flag_regex_match
+
+        direct = bool(_never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)))
+        assert _never_flag_regex_match(path) == direct, path
+        # Second call exercises the cached branch.
+        assert _never_flag_regex_match(path) == direct, path
+
+
 class TestShouldNeverFlag:
     def _analyzer(self) -> DeadCodeAnalyzer:
         return DeadCodeAnalyzer(nx.DiGraph(), {})
