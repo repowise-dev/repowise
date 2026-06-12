@@ -144,7 +144,9 @@ def build_repo_graph(
     try:
         from repowise.core.ingestion.dynamic_hints import HintRegistry
 
-        dynamic_edges = HintRegistry().extract_all(Path(repo_path))
+        dynamic_edges = HintRegistry().extract_all(
+            Path(repo_path), dotnet_index=graph_builder.dotnet_index
+        )
         graph_builder.add_dynamic_edges(dynamic_edges)
         if dynamic_edges:
             log(f"Dynamic hint edges added: [cyan]{len(dynamic_edges)}[/cyan]")

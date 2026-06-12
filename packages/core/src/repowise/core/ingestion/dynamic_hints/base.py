@@ -26,6 +26,11 @@ class DynamicHintExtractor(ABC):
     # extractor use in tests keeps working unchanged).
     _walk_snapshot = None
 
+    # Prebuilt DotNetProjectIndex, attached by HintRegistry.extract_all when
+    # the caller already built one (the graph resolvers do, on every C# repo).
+    # None -> extractors that need it build their own, as before.
+    _dotnet_index = None
+
     @abstractmethod
     def extract(self, repo_root: Path) -> list[DynamicEdge]: ...
 

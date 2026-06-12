@@ -201,3 +201,62 @@ class TestLanguageRegistration:
         assert spec is not None
         assert spec.is_passthrough is True
         assert spec.is_code is False
+
+
+class TestPrebuiltIndexReuse:
+    """The registry attaches the resolver-built DotNetProjectIndex so the
+    XAML extractor skips its duplicate full .cs walk + index build."""
+
+    def _mini_repo(self, tmp_path: Path) -> None:
+        (tmp_path / "App").mkdir()
+        (tmp_path / "App" / "App.csproj").write_text(_CSPROJ)
+        (tmp_path / "App" / "ViewModels").mkdir()
+        (tmp_path / "App" / "ViewModels" / "GeneralViewModel.cs").write_text(
+            "namespace App.ViewModels;\npublic class GeneralViewModel {}\n"
+        )
+        (tmp_path / "App" / "Views").mkdir()
+        (tmp_path / "App" / "Views" / "GeneralPage.xaml").write_text(
+            '<Page xmlns:vm="using:App.ViewModels" x:DataType="vm:GeneralViewModel">\n'
+            "</Page>\n"
+        )
+
+    def test_provided_index_used_without_rebuild(self, tmp_path: Path, monkeypatch) -> None:
+        from repowise.core.ingestion.dynamic_hints import xaml as xaml_mod
+        from repowise.core.ingestion.resolvers.dotnet import build_index
+
+        self._mini_repo(tmp_path)
+        index = build_index(tmp_path)
+        baseline = XamlDynamicHints().extract(tmp_path)
+
+        def _boom(_root):
+            raise AssertionError("xaml must not rebuild the index when one is provided")
+
+        monkeypatch.setattr(xaml_mod, "_load_type_map", _boom)
+        ex = XamlDynamicHints()
+        ex._dotnet_index = index
+        edges = ex.extract(tmp_path)
+        assert sorted((e.source, e.target, e.edge_type, e.hint_source) for e in edges) == sorted(
+            (e.source, e.target, e.edge_type, e.hint_source) for e in baseline
+        )
+        assert edges  # the mini repo produces at least the binding edge
+
+    def test_registry_attaches_and_clears_index(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.dynamic_hints import HintRegistry
+        from repowise.core.ingestion.resolvers.dotnet import build_index
+
+        self._mini_repo(tmp_path)
+        index = build_index(tmp_path)
+
+        seen: list[object] = []
+
+        class _Probe(XamlDynamicHints):
+            def extract(self, repo_root: Path):
+                seen.append(self._dotnet_index)
+                return super().extract(repo_root)
+
+        probe = _Probe()
+        registry = HintRegistry(extractors=[probe])
+        edges = registry.extract_all(tmp_path, dotnet_index=index)
+        assert seen == [index]
+        assert probe._dotnet_index is None  # cleared after the run
+        assert edges

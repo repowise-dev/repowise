@@ -77,13 +77,21 @@ class HintRegistry:
         ]
         self._max_workers = max_workers or min(_DEFAULT_MAX_WORKERS, len(self._extractors))
 
-    def extract_all(self, repo_root: Path) -> list[DynamicEdge]:
+    def extract_all(
+        self, repo_root: Path, *, dotnet_index: object | None = None
+    ) -> list[DynamicEdge]:
         """Run every registered extractor and merge their edges.
 
         Extractors run in a thread pool — their work is I/O-bound and
         releases the GIL during filesystem reads, so threads are the
         right tool (no per-process startup overhead, no pickling).
         The returned list is deterministically sorted.
+
+        *dotnet_index* is an optional prebuilt
+        :class:`~repowise.core.ingestion.resolvers.dotnet.DotNetProjectIndex`.
+        The XAML extractor needs the repo's type map and otherwise rebuilds
+        the index from scratch (a full .cs walk + read + scan); passing the
+        one the graph resolvers already built skips that duplicate work.
         """
         edges: list[DynamicEdge] = []
         if not self._extractors:
@@ -103,6 +111,7 @@ class HintRegistry:
             log.warning("dynamic_hints_snapshot_failed", error=str(e))
         for ex in self._extractors:
             ex._walk_snapshot = snapshot
+            ex._dotnet_index = dotnet_index
 
         try:
             with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
@@ -121,6 +130,7 @@ class HintRegistry:
         finally:
             for ex in self._extractors:
                 ex._walk_snapshot = None
+                ex._dotnet_index = None
         # Thread-completion order varies run-to-run; sort so downstream graph
         # construction (and therefore the exported KG) stays deterministic.
         edges.sort(key=lambda e: (e.source, e.target, e.edge_type, e.hint_source, e.weight))

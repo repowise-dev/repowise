@@ -100,10 +100,14 @@ class XamlDynamicHints(DynamicHintExtractor):
             return []
 
         # Reuse the existing C# type index — it already walks every .cs
-        # file under every .csproj and dedupes builtins. Building it
-        # here keeps XAML resolution cross-project / cross-repo
-        # consistent with how `using` directives resolve.
-        type_map = _load_type_map(repo_root)
+        # file under every .csproj and dedupes builtins. Reusing it keeps
+        # XAML resolution cross-project / cross-repo consistent with how
+        # `using` directives resolve. The registry attaches the index the
+        # graph resolvers built; standalone use rebuilds it from disk.
+        if self._dotnet_index is not None:
+            type_map = self._dotnet_index.type_map
+        else:
+            type_map = _load_type_map(repo_root)
         # Even without a .NET project we can still resolve xaml→xaml
         # ResourceDictionary references, so don't early-exit on an empty
         # type_map — only the C# binding pass is gated on it.

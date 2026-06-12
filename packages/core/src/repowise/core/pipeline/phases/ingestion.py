@@ -377,7 +377,12 @@ async def _run_ingestion(
         from repowise.core.ingestion.dynamic_hints import HintRegistry
 
         registry = HintRegistry()
-        dynamic_edges = await loop.run_in_executor(None, registry.extract_all, repo_path)
+        dynamic_edges = await loop.run_in_executor(
+            None,
+            lambda: registry.extract_all(
+                repo_path, dotnet_index=graph_builder.dotnet_index
+            ),
+        )
         graph_builder.add_dynamic_edges(dynamic_edges)
         logger.info("dynamic_hints_added", count=len(dynamic_edges))
     except Exception as hints_exc:

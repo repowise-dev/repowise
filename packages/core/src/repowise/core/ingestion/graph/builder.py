@@ -52,6 +52,9 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
         self._built = False
+        # Resolver-built DotNetProjectIndex, stashed by build() for the
+        # dynamic-hints phase to reuse (see build()).
+        self.dotnet_index: Any | None = None
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
         # Mirrors the traverser flags: when submodules or nested repos are
         # indexed, resolver filesystem scans must not prune them (both are
@@ -430,6 +433,15 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._resolve_calls(import_targets, progress=progress)
 
         self._built = True
+
+        # Keep the resolver-built DotNetProjectIndex reachable after the
+        # context goes out of scope: the dynamic-hints phase (XAML) needs
+        # the same type map and otherwise rebuilds the index from disk.
+        # Only stashed when this build pruned nested git repos, because a
+        # standalone rebuild always prunes — the maps must be identical.
+        self.dotnet_index = (
+            getattr(ctx, "_dotnet_index", None) if self._prune_nested_git else None
+        )
 
         # Count edge types for logging
         edge_counts: dict[str, int] = {}
