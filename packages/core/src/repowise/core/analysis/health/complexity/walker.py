@@ -14,8 +14,9 @@ through its body, accumulating:
   do not contribute (kept simple in v1).
 
 Anonymous functions (lambdas, arrow functions, closures) recurse for
-their containing function's metrics — they do not produce their own
-``FunctionComplexity`` row.
+their containing function's metrics when they are nested in a named
+function. Module-level lambdas, such as route callbacks, produce their
+own ``FunctionComplexity`` row.
 """
 
 from __future__ import annotations
@@ -179,6 +180,71 @@ def _find_name(node: Node) -> str:
         ):
             return child.text.decode("utf-8", errors="replace")
     return "<anonymous>"
+
+
+def _node_text(node: Node) -> str:
+    return (node.text or b"").decode("utf-8", errors="replace")
+
+
+def _find_assigned_lambda_name(node: Node) -> str | None:
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "variable_declarator":
+            name = parent.child_by_field_name("name")
+            if name is not None and name.text is not None:
+                return _node_text(name)
+        if parent.type in {"assignment_expression", "assignment_pattern"}:
+            left = parent.child_by_field_name("left")
+            if left is None:
+                left = next((child for child in parent.children if child is not node), None)
+            if left is not None and left.text is not None:
+                return _node_text(left)
+        if parent.type not in {"parenthesized_expression", "as_expression", "satisfies_expression"}:
+            return None
+        parent = parent.parent
+    return None
+
+
+def _find_call_callback_callee(node: Node) -> str | None:
+    parent = node.parent
+    while parent is not None and parent.type in {
+        "parenthesized_expression",
+        "as_expression",
+        "satisfies_expression",
+    }:
+        parent = parent.parent
+    if parent is None or parent.type != "arguments":
+        return None
+    call = parent.parent
+    if call is None or call.type != "call_expression":
+        return None
+    callee = call.child_by_field_name("function")
+    if callee is None or callee.text is None:
+        return None
+    return " ".join(_node_text(callee).split())
+
+
+_TEST_SUITE_CALLBACK_CALLEES = frozenset({"describe", "context", "suite"})
+
+
+def _is_test_suite_callback(node: Node, lmap: LanguageNodeMap) -> bool:
+    if node.type not in lmap.lambda_kinds:
+        return False
+    callee_text = _find_call_callback_callee(node)
+    if callee_text is None:
+        return False
+    return any(part in _TEST_SUITE_CALLBACK_CALLEES for part in callee_text.split("."))
+
+
+def _find_function_entry_name(node: Node, lmap: LanguageNodeMap) -> str:
+    if node.type not in lmap.lambda_kinds:
+        return _find_name(node)
+    assigned = _find_assigned_lambda_name(node)
+    if assigned:
+        return assigned
+    if callee := _find_call_callback_callee(node):
+        return f"{callee} callback"
+    return f"<anonymous@{node.start_point[0] + 1}>"
 
 
 def _count_nloc(node: Node, source: bytes) -> int:
@@ -355,10 +421,7 @@ def _is_flat_match(node: Node, lmap: LanguageNodeMap) -> bool:
     cases = _collect_case_children(node, lmap)
     if not cases:
         return False
-    for arm in cases:
-        if _subtree_contains_complex(arm, complex_types):
-            return False
-    return True
+    return all(not _subtree_contains_complex(arm, complex_types) for arm in cases)
 
 
 def _subtree_contains_complex(arm_node: Node, complex_types: frozenset[str]) -> bool:
@@ -429,11 +492,15 @@ def _walk_function_body(
         # so we check both parent and grandparent.
         _parent = node.parent
         is_flat_match_arm = False
-        if node.type in lmap.case_kinds and _parent is not None:
-            if _parent.id in flat_match_ids:
-                is_flat_match_arm = True
-            elif _parent.parent is not None and _parent.parent.id in flat_match_ids:
-                is_flat_match_arm = True
+        if (
+            node.type in lmap.case_kinds
+            and _parent is not None
+            and (
+                _parent.id in flat_match_ids
+                or (_parent.parent is not None and _parent.parent.id in flat_match_ids)
+            )
+        ):
+            is_flat_match_arm = True
 
         if is_flat_match_arm:
             # Flat match arms: no CCN increment, no nesting increment.
@@ -627,19 +694,20 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
     """All function / method definition nodes in the file.
 
     Iterative pre-order traversal. We descend into class / module
-    bodies but do **not** recurse below a function — nested defs are
-    rare and treated as their own top-level entry. Lambda kinds are
-    skipped (they're walked inline as part of their enclosing fn).
+    bodies but do **not** recurse below a function or lambda. Lambdas found
+    before any function boundary are module-level executable units (for
+    example route callbacks) and get their own entry; lambdas inside an
+    already-collected function still roll up into that function.
     """
     out: list[Node] = []
     stack: list[Node] = [root]
     while stack:
         node = stack.pop()
-        if node.type in lmap.function_kinds:
+        if node.type in lmap.lambda_kinds and _is_test_suite_callback(node, lmap):
+            stack.extend(node.children)
+            continue
+        if node.type in lmap.function_kinds or node.type in lmap.lambda_kinds:
             out.append(node)
-            # Don't descend further — nested defs roll up into the
-            # enclosing fn's complexity via _walk_function_body
-            # (which skips nested function_kinds).
             continue
         for child in node.children:
             stack.append(child)
@@ -1070,7 +1138,7 @@ def walk_file(
         body = fn_node.child_by_field_name("body") or fn_node
         ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(body, lmap)
         fc = FunctionComplexity(
-            name=_find_name(fn_node),
+            name=_find_function_entry_name(fn_node, lmap),
             start_line=fn_node.start_point[0] + 1,
             end_line=fn_node.end_point[0] + 1,
             ccn=ccn,

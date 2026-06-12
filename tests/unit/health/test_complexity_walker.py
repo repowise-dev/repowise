@@ -41,6 +41,15 @@ def _find(results, name):
     return matches[0] if matches else None
 
 
+def _require_language(language: str) -> None:
+    try:
+        from repowise.core.ingestion.parser import _get_language
+    except Exception:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+    if _get_language(language) is None:
+        pytest.skip(f"tree-sitter language pack missing for {language}")
+
+
 def test_python_nested_depth():
     results = _walk("python/nested.py", "python")
     deep = _find(results, "deeply_nested")
@@ -81,6 +90,52 @@ def test_javascript_nested_depth():
     if deep is None:
         pytest.skip("js function not detected")
     assert deep.max_nesting >= 4
+
+
+def test_javascript_module_level_arrow_callback_is_function_entry():
+    _require_language("javascript")
+    source = b"""
+router.get("/users", async (req, res) => {
+  if (req.query.active && req.user) {
+    return res.json(await loadUsers());
+  }
+  return res.status(400).end();
+});
+
+function wrapper(items) {
+  return items.map((item) => item.id);
+}
+"""
+    fcx = walk_file("/tmp/routes.js", "javascript", source)
+    names = [fn.name for fn in fcx.functions]
+    assert "router.get callback" in names
+    assert "wrapper" in names
+    assert "item" not in names
+
+    route = _find(fcx.functions, "router.get callback")
+    assert route is not None
+    assert route.ccn >= 3
+    assert route.max_nesting >= 1
+
+
+def test_javascript_test_suite_wrapper_callback_is_not_function_entry():
+    _require_language("javascript")
+    source = b"""
+test.describe("routes", () => {
+  beforeEach(() => resetDb());
+
+  it("handles active users", async () => {
+    if (ready()) {
+      await request(app).get("/users");
+    }
+  });
+});
+"""
+    fcx = walk_file("/tmp/routes.test.js", "javascript", source)
+    names = [fn.name for fn in fcx.functions]
+    assert "test.describe callback" not in names
+    assert "it callback" in names
+    assert "beforeEach callback" in names
 
 
 def test_rust_flat_match_complexity():
