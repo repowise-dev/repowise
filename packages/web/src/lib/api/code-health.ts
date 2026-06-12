@@ -27,6 +27,8 @@ export interface HealthFinding {
   reason: string;
   details: Record<string, unknown>;
   status: string;
+  /** Matching symbol id when the finding names a function; links to the symbol page. */
+  symbol_id?: string | null;
 }
 
 export interface HealthModuleRow {
