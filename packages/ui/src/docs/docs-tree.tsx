@@ -783,22 +783,24 @@ export function DocsTree({ pages, selectedPageId, onSelectPage, className }: Doc
   // first, filesystem second. The folder view is a toggle for power users.
   const [viewMode, setViewMode] = useState<ViewMode>("domain");
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
-    // Restore the user's last expansion state; otherwise auto-expand first
-    // two levels, the Onboarding folder, and every domain section so both
-    // views open in a useful state.
-    if (typeof window !== "undefined") {
-      try {
-        const saved = window.localStorage.getItem(EXPANDED_DIRS_KEY);
-        if (saved) return new Set<string>(JSON.parse(saved) as string[]);
-      } catch {
-        // Corrupt state — fall through to the defaults.
-      }
-    }
+    // Auto-expand first two levels, the Onboarding folder, and every domain
+    // section so both views open in a useful state; then ADD any previously
+    // expanded dirs from localStorage. Union (not replace) — the key is
+    // shared across repos, so a stale saved set must never collapse another
+    // repo's default-open sections.
     const dirs = new Set<string>(DOMAIN_SECTION_KEYS);
     dirs.add(ONBOARDING_DIR_KEY);
     for (const page of pages) {
       const parts = page.target_path.split("/");
       if (parts.length > 1 && parts[0]) dirs.add(parts[0]);
+    }
+    if (typeof window !== "undefined") {
+      try {
+        const saved = window.localStorage.getItem(EXPANDED_DIRS_KEY);
+        if (saved) for (const d of JSON.parse(saved) as string[]) dirs.add(d);
+      } catch {
+        // Corrupt state — defaults are fine.
+      }
     }
     return dirs;
   });

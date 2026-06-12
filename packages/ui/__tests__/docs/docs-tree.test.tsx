@@ -1,5 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+
+// The tree persists its expansion state to localStorage; isolate tests so
+// toggles from one render don't pre-expand (and invert clicks in) the next.
+beforeEach(() => {
+  window.localStorage.clear();
+});
 import { DocsTree } from "../../src/docs/docs-tree.js";
 import type { DocPage } from "@repowise-dev/types/docs";
 
