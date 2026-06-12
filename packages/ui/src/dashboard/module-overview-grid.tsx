@@ -52,7 +52,7 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix, initialVi
             </span>
           </span>
           <a
-            href={`${prefix}/graph`}
+            href={`${prefix}/architecture?view=graph`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             Full graph →
@@ -72,7 +72,7 @@ export function ModuleOverviewGrid({ nodes, edges, repoId, linkPrefix, initialVi
             return (
               <a
                 key={m.module_id}
-                href={`${prefix}/graph?node=${encodeURIComponent(m.module_id)}`}
+                href={`${prefix}/architecture?view=graph&node=${encodeURIComponent(m.module_id)}`}
                 className="group rounded-lg border border-[var(--color-border-default)] p-3 hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] transition-colors"
               >
                 <p className="text-xs font-medium text-[var(--color-text-primary)] truncate mb-2" title={m.module_id}>

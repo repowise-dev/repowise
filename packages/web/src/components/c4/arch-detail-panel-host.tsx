@@ -65,7 +65,7 @@ export function ArchDetailPanelHost({ repoId }: ArchDetailPanelHostProps) {
       renderDoc={(content) => <ChatMarkdown content={content} />}
       onOpenInGraph={
         filePath
-          ? (p) => router.push(`/repos/${repoId}/graph?node=${encodeURIComponent(p)}`)
+          ? (p) => router.push(`/repos/${repoId}/architecture?view=graph&node=${encodeURIComponent(p)}`)
           : undefined
       }
       onOpenDoc={() => {

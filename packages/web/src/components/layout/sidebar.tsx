@@ -5,72 +5,26 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BrandLogo } from "./brand-logo";
 import {
-  LayoutDashboard,
-  Activity,
-  BookOpen,
-  GitBranch,
-  Lightbulb,
-  MessageSquare,
-  Code2,
-  ShieldAlert,
-  GitCommitHorizontal,
-  DollarSign,
-  Settings,
   ChevronDown,
   ChevronRight,
   Circle,
   PanelLeft,
-  Layers,
-  Link2,
-  GitMerge,
-  Users,
-  Boxes,
-  HeartPulse,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
+import {
+  GLOBAL_NAV,
+  WORKSPACE_NAV,
+  repoNavGroups,
+  isNavItemActive,
+  type NavItem,
+} from "./nav-items";
 import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
 import { Separator } from "@repowise-dev/ui/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@repowise-dev/ui/ui/tooltip";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
-
-interface NavItem {
-  label: string;
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-  exact?: boolean;
-}
-
-const GLOBAL_NAV: NavItem[] = [
-  { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Settings", href: "/settings", icon: Settings },
-];
-
-const WORKSPACE_NAV: NavItem[] = [
-  { label: "Overview", href: "/workspace", icon: Layers, exact: true },
-  { label: "Contracts", href: "/workspace/contracts", icon: Link2 },
-  { label: "Co-Changes", href: "/workspace/co-changes", icon: GitMerge },
-];
-
-
-function repoNavItems(repoId: string): NavItem[] {
-  return [
-    { label: "Overview", href: `/repos/${repoId}/overview`, icon: Activity },
-    { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare, exact: true },
-    { label: "Wiki", href: `/repos/${repoId}/docs`, icon: BookOpen },
-    { label: "Risk", href: `/repos/${repoId}/risk`, icon: ShieldAlert },
-    { label: "Commits", href: `/repos/${repoId}/commits`, icon: GitCommitHorizontal },
-    { label: "Health", href: `/repos/${repoId}/health`, icon: HeartPulse, exact: true },
-    { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
-    { label: "Knowledge Graph", href: `/repos/${repoId}/c4`, icon: Boxes },
-    { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
-    { label: "Contributors", href: `/repos/${repoId}/owners`, icon: Users },
-    { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },
-    { label: "Costs", href: `/repos/${repoId}/costs`, icon: DollarSign },
-    { label: "Settings", href: `/repos/${repoId}/settings`, icon: Settings },
-  ];
-}
 
 interface SidebarProps {
   repos?: RepoResponse[];
@@ -177,6 +131,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                 iconOnly={isIconOnly}
               />
             ))}
+            <SidebarSearchButton iconOnly={isIconOnly} />
           </nav>
 
           {/* Workspace nav — only shown in workspace mode */}
@@ -219,7 +174,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                 {repos.map((repo) => {
                   const isExpanded = expandedRepos.has(repo.id);
                   const isActive = derivedActiveRepoId === repo.id;
-                  const navItems = repoNavItems(repo.id);
+                  const navGroups = repoNavGroups(repo.id);
                   const needsIndex =
                     repo.workspace_status === "needs_index" ||
                     repo.id.startsWith("ws:");
@@ -317,14 +272,25 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                       </button>
                       {isExpanded && (
                         <div id={`sidebar-repo-${repo.id}`} className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
-                          {navItems.map((item) => (
-                            <SidebarNavItem
-                              key={item.href}
-                              item={item}
-                              isActive={item.exact ? pathname === item.href : (pathname === item.href || pathname.startsWith(`${item.href}/`))}
-                              size="sm"
-                              iconOnly={false}
-                            />
+                          {navGroups.map((group, gi) => (
+                            <React.Fragment key={group.label ?? gi}>
+                              {group.label ? (
+                                <p className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                                  {group.label}
+                                </p>
+                              ) : gi > 0 ? (
+                                <div className="pt-1.5" />
+                              ) : null}
+                              {group.items.map((item) => (
+                                <SidebarNavItem
+                                  key={item.href}
+                                  item={item}
+                                  isActive={isNavItemActive(item, pathname)}
+                                  size="sm"
+                                  iconOnly={false}
+                                />
+                              ))}
+                            </React.Fragment>
                           ))}
                         </div>
                       )}
@@ -362,6 +328,41 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
         </div>
       )}
     </aside>
+  );
+}
+
+function SidebarSearchButton({ iconOnly }: { iconOnly: boolean }) {
+  const openPalette = () =>
+    window.dispatchEvent(new CustomEvent("repowise:open-command-palette"));
+
+  if (iconOnly) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={openPalette}
+            aria-label="Search"
+            className="flex w-full items-center justify-center rounded-lg p-2.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+          >
+            <Search className="h-[18px] w-[18px] shrink-0" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Search</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <button
+      onClick={openPalette}
+      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+    >
+      <Search className="h-[18px] w-[18px] shrink-0" />
+      <span className="flex-1 truncate text-left">Search</span>
+      <kbd className="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-tertiary)]">
+        ⌘K
+      </kbd>
+    </button>
   );
 }
 

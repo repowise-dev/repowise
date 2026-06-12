@@ -218,7 +218,7 @@ export default async function WikiPageRoute({ params }: Props) {
                   <div className="flex justify-between text-xs">
                     <span className="text-[var(--color-text-tertiary)]">Community</span>
                     <Link
-                      href={`/repos/${id}/graph?colorMode=community`}
+                      href={`/repos/${id}/architecture?view=graph&colorMode=community`}
                       className="text-[var(--color-accent)] hover:underline font-mono text-[11px]"
                     >
                       {graphMetrics.community_label}

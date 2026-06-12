@@ -161,8 +161,8 @@ export function FindingRow({ finding, repoId, selected, onToggle, onUpdate }: Fi
         <div className="flex items-center gap-1 flex-wrap justify-end">
           <RowActions
             actions={[
-              { icon: GitBranch, label: "Graph", href: `/repos/${repoId}/graph?node=${encodeURIComponent(finding.file_path)}` },
-              ...(finding.symbol_name ? [{ icon: Code2, label: "Symbol", href: `/repos/${repoId}/symbols` }] : []),
+              { icon: GitBranch, label: "Graph", href: `/repos/${repoId}/architecture?view=graph&node=${encodeURIComponent(finding.file_path)}` },
+              ...(finding.symbol_name ? [{ icon: Code2, label: "Symbol", href: `/repos/${repoId}/architecture?view=symbols` }] : []),
             ]}
           />
         {finding.status === "open" && (

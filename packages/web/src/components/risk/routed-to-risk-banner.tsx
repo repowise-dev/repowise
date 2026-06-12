@@ -25,7 +25,7 @@ const TAB_TITLE: Record<RoutedToRiskBannerProps["tab"], string> = {
  * keeps deep links + bookmarks working while the IA migration is rolled out.
  */
 export function RoutedToRiskBanner({ repoId, tab, tabLabel }: RoutedToRiskBannerProps) {
-  const target = `/repos/${repoId}/risk?tab=${tab}`;
+  const target = `/repos/${repoId}/code-health?tab=${tab}`;
   const label = tabLabel ?? TAB_TITLE[tab];
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-accent-primary)]/30 bg-[var(--color-accent-primary)]/8 px-3 py-2 text-xs text-[var(--color-text-secondary)]">

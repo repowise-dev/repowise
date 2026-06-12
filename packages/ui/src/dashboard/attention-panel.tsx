@@ -64,11 +64,11 @@ function getDefaultHref(item: AttentionItem, prefix: string): string {
     case "proposed_decision":
       return `${prefix}/decisions`;
     case "knowledge_silo":
-      return `${prefix}/ownership`;
+      return `${prefix}/owners`;
     case "ungoverned_hotspot":
-      return `${prefix}/hotspots`;
+      return `${prefix}/code-health?tab=hotspots`;
     case "dead_code":
-      return `${prefix}/dead-code`;
+      return `${prefix}/code-health?tab=dead-code`;
     default:
       return prefix;
   }

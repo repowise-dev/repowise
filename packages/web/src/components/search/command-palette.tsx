@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { Command } from "cmdk";
-import { Search, LayoutDashboard, Settings, BookOpen, Layers, Link2, GitMerge } from "lucide-react";
+import { Search, LayoutDashboard, Settings, BookOpen, Layers, Link2, GitMerge, MessageSquare } from "lucide-react";
 import { useSearch } from "@/lib/hooks/use-search";
 import { truncatePath } from "@repowise-dev/ui/lib/format";
+import { repoNavItems } from "@/components/layout/nav-items";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface CommandPaletteProps {
@@ -18,8 +19,21 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const router = useRouter();
+  const pathname = usePathname();
 
   const { results, isLoading } = useSearch(query, { limit: 8 });
+
+  // Active repo: from the URL when inside one, else the only repo.
+  const activeRepo = useMemo(() => {
+    const m = pathname?.match(/^\/repos\/([^/]+)/);
+    const fromPath = m ? repos.find((r) => r.id === m[1]) : undefined;
+    return fromPath ?? (repos.length === 1 ? repos[0] : undefined);
+  }, [pathname, repos]);
+
+  const repoPages = useMemo(
+    () => (activeRepo ? repoNavItems(activeRepo.id) : []),
+    [activeRepo],
+  );
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -75,6 +89,54 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
           <Command.Empty className="px-4 py-8 text-center text-sm text-[var(--color-text-tertiary)]">
             {isLoading ? "Searching…" : "No results found."}
           </Command.Empty>
+
+          {/* Quick-ask — always available when a repo is in scope */}
+          {activeRepo && (
+            <Command.Group heading="Ask" className="px-2 pb-1">
+              <Command.Item
+                value={`ask-repowise ${query}`}
+                onSelect={() =>
+                  navigate(
+                    query.trim()
+                      ? `/repos/${activeRepo.id}/chat?q=${encodeURIComponent(query.trim())}`
+                      : `/repos/${activeRepo.id}/chat`,
+                  )
+                }
+                className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
+              >
+                <MessageSquare className="h-4 w-4 text-[var(--color-accent-primary)]" />
+                <span className="truncate">
+                  {query.trim() ? (
+                    <>
+                      Ask repowise: <span className="text-[var(--color-text-primary)]">“{query.trim()}”</span>
+                    </>
+                  ) : (
+                    "Ask repowise…"
+                  )}
+                </span>
+              </Command.Item>
+            </Command.Group>
+          )}
+
+          {/* Per-repo page navigation */}
+          {activeRepo && repoPages.length > 0 && (
+            <Command.Group heading={`Go to — ${activeRepo.name}`} className="px-2 pb-1">
+              {repoPages.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <Command.Item
+                    key={item.href}
+                    value={`goto ${activeRepo.name} ${item.label}`}
+                    onSelect={() => navigate(item.href)}
+                    className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
+                  >
+                    <Icon className="h-4 w-4" />
+                    {item.label}
+                  </Command.Item>
+                );
+              })}
+            </Command.Group>
+          )}
 
           {/* Quick navigation */}
           <Command.Group
@@ -136,7 +198,7 @@ export function CommandPalette({ repos, workspace }: CommandPaletteProps) {
                 <Command.Item
                   key={repo.id}
                   value={`repo-${repo.name}`}
-                  onSelect={() => navigate(`/repos/${repo.id}`)}
+                  onSelect={() => navigate(`/repos/${repo.id}/overview`)}
                   className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] cursor-pointer hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] data-[selected=true]:bg-[var(--color-bg-elevated)] data-[selected=true]:text-[var(--color-text-primary)]"
                 >
                   <BookOpen className="h-4 w-4" />

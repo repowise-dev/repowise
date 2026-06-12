@@ -118,7 +118,7 @@ export function ModuleMinimap({ nodes, edges, repoId, linkPrefix }: ModuleMinima
             Architecture
           </span>
           <a
-            href={`${prefix}/graph`}
+            href={`${prefix}/architecture?view=graph`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             Full graph

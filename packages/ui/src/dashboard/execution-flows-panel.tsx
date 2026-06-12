@@ -107,7 +107,7 @@ export function ExecutionFlowsPanel({ flows, repoId, linkPrefix }: ExecutionFlow
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium">Execution Flows</CardTitle>
-          <a href={`${prefix}/graph?viewMode=architecture`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+          <a href={`${prefix}/architecture?view=graph&viewMode=architecture`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
             View in Graph →
           </a>
         </div>

@@ -37,7 +37,7 @@ export function HealthRisksPanel({
           {title}
         </span>
         <Link
-          href={`/repos/${repoId}/health`}
+          href={`/repos/${repoId}/code-health`}
           className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
         >
           See all →

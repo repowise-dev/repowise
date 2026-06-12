@@ -6,27 +6,10 @@ import { usePathname } from "next/navigation";
 import { BrandLogo } from "./brand-logo";
 import {
   Menu,
-  Activity,
-  BookOpen,
-  LayoutDashboard,
-  Lightbulb,
-  MessageSquare,
-  Settings,
   Search,
-  GitBranch,
-  Code2,
-  Users,
-  Flame,
-  GitCommitHorizontal,
-  Trash2,
-  Radar,
   ChevronDown,
   ChevronRight,
   Circle,
-  SlidersHorizontal,
-  Layers,
-  Link2,
-  GitMerge,
 } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@repowise-dev/ui/ui/sheet";
@@ -34,36 +17,13 @@ import { ScrollArea } from "@repowise-dev/ui/ui/scroll-area";
 import { Separator } from "@repowise-dev/ui/ui/separator";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { cn } from "@/lib/utils/cn";
+import {
+  GLOBAL_NAV,
+  WORKSPACE_NAV,
+  repoNavGroups,
+  isNavItemActive,
+} from "./nav-items";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
-
-const GLOBAL_NAV = [
-  { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Settings", href: "/settings", icon: Settings },
-];
-
-function repoNavItems(repoId: string) {
-  return [
-    { label: "Overview", href: `/repos/${repoId}/overview`, icon: Activity },
-    { label: "Chat", href: `/repos/${repoId}`, icon: MessageSquare, exact: true },
-    { label: "Wiki", href: `/repos/${repoId}/docs`, icon: BookOpen },
-    { label: "Search", href: `/repos/${repoId}/search`, icon: Search },
-    { label: "Graph", href: `/repos/${repoId}/graph`, icon: GitBranch },
-    { label: "Symbols", href: `/repos/${repoId}/symbols`, icon: Code2 },
-    { label: "Ownership", href: `/repos/${repoId}/ownership`, icon: Users },
-    { label: "Hotspots", href: `/repos/${repoId}/hotspots`, icon: Flame },
-    { label: "Commits", href: `/repos/${repoId}/commits`, icon: GitCommitHorizontal },
-    { label: "Dead Code", href: `/repos/${repoId}/dead-code`, icon: Trash2 },
-    { label: "Blast Radius", href: `/repos/${repoId}/blast-radius`, icon: Radar },
-    { label: "Decisions", href: `/repos/${repoId}/decisions`, icon: Lightbulb },
-    { label: "Settings", href: `/repos/${repoId}/settings`, icon: SlidersHorizontal },
-  ];
-}
-
-const WORKSPACE_NAV = [
-  { label: "Overview", href: "/workspace", icon: Layers, exact: true as const },
-  { label: "Contracts", href: "/workspace/contracts", icon: Link2 },
-  { label: "Co-Changes", href: "/workspace/co-changes", icon: GitMerge },
-];
 
 interface MobileNavProps {
   repos?: RepoResponse[];
@@ -207,7 +167,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                   <div className="space-y-0.5">
                     {repos.map((repo) => {
                       const isExpanded = expandedRepos.has(repo.id);
-                      const navItems = repoNavItems(repo.id);
+                      const navGroups = repoNavGroups(repo.id);
                       return (
                         <div key={repo.id}>
                           <button
@@ -227,27 +187,36 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                           </button>
                           {isExpanded && (
                             <div className="ml-3.5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-default)] pl-3">
-                              {navItems.map((item) => {
-                                const Icon = item.icon;
-                                const isActive = (item as { exact?: boolean }).exact
-                                  ? pathname === item.href
-                                  : pathname === item.href || pathname.startsWith(`${item.href}/`);
-                                return (
-                                  <Link
-                                    key={item.href}
-                                    href={item.href}
-                                    className={cn(
-                                      "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] transition-colors",
-                                      isActive
-                                        ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
-                                        : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
-                                    )}
-                                  >
-                                    <Icon className="h-4 w-4 shrink-0" />
-                                    {item.label}
-                                  </Link>
-                                );
-                              })}
+                              {navGroups.map((group, gi) => (
+                                <React.Fragment key={group.label ?? gi}>
+                                  {group.label ? (
+                                    <p className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                                      {group.label}
+                                    </p>
+                                  ) : gi > 0 ? (
+                                    <div className="pt-1.5" />
+                                  ) : null}
+                                  {group.items.map((item) => {
+                                    const Icon = item.icon;
+                                    const isActive = isNavItemActive(item, pathname);
+                                    return (
+                                      <Link
+                                        key={item.href}
+                                        href={item.href}
+                                        className={cn(
+                                          "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] transition-colors",
+                                          isActive
+                                            ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                                            : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                                        )}
+                                      >
+                                        <Icon className="h-4 w-4 shrink-0" />
+                                        {item.label}
+                                      </Link>
+                                    );
+                                  })}
+                                </React.Fragment>
+                              ))}
                             </div>
                           )}
                         </div>

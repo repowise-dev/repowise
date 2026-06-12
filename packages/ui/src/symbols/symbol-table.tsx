@@ -359,7 +359,7 @@ export function SymbolTable({
                             {
                               icon: GitBranch,
                               label: "Graph",
-                              href: `${prefix}/graph?node=${encodeURIComponent(sym.file_path)}`,
+                              href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(sym.file_path)}`,
                             },
                             {
                               icon: BookOpen,

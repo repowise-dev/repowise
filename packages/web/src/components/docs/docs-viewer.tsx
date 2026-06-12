@@ -119,7 +119,7 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
             </span>
           </div>
           <Link
-            href={`/repos/${repoId}/graph?colorMode=community`}
+            href={`/repos/${repoId}/architecture?view=graph&colorMode=community`}
             className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:underline"
           >
             {metrics.community_label}

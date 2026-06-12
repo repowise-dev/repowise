@@ -336,9 +336,9 @@ export function HotspotTable({
                         {prefix && (
                           <RowActions
                             actions={[
-                              { icon: GitBranch, label: "Graph", href: `${prefix}/graph?node=${encodeURIComponent(h.file_path)}` },
+                              { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(h.file_path)}` },
                               { icon: BookOpen, label: "Docs", href: `${prefix}/docs?file=${encodeURIComponent(h.file_path)}` },
-                              { icon: Radius, label: "Blast Radius", href: `${prefix}/blast-radius?file=${encodeURIComponent(h.file_path)}` },
+                              { icon: Radius, label: "Blast Radius", href: `${prefix}/code-health?tab=impact&file=${encodeURIComponent(h.file_path)}` },
                             ]}
                           />
                         )}

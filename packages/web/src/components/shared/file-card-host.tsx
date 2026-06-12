@@ -22,11 +22,11 @@ export function useFileCardHost(repoId?: string) {
         customLinks ??
         (repoId
           ? {
-              graph: `/repos/${repoId}/graph?node=${encodeURIComponent(next.file_path)}`,
+              graph: `/repos/${repoId}/architecture?view=graph&node=${encodeURIComponent(next.file_path)}`,
               docs: `/repos/${repoId}/docs?file=${encodeURIComponent(next.file_path)}`,
-              symbols: `/repos/${repoId}/symbols?q=${encodeURIComponent(next.file_path)}`,
-              blastRadius: `/repos/${repoId}/risk?tab=impact&file=${encodeURIComponent(next.file_path)}`,
-              deadCode: `/repos/${repoId}/risk?tab=dead-code`,
+              symbols: `/repos/${repoId}/architecture?view=symbols&q=${encodeURIComponent(next.file_path)}`,
+              blastRadius: `/repos/${repoId}/code-health?tab=impact&file=${encodeURIComponent(next.file_path)}`,
+              deadCode: `/repos/${repoId}/code-health?tab=dead-code`,
               decisions: `/repos/${repoId}/decisions?file=${encodeURIComponent(next.file_path)}`,
             }
           : undefined);

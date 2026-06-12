@@ -131,7 +131,7 @@ export function OwnershipTable({ entries, repoId, linkPrefix }: OwnershipTablePr
           {prefix && (
             <RowActions
               actions={[
-                { icon: GitBranch, label: "Graph", href: `${prefix}/graph?node=${encodeURIComponent(entry.module_path)}` },
+                { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(entry.module_path)}` },
                 { icon: Flame, label: "Hotspots", href: `${prefix}/code-health?tab=hotspots` },
               ]}
             />

@@ -113,7 +113,7 @@ export function SymbolGitPanelWrapper({ symbol, repoId }: Props) {
         router.push(`/repos/${repoId}/decisions/${encodeURIComponent(id)}`)
       }
       onOpenBlastRadius={() =>
-        router.push(`/repos/${repoId}/blast-radius?file=${encodeURIComponent(filePath)}`)
+        router.push(`/repos/${repoId}/code-health?tab=impact&file=${encodeURIComponent(filePath)}`)
       }
     />
   );

@@ -64,7 +64,7 @@ export function WorkspaceGraphSection({ repoCount }: WorkspaceGraphSectionProps)
             ) : data && data.nodes.length >= 2 ? (
               <WorkspaceGraph
                 data={data}
-                onRepoClick={(repoId) => router.push(`/repos/${repoId}/graph`)}
+                onRepoClick={(repoId) => router.push(`/repos/${repoId}/architecture?view=graph`)}
               />
             ) : (
               <div className="flex items-center justify-center h-full">

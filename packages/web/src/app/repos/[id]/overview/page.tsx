@@ -171,19 +171,19 @@ export default async function OverviewPage({ params }: Props) {
             <StatCard
               label="Files"
               value={stats ? formatNumber(stats.file_count) : "–"}
-              href={`/repos/${id}/graph`}
+              href={`/repos/${id}/architecture?view=graph`}
               dense
             />
             <StatCard
               label="Symbols"
               value={stats ? formatNumber(stats.symbol_count) : "–"}
-              href={`/repos/${id}/symbols`}
+              href={`/repos/${id}/architecture?view=symbols`}
               dense
             />
             <StatCard
               label="Entry Points"
               value={stats ? formatNumber(stats.entry_point_count) : "–"}
-              href={`/repos/${id}/graph?viewMode=architecture`}
+              href={`/repos/${id}/architecture?view=graph&viewMode=architecture`}
               dense
             />
             <StatCard
@@ -200,7 +200,7 @@ export default async function OverviewPage({ params }: Props) {
                   ? `${formatNumber(deadCodeSummary.deletable_lines)} cleanup-candidate lines`
                   : undefined
               }
-              href={`/repos/${id}/dead-code`}
+              href={`/repos/${id}/code-health?tab=dead-code`}
               dense
             />
           </div>
@@ -222,7 +222,7 @@ export default async function OverviewPage({ params }: Props) {
             data={distillSavings}
             repoId={id}
             langDistribution={langDistribution}
-            langHref={`/repos/${id}/graph?colorMode=language`}
+            langHref={`/repos/${id}/architecture?view=graph&colorMode=language`}
           />
         </div>
       </div>
@@ -288,7 +288,7 @@ export default async function OverviewPage({ params }: Props) {
         {/* Graph — communities & execution flows */}
         <TabsContent value="graph" className="mt-4 space-y-4">
           <div className="flex justify-end">
-            <a href={`/repos/${id}/graph?colorMode=community`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+            <a href={`/repos/${id}/architecture?view=graph&colorMode=community`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
               View all →
             </a>
           </div>
@@ -311,7 +311,7 @@ export default async function OverviewPage({ params }: Props) {
         {/* Ownership — bus factor, silos, onboarding */}
         <TabsContent value="ownership" className="mt-4 space-y-4">
           <div className="flex justify-end">
-            <a href={`/repos/${id}/ownership`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+            <a href={`/repos/${id}/owners`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
               View all →
             </a>
           </div>
@@ -345,7 +345,7 @@ export default async function OverviewPage({ params }: Props) {
                         {knowledgeMap.knowledge_silos.slice(0, 3).map((silo) => (
                           <li key={silo.file_path}>
                             <a
-                              href={`/repos/${id}/graph?node=${encodeURIComponent(silo.file_path)}`}
+                              href={`/repos/${id}/architecture?view=graph&node=${encodeURIComponent(silo.file_path)}`}
                               className="flex items-center justify-between gap-2 -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
                             >
                               <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate min-w-0">
@@ -359,7 +359,7 @@ export default async function OverviewPage({ params }: Props) {
                         ))}
                         {knowledgeMap.knowledge_silos.length > 3 && (
                           <li>
-                            <a href={`/repos/${id}/ownership`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
+                            <a href={`/repos/${id}/owners`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
                               +{knowledgeMap.knowledge_silos.length - 3} more
                             </a>
                           </li>
@@ -384,7 +384,7 @@ export default async function OverviewPage({ params }: Props) {
                       {knowledgeMap.onboarding_targets.slice(0, 5).map((target) => (
                         <li key={target.path}>
                           <a
-                            href={`/repos/${id}/graph?node=${encodeURIComponent(target.path)}`}
+                            href={`/repos/${id}/architecture?view=graph&node=${encodeURIComponent(target.path)}`}
                             className="block -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors space-y-0.5"
                           >
                             <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">

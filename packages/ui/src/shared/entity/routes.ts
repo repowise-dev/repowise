@@ -18,17 +18,16 @@ export function resolveEntityHref(ref: EntityRef): string {
     case "file":
       return `/repos/${repoId}/wiki/${encodeURI(id)}`;
     case "symbol":
-      return `/repos/${repoId}/symbols?symbol=${encodeURIComponent(id)}`;
+      return `/repos/${repoId}/architecture?view=symbols&symbol=${encodeURIComponent(id)}`;
     case "decision":
       return `/repos/${repoId}/decisions/${encodeURIComponent(id)}`;
     case "owner":
-      // No dedicated owner page yet — deep-link into the Risk page heatmap.
       return repoId
-        ? `/repos/${repoId}/risk?owner=${encodeURIComponent(id)}`
+        ? `/repos/${repoId}/owners/${encodeURIComponent(id)}`
         : `#owner:${encodeURIComponent(id)}`;
     case "commit":
       return repoId
-        ? `/repos/${repoId}/risk?commit=${encodeURIComponent(id)}`
+        ? `/repos/${repoId}/commits?commit=${encodeURIComponent(id)}`
         : `#commit:${encodeURIComponent(id)}`;
   }
 }

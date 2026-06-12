@@ -25,7 +25,7 @@ export default function ModuleHealthPage() {
     <div className="p-4 sm:p-6 space-y-4 max-w-[1600px]">
       <div className="flex items-center justify-between">
         <Link
-          href={`/repos/${id}/risk?tab=modules`}
+          href={`/repos/${id}/code-health?tab=modules`}
           className="inline-flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
         >
           <ArrowLeft className="h-3 w-3" /> All modules

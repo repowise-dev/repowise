@@ -77,7 +77,7 @@ export function C4DetailPanelHost({
       contributors={contributors}
       onClose={onClose}
       onDrillIn={onDrillIn}
-      onOpenInGraph={path ? (p) => router.push(`/repos/${repoId}/graph?node=${encodeURIComponent(p)}`) : undefined}
+      onOpenInGraph={path ? (p) => router.push(`/repos/${repoId}/architecture?view=graph&node=${encodeURIComponent(p)}`) : undefined}
       onOpenDoc={(href) => router.push(href)}
     />
   );

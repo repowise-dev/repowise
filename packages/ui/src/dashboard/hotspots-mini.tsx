@@ -65,7 +65,7 @@ export function HotspotsMini({
             </span>
           </span>
           <a
-            href={`${prefix}/hotspots`}
+            href={`${prefix}/code-health?tab=hotspots`}
             className="text-[10px] text-[var(--color-accent-primary)] hover:underline font-normal"
           >
             View all
@@ -77,7 +77,7 @@ export function HotspotsMini({
           {top.map((h) => (
             <a
               key={h.file_path}
-              href={`${prefix}/graph?node=${encodeURIComponent(h.file_path)}`}
+              href={`${prefix}/architecture?view=graph&node=${encodeURIComponent(h.file_path)}`}
               className="flex items-center gap-3 -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
             >
               <div className="w-16 shrink-0">

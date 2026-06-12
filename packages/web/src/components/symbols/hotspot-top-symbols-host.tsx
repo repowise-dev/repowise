@@ -30,7 +30,7 @@ export function HotspotTopSymbolsHost({ repoId, filePath, onSelectSymbol }: Prop
     { revalidateOnFocus: false },
   );
 
-  const seeAllHref = `/repos/${repoId}/symbols?q=${encodeURIComponent(filePath)}`;
+  const seeAllHref = `/repos/${repoId}/architecture?view=symbols&q=${encodeURIComponent(filePath)}`;
 
   return (
     <TopSymbolsRow

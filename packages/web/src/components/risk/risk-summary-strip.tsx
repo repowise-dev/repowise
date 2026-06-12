@@ -9,7 +9,7 @@ import { getDeadCodeSummary } from "@/lib/api/dead-code";
 import { getDecisionHealth } from "@/lib/api/decisions";
 import { listSecurityFindings } from "@/lib/api/security";
 
-const RISK_BASE = (repoId: string) => `/repos/${repoId}/risk`;
+const RISK_BASE = (repoId: string) => `/repos/${repoId}/code-health`;
 
 /**
  * Always-visible 5-card strip atop /repos/[id]/risk. Pulls cached SWR data
