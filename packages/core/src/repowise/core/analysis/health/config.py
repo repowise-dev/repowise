@@ -80,7 +80,10 @@ class HealthConfig:
         for entry in raw.get("rules") or []:
             if not isinstance(entry, dict):
                 continue
-            glob = entry.get("path") or entry.get("path_glob")
+            # ``path`` is canonical; ``path_glob`` and ``glob`` are accepted
+            # aliases (the docs showed ``glob`` for a while, so a silent
+            # rejection here would invalidate working configs users copied).
+            glob = entry.get("path") or entry.get("path_glob") or entry.get("glob")
             if not isinstance(glob, str) or not glob:
                 continue
             disabled_for = [

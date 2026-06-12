@@ -93,6 +93,8 @@ analysis/health/
     ├── base.py                     # Biomarker Protocol + FileContext + BiomarkerResult
     ├── registry.py                 # detector list + detect_all()
     ├── brain_method.py
+    ├── low_cohesion.py
+    ├── god_class.py
     ├── nested_complexity.py
     ├── bumpy_road.py
     ├── complex_method.py
@@ -101,6 +103,7 @@ analysis/health/
     ├── dry_violation.py
     ├── untested_hotspot.py
     ├── coverage_gap.py
+    ├── coverage_gradient.py
     ├── developer_congestion.py
     ├── knowledge_loss.py
     ├── hidden_coupling.py
@@ -111,6 +114,9 @@ analysis/health/
     ├── churn_risk.py
     ├── change_entropy.py
     ├── co_change_scatter.py
+    ├── prior_defect.py
+    ├── large_assertion_block.py
+    ├── duplicated_assertion_block.py
     └── error_handling.py
 ```
 
@@ -749,19 +755,21 @@ User-authored (the **only** JSON file in the layer). Loaded by
   "disabled_biomarkers": ["primitive_obsession"],
   "rules": [
     {
-      "glob": "tests/**/*.py",
+      "path": "tests/**/*.py",
       "disabled_biomarkers": ["large_method", "complex_method"]
     },
     {
-      "glob": "src/legacy/**",
+      "path": "src/legacy/**",
       "disabled_biomarkers": ["dry_violation"]
     }
   ]
 }
 ```
 
-`to_analyzer_config(file_paths)` resolves globs to per-file disabled
-sets, which the engine honors in `_evaluate_file()`.
+`path` is an fnmatch glob over the repo-relative POSIX path; `path_glob`
+and `glob` are accepted aliases. `to_analyzer_config(file_paths)` resolves
+globs to per-file disabled sets, which the engine honors in
+`_evaluate_file()`.
 
 ---
 
@@ -859,10 +867,11 @@ phases may revisit; the constraints kept v1 shippable.
 - **No `complexity_estimate` propagation backfill.** The walker writes
   the field as a side effect during the current run; old indexes don't
   get touched until a re-index.
-- **No PR-mode delta in v1.** `get_risk(changed_files=...)` returns the
-  current health score, not before/after. Phase 5.
-- **No predictive ML.** `Predicted Decline` is a 3-snapshot direction
-  check, not a model. Phase 5.
+- **No predictive ML on trends.** `Predicted Decline` is a 3-snapshot
+  direction check, not a model. (Commit-level change risk is a separate,
+  shipped surface: the `analysis/change_risk/` package behind
+  `repowise risk` scores a commit or base..head range with a calibrated
+  logistic model.)
 
 ---
 
