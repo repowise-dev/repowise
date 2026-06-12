@@ -1,3 +1,4 @@
+export * from "./symbol-page";
 export * from "./symbol-table";
 export * from "./symbol-drawer";
 export * from "./symbol-graph-panel";

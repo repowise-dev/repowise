@@ -35,6 +35,8 @@
     "./health/*": "./src/health/*.tsx",
     "./decisions": "./src/decisions/index.ts",
     "./decisions/*": "./src/decisions/*.tsx",
+    "./files": "./src/files/index.ts",
+    "./files/*": "./src/files/*.tsx",
     "./docs": "./src/docs/index.ts",
     "./docs/doc-nav": "./src/docs/doc-nav.ts",
     "./docs/reader-persona": "./src/docs/reader-persona.ts",

@@ -25,6 +25,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   security: "Security",
   settings: "Settings",
   c4: "Knowledge Graph",
+  files: "Files",
 };
 
 export function getRepoBreadcrumbSegmentLabel(segment: string): string {
