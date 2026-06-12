@@ -170,6 +170,18 @@ class CommitResponse(BaseModel):
     # Repo-relative normalization (the portable signal).
     risk_percentile: float
     review_priority: str
+    # The dominant risk driver, surfaced on rows so reviewers don't have to
+    # open every detail sheet. Recomputed deterministically from the stored
+    # Kamei features; None when the commit was never risk-scored.
+    top_driver: str | None = None
+    # Cumulative prior-commit count at commit time. Low values flag a
+    # new-to-this-repo contributor.
+    author_experience: int | None = None
+    # Agent provenance (deterministic local-git attribution channels).
+    # agent_name is None for human-authored commits.
+    agent_name: str | None = None
+    agent_autonomy_tier: int | None = None
+    agent_confidence: str | None = None
 
 
 class RiskDriverResponse(BaseModel):
@@ -184,5 +196,25 @@ class RiskDriverResponse(BaseModel):
 class CommitDetailResponse(CommitResponse):
     """A single commit with its full, attributable risk-driver breakdown."""
 
-    author_experience: int | None = None
     drivers: list[RiskDriverResponse] = []
+    agent_channel: str | None = None
+
+
+class AgentTrendBucket(BaseModel):
+    """One month of agent-vs-human commit volume."""
+
+    month: str  # "YYYY-MM"
+    total_commits: int
+    agent_commits: int
+    agent_pct: float  # 0-100
+    tier_counts: dict = {}
+
+
+class AgentTrendResponse(BaseModel):
+    """Monthly agent-share trend across the indexed commit window."""
+
+    buckets: list[AgentTrendBucket]
+    total_commits: int
+    agent_commits: int
+    agent_pct: float  # 0-100 across the whole window
+    agent_names: list[dict] = []  # [{name, count}] descending

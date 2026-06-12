@@ -44,6 +44,19 @@ export interface DecisionRecord {
   verification?: DecisionVerification;
   created_at: string;
   updated_at: string;
+  /** Number of evidence rows backing the record. List endpoint only. */
+  evidence_count?: number | null;
+  /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
+  evidence_preview?: EvidencePreview | null;
+}
+
+/** The top-ranked evidence row, slimmed for decision list rows. */
+export interface EvidencePreview {
+  source: string;
+  source_quote: string;
+  verification: DecisionVerification;
+  evidence_file?: string | null;
+  evidence_line?: number | null;
 }
 
 export interface DecisionCreateInput {

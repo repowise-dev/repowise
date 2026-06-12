@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud, decision_graph
+from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
     DecisionCodeEdge,
@@ -18,6 +20,7 @@ from repowise.server.schemas import (
     DecisionRecordResponse,
     DecisionStatusUpdate,
 )
+from repowise.server.schemas.decisions import EvidencePreview
 
 router = APIRouter(
     tags=["decisions"],
@@ -40,7 +43,12 @@ async def list_decisions(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[DecisionRecordResponse]:
-    """List architectural decision records for a repository."""
+    """List architectural decision records for a repository.
+
+    Each row carries an ``evidence_preview`` (the top-ranked evidence row's
+    verbatim quote) plus the total ``evidence_count``, so the table can show
+    provenance without N+1 calls to the per-decision /evidence endpoint.
+    """
     decisions = await crud.list_decisions(
         session,
         repo_id,
@@ -52,7 +60,38 @@ async def list_decisions(
         limit=limit,
         offset=offset,
     )
-    return [DecisionRecordResponse.from_orm(d) for d in decisions]
+    items = [DecisionRecordResponse.from_orm(d) for d in decisions]
+
+    ids = [d.id for d in decisions]
+    if ids:
+        rows = (
+            await session.execute(
+                select(DecisionEvidence)
+                .where(DecisionEvidence.decision_id.in_(ids))
+                .order_by(
+                    DecisionEvidence.source_rank.desc(),
+                    DecisionEvidence.confidence.desc(),
+                )
+            )
+        ).scalars()
+        counts: dict[str, int] = {}
+        best: dict[str, DecisionEvidence] = {}
+        for ev in rows:
+            counts[ev.decision_id] = counts.get(ev.decision_id, 0) + 1
+            # Rows arrive best-first, so the first row per decision wins.
+            best.setdefault(ev.decision_id, ev)
+        for item in items:
+            item.evidence_count = counts.get(item.id, 0)
+            top = best.get(item.id)
+            if top is not None and top.source_quote:
+                item.evidence_preview = EvidencePreview(
+                    source=top.source,
+                    source_quote=top.source_quote,
+                    verification=top.verification,
+                    evidence_file=top.evidence_file,
+                    evidence_line=top.evidence_line,
+                )
+    return items
 
 
 @router.get(

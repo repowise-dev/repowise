@@ -18,6 +18,8 @@ from repowise.core.persistence.models import GitCommit, GitMetadata
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.mcp_server.tool_risk import _check_test_gap
 from repowise.server.schemas import (
+    AgentTrendBucket,
+    AgentTrendResponse,
     CommitDetailResponse,
     CommitResponse,
     GitMetadataResponse,
@@ -80,8 +82,31 @@ def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
     )
 
 
+def _commit_risk(r: GitCommit):
+    """Re-score the persisted Kamei features; deterministic, reproduces the
+    stored ``change_risk_score`` exactly. Returns None for unscored rows."""
+    if r.change_risk_score is None:
+        return None
+    feats = ChangeFeatures(
+        la=r.lines_added or 0,
+        ld=r.lines_deleted or 0,
+        nf=r.files_changed or 0,
+        nd=r.dirs_changed or 0,
+        ns=r.subsystems_changed or 0,
+        entropy=r.entropy or 0.0,
+        exp=r.author_experience,
+        is_fix=bool(r.is_fix),
+        author=r.author_name or "",
+        subject=r.subject or "",
+        ref=r.sha,
+    )
+    return score_change(feats)
+
+
 def _commit_fields(r: GitCommit, normalizer: RiskNormalizer) -> dict:
     """Shared CommitResponse field map (raw row + repo-relative normalization)."""
+    risk = _commit_risk(r)
+    top_driver = risk.top_drivers[0].label if risk and risk.top_drivers else None
     return {
         "sha": r.sha,
         "short_sha": r.sha[:8],
@@ -100,6 +125,11 @@ def _commit_fields(r: GitCommit, normalizer: RiskNormalizer) -> dict:
         "change_risk_level": r.change_risk_level,
         "risk_percentile": normalizer.percentile(r.change_risk_score),
         "review_priority": normalizer.priority(r.change_risk_score),
+        "top_driver": top_driver,
+        "author_experience": r.author_experience,
+        "agent_name": r.agent_name,
+        "agent_autonomy_tier": r.agent_autonomy_tier,
+        "agent_confidence": r.agent_confidence,
     }
 
 
@@ -115,20 +145,7 @@ def _commit_detail_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitD
     stored features reproduces the persisted ``change_risk_score`` exactly —
     no need to persist the per-driver breakdown.
     """
-    feats = ChangeFeatures(
-        la=r.lines_added or 0,
-        ld=r.lines_deleted or 0,
-        nf=r.files_changed or 0,
-        nd=r.dirs_changed or 0,
-        ns=r.subsystems_changed or 0,
-        entropy=r.entropy or 0.0,
-        exp=r.author_experience,
-        is_fix=bool(r.is_fix),
-        author=r.author_name or "",
-        subject=r.subject or "",
-        ref=r.sha,
-    )
-    risk = score_change(feats)
+    risk = _commit_risk(r)
     drivers = [
         RiskDriverResponse(
             feature=d.feature,
@@ -136,12 +153,12 @@ def _commit_detail_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitD
             contribution=d.contribution,
             label=d.label,
         )
-        for d in risk.top_drivers
+        for d in (risk.top_drivers if risk else [])
     ]
     return CommitDetailResponse(
         **_commit_fields(r, normalizer),
-        author_experience=r.author_experience,
         drivers=drivers,
+        agent_channel=r.agent_channel,
     )
 
 
@@ -149,6 +166,7 @@ def _commit_detail_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitD
 async def get_commits(
     repo_id: str,
     sort: str = Query("risk", pattern="^(risk|date)$"),
+    authorship: str = Query("all", pattern="^(all|agent|human)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
@@ -156,12 +174,15 @@ async def get_commits(
     """Per-commit change-risk feed — the review-priority queue.
 
     ``sort=risk`` (default) orders by raw change-risk score descending (the
-    review-priority order); ``sort=date`` orders by recency. Each commit also
+    review-priority order); ``sort=date`` orders by recency. ``authorship``
+    narrows the feed to agent-attributed or human commits. Each commit also
     carries a **repo-relative** ``risk_percentile`` + ``review_priority`` so the
     ranking is portable across repos (the absolute calibration band is not).
     """
-    total = await crud.count_git_commits(session, repo_id)
-    rows = await crud.get_git_commits(session, repo_id, limit=limit, offset=offset, sort=sort)
+    total = await crud.count_git_commits(session, repo_id, authorship=authorship)
+    rows = await crud.get_git_commits(
+        session, repo_id, limit=limit, offset=offset, sort=sort, authorship=authorship
+    )
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
     items = [_commit_from_row(r, normalizer) for r in rows]
     next_offset = offset + limit if offset + limit < total else None
@@ -170,6 +191,63 @@ async def get_commits(
         total=total,
         has_more=next_offset is not None,
         next_offset=next_offset,
+    )
+
+
+@router.get("/{repo_id}/commits/agent-trend", response_model=AgentTrendResponse)
+async def get_agent_trend(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> AgentTrendResponse:
+    """Monthly agent-vs-human commit volume across the indexed window.
+
+    Buckets the bounded ``git_commits`` table in Python (portable across
+    SQLite/Postgres date functions). Months with zero commits are omitted.
+    """
+    result = await session.execute(
+        select(
+            GitCommit.committed_at,
+            GitCommit.agent_name,
+            GitCommit.agent_autonomy_tier,
+        ).where(GitCommit.repository_id == repo_id)
+    )
+    buckets: dict[str, dict] = {}
+    total = 0
+    agent_total = 0
+    names: dict[str, int] = {}
+    for committed_at, agent_name, tier in result.all():
+        if committed_at is None:
+            continue
+        month = committed_at.strftime("%Y-%m")
+        b = buckets.setdefault(month, {"total": 0, "agent": 0, "tiers": {}})
+        b["total"] += 1
+        total += 1
+        if agent_name:
+            b["agent"] += 1
+            agent_total += 1
+            names[agent_name] = names.get(agent_name, 0) + 1
+            if tier is not None:
+                key = str(tier)
+                b["tiers"][key] = b["tiers"].get(key, 0) + 1
+    return AgentTrendResponse(
+        buckets=[
+            AgentTrendBucket(
+                month=m,
+                total_commits=b["total"],
+                agent_commits=b["agent"],
+                agent_pct=(b["agent"] / b["total"] * 100.0) if b["total"] else 0.0,
+                tier_counts=b["tiers"],
+            )
+            for m, b in sorted(buckets.items())
+        ],
+        total_commits=total,
+        agent_commits=agent_total,
+        agent_pct=(agent_total / total * 100.0) if total else 0.0,
+        agent_names=sorted(
+            [{"name": k, "count": v} for k, v in names.items()],
+            key=lambda x: x["count"],
+            reverse=True,
+        ),
     )
 
 

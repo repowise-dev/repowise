@@ -99,6 +99,12 @@ class _OwnerAccumulator:
     dead_code_files: set[str] = field(default_factory=set)
     dead_code_lines: int = 0
 
+    # Agent-provenance rollup across primary-owned files.
+    owned_files_with_agents: int = 0
+    owned_agent_commits: int = 0
+    owned_attributed_commits: int = 0  # total commits on owned files with a rollup
+    owned_agent_tier_counts: Counter[str] = field(default_factory=Counter)
+
     # co-author tally: other_key -> shared file count
     coauthor_shared: Counter[str] = field(default_factory=Counter)
     coauthor_meta: dict[str, tuple[str, str | None]] = field(default_factory=dict)
@@ -217,6 +223,21 @@ async def aggregate_owners(
                 primary.module_hotspots[module] += 1
             if (m.bus_factor or 0) <= 1:
                 primary.bus_factor_risk_files += 1
+            # Agent collaboration: how much agent activity lands on the
+            # files this person owns. agent_authored_pct is None for rows
+            # persisted before the provenance-aware index ran — skip those
+            # so the share stays honest.
+            if m.agent_authored_pct is not None:
+                primary.owned_attributed_commits += m.commit_count_total or 0
+                if (m.agent_commit_count or 0) > 0:
+                    primary.owned_files_with_agents += 1
+                    primary.owned_agent_commits += m.agent_commit_count or 0
+                    try:
+                        tiers = json.loads(m.agent_tier_counts_json or "{}")
+                    except json.JSONDecodeError:
+                        tiers = {}
+                    for tier, n in tiers.items():
+                        primary.owned_agent_tier_counts[str(tier)] += int(n)
 
         # Co-author tally — each pair of distinct touchers shares this file.
         for i, a in enumerate(touchers):

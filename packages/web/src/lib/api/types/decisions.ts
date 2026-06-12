@@ -27,9 +27,21 @@ export interface DecisionRecordResponse {
   verification?: DecisionVerification;
   created_at: string;
   updated_at: string;
+  /** Evidence rows backing the record. Populated by the list endpoint only. */
+  evidence_count?: number | null;
+  /** Top-ranked evidence row, slimmed. Populated by the list endpoint only. */
+  evidence_preview?: EvidencePreview | null;
 }
 
 export type DecisionVerification = "exact" | "fuzzy" | "unverified";
+
+export interface EvidencePreview {
+  source: string;
+  source_quote: string;
+  verification: DecisionVerification;
+  evidence_file?: string | null;
+  evidence_line?: number | null;
+}
 
 export interface DecisionEvidence {
   id: string;

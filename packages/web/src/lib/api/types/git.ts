@@ -107,6 +107,15 @@ export interface CommitResponse {
   change_risk_level: ReviewPriority | null;
   risk_percentile: number;
   review_priority: ReviewPriority;
+  /** Label of the dominant risk driver; null when never risk-scored. */
+  top_driver?: string | null;
+  /** Author's cumulative prior-commit count at commit time. */
+  author_experience?: number | null;
+  /** Coding-agent attribution; null for human-authored commits. */
+  agent_name?: string | null;
+  /** 1 = near-autonomous bot, 2 = human-driven agent, 3 = assisted. */
+  agent_autonomy_tier?: number | null;
+  agent_confidence?: string | null;
 }
 
 export interface RiskDriverResponse {
@@ -117,6 +126,22 @@ export interface RiskDriverResponse {
 }
 
 export interface CommitDetailResponse extends CommitResponse {
-  author_experience?: number | null;
   drivers: RiskDriverResponse[];
+  agent_channel?: string | null;
+}
+
+export interface AgentTrendBucket {
+  month: string;
+  total_commits: number;
+  agent_commits: number;
+  agent_pct: number;
+  tier_counts: Record<string, number>;
+}
+
+export interface AgentTrend {
+  buckets: AgentTrendBucket[];
+  total_commits: number;
+  agent_commits: number;
+  agent_pct: number;
+  agent_names: { name: string; count: number }[];
 }

@@ -72,6 +72,22 @@ class OwnerCoAuthor(BaseModel):
     co_change_strength: float  # 0-1 fraction
 
 
+class OwnerAgentCollab(BaseModel):
+    """How much coding-agent activity lands on the files this person owns.
+
+    Aggregated from the per-file agent-provenance rollup (GitMetadata) over
+    the owner's primary-owned files — agent identity per commit lives on the
+    commits surface, the per-file rollup only carries counts and tiers.
+    """
+
+    files_with_agent_commits: int
+    agent_commit_count: int
+    # Commit-weighted share of agent-attributed commits across owned files,
+    # 0-100. None when no owned file has a provenance-aware rollup yet.
+    agent_share_pct: float | None
+    tier_counts: dict = {}
+
+
 class OwnerProfileResponse(BaseModel):
     key: str
     name: str
@@ -94,13 +110,20 @@ class OwnerProfileResponse(BaseModel):
     lines_added_90d_est: int
     lines_deleted_90d_est: int
 
-    # Breakdowns
+    # Breakdowns. top_files / co_authors are capped server-side; the
+    # *_total fields carry the uncapped counts so the UI can render honest
+    # "+N more" indicators instead of implying the list is complete.
     modules: list[OwnerModuleRollup]
     top_files: list[OwnerFileEntry]
+    files_touched_total: int = 0
     co_authors: list[OwnerCoAuthor]
+    co_authors_total: int = 0
 
     # Commit-category mix across files they touch (sum of categories).
     commit_categories: dict
+
+    # Agent collaboration on owned files (None when nothing is attributed).
+    agent_collab: OwnerAgentCollab | None = None
 
 
 class ModuleHealthOwner(BaseModel):

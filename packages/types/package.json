@@ -24,7 +24,8 @@
     "./owners": "./src/owners.ts",
     "./modules": "./src/modules.ts",
     "./overview": "./src/overview.ts",
-    "./files": "./src/files.ts"
+    "./files": "./src/files.ts",
+    "./external-systems": "./src/external-systems.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

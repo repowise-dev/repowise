@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from "./client";
+import { apiGet, apiPatch, apiPost } from "./client";
 import type { PageResponse, PageVersionResponse } from "./types";
 
 export async function listPages(
@@ -41,6 +41,17 @@ export async function getPageVersions(
     page_id: pageId,
     limit,
   });
+}
+
+/** Set or clear the human-curated note pinned above a page's generated content. */
+export async function updatePageNotes(
+  pageId: string,
+  humanNotes: string | null,
+): Promise<PageResponse> {
+  return apiPatch<PageResponse>(
+    `/api/pages/lookup/notes?page_id=${encodeURIComponent(pageId)}`,
+    { human_notes: humanNotes },
+  );
 }
 
 /** Force-regenerate a page by ID */

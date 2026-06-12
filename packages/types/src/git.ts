@@ -130,6 +130,18 @@ export interface Commit {
   risk_percentile: number;
   /** Repo-relative review priority (the portable ranking signal). */
   review_priority: ReviewPriority;
+  /** Label of the dominant risk driver, so rows explain themselves without
+   * opening the detail sheet. Null when the commit was never risk-scored. */
+  top_driver?: string | null;
+  /** Author's cumulative prior-commit count at the time of the commit.
+   * Low values flag a new-to-this-repo contributor. */
+  author_experience?: number | null;
+  /** Coding-agent attribution (deterministic local-git channels).
+   * Null/undefined for human-authored commits. */
+  agent_name?: string | null;
+  /** 1 = near-autonomous bot, 2 = human-driven agent, 3 = assisted/co-authored. */
+  agent_autonomy_tier?: number | null;
+  agent_confidence?: string | null;
 }
 
 /** One feature's signed contribution to a commit's change-risk logit. */
@@ -142,10 +154,28 @@ export interface RiskDriver {
 }
 
 export interface CommitDetail extends Commit {
-  /** Author's cumulative prior-commit count at the time of the commit. */
-  author_experience?: number | null;
   /** Per-feature breakdown, strongest contribution first. */
   drivers: RiskDriver[];
+  /** Which attribution channel identified the agent (e.g. git footer). */
+  agent_channel?: string | null;
+}
+
+/** One month of agent-vs-human commit volume. */
+export interface AgentTrendBucket {
+  month: string; // "YYYY-MM"
+  total_commits: number;
+  agent_commits: number;
+  agent_pct: number; // 0-100
+  tier_counts: Record<string, number>;
+}
+
+/** Monthly agent-share trend across the indexed commit window. */
+export interface AgentTrend {
+  buckets: AgentTrendBucket[];
+  total_commits: number;
+  agent_commits: number;
+  agent_pct: number; // 0-100
+  agent_names: { name: string; count: number }[];
 }
 
 export interface OwnershipEntry {

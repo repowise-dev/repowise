@@ -237,6 +237,105 @@ async def test_get_commit_not_found(client: AsyncClient) -> None:
     assert resp.status_code == 404
 
 
+async def _insert_agent_commit(session_factory, repo_id: str) -> None:
+    from datetime import UTC, datetime
+
+    async with get_session(session_factory) as session:
+        await crud.upsert_git_commits_bulk(
+            session,
+            repo_id,
+            [
+                {
+                    "sha": "dddddddd44",
+                    "author_name": "claude",
+                    "author_email": "bot@example.com",
+                    "committed_at": datetime.fromtimestamp(4000, tz=UTC),
+                    "subject": "agent commit",
+                    "lines_added": 10,
+                    "lines_deleted": 2,
+                    "files_changed": 1,
+                    "dirs_changed": 1,
+                    "subsystems_changed": 1,
+                    "entropy": 0.5,
+                    "is_fix": False,
+                    "author_experience": 1,
+                    "change_risk_score": 3.0,
+                    "change_risk_level": "low",
+                    "agent_name": "claude-code",
+                    "agent_autonomy_tier": 2,
+                    "agent_channel": "git_footer",
+                    "agent_confidence": "high",
+                }
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_commits_carry_agent_provenance_and_top_driver(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    await _insert_agent_commit(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"sort": "date"})
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items[0]["sha"] == "dddddddd44"
+    assert items[0]["agent_name"] == "claude-code"
+    assert items[0]["agent_autonomy_tier"] == 2
+    assert items[0]["agent_confidence"] == "high"
+    assert items[0]["author_experience"] == 1
+    # Human rows carry no agent attribution but do carry a top driver.
+    human = items[-1]
+    assert human["agent_name"] is None
+    assert isinstance(human["top_driver"], str) and human["top_driver"]
+
+    detail = await client.get(f"/api/repos/{repo['id']}/commits/dddddddd")
+    assert detail.status_code == 200
+    assert detail.json()["agent_channel"] == "git_footer"
+
+
+@pytest.mark.asyncio
+async def test_commits_authorship_filter(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    await _insert_agent_commit(app.state.session_factory, repo["id"])
+
+    agents = await client.get(
+        f"/api/repos/{repo['id']}/commits", params={"authorship": "agent"}
+    )
+    assert agents.status_code == 200
+    assert agents.json()["total"] == 1
+    assert agents.json()["items"][0]["agent_name"] == "claude-code"
+
+    humans = await client.get(
+        f"/api/repos/{repo['id']}/commits", params={"authorship": "human"}
+    )
+    assert humans.json()["total"] == 3
+    assert all(c["agent_name"] is None for c in humans.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_agent_trend(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    await _insert_agent_commit(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/agent-trend")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_commits"] == 4
+    assert data["agent_commits"] == 1
+    assert data["agent_pct"] == 25.0
+    assert data["agent_names"] == [{"name": "claude-code", "count": 1}]
+    # All four fixture commits share the epoch-1970 month bucket.
+    assert len(data["buckets"]) == 1
+    bucket = data["buckets"][0]
+    assert bucket["total_commits"] == 4
+    assert bucket["tier_counts"] == {"2": 1}
+
+
 @pytest.mark.asyncio
 async def test_get_git_summary(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)

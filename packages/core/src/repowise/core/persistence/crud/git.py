@@ -261,11 +261,29 @@ async def delete_git_commits(session: AsyncSession, repository_id: str) -> None:
     await session.flush()
 
 
-async def count_git_commits(session: AsyncSession, repository_id: str) -> int:
+def _commit_authorship_clause(authorship: str | None):
+    """Optional authorship predicate: ``agent`` keeps agent-attributed commits,
+    ``human`` keeps the rest. ``None`` / ``"all"`` means no filtering."""
+    if authorship == "agent":
+        return GitCommit.agent_name.is_not(None)
+    if authorship == "human":
+        return GitCommit.agent_name.is_(None)
+    return None
+
+
+async def count_git_commits(
+    session: AsyncSession, repository_id: str, *, authorship: str | None = None
+) -> int:
     """Count persisted commits for a repository."""
-    result = await session.execute(
-        select(func.count()).select_from(GitCommit).where(GitCommit.repository_id == repository_id)
+    stmt = (
+        select(func.count())
+        .select_from(GitCommit)
+        .where(GitCommit.repository_id == repository_id)
     )
+    clause = _commit_authorship_clause(authorship)
+    if clause is not None:
+        stmt = stmt.where(clause)
+    result = await session.execute(stmt)
     return int(result.scalar_one() or 0)
 
 
@@ -316,20 +334,20 @@ async def get_git_commits(
     limit: int = 50,
     offset: int = 0,
     sort: str = "risk",
+    authorship: str | None = None,
 ) -> list[GitCommit]:
     """Return a page of commits, sorted by change-risk (default) or recency.
 
     ``sort="risk"`` ranks by ``change_risk_score`` descending (the review-
     priority order); ``sort="date"`` ranks by ``committed_at`` descending.
+    ``authorship`` optionally narrows to ``agent`` / ``human`` commits.
     """
     order = GitCommit.committed_at.desc() if sort == "date" else GitCommit.change_risk_score.desc()
-    result = await session.execute(
-        select(GitCommit)
-        .where(GitCommit.repository_id == repository_id)
-        .order_by(order)
-        .limit(limit)
-        .offset(offset)
-    )
+    stmt = select(GitCommit).where(GitCommit.repository_id == repository_id)
+    clause = _commit_authorship_clause(authorship)
+    if clause is not None:
+        stmt = stmt.where(clause)
+    result = await session.execute(stmt.order_by(order).limit(limit).offset(offset))
     return list(result.scalars().all())
 
 

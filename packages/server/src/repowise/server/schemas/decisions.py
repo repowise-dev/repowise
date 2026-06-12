@@ -8,6 +8,16 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class EvidencePreview(BaseModel):
+    """The top-ranked evidence row, slimmed for list rows."""
+
+    source: str
+    source_quote: str
+    verification: str
+    evidence_file: str | None = None
+    evidence_line: int | None = None
+
+
 class DecisionRecordResponse(BaseModel):
     id: str
     repository_id: str
@@ -32,6 +42,12 @@ class DecisionRecordResponse(BaseModel):
     last_code_change: datetime | None
     created_at: datetime
     updated_at: datetime
+    # List-row evidence preview: the top-ranked evidence row's verbatim quote
+    # plus how many evidence rows back the record. Populated by the list
+    # endpoint only (None on detail/graph responses, which have the full
+    # /evidence endpoint instead).
+    evidence_count: int | None = None
+    evidence_preview: EvidencePreview | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:

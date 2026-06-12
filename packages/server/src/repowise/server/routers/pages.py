@@ -7,10 +7,12 @@ parameter greedily matches the suffix as part of the page_id.
 
 from __future__ import annotations
 
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from repowise.core.persistence import crud
+from repowise.core.persistence.models import _now_utc
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import PageResponse, PageVersionResponse
 
@@ -71,6 +73,30 @@ async def get_page_versions_by_query(
     """Get version history for a wiki page (page_id as query param)."""
     versions = await crud.get_page_versions(session, page_id, limit=limit)
     return [PageVersionResponse.from_orm(v) for v in versions]
+
+
+class PageNotesUpdate(BaseModel):
+    """PATCH body for /lookup/notes. ``None`` clears the note."""
+
+    human_notes: str | None = None
+
+
+@router.patch("/lookup/notes", response_model=PageResponse)
+async def update_page_notes(
+    body: PageNotesUpdate,
+    page_id: str = Query(..., description="Page ID"),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> PageResponse:
+    """Set or clear the human-curated note pinned above a page's generated
+    content. Notes survive regeneration, so this never touches versions."""
+    page = await crud.get_page(session, page_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Page not found")
+    note = (body.human_notes or "").strip()
+    page.human_notes = note or None
+    page.updated_at = _now_utc()
+    await session.flush()
+    return PageResponse.from_orm(page)
 
 
 @router.post("/lookup/regenerate", status_code=202)

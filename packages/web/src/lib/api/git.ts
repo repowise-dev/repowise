@@ -1,5 +1,6 @@
 import { apiGet } from "./client";
 import type {
+  AgentTrend,
   CommitDetailResponse,
   CommitResponse,
   GitMetadataResponse,
@@ -115,14 +116,25 @@ export async function getGitSummary(
  */
 export async function getCommitsPage(
   repoId: string,
-  options: { sort?: "risk" | "date"; limit?: number; offset?: number } = {},
+  options: {
+    sort?: "risk" | "date";
+    authorship?: "all" | "agent" | "human";
+    limit?: number;
+    offset?: number;
+  } = {},
 ): Promise<Paginated<CommitResponse>> {
-  const { sort = "risk", limit = 50, offset = 0 } = options;
+  const { sort = "risk", authorship = "all", limit = 50, offset = 0 } = options;
   return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {
     sort,
+    authorship,
     limit,
     offset,
   });
+}
+
+/** Monthly agent-vs-human commit volume across the indexed window. */
+export async function getAgentTrend(repoId: string): Promise<AgentTrend> {
+  return apiGet<AgentTrend>(`/api/repos/${repoId}/commits/agent-trend`);
 }
 
 export async function getCommit(

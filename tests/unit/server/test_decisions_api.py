@@ -100,6 +100,33 @@ async def _seed_code_link(session_factory, repo_id: str, decision_id: str) -> No
 
 
 # ---------------------------------------------------------------------------
+# List evidence preview
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_carries_evidence_preview(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+    bare_id = await _seed_decision(
+        app.state.session_factory, repo["id"], title="No evidence yet"
+    )
+    await _seed_evidence(app.state.session_factory, decision_id)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/decisions")
+    assert resp.status_code == 200
+    rows = {d["id"]: d for d in resp.json()}
+    rich = rows[decision_id]
+    assert rich["evidence_count"] == 1
+    assert rich["evidence_preview"]["source_quote"] == (
+        "# ADR: Use SQLite for all unit tests."
+    )
+    assert rich["evidence_preview"]["verification"] == "exact"
+    assert rows[bare_id]["evidence_count"] == 0
+    assert rows[bare_id]["evidence_preview"] is None
+
+
+# ---------------------------------------------------------------------------
 # Evidence endpoint
 # ---------------------------------------------------------------------------
 
