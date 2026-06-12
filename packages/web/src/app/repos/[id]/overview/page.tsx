@@ -1,48 +1,21 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Hash } from "lucide-react";
-import { getRepo, getRepoStats } from "@/lib/api/repos";
-import { getGitSummary, getHotspots, getOwnership } from "@/lib/api/git";
-import { getDeadCodeSummary, listDeadCode } from "@/lib/api/dead-code";
-import { listDecisions, getDecisionHealth } from "@/lib/api/decisions";
-import { getGraph, getModuleGraph, getCommunities, getExecutionFlows } from "@/lib/api/graph";
+import { getOverviewSummary } from "@/lib/api/overview";
 import { getProviders } from "@/lib/api/providers";
-import { getDistillSavings } from "@/lib/api/costs";
-import { getHealthOverview } from "@/lib/api/code-health";
-import { listJobs } from "@/lib/api/jobs";
-import { getKnowledgeMap } from "@/lib/api/knowledge-map";
 import { Badge } from "@repowise-dev/ui/ui/badge";
 import { StatCard } from "@repowise-dev/ui/shared/stat-card";
 import { EmptyState } from "@repowise-dev/ui/shared";
-import { DefectAccuracyCard } from "@repowise-dev/ui/health";
-import { HealthScoreRing } from "@repowise-dev/ui/dashboard/health-score-ring";
+import { HealthScoreBadge } from "@repowise-dev/ui/dashboard/health-score-badge";
 import { AttentionPanel } from "@repowise-dev/ui/dashboard/attention-panel";
-import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
+import { WhereToStartCard } from "@repowise-dev/ui/dashboard/where-to-start";
 import { SavingsMini } from "@repowise-dev/ui/dashboard/savings-mini";
-import { computeHealthScore, buildAttentionItems, aggregateLanguages } from "@/lib/utils/health-score";
-import { HotspotsMini } from "@repowise-dev/ui/dashboard/hotspots-mini";
-import { DecisionsTimeline } from "@repowise-dev/ui/dashboard/decisions-timeline";
-import { ModuleOverviewGrid } from "@repowise-dev/ui/dashboard/module-overview-grid";
-import { CommunitySummaryGridWrapper as CommunitySummaryGrid } from "@/components/dashboard/community-summary-grid-wrapper";
-import { ExecutionFlowsPanel } from "@repowise-dev/ui/dashboard/execution-flows-panel";
-import { BusFactorPanel } from "@repowise-dev/ui/git/bus-factor-panel";
-import { CommitCategorySparkline } from "@repowise-dev/ui/git/commit-category-sparkline";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@repowise-dev/ui/ui/tabs";
-import { formatNumber } from "@repowise-dev/ui/lib/format";
-import type {
-  RepoStatsResponse,
-  GitSummaryResponse,
-  HotspotResponse,
-  OwnershipEntry,
-  DeadCodeSummaryResponse,
-  DecisionRecordResponse,
-  DecisionHealthResponse,
-  GraphExportResponse,
-  ModuleGraphResponse,
-  CommunitySummaryItem,
-  ExecutionFlowsResponse,
-} from "@/lib/api/types";
+import { LanguageDonut } from "@repowise-dev/ui/dashboard/language-donut";
+import { QuickActionsWrapper as QuickActions } from "@/components/dashboard/quick-actions-wrapper";
+import { OverviewTabs } from "@/components/overview/overview-tabs";
+import { computeHealthScore } from "@/lib/utils/health-score";
+import { formatNumber, formatRelativeTime } from "@repowise-dev/ui/lib/format";
+import type { AttentionItem } from "@repowise-dev/ui/dashboard/attention-panel";
 
 export const metadata: Metadata = { title: "Overview" };
 
@@ -50,7 +23,6 @@ interface Props {
   params: Promise<{ id: string }>;
 }
 
-// Each fetch wrapped to return null on failure — the dashboard degrades gracefully
 async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
@@ -59,351 +31,177 @@ async function safeFetch<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
+function trendFor(delta: number | null | undefined, suffix = "") {
+  if (delta == null || delta === 0) return undefined;
+  return {
+    value: `${delta > 0 ? "+" : ""}${delta}${suffix}`,
+    positive: delta > 0,
+  };
+}
+
 export default async function OverviewPage({ params }: Props) {
   const { id } = await params;
 
-  const repo = await safeFetch(() => getRepo(id));
-  if (!repo) notFound();
+  const [summary, providers] = await Promise.all([
+    safeFetch(() => getOverviewSummary(id)),
+    safeFetch(() => getProviders()),
+  ]);
+  if (!summary) notFound();
 
-  // Fetch all data in parallel — each independently failable
-  const [stats, gitSummary, hotspots, ownership, deadCodeSummary, deadCodeSafe, decisions, decisionHealth, graph, moduleGraph, providers, completedJobs, knowledgeMap, communities, executionFlows, distillSavings, healthOverview] =
-    await Promise.all([
-      safeFetch(() => getRepoStats(id)),
-      safeFetch(() => getGitSummary(id)),
-      safeFetch(() => getHotspots(id, 50)),
-      safeFetch(() => getOwnership(id, "module")),
-      safeFetch(() => getDeadCodeSummary(id)),
-      safeFetch(() => listDeadCode(id, { safe_only: true, status: "active", limit: 50 })),
-      safeFetch(() => listDecisions(id, { limit: 10 })),
-      safeFetch(() => getDecisionHealth(id)),
-      safeFetch(() => getGraph(id)),
-      safeFetch(() => getModuleGraph(id)),
-      safeFetch(() => getProviders()),
-      safeFetch(() => listJobs({ repo_id: id, limit: 20, status: "completed" })),
-      safeFetch(() => getKnowledgeMap(id)),
-      safeFetch(() => getCommunities(id)),
-      safeFetch(() => getExecutionFlows(id, { top_n: 5, max_depth: 5 })),
-      safeFetch(() => getDistillSavings(id)),
-      safeFetch(() => getHealthOverview(id, 25)),
-    ]);
+  const { repo, stats, health, attention, sync } = summary;
+  const isFresh = stats.file_count === 0;
 
-  // Find timestamps for last sync and last full re-index from completed jobs
-  const lastSyncJob = completedJobs?.find((j) => !j.config?.mode || j.config.mode === "sync");
-  const lastResyncJob = completedJobs?.find((j) => j.config?.mode === "full_resync");
-
-  // Compute health score
-  const siloCount = ownership?.filter((o) => o.is_silo).length ?? 0;
   const healthScore = computeHealthScore({
-    docCoveragePct: stats?.doc_coverage_pct ?? 0,
-    freshnessScore: stats?.freshness_score ?? 0,
-    deadExportCount: stats?.dead_export_count ?? 0,
-    symbolCount: stats?.symbol_count ?? 1,
-    hotspotCount: gitSummary?.hotspot_count ?? 0,
-    totalFiles: gitSummary?.total_files ?? 1,
-    siloCount,
-    totalModules: ownership?.length ?? 1,
+    docCoveragePct: stats.doc_coverage_pct,
+    freshnessScore: stats.freshness_score,
+    deadExportCount: stats.dead_export_count,
+    symbolCount: stats.symbol_count || 1,
+    hotspotCount: stats.hotspot_count,
+    totalFiles: stats.file_count || 1,
+    siloCount: stats.silo_count,
+    totalModules: stats.module_count || 1,
   });
 
-  // Build attention items
-  const attentionItems = buildAttentionItems({
-    staleDecisions: decisionHealth?.stale_decisions ?? [],
-    proposedDecisions: decisionHealth?.proposed_awaiting_review ?? [],
-    ungovernedHotspots: decisionHealth?.ungoverned_hotspots ?? [],
-    siloModules: ownership?.filter((o) => o.is_silo) ?? [],
-    deadCodeSafe: deadCodeSafe ?? [],
-  });
+  const attentionItems: AttentionItem[] = attention.map((a) => ({
+    id: a.id,
+    type: a.type,
+    title: a.title,
+    description: a.description,
+    severity: a.severity,
+    href:
+      a.type === "stale_decision" || a.type === "proposed_decision"
+        ? `/repos/${id}/decisions/${a.target_id}`
+        : undefined,
+  }));
 
-  // Aggregate language distribution from graph nodes
-  const langDistribution = graph ? aggregateLanguages(graph.nodes) : {};
+  const langDistribution: Record<string, number> = {};
+  for (const l of summary.languages) langDistribution[l.language] = l.file_count;
 
-  // Aggregate commit categories across hotspots for the Activity tab
-  const aggregatedCategories: Record<string, number> = {};
-  for (const h of hotspots ?? []) {
-    for (const [cat, count] of Object.entries(h.commit_categories ?? {})) {
-      aggregatedCategories[cat] = (aggregatedCategories[cat] || 0) + count;
-    }
-  }
-  const hasCategories = Object.values(aggregatedCategories).some((v) => v > 0);
+  const lastActivityAt = sync.last_sync_at ?? sync.last_resync_at ?? health.last_indexed_at;
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-[1600px]">
-      {/* ── Hero: Health Score + Repo Info + Quick Actions ── */}
-      <div className="flex flex-col sm:flex-row items-start gap-6">
-        <HealthScoreRing
-          score={healthScore.score}
-          components={healthScore.components}
-          note={healthScore.note}
+      {/* ── Compact header ── */}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <h1 className="text-xl font-semibold text-[var(--color-text-primary)] truncate">
+            {repo.name}
+          </h1>
+          {repo.head_commit && (
+            <Badge variant="outline" className="text-[10px] h-5 shrink-0">
+              <Hash className="h-2.5 w-2.5" />
+              {repo.head_commit.slice(0, 7)}
+            </Badge>
+          )}
+          <Badge variant="outline" className="text-[10px] h-5 shrink-0">
+            {repo.default_branch}
+          </Badge>
+          {!isFresh && (
+            <HealthScoreBadge
+              score={healthScore.score}
+              components={healthScore.components}
+              note={healthScore.note}
+              history={health.history}
+            />
+          )}
+          {lastActivityAt && (
+            <span
+              className="text-[11px] text-[var(--color-text-tertiary)]"
+              title={new Date(lastActivityAt).toLocaleString()}
+            >
+              synced {formatRelativeTime(lastActivityAt)}
+            </span>
+          )}
+        </div>
+        <p className="text-xs font-mono text-[var(--color-text-tertiary)] truncate -mt-1">
+          {repo.local_path}
+        </p>
+        <QuickActions
+          repoId={id}
+          repoName={repo.name}
+          pageCount={sync.page_count || stats.file_count}
+          modelName={providers?.active.model ?? sync.last_sync_model ?? ""}
+          lastSyncAt={sync.last_sync_at}
+          lastResyncAt={sync.last_resync_at}
         />
+      </div>
 
-        <div className="flex-1 min-w-0 space-y-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold text-[var(--color-text-primary)] truncate">
-                {repo.name}
-              </h1>
-              {repo.head_commit && (
-                <Badge variant="outline" className="text-[10px] h-5 shrink-0">
-                  <Hash className="h-2.5 w-2.5" />
-                  {repo.head_commit.slice(0, 7)}
-                </Badge>
-              )}
-              <Badge variant="outline" className="text-[10px] h-5 shrink-0">
-                {repo.default_branch}
-              </Badge>
+      {isFresh ? (
+        <EmptyState
+          title={
+            lastActivityAt
+              ? `Indexed ${formatRelativeTime(lastActivityAt)} — nothing to show yet`
+              : "This repo hasn't been indexed yet"
+          }
+          description="Run a sync (above) or `repowise init` in the repo to populate the overview. Stats, attention items, and activity appear as soon as the first index lands."
+        />
+      ) : (
+        <>
+          {/* ── Attention strip leads ── */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <AttentionPanel items={attentionItems} repoId={id} />
             </div>
-            <p className="text-xs font-mono text-[var(--color-text-tertiary)] truncate mt-0.5">
-              {repo.local_path}
-            </p>
+            <div className="space-y-4">
+              <WhereToStartCard targets={summary.onboarding_targets} repoId={id} />
+              <SavingsMini data={summary.savings} repoId={id} />
+            </div>
           </div>
 
-          {/* Quick actions */}
-          <QuickActions
-            repoId={id}
-            repoName={repo.name}
-            pageCount={stats?.file_count ?? 0}
-            modelName={providers?.active.model ?? ""}
-            lastSyncAt={lastSyncJob?.finished_at ?? null}
-            lastResyncAt={lastResyncJob?.finished_at ?? null}
-          />
-
-          {/* Key metrics strip */}
+          {/* ── Stat strip with deltas ── */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             <StatCard
               label="Files"
-              value={stats ? formatNumber(stats.file_count) : "–"}
+              value={formatNumber(stats.file_count)}
+              trend={trendFor(stats.deltas.file_count)}
               href={`/repos/${id}/architecture?view=graph`}
               dense
             />
             <StatCard
               label="Symbols"
-              value={stats ? formatNumber(stats.symbol_count) : "–"}
+              value={formatNumber(stats.symbol_count)}
               href={`/repos/${id}/architecture?view=symbols`}
               dense
             />
             <StatCard
-              label="Entry Points"
-              value={stats ? formatNumber(stats.entry_point_count) : "–"}
-              href={`/repos/${id}/architecture?view=graph&viewMode=architecture`}
-              dense
-            />
-            <StatCard
               label="Doc Coverage"
-              value={stats ? `${Math.round(stats.doc_coverage_pct)}%` : "–"}
+              value={`${Math.round(stats.doc_coverage_pct)}%`}
               href={`/repos/${id}/docs/coverage`}
               dense
             />
             <StatCard
               label="Dead Exports"
-              value={stats ? formatNumber(stats.dead_export_count) : "–"}
-              description={
-                deadCodeSummary
-                  ? `${formatNumber(deadCodeSummary.deletable_lines)} cleanup-candidate lines`
-                  : undefined
-              }
+              value={formatNumber(stats.dead_export_count)}
               href={`/repos/${id}/code-health?tab=dead-code`}
               dense
             />
+            <StatCard
+              label="Hotspots"
+              value={formatNumber(stats.hotspot_count)}
+              href={`/repos/${id}/code-health?tab=hotspots`}
+              dense
+            />
           </div>
-        </div>
-      </div>
 
-      {/* ── Does the health score find the bugs? — self-validation ── */}
-      {healthOverview?.defect_accuracy ? (
-        <DefectAccuracyCard data={healthOverview.defect_accuracy} />
-      ) : null}
-
-      {/* ── At a glance: what needs eyes now ── */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <AttentionPanel items={attentionItems} repoId={id} />
-        </div>
-        <div>
-          <SavingsMini
-            data={distillSavings}
+          {/* ── Pulse / Structure ── */}
+          <OverviewTabs
             repoId={id}
-            langDistribution={langDistribution}
-            langHref={`/repos/${id}/architecture?view=graph&colorMode=language`}
+            hotspots={summary.top_hotspots}
+            hotspotTotal={stats.hotspot_count}
+            decisions={summary.recent_decisions}
           />
-        </div>
-      </div>
 
-      {/* ── Detail sections — one focus at a time ── */}
-      <Tabs defaultValue="activity">
-        <TabsList>
-          <TabsTrigger value="activity">Activity</TabsTrigger>
-          <TabsTrigger value="architecture">Architecture</TabsTrigger>
-          <TabsTrigger value="graph">Graph</TabsTrigger>
-          <TabsTrigger value="ownership">Ownership</TabsTrigger>
-        </TabsList>
-
-        {/* Activity — recent change pressure and decisions */}
-        <TabsContent value="activity" className="mt-4 space-y-4">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <HotspotsMini hotspots={hotspots ?? []} repoId={id} />
-            <DecisionsTimeline
-              decisions={
-                decisions
-                  ? [...decisions].sort(
-                      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-                    )
-                  : []
-              }
-              repoId={id}
-            />
-          </div>
-          {hasCategories && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Commit Activity</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <CommitCategorySparkline categories={aggregatedCategories} />
-                <div className="flex items-center gap-4 mt-2 text-[10px] text-[var(--color-text-tertiary)]">
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-info)" }} /> Feature</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-error)" }} /> Fix</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-accent-secondary)" }} /> Refactor</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: "var(--color-accent-fill)" }} /> Dependency</span>
-                </div>
-              </CardContent>
-            </Card>
+          {/* ── Languages (moved out of the savings card) ── */}
+          {summary.languages.length > 0 && (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <LanguageDonut
+                distribution={langDistribution}
+                viewAllHref={`/repos/${id}/architecture?view=graph&colorMode=language`}
+              />
+            </div>
           )}
-        </TabsContent>
-
-        {/* Architecture — module map */}
-        <TabsContent value="architecture" className="mt-4">
-          {moduleGraph && moduleGraph.nodes.length > 0 ? (
-            <ModuleOverviewGrid
-              nodes={moduleGraph.nodes}
-              edges={moduleGraph.edges}
-              repoId={id}
-            />
-          ) : (
-            <EmptyState
-              title="No module graph yet"
-              description="Module structure appears once indexing completes. Run repowise update to refresh."
-            />
-          )}
-        </TabsContent>
-
-        {/* Graph — communities & execution flows */}
-        <TabsContent value="graph" className="mt-4 space-y-4">
-          <div className="flex justify-end">
-            <a href={`/repos/${id}/architecture?view=graph&colorMode=community`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
-              View all →
-            </a>
-          </div>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {communities && communities.length > 0 && (
-              <CommunitySummaryGrid communities={communities} repoId={id} />
-            )}
-            {executionFlows && executionFlows.flows.length > 0 && (
-              <ExecutionFlowsPanel flows={executionFlows.flows} repoId={id} />
-            )}
-          </div>
-          {!(communities && communities.length > 0) && !(executionFlows && executionFlows.flows.length > 0) && (
-            <EmptyState
-              title="No graph intelligence yet"
-              description="Communities and execution flows appear after the analysis pass of indexing."
-            />
-          )}
-        </TabsContent>
-
-        {/* Ownership — bus factor, silos, onboarding */}
-        <TabsContent value="ownership" className="mt-4 space-y-4">
-          <div className="flex justify-end">
-            <a href={`/repos/${id}/owners`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
-              View all →
-            </a>
-          </div>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            {hotspots && hotspots.length > 0 && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Bus Factor</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <BusFactorPanel hotspots={hotspots} />
-                </CardContent>
-              </Card>
-            )}
-
-            {knowledgeMap && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Knowledge Silos</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {knowledgeMap.knowledge_silos.length === 0 ? (
-                    <p className="text-xs text-[var(--color-text-tertiary)]">No silos detected — good bus factor!</p>
-                  ) : (
-                    <div className="space-y-1">
-                      <p className="text-xs text-[var(--color-text-secondary)] mb-2">
-                        {formatNumber(knowledgeMap.knowledge_silos.length)} file
-                        {knowledgeMap.knowledge_silos.length === 1 ? "" : "s"} with &gt;80% single-owner concentration
-                      </p>
-                      <ul className="space-y-1">
-                        {knowledgeMap.knowledge_silos.slice(0, 3).map((silo) => (
-                          <li key={silo.file_path}>
-                            <a
-                              href={`/repos/${id}/architecture?view=graph&node=${encodeURIComponent(silo.file_path)}`}
-                              className="flex items-center justify-between gap-2 -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
-                            >
-                              <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate min-w-0">
-                                {silo.file_path}
-                              </p>
-                              <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0">
-                                {Math.round(silo.owner_pct * 100)}%
-                              </span>
-                            </a>
-                          </li>
-                        ))}
-                        {knowledgeMap.knowledge_silos.length > 3 && (
-                          <li>
-                            <a href={`/repos/${id}/owners`} className="text-[10px] text-[var(--color-accent-primary)] hover:underline">
-                              +{knowledgeMap.knowledge_silos.length - 3} more
-                            </a>
-                          </li>
-                        )}
-                      </ul>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
-
-            {knowledgeMap && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Onboarding Targets</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {knowledgeMap.onboarding_targets.length === 0 ? (
-                    <p className="text-xs text-[var(--color-text-tertiary)]">No graph data available.</p>
-                  ) : (
-                    <ul className="space-y-2">
-                      {knowledgeMap.onboarding_targets.slice(0, 5).map((target) => (
-                        <li key={target.path}>
-                          <a
-                            href={`/repos/${id}/architecture?view=graph&node=${encodeURIComponent(target.path)}`}
-                            className="block -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors space-y-0.5"
-                          >
-                            <p className="text-[11px] font-mono text-[var(--color-text-primary)] truncate">
-                              {target.path}
-                            </p>
-                            <p className="text-[10px] text-[var(--color-text-tertiary)]">
-                              pagerank {target.pagerank.toFixed(4)} · {formatNumber(target.doc_words)} doc words
-                            </p>
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </CardContent>
-              </Card>
-            )}
-          </div>
-        </TabsContent>
-      </Tabs>
+        </>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { Flame } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { EmptyState } from "../shared/empty-state";
 import { truncatePath } from "../lib/format";
+import { fileEntityPath } from "../shared/entity/routes";
 import type { Hotspot } from "@repowise-dev/types/git";
 
 interface HotspotsMiniProps {
@@ -77,7 +78,7 @@ export function HotspotsMini({
           {top.map((h) => (
             <a
               key={h.file_path}
-              href={`${prefix}/architecture?view=graph&node=${encodeURIComponent(h.file_path)}`}
+              href={fileEntityPath(prefix, h.file_path)}
               className="flex items-center gap-3 -mx-2 px-2 py-0.5 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
             >
               <div className="w-16 shrink-0">

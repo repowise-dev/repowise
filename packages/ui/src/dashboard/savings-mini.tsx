@@ -1,7 +1,16 @@
 import { Sparkles } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { formatCost, formatTokens } from "../lib/format";
-import type { DistillSavingsData } from "../costs/distill-savings-card";
+
+/** Structural slice of the savings rollup this tile renders — the full
+ *  /distill-savings payload and the overview-summary headline both fit. */
+export interface SavingsMiniData {
+  available: boolean;
+  saved_tokens?: number;
+  mcp_tokens?: number;
+  estimated_usd_saved?: number;
+  pricing_model?: string;
+}
 
 const LANG_COLORS: Record<string, string> = {
   python: "var(--color-lang-python)",
@@ -20,8 +29,9 @@ function getLangColor(lang: string): string {
 }
 
 interface SavingsMiniProps {
-  /** Rollup from /distill-savings; null/undefined when unavailable. */
-  data?: DistillSavingsData | null;
+  /** Rollup from /distill-savings (or the overview-summary headline);
+   *  null/undefined when unavailable. */
+  data?: SavingsMiniData | null;
   /** Repo id, for the "View costs →" link. */
   repoId: string;
   /** Language → file-count map, rendered as a composition strip below savings. */
@@ -79,7 +89,7 @@ export function SavingsMini({ data, repoId, langDistribution, langHref }: Saving
                 {formatTokens(total)}
               </span>
               <span className="text-base font-semibold tabular-nums text-green-500">
-                {formatCost(data!.estimated_usd_saved)}
+                {formatCost(data!.estimated_usd_saved ?? 0)}
               </span>
             </div>
             <p className="text-[11px] text-[var(--color-text-secondary)] -mt-1">
